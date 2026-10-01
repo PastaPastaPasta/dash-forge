@@ -44,18 +44,22 @@ import {
   queryDocumentsWithProof,
   sumDocumentsGrouped,
   type DeleteResult,
+  type PlainDocument,
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
 import { DOC, asIdentifierString, withVis, type RepoRef } from './contract'
 import { isRc1BranchName, isRc1OidHex, isRc1TagName } from '../rules'
-import { invalidateMembers, readMemberships } from './members'
+import { invalidateMembers, memberDocOf, readMemberships, roleOfMemberDoc } from './members'
+import { contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
+import { refreshRoleOnRefusal, roleClaim } from './role-claim'
+import { WRITER_ROLE_CODE, grantableRoles } from '../rules/roles'
 import { repoSource } from './source'
 import { starShape } from './star-shape'
 import { writeLock, writeTransition, type StateTarget } from './transitions'
@@ -122,7 +126,7 @@ export interface PostContext {
 }
 
 /** Why a non-member cannot comment on or review a locked thread. */
-export const LOCKED_REASON = 'This conversation is locked: only maintainers and writers can comment.'
+export const LOCKED_REASON = "This conversation is locked: only the repo's members can comment."
 
 /** A non-member's post to a locked thread: consensus refuses it (`lockGate`). */
 export function lockedOut(post: PostContext | undefined): boolean {
@@ -283,6 +287,9 @@ export async function writeRepoDoc(
   // A review's PR, read before sealing: the inbox follows a PR its reviewer reviewed (QW2-009).
   const patchId = data['patchId']
   const reviewed = documentType !== DOC.review ? '' : patchId instanceof Uint8Array ? base58Encode(patchId) : asIdentifierString(patchId)
+  // The claimed role (`r`) of a gated type, and the refusal of a write the signer's role cannot
+  // make, before anything is sealed or signed. `r` is plaintext: it goes on beside `enc`.
+  const claim = await roleClaim(sdk, auth, repo, documentType, data)
   const sealedType = repo.visibility === 'private' ? sealedTypeOf(documentType, data) : null
   if (sealedType !== null) {
     contentKey = contentHash(documentType, scoped(repo, data))
@@ -293,14 +300,17 @@ export async function writeRepoDoc(
   assertNoPlaintext(repo, documentType, data)
   let result: WriteResult | undefined
   try {
-    result = await createDocumentIdempotent(sdk, auth, {
-      contractId: contractFor(repo, documentType),
-      documentType,
-      // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
-      data: scoped(repo, withVis(repo.visibility, documentType, data)),
-      ...(intent ? { intent } : {}),
-      ...(contentKey ? { contentKey } : {}),
-    })
+    const signed = data
+    result = await refreshRoleOnRefusal(repo, auth, documentType, () =>
+      createDocumentIdempotent(sdk, auth, {
+        contractId: contractFor(repo, documentType),
+        documentType,
+        // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
+        data: scoped(repo, withVis(repo.visibility, documentType, { ...signed, ...claim })),
+        ...(intent ? { intent } : {}),
+        ...(contentKey ? { contentKey } : {}),
+      }),
+    )
     return result
   } finally {
     // A new issue or PR raises its total's floor BEFORE the caches drop: dropping them tells the
@@ -958,15 +968,49 @@ function need(auth: WriteAuth | null): WriteAuth {
 // Membership (owner-only)
 // ---------------------------------------------------------------------------
 
-const ROLE_DOC: Readonly<Record<Role, string>> = { maintainer: DOC.maintainer, writer: DOC.writer }
-
-/** The membership document `(repoId, memberId)` of `role`, or null. */
-async function findMembership(sdk: EvoSDK, repo: RepoRef, role: Role, memberId: string): Promise<string | null> {
+/**
+ * The membership document `(repoId, memberId)` of the type that holds `role` (a `writer` document
+ * for writer, triage and reader), with the role it grants, or null.
+ */
+async function findMembership(sdk: EvoSDK, repo: RepoRef, role: Role, memberId: string): Promise<{ readonly id: string; readonly role: Role | null } | null> {
+  const type = memberDocOf(role)
   const { documents } = await queryDocumentsWithProof(
     sdk,
-    repoSource(repo).repoQuery(ROLE_DOC[role], { where: [['memberId', '==', memberId]], limit: 1 }),
+    repoSource(repo).repoQuery(type, { where: [['memberId', '==', memberId]], limit: 1 }),
   )
-  return firstId(documents)
+  const id = firstId(documents)
+  return id === null ? null : { id, role: roleOfMemberDoc(type, documents[0] as PlainDocument) }
+}
+
+/**
+ * A member already holds a `writer` document of another role. A `writer` document is immutable:
+ * a role change is a removal and a new add (their consent still stands).
+ */
+export class MemberRoleTakenError extends Error {
+  constructor(
+    readonly memberId: string,
+    readonly held: Role | null,
+  ) {
+    super(`they are already a ${held ?? 'member'} here: to change their role, remove them and add them again as the new role`)
+    this.name = 'MemberRoleTakenError'
+  }
+}
+
+/** Refuse a role the owner cannot grant on `repo` (a reader on a public repo: everyone can read it). */
+function assertGrantable(repo: RepoRef, role: Role): void {
+  if (!grantableRoles(repo.visibility).includes(role)) throw new Error('a reader role is only for private repos: everyone can read a public one')
+}
+
+/**
+ * The `role` a `writer` document of `role` carries, where the registered forge-core declares it
+ * (RC2 member roles); a contract without it has writers only, so a triage or reader grant is
+ * refused there before signing.
+ */
+async function writerRoleData(sdk: EvoSDK, repo: RepoRef, role: Role): Promise<Record<string, unknown>> {
+  if (role === 'maintainer') return {}
+  if (await contractHasProperty(sdk, repo.forge.core, DOC.writer, 'role')) return { role: WRITER_ROLE_CODE[role] }
+  if (role !== 'writer') throw new Error(`this network's forge-core predates member roles: it has no ${role} role, only writers and maintainers`)
+  return {}
 }
 
 /**
@@ -1039,15 +1083,17 @@ export async function acceptInvite(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, 
 
 /**
  * The `maintainer` / `writer` document data (RC1): the repo's `vis`, and `consentBy` = the member
- * (their `consent` document must exist) unless the owner enrols itself.
+ * (their `consent` document must exist) unless the owner enrols itself; `extra` adds a writer's
+ * `role` (RC2).
  */
-export function membershipData(repo: RepoRef, memberId: string): Record<string, unknown> {
+export function membershipData(repo: RepoRef, memberId: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const member = decodeIdentifier(memberId)
   return {
     repoId: decodeIdentifier(repo.repoId),
     memberId: member,
     vis: repo.visibility,
     ...(memberId === repo.ownerId ? {} : { consentBy: member }),
+    ...extra,
   }
 }
 
@@ -1083,8 +1129,13 @@ export async function grantMembershipDoc(
   intent?: string,
 ): Promise<WriteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can add members')
+  assertGrantable(repo, role)
+  const roleData = await writerRoleData(sdk, repo, role)
   const held = await findMembership(sdk, repo, role, memberId)
-  if (held !== null) return alreadyThere(held)
+  if (held !== null) {
+    if (held.role === role) return alreadyThere(held.id)
+    throw new MemberRoleTakenError(memberId, held.role)
+  }
   if (memberId !== repo.ownerId && (await retryWhileMissing(() => findConsent(sdk, repo, memberId), CONSENT_LAG_RETRIES)) === null) {
     throw new ConsentMissingError(memberId)
   }
@@ -1092,11 +1143,11 @@ export async function grantMembershipDoc(
     () =>
       createDocumentIdempotent(sdk, auth, {
         contractId: repo.forge.core,
-        documentType: ROLE_DOC[role],
-        data: membershipData(repo, memberId),
+        documentType: memberDocOf(role),
+        data: membershipData(repo, memberId, roleData),
         ...(intent ? { intent } : {}),
       }),
-    () => findMembership(sdk, repo, role, memberId),
+    async () => (await findMembership(sdk, repo, role, memberId))?.id ?? null,
   )
   invalidateMembers(repo, auth.network)
   // Membership decides which rows a private repo shows (a stranger's ciphertext is hidden).
@@ -1120,6 +1171,56 @@ export async function revokeMember(
 }
 
 /**
+ * Change a public repo member's role `from` → `to` (RC2: a `writer` document is immutable, so a
+ * change is the owner deleting the membership and adding the new one; the member's `consent`
+ * still stands). Everything that would refuse the add is checked before the delete: the role is
+ * grantable here, the contract has it, their consent is present, and they hold no other document
+ * of the new role's type. Refused on a private repo (there a removal rotates the key: remove and
+ * add again through the private-repo flow).
+ */
+export async function changeMemberRole(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  memberId: string,
+  from: Role,
+  to: Role,
+  intent?: string,
+): Promise<WriteResult> {
+  if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
+  if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
+  if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
+  if (from === to) throw new Error(`they are already a ${to}`)
+  assertGrantable(repo, to)
+  await writerRoleData(sdk, repo, to)
+  if (memberDocOf(from) !== memberDocOf(to)) {
+    const other = await findMembership(sdk, repo, to, memberId)
+    if (other !== null) throw new MemberRoleTakenError(memberId, other.role)
+  }
+  if ((await findConsent(sdk, repo, memberId)) === null) throw new ConsentMissingError(memberId)
+  // The document being replaced must still hold `from` (another tab may have changed it already).
+  const current = await findMembership(sdk, repo, from, memberId)
+  if (current === null || current.role !== from) {
+    throw new Error(`they are no longer a ${from} here (their role changed meanwhile); reload the members and try again`)
+  }
+  await revokeMembershipDoc(sdk, auth, repo, memberId, from)
+  try {
+    // A node a block behind may still list the deleted document: wait until it is gone before the
+    // add, which would otherwise read it as a membership they already hold.
+    if (memberDocOf(from) === memberDocOf(to)) {
+      await retryWhileMissing(async () => {
+        const held = await findMembership(sdk, repo, to, memberId)
+        return held === null || held.id !== current.id ? true : null
+      }, CONSENT_LAG_RETRIES + 2)
+    }
+    return await grantMembershipDoc(sdk, auth, repo, memberId, to, intent)
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e)
+    throw new Error(`their ${from} role was removed, but adding them as ${to} failed (${reason}); add them again as ${to}`)
+  }
+}
+
+/**
  * The membership document delete alone, for any repo. Only `private-members.ts` calls it for a
  * private repo, inside the removal flow (after the re-anchors, before the rotation).
  */
@@ -1131,12 +1232,14 @@ export async function revokeMembershipDoc(
   role: Role,
 ): Promise<DeleteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can remove members')
+  // A writer-document role (writer, triage, reader) deletes the member's `writer` document,
+  // whichever of them it grants: a member holds at most one.
   const existing = await findMembership(sdk, repo, role, memberId)
   if (existing === null) return ALREADY_GONE
   const result = await deleteDocumentIdempotent(sdk, auth, {
     contractId: repo.forge.core,
-    documentType: ROLE_DOC[role],
-    documentId: existing,
+    documentType: memberDocOf(role),
+    documentId: existing.id,
     repo: repo.repoId,
   })
   invalidateMembers(repo, auth.network)

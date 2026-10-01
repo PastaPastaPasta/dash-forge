@@ -1,0 +1,57 @@
+{
+  "name": "triage_reporter_not_counted",
+  "description": "RC2 member roles: check runs are trusted only from maintainers, role-1 writers and runners. A run by a triage member (a writer demoted after posting it; consensus refuses a triage member's new run) is not counted and does not shadow the trusted run before it.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "maint",
+        "createdAt": 100,
+        "conclusion": "failure"
+      },
+      {
+        "id": "r2",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "tri",
+        "createdAt": 200,
+        "conclusion": "success"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requiredChecks": [
+        "build"
+      ]
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "failing",
+        "runId": "r1"
+      }
+    ],
+    "met": false,
+    "untrusted": 1
+  }
+}

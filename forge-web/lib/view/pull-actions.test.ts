@@ -38,9 +38,11 @@ const MAINTAINER = 'maintainer'
 const STRANGER = 'stranger'
 const HEAD = 'cd'.repeat(20)
 
-const NONE: Holdings = { write: false, maintain: false }
-const WRITE: Holdings = { write: true, maintain: false }
-const MAINTAIN: Holdings = { write: false, maintain: true }
+const NONE: Holdings = { member: false, maintain: false, role: null }
+const WRITE: Holdings = { member: true, maintain: false, role: 'writer' }
+const MAINTAIN: Holdings = { member: true, maintain: true, role: 'maintainer' }
+const TRIAGE: Holdings = { member: true, maintain: false, role: 'triage' }
+const READER: Holdings = { member: true, maintain: false, role: 'reader' }
 
 type Pull = PullActionInputs['pull']
 
@@ -60,6 +62,19 @@ describe('pullActions — who may merge', () => {
   it('offers it to writers and maintainers', () => {
     expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE }).canMerge).toBe(true)
     expect(pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN }).canMerge).toBe(true)
+  })
+
+  it('withholds it from a triage member and a reader (RC2 roles), who may still close and reopen as triage', () => {
+    const triage = pullActions({ pull: pull(), viewer: STRANGER, holdings: TRIAGE })
+    expect(triage.canMerge).toBe(false)
+    expect(triage.canCloseReopen).toBe(true)
+    expect(triage.mergeHint).toBe("Your role here is triage: a triage member can't merge pull requests.")
+    const reader = pullActions({ pull: pull(), viewer: STRANGER, holdings: READER })
+    expect(reader.canMerge).toBe(false)
+    expect(reader.canCloseReopen).toBe(false)
+    expect(reader.mergeHint).toMatch(/reader/)
+    // A reader who opened the PR closes it as its author.
+    expect(pullActions({ pull: pull(), viewer: AUTHOR, holdings: READER }).canCloseReopen).toBe(true)
   })
 
   it('withholds it from a signed-in non-member, with the reason', () => {

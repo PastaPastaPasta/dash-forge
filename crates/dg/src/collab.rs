@@ -1,7 +1,9 @@
 //! `dg collab` — repository members: accept / add / remove / list.
 //!
 //! On forge-v2 a member is a `writer` or `maintainer` document the repo owner creates
-//! (add) or deletes (remove); consensus refuses the removed member's next write at once.
+//! (add) or deletes (remove); consensus refuses the removed member's next write at once. A
+//! `writer` document's role is writer, triage or reader (RC2 member roles; reader on private
+//! repositories only); adding a member with another of those roles replaces the document.
 //! There is no suspend: remove and re-add instead. Adding is a two-party invite: the member
 //! first accepts (`dg collab accept`, their own `consent` document), and the owner's add names
 //! that consent (RC1 `member_consent`); `dg collab add --wait` waits for it.
@@ -17,9 +19,10 @@ use serde_json::json;
 
 use forge_core::keyring::PrivateSigner;
 use forge_core::members::{
-    awaiting_consent, doc_type as role_name, ConsentService, MemberReader, MemberService,
+    awaiting_consent, check_grant, check_role_for, doc_type, ConsentService, MemberReader,
+    MemberService,
 };
-use forge_core::rules::v2::Visibility;
+use forge_core::rules::v2::{Role, Visibility};
 use forge_core::user_error::{codes, UserError};
 
 use crate::fmt::{cost_json, cost_line};
@@ -159,16 +162,23 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
+    // A reader on a public repository is refused before anything else (a client rule).
+    check_role_for(handle, role)?;
     // `member` is an identity id or a DPNS name; resolve it once so every check and write
     // below sees a plain identity id.
     let member: &str = &resolve_identity(client, member, "member").await?;
+    // The owner cannot take triage or reader (as the web refuses it).
+    check_grant(handle, member, role)?;
     let signer = crate::keys::signer(&s);
     // The member's consent comes first (checked before any cost prompt or key work), unless
-    // they already hold the role: re-running an add to finish its key wrap needs none.
-    let held = MemberReader::new(client)
+    // they already hold the role: re-running an add to finish its key wrap needs none. A
+    // writer document with another role is a role change (its consent is checked too).
+    let current = MemberReader::new(client)
         .role_doc(handle, member, role)
         .await?
-        .is_some();
+        .map(|m| m.role);
+    let held = current == Some(role);
+    let change_from = current.filter(|r| *r != role);
     if !held {
         require_consent(ctx, client, handle, member, wait).await?;
     }
@@ -224,10 +234,14 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     } else {
         "one small document".to_string()
     };
-    if !ctx.confirm(&format!(
-        "Add {member} as a {} of {repo}? ({what})",
-        role_name(role)
-    ))? {
+    let question = match change_from {
+        Some(from) => format!(
+            "Change {member}'s role in {repo} from {from} to {role}? (their writer document is \
+             deleted and a new one written: 1 delete + {what})"
+        ),
+        None => format!("Add {member} as a {role} of {repo}? ({what})"),
+    };
+    if !ctx.confirm(&question)? {
         return Err(crate::errors::cancelled());
     }
     let before = s.balance().await;
@@ -251,7 +265,8 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         json!({
             "status": "granted",
             "member": member,
-            "role": role_name(role),
+            "role": granted.role.as_str(),
+            "previousRole": change_from.map(Role::as_str),
             "documentId": granted.document_id,
             "id": granted.document_id,
             "repo": handle.display(),
@@ -260,7 +275,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         || {
             println!(
                 "{member} is a {} of {} (document {}) · {}",
-                role_name(role),
+                granted.role,
                 handle.display(),
                 granted.document_id,
                 cost_line(spent, price)
@@ -286,15 +301,17 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
         }
         .into());
     }
+    // Writer, triage and reader are one `writer` document: name the role it grants.
+    let shown = MemberReader::new(client)
+        .role_doc(handle, member, role)
+        .await?
+        .map_or(role, |m| m.role);
     let prompt = if private {
         let members = MemberReader::new(client).list(handle).await?;
         let kr = crate::keys::signer(&s).keyring(handle).await?;
-        private_remove_prompt(&kr, &members, repo, member, role, ctx.usd_price())
+        private_remove_prompt(&kr, &members, repo, member, shown, ctx.usd_price())
     } else {
-        format!(
-            "Remove {member} as a {} of {repo}? Their next push is refused at once",
-            role_name(role)
-        )
+        format!("Remove {member} as a {shown} of {repo}? Their next write is refused at once")
     };
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
@@ -307,10 +324,12 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     } else {
         (Vec::new(), Vec::new())
     };
-    let removed = MemberService::new(client, &s.identity, &s.bridge)
+    let removed_role = MemberService::new(client, &s.identity, &s.bridge)
         .revoke(handle, member, role)
         .await
         .context("removing the member")?;
+    let removed = removed_role.is_some();
+    let shown = removed_role.unwrap_or(shown);
     // A private removal rotates. Also when the member was already gone but the repair check
     // still names them, or the current epoch is burned (an earlier removal whose rotation did
     // not finish, or anyone's interrupted burn: finishing it is the recovery path, and the prompt
@@ -318,7 +337,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     // Dropping only the writer role of someone who stays a maintainer changes nobody's access
     // to the key: no rotation (dropping the maintainer role of someone who stays a writer does
     // rotate, since their wraps stop counting, §5.4; they are wrapped the new key).
-    let stays_maintainer = role == forge_core::rules::v2::Role::Writer
+    let stays_maintainer = role != Role::Maintainer
         && MemberReader::new(client)
             .role_doc(handle, member, forge_core::rules::v2::Role::Maintainer)
             .await?
@@ -342,7 +361,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
         json!({
             "status": if removed { "removed" } else { "not_a_member" },
             "member": member,
-            "role": role_name(role),
+            "role": shown.as_str(),
             "repo": handle.display(),
             "rotation": rotation.as_ref().map(crate::keys::rotation_json),
             "droppedEpochs": dropped,
@@ -361,15 +380,10 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
                 crate::keys::print_rotation(handle, r);
             }
             if removed {
-                println!(
-                    "Removed {member} ({}) from {}.",
-                    role_name(role),
-                    handle.display()
-                );
+                println!("Removed {member} ({shown}) from {}.", handle.display());
             } else {
                 println!(
-                    "{member} is not a {} of {}; nothing to remove.",
-                    role_name(role),
+                    "{member} is not a {shown} of {}; nothing to remove.",
                     handle.display()
                 );
             }
@@ -388,9 +402,10 @@ fn private_remove_prompt(
     role: forge_core::rules::v2::Role,
     price: Option<f64>,
 ) -> String {
+    // Writer, triage and reader are one `writer` document: another role is the other type.
     let keeps_other_role = members
         .iter()
-        .any(|m| m.identity_id == member && m.role != role);
+        .any(|m| m.identity_id == member && doc_type(m.role) != doc_type(role));
     let remaining = crate::keys::distinct_members(members)
         - usize::from(members.iter().any(|m| m.identity_id == member) && !keeps_other_role);
     let (est, what) = crate::keys::rotation_cost(kr, remaining);
@@ -409,8 +424,7 @@ fn private_remove_prompt(
         "Removing {member} rotates the repo key. New pushes, issues and comments will be \
          unreadable to {member}. Everything {member} could already read stays readable to \
          {member} — encryption can't take back what was shared.{burned}\n\
-         Remove {member} as a {} of {repo}? (1 delete + {what}, {})",
-        role_name(role),
+         Remove {member} as a {role} of {repo}? (1 delete + {what}, {})",
         cost_line(est + MEMBER_DOC_ESTIMATE_CREDITS, price)
     )
 }
@@ -499,15 +513,16 @@ async fn rotate_after_removal(
     // otherwise list them, and the rotation must not wrap to them). `rotate` excludes them
     // explicitly as well, unless they still hold the other role.
     let reader = MemberReader::new(signer.client);
+    let removed_type = doc_type(removed_role);
     let mut roles = reader.roles_of(repo, member).await?;
     for _ in 0..DELETE_VISIBLE_ATTEMPTS {
-        if !roles.iter().any(|m| m.role == removed_role) {
+        if !roles.iter().any(|m| doc_type(m.role) == removed_type) {
             break;
         }
         tokio::time::sleep(DELETE_VISIBLE_DELAY).await;
         roles = reader.roles_of(repo, member).await?;
     }
-    let exclude: Vec<String> = if roles.iter().all(|m| m.role == removed_role) {
+    let exclude: Vec<String> = if roles.iter().all(|m| doc_type(m.role) == removed_type) {
         vec![member.to_string()]
     } else {
         Vec::new()
@@ -541,7 +556,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
         .map(|m| {
             json!({
                 "identityId": m.identity_id,
-                "role": role_name(m.role),
+                "role": m.role.as_str(),
                 "documentId": m.document_id,
                 "id": m.document_id,
                 "since": m.created_at,
@@ -557,14 +572,22 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             .await
     };
     ctx.emit(
-        json!({ "count": rows.len(), "members": rows, "ownerId": handle.owner_id() }),
+        // `roles: true`: each member's `role` is its real role (maintainer, writer, triage or
+        // reader). An older dg listed triage and reader documents as "writer"; a consumer that
+        // trusts writers (forge-runner) refuses a list without the marker.
+        json!({
+            "count": rows.len(),
+            "members": rows,
+            "ownerId": handle.owner_id(),
+            "roles": true,
+        }),
         || {
             println!("{} member(s) of {}:", members.len(), handle.display());
             for m in &members {
                 println!(
                     "  {}  {}",
                     crate::fmt::with_name(&m.identity_id, &names),
-                    role_name(m.role)
+                    m.role
                 );
             }
         },

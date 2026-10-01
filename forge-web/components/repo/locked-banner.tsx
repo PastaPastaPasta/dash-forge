@@ -26,7 +26,8 @@ export function lockViewerOf(identity: string | null, holdings: { readonly settl
   if (identity === null) return 'signedOut'
   if (!holdings.settled) return 'checking'
   if (holdings.data === null) return 'unknown'
-  return holdings.data.write || holdings.data.maintain ? 'member' : 'outsider'
+  // Any membership document proves membership on a locked thread (`asMember`), a reader's too.
+  return holdings.data.member ? 'member' : 'outsider'
 }
 
 /** What the banner tells each viewer; `acts` is what the thread takes ("comment", or "comment or review" on a PR). */

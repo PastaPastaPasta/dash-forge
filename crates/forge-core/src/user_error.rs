@@ -769,7 +769,12 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
     } else if needs == "owner" {
         // An edit: consensus admits a document replace from its owner only, members included.
         u.fix("only the author can edit it; comment instead, or ask them to make the change")
-    } else if matches!(needs, "writer" | "maintainer") {
+    } else if matches!(needs, "writer" | "triage") && reason.starts_with("you are a ") {
+        // A triage member or reader (RC2 member roles) is a member already: a role change.
+        u.fix(format!(
+            "ask the owner to change your role: `dg collab add {repo} <your identity id> --role {needs}`"
+        ))
+    } else if matches!(needs, "writer" | "triage" | "maintainer") {
         u.fix(join_fix(&repo, "<your identity id>", needs))
     } else {
         // Not a role a member can be given (the repository's owner, …).
@@ -1257,11 +1262,11 @@ const RULE_EXPLANATIONS: &[(&str, &str)] = &[
     ("c3_mergedAfter", "the pull request was not open and ready when the merge landed (another state change came first); re-read it and run the command again"),
     ("c4_draftAfter", "the pull request was not in the state this moves from when it landed (another state change came first); re-read it and run the command again"),
     ("c5_draftClosedAfter", "the pull request was not an open draft when the close landed (another state change came first); re-read it and run the command again"),
-    ("e_mergeOid", "a merge names its merge commit (oid)"),
+    ("e_mergeOid", "a merge names its merge commit (oid), and a merge, draft or ready needs a maintainer or writer (r 1): triage members cannot make it"),
     ("f_authorNoMerge", "a pull request's author cannot merge it unless they are a maintainer or writer"),
     ("b4_lockDelta", "a lock carries delta +16 and an unlock -16"),
     ("c6_lockedAfter", "the thread was already locked (or already unlocked) when this landed; re-read it and run the command again"),
-    ("g_memberLock", "only a maintainer or writer can lock or unlock a thread"),
+    ("g_memberLock", "only a maintainer, writer or triage member can lock or unlock a thread"),
     ("hasBody", "a comment needs a body (sealed in a private repository)"),
     ("noParentSet", "noParent is reserved and is never set"),
     ("rangeOrder", "a range comment needs a line, and its start line may not follow it"),
@@ -1286,6 +1291,7 @@ const RULE_EXPLANATIONS: &[(&str, &str)] = &[
     ("needRefId", "this event needs refId (a thread, a reviewer or a review)"),
     ("needOid", "a head update names the new head commit (oid)"),
     ("noState", "a state change (draft, ready, lock, unlock) is a transition, not an event"),
+    ("t_triageKinds", "a retarget, review dismissal, head update, pin, unpin or policy bypass needs a maintainer or writer (r 1): triage members cannot make it"),
     (
         "hideByMaint",
         "a hide or unhide must name your own maintainer document (asMaintainer): only a maintainer of the repository can hide content",

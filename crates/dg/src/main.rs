@@ -1267,14 +1267,15 @@ pub enum LabelCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CollabCommand {
-    /// Add a member (the repo owner creates a writer/maintainer document). The member must
-    /// have run `dg collab accept <repo>` first.
+    /// Add a member, or change a member's role (the repo owner creates a writer/maintainer
+    /// document; a writer document's role is writer, triage or reader, and a role change
+    /// replaces it). The member must have run `dg collab accept <repo>` first.
     Add {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
-        /// The role to grant.
+        /// The role to grant: writer, triage, reader (private repositories only) or maintainer.
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
         /// Wait up to this many seconds for the member to accept (`dg collab accept`) before
@@ -1297,7 +1298,8 @@ pub enum CollabCommand {
         repo: String,
         /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
-        /// The role to revoke.
+        /// The role to revoke: maintainer, or the writer document (writer, triage and reader
+        /// are one document: any of them removes it).
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
@@ -1654,11 +1656,19 @@ impl VerdictArg {
 }
 
 /// A member role.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum RoleArg {
-    /// Push, upload (a `writer` document).
+    /// Push, merge, label, close, post check runs (a `writer` document, role 1).
     #[value(alias = "write")]
     Writer,
+    /// Close, reopen and lock, label, assign, set milestones, request reviews and resolve
+    /// threads; no push, merge, draft or ready, retarget, review dismiss, head update, pin or
+    /// check runs (a `writer` document, role 2).
+    Triage,
+    /// Private repositories only: read, comment, review and open issues and PRs; no state
+    /// changes (a `writer` document, role 3).
+    #[value(alias = "read")]
+    Reader,
     /// Also protected refs, config, releases (a `maintainer` document).
     #[value(alias = "maintain")]
     Maintainer,
@@ -1669,6 +1679,8 @@ impl RoleArg {
     pub fn to_core(self) -> forge_core::rules::v2::Role {
         match self {
             RoleArg::Writer => forge_core::rules::v2::Role::Writer,
+            RoleArg::Triage => forge_core::rules::v2::Role::Triage,
+            RoleArg::Reader => forge_core::rules::v2::Role::Reader,
             RoleArg::Maintainer => forge_core::rules::v2::Role::Maintainer,
         }
     }
@@ -2170,6 +2182,33 @@ mod tests {
             }
             _ => panic!("expected collab add"),
         }
+    }
+
+    #[test]
+    fn parses_collab_add_member_roles() {
+        let role_of = |args: &[&str]| {
+            let mut argv = vec!["dg", "collab", "add", "o/r", "m"];
+            argv.extend_from_slice(args);
+            match Cli::parse_from(argv).command {
+                Command::Collab(CollabCommand::Add { role, .. }) => role,
+                _ => panic!("expected collab add"),
+            }
+        };
+        assert_eq!(role_of(&[]), RoleArg::Writer);
+        assert_eq!(role_of(&["--role", "triage"]), RoleArg::Triage);
+        assert_eq!(role_of(&["--role", "reader"]), RoleArg::Reader);
+        assert_eq!(role_of(&["--role", "read"]), RoleArg::Reader);
+        assert_eq!(
+            RoleArg::Triage.to_core(),
+            forge_core::rules::v2::Role::Triage
+        );
+        assert_eq!(
+            RoleArg::Reader.to_core(),
+            forge_core::rules::v2::Role::Reader
+        );
+        assert!(
+            Cli::try_parse_from(["dg", "collab", "add", "o/r", "m", "--role", "owner"]).is_err()
+        );
     }
 
     #[test]

@@ -233,14 +233,21 @@ pub async fn create(
 /// proved member, and membership needs the mirror identity's own consent first.
 pub async fn require_member(client: &PlatformClient, repo: &RepoRef, signer: &str) -> Result<Role> {
     let reader = MemberReader::new(client);
-    let role = reader
-        .roles_of(repo, signer)
-        .await?
-        .iter()
-        .map(|m| m.role)
-        .min();
-    if let Some(role) = role {
+    let role = reader.best_role(repo, signer).await?;
+    if let Some(role) = role.filter(|r| r.is_approver()) {
         return Ok(role);
+    }
+    // RC2 member roles: a triage member or reader cannot push, and its imported items are not
+    // trusted (provenance counts only from maintainers and role-1 writers).
+    if let Some(role) = role {
+        return Err(anyhow::anyhow!(
+            "{signer} is a {role} of {}: the mirror identity pushes and writes imported items \
+             that readers trust only from maintainers and writers, so it must be a maintainer \
+             (or a writer, without releases). The owner runs `dg collab add {} {signer} --role \
+             maintainer`",
+            repo.display(),
+            repo.display()
+        ));
     }
     let consented = reader.consented(repo, signer).await.unwrap_or(false);
     let repo = repo.display();

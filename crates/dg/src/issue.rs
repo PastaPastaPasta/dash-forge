@@ -134,11 +134,12 @@ async fn milestone(ctx: &Ctx, repo: &str, number: u64, title: Option<&str>) -> R
     // Only an open milestone the repo defines: the fold would otherwise show a title that
     // exists nowhere (the web picker offers the same list).
     if let Some(t) = title {
-        // Members only (E601 first, as for a clear): then the title must name an open one.
+        // Members only, triage included (E601 first, as for a clear): then the title must
+        // name an open one.
         s.collab()
             .require_role(
                 &s.repo,
-                forge_core::rules::v2::Role::Writer,
+                forge_core::rules::v2::Role::Triage,
                 &format!("put issue #{number} in a milestone"),
             )
             .await?;

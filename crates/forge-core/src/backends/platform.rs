@@ -316,9 +316,12 @@ impl PackBackend for PlatformBackend<'_> {
         // Pipeline the chunk creates with a bounded in-flight window (S0.1: window 8).
         // `buffered` preserves order while running up to PIPELINE_WINDOW concurrently; the
         // engine's sequential-nonce + idempotent re-broadcast handles landing order.
+        // RC2 member roles: a chunk is push class, `r` 1 (the writer leaf proves `role == r`).
         stream::iter(docs.into_iter().map(|(_seq, props)| {
+            let mut props = self.scope.scoped(props);
+            crate::members::stamp_claimed_role(self.contract, CHUNK_DOC_TYPE, &mut props, 1);
             self.engine
-                .create_document(self.contract, CHUNK_DOC_TYPE, self.scope.scoped(props))
+                .create_document(self.contract, CHUNK_DOC_TYPE, props)
         }))
         .buffered(pipeline_window())
         .try_collect::<Vec<_>>()

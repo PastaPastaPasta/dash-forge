@@ -186,8 +186,11 @@ pub enum Standing {
     Stale,
     /// Their newest review was dismissed.
     Dismissed,
-    /// They are not a maintainer or writer, so their verdict does not count.
+    /// They are not a member, so their verdict does not count.
     NotMember,
+    /// A triage member or reader (RC2 member roles): a member, never an approver, so their
+    /// verdict is recorded, not counted (forge-web `notApprover`).
+    NotApprover,
     /// They opened the PR: their own verdict never counts (GitHub: authors can't approve their
     /// own PR), as `count_approvals` rules.
     Author,
@@ -204,6 +207,7 @@ impl Standing {
             Standing::Stale => "stale — new commits since",
             Standing::Dismissed => "dismissed",
             Standing::NotMember => "doesn't count (not a maintainer or writer)",
+            Standing::NotApprover => "not counted (triage or reader)",
             Standing::Author => "author, not counted",
         }
     }
@@ -312,6 +316,12 @@ pub fn reviewer_rows(
                         if !oracle.member_at(id, r.created_at) || oracle.current_role(id).is_none()
                         {
                             Standing::NotMember
+                        } else if !oracle.approver_at(id, r.created_at)
+                            || !oracle.current_approver(id)
+                        {
+                            // Triage members and readers are members, never approvers: their
+                            // member verdict is shown, not counted (as `count_approvals`).
+                            Standing::NotApprover
                         } else if r.commit_oid != head {
                             Standing::Stale
                         } else {
@@ -508,33 +518,24 @@ mod tests {
 
     #[test]
     fn reviewer_rows_cover_every_standing() {
-        let oracle = RoleOracle::new(vec![
-            Membership {
-                identity: "m".into(),
-                role: Role::Maintainer,
+        let oracle = RoleOracle::new(
+            [
+                ("m", Role::Maintainer),
+                ("w", Role::Writer),
+                ("d", Role::Writer),
+                ("s", Role::Writer),
+                ("auth", Role::Maintainer),
+                ("tri", Role::Triage),
+                ("rdr", Role::Reader),
+            ]
+            .into_iter()
+            .map(|(id, role)| Membership {
+                identity: id.into(),
+                role,
                 created_at: 0,
-            },
-            Membership {
-                identity: "w".into(),
-                role: Role::Writer,
-                created_at: 0,
-            },
-            Membership {
-                identity: "d".into(),
-                role: Role::Writer,
-                created_at: 0,
-            },
-            Membership {
-                identity: "s".into(),
-                role: Role::Writer,
-                created_at: 0,
-            },
-            Membership {
-                identity: "auth".into(),
-                role: Role::Maintainer,
-                created_at: 0,
-            },
-        ]);
+            })
+            .collect(),
+        );
         let reviews = vec![
             review("r-m", "m", Verdict::Approve, H2, 10),
             review("r-w", "w", Verdict::RequestChanges, H2, 11),
@@ -544,6 +545,8 @@ mod tests {
             review("r-c", "chatty", Verdict::Comment, H2, 13),
             review("r-q", "q", Verdict::Approve, H1, 1),
             review("r-a", "auth", Verdict::Approve, H2, 14),
+            review("r-t", "tri", Verdict::Approve, H2, 15),
+            review("r-r", "rdr", Verdict::RequestChanges, H2, 16),
         ];
         let mut f = fold(H2);
         f.dismissed_reviews = vec![Dismissal {
@@ -592,6 +595,12 @@ mod tests {
         assert_eq!(state["stranger"].0, Standing::NotMember);
         assert_eq!(state["chatty"].0, Standing::Commented);
         assert_eq!(state["auth"].0, Standing::Author);
+        assert_eq!(state["tri"].0, Standing::NotApprover);
+        assert_eq!(state["rdr"].0, Standing::NotApprover);
+        assert_eq!(
+            serde_json::to_value(Standing::NotApprover).unwrap(),
+            "notApprover"
+        );
         assert_eq!(
             state["q"],
             (Standing::Awaiting, true),

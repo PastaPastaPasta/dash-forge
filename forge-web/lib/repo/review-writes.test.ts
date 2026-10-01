@@ -13,6 +13,8 @@ let failAt: number | null = null
 const IDS = ['8rSFEyS7gidGdS4r8m22YtMEc519otpDNQ242Zw9c1Gb', 'EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35', 'DBL7NnqGZjyVHwo2jp3K1QD9oRBcbFZnSnB9kQ8bmoYu', 'C6Gox4Qdg9iuQkAnq8hr6XSMYMKNUfSjESD81KrZu4pm', '6N175pfKBhzcNg9kdpPLBTG32LdpZCLxG6XPReg4NPHS']
 const D = (n: number): string => IDS[n - 1] as string
 
+// RC2 member roles: the claimed role (`r`) is role-claim.test.ts's and rc1-writers.test.ts's.
+vi.mock('./role-claim', async (orig) => ({ ...(await orig<typeof import('./role-claim')>()), roleClaim: async () => ({}) }))
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {
@@ -159,7 +161,7 @@ describe('event payloads and routes', () => {
     expect(r.route).toBe('authorEvent')
     expect(writes[0]?.documentType).toBe('authorEvent')
     expect(writes[0]?.data['kind']).toBe(16)
-    await expect(postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'reviewDismiss', author: ALICE, isMember: false, payload: { refId: BOB } })).rejects.toThrow(/maintainer or writer/)
+    await expect(postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'reviewDismiss', author: ALICE, isMember: false, payload: { refId: BOB } })).rejects.toThrow(/member whose role allows it/)
     expect(writes).toHaveLength(1)
   })
 })

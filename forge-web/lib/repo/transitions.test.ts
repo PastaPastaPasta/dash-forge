@@ -128,6 +128,23 @@ describe('writeTransition', () => {
     expect(writes).toEqual([expect.objectContaining({ kind: 11, asAuthor: 7 })])
   })
 
+  it('writes as the author when the gate refuses a stale claimed role (40127), but never for a non-author', async () => {
+    const writes: Record<string, unknown>[] = []
+    let calls = 0
+    await writeTransition(sumSdk(() => ({})), auth(AUTHOR), REPO, async (_t, data) => {
+      calls++
+      if (calls === 1) throw new ConsensusRefusal(40127, 'role', {}, false)
+      writes.push(data)
+      return OK
+    }, { target: PR, action: 'close', isMember: true })
+    expect(writes).toEqual([expect.objectContaining({ kind: 11, asAuthor: 7 })])
+    await expect(
+      writeTransition(sumSdk(() => ({})), auth(MAINT), REPO, async () => {
+        throw new ConsensusRefusal(40127, 'role', {}, false)
+      }, { target: PR, action: 'close', isMember: true }),
+    ).rejects.toBeInstanceOf(ConsensusRefusal)
+  })
+
   it('re-reads and retries once when a state rule refuses (the target moved meanwhile)', async () => {
     let code = 0
     const writes: Record<string, unknown>[] = []
@@ -152,7 +169,7 @@ describe('writeTransition', () => {
 
   it('refuses a stranger and an author merge before reading anything', async () => {
     const seen: DocumentQuery[] = []
-    await expect(writeTransition(sumSdk(() => ({}), seen), auth(id('x')), REPO, async () => OK, { target: PR, action: 'close', isMember: false })).rejects.toThrow(/author or a maintainer/)
+    await expect(writeTransition(sumSdk(() => ({}), seen), auth(id('x')), REPO, async () => OK, { target: PR, action: 'close', isMember: false })).rejects.toThrow(/the author, or a member whose role allows it/)
     await expect(writeTransition(sumSdk(() => ({}), seen), auth(AUTHOR), REPO, async () => OK, { target: PR, action: 'merge', isMember: false, oidHex: 'ab'.repeat(20) })).rejects.toThrow(/maintainer or writer can merge/)
     expect(seen).toEqual([])
   })
@@ -279,7 +296,7 @@ describe('the lock bit (RC1 R-15: kinds 3/4 and 18/19, delta ±16, sums read mod
       expect.objectContaining({ kind: ISSUE_UNLOCK, delta: -16, targetKind: 0, asAuthor: 0 }),
     ])
     expect(done.documentId).toBe('')
-    await expect(writeLock(sumSdk(() => ({})), auth(AUTHOR), REPO, write, { target: ISSUE, lock: true, isMember: false })).rejects.toThrow(/maintainer or writer/)
+    await expect(writeLock(sumSdk(() => ({})), auth(AUTHOR), REPO, write, { target: ISSUE, lock: true, isMember: false })).rejects.toThrow(/maintainer, writer or triage member/)
   })
 
   it('re-reads once when c6 refuses (someone locked it meanwhile)', async () => {

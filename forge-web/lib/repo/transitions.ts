@@ -23,6 +23,8 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 
 import { decodeIdentifier } from '../auth/base58'
 import { compareKey } from '../rules/oid'
+import { RoleRefusedError } from '../rules/roles'
+import { isMemberGateRefusal } from './role-claim'
 import {
   CLOSE_REASON_CODE,
   ISSUE_CLOSE,
@@ -46,7 +48,6 @@ import {
 } from '../rules/transition'
 import {
   ConsensusRefusal,
-  GATE_REFUSED_CODE,
   previewCredits,
   RULE_REFUSED_CODE,
   countDocumentsGrouped,
@@ -305,8 +306,9 @@ export function closeReasonData(closed: ClosedAs, targetNumber: number): Record<
  * - The intent is the action's (`<intent>:<action>`), not the state's: a retry of a write that
  *   timed out replays the same bytes, and a retry after it landed finds the target already in
  *   the action's end state and returns without writing (an empty `documentId`, nothing spent).
- * - When the gate refuses a member write (the membership read was stale) and the viewer is the
- *   author, it is written again as the author.
+ * - When the gate refuses a member write (the membership read was stale), or the signer's role
+ *   cannot make the move as a member ({@link RoleRefusedError}), and the viewer is the author, it
+ *   is written again as the author.
  * - When a state rule refuses it (someone moved the target meanwhile), the state is read again
  *   and the move retried once, or refused plainly.
  */
@@ -319,7 +321,7 @@ export async function writeTransition(
 ): Promise<WriteResult> {
   const { target, action } = input
   const isAuthor = auth.identityId === target.author
-  if (!input.isMember && !isAuthor) throw new Error('only the author or a maintainer or writer can do that')
+  if (!input.isMember && !isAuthor) throw new Error('only the author, or a member whose role allows it, can do that')
   if (action === 'merge' && !input.isMember) throw new Error('only a maintainer or writer can merge')
   // Why an issue closes: only where the registered contract records it.
   const why =
@@ -340,7 +342,11 @@ export async function writeTransition(
       const data = transitionData(target, code, action, actor, input.oidHex)
       return await write(DOC.transition, why !== null && data['kind'] === ISSUE_CLOSE ? { ...data, ...why } : data, intent)
     } catch (e) {
-      if (e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE && actor === 'member' && isAuthor && action !== 'merge') {
+      // A stale membership read (the gate refused), or a role that cannot make this move as a
+      // member (triage: draft and ready; a reader: anything): the author writes it as the author.
+      // 40120 / 40127: the gate refused the membership or the claimed role (a stale read).
+      const memberRefused = isMemberGateRefusal(e) || e instanceof RoleRefusedError
+      if (memberRefused && actor === 'member' && isAuthor && action !== 'merge') {
         actor = 'author'
         continue
       }
@@ -367,7 +373,7 @@ export async function writeLock(
   write: TransitionWriter,
   input: { target: StateTarget; lock: boolean; isMember: boolean; intent?: string },
 ): Promise<WriteResult> {
-  if (!input.isMember) throw new Error('only a maintainer or writer can lock or unlock a conversation')
+  if (!input.isMember) throw new Error('only a maintainer, writer or triage member can lock or unlock a conversation')
   const { target, lock } = input
   const once = async (): Promise<WriteResult> => {
     const state = (await readThreadStates(sdk, repo, [target.id])).get(target.id) ?? threadStateOf(0)

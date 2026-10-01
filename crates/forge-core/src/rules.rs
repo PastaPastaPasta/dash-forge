@@ -2186,6 +2186,7 @@ mod tests {
                             "roleAt": oracle.role_at(&q.identity, q.at),
                             "memberAt": oracle.member_at(&q.identity, q.at),
                             "currentRole": oracle.current_role(&q.identity),
+                            "approverAt": oracle.approver_at(&q.identity, q.at),
                         })
                     })
                     .collect();

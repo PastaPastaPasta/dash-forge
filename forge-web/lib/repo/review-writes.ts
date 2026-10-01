@@ -18,14 +18,14 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import { isLegalRefName, isRc1OidHex } from '../rules'
+import { RoleRefusedError } from '../rules/roles'
+import { isMemberGateRefusal } from './role-claim'
 import { anchorOf, groupReviewComments, isAuthorKind, type AnchorFields, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
 import {
-  ConsensusRefusal,
   precheckEdit,
   deleteDocumentIdempotent,
   type DeleteResult,
-  GATE_REFUSED_CODE,
   queryAllDocuments,
   replaceDocumentIdempotent,
   type ReplaceResult,
@@ -134,15 +134,18 @@ export async function postTargetEvent(
 ): Promise<WriteResult & { readonly route: 'event' | 'authorEvent' }> {
   const route = eventRoute({ viewer: auth.identityId, author: input.author, isMember: input.isMember, kind: input.kind })
   if (route === null) {
-    throw new Error(isAuthorKind(input.kind) ? 'only the author or a maintainer or writer can do that' : 'only a maintainer or writer can do that')
+    throw new Error(isAuthorKind(input.kind) ? 'only the author, or a member whose role allows it, can do that' : 'only a member whose role allows it can do that')
   }
   const data = targetEventData(input.target, input.kind, input.payload)
   if (route === 'authorEvent') return { ...(await write(sdk, auth, repo, DOC.authorEvent, data, input.intent)), route }
   try {
     return { ...(await write(sdk, auth, repo, DOC.event, data, input.intent)), route }
   } catch (e) {
-    const gateRefused = e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE
-    if (gateRefused && auth.identityId === input.author && isAuthorKind(input.kind)) {
+    // A stale membership read (the gate refused), or a role that cannot write this kind as a
+    // member (triage: a head update), falls back to the author's route.
+    // 40120 / 40127: the gate refused the membership or the claimed role (a stale read).
+    const memberRefused = isMemberGateRefusal(e) || e instanceof RoleRefusedError
+    if (memberRefused && auth.identityId === input.author && isAuthorKind(input.kind)) {
       const intent = input.intent ? `${input.intent}:author` : undefined
       return { ...(await write(sdk, auth, repo, DOC.authorEvent, data, intent)), route: 'authorEvent' }
     }

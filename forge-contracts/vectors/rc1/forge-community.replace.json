@@ -19,7 +19,8 @@
    "outcome": 0,
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
-   "summary": "ok"
+   "summary": "ok",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -37,6 +38,7 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
+   "r": 1,
    "startedAt": 1760000000000
   }
  },
@@ -60,7 +62,8 @@
    "outcome": 0,
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
-   "summary": "ok"
+   "summary": "ok",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -78,6 +81,7 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
+   "r": 1,
    "externalId": "gh-9"
   }
  },
@@ -103,7 +107,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -123,6 +128,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "completedAt": 1760000060000,
    "conclusion": "success"
   }
@@ -150,7 +156,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -169,7 +176,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -195,7 +203,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -214,7 +223,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-2"
+   "externalId": "gh-2",
+   "r": 1
   }
  },
  {
@@ -240,7 +250,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -258,7 +269,8 @@
    "outcome": 0,
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
-   "summary": "ok"
+   "summary": "ok",
+   "r": 1
   }
  },
  {
@@ -287,6 +299,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -316,6 +329,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -352,6 +366,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -379,6 +394,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -415,6 +431,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -443,6 +460,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -474,7 +492,8 @@
    "outcome": 0,
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
-   "summary": "ok"
+   "summary": "ok",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -491,7 +510,8 @@
    "outcome": 0,
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
-   "summary": "ok"
+   "summary": "ok",
+   "r": 1
   }
  },
  {
@@ -515,7 +535,8 @@
    "outcome": 0,
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
-   "summary": "ok"
+   "summary": "ok",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -530,7 +551,8 @@
    "name": "build",
    "status": "queued",
    "outcome": 0,
-   "vis": "private"
+   "vis": "private",
+   "r": 1
   }
  },
  {
@@ -555,7 +577,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -574,7 +597,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "half way",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -599,7 +623,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -619,6 +644,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "all green",
    "externalId": "gh-1",
+   "r": 1,
    "completedAt": 1760000060000,
    "conclusion": "success",
    "logUrl": "https://logs.example.com/2.txt",
@@ -657,6 +683,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -686,6 +713,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/forged.txt",
    "logSha256": {
     "$b": [
@@ -722,6 +750,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -751,6 +780,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "ipfs://bafyforged",
    "logSha256": {
     "$b": [
@@ -787,6 +817,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -816,6 +847,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "all green (edited)",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -852,6 +884,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -880,6 +913,7 @@
    "vis": "public",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -916,6 +950,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -945,6 +980,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -980,7 +1016,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   },
   "doc": {
    "repoId": {
@@ -1002,6 +1039,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/late.txt",
    "logSha256": {
     "$b": [

@@ -69,7 +69,8 @@
    "targetKind": 0,
    "kind": 1,
    "delta": 1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -308,6 +309,7 @@
    "kind": 13,
    "delta": 2,
    "asAuthor": 0,
+   "r": 1,
    "oid": {
     "$b": [
      1,
@@ -333,6 +335,7 @@
    "kind": 13,
    "delta": 2,
    "asAuthor": 0,
+   "r": 1,
    "oid": {
     "$b": [
      1,
@@ -1134,7 +1137,8 @@
    "targetKind": 0,
    "kind": 3,
    "delta": 16,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1153,7 +1157,8 @@
    "targetKind": 0,
    "kind": 4,
    "delta": -16,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1172,7 +1177,8 @@
    "targetKind": 1,
    "kind": 18,
    "delta": 16,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1191,7 +1197,8 @@
    "targetKind": 1,
    "kind": 19,
    "delta": -16,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1210,7 +1217,8 @@
    "targetKind": 0,
    "kind": 1,
    "delta": 1,
-   "asAuthor": 7
+   "asAuthor": 7,
+   "r": 1
   }
  },
  {
@@ -1230,7 +1238,8 @@
    "targetKind": 0,
    "kind": 3,
    "delta": 1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1250,7 +1259,8 @@
    "targetKind": 0,
    "kind": 4,
    "delta": 16,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1270,7 +1280,8 @@
    "targetKind": 1,
    "kind": 3,
    "delta": 16,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1290,7 +1301,8 @@
    "targetKind": 0,
    "kind": 3,
    "delta": 16,
-   "asAuthor": 7
+   "asAuthor": 7,
+   "r": 1
   }
  },
  {
@@ -1310,7 +1322,8 @@
    "targetKind": 0,
    "kind": 3,
    "delta": 17,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1330,7 +1343,8 @@
    "targetKind": 0,
    "kind": 5,
    "delta": 0,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1388,7 +1402,8 @@
    "targetKind": 0,
    "kind": 1,
    "delta": 1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1408,7 +1423,8 @@
    "targetKind": 0,
    "kind": 1,
    "delta": 0,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1428,7 +1444,8 @@
    "targetKind": 1,
    "kind": 1,
    "delta": 1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1447,7 +1464,8 @@
    "targetKind": 1,
    "kind": 11,
    "delta": 1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1466,7 +1484,8 @@
    "targetKind": 1,
    "kind": 12,
    "delta": -1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1486,7 +1505,8 @@
    "targetKind": 1,
    "kind": 12,
    "delta": 1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1506,6 +1526,7 @@
    "kind": 13,
    "delta": 2,
    "asAuthor": 0,
+   "r": 1,
    "oid": {
     "$b": [
      170,
@@ -1531,7 +1552,8 @@
    "targetKind": 1,
    "kind": 13,
    "delta": 2,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1552,6 +1574,7 @@
    "kind": 13,
    "delta": 2,
    "asAuthor": 7,
+   "r": 1,
    "oid": {
     "$b": [
      170,
@@ -1576,7 +1599,8 @@
    "targetKind": 1,
    "kind": 14,
    "delta": 8,
-   "asAuthor": 7
+   "asAuthor": 7,
+   "r": 1
   }
  },
  {
@@ -1595,7 +1619,8 @@
    "targetKind": 1,
    "kind": 15,
    "delta": -8,
-   "asAuthor": 7
+   "asAuthor": 7,
+   "r": 1
   }
  },
  {
@@ -1615,7 +1640,8 @@
    "targetKind": 1,
    "kind": 14,
    "delta": 1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1634,7 +1660,8 @@
    "targetKind": 1,
    "kind": 16,
    "delta": 1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -1653,7 +1680,8 @@
    "targetKind": 1,
    "kind": 17,
    "delta": -1,
-   "asAuthor": 0
+   "asAuthor": 0,
+   "r": 1
   }
  },
  {
@@ -2361,6 +2389,7 @@
    "kind": 1,
    "delta": 1,
    "asAuthor": 0,
+   "r": 1,
    "reason": 1
   }
  },
@@ -2381,6 +2410,7 @@
    "kind": 1,
    "delta": 1,
    "asAuthor": 0,
+   "r": 1,
    "reason": 2
   }
  },
@@ -2401,6 +2431,7 @@
    "kind": 1,
    "delta": 1,
    "asAuthor": 0,
+   "r": 1,
    "reason": 3,
    "dupNumber": 3
   }
@@ -2422,6 +2453,7 @@
    "kind": 1,
    "delta": 1,
    "asAuthor": 0,
+   "r": 1,
    "reason": 3
   }
  },
@@ -2443,6 +2475,7 @@
    "kind": 1,
    "delta": 1,
    "asAuthor": 0,
+   "r": 1,
    "reason": 0
   }
  },
@@ -2464,6 +2497,7 @@
    "kind": 1,
    "delta": 1,
    "asAuthor": 0,
+   "r": 1,
    "reason": 4
   }
  },
@@ -2485,6 +2519,7 @@
    "kind": 1,
    "delta": 1,
    "asAuthor": 0,
+   "r": 1,
    "reason": 3,
    "dupNumber": 0
   }
@@ -2507,6 +2542,7 @@
    "kind": 1,
    "delta": 1,
    "asAuthor": 0,
+   "r": 1,
    "reason": 3,
    "dupNumber": 4294967296
   }
@@ -2671,6 +2707,378 @@
     ]
    },
    "epoch": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "transition without r",
+  "type": "transition",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "transition claiming r 0",
+  "type": "transition",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "r": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage issue close",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage issue reopen",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 2,
+   "delta": -1,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage issue lock",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 3,
+   "delta": 16,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage issue unlock",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 4,
+   "delta": -16,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage PR close",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 11,
+   "delta": 1,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage PR reopen",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 12,
+   "delta": -1,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage draft PR close",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 16,
+   "delta": 1,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage draft PR reopen",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 17,
+   "delta": -1,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage PR lock",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 18,
+   "delta": 16,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage PR unlock",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 19,
+   "delta": -16,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage merge",
+  "type": "transition",
+  "expect": "refused",
+  "why": "e_mergeOid",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 13,
+   "delta": 2,
+   "asAuthor": 0,
+   "r": 2,
+   "oid": {
+    "$b": [
+     170,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage draft",
+  "type": "transition",
+  "expect": "refused",
+  "why": "e_mergeOid",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 14,
+   "delta": 8,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage ready",
+  "type": "transition",
+  "expect": "refused",
+  "why": "e_mergeOid",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 15,
+   "delta": -8,
+   "asAuthor": 0,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "an author drafts as r 1 (the author operand proves no role)",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 14,
+   "delta": 8,
+   "asAuthor": 7,
+   "r": 1
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "transition claiming reader (r 3)",
+  "type": "transition",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "r": 3
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "an author drafting with r 2 (merge, draft and ready claim r 1 on every operand)",
+  "type": "transition",
+  "expect": "refused",
+  "why": "e_mergeOid",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 14,
+   "delta": 8,
+   "asAuthor": 7,
+   "r": 2
   }
  }
 ]

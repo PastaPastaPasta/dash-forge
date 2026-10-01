@@ -26,12 +26,14 @@
     {
       "roleAt": null,
       "memberAt": false,
-      "currentRole": "writer"
+      "currentRole": "writer",
+      "approverAt": false
     },
     {
       "roleAt": "writer",
       "memberAt": true,
-      "currentRole": "writer"
+      "currentRole": "writer",
+      "approverAt": true
     }
   ]
 }

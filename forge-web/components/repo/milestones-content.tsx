@@ -29,6 +29,8 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
+import { capabilitiesOf } from '@/lib/rules/roles'
+import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
@@ -142,7 +144,8 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
   const { signer, identity } = useAuth()
   const { role } = useViewerRole(repo)
   const privateRepo = repo.visibility === 'private'
-  const canEdit = role !== null && home.config?.archived !== true && !privateRepo
+  // Writers and triage define milestones (consensus: `milestone` r 1..2); a reader cannot.
+  const canEdit = capabilitiesOf(role).canMilestone && home.config?.archived !== true && !privateRepo
   const [state, setState] = useState<'open' | 'closed'>(useParam('state') === 'closed' ? 'closed' : 'open')
   const [creating, setCreating] = useState(useParam('new') === '1')
   const [editing, setEditing] = useState<string | null>(null)
@@ -242,6 +245,7 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
           </Button>
         ) : null}
       </div>
+      {!privateRepo && home.config?.archived !== true ? <RoleLimitNote role={role} what="create or edit milestones" /> : null}
       {privateRepo && role !== null ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="milestones-private-note">
           Milestones aren&apos;t available in private repos yet: they would be sealed like the rest of the repo&apos;s content, which neither this
@@ -285,7 +289,7 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
                   ? 'A closed milestone shows here.'
                   : canEdit
                     ? 'Create one to track a release or a goal.'
-                    : 'A maintainer or writer creates milestones.'
+                    : 'A maintainer, writer or triage member creates milestones.'
             }
           />
         ) : (

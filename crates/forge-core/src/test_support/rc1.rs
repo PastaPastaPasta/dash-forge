@@ -415,7 +415,7 @@ mod builders {
     use crate::collab::{CommentAnchor, Imported};
     use crate::layout::{stamp_vis_for, AS_MEMBER, MEMBER_PROOF_TYPES};
     use crate::private::{DocKind, EpochKey, EpochKeys};
-    use crate::rules::v2::{next_transition, Actor, Policy, StateAction, Visibility};
+    use crate::rules::v2::{next_transition, Actor, Policy, Role, StateAction, Visibility};
     use crate::rules::{EventKind, Verdict};
 
     const REPO: [u8; 32] = [1; 32];
@@ -457,6 +457,23 @@ mod builders {
             });
         if by == By::Member && MEMBER_PROOF_TYPES.contains(&doc_type) && !non_member_verdict {
             props.insert(AS_MEMBER.to_string(), FieldValue::identifier(OWNER));
+        }
+        // RC2 member roles: the `r` the write claims (`Collab::write`), as a role-1 writer.
+        claimed(doc_type, props, (by == By::Member).then_some(Role::Writer))
+    }
+
+    /// `props` with the `r` a signer of `role` claims on a `doc_type` write
+    /// ([`crate::collab::v2::claimed_role_for`]); unchanged for a type without it.
+    fn claimed(
+        doc_type: &str,
+        mut props: BTreeMap<String, FieldValue>,
+        role: Option<crate::rules::v2::Role>,
+    ) -> BTreeMap<String, FieldValue> {
+        if let Some(r) = crate::collab::v2::claimed_role_for(doc_type, &props, role) {
+            props.insert(
+                crate::members::CLAIMED_ROLE.to_string(),
+                FieldValue::integer(r),
+            );
         }
         props
     }
@@ -708,10 +725,21 @@ mod builders {
                     continue;
                 };
                 let oid = (action == Merge).then_some(&[0xaa; 20][..]);
+                let p = scoped(transition_props(&t, &mv, oid).unwrap());
                 assert_valid(
                     "transition",
-                    &scoped(transition_props(&t, &mv, oid).unwrap()),
+                    &claimed("transition", p.clone(), Some(Role::Writer)),
                 );
+                // RC2 member roles: a triage member's own move claims 2, which `e_mergeOid`
+                // refuses for merge, draft and ready; an author's move claims 1 whatever the
+                // signer's role.
+                let triage = claimed("transition", p, Some(Role::Triage));
+                if actor == Actor::Member && matches!(action, Merge | Draft | Ready) {
+                    assert_eq!(triage.get("r"), Some(&FieldValue::integer(2)));
+                    assert_refused("transition", &triage, "e_mergeOid");
+                } else {
+                    assert_valid("transition", &triage);
+                }
                 written += 1;
             }
             // Only a member merges, locks and unlocks; the author may make every other move.
@@ -766,9 +794,20 @@ mod builders {
         ];
         for (t, kind, payload) in cases {
             let p = scoped(event_payload_props(t, kind, payload).unwrap());
-            assert_valid("event", &p);
+            assert_valid("event", &claimed("event", p.clone(), Some(Role::Writer)));
+            // RC2 member roles: a triage member claims 2, which `t_triageKinds` refuses for
+            // retarget, review dismiss, head update, pin and unpin (and policy bypass).
+            let triage = claimed("event", p.clone(), Some(Role::Triage));
+            if crate::members::event_needs(kind) == Role::Writer {
+                assert_refused("event", &triage, "t_triageKinds");
+            } else {
+                assert_valid("event", &triage);
+            }
             if crate::rules::v2::is_author_kind(kind) {
-                assert_valid("authorEvent", &p);
+                assert_valid(
+                    "authorEvent",
+                    &claimed("authorEvent", p, Some(Role::Writer)),
+                );
             }
         }
         // Lock and unlock are transitions in RC1 (the event kinds 21/22 break `noState`).
@@ -793,7 +832,7 @@ mod builders {
             .has_property("event", EVENT_AS_MAINTAINER);
         assert!(proved, "the committed forge-community carries RC2 MOD");
         let hide = |t: &Target, kind: EventKind, item: Option<&str>, reason: Option<&str>| {
-            scoped(
+            let p = scoped(
                 event_payload_props(
                     t,
                     kind,
@@ -804,7 +843,9 @@ mod builders {
                     },
                 )
                 .unwrap(),
-            )
+            );
+            // A hide is a maintainer's: it claims `r` 1.
+            claimed("event", p, Some(Role::Maintainer))
         };
         for (t, kind, item, reason) in [
             (&issue, EventKind::Hide, Some(ID), Some("spam")),
@@ -894,7 +935,8 @@ mod builders {
                 let oid = report.validate().unwrap();
                 let w = report.write(None, 1_760_000_000_000).unwrap();
                 let p = report.create_props(oid, &w, visibility);
-                let doc = scoped(p.clone());
+                let doc = claimed("checkRun", scoped(p.clone()), None);
+                assert_eq!(doc.get("r"), Some(&FieldValue::integer(1)));
                 assert_valid("checkRun", &doc);
                 // The builder stamps vis itself.
                 assert_eq!(stamped("checkRun", p, visibility, By::Other), doc);
@@ -904,7 +946,11 @@ mod builders {
         let report = check_report("completed", Some("success"));
         let oid = report.validate().unwrap();
         let w = report.write(None, 1_760_000_000_000).unwrap();
-        let p = scoped(report.create_props(oid, &w, Visibility::Private));
+        let p = claimed(
+            "checkRun",
+            scoped(report.create_props(oid, &w, Visibility::Private)),
+            None,
+        );
         assert_refused("checkRun", &p, "privateNoText");
     }
 
@@ -925,8 +971,11 @@ mod builders {
             let now = 1_760_000_000_000 + i as u64 * 1000;
             let w = report.write(stored.as_ref(), now).unwrap();
             if stored.is_none() {
-                doc =
-                    scoped(report.create_props(report.validate().unwrap(), &w, Visibility::Public));
+                doc = claimed(
+                    "checkRun",
+                    scoped(report.create_props(report.validate().unwrap(), &w, Visibility::Public)),
+                    None,
+                );
             } else {
                 for (k, v) in report.changes(&w) {
                     if let Some(v) = v {

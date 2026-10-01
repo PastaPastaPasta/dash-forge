@@ -279,7 +279,7 @@ export function documentWriter(box, evo, net, reconnect, { retries = 3, pauseMs 
   return async (who, type, data) => {
     const version = box.sdk.version();
     const base = new evo.Document({ properties: {}, documentTypeName: type, dataContractId: contractIdOf(net, type), ownerId: who.id });
-    const document = evo.Document.fromObject({ ...base.toObject(), ...data }, version);
+    const document = evo.Document.fromObject({ ...base.toObject(), ...withRole(type, data) }, version);
     for (let attempt = 0; ; attempt++) {
       try {
         return await box.sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
@@ -432,6 +432,25 @@ export function transition(repoId, target, kind, { byAuthor = false, oid } = {})
 export const EVENT = {
   labelAdd: 4, assign: 6, threadResolve: 11, reviewRequest: 13, reviewDismiss: 15, headUpdate: 16, milestoneSet: 17, pin: 19,
 };
+
+/** RC2 member roles (forge-v2.md §2.1): the committed contracts carry `writer.role` and a claimed `r`. */
+export const MEMBER_ROLES = 'role' in CONTRACTS.core.documentSchemas.writer.properties;
+/** The role-gated types: every type that claims a role `r`. */
+export const ROLE_GATED = new Set(
+  Object.values(CONTRACTS).flatMap((c) => Object.entries(c.documentSchemas).filter(([, s]) => s.properties?.r).map(([t]) => t)),
+);
+
+/**
+ * `data` with the role fields the contracts require and it leaves out: a `writer` enrolment is
+ * role 1 (writer), and a role-gated write claims `r` 1, what a maintainer, an author, a runner or
+ * a role-1 writer sends (every seed identity is one of those). A value `data` names is kept.
+ */
+export function withRole(type, data) {
+  if (!MEMBER_ROLES) return data;
+  if (type === 'writer' && data.role === undefined) return { ...data, role: 1 };
+  if (ROLE_GATED.has(type) && data.r === undefined) return { ...data, r: 1 };
+  return data;
+}
 
 /**
  * A `maintainer` / `writer` enrolment written by the repo owner. Anyone but the owner must have

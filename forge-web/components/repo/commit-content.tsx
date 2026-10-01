@@ -15,6 +15,7 @@ import { GitCommit, Tag } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import { readCheckRuns, summarizeChecks } from '@/lib/repo/checks'
+import { isApprover } from '@/lib/rules/v2'
 import type { DiffSides, RepoHome } from '@/lib/view'
 import { commitSubject, loadCommitChanges, type CommitObject } from '@/lib/view'
 import { commitPeople } from '@/lib/view/commit-people'
@@ -105,7 +106,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
 
 /**
  * The newest check run per name on this commit, trusted when its reporter is a current
- * maintainer, writer or runner. Private repositories' check runs are plaintext on chain too
+ * maintainer, role-1 writer or runner. Private repositories' check runs are plaintext on chain too
  * (private-repos.md §7), so they read the same way.
  */
 function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Element {
@@ -113,7 +114,8 @@ function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Elemen
   const checks = useAsync(
     async () => {
       const members = await readMembershipsCached(sdk!, repo, network).then(
-        (ms) => ({ known: true, ids: new Set(ms.map((m) => m.identity)) }),
+        // Trusted reporters: maintainers and role-1 writers (never triage or readers), and runners.
+        (ms) => ({ known: true, ids: new Set(ms.filter((m) => isApprover(m.role)).map((m) => m.identity)) }),
         () => ({ known: false, ids: new Set<string>() }),
       )
       const { runs } = await readCheckRuns(sdk!, repo, oid, members.ids)

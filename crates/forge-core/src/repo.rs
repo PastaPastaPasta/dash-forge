@@ -1005,7 +1005,8 @@ impl<'a> RepoService<'a> {
         // The config in force now: this write is routed by it.
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         let doc_type = ref_doc_type(ref_name, &current_protected_patterns(&configs));
-        let props = public_ref_props(&scope, ref_name, new_oid, prev_oid, force)?;
+        let mut props = public_ref_props(&scope, ref_name, new_oid, prev_oid, force)?;
+        crate::members::stamp_claimed_role(&contract, doc_type, &mut props, 1);
         self.doc_engine()?
             .create_document(&contract, doc_type, props)
             .await
@@ -1059,16 +1060,16 @@ impl<'a> RepoService<'a> {
         let engine = self.doc_engine()?;
         let (scope, contract, patterns, engine) = (&scope, &contract, &patterns, &engine);
         let mut landed = futures::stream::iter(updates.iter().map(|u| async move {
-            let props = public_ref_props(
+            let mut props = public_ref_props(
                 scope,
                 &u.ref_name,
                 &u.new_oid,
                 u.prev_oid.as_deref(),
                 u.force,
             )?;
-            engine
-                .create_document(contract, ref_doc_type(&u.ref_name, patterns), props)
-                .await
+            let doc_type = ref_doc_type(&u.ref_name, patterns);
+            crate::members::stamp_claimed_role(contract, doc_type, &mut props, 1);
+            engine.create_document(contract, doc_type, props).await
         }))
         .buffered(crate::backends::platform::pipeline_window());
         while let Some(r) = landed.next().await {
@@ -1127,6 +1128,7 @@ impl<'a> RepoService<'a> {
             props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
         }
         layout::stamp_vis(&mut props, repo.visibility);
+        crate::members::stamp_claimed_role(contract, doc_type, &mut props, 1);
         self.doc_engine()?
             .create_document(contract, doc_type, props)
             .await
@@ -1363,7 +1365,8 @@ impl<'a> RepoService<'a> {
         manifest: &PackManifestInput,
     ) -> Result<String> {
         let (scope, contract) = self.writable(repo).await?;
-        let props = manifest.props(&scope)?;
+        let mut props = manifest.props(&scope)?;
+        crate::members::stamp_claimed_role(&contract, DOC_PACK_MANIFEST, &mut props, 1);
         match self
             .doc_engine()?
             .create_document(&contract, DOC_PACK_MANIFEST, props)
@@ -1511,8 +1514,10 @@ impl<'a> RepoService<'a> {
         }
         let (engine, contract, scope) = (&engine, &contract, &scope);
         let mut landed = futures::stream::iter(todo.into_iter().map(|(seq, props)| async move {
+            let mut props = scope.scoped(props);
+            crate::members::stamp_claimed_role(contract, CHUNK_DOC_TYPE, &mut props, 1);
             engine
-                .create_landed(contract, CHUNK_DOC_TYPE, scope.scoped(props))
+                .create_landed(contract, CHUNK_DOC_TYPE, props)
                 .await
                 .map(|prepared| (seq, prepared))
         }))
@@ -5704,7 +5709,9 @@ mod rc1_tests {
             let Some(size) = d["sizeBytes"].as_u64() else {
                 continue;
             };
-            if supersedes.len() % 32 != 0 || c.why == "additionalProperties" {
+            // `r` (RC2 member roles) is stamped at the write, not checked by the builder.
+            let claims_one = d.get("r").and_then(Value::as_u64) == Some(1);
+            if supersedes.len() % 32 != 0 || c.why == "additionalProperties" || !claims_one {
                 continue;
             }
             let input = PackManifestInput {
@@ -5786,6 +5793,12 @@ mod rc1_tests {
             }
             .props(&scope)
             .unwrap();
+            let mut props = props;
+            // `r` (RC2 member roles) is stamped at the write (`write_pack_manifest`): 1.
+            props.insert(
+                crate::members::CLAIMED_ROLE.to_string(),
+                FieldValue::integer(1),
+            );
             crate::test_support::rc1::assert_valid("packManifest", &props);
         }
     }

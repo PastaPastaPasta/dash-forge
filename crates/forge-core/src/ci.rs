@@ -55,7 +55,7 @@ use crate::platform::{
     self, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity, PlatformClient, QueryOrder,
 };
 use crate::rules::v2::{
-    check_run_write, RunReport, RunWrite, RunWriteAction, StoredRun, Visibility,
+    check_run_write, Role, RunReport, RunWrite, RunWriteAction, StoredRun, Visibility,
     PASSING_CONCLUSIONS,
 };
 use crate::scope::RepoRef;
@@ -658,6 +658,7 @@ impl<'a> CheckRuns<'a> {
         let oid = report.validate()?;
         let community = self.client.fetch_contract(&repo.forge().community).await?;
         let me = self.identity.id();
+        self.require_check_role(repo, &me, &report.name).await?;
         let mut docs = check_run_docs(self.client, &community, repo, oid.clone()).await?;
         if names_its_run && newest_run(&docs, &me, report).is_none() {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -674,6 +675,35 @@ impl<'a> CheckRuns<'a> {
             write,
             dropped,
         })
+    }
+
+    /// RC2 member roles: refuse, before signing, a check run from a triage member or reader
+    /// who is not also a runner (a check run claims `r` 1, which only a maintainer's, a
+    /// role-1 writer's or a runner's operand admits). Off with the pre-check.
+    async fn require_check_role(&self, repo: &RepoRef, me: &str, name: &str) -> Result<()> {
+        if !crate::collab::v2::precheck_enabled() {
+            return Ok(());
+        }
+        // A runner first: most reports are a runner's, and its operand admits it whatever
+        // membership it also holds.
+        if RunnerReader::new(self.client)
+            .get(repo, me)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let role = members::MemberReader::new(self.client)
+            .best_role(repo, me)
+            .await?;
+        // A non-member is consensus's to refuse; a maintainer or writer passes.
+        crate::collab::v2::member_role_refusal(
+            role,
+            Role::Writer,
+            repo,
+            &format!("report check run {name}"),
+        )
+        .map_or(Ok(()), Err)
     }
 
     /// Write what [`Self::plan`] decided. `report` is the one planned, perhaps with a log added
@@ -701,9 +731,12 @@ impl<'a> CheckRuns<'a> {
                 action: if written { "updated" } else { "unchanged" },
             });
         }
-        let props =
+        let mut props =
             repo.scope()?
                 .scoped(report.create_props(plan.oid, &plan.write, repo.visibility));
+        // RC2 member roles: a check run claims `r` 1 (runners and maintainers send 1; a
+        // writer's leaf proves its role is 1).
+        crate::members::stamp_claimed_role(&plan.community, DOC_CHECK_RUN, &mut props, 1);
         let document_id = engine
             .create_document(&plan.community, DOC_CHECK_RUN, props)
             .await?;
@@ -1213,12 +1246,10 @@ mod tests {
             let (kept, dropped) = r.for_visibility(visibility_of(doc));
             assert!(dropped.is_empty(), "{}", case["name"]);
             let w = kept.write(None, VECTOR_NOW).unwrap();
-            assert_eq!(
-                kept.create_props(oid, &w, visibility_of(doc)),
-                vector_props(doc),
-                "{}",
-                case["name"]
-            );
+            // `r` (RC2 member roles) is stamped at the write ([`CheckRuns::execute`]): 1.
+            let mut props = kept.create_props(oid, &w, visibility_of(doc));
+            props.insert(members::CLAIMED_ROLE.to_string(), FieldValue::integer(1));
+            assert_eq!(props, vector_props(doc), "{}", case["name"]);
         }
     }
 

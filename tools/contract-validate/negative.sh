@@ -164,6 +164,16 @@ expect_reject one-def-twice-in-a-type core '.documentSchemas.chunk.properties.pa
 # indexed strings are at most 63 characters
 expect_reject topic-name-too-long-for-an-index core '.documentSchemas.topic.properties.name.maxLength = 64'
 
+# RC2 member roles (design/v5/RECUT-OR-NEVER.md §3): the writer leaf proves `role == r`, so both
+# sides must exist and share one value kind (40126), and the role property stays required
+if jq -e '.documentSchemas.writer.properties.role' "$contracts/forge-core.json" > /dev/null; then
+  expect_reject roles-where-kind-mismatch core '.documentSchemas.refUpdate.ownerRefersTo.anyOf[1].where.role = "refName"' '40126'
+  expect_reject roles-where-missing-prop collab '.documentSchemas.transition.ownerRefersTo.anyOf[1].where.role = "nope"' '40126'
+  expect_reject roles-where-missing-target community '.documentSchemas.checkRun.ownerRefersTo.anyOf[2].where = {"rank": "r"}' '40126'
+  expect_reject roles-writer-role-optional core '.documentSchemas.writer.required -= ["role"]' 'expected refused by required, got accepted'
+  expect_reject roles-push-admits-triage core '.documentSchemas.refUpdate.properties.r.maximum = 2' 'expected refused by maximum, got accepted'
+fi
+
 # A later forge-core change ships as an in-place update of the registered schema
 # (registered/forge-core.v1.json, registered fresh at the beta.7 wipe): a change the
 # update rules refuse (here an index flag or a rule of a registered type) must fail
@@ -183,6 +193,10 @@ expect_update_refused() {
 }
 expect_update_refused update-changes-a-registered-index '.documentSchemas.repo.indices[1].rangeCountable = true'
 expect_update_refused update-changes-a-rule '.documentSchemas.label.propertyConstraints.noPlain.anyOf[1].allOf[1].absent = "retired"'
+# member roles are re-cut-or-never: a gate's `where` cannot change on an update
+if jq -e '.documentSchemas.writer.properties.role' "$contracts/forge-core.json" > /dev/null; then
+  expect_update_refused update-drops-a-role-where 'del(.documentSchemas.refUpdate.ownerRefersTo.anyOf[1].where.role)'
+fi
 
 if [ "$fails" -ne 0 ]; then
   echo "$fails mutation(s) were NOT rejected"

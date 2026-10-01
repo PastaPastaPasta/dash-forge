@@ -87,7 +87,7 @@ export const BACKFILL_MS = 7 * 24 * 60 * 60_000
 /** Items kept; the oldest read ones go first. */
 export const MAX_ITEMS = 300
 
-export type RepoReason = 'owner' | 'maintainer' | 'writer' | 'watched' | 'starred'
+export type RepoReason = 'owner' | 'maintainer' | 'writer' | 'triage' | 'reader' | 'watched' | 'starred'
 
 export interface RepoSub {
   readonly repo: RepoLite

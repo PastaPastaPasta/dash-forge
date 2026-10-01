@@ -207,10 +207,13 @@ async fn forge_v2_repo_lifecycle_on_sakura() {
         .write_ref_update(&repo, "refs/heads/collab", &[0x22; 20], None, false)
         .await
         .expect("writer can push");
-    assert!(members
-        .revoke(&repo, &collab.id(), Role::Writer)
-        .await
-        .unwrap());
+    assert_eq!(
+        members
+            .revoke(&repo, &collab.id(), Role::Writer)
+            .await
+            .unwrap(),
+        Some(Role::Writer)
+    );
     let err = collab_svc
         .write_ref_update(&repo, "refs/heads/collab", &[0x33; 20], None, false)
         .await
@@ -279,10 +282,13 @@ async fn forge_v2_repo_lifecycle_on_sakura() {
         .write_ref_update(&repo, "refs/heads/feature", &[0x66; 20], None, false)
         .await
         .expect("a writer can update an unprotected ref");
-    assert!(members
-        .revoke(&repo, &collab.id(), Role::Writer)
-        .await
-        .unwrap());
+    assert_eq!(
+        members
+            .revoke(&repo, &collab.id(), Role::Writer)
+            .await
+            .unwrap(),
+        Some(Role::Writer)
+    );
 
     // --- 5. never a member ---
     let err = RepoService::new(&client, &contrib, &contrib_b)

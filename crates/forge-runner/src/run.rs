@@ -364,10 +364,20 @@ pub type Members = std::collections::BTreeMap<String, Author>;
 
 /// [`list_members`]' reading of `dg collab list --json`. The owner counts as a maintainer
 /// whether or not it holds a maintainer document.
+///
+/// A list without `"roles": true` comes from a dg older than RC2 member roles, which lists
+/// triage members and readers as "writer": it is refused, so their PRs never get a writer's
+/// trusted-runner treatment.
 pub fn members_of(v: &serde_json::Value) -> Result<Members> {
     let rows = v["members"]
         .as_array()
         .context("dg collab list: no members")?;
+    if v["roles"].as_bool() != Some(true) {
+        bail!(
+            "dg collab list: no member roles (dg too old for this runner: it lists triage \
+             members and readers as writers); upgrade dg"
+        );
+    }
     let mut m = Members::new();
     for r in rows {
         let (Some(id), Some(role)) = (r["identityId"].as_str(), r["role"].as_str()) else {
@@ -376,7 +386,8 @@ pub fn members_of(v: &serde_json::Value) -> Result<Members> {
         let role = match role {
             "maintainer" => Author::Maintainer,
             "writer" => Author::Writer,
-            // A role this runner does not know is not a member's.
+            // A role this runner does not know is not a member's; triage members and readers
+            // (RC2 member roles) cannot push, so they are strangers here too.
             _ => continue,
         };
         let held = m.entry(id.to_string()).or_insert(role);
@@ -1303,10 +1314,17 @@ mod tests {
                 {"identityId": "W", "role": "writer"},
                 {"identityId": "B", "role": "writer"},
                 {"identityId": "B", "role": "maintainer"},
+                {"identityId": "T", "role": "triage"},
+                {"identityId": "R", "role": "reader"},
             ],
             "ownerId": "O",
+            "roles": true,
         });
         let m = members_of(&v).unwrap();
+        // RC2 member roles: triage members and readers cannot push, so a PR of theirs is a
+        // stranger's to the runner (no trusted-branch run, no secrets).
+        assert_eq!(author_of(&m, "T"), Author::Stranger);
+        assert_eq!(author_of(&m, "R"), Author::Stranger);
         assert_eq!(author_of(&m, "M"), Author::Maintainer);
         assert_eq!(author_of(&m, "W"), Author::Writer);
         assert_eq!(
@@ -1321,9 +1339,17 @@ mod tests {
         );
         assert_eq!(author_of(&m, "X"), Author::Stranger);
         assert!(
-            members_of(&serde_json::json!({"members": []})).is_err(),
+            members_of(&serde_json::json!({"members": [], "roles": true})).is_err(),
             "a dg without ownerId is refused, not read as 'no owner'"
         );
+        // A dg older than member roles lists triage members and readers as "writer": its list
+        // is refused rather than trusted.
+        let old = serde_json::json!({
+            "members": [{"identityId": "T", "role": "writer"}],
+            "ownerId": "O",
+        });
+        let e = members_of(&old).unwrap_err().to_string();
+        assert!(e.contains("upgrade dg"), "{e}");
     }
 
     #[test]

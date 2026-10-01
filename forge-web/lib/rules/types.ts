@@ -8,6 +8,8 @@
  * and hand them in as plain objects; the only clock is the consensus `createdAt`.
  */
 
+import type { Role } from './v2'
+
 /** A git object id, hex-encoded. All-zero (any length) or empty string = the null oid. */
 export type Oid = string
 
@@ -79,13 +81,16 @@ export type RefState =
   | { readonly state: 'diverged'; readonly heads: readonly RefHead[] }
 
 /**
- * What an identity may do on a repo now, from its forge-v2 membership: `write` for a writer
- * or maintainer (push, act on issues and PRs), `maintain` for a maintainer only (protected
- * refs, config, releases).
+ * What an identity may do on a repo now, from its forge-v2 membership: `member` for any
+ * membership document (a maintainer, or a writer document of any role: it proves membership on
+ * comments and reviews), `maintain` for a maintainer only (protected refs, config, releases),
+ * and `role`, the best role held, whose `capabilitiesOf` (`rules/roles.ts`) gates every member
+ * write (push, merge, triage).
  */
 export interface Holdings {
-  readonly write: boolean
+  readonly member: boolean
   readonly maintain: boolean
+  readonly role: Role | null
 }
 
 /**

@@ -17,6 +17,7 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useR
 import Link from 'next/link'
 import { GitCommit } from 'lucide-react'
 
+import { capabilitiesOf } from '@/lib/rules/roles'
 import { holdingsOfRole, readConfigBundle, readRoleOracle, repoKey, type PullView, type RepoRef } from '@/lib/repo'
 import { readBranchTip } from '@/lib/repo/source-branch'
 import { matchesProtected } from '@/lib/rules'
@@ -60,7 +61,8 @@ export function useSourceWrite(source: RepoRef | null, refName: string | null): 
       const [oracle, bundle] = await Promise.all([readRoleOracle(sdk!, source!, network), readConfigBundle(sdk!, source!)])
       const h = holdingsOfRole(oracle.currentRole(identity!))
       const protectedHere = refName !== null && matchesProtected(refName, bundle.config?.protectedPatterns ?? [])
-      return h.maintain || (h.write && !protectedHere)
+      // A triage member or reader cannot push (consensus: `refUpdate` r 1 only).
+      return h.maintain || (capabilitiesOf(h.role).canPush && !protectedHere)
     },
     [ready, source === null ? '' : repoKey(source), identity ?? '', network, refName ?? ''],
     { enabled: ready && sdk !== null && source !== null && identity !== null },

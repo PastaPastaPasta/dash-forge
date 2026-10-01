@@ -497,6 +497,7 @@ function runCaseV2(v: Vector): void {
         roleAt: oracle.roleAt(q.identity, q.at),
         memberAt: oracle.memberAt(q.identity, q.at),
         currentRole: oracle.currentRole(q.identity),
+        approverAt: oracle.approverAt(q.identity, q.at),
       }))
       expect(got).toEqual(v.expected)
       break

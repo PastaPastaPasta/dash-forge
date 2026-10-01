@@ -1162,7 +1162,8 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
                     c.status.as_str()
                 };
                 let note = if !c.trusted {
-                    "  (reporter is no longer a member or runner: not counted)".to_string()
+                    "  (reporter is not a maintainer, writer or runner now: not counted)"
+                        .to_string()
                 } else if let Some(to) = pinned_to(c) {
                     format!("  (not counted: the branch policy counts only runs by {to})")
                 } else {

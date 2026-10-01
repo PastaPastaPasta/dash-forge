@@ -36,6 +36,14 @@
 //             writer's hide (40120), a maintainer of another repo, a removed maintainer, and a
 //             hide naming another maintainer (hideByMaint); the fees of a hide and of a plain
 //             event (the fee gate: <= +10 % per hide)
+//   roles     with RC2 member roles (design/v5/RECUT-OR-NEVER.md) the member as triage (writer role
+//             2) of a second public repo: close, reopen, lock, label, milestone and the triage
+//             event kinds land; merge, draft, the writer-only event kinds (t_triageKinds, e_mergeOid)
+//             and a push or check run (40127) are refused; a claimed r above the role (40127); and
+//             the member as reader (role 3) of a second private repo: a key wrap to it lands, every
+//             role-gated write is refused (40127); the fees of a triage and a reader enrolment, a
+//             refUpdate and a merge with r (r is one stored byte, about 27.4 k credits: the +1 %
+//             gate is computed; these confirm it against forge-v2.md §7's per-write table)
 //
 // Every refusal is matched on the node's numeric code (and, for a rule, its name in the
 // message), never on the decoded cause (IMPL-RULES: codes shifted between SDK builds).
@@ -46,7 +54,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEvoSdk } from './deploy-v2.mjs';
-import { CONTRACTS, FUSED_STAR } from './lib/seed-io.mjs';
+import { CONTRACTS, FUSED_STAR, MEMBER_ROLES, withRole } from './lib/seed-io.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
@@ -68,6 +76,9 @@ const CLOSE_REASON = 'reason' in CONTRACTS.collab.documentSchemas.transition.pro
 const REVIEW_HUNK = 'diffHunk' in CONTRACTS.collab.documentSchemas.comment.properties;
 // RC2 moderation (design/v5/MODERATION.md): a hide proves its writer a maintainer
 const HIDE_PROOF = 'asMaintainer' in CONTRACTS.community.documentSchemas.event.properties;
+// RC2 member roles (design/v5/RECUT-OR-NEVER.md): writer.role, and a claimed `r` on every
+// role-gated type. A case that names no `r` (or no writer `role`) writes 1, what a maintainer, an
+// author, a runner or a role-1 writer sends.
 
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey, Identifier } = evo;
@@ -159,6 +170,7 @@ const TOTALS = new Set(['issue', 'patch', 'transition', 'comment', 'review', 'pa
 
 async function create(who, contract, type, data) {
   if (TOTALS.has(type)) await sleep(A_BLOCK);
+  data = withRole(type, data);
   const base = new Document({ properties: {}, documentTypeName: type, dataContractId: contract, ownerId: who.id });
   const document = Document.fromObject({ ...base.toObject(), ...data }, version);
   try {
@@ -664,6 +676,68 @@ if (want('moderation') && I1 && HIDE_PROOF) {
     } catch (e) {
       record({ item: 'MOD', label: "the owner removes the member's maintainer document", expect: 'ok', got: `refused ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
     }
+  }
+}
+
+// ---------------- roles: triage and reader (RC2 member roles) ----------------
+if (want('roles') && MEMBER_ROLES) {
+  // The member is triage (role 2) of a second public repo, and reader (role 3) of a second
+  // private repo; the owner opens issue #1 and PR #2 in the public one
+  const r2 = need(await ok('ROLES', 'second public repo', O, CORE, 'repo', { name: `rc1r-${tag}`, visibility: 'public' }), 'the roles repo');
+  const R2 = id(docId(r2));
+  await ok('ROLES', 'owner self-enrols as maintainer', O, CORE, 'maintainer', { repoId: R2, memberId: id(O.id), vis: 'public' });
+  await ok('ROLES', 'member consents', M, CORE, 'consent', { repoId: R2 });
+  need(await ok('ROLES', 'the owner enrols the member as triage (role 2)', O, CORE, 'writer', { repoId: R2, memberId: id(M.id), vis: 'public', consentBy: id(M.id), role: 2 }, 'writer: triage'), "the member's triage document");
+  const ri = need(await ok('ROLES', 'issue #1 (owner)', O, COLLAB, 'issue', { repoId: R2, number: 1, tk: 0, title: 'triage me', vis: 'public' }), 'roles issue #1');
+  const rp = need(await ok('ROLES', 'PR #2 (owner)', O, COLLAB, 'patch', { repoId: R2, number: 2, tk: 1, title: 'pr', vis: 'public', baseRefNameHash: sha256(Buffer.from('refs/heads/main')), baseRefName: 'refs/heads/main', sourceRepoId: R2, sourceRefNameHash: sha256(Buffer.from('refs/heads/f')), sourceRefName: 'refs/heads/f', headOid: bytes(20, 2) }), 'roles PR #2');
+  const T2 = (target, n, targetKind, kind, delta, extra = {}) => ({ repoId: R2, targetId: id(docId(target)), targetNumber: n, targetKind, kind, delta, asAuthor: 0, r: 2, ...extra });
+  const E2 = (target, n, kind, extra = {}) => ({ repoId: R2, targetId: id(docId(target)), targetNumber: n, kind, r: 2, ...extra });
+  // what triage may do
+  await ok('ROLES', 'triage closes an issue (r 2)', M, COLLAB, 'transition', T2(ri, 1, 0, 1, 1), 'transition: triage close');
+  await no('ROLES', 'triage claiming r 1 (role mismatch)', M, COLLAB, 'transition', T2(ri, 1, 0, 2, -1, { r: 1 }), WHERE_ANYOF);
+  await ok('ROLES', 'triage reopens', M, COLLAB, 'transition', T2(ri, 1, 0, 2, -1));
+  await ok('ROLES', 'triage locks', M, COLLAB, 'transition', T2(ri, 1, 0, 3, 16));
+  await ok('ROLES', 'triage unlocks', M, COLLAB, 'transition', T2(ri, 1, 0, 4, -16));
+  await ok('ROLES', 'triage labels', M, COMM, 'event', E2(ri, 1, 4, { value: 'bug' }), 'event: triage label');
+  await ok('ROLES', 'triage assigns', M, COMM, 'event', E2(ri, 1, 6, { value: 'x', refId: id(M.id) }));
+  await ok('ROLES', 'triage requests a review', M, COMM, 'event', E2(rp, 2, 13, { refId: id(O.id) }));
+  await ok('ROLES', 'triage sets a milestone', M, COMM, 'event', E2(ri, 1, 17, { value: 'v1' }));
+  await ok('ROLES', 'triage creates a label', M, CORE, 'label', { repoId: R2, name: 'triaged', color: '#00ff00', r: 2 });
+  await ok('ROLES', 'triage creates a milestone', M, COMM, 'milestone', { repoId: R2, title: 'v1', r: 2 });
+  await ok('ROLES', 'triage closes the PR', M, COLLAB, 'transition', T2(rp, 2, 1, 11, 1));
+  await ok('ROLES', 'triage reopens the PR', M, COLLAB, 'transition', T2(rp, 2, 1, 12, -1));
+  // what triage may not do
+  await no('ROLES', 'triage merges (e_mergeOid)', M, COLLAB, 'transition', T2(rp, 2, 1, 13, 2, { oid: bytes(20, 3) }), [10422], 'e_mergeOid');
+  await no('ROLES', 'triage merges claiming r 1 (role mismatch)', M, COLLAB, 'transition', T2(rp, 2, 1, 13, 2, { oid: bytes(20, 3), r: 1 }), WHERE_ANYOF);
+  await no('ROLES', 'triage drafts (e_mergeOid)', M, COLLAB, 'transition', T2(rp, 2, 1, 14, 8), [10422], 'e_mergeOid');
+  await no('ROLES', 'triage head update (t_triageKinds)', M, COMM, 'event', E2(rp, 2, 16, { oid: bytes(20, 4) }), [10422], 't_triageKinds');
+  await no('ROLES', 'triage retarget (t_triageKinds)', M, COMM, 'event', E2(rp, 2, 8, { value: 'refs/heads/dev' }), [10422], 't_triageKinds');
+  await no('ROLES', 'triage pin (t_triageKinds)', M, COMM, 'event', E2(ri, 1, 19), [10422], 't_triageKinds');
+  await no('ROLES', 'triage head update claiming r 1 (role mismatch)', M, COMM, 'event', E2(rp, 2, 16, { oid: bytes(20, 4), r: 1 }), WHERE_ANYOF);
+  await no('ROLES', 'triage pushes (refUpdate r 1, role mismatch)', M, CORE, 'refUpdate', { repoId: R2, refNameHash: sha256(Buffer.from('refs/heads/main')), refName: 'refs/heads/main', newOid: bytes(20, 1), vis: 'public', r: 1 }, WHERE_ANYOF);
+  await no('ROLES', 'triage uploads a chunk (role mismatch)', M, CORE, 'chunk', { repoId: R2, packHash: bytes(32), seq: 0, d0: bytes(100), r: 1 }, WHERE_ANYOF);
+  const now = Date.now();
+  await no('ROLES', 'triage posts a check run (role mismatch)', M, COMM, 'checkRun', { repoId: R2, headOid: bytes(20, 2), name: 'build', status: 'completed', conclusion: 'success', startedAt: now - 60000, completedAt: now, outcome: 1, vis: 'public', r: 1 }, WHERE_ANYOF);
+  // the owner (a maintainer) still merges with r 1; the fee gate's role-1 baseline
+  await ok('ROLES', 'the owner pushes (r 1)', O, CORE, 'refUpdate', { repoId: R2, refNameHash: sha256(Buffer.from('refs/heads/main')), refName: 'refs/heads/main', newOid: bytes(20, 3), vis: 'public' }, 'refUpdate: with r');
+  await ok('ROLES', 'the owner merges (r 1)', O, COLLAB, 'transition', T2(rp, 2, 1, 13, 2, { oid: bytes(20, 3), r: 1 }), 'transition: merge with r');
+
+  // the reader: a private repo's member that receives the key and changes nothing
+  const p2 = need(await ok('ROLES', 'second private repo', O, CORE, 'repo', { name: `rc1rp-${tag}`, visibility: 'private' }), 'the reader repo');
+  const P2 = id(docId(p2));
+  await ok('ROLES', 'owner self-enrols in it', O, CORE, 'maintainer', { repoId: P2, memberId: id(O.id), vis: 'private' });
+  await ok('ROLES', 'member consents to it', M, CORE, 'consent', { repoId: P2 });
+  need(await ok('ROLES', 'the owner enrols the member as reader (role 3)', O, CORE, 'writer', { repoId: P2, memberId: id(M.id), vis: 'private', consentBy: id(M.id), role: 3 }, 'writer: reader'), "the member's reader document");
+  await sleep(A_BLOCK);
+  await ok('ROLES', 'a key wrap to the reader', O, COLLAB, 'repoKey', { repoId: P2, memberId: id(M.id), epoch: 0, recipientKeyId: M.encKeyId, senderKeyId: O.encKeyId, wrapped: bytes(48) });
+  await no('ROLES', 'the reader pushes (r 1)', M, CORE, 'refUpdate', { repoId: P2, refNameHash: bytes(32, 5), newOid: bytes(20, 5), vis: 'private', enc: bytes(61), epoch: 0, r: 1 }, WHERE_ANYOF);
+  await no('ROLES', 'the reader creates a label (r 2)', M, CORE, 'label', { repoId: P2, name: 'x', enc: bytes(61), epoch: 0, r: 2 }, WHERE_ANYOF);
+  await no('ROLES', 'the reader creates a milestone (r 2)', M, COMM, 'milestone', { repoId: P2, title: 'x', enc: bytes(61), epoch: 0, r: 2 }, WHERE_ANYOF);
+  const pi = await ok('ROLES', 'the reader opens an issue (anyone may)', M, COLLAB, 'issue', { repoId: P2, number: 1, tk: 0, vis: 'private', enc: bytes(61), epoch: 0 });
+  if (pi) {
+    await no('ROLES', 'the reader closes its own issue as a member (r 2)', M, COLLAB, 'transition', { repoId: P2, targetId: id(docId(pi)), targetNumber: 1, targetKind: 0, kind: 1, delta: 1, asAuthor: 0, r: 2 }, WHERE_ANYOF);
+    await ok('ROLES', 'the reader closes its own issue as the author (r 1)', M, COLLAB, 'transition', { repoId: P2, targetId: id(docId(pi)), targetNumber: 1, targetKind: 0, kind: 1, delta: 1, asAuthor: 1, r: 1 });
+    await no('ROLES', 'the reader labels its issue (r 2)', M, COMM, 'event', { repoId: P2, targetId: id(docId(pi)), targetNumber: 1, kind: 4, enc: bytes(61), epoch: 0, r: 2 }, WHERE_ANYOF);
   }
 }
 

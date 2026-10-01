@@ -62,6 +62,8 @@
  * ledger, so drift shows up there (`ux-dx-spec.md` §4 rule 2).
  */
 
+import { isRoleGated } from '../rules/roles'
+
 /** 1 DASH = 1e11 credits (parity with forge-core `credits_to_dash`). */
 export const CREDITS_PER_DASH = 100_000_000_000
 
@@ -117,6 +119,16 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   // being byte fields (`webhookCost` sizes them as text would not).
   topic: 59_000_000,
   webhook: 76_000_000,
+}
+
+/**
+ * Whether a create of `documentType` stores an RC2 member-roles integer the measured costs above
+ * predate: the claimed role `r` on a role-gated type, or a `writer` document's `role` (one stored
+ * byte each, about one text byte's credits: `RECUT-OR-NEVER.md` §6). Priced on every network: an
+ * upper bound either way.
+ */
+function storesRoleByte(documentType: string): boolean {
+  return isRoleGated(documentType) || documentType === 'writer'
 }
 
 /** Which index subtrees a create may be the first to write. Unknown fields count as first. */
@@ -420,7 +432,7 @@ export function estimateCreateCredits(
   data: Readonly<Record<string, unknown>> = {},
   first: FirstWrite = {},
 ): number {
-  const base = BASE_CREDITS[documentType] ?? DEFAULT_BASE_CREDITS
+  const base = (BASE_CREDITS[documentType] ?? DEFAULT_BASE_CREDITS) + (storesRoleByte(documentType) ? CREDITS_PER_TEXT_BYTE : 0)
   return Math.ceil((base + firstWriteCredits(documentType, first) + CREDITS_PER_TEXT_BYTE * textBytes(data)) * HEADROOM)
 }
 
@@ -465,7 +477,11 @@ export const CHUNK_FEES = {
   perByte: 27_700,
   /** A chunk's cost beyond its bytes: its index entries and 16 levels of the chunk tree. */
   flat: 140_000_000,
-  /** Bytes a chunk's transition carries beyond its payload. */
+  /**
+   * Bytes a chunk's transition carries beyond its payload. Held equal to forge-core's
+   * `CHUNK_OVERHEAD_BYTES` (the CLI quotes the same bound); RC2's `r` adds one byte, within the
+   * fit's headroom.
+   */
   overheadBytes: 130,
   /** Payload bytes per chunk document (three 4,900-byte fields, forge-core `pack::split`). */
   payload: 4900 * 3,
