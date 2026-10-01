@@ -98,6 +98,8 @@ import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-thre
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { anchorOnHead } from '@/lib/view/inline-threads'
 import { snippetKey, snippetSource } from '@/lib/view/anchor-snippet'
+import { carryAnchor, carryFrom, lineMap, type LineMap } from '@/lib/view/carry-anchor'
+import type { Anchor } from '@/lib/rules/v2'
 import { AnchorContext, useSnippetTexts } from '@/components/repo/anchor-snippet'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
@@ -515,17 +517,64 @@ function PullPage({
   }, [])
   // Suggestions and "Update branch": commits to the PR's source branch (the fork).
   const applied = useMemo(() => appliedSuggestions(commits.data?.commits ?? []), [commits.data])
-  // The code each inline comment was left on, for Conversation (QW2-049): read on that tab only.
-  const snippetSources = useMemo(() => thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor)].filter((s) => s !== null))), [thread.comments])
-  const snippetTexts = useSnippetTexts(tab === 'conversation' ? headReader : null, snippetSources)
+  // Comments left on an older head whose lines the head kept unchanged (QW3-015): carried to the
+  // head at those lines' new numbers, so they stay current (inline in Files changed, not Outdated
+  // in Conversation) and their suggestions stay appliable, as on GitHub.
+  const carryPairs = useMemo(() => {
+    const out = new Map<string, { readonly from: string; readonly path: string }>()
+    for (const c of thread.comments) {
+      const from = c.anchor === null ? null : carryFrom(c.anchor, pull.headOid)
+      if (from !== null && c.anchor !== null) out.set(`${from}\0${c.anchor.path}`, { from, path: c.anchor.path })
+    }
+    return [...out.values()]
+  }, [thread.comments, pull.headOid])
+  // The code each inline comment was left on, for Conversation (QW2-049), and the files a carry
+  // compares: one cache, read on Conversation and (to carry) on Files changed.
+  const snippetSources = useMemo(
+    () => [
+      ...thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor)].filter((s) => s !== null))),
+      ...carryPairs.flatMap((p) => [
+        { commit: p.from, path: p.path },
+        { commit: pull.headOid.toLowerCase(), path: p.path },
+      ]),
+    ],
+    [thread.comments, carryPairs, pull.headOid],
+  )
+  const snippetTexts = useSnippetTexts(tab === 'conversation' || (tab === 'files' && carryPairs.length > 0) ? headReader : null, snippetSources)
+  // One line diff per file and older head, however many comments sit on it.
+  const lineMaps = useMemo(() => {
+    const out = new Map<string, LineMap | null>()
+    for (const p of carryPairs) {
+      const before = snippetTexts.get(snippetKey({ commit: p.from, path: p.path }))
+      const after = snippetTexts.get(snippetKey({ commit: pull.headOid.toLowerCase(), path: p.path }))
+      if (typeof before === 'string' && typeof after === 'string') out.set(`${p.from}\0${p.path}`, lineMap(before, after))
+    }
+    return out
+  }, [carryPairs, snippetTexts, pull.headOid])
+  const carried = useMemo(() => {
+    const out = new Map<string, Anchor>()
+    if (lineMaps.size === 0) return out
+    for (const c of thread.comments) {
+      const a = c.anchor === null ? null : carryAnchor(c.anchor, pull.headOid, lineMaps.get(`${c.anchor.commitOid}\0${c.anchor.path}`))
+      if (a !== null) out.set(c.id, a)
+    }
+    return out
+  }, [thread.comments, pull.headOid, lineMaps])
+  const withCarried = useCallback((c: CommentView): CommentView => {
+    const a = carried.get(c.id)
+    return a === undefined ? c : { ...c, anchor: a }
+  }, [carried])
+  const comments = useMemo(() => (carried.size === 0 ? thread.comments : thread.comments.map(withCarried)), [thread.comments, carried, withCarried])
   const anchorContext = (c: CommentView, label = true): JSX.Element | null => {
-    if (c.anchor === null) return null
-    const source = snippetSource(c.anchor)
+    // A carried comment shows where it is on the head now.
+    const anchor = carried.get(c.id) ?? c.anchor
+    if (anchor === null) return null
+    const source = snippetSource(anchor)
     return (
       <AnchorContext
-        anchor={c.anchor}
+        anchor={anchor}
         text={source === null ? null : snippetTexts.get(snippetKey(source))}
-        outdated={!anchorOnHead(c.anchor, pull.headOid)}
+        outdated={!anchorOnHead(anchor, pull.headOid)}
         applied={applied.get(c.id) ?? null}
         label={label}
       />
@@ -535,7 +584,7 @@ function PullPage({
     repo,
     source: sourceRef,
     pull,
-    comments: thread.comments,
+    comments,
     drafts: reviewDraft.draft?.comments ?? NO_DRAFTS,
     headReader,
     headOnly: comparison.headOnly,
@@ -803,10 +852,13 @@ function PullPage({
   const conversation = useMemo(
     () =>
       foldMirroredReviews(
-        timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id))),
+        timeline
+          .filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id)))
+          // A comment carried to the head (QW3-015) names its place there.
+          .map((t) => (t.kind === 'comment' && carried.has(t.comment.id) ? { ...t, comment: withCarried(t.comment) } : t)),
         (it) => (it.kind === 'review' ? trustedOrigin(it.review.origin, it.review.reviewer, trust) : trustedOrigin(it.comment.origin, it.comment.author, trust)),
       ),
-    [timeline, inlineIds, trust],
+    [timeline, inlineIds, trust, carried, withCarried],
   )
   const resolved = new Set(review.resolvedThreads)
   const eventText = (e: Event): HeadUpdatePhrase | null => (e.kind === 'headUpdate' && e.id ? phrases.data?.get(e.id) ?? null : null)
@@ -995,8 +1047,10 @@ function PullPage({
         // Every reader is told the PR shows an older head than its branch (QW2-007: an
         // interrupted browser commit, or a push with auto-sync off); who can move it gets the button.
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="head-sync-banner">
-          <RefreshCw className="h-4 w-4 text-forge-700 dark:text-forge-400" aria-hidden />
-          <span className="min-w-0 flex-1">
+          <RefreshCw className="h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
+          {/* At least 16rem: on a phone the text keeps the row and the cost and button wrap below it,
+              instead of squeezing it into a narrow column beside them (QW3-054). */}
+          <span className="min-w-[min(16rem,calc(100%-1.75rem))] flex-1">
             {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortBranch(pull.sourceRefName ?? '')}</span> is at{' '}
             <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
             {authorOrMember ? null : (
@@ -1081,7 +1135,7 @@ function PullPage({
             <>
               {/* Description */}
               <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-                <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
                   <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
@@ -1450,7 +1504,7 @@ function PullPage({
                   writeBlock={composeBlock}
                   pullId={pull.id}
                   headOid={pull.headOid}
-                  comments={thread.comments}
+                  comments={comments}
                   changedPaths={new Set(c.changes.flatMap((x) => (x.oldPath !== undefined ? [x.path, x.oldPath] : [x.path])))}
                   onPosted={onInlinePosted}
                   actions={threadActions}

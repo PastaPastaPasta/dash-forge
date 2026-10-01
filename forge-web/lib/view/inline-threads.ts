@@ -5,7 +5,9 @@
  * current head and that line is still in the diff; otherwise (another head, no head recorded,
  * a line the diff no longer shows) it is outdated and collapses under "n comments on an older
  * version". A file-level anchor (a path, no line) on the current head is listed with the
- * threads not shown on a line.
+ * threads not shown on a line. The PR page first carries an anchor on an older head whose lines
+ * the head kept unchanged to the head (`carry-anchor.ts`, QW3-015), as GitHub keeps such a
+ * comment current; `dg pr view` still reports it on its own commit.
  */
 
 import type { Anchor } from '../rules/v2'

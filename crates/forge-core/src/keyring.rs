@@ -651,14 +651,22 @@ impl Keyring {
                 fix_repair(repo),
             )
         } else {
-            (
-                "you are not a member of this private repository (or you were removed)".to_string(),
-                format!(
-                    "ask a maintainer to run `dg collab add {} {}`",
-                    repo.display(),
-                    platform::encode_identifier(self.reader)
-                ),
+            // QW3-065: an add without the member's consent is refused (E604), so the accept
+            // comes first; a removed member is told so instead of being sent to a repair.
+            let joined = format!(
+                "not a member yet? run `dg collab accept {repo}` first (your consent), then ask \
+                 the owner to run `dg collab add {repo} {} --role writer`",
+                platform::encode_identifier(self.reader),
+                repo = repo.display(),
+            );
+            return UserError::new(
+                codes::NOT_A_KEY_HOLDER,
+                format!("private repo {}: you hold no key for it", repo.display()),
             )
+            .cause("you are not a member of this private repository, or you were removed from it")
+            .fix(joined)
+            .fix("removed? what was written after your removal is sealed to keys you are not given")
+            .into();
         };
         UserError::new(
             codes::NOT_A_KEY_HOLDER,
@@ -934,11 +942,17 @@ impl ChainLink {
 /// contents do not open is E508 (every copy of that hash is the same bytes).
 pub fn sealed_error(e: &PrivateError) -> Error {
     match *e {
+        // QW3-065: a removed member meets this for every pack pushed after the removal; a
+        // repair is the way out only for a member the key was not wrapped to.
         PrivateError::NoKey(epoch) => UserError::new(
             codes::NOT_A_KEY_HOLDER,
             format!("a pack is sealed under key epoch {epoch}, which you hold no key for"),
         )
-        .fix("ask a maintainer to run `dg repo keys repair <owner>/<repo>`")
+        .cause(format!(
+            "key epoch {epoch} was not given to you: you were removed from the repository before it, or a maintainer has not wrapped it to your key yet"
+        ))
+        .fix("`dg repo keys status <owner>/<repo>` says which keys you hold")
+        .fix("removed? content from that epoch on is not readable to you; still a member? ask a maintainer to run `dg repo keys repair <owner>/<repo>`")
         .into(),
         PrivateError::SizeMismatch => Error::Integrity,
         _ => UserError::new(
@@ -2340,6 +2354,23 @@ mod tests {
     use super::*;
     use crate::platform::FieldValue;
 
+    /// QW3-065: a pack sealed under an epoch the reader was not given does not read as a
+    /// repository fault to repair: a removed member is told why, a member how.
+    #[test]
+    fn a_pack_under_an_unheld_epoch_names_both_reasons() {
+        let Error::User(u) = sealed_error(&PrivateError::NoKey(1)) else {
+            panic!("not a user error");
+        };
+        assert_eq!(u.code, codes::NOT_A_KEY_HOLDER);
+        let cause = u.cause.as_deref().unwrap();
+        assert!(cause.contains("you were removed"), "{cause}");
+        assert!(u.fix[0].contains("dg repo keys status"), "{u:?}");
+        assert!(
+            u.fix[1].starts_with("removed? content from that epoch on is not readable"),
+            "{u:?}"
+        );
+    }
+
     /// QW-040: when the signer's own key source lacks the encryption key, E306 says so (not
     /// that the identity has none) and gives the words-only route; a member without one is told
     /// to add it themselves.
@@ -3121,7 +3152,7 @@ mod tests {
             encryption_key_entry(&EncryptionSecret::new([seed; 32]).unwrap(), id, &net, "m/x")
         };
         let mut bridge = BridgeIdentity::from_dfk1(
-            "dfk1:testnet:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:FAKE-wif",
+            "dfk1:testnet:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw",
         )
         .unwrap();
         // key 4 is on chain; key 9 is not (a stale file): only 4 is kept
@@ -3144,7 +3175,7 @@ mod tests {
         assert_eq!(kept[0].derivation_path, "");
         // stored beside the signing key, they open again
         let mut stored = BridgeIdentity::from_dfk1(
-            "dfk1:testnet:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:FAKE-wif",
+            "dfk1:testnet:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw",
         )
         .unwrap();
         stored.identity_keys.extend(kept);
