@@ -14,7 +14,8 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { keyBudgetWords } from '@/lib/view/funds'
 import { creditsAsDash } from '@/lib/view/format'
 import { dashPaymentUri } from './ui/payment-address'
-import { FORGET_CONFIRM, forgetConfirm, topUpRecordsStay } from './keys-panel'
+import { FORGET_CONFIRM, forgetConfirm } from './keys-panel'
+import { topUpRecordsStay } from './top-up-stays'
 
 const ID = 'DhRR5hsXcwGikNuwSs43AF3VpRAdbRRLCiMK4FfDD6by'
 const DASH = 100_000_000_000n

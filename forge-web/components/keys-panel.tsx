@@ -19,8 +19,7 @@ import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { keyBudgetWords } from '@/lib/view/funds'
 import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
-import { topUpRecords } from '@/lib/auth/identity-top-up'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { topUpStays } from '@/components/top-up-stays'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { KeyRevokeDialog } from '@/components/key-revoke-dialog'
 import { PendingRenewal } from '@/components/pending-renewal'
@@ -31,34 +30,6 @@ export const FORGET_CONFIRM: ConfirmActionOptions = {
   title: "Forget this browser's key?",
   body: "This deletes the key from this device. It does not revoke it: the key stays valid on chain until it expires, and a wallet key never expires (use \"Revoke on chain\" or \"Disable key on chain\" for that). You will need your identity file, recovery phrase or wallet to sign in here again.",
   confirmLabel: 'Forget key',
-}
-
-/**
- * What stays after a forget or a revoke, for an identity topped up in this browser (QW3-034).
- * Said rather than silently kept. `next`: where its next top-up starts; `unfinished`: a top-up
- * that has not finished.
- */
-export function topUpRecordsStay(r: { readonly next: boolean; readonly unfinished: boolean }): string | null {
-  if (r.unfinished) {
-    return 'Your unfinished top-up of this identity stays in this browser (its deposit address and lock, no keys or words), so typing your recovery phrase in Top up still finishes it.'
-  }
-  if (r.next) {
-    return 'One note about this identity stays in this browser because you topped it up here: where its next top-up starts (no keys or words), so a later top-up picks the right address and still collects anything left at the last one.'
-  }
-  return null
-}
-
-/** How long the forget confirmation waits to learn what stays: a stalled storage read never blocks it. */
-const RECORDS_READ_MS = 1500
-
-/** What stays for `identityId` ({@link topUpRecordsStay}), or null; never waits long. */
-export async function topUpStays(identityId: string): Promise<string | null> {
-  const none = { next: false, unfinished: false }
-  const records = await Promise.race([
-    topUpRecords(ACTIVE_NETWORK.network, identityId).catch(() => none),
-    new Promise<typeof none>((resolve) => setTimeout(() => resolve(none), RECORDS_READ_MS)),
-  ])
-  return topUpRecordsStay(records)
 }
 
 /** {@link FORGET_CONFIRM}, saying what stays when the identity was topped up here. */
