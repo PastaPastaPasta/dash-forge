@@ -219,33 +219,28 @@ impl Helper {
     }
 
     /// Pin a named URL's resolution in the repository git runs us for, or refuse one that now
-    /// resolves elsewhere ([`crate::pin`]). Outside a repository (`git ls-remote` with no
-    /// repo) there is nothing to pin. A pin that cannot be written is a warning, not a failed
-    /// clone; a moved URL is E504.
+    /// resolves elsewhere (E504; [`crate::pin`]). Only when git named a repository
+    /// (`GIT_DIR`): `git ls-remote` outside one has nothing to pin, and a directory git
+    /// declined to use (safe.directory) is not written to.
     fn check_pin(&self, repo: &RepoRef) -> Result<()> {
-        if crate::pin::section(&self.url).is_none() {
+        if std::env::var_os("GIT_DIR").is_none() {
             return Ok(());
         }
-        let Ok(git_dir) = LocalRepo::git_dir() else {
-            return Ok(());
-        };
+        let git_dir = LocalRepo::git_dir()?;
         let now = crate::pin::Pin {
             repo_id: repo.id().to_string(),
             owner_id: repo.owner_id().to_string(),
             network: self.target.network.key(),
         };
-        let allow = crate::pin::allow_repin()?;
-        match crate::pin::guard(&self.url, &git_dir, self.remote.as_deref(), &now, allow) {
-            Ok(outcome) => {
-                tracing::debug!(?outcome, "dash:// pin");
-                Ok(())
-            }
-            Err(e) if e.downcast_ref::<UserError>().is_some() => Err(e),
-            Err(e) => {
-                tracing::warn!(error = %e, "could not record which repository this URL names; continuing without the pin");
-                Ok(())
-            }
-        }
+        let outcome = crate::pin::guard(
+            &self.url,
+            &git_dir,
+            self.remote.as_deref(),
+            &now,
+            crate::pin::allow_repin,
+        )?;
+        tracing::debug!(?outcome, "dash:// pin");
+        Ok(())
     }
 
     /// [`Self::ensure_conn`], plus the signing identity (loaded once, on first need): a push

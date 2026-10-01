@@ -796,11 +796,12 @@ pub async fn reseed(
                 let note = if r.announced {
                     "recorded as your copy"
                 } else if r.restores_recorded {
-                    "uploaded; it restores a URL your manifest for this pack records"
+                    "uploaded; it restores an address a recorded copy of this pack names"
                 } else {
                     "uploaded, but NOT recorded: you already hold a manifest for this pack \
                      (manifests are immutable), so readers will not look here. Reseed through \
-                     the profile you pushed it with, or have another member reseed it"
+                     the profile it was pushed with, have another member reseed it, or \
+                     record a consolidated pack there with `dg repack --profile <profile>`"
                 };
                 println!("  {} — {note}", hex::encode(r.pack_hash));
                 for u in &r.uris {

@@ -664,10 +664,10 @@ pub struct Reseeded {
     /// Whether the caller's own manifest now records it (`false`: the caller already had
     /// one for this pack, and manifests are immutable).
     pub announced: bool,
-    /// Not announced, but the upload re-created a URI the caller's existing manifest
-    /// records (keys are content-addressed, so reseeding through the profile the pack was
-    /// pushed with restores that copy). `false` when announced, or when the new copy is
-    /// recorded nowhere and readers will not find it.
+    /// The upload re-created a URI a recorded copy of the pack already names (keys are
+    /// content-addressed: the profile it was pushed with, a shared bucket, the same IPFS
+    /// CID), so readers find it and no manifest was written. `false` when announced, or when
+    /// the new copy is recorded nowhere and readers will not find it.
     pub restores_recorded: bool,
 }
 
@@ -1907,8 +1907,9 @@ impl<'a> RepoService<'a> {
     /// writing the caller's own copy — `storage` 1, the new URIs — when the caller has none
     /// yet for that pack; readers verify it by hash like any other copy. Packs the caller
     /// already holds a manifest for are uploaded but cannot be re-announced (a manifest is
-    /// immutable, and that index admits one per uploader): the report says whether the
-    /// upload re-created a URI that manifest records ([`Reseeded::restores_recorded`]).
+    /// immutable, and that index admits one per uploader). An upload that re-created a URI
+    /// some recorded copy already names is found by readers as it is, so nothing is written
+    /// for it ([`Reseeded::restores_recorded`]).
     ///
     /// Members only: `packManifest` is gated on a maintainer or writer document, so a
     /// non-member's copy could never be recorded. That is refused before anything uploads.
@@ -1936,8 +1937,10 @@ impl<'a> RepoService<'a> {
             };
             let meta = PackMeta::for_bytes(&bytes);
             let uris = uri_strings(target.put(&bytes, &meta).await?);
-            let mine = copies.iter().find(|m| m.owner_id == me);
-            let announced = if mine.is_some() {
+            // Readers try every copy of a pack, so an upload that re-created a URI any copy
+            // records (a shared bucket, the same IPFS CID) is already found: nothing to pay for.
+            let restores_recorded = restores_recorded(&copies, &uris);
+            let announced = if restores_recorded || copies.iter().any(|m| m.owner_id == me) {
                 false
             } else {
                 self.write_pack_manifest(
@@ -1959,7 +1962,7 @@ impl<'a> RepoService<'a> {
             };
             report.reseeded.push(Reseeded {
                 pack_hash: hash,
-                restores_recorded: restores_recorded(mine.copied(), &uris),
+                restores_recorded,
                 uris,
                 announced,
             });
@@ -3577,10 +3580,12 @@ fn require_reseed_member(roles: &RoleMap, me: &str, repo: &RepoRef) -> Result<()
     })
 }
 
-/// Whether a reseed upload to `uris` re-created a URI the caller's own existing manifest
-/// (`mine`) records: then readers find the copy again although nothing new was written.
-fn restores_recorded(mine: Option<&PackManifestInfo>, uris: &[String]) -> bool {
-    mine.is_some_and(|m| uris.iter().any(|u| m.uris.contains(u)))
+/// Whether a reseed upload to `uris` re-created a URI one of the pack's recorded `copies`
+/// names: readers try every copy, so they find it again although nothing new is written.
+fn restores_recorded(copies: &[&PackManifestInfo], uris: &[String]) -> bool {
+    copies
+        .iter()
+        .any(|m| uris.iter().any(|u| m.uris.contains(u)))
 }
 
 /// `copies` of one pack in the order the forge-v2 reader rule tries them
@@ -4196,20 +4201,23 @@ mod tests {
         assert!(reason.contains("not a maintainer or writer"), "{reason}");
     }
 
-    /// A caller who already recorded a pack cannot record it again; the upload only helps
-    /// when it re-created a URI that manifest records (same profile, content-addressed key).
+    /// An upload restores a copy readers find only at a URI some recorded copy of the pack
+    /// names (content-addressed keys: the same profile, a shared bucket, the same CID), the
+    /// caller's or another member's.
     #[test]
     fn a_reseed_upload_restores_a_recorded_copy_only_at_a_recorded_uri() {
         let mut mine = manifest("m", 1, 0, 7);
         mine.uris = vec!["s3://b/packs/07.pack".into()];
+        let mut theirs = manifest("t", 2, 0, 7);
+        theirs.owner_id = "writer".into();
+        theirs.uris = vec!["ipfs://bafy".into()];
         let same = vec!["https://cdn/x".to_string(), "s3://b/packs/07.pack".into()];
-        let other = vec!["ipfs://bafy".to_string()];
-        assert!(super::restores_recorded(Some(&mine), &same));
-        assert!(!super::restores_recorded(Some(&mine), &other));
-        assert!(
-            !super::restores_recorded(None, &same),
-            "nothing recorded yet"
-        );
+        let cid = vec!["ipfs://bafy".to_string()];
+        let other = vec!["https://elsewhere/07.pack".to_string()];
+        assert!(super::restores_recorded(&[&mine], &same));
+        assert!(super::restores_recorded(&[&mine, &theirs], &cid));
+        assert!(!super::restores_recorded(&[&mine, &theirs], &other));
+        assert!(!super::restores_recorded(&[], &same), "nothing recorded");
     }
 
     /// A manifest stub carrying only what the packRef space is derived from.

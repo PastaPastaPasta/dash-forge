@@ -6,26 +6,27 @@
 //! from it would mix a stranger's history into the clone, and pushing would send commits to
 //! them. So the first time this helper resolves a named URL inside a repository (the clone
 //! itself, or the first fetch of an existing one), it records what the URL resolved to in
-//! that repository's own git config:
+//! that repository's own git config, per network:
 //!
 //! ```text
-//! [dash "dash://alice/project"]
+//! [dash "devnet-bonsia:dash://alice/project"]
 //!     repoId = <base58 repo document id>
 //!     ownerId = <base58 owner identity id>
-//!     network = devnet-bonsia
 //! ```
 //!
 //! Every later fetch or push compares. A different repository is refused (E504) unless the
 //! user says otherwise, once, with `git -c dash.allowRepin=true <fetch|push>` (or by setting
-//! `dash.allowRepin`): then the helper warns loudly, re-pins and goes on. The pin is per
-//! network: the same URL on another network is another namespace, so it is pinned afresh
-//! there. An id-addressed URL (`dash://<repo id>`) needs no pin: the id is the repository.
+//! `dash.allowRepin`): then the helper warns loudly, re-pins and goes on. The same URL on
+//! another network is another namespace with its own pin. An id-addressed URL
+//! (`dash://<repo id>`) needs no pin: the id is the repository.
+//!
+//! This guards git's transport (fetch, push, clone). `dg` commands run in a clone resolve
+//! the remote's name themselves and do not consult the pin.
 
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Result};
-use forge_core::storage::policy::parse_git_bool;
 use forge_core::user_error::{codes, UserError};
 
 use crate::url::DashUrl;
@@ -33,7 +34,7 @@ use crate::url::DashUrl;
 /// The git config key that lets one fetch or push accept a re-pointed URL (and re-pin it).
 pub const ALLOW_REPIN_GIT_KEY: &str = "dash.allowRepin";
 
-/// What a named URL resolved to.
+/// What a named URL resolves to now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pin {
     /// The forge-v2 `repo` document id.
@@ -44,27 +45,37 @@ pub struct Pin {
     pub network: String,
 }
 
-/// What [`guard`] did.
+/// A pin as recorded: either key may be missing (a hand-edited or partly written pin).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Recorded {
+    /// `repoId`.
+    pub repo_id: Option<String>,
+    /// `ownerId`.
+    pub owner_id: Option<String>,
+}
+
+/// What [`guard`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// An id-addressed URL, or no repository to record a pin in.
+    /// An id-addressed URL: nothing to pin.
     NotApplicable,
-    /// Nothing was pinned yet for this URL on this network: it is now.
+    /// Nothing was pinned yet for this URL on this network: it is now (or a warning said
+    /// why it could not be recorded).
     Pinned,
     /// The URL still resolves to the pinned repository.
     Matches,
     /// The URL resolves elsewhere and `dash.allowRepin` allowed it: re-pinned.
     Repinned {
         /// The previous pin.
-        was: Pin,
+        was: Recorded,
     },
 }
 
-/// The git config section of `url`'s pin (`dash.dash://alice/project`), `None` for an
-/// id-addressed URL. A DPNS owner is keyed as DPNS compares it (case-insensitive, without
-/// `@` or `.dash`), and the repo name as the resolver does (lowercase), so the spellings that
-/// resolve alike share one pin.
-pub fn section(url: &DashUrl) -> Option<String> {
+/// The git config section of `url`'s pin on `network`
+/// (`dash.devnet-bonsia:dash://alice/project`), `None` for an id-addressed URL. A DPNS owner
+/// is keyed as DPNS compares it (case-insensitive, without `@` or `.dash`), and the repo name
+/// as the resolver does (lowercase), so the spellings that resolve alike share one pin.
+pub fn section(url: &DashUrl, network: &str) -> Option<String> {
     let DashUrl::Named { owner, repo } = url else {
         return None;
     };
@@ -75,90 +86,75 @@ pub fn section(url: &DashUrl) -> Option<String> {
         }
         _ => owner.to_string(),
     };
-    Some(format!("dash.dash://{owner}/{}", repo.to_ascii_lowercase()))
+    Some(format!(
+        "dash.{network}:dash://{owner}/{}",
+        repo.to_ascii_lowercase()
+    ))
 }
 
-/// Compare a recorded pin with what the URL resolves to now: `Ok(None)` when nothing is
-/// recorded for this network, `Ok(Some(()))` on a match, `Err(was)` when it moved.
-fn compare(recorded: &RecordedPin, now: &Pin) -> std::result::Result<Option<()>, Pin> {
-    let on_this_network = recorded.network.as_deref().is_none_or(|n| n == now.network);
-    if !on_this_network || (recorded.repo_id.is_none() && recorded.owner_id.is_none()) {
-        return Ok(None);
-    }
-    let same = |v: &Option<String>, now: &str| v.as_deref().is_none_or(|v| v == now);
-    if same(&recorded.repo_id, &now.repo_id) && same(&recorded.owner_id, &now.owner_id) {
-        Ok(Some(()))
-    } else {
-        Err(Pin {
-            repo_id: recorded.repo_id.clone().unwrap_or_default(),
-            owner_id: recorded.owner_id.clone().unwrap_or_default(),
-            network: now.network.clone(),
-        })
-    }
-}
-
-/// The pin keys as recorded (each may be missing).
-#[derive(Debug, Default)]
-struct RecordedPin {
-    repo_id: Option<String>,
-    owner_id: Option<String>,
-    network: Option<String>,
-}
-
-/// Check (and record) the pin of `url` in the repository at `git_dir`. `allow_repin` is
-/// `dash.allowRepin`. A moved URL without it is E504, naming both repositories and the ways
-/// out; with it, a loud warning on stderr and a new pin.
+/// Check (and record) the pin of `url` in the repository at `git_dir`. `allow_repin` reads
+/// `dash.allowRepin`, only when the URL moved. A moved URL without it is E504, naming both
+/// repositories and the ways out; with it, a loud warning on stderr and a new pin.
+///
+/// Fails closed on reads (a pin that cannot be read is an error, never a skipped check) and
+/// open on writes (a pin that cannot be recorded is a warning, not a failed clone).
 pub fn guard(
     url: &DashUrl,
     git_dir: &Path,
     remote: Option<&str>,
     now: &Pin,
-    allow_repin: bool,
+    allow_repin: impl FnOnce() -> Result<bool>,
 ) -> Result<Outcome> {
-    let Some(section) = section(url) else {
+    let Some(section) = section(url, &now.network) else {
         return Ok(Outcome::NotApplicable);
     };
-    let recorded = RecordedPin {
+    let recorded = Recorded {
         repo_id: config_get(git_dir, &format!("{section}.repoId"))?,
         owner_id: config_get(git_dir, &format!("{section}.ownerId"))?,
-        network: config_get(git_dir, &format!("{section}.network"))?,
     };
-    match compare(&recorded, now) {
-        Ok(Some(())) => {
-            // Fill in a key an older or hand-written pin lacks.
-            if recorded.repo_id.is_none()
-                || recorded.owner_id.is_none()
-                || recorded.network.is_none()
-            {
-                write(git_dir, &section, now)?;
-            }
-            Ok(Outcome::Matches)
-        }
-        Ok(None) => {
-            write(git_dir, &section, now)?;
-            Ok(Outcome::Pinned)
-        }
-        Err(was) if allow_repin => {
-            eprintln!(
-                "dash: WARNING: {url_s} now resolves to repository {new_repo} (owner {new_owner}), \
-                 not {old_repo} (owner {old_owner}) as when this clone was made. \
-                 {ALLOW_REPIN_GIT_KEY} is set, so it is re-pinned to the new repository.",
-                url_s = display(url),
-                new_repo = now.repo_id,
-                new_owner = now.owner_id,
-                old_repo = was.repo_id,
-                old_owner = was.owner_id,
-            );
-            write(git_dir, &section, now)?;
-            Ok(Outcome::Repinned { was })
-        }
-        Err(was) => Err(moved(url, remote, &was, now).into()),
+    if recorded.repo_id.is_none() && recorded.owner_id.is_none() {
+        record(git_dir, &section, now);
+        return Ok(Outcome::Pinned);
     }
+    let same = |v: &Option<String>, now: &str| v.as_deref().is_none_or(|v| v == now);
+    if same(&recorded.repo_id, &now.repo_id) && same(&recorded.owner_id, &now.owner_id) {
+        // Complete a pin that lacks a key.
+        if recorded.repo_id.is_none() || recorded.owner_id.is_none() {
+            record(git_dir, &section, now);
+        }
+        return Ok(Outcome::Matches);
+    }
+    if !allow_repin()? {
+        return Err(moved(url, remote, &section, &recorded, now).into());
+    }
+    eprintln!(
+        "dash: WARNING: {} now resolves to repository {} (owner {}), not {} (owner {}) as \
+         when this clone was made. {ALLOW_REPIN_GIT_KEY} is set, so it is re-pinned to the \
+         new repository.",
+        display(url),
+        now.repo_id,
+        now.owner_id,
+        shown(recorded.repo_id.as_deref()),
+        shown(recorded.owner_id.as_deref()),
+    );
+    record(git_dir, &section, now);
+    Ok(Outcome::Repinned { was: recorded })
 }
 
 /// E504: the URL names another repository than the pinned one.
-fn moved(url: &DashUrl, remote: Option<&str>, was: &Pin, now: &Pin) -> UserError {
-    let remote = remote.unwrap_or("<remote>");
+fn moved(
+    url: &DashUrl,
+    remote: Option<&str>,
+    section: &str,
+    was: &Recorded,
+    now: &Pin,
+) -> UserError {
+    let keep = match (remote, &was.repo_id) {
+        (Some(r), Some(id)) => {
+            format!("keep using the pinned repository: `git remote set-url {r} dash://{id}`; or, ")
+        }
+        _ => String::new(),
+    };
     UserError::new(
         codes::INTEGRITY,
         format!(
@@ -167,16 +163,25 @@ fn moved(url: &DashUrl, remote: Option<&str>, was: &Pin, now: &Pin) -> UserError
         ),
     )
     .cause(format!(
-        "pinned: repository {} (owner {}); now: repository {} (owner {}). The owner's DPNS \
-         name may have changed hands, or the network was reset: fetching could mix in someone \
-         else's history, and pushing would send your commits to them",
-        was.repo_id, was.owner_id, now.repo_id, now.owner_id
+        "pinned on {}: repository {} (owner {}); now: repository {} (owner {}). The owner's \
+         DPNS name may have changed hands, or the network was reset: fetching could mix in \
+         someone else's history, and pushing would send your commits to them",
+        now.network,
+        shown(was.repo_id.as_deref()),
+        shown(was.owner_id.as_deref()),
+        now.repo_id,
+        now.owner_id
     ))
     .fix(format!(
-        "keep using the pinned repository: `git remote set-url {remote} dash://{}`; or, if you \
-         trust the change, re-pin once with `git -c {ALLOW_REPIN_GIT_KEY}=true fetch`",
-        was.repo_id
+        "{keep}if you trust the change, run the same git command once with \
+         `git -c {ALLOW_REPIN_GIT_KEY}=true …`, which re-pins it (or drop the pin: \
+         `git config --remove-section '{section}'`)"
     ))
+}
+
+/// A recorded value for messages.
+fn shown(v: Option<&str>) -> &str {
+    v.unwrap_or("(not recorded)")
 }
 
 /// `dash://owner/repo`, for messages.
@@ -184,16 +189,17 @@ fn display(url: &DashUrl) -> String {
     format!("{}://{url}", crate::url::SCHEME)
 }
 
-/// Record `pin` under `section` in the repository's local config.
-fn write(git_dir: &Path, section: &str, pin: &Pin) -> Result<()> {
-    for (key, value) in [
-        ("repoId", &pin.repo_id),
-        ("ownerId", &pin.owner_id),
-        ("network", &pin.network),
-    ] {
-        git_config(git_dir, &[&format!("{section}.{key}"), value])?;
+/// Record `pin` under `section` in the repository's local config. Best effort: a pin that
+/// cannot be written is reported, and the fetch or push goes on unpinned.
+fn record(git_dir: &Path, section: &str, pin: &Pin) {
+    let written = config_set(git_dir, &format!("{section}.repoId"), &pin.repo_id)
+        .and_then(|()| config_set(git_dir, &format!("{section}.ownerId"), &pin.owner_id));
+    if let Err(e) = written {
+        eprintln!(
+            "dash: warning: could not record which repository this URL names ({e:#}); \
+             a later change of owner will not be detected"
+        );
     }
-    Ok(())
 }
 
 /// The repository-local value of `key` (`git config --local --get`), `None` when unset.
@@ -210,23 +216,21 @@ fn config_get(git_dir: &Path, key: &str) -> Result<Option<String>> {
         // 1: the key is not set.
         Some(1) => Ok(None),
         _ => bail!(
-            "git config --get {key} failed: {}",
+            "reading the repository pin ({key}) failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ),
     }
 }
 
-/// `git config --local <args>` in the repository at `git_dir`.
-fn git_config(git_dir: &Path, args: &[&str]) -> Result<()> {
+/// `git config --local <key> <value>` in the repository at `git_dir`.
+fn config_set(git_dir: &Path, key: &str, value: &str) -> Result<()> {
     let out = git(git_dir)
-        .args(["config", "--local"])
-        .args(args)
+        .args(["config", "--local", key, value])
         .output()
         .map_err(|e| anyhow!("running git config: {e}"))?;
     if !out.status.success() {
         bail!(
-            "git config {} failed: {}",
-            args.first().copied().unwrap_or_default(),
+            "git config {key} failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -244,13 +248,21 @@ fn git(git_dir: &Path) -> Command {
     cmd
 }
 
-/// `dash.allowRepin` as git resolves it (repository, global, or a one-off `git -c`).
+/// `dash.allowRepin` as git resolves it (repository, global, or a one-off `git -c`, where a
+/// bare `-c dash.allowRepin` means true).
 pub fn allow_repin() -> Result<bool> {
-    crate::git::config_get(ALLOW_REPIN_GIT_KEY)
-        .map(|v| parse_git_bool(ALLOW_REPIN_GIT_KEY, &v))
-        .transpose()
-        .map(Option::unwrap_or_default)
-        .map_err(Into::into)
+    let out = Command::new("git")
+        .args(["config", "--type=bool", "--get", ALLOW_REPIN_GIT_KEY])
+        .output()
+        .map_err(|e| anyhow!("running git config: {e}"))?;
+    match out.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&out.stdout).trim() == "true"),
+        Some(1) => Ok(false),
+        _ => bail!(
+            "{ALLOW_REPIN_GIT_KEY} must be a boolean (true/false): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -259,12 +271,20 @@ mod tests {
 
     const OWNER_A: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
     const OWNER_B: &str = "5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX";
+    const SECTION: &str = "dash.devnet-bonsia:dash://alice/project";
 
     fn pin(repo: &str, owner: &str) -> Pin {
         Pin {
             repo_id: repo.into(),
             owner_id: owner.into(),
             network: "devnet-bonsia".into(),
+        }
+    }
+
+    fn recorded(repo: &str, owner: &str) -> Recorded {
+        Recorded {
+            repo_id: Some(repo.into()),
+            owner_id: Some(owner.into()),
         }
     }
 
@@ -287,17 +307,31 @@ mod tests {
         DashUrl::parse(s).unwrap()
     }
 
+    #[allow(clippy::unnecessary_wraps)]
+    fn no() -> Result<bool> {
+        Ok(false)
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn yes() -> Result<bool> {
+        Ok(true)
+    }
+
+    fn get(git_dir: &Path, key: &str) -> Option<String> {
+        config_get(git_dir, &format!("{SECTION}.{key}")).unwrap()
+    }
+
     #[test]
     fn spellings_that_resolve_alike_share_a_pin() {
-        let s = |u: &str| section(&url(u));
-        let alice = Some("dash.dash://alice/project".to_string());
+        let s = |u: &str| section(&url(u), "devnet-bonsia");
+        let alice = Some(SECTION.to_string());
         assert_eq!(s("dash://alice/project"), alice);
         assert_eq!(s("dash://Alice.dash/Project.git"), alice);
         assert_eq!(s("dash://@alice/project"), alice);
         // An identity id keeps its case (base58 is case-sensitive).
         assert_eq!(
             s(&format!("dash://{OWNER_A}/project")),
-            Some(format!("dash.dash://{OWNER_A}/project"))
+            Some(format!("dash.devnet-bonsia:dash://{OWNER_A}/project"))
         );
         // An id-addressed URL is the repository already.
         assert_eq!(s(&format!("dash://{OWNER_B}")), None);
@@ -309,19 +343,15 @@ mod tests {
         let u = url("dash://alice/project");
         let now = pin("R1", OWNER_A);
         assert_eq!(
-            guard(&u, &git_dir, Some("origin"), &now, false).unwrap(),
+            guard(&u, &git_dir, Some("origin"), &now, no).unwrap(),
             Outcome::Pinned
         );
+        assert_eq!(get(&git_dir, "repoId"), Some("R1".into()));
+        assert_eq!(get(&git_dir, "ownerId"), Some(OWNER_A.into()));
+        // A matching resolution never asks about dash.allowRepin.
+        let never = || -> Result<bool> { panic!("asked about a re-pin") };
         assert_eq!(
-            config_get(&git_dir, "dash.dash://alice/project.repoId").unwrap(),
-            Some("R1".into())
-        );
-        assert_eq!(
-            config_get(&git_dir, "dash.dash://alice/project.ownerId").unwrap(),
-            Some(OWNER_A.into())
-        );
-        assert_eq!(
-            guard(&u, &git_dir, Some("origin"), &now, false).unwrap(),
+            guard(&u, &git_dir, Some("origin"), &now, never).unwrap(),
             Outcome::Matches
         );
     }
@@ -332,8 +362,8 @@ mod tests {
     fn a_name_that_now_resolves_elsewhere_is_refused() {
         let (_d, git_dir) = repo();
         let u = url("dash://alice/project");
-        guard(&u, &git_dir, Some("origin"), &pin("R1", OWNER_A), false).unwrap();
-        let err = guard(&u, &git_dir, Some("origin"), &pin("R2", OWNER_B), false).unwrap_err();
+        guard(&u, &git_dir, Some("origin"), &pin("R1", OWNER_A), no).unwrap();
+        let err = guard(&u, &git_dir, Some("origin"), &pin("R2", OWNER_B), no).unwrap_err();
         let user = err.downcast_ref::<UserError>().expect("a UserError");
         assert_eq!(user.code, codes::INTEGRITY);
         let text = format!("{user} {:?}", user.fix);
@@ -343,12 +373,12 @@ mod tests {
             OWNER_A,
             OWNER_B,
             "git remote set-url origin dash://R1",
+            ALLOW_REPIN_GIT_KEY,
         ] {
             assert!(text.contains(want), "{want} missing from: {text}");
         }
-        assert!(text.contains(ALLOW_REPIN_GIT_KEY), "{text}");
         assert_eq!(
-            config_get(&git_dir, "dash.dash://alice/project.repoId").unwrap(),
+            get(&git_dir, "repoId"),
             Some("R1".into()),
             "a refusal keeps the pin"
         );
@@ -358,41 +388,65 @@ mod tests {
             &git_dir,
             None,
             &pin("R2", OWNER_B),
-            false
+            no
         )
         .is_err());
+    }
+
+    /// Without a remote name (a fetch by URL, forge-import's mirror), the fix does not name
+    /// a remote to re-point.
+    #[test]
+    fn a_refusal_by_url_offers_the_re_pin_and_the_unset() {
+        let (_d, git_dir) = repo();
+        let u = url("dash://alice/project");
+        guard(&u, &git_dir, None, &pin("R1", OWNER_A), no).unwrap();
+        let err = guard(&u, &git_dir, None, &pin("R2", OWNER_B), no).unwrap_err();
+        let fix = format!("{:?}", err.downcast_ref::<UserError>().unwrap().fix);
+        assert!(!fix.contains("set-url"), "{fix}");
+        assert!(fix.contains("--remove-section"), "{fix}");
     }
 
     #[test]
     fn allow_repin_accepts_the_change_and_re_pins() {
         let (_d, git_dir) = repo();
         let u = url("dash://alice/project");
-        guard(&u, &git_dir, None, &pin("R1", OWNER_A), false).unwrap();
-        let out = guard(&u, &git_dir, None, &pin("R2", OWNER_B), true).unwrap();
+        guard(&u, &git_dir, None, &pin("R1", OWNER_A), no).unwrap();
+        let out = guard(&u, &git_dir, None, &pin("R2", OWNER_B), yes).unwrap();
         assert_eq!(
             out,
             Outcome::Repinned {
-                was: pin("R1", OWNER_A)
+                was: recorded("R1", OWNER_A)
             }
         );
         assert_eq!(
-            guard(&u, &git_dir, None, &pin("R2", OWNER_B), false).unwrap(),
+            guard(&u, &git_dir, None, &pin("R2", OWNER_B), no).unwrap(),
             Outcome::Matches
         );
     }
 
+    /// Each network keeps its own pin: a fetch on testnet neither trips nor replaces the
+    /// devnet one.
     #[test]
-    fn another_network_is_pinned_afresh() {
+    fn each_network_has_its_own_pin() {
         let (_d, git_dir) = repo();
         let u = url("dash://alice/project");
-        guard(&u, &git_dir, None, &pin("R1", OWNER_A), false).unwrap();
+        guard(&u, &git_dir, None, &pin("R1", OWNER_A), no).unwrap();
         let testnet = Pin {
             network: "testnet".into(),
             ..pin("T1", OWNER_B)
         };
         assert_eq!(
-            guard(&u, &git_dir, None, &testnet, false).unwrap(),
+            guard(&u, &git_dir, None, &testnet, no).unwrap(),
             Outcome::Pinned
+        );
+        assert_eq!(
+            guard(&u, &git_dir, None, &testnet, no).unwrap(),
+            Outcome::Matches
+        );
+        assert!(guard(&u, &git_dir, None, &pin("R2", OWNER_B), no).is_err());
+        assert_eq!(
+            guard(&u, &git_dir, None, &pin("R1", OWNER_A), no).unwrap(),
+            Outcome::Matches
         );
     }
 
@@ -400,16 +454,22 @@ mod tests {
     fn a_partial_pin_is_compared_and_completed() {
         let (_d, git_dir) = repo();
         let u = url("dash://alice/project");
-        git_config(&git_dir, &["dash.dash://alice/project.repoId", "R1"]).unwrap();
-        assert!(guard(&u, &git_dir, None, &pin("R2", OWNER_A), false).is_err());
+        config_set(&git_dir, &format!("{SECTION}.repoId"), "R1").unwrap();
+        assert!(guard(&u, &git_dir, None, &pin("R2", OWNER_A), no).is_err());
         assert_eq!(
-            guard(&u, &git_dir, None, &pin("R1", OWNER_A), false).unwrap(),
+            guard(&u, &git_dir, None, &pin("R1", OWNER_A), no).unwrap(),
             Outcome::Matches
         );
-        assert_eq!(
-            config_get(&git_dir, "dash.dash://alice/project.ownerId").unwrap(),
-            Some(OWNER_A.into())
-        );
+        assert_eq!(get(&git_dir, "ownerId"), Some(OWNER_A.into()));
+    }
+
+    /// A pin that cannot be read fails the operation rather than skipping the check.
+    #[test]
+    fn an_unreadable_pin_fails_closed() {
+        let (_d, git_dir) = repo();
+        std::fs::write(git_dir.join("config"), "[core\nbroken").unwrap();
+        let u = url("dash://alice/project");
+        assert!(guard(&u, &git_dir, None, &pin("R1", OWNER_A), no).is_err());
     }
 
     #[test]
@@ -417,7 +477,7 @@ mod tests {
         let (_d, git_dir) = repo();
         let u = url(&format!("dash://{OWNER_B}"));
         assert_eq!(
-            guard(&u, &git_dir, None, &pin("R1", OWNER_A), false).unwrap(),
+            guard(&u, &git_dir, None, &pin("R1", OWNER_A), no).unwrap(),
             Outcome::NotApplicable
         );
     }
