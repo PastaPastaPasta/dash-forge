@@ -41,7 +41,7 @@ export interface ConfirmDialogProps {
   successNote?: string
   /**
    * What the action's one toast says while its writes land and once they all did (QW3-039: one
-   * toast with their total). Defaults to "Writing to Platform…", then `successNote` or "Saved";
+   * toast with their total). Defaults to each write's own title, then `successNote` or "Saved";
    * an action of one write ends under that write's own title.
    */
   toast?: SpendActionLabels
@@ -87,7 +87,8 @@ export function ConfirmDialog({
     setError(null)
     try {
       // However many writes the action signs, they show one toast with their total (QW3-039).
-      await spendAction(toast ?? { running: 'Writing to Platform…', done: successNote ?? 'Saved' }, () => onConfirm(intent))
+      // The dialog is modal: every write reported while it runs is this action's.
+      await spendAction(toast ?? { done: successNote ?? 'Saved' }, () => onConfirm(intent), { scope: true })
       setDone(true)
       setTimeout(() => {
         setDone(false)

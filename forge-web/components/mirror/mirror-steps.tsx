@@ -197,8 +197,8 @@ export function RepoStep({
     setError(null)
     setProgress({})
     try {
-      const r = await spendAction({ running: 'Creating the repository…', done: 'Repository created' }, () =>
-        createRepo(sdk, signer, forge, input, (step, state) => setProgress((p) => ({ ...p, [step]: state === 'start' ? 'running' : 'done' }))),
+      const r = await spendAction({ running: 'Creating the repository…', done: 'Repository created', failed: 'Repository creation stopped part-way' }, (tag) =>
+        createRepo(sdk, tag(signer), forge, input, (step, state) => setProgress((p) => ({ ...p, [step]: state === 'start' ? 'running' : 'done' }))),
       )
       onDone({ repoId: r.repoId, name: r.name }, true)
     } catch (e) {

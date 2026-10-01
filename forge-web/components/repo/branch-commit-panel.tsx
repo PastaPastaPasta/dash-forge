@@ -191,7 +191,7 @@ export function useBranchCommit({
       const refName = pull.sourceRefName
       try {
         // The commit's pack, ref and event are one action: one toast with their total (QW3-039).
-        const commit = await spendAction({ running: `Committing to ${refName}…`, done: `Committed to ${refName}` }, () =>
+        const commit = await spendAction({ running: `Committing to ${refName}…`, done: `Committed to ${refName}`, failed: `Commit to ${refName} stopped part-way` }, (tag) =>
           runKeyedBranchCommit(
             saved.current,
             key,
@@ -205,7 +205,7 @@ export function useBranchCommit({
               const intent = `branch:${source.repoId}:${pull.number}:${built.commit}`
               return {
                 sdk,
-                auth: signer,
+                auth: tag(signer),
                 repo,
                 source,
                 pull: { id: pull.id, number: pull.number, author: pull.author, headOid: pull.headOid, sourceRefName: refName },
@@ -213,7 +213,7 @@ export function useBranchCommit({
                 built,
                 upload,
                 publishIndex: async (pack, packHash) => {
-                  const r = await publishMergeIndex(sdk, signer, source, pack, packHash, upload, `${intent}:index`)
+                  const r = await publishMergeIndex(sdk, tag(signer), source, pack, packHash, upload, `${intent}:index`)
                   return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
                 },
                 readBranchTip: () => readBranchTip(sdk, source, refName),

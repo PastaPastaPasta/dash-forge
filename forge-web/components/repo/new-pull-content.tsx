@@ -163,8 +163,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     setNote(null)
     try {
       // The PR and its draft mark are one action: one toast with their total (QW3-039).
-      const created = await spendAction({ running: 'Opening the pull request…', done: 'Pull request opened' }, () =>
-        createPatch(sdk, signer, repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
+      const created = await spendAction({ running: 'Opening the pull request…', done: 'Pull request opened' }, (tag) =>
+        createPatch(sdk, tag(signer), repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
           setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
         ),
       )

@@ -4,8 +4,8 @@
  * while an action is open carries the action's id, so its toast folds into that action's one
  * toast however late the measurement lands.
  *
- * The UI opens one action at a time (a dialog's confirm), and an identity's writes are
- * serialized, so "the action open when the write was reported" is the action that made it.
+ * Only a modal dialog opens a scope (nothing else on the page writes while it is open); an action
+ * that runs beside the page tags its own signer instead (`WriteAuth.spendAction`), which wins.
  */
 
 let open: string | null = null

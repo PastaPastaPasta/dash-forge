@@ -371,7 +371,7 @@ export default function NewRepoPage(): JSX.Element {
         cost={confirm ? costOf(confirm) : cost}
         confirmLabel="Sign & create"
         successNote="Created — opening your repo"
-        toast={{ running: 'Creating the repository…', done: 'Repository created' }}
+        toast={{ running: 'Creating the repository…', done: 'Repository created', failed: 'Repository creation stopped part-way' }}
         onConfirm={() => (confirm ? create(confirm) : Promise.resolve())}
       />
     </AppShell>

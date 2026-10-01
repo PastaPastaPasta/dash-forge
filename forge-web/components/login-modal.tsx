@@ -691,7 +691,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
           : // Platform meters the update: an identity that already holds a Forge key (from another
             // browser or dg) pays the lower figure (QW-043). Its floor is the least one was measured to
             // cost, the low end Settings → Spend shows too (QW3-037: 0.00028 quoted, 0.000269 charged).
-            ` (${creditsAsDash(KEY_ADD_FLOOR_CREDITS)}–${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature; the lower figure when the identity already has a Forge key).`}
+            ` (${creditsAsDash(KEY_ADD_FLOOR_CREDITS)}–${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature; up to ${creditsAsDash(KEY_RENEW_CREDITS)} when the identity already has a Forge key).`}
       </p>
       {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
       <div ref={errorRef} hidden={error === null}>

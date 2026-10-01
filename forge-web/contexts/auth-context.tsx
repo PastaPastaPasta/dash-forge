@@ -32,7 +32,7 @@ import { lockedIdentityOf, readLastIdentity } from '../lib/auth/last-identity'
 import { errorMessage } from '../lib/utils'
 import { fundsState, nextFundsChange, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
-import { spendToast } from '../lib/spend-toast'
+import { toastSpend } from '../lib/spend-toast'
 
 /** setTimeout's longest delay (about 24.8 days); a later change is re-armed from there. */
 const MAX_TIMER_MS = 2 ** 31 - 1
@@ -230,13 +230,7 @@ export function AuthProvider({
 
   const onSpend = useCallback(
     (event: SpendEvent) => {
-      const credits = event.actualCredits ?? null
-      // A refused write is its own warning, never folded into its action's total.
-      if (event.kind.startsWith('refused:')) {
-        toast({ title: 'Platform refused that write', credits, tone: 'warn', detail: 'A refused write still pays its processing fee.' })
-      } else {
-        toast({ ...spendToast(event), credits })
-      }
+      toastSpend(event, event.actualCredits ?? null)
       // The row first, then the balance: a refresh that lands before the row would let Settings →
       // Spend reconcile a balance with this write in it against a ledger without it.
       void recordSpend(event)

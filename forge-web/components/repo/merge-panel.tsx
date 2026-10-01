@@ -303,7 +303,8 @@ export function MergePanel({
   const cost = sumPreviews([
     // The repo has packs and the base branch has updates: neither builds a subtree (QW3-037).
     previewCreate('packManifest', {}, EXISTING),
-    previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate', {}, EXISTING),
+    // A base only lately protected may hold no protectedRefUpdate yet: its subtrees stay unknown.
+    baseProtected ? previewCreate('protectedRefUpdate') : previewCreate('refUpdate', {}, EXISTING),
     previewCreate('event'),
     ...(deleting ? [previewCreate('refUpdate', {}, EXISTING)] : []),
     ...closing.map(() => previewCreate('transition')),
@@ -332,19 +333,21 @@ export function MergePanel({
     begin(preAgreedCredits)
     const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : input.noFastForward ? ':no-ff' : ''}`
     try {
-      // The merge, and the branch delete and issue closes it goes on to, are one action: one toast with their total (QW3-039).
-      await spendAction({ running: `Merging #${pull.number}…`, done: `Merged #${pull.number}` }, async () => {
+      // The merge's writes are one action: one toast with their total (QW3-039). The merge panel is
+      // not modal, so its own signer marks them; a branch delete or issue close after it is its own.
+      await spendAction({ running: `Merging #${pull.number}…`, done: `Merged #${pull.number}`, failed: `Merge of #${pull.number} stopped part-way` }, async (tag) => {
+        const auth = tag(signer)
         const done = await runMergeSteps(
           {
             sdk,
-            auth: signer,
+            auth,
             repo,
             pull: { id: pull.id, number: pull.number, author: pull.author, baseRefName, openedBaseRefName: pull.baseRefName },
             input,
             merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
             upload,
             publishIndex: upload === null ? null : async (pack, packHash) => {
-              const r = await publishMergeIndex(sdk, signer, repo, pack, packHash, upload, `${intent}:index`)
+              const r = await publishMergeIndex(sdk, auth, repo, pack, packHash, upload, `${intent}:index`)
               return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
             },
             verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, (readers ?? { base: baseOnly }).base),
@@ -357,7 +360,7 @@ export function MergePanel({
             ...(bypass !== null && bypass.length > 0
               ? {
                   recordBypass: async (tip: string, eventIntent: string) =>
-                    (await recordPolicyBypass(sdk, signer, repo, { target: { id: pull.id, number: pull.number }, rules: bypass, mergeOid: tip, intent: eventIntent })).documentId,
+                    (await recordPolicyBypass(sdk, auth, repo, { target: { id: pull.id, number: pull.number }, rules: bypass, mergeOid: tip, intent: eventIntent })).documentId,
                 }
               : {}),
           },

@@ -36,6 +36,13 @@ const STEPS: readonly { step: ForkStep; label: string }[] = [
 
 type Progress = Partial<Record<ForkStep, { state: 'running' | 'done'; count?: string }>>
 
+/** A fork whose repo landed but that could copy no branches: some parent packs have no copy to point at. */
+class IncompleteFork extends Error {
+  constructor(readonly packs: number) {
+    super('fork incomplete')
+  }
+}
+
 /** What a fork takes from its parent, as on GitHub: its default branch and (editable) description. */
 export interface ForkDefaults {
   readonly defaultBranch: string
@@ -137,25 +144,28 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
     setError(null)
     setProgress({})
     try {
-      // Every document of the fork shows in one toast, with their total (QW3-039).
-      const result = await spendAction({ running: `Forking ${parent.name}…`, done: `Forked ${parent.name} as ${normalized}` }, () =>
-        forkRepoV2(sdk, signer, parent, { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch }, (p) =>
-          setProgress((prev) => ({
-            ...(prev ?? {}),
-            [p.step]: { state: p.state === 'start' ? 'running' : 'done', ...(p.total ? { count: `${p.done ?? 0} of ${p.total}` } : {}) },
-          })),
-        ),
+      // Every document of the fork shows in one toast, with their total (QW3-039). A fork that
+      // could copy no branches did not finish: its toast says so.
+      const result = await spendAction(
+        { running: `Forking ${parent.name}…`, done: `Forked ${parent.name} as ${normalized}`, failed: `Fork of ${parent.name} stopped part-way` },
+        async (tag) => {
+          const r = await forkRepoV2(sdk, tag(signer), parent, { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch }, (p) =>
+            setProgress((prev) => ({
+              ...(prev ?? {}),
+              [p.step]: { state: p.state === 'start' ? 'running' : 'done', ...(p.total ? { count: `${p.done ?? 0} of ${p.total}` } : {}) },
+            })),
+          )
+          if (r.unreferenceable.length > 0) throw new IncompleteFork(r.unreferenceable.length)
+          return r
+        },
       )
-      if (result.unreferenceable.length > 0) {
-        setError(
-          `Forked, but ${result.unreferenceable.length} of the parent's packs have no copy a fork can point at, so no branches were copied. Push your branches to the fork.`,
-        )
-        setPending(false)
-        return
-      }
       router.push(`/repo/?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`)
     } catch (e) {
-      setError(guard.failed(e))
+      setError(
+        e instanceof IncompleteFork
+          ? `Forked, but ${e.packs} of the parent's packs have no copy a fork can point at, so no branches were copied. Push your branches to the fork.`
+          : guard.failed(e),
+      )
       setPending(false)
     }
   }

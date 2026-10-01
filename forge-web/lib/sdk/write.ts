@@ -960,6 +960,8 @@ export interface WriteAuth {
   getSigningKeyWif(contractId?: string): string
   /** Told about every write that was charged (the local spend ledger listens here). */
   readonly onSpend?: (event: SpendEvent) => void
+  /** The user action this signer writes for (`lib/spend-toast.ts` `spendAction`). */
+  readonly spendAction?: string
 }
 
 /** The outcome of a write. A write that did not confirm throws {@link UnconfirmedWriteError}. */
@@ -1162,8 +1164,9 @@ function reportSpend(
   event: Omit<SpendEvent, 'actualCredits' | 'identityId' | 'network'>,
 ): void {
   if (!auth.onSpend) return
-  // The action open now made this write; its measurement may land after the action returned.
-  const action = currentSpendAction()
+  // The action that made this write: its signer's, else the (modal) one open now. Its
+  // measurement may land after the action returned.
+  const action = auth.spendAction ?? currentSpendAction()
   void measureActual(sdk, auth.identityId, event.balanceBefore).then((actualCredits) =>
     auth.onSpend?.({ ...event, identityId: auth.identityId, network: auth.network, actualCredits, ...(action !== null ? { action } : {}) }),
   )

@@ -1295,13 +1295,15 @@ describe('spend measurement across back-to-back writes (D-2)', () => {
     const chain = laggingChain([500n, 600n, 900n])
     const spends: SpendEvent[] = []
     await inSpendScope('action:fork', async () => {
-      for (const t of ['repo', 'refUpdate']) await createDocumentIdempotent(chain.sdk, auth(spends), doc(t, 'D2t'))
+      await createDocumentIdempotent(chain.sdk, auth(spends), doc('repo', 'D2t'))
+      // A signer that names its own action (one running beside the dialog) keeps it.
+      await createDocumentIdempotent(chain.sdk, { ...auth(spends), spendAction: 'action:merge' }, doc('refUpdate', 'D2t'))
     })
     // Outside any action now: the action's last write still reports under it.
     await measurementsSettled()
     await createDocumentIdempotent(chain.sdk, auth(spends), doc('packManifest', 'D2t'))
     for (let i = 0; i < 3; i++) await reported()
-    expect(spends.map((s) => s.action)).toEqual(['action:fork', 'action:fork', undefined])
+    expect(spends.map((s) => s.action)).toEqual(['action:fork', 'action:merge', undefined])
   })
 
   it('a balance read from a node still behind an earlier write is not taken for the next write’s', async () => {

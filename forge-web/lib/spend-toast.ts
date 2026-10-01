@@ -1,11 +1,11 @@
 /**
- * The toast each charged write shows (`ux-dx-spec.md` §4 rule 2): its title, and the group that
- * folds one action's several writes into one toast (`hooks/use-toasts`).
+ * The toast each charged write shows (`ux-dx-spec.md` §4 rule 2): its title, and the one toast
+ * an action of several writes shows for all of them (`hooks/use-toasts`).
  */
 
-import { useToasts } from '../hooks/use-toasts'
-import { currentSpendAction, inSpendScope } from './sdk/spend-scope'
-import { measurementsSettled, type SpendEvent } from './sdk/write'
+import { toast, useToasts } from '../hooks/use-toasts'
+import { inSpendScope } from './sdk/spend-scope'
+import { measurementsSettled, type SpendEvent, type WriteAuth } from './sdk/write'
 
 /** A write kind (`create:issue`) → the toast title. */
 const SPEND_TITLES: Readonly<Record<string, string>> = {
@@ -73,20 +73,23 @@ export function spendTitle(kind: string): string {
   return SPEND_TITLES[kind] ?? VERB_TITLES[kind.split(':')[0] ?? ''] ?? 'Write confirmed'
 }
 
-/** What one action's toast says: while it runs (two writes on), and once it ended. */
+/** What one action's toast says while its writes land, and once it ended. */
 export interface SpendActionLabels {
-  /** While its writes land: "Forking dips…". */
-  readonly running: string
-  /** Once every write landed: "Forked dips". */
+  /** While its writes land ("Forking dips…"); absent, the latest write's own title. */
+  readonly running?: string
+  /** Once every write landed ("Forked dips"); an action of one write keeps that write's title. */
   readonly done: string
+  /** When it failed after some of its writes landed; "Stopped part-way" when absent. */
+  readonly failed?: string
 }
 
 interface ActionState {
   readonly labels: SpendActionLabels
-  /** The writes reported so far. */
+  /** The writes reported so far, and their charges together (null once one was unreadable). */
   writes: number
-  /** The first write's own title: an action of one write keeps it. */
-  first: string | null
+  credits: number | null
+  /** The latest write's own title. */
+  last: string | null
   ended: 'ok' | 'failed' | null
 }
 
@@ -95,30 +98,45 @@ let actionSeq = 0
 /** How long an ended action still takes a straggling report (a measurement past its wait). */
 const STRAGGLER_MS = 60_000
 
-/** The title (and tone) of an ended action's toast. */
-function endedToast(s: ActionState): { title: string; tone?: 'warn'; detail?: string } {
-  if (s.writes <= 1) return { title: s.first ?? s.labels.done }
-  if (s.ended === 'failed') {
-    return { title: `${s.labels.running.replace(/…$/, '')} stopped part-way`, tone: 'warn', detail: 'Not every write landed; the ones that did are charged.' }
-  }
-  return { title: s.labels.done }
+/** Make a signer's writes belong to an action: `tag(signer)` is the signer to write with. */
+export type TagSigner = <A extends WriteAuth>(auth: A) => A
+
+/** An action's title for now. */
+function actionTitle(s: ActionState): string {
+  if (s.ended === null) return s.labels.running ?? s.last ?? s.labels.done
+  if (s.ended === 'failed') return s.labels.failed ?? 'Stopped part-way'
+  return s.writes === 1 ? (s.last ?? s.labels.done) : s.labels.done
+}
+
+/** The toast of an action, with every write's charge so far. */
+function showAction(id: string, s: ActionState): void {
+  useToasts.getState().show({
+    group: id,
+    title: actionTitle(s),
+    credits: s.credits,
+    writes: s.writes,
+    pending: s.ended === null,
+    ...(s.ended === 'failed' ? { tone: 'warn' as const, detail: 'Not every write landed; the ones that did are charged.' } : {}),
+  })
 }
 
 /**
  * Run one user action that may sign several writes (a fork, a Settings save, a merge) so its
  * writes show one toast with their total (QW3-039: a 32-write fork toasted only its last write,
- * "Write confirmed · 0.000671 DASH"). While it runs the toast reads `labels.running`; once the
- * action returned and its last charge was measured, `labels.done`, or the write's own title when
- * there was only one ("Comment edited"). An action inside another is part of it.
+ * "Write confirmed · 0.000671 DASH"). The writes that belong to it are those signed with
+ * `tag(signer)`, or, with `scope` (a modal dialog, where nothing else on the page writes
+ * meanwhile), every write reported while it runs. The total is kept here, not in the toast, so a
+ * toast dismissed or timed out mid-way still ends with the whole sum. Once the action returned
+ * and its last charge was measured, the toast reads `labels.done` (or `labels.failed`).
  */
-export async function spendAction<T>(labels: SpendActionLabels, run: () => Promise<T>): Promise<T> {
-  if (currentSpendAction() !== null) return run()
+export async function spendAction<T>(labels: SpendActionLabels, run: (tag: TagSigner) => Promise<T>, opts: { scope?: boolean } = {}): Promise<T> {
   const id = `action:${++actionSeq}`
-  const state: ActionState = { labels, writes: 0, first: null, ended: null }
+  const state: ActionState = { labels, writes: 0, credits: 0, last: null, ended: null }
   actions.set(id, state)
+  const tag: TagSigner = (auth) => ({ ...auth, spendAction: id })
   let ok = false
   try {
-    const result = await inSpendScope(id, run)
+    const result = opts.scope ? await inSpendScope(id, () => run(tag)) : await run(tag)
     ok = true
     return result
   } finally {
@@ -130,28 +148,27 @@ async function endAction(id: string, state: ActionState, ok: boolean): Promise<v
   // The action's last write is reported once its charge is measured, after it returned.
   await measurementsSettled()
   state.ended = ok ? 'ok' : 'failed'
-  if (state.writes > 0) useToasts.getState().settle(id, endedToast(state))
+  if (state.writes > 0) showAction(id, state)
   setTimeout(() => actions.delete(id), STRAGGLER_MS)
 }
 
 /**
- * A write's toast title, and the group that folds an action's writes into one toast: a write
- * made inside {@link spendAction} joins that action's toast (a repo's creation, QW2-034; a fork,
- * a Settings save, QW3-039). Any other write is its own toast.
+ * Toast a charged write (`ux-dx-spec.md` §4 rule 2): one of an action's writes joins its toast
+ * and total; any other is its own toast. A refused write is always its own warning.
  */
-export function spendToast(event: Pick<SpendEvent, 'kind' | 'action'>): {
-  title: string
-  group?: string
-  pending?: boolean
-  tone?: 'warn'
-  detail?: string
-} {
-  const action = event.action === undefined ? undefined : actions.get(event.action)
-  if (event.action !== undefined && action !== undefined) {
-    action.writes += 1
-    if (action.first === null) action.first = spendTitle(event.kind)
-    if (action.ended !== null) return { ...endedToast(action), group: event.action, pending: false }
-    return { title: action.labels.running, group: event.action, pending: true }
+export function toastSpend(event: Pick<SpendEvent, 'kind' | 'action'>, credits: number | null): void {
+  if (event.kind.startsWith('refused:')) {
+    toast({ title: 'Platform refused that write', credits, tone: 'warn', detail: 'A refused write still pays its processing fee.' })
+    return
   }
-  return { title: spendTitle(event.kind) }
+  const id = event.action
+  const state = id === undefined ? undefined : actions.get(id)
+  if (id === undefined || state === undefined) {
+    toast({ title: spendTitle(event.kind), credits })
+    return
+  }
+  state.writes += 1
+  state.credits = state.credits === null || credits === null ? null : state.credits + credits
+  state.last = spendTitle(event.kind)
+  showAction(id, state)
 }

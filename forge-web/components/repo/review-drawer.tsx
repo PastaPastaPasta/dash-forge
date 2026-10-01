@@ -244,8 +244,8 @@ export function ReviewDrawer({
     setProgress({ done: 0, total: documents })
     try {
       // The review and its inline comments are one action: one toast with their total (QW3-039).
-      const r = await spendAction({ running: 'Submitting the review…', done: 'Review submitted' }, () =>
-        submitReviewDraft(sdk, signer, repo, toSubmit, { isMember, locked }, (p) => setProgress(p)),
+      const r = await spendAction({ running: 'Submitting the review…', done: 'Review submitted', failed: 'Review submitted part-way' }, (tag) =>
+        submitReviewDraft(sdk, tag(signer), repo, toSubmit, { isMember, locked }, (p) => setProgress(p)),
       )
       update(null)
       setOpen(false)
