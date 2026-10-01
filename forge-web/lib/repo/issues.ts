@@ -504,6 +504,41 @@ export function sharedRepoFeed(repo: RepoRef): Promise<Map<string, TargetLog> | 
   return live(hit) ? hit!.promise : undefined
 }
 
+/**
+ * Feed pages (after the first, which rides the issue index's first composite) an issue list's page
+ * 1 reads for its pinned issues before it leaves them to be asked for (QW3-003: the dash mirror's
+ * import grew its feed to 9 pages, read on every cold load).
+ */
+export const PIN_FEED_PAGES = 2
+
+/**
+ * The repo's feed when it ends within `maxPages` pages (`first`, the composite's first page, is
+ * page 1), shared as {@link readRepoFeedFrom}'s would be; `'long'` when it runs longer, with
+ * nothing cached (a full read later still reads it). A feed another reader has is joined.
+ */
+export async function readShortRepoFeed(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  first: readonly PlainDocument[] | undefined,
+  epoch: number,
+  maxPages: number,
+): Promise<Map<string, TargetLog> | null | 'long'> {
+  const shared = sharedRepoFeed(repo)
+  if (shared !== undefined) return shared
+  let docs: PlainDocument[]
+  try {
+    docs = await queryAllDocuments(sdk, feedQuery(repo), { maxPages, firstPage: first })
+  } catch (e) {
+    if (e instanceof IncompleteReadError) return 'long'
+    throw e
+  }
+  const log = await toLog(repo, docs, [])
+  const feed = groupFeed(log.events, [])
+  // Shared like a full read's, unless a write landed meanwhile.
+  if (epoch === repoEpoch(repo)) return ttlCached(feedCache, pageKey(repo), () => Promise.resolve(feed))
+  return feed
+}
+
 async function readRepoFeed(sdk: EvoSDK, repo: RepoRef, first: readonly PlainDocument[] | undefined): Promise<Map<string, TargetLog> | null> {
   try {
     const docs = await queryAllDocuments(sdk, feedQuery(repo), { maxPages: FEED_MAX_PAGES, firstPage: first })

@@ -48,13 +48,18 @@ vi.mock('@/lib/view', async (importOriginal) => {
 
 const asked: PullSelection[] = []
 let answer: PullListPage
+/** Answers for the next reads, in order (then `answer`). */
+let answers: PullListPage[] = []
+/** Set to hold every read after the first until it resolves. */
+let laterGate: Promise<void> | null = null
 vi.mock('@/lib/repo', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/lib/repo')>()
   return {
     ...real,
     queryPulls: async (_sdk: unknown, _repo: unknown, q: PullSelection) => {
       asked.push(q)
-      return answer
+      if (asked.length > 1 && laterGate) await laterGate
+      return answers.shift() ?? answer
     },
   }
 })
@@ -126,6 +131,8 @@ beforeEach(() => {
   dotReads.length = 0
   replaced.length = 0
   asked.length = 0
+  answers = []
+  laterGate = null
   answer = {
     rows: [
       row(203, { comments: 2, state: { open: true, merged: false, draft: false, baseRef: null, labels: ['bug'], assignees: [], mergeOnBase: null } }),
@@ -176,7 +183,7 @@ describe('PullsContent (L-44)', () => {
     await render()
     expect(el.textContent).toContain('None among the newest 397 pull requests')
     expect(el.textContent).not.toContain('No open pull requests')
-    expect(el.querySelector('[data-testid="list-read-budget"]')?.textContent).toContain('Read the newest 397 of 1766 pull requests; older ones are not read yet.')
+    expect(el.querySelector('[data-testid="list-read-budget"]')?.textContent).toContain('Read the newest 397 of 1,766 pull requests; older ones are not read yet.')
     // "Look through older" asks the same page again (the index reads on from where it stopped).
     answer = { ...answer, rows: [row(30), row(29)], searchedOf: null }
     act(() => button('Look through older pull requests').click())
@@ -185,6 +192,51 @@ describe('PullsContent (L-44)', () => {
     expect(asked[1]).toEqual(asked[0])
     expect([...el.querySelectorAll('[data-testid="pull-row"]')].map((r) => r.getAttribute('data-number'))).toEqual(['30', '29'])
     expect(el.querySelector('[data-testid="list-read-budget"]')).toBeNull()
+  })
+
+  it('digit-groups the tab counts as the rest of the UI does (QW3-058)', async () => {
+    answer = { ...answer, counts: { open: 8, merged: 4309, closed: 594 } }
+    await render()
+    expect(tabs()).toEqual(['8 Open', '4,309 Merged', '594 Closed', 'All'])
+  })
+
+  it('a sparse tab finding its older rows through the state scan reads on by itself until it has them (QW3-002)', async () => {
+    // The first load found the newest open PRs; the proved count says one more is older.
+    const first: PullListPage = { ...answer, rows: [row(5615), row(5614)], matching: 3, hasNext: false, counts: { open: 3, merged: 4309, closed: 594 }, searchedOf: { searched: 880, total: 4911, more: true, kind: 'scan', auto: true } }
+    answers = [first]
+    answer = { ...first, rows: [row(5615), row(5614), row(4604)], searchedOf: null }
+    await render()
+    await settle()
+    // It asked again by itself, with no click, for the same page, and then stopped.
+    expect(asked).toHaveLength(2)
+    expect(asked[1]).toEqual(asked[0])
+    expect([...el.querySelectorAll('[data-testid="pull-row"]')].map((r) => r.getAttribute('data-number'))).toEqual(['5615', '5614', '4604'])
+    expect(el.querySelector('[data-testid="list-read-budget"]')).toBeNull()
+    await settle()
+    expect(asked).toHaveLength(2)
+  })
+
+  it('while a sparse tab reads on, its rows stay and its note says how far it got, with no button to press', async () => {
+    answer = { ...answer, rows: [row(5615)], matching: 3, hasNext: false, counts: { open: 3, merged: 4309, closed: 594 }, searchedOf: { searched: 880, total: 4911, more: true, kind: 'scan', auto: true } }
+    laterGate = new Promise(() => undefined)
+    await render()
+    await settle()
+    expect(asked).toHaveLength(2)
+    expect([...el.querySelectorAll('[data-testid="pull-row"]')].map((r) => r.getAttribute('data-number'))).toEqual(['5615'])
+    const note = el.querySelector('[data-testid="list-read-budget"]')
+    expect(note?.getAttribute('role')).toBe('status')
+    expect(note?.textContent).toContain('Finding the older pull requests in this tab: checked about 880 of 4,911 pull requests so far')
+    expect(button('Look through older pull requests')).toBeUndefined()
+  })
+
+  it('a sort by comments says how many it sorted and reads on when asked (QW3-004)', async () => {
+    answer = { ...answer, searchedOf: { searched: 397, total: 4911, more: true, kind: 'sort' } }
+    search = 'sort=comments&state=all'
+    await render()
+    expect(el.querySelector('[data-testid="list-read-budget"]')?.textContent).toContain('Sorted the newest 397 of 4,911 pull requests by comments; older ones are not read yet.')
+    act(() => button('Look through older pull requests').click())
+    await settle()
+    expect(asked).toHaveLength(2)
   })
 
   it("shows each head's CI status dot after the rows, from one read for the page (O-07)", async () => {

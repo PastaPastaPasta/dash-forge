@@ -11,9 +11,11 @@
  *    label definitions and the first 100 rows of the repo's member `event` feed; and beside it
  *    one proved sum query for those issues' state codes (`transition.perTarget`), and the three
  *    proved counts.
- * 2. **The rest of the event feed**, for page 1's pinned issues (a pin can be on any issue) and
- *    for a label, assignee or milestone filter, read once per repo and shared with the pull index
- *    (`readRepoFeedFrom`); a row's own labels never wait for it.
+ * 2. **The rest of the event feed**, for a label, assignee or milestone filter, read once per repo
+ *    and shared with the pull index (`readRepoFeedFrom`); and for page 1's pinned issues (a pin
+ *    can be on any issue, and only the feed finds it) when it is short (`PIN_FEED_PAGES`) or
+ *    asked for (`pins`): a mirror's feed runs to thousands of label events (QW3-003). A row's own
+ *    labels never wait for it.
  * 3. **More issues on demand**: a keyset composite per 100 (`$createdAt <=` the oldest loaded,
  *    newest first; `>=` the newest loaded for the oldest-first sort), each with its sum query,
  *    and `$id in` composites for issues the feed names but no loaded chunk holds. An unfiltered
@@ -31,8 +33,8 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import type { RepoRef } from './contract'
-import { countsSettled, issueViewOf, type IssueView } from './issues'
-import { ISSUE_CLOSE } from '../rules/transition'
+import { PIN_FEED_PAGES, countsSettled, issueViewOf, readShortRepoFeed, type IssueView } from './issues'
+import { ISSUE_CLOSE, statusOfCode } from '../rules/transition'
 import type { LabelDef } from './labels'
 import { foldThreadMetaV2, pinnedTargets } from '../rules/parity'
 import { searchableBody, trustedOrigin } from './provenance'
@@ -48,6 +50,7 @@ import {
   logsVerified,
   matchingOf,
   metaCandidates,
+  openShare,
   pageOf,
   pageWalk,
   repoCountsOf,
@@ -55,6 +58,8 @@ import {
   rowsInAnyState,
   rowsOf,
   rowsWithEvent,
+  scanCheaper,
+  scanSelect,
   searchedOfPage,
   selectRows,
   shownRows,
@@ -193,6 +198,12 @@ export interface IssueListPage {
    * pin first: page 1 shows them above the list. Empty past page 1 or when the feed is too large.
    */
   readonly pinned: readonly IssueRow[]
+  /**
+   * Page 1 did not read its pinned issues: the repo's member-event feed (the only place a pin is
+   * found) is longer than a page load reads for them (`PIN_FEED_PAGES`). Query again with `pins`
+   * to read it.
+   */
+  readonly pinsUnread: boolean
   readonly labels: readonly LabelDef[]
   readonly hidden: number
   /** `hidden` by reason (private repos: shown to maintainers). */
@@ -328,11 +339,12 @@ function stateCount(state: IssueSelection['state'], open: number | null, closed:
 /**
  * One page of the issue list for `q`, reading only what it needs: the first chunk (with the
  * proved counts beside it), then, unfiltered, keyset chunks until the page is full or every issue
- * the tab's count allows is held (at most `PAGE_CHUNKS` per load), or the Closed tab's
- * transitions when that is cheaper; filtered, feed-named candidates by id or up to 30 chunks (a
- * search, reported through `onProgress`); a sort by comments reads every chunk up to 30. Page 1
- * reads the feed for its pinned issues beside the list. `total` is the repo's issue count (the
- * countable index), or null when it is not known.
+ * the tab's count allows is held (at most `PAGE_CHUNKS` per load), or a sparse tab's rows through
+ * the state scan or the Closed tab's transitions when that is cheaper; filtered, feed-named
+ * candidates by id or up to `PAGE_CHUNKS` chunks per load (a search, reported through
+ * `onProgress`, read on when asked); a sort by comments the same. Page 1 reads its pinned issues
+ * beside the list when the feed is short, or when asked (`pins`). `total` is the repo's issue
+ * count (the countable index), or null when it is not known.
  */
 export async function queryIssues(
   sdk: EvoSDK,
@@ -340,27 +352,44 @@ export async function queryIssues(
   q: IssueSelection,
   total: number | null,
   network: Network = DEFAULT_NETWORK,
-  { onProgress }: ListOptions = {},
+  { onProgress, pins = false }: ListOptions & { readonly pins?: boolean } = {},
 ): Promise<IssueListPage> {
   const index = await indexOf(sdk, repo, network, { withCounts: true })
-  const pinned = q.page === 1 ? pinnedRows(sdk, index) : Promise.resolve([])
+  const pinned = q.page === 1 ? pinnedRows(sdk, index, pins) : Promise.resolve([])
   pinned.catch(() => undefined)
   const filtered = selectionFiltered(q)
   const needLogs = eventFiltered(q)
   if (needLogs) await feedOf(sdk, index)
   const bound = await repoCountsOf(sdk, index)
   const walk = pageWalk(q, filtered)
+  const tab = tabBound(bound, index, q.state)
+  // A sparse tab through the state scan when the proved counts say that is cheaper than walking
+  // (QW3-002; the PR list's Open tab is the usual one).
+  const byScan = !filtered && bound !== null && tab !== null && countsSettled(repo) && scanCheaper(index, walk, tab, bound, q.state !== 'closed')
   const byState = q.state === 'closed' && candidatesCheaper(index, walk, tabBound(bound, index, 'closed'), bound?.issues ?? null)
-  const selected = await selectRows(sdk, index, {
-    ...walk,
-    candidates: await candidatesFor(sdk, index, q, byState),
-    matches: (r) => stateMatches(r, q.state) && rowMatches(r, q),
-    cmp: compareRows(q.sort),
-    // The walk stops at the tab's proved count (never a filter's), once it includes this browser's own writes.
-    known: () => (filtered || !countsSettled(repo) ? null : tabBound(bound, index, q.state)),
-    needLogs,
-    onProgress,
-  })
+  const selected = byScan
+    ? await scanSelect(sdk, index, {
+        inTab: (code) => q.state === 'all' || statusOfCode(code).open === (q.state === 'open'),
+        matches: (r) => stateMatches(r, q.state),
+        cmp: compareRows(q.sort),
+        direction: walk.direction,
+        want: walk.want + 1,
+        known: tab,
+        max: bound.issues + bound.patches,
+        typeTotal: bound.issues,
+        openShare: openShare(bound, bound.issuesOpen),
+        onProgress,
+      })
+    : await selectRows(sdk, index, {
+        ...walk,
+        candidates: await candidatesFor(sdk, index, q, byState),
+        matches: (r) => stateMatches(r, q.state) && rowMatches(r, q),
+        cmp: compareRows(q.sort),
+        // The walk stops at the tab's proved count (never a filter's), once it includes this browser's own writes.
+        known: () => (filtered || !countsSettled(repo) ? null : tabBound(bound, index, q.state)),
+        needLogs,
+        onProgress,
+      })
 
   // Tab counts under the current filters: exact when the whole candidate set is known.
   let openCount: number | null = null
@@ -379,18 +408,19 @@ export async function queryIssues(
   }
 
   const page = pageOf(selected.rows, q.page, q.pageSize)
-  // Page 1 reads the feed for its pins: the shown rows take their events from it, not a read of their own.
-  const pins = await pinned
+  // Page 1 reads the feed for its pins when it is short: the shown rows then take their events from it.
+  const pinnedNow = await pinned
   const rows = await shownRows(sdk, index, page.rows)
   return {
     rows,
-    pinned: pins,
+    pinned: pinnedNow ?? [],
+    pinsUnread: pinnedNow === null,
     matching: matchingOf(selected, filtered, stateCount(q.state, openCount, closedCount)),
     hasNext: page.hasNext,
     openCount,
     closedCount,
     searchedOf: searchedOfPage(selected, total),
-    stateComplete: logsVerified(index, [...rows, ...pins]),
+    stateComplete: logsVerified(index, [...rows, ...(pinnedNow ?? [])]),
     labels: index.labels,
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
@@ -411,10 +441,20 @@ async function candidatesFor(sdk: EvoSDK, index: IssueIndex, q: IssueSelection, 
   return named ?? (byState ? transitionTargets(sdk, index, [ISSUE_CLOSE]) : null)
 }
 
-/** The repo's pinned issues, newest pin first (from the feed; one `$id in` read for any not loaded yet). */
-async function pinnedRows(sdk: EvoSDK, index: IssueIndex): Promise<IssueRow[]> {
+/**
+ * The repo's pinned issues, newest pin first (from the feed; one `$id in` read for any not loaded
+ * yet), or null when they were not read: no index finds a pin but the whole member-event feed, so
+ * a page reads it for them only when it is short ({@link PIN_FEED_PAGES}), already read, or asked
+ * for (`full`). A feed too large to read completely at all leaves them unread too.
+ */
+async function pinnedRows(sdk: EvoSDK, index: IssueIndex, full: boolean): Promise<IssueRow[] | null> {
+  if (!full && index.feedRead === undefined) {
+    const short = await readShortRepoFeed(sdk, index.repo, index.feedFirst, index.epoch, 1 + PIN_FEED_PAGES)
+    if (short === 'long') return null
+  }
+  // Shared by now (or asked for): no second read of a feed the short read just read.
   const feed = await feedOf(sdk, index)
-  if (feed === null) return []
+  if (feed === null) return null
   const ids = pinnedTargets([...feed.values()].flatMap((log) => log.events)).map((p) => p.targetId)
   if (ids.length === 0) return []
   await resolveIds(sdk, index, ids)

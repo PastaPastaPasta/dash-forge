@@ -17,7 +17,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { CheckCircle2, CircleDot, MessageSquarePlus, Pin, X } from 'lucide-react'
@@ -80,6 +80,7 @@ import {
   budgetEmptyTitle,
   readingLabel,
   tabCount,
+  useAutoReadOn,
   useListQuery,
   useReadProgress,
   type ListGrammar,
@@ -121,6 +122,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const awaitingTrust = query.authorLogin !== null && trust === null
   // How many issues a walk (a search, or "look through older") has read so far, while it reads.
   const { progress, track } = useReadProgress()
+  // Pinned issues on a repo whose member-event feed is long are read when asked (QW3-003).
+  const [pinsAsked, setPinsAsked] = useState(false)
+  // Read by the list's read itself: asking re-reads with the list kept on screen, not reset.
+  const pinsAskedRef = useRef(false)
   const { data, loading, error, reload } = useAsync<IssueListPage>(
     async (signal) => {
       const me = identity ?? ''
@@ -137,11 +142,14 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         pageSize: ISSUE_PAGE_SIZE,
         ...rowFiltersOf(query, trust),
       }
-      return track(signal, (options) => queryIssues(sdk!, home.repo, selection, totals, network, options))
+      return track(signal, (options) => queryIssues(sdk!, home.repo, selection, totals, network, { ...options, pins: pinsAskedRef.current }))
     },
     [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', totals ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
+
+  // A sparse tab finding its older rows through the state scan reads on by itself (QW3-002).
+  useAutoReadOn(data?.searchedOf, loading, reload)
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
   const empty = data !== null && data.rows.length === 0
@@ -163,6 +171,32 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       <AuthorLoginNote login={query.authorLogin} notFound={search.notFound} />
 
       <MirrorNote home={home} kind="issue" />
+
+      {data && data.pinsUnread && query.page === 1 ? (
+        <p className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="pins-unread">
+          <Pin className="h-3.5 w-3.5" aria-hidden />
+          <span>
+            {!pinsAsked
+              ? "This repository's activity log is long, so pinned issues are not checked on every load."
+              : loading
+                ? 'Checking for pinned issues…'
+                : "This repository's activity log is too long to find its pinned issues."}
+          </span>
+          {pinsAsked ? null : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                pinsAskedRef.current = true
+                setPinsAsked(true)
+                reload()
+              }}
+            >
+              Check for pinned issues
+            </Button>
+          )}
+        </p>
+      ) : null}
 
       {data && data.pinned.length > 0 ? (
         <ul aria-label="Pinned issues" className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3" data-testid="pinned-issues">
@@ -234,8 +268,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own issues, assignments and mentions.</p>
-        ) : (loading || awaitingTrust) && !data ? (
-          <LoadingBlock label={readingLabel('issues', progress, totals)} />
+        ) : ((loading || awaitingTrust) && !data) || (empty && data?.searchedOf?.auto) ? (
+          <LoadingBlock label={readingLabel('issues', progress ?? data?.searchedOf?.searched ?? null, totals)} />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
         ) : lastPage !== null ? (
