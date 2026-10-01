@@ -4,10 +4,9 @@
  * Toasts — the post-write actuals (`ux-dx-spec.md` §4 rule 2): "Issue #43 created · 0.00038
  * DASH". A tiny global queue; `<Toaster>` in the app shell renders it.
  *
- * One action that signs several writes (a repo's creation: its repo, maintainer and config
- * documents) shows one toast for all of them: a toast pushed with the `group` of one still showing
- * takes its place, with the writes' credits summed (QW2-034: "Repository created · 0.000817 DASH"
- * gave the first write's cost for a 0.001652 DASH create).
+ * One action that signs several writes (a repo's creation, a fork) shows one toast for all of
+ * them (`lib/spend-toast.ts`): `show` puts its latest state, total included, in the place of its
+ * group's toast (QW2-034, QW3-039).
  */
 
 import { create } from 'zustand'
@@ -19,7 +18,7 @@ export interface Toast {
   readonly credits?: number | null
   readonly tone?: 'ok' | 'warn' | 'error'
   readonly detail?: string
-  /** One action's writes share a group: a later one updates the same toast. */
+  /** One action's toast: a later `show` of the group updates it in place. */
   readonly group?: string
   /** How many writes the toast totals (1 unless grouped). */
   readonly writes?: number
@@ -29,23 +28,20 @@ export interface Toast {
 
 interface ToastState {
   readonly toasts: readonly Toast[]
-  push: (t: Omit<Toast, 'id' | 'writes'>) => void
+  push: (t: Omit<Toast, 'id' | 'writes' | 'group'>) => void
+  /** Show a group's toast as `t` (its figures as given), in place of the one showing, if any. */
+  show: (t: Omit<Toast, 'id'> & { readonly group: string }) => void
   dismiss: (id: number) => void
 }
 
 let next = 1
 const TOAST_MS = 8000
 /**
- * A grouped toast waits this long for its action's next write: one step of a repo's creation (its
- * reads, broadcast, confirmation and charge measurement) takes longer than a plain toast shows.
+ * An action's toast waits this long for its next write: one step of a fork (its reads, broadcast,
+ * confirmation and charge measurement) takes longer than a plain toast shows.
  */
 const GROUP_WAIT_MS = 60_000
 const timers = new Map<number, ReturnType<typeof setTimeout>>()
-
-/** Two writes' credits together; unknown when either could not be read. */
-function sumCredits(a: number | null | undefined, b: number | null | undefined): number | null {
-  return a == null || b == null ? null : a + b
-}
 
 export const useToasts = create<ToastState>((set, get) => {
   const expire = (id: number, ms: number): void => {
@@ -61,15 +57,15 @@ export const useToasts = create<ToastState>((set, get) => {
   return {
     toasts: [],
     push: (t) => {
-      const prev = t.group === undefined ? undefined : get().toasts.find((x) => x.group === t.group)
-      if (prev) {
-        const merged: Toast = { ...t, id: prev.id, credits: sumCredits(prev.credits, t.credits), writes: (prev.writes ?? 1) + 1 }
-        set((s) => ({ toasts: s.toasts.map((x) => (x.id === prev.id ? merged : x)) }))
-        expire(prev.id, t.pending ? GROUP_WAIT_MS : TOAST_MS)
-        return
-      }
       const id = next++
       set((s) => ({ toasts: [...s.toasts.slice(-3), { ...t, id, writes: 1 }] }))
+      expire(id, t.pending ? GROUP_WAIT_MS : TOAST_MS)
+    },
+    show: (t) => {
+      const prev = get().toasts.find((x) => x.group === t.group)
+      const id = prev?.id ?? next++
+      const shown: Toast = { ...t, id }
+      set((s) => (prev ? { toasts: s.toasts.map((x) => (x.id === id ? shown : x)) } : { toasts: [...s.toasts.slice(-3), shown] }))
       expire(id, t.pending ? GROUP_WAIT_MS : TOAST_MS)
     },
     dismiss: (id) => {
@@ -81,11 +77,6 @@ export const useToasts = create<ToastState>((set, get) => {
 })
 
 /** Push a toast from outside React. */
-export function toast(t: Omit<Toast, 'id' | 'writes'>): void {
+export function toast(t: Omit<Toast, 'id' | 'writes' | 'group'>): void {
   useToasts.getState().push(t)
-}
-
-/** The toast of `group` still showing, if any. */
-export function liveToast(group: string): Toast | undefined {
-  return useToasts.getState().toasts.find((x) => x.group === group)
 }

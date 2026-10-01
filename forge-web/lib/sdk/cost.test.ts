@@ -13,6 +13,8 @@ import {
   estimateCreateCredits,
   previewCreate,
   previewDelete,
+  previewReplace,
+  REPLACE_MIN_CREDITS,
   sumPreviews,
   type FirstWrite,
   typicalIssueCredits,
@@ -67,12 +69,35 @@ const MEASURED: ReadonlyArray<readonly [string, string, Record<string, unknown>,
   ['patch, repo first', 'patch', { title: t(10), ...PR }, { ...S, repo: true, sourceRef: true }, 116_227_740],
   ['patch, steady', 'patch', { title: t(10), ...PR }, S, 72_324_740],
   ['patch, new source branch', 'patch', { title: t(10), ...PR, sourceRefName: 'refs/heads/feat2' }, { ...S, sourceRef: true }, 82_114_280],
-  ['review, PR first', 'review', {}, { ...S, target: true }, 41_920_980],
-  ['review, PR first', 'review', {}, { ...S, target: true }, 40_152_240],
-  ['review, steady', 'review', {}, S, 35_876_380],
   ['release, repo first', 'release', { tagName: 'v0.0.1' }, { ...S, repo: true }, 64_004_880],
   ['release, steady', 'release', { tagName: 'v0.0.2' }, S, 53_342_700],
   ['release + 200 B notes', 'release', { tagName: 'v0.0.3', notes: t(200) }, S, 58_413_140],
+  // Bonsia (drive 4.2.0-beta.7, QA wave 3, 2026-09-30; Settings → Spend balance deltas, QW3-037).
+  // A review there costs more than on moutai (35.9M steady), which these replace.
+  ['bonsia review, steady', 'review', {}, S, 49_900_000],
+  ['bonsia review, steady', 'review', {}, S, 49_600_000],
+  ['bonsia review, PR first', 'review', {}, { ...S, target: true }, 69_700_000],
+  ['bonsia review, PR first and first forge-collab write', 'review', {}, { ...S, target: true, contract: true }, 78_000_000],
+  ['bonsia transition, steady', 'transition', {}, S, 54_000_000],
+  ['bonsia transition, steady', 'transition', {}, S, 47_300_000],
+  ['bonsia transition, thread first', 'transition', {}, { ...S, target: true }, 63_000_000],
+  ['bonsia transition, thread and repo first', 'transition', {}, { ...S, target: true, repo: true }, 74_200_000],
+  ['bonsia label', 'label', { name: 'bug', color: 'd73a4a' }, S, 35_100_000],
+  ['bonsia label', 'label', { name: 'bug', color: 'd73a4a' }, S, 33_800_000],
+  ['bonsia label, repo first', 'label', { name: 'bug', color: 'd73a4a' }, { ...S, repo: true }, 41_800_000],
+  ['bonsia config, a later one', 'config', { defaultBranch: 'main' }, S, 28_100_000],
+  ['bonsia config, a later one', 'config', { defaultBranch: 'main' }, S, 27_400_000],
+  ['bonsia config, the repo\'s first', 'config', { defaultBranch: 'main' }, { ...S, repo: true }, 35_600_000],
+  ['bonsia refUpdate, an existing ref', 'refUpdate', { refName: 'refs/heads/feature-ff' }, S, 59_000_000],
+  ['bonsia refUpdate, a new ref name', 'refUpdate', { refName: 'refs/heads/feature-ff' }, { ...S, target: true }, 66_400_000],
+  ['bonsia refUpdate, the repo\'s first', 'refUpdate', { refName: 'refs/heads/master' }, { ...S, target: true, repo: true }, 89_400_000],
+  ['bonsia packManifest', 'packManifest', { uris: [t(209)] }, S, 85_800_000],
+  ['bonsia packManifest, the repo\'s first', 'packManifest', { uris: [t(209)] }, { ...S, repo: true }, 134_300_000],
+  ['bonsia topic', 'topic', { name: 'dash' }, S, 62_600_000],
+  ['bonsia topic, the repo\'s first', 'topic', { name: 'dash' }, { ...S, repo: true }, 72_900_000],
+  ['bonsia webhook', 'webhook', { url: 'https://example.org/qa3-cli-hook2', events: ['push'] }, S, 77_200_000],
+  ['bonsia webhook, the repo\'s first', 'webhook', { url: 'https://example.org/qa3-hook', events: ['push'] }, { ...S, repo: true }, 102_100_000],
+  ['bonsia fork repo', 'repo', { name: 'qa3-cb-dips-fork', description: t(62), defaultBranch: 'master', visibility: 'public' }, { ...S, author: true, contract: true }, 91_400_000],
 ]
 
 const over = (est: number, actual: number): number => est / actual - 1
@@ -93,7 +118,7 @@ describe('cost preview (D-011)', () => {
       sumPreviews([
         previewCreate('repo', { name: 'cal2-mujwxyz', visibility: 'public' }, first),
         previewCreate('maintainer', {}, first),
-        previewCreate('config', { defaultBranch: 'main' }, first),
+        previewCreate('config', { defaultBranch: 'main' }, { ...first, repo: true }),
       ]).credits
     // Measured: 132.7M (a returning owner, 13-byte name), 159.7M (the owner's first; QA +23.4 %).
     expect(over(create(S), 132_684_960)).toBeGreaterThanOrEqual(0)
@@ -147,6 +172,16 @@ describe('admission (D-012)', () => {
     const b = previewCreate('follow', {}, STEADY)
     const sum = sumPreviews([a, b])
     expect(sum.admit.budget).toBe(Math.max(a.admit.budget, a.credits + b.admit.budget))
+  })
+})
+
+describe('an edit is a range (QW3-037)', () => {
+  it('runs from what an edit was measured to cost up to its upper bound', () => {
+    const edit = previewReplace('comment', { body: t(100) })
+    expect(edit.minCredits).toBe(REPLACE_MIN_CREDITS)
+    // Bonsia: a comment's body 7.8M, the repo's description and topics 5.8M (quoted 18.8M, 19.9M).
+    expect(edit.minCredits! * 0.75).toBeLessThanOrEqual(5_800_000)
+    expect(edit.credits).toBeGreaterThanOrEqual(7_800_000)
   })
 })
 

@@ -293,9 +293,14 @@ pub fn read_mnemonic() -> Result<Secret> {
     }
     let words =
         rpassword::prompt_password("Recovery words (12, hidden as you type): ").map_err(|e| {
+            // Ctrl-D or Ctrl-C: the user left, nothing was written (E803), not "no terminal".
+            if crate::prompt::left_the_prompt(&e) {
+                return crate::prompt::input_closed();
+            }
             UserError::new(codes::USAGE, "the recovery words could not be read")
                 .cause(format!("no terminal to ask on ({e})"))
                 .fix("run it in a terminal, or pass the identity file instead")
+                .into()
         })?;
     let words = zeroize::Zeroizing::new(words);
     identity::normalize_mnemonic(&words).map_err(Into::into)

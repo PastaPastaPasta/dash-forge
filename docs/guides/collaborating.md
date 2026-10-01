@@ -125,7 +125,7 @@ Leave the description empty if the project's purpose is itself sensitive.
 
 Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks (`dg repo fork`) and webhooks. Issues, PRs, comments and reviews are sealed; label definitions (`dg label create`) are allowed but stay public.
 
-**Releases** of a private repository are sealed ([private repositories §16](../security/private-repos.md#16-sealed-releases)). The web app publishes, edits, yanks and unpublishes them (a maintainer's **Edit** on each release), and members download their files verified in the browser; `dg release create`, `dg release unpublish` and `dg release download` do the same from the command line. Each file is encrypted in the tab before it goes to your own storage, named by the hash of the encrypted copy, and the asset list is an encrypted file too. A private release holds 1507 bytes of tag, name, notes preview and provenance: longer notes continue in the encrypted asset list, so they need storage of your own even without files. Draft and pre-release are labels every member sees, not access control. Every change is a new revision that carries the rest forward; two maintainers editing the same release at once both land, and the one written second is warned that it may have dropped the other's change.
+**Releases** of a private repository are sealed ([private repositories §16](../security/private-repos.md#16-sealed-releases)). The web app publishes, edits, yanks and unpublishes them (a maintainer's **Edit** on each release), and members download their files verified in the browser; `dg release create`, `dg release unpublish` and `dg release download` do the same from the command line. Each file you publish is encrypted in the tab before it goes to your own storage (an imported asset that could not be fetched and sealed stays an external link: its URL is hidden, but the file is not encrypted), named by the hash of the encrypted copy, and the asset list is an encrypted file too. A private release holds 1507 bytes of tag, name, notes preview and provenance: longer notes continue in the encrypted asset list, so they need storage of your own even without files. Draft and pre-release are labels every member sees, not access control. Every change is a new revision that carries the rest forward; two maintainers editing the same release at once both land, and the one written second is warned that it may have dropped the other's change.
 
 **Content a removed member wrote late.** A member removed from the repository who keeps writing under the old key, more than 240 blocks after the rotation, is hidden from every reader (the late-content rule). A clone that needs such a pack stops with [`E510`](../errors.md#e510) (`clone incomplete: N packs hidden by the late-content rule`).
 
@@ -193,7 +193,9 @@ dg repo fork <owner>/project            # or --name <another name>
 ✓ forked <owner>/project → <you>/project
   packs:   36 recorded (36 by reference to the parent's Platform chunks), nothing re-uploaded
   refs:    1 copied
-  cost:    ~0.03 DASH ≈ $0.90
+  remote:  dash://<you>/project
+  cost:    ~0.03 DASH
+  next:    push a branch to dash://<you>/project, then `dg pr create <owner>/project`
 ```
 
 A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork. In the web, the fork browses through the parent's published browse and history index, so no visitor rebuilds it in the browser; your own pushes to the fork index just the packs they add.
@@ -215,7 +217,7 @@ dg pr create <owner>/project --body "Fixes #12"
 
 ```text
 Open PR "Handle empty input" in <owner>/project: <you>/project refs/heads/fix-empty-input (8f3e2a1c9d0b) → refs/heads/main
-✓ opened PR #7 in <owner>/project · ~0.001 DASH ≈ $0.03
+✓ opened PR #7 in <owner>/project · ~0.0014 DASH
 ```
 
 `dg` fills in the rest:
@@ -337,7 +339,7 @@ dg label create <owner>/<repo> bug --color "#d73a4a" --description "Something is
 dg label list   <owner>/<repo> [--all]
 dg label retire <owner>/<repo> bug
 dg label delete <owner>/<repo> bug                 # deletes your definitions; retires it if others defined it too
-dg issue label  <owner>/<repo> 12 --add bug
+dg issue label  <owner>/<repo> 12 add bug
 ```
 
 On the web, **Issues → Labels** lists them and lets members create one, change its colour or description, and delete it (with the same retire-if-others-defined-it rule). A label keeps its name once defined: issues carry a label by its name, so a rename would leave them under the old one.
