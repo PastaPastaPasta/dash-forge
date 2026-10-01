@@ -110,9 +110,9 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
 
   const following = follow.on === true
   const first = useFirstWrite(
-    () => followFirsts(sdk!, forge!.community, identity!),
-    [identity ?? '', network],
-    interested && canFollow && ready && sdk !== null && identity !== null && !following,
+    () => followFirsts(sdk!, forge!.community, identity!, identityId, data?.followers),
+    [identity ?? '', network, identityId],
+    interested && canFollow && ready && sdk !== null && identity !== null && !following && data !== undefined && data !== null,
   )
   const followCost = previewCreate('follow', {}, first)
   const unfollowRefund = previewDelete('follow')

@@ -13,8 +13,9 @@ import { useRouter } from 'next/navigation'
 import { Check, GitFork, Loader2 } from 'lucide-react'
 
 import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
-import { previewCreate, sumPreviews } from '@/lib/sdk'
+import { previewCreate, sumPreviews, type FirstWrite } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
+import { spendAction } from '@/lib/spend-toast'
 import { plural } from '@/lib/view/format'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -116,12 +117,16 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const cost = useMemo(() => {
     const p = plan.data
     const manifests = p?.manifests ?? []
+    // After the fork's repo document, the owner has written to forge-core, and the new repo has
+    // no config, pack or ref yet: its first of each builds the repo's subtrees, and each ref name
+    // is new to it (QW3-037: the plan priced every write as a steady one).
+    const after: FirstWrite = { contract: false }
     return sumPreviews([
       previewCreate('repo', { name: normalized || parent.name, description: description.trim(), defaultBranch: defaults.defaultBranch, visibility: 'public' }),
-      previewCreate('maintainer'),
-      previewCreate('config', { defaultBranch: defaults.defaultBranch }),
-      ...manifests.map((m) => previewCreate('packManifest', { uris: m.uris })),
-      ...(p?.refs ?? []).map((r) => previewCreate('refUpdate', { refName: r.refName })),
+      previewCreate('maintainer', {}, after),
+      previewCreate('config', { defaultBranch: defaults.defaultBranch }, { ...after, repo: true }),
+      ...manifests.map((m, i) => previewCreate('packManifest', { uris: m.uris }, { ...after, repo: i === 0 })),
+      ...(p?.refs ?? []).map((r, i) => previewCreate('refUpdate', { refName: r.refName }, { ...after, repo: i === 0, target: true })),
     ])
   }, [plan.data, normalized, parent.name, description, defaults.defaultBranch])
 
@@ -132,11 +137,14 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
     setError(null)
     setProgress({})
     try {
-      const result = await forkRepoV2(sdk, signer, parent, { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch }, (p) =>
-        setProgress((prev) => ({
-          ...(prev ?? {}),
-          [p.step]: { state: p.state === 'start' ? 'running' : 'done', ...(p.total ? { count: `${p.done ?? 0} of ${p.total}` } : {}) },
-        })),
+      // Every document of the fork shows in one toast, with their total (QW3-039).
+      const result = await spendAction({ running: `Forking ${parent.name}…`, done: `Forked ${parent.name} as ${normalized}` }, () =>
+        forkRepoV2(sdk, signer, parent, { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch }, (p) =>
+          setProgress((prev) => ({
+            ...(prev ?? {}),
+            [p.step]: { state: p.state === 'start' ? 'running' : 'done', ...(p.total ? { count: `${p.done ?? 0} of ${p.total}` } : {}) },
+          })),
+        ),
       )
       if (result.unreferenceable.length > 0) {
         setError(

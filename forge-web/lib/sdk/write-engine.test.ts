@@ -87,11 +87,13 @@ import {
   createDocumentIdempotent,
   deleteDocumentIdempotent,
   isNonceSpent,
+  measurementsSettled,
   replaceDocumentIdempotent,
   setWriteClock,
   type SpendEvent,
   type WriteAuth,
 } from './write'
+import { inSpendScope } from './spend-scope'
 import { encodeWif } from '../auth/wif'
 
 const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
@@ -1287,6 +1289,19 @@ describe('spend measurement across back-to-back writes (D-2)', () => {
     for (let i = 0; i < 3; i++) await reported()
     expect(spends.map((s) => s.actualCredits)).toEqual([500, 600, 900])
     expect(spends.map((s) => s.balanceBefore)).toEqual([START, START - 500n, START - 1100n])
+  })
+
+  it('a write made inside an action carries its id, however late its charge is measured (QW3-039)', async () => {
+    const chain = laggingChain([500n, 600n, 900n])
+    const spends: SpendEvent[] = []
+    await inSpendScope('action:fork', async () => {
+      for (const t of ['repo', 'refUpdate']) await createDocumentIdempotent(chain.sdk, auth(spends), doc(t, 'D2t'))
+    })
+    // Outside any action now: the action's last write still reports under it.
+    await measurementsSettled()
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('packManifest', 'D2t'))
+    for (let i = 0; i < 3; i++) await reported()
+    expect(spends.map((s) => s.action)).toEqual(['action:fork', 'action:fork', undefined])
   })
 
   it('a balance read from a node still behind an earlier write is not taken for the next write’s', async () => {

@@ -54,6 +54,7 @@ import {
 } from '@/lib/mirror/wizard'
 import { refsFingerprint, type MirrorProgress, type RunnerKeyRecord } from '@/lib/mirror/progress'
 import { cn, errorMessage } from '@/lib/utils'
+import { spendAction } from '@/lib/spend-toast'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const BUILD_COMMIT = process.env.FORGE_BUILD_COMMIT ?? ''
@@ -196,7 +197,9 @@ export function RepoStep({
     setError(null)
     setProgress({})
     try {
-      const r = await createRepo(sdk, signer, forge, input, (step, state) => setProgress((p) => ({ ...p, [step]: state === 'start' ? 'running' : 'done' })))
+      const r = await spendAction({ running: 'Creating the repository…', done: 'Repository created' }, () =>
+        createRepo(sdk, signer, forge, input, (step, state) => setProgress((p) => ({ ...p, [step]: state === 'start' ? 'running' : 'done' }))),
+      )
       onDone({ repoId: r.repoId, name: r.name }, true)
     } catch (e) {
       setProgress(null)

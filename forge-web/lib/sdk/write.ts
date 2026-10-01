@@ -36,6 +36,7 @@ import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
 import { previewCreate, previewCredits, previewDelete, previewReplace, STEADY, type CostPreview } from './cost'
 import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite } from './query'
+import { currentSpendAction } from './spend-scope'
 
 export type { CostPreview } from './cost'
 
@@ -892,6 +893,20 @@ function lastMeasurement(identityId: string): Promise<void> {
 }
 
 /**
+ * Wait (bounded) until every identity's measurements still reading have reported: an action's
+ * last write is reported once its charge is measured, after the action itself returned
+ * (QW3-039). Never rejects.
+ */
+export function measurementsSettled(capMs = MEASUREMENT_WAIT_MS): Promise<void> {
+  if (measuring.size === 0) return Promise.resolve()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cap = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, capMs)
+  })
+  return Promise.race([Promise.all([...measuring.values()]).then(() => undefined), cap]).finally(() => clearTimeout(timer))
+}
+
+/**
  * The credits a write took (negative: refunded), from the balance on each side of it. The
  * identity's next write waits until this has read its "after".
  */
@@ -929,6 +944,8 @@ export interface SpendEvent {
   readonly actualCredits: number | null
   /** The identity's balance right before the write (the ledger's reconciliation baseline). */
   readonly balanceBefore: bigint | null
+  /** The user action that made the write (`lib/sdk/spend-scope.ts`), when one was open. */
+  readonly action?: string
 }
 
 /** Identifies the acting identity and yields its signing key (WIF) on demand. */
@@ -1145,8 +1162,10 @@ function reportSpend(
   event: Omit<SpendEvent, 'actualCredits' | 'identityId' | 'network'>,
 ): void {
   if (!auth.onSpend) return
+  // The action open now made this write; its measurement may land after the action returned.
+  const action = currentSpendAction()
   void measureActual(sdk, auth.identityId, event.balanceBefore).then((actualCredits) =>
-    auth.onSpend?.({ ...event, identityId: auth.identityId, network: auth.network, actualCredits }),
+    auth.onSpend?.({ ...event, identityId: auth.identityId, network: auth.network, actualCredits, ...(action !== null ? { action } : {}) }),
   )
 }
 
@@ -1823,6 +1842,8 @@ async function replaceDocumentUnlocked(
     repo: params.repo ?? null,
     documentId,
     estimateCredits: cost.credits,
+    // An edit pays only for the text it adds: its range starts far below the bound (QW3-037).
+    ...(cost.minCredits !== undefined ? { estimateMinCredits: cost.minCredits } : {}),
     balanceBefore,
   })
 

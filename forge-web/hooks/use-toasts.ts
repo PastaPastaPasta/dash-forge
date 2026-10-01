@@ -30,6 +30,11 @@ export interface Toast {
 interface ToastState {
   readonly toasts: readonly Toast[]
   push: (t: Omit<Toast, 'id' | 'writes'>) => void
+  /**
+   * Restyle the toast of `group` still showing (an action that ended: its final title, no longer
+   * pending), keeping its total; nothing when none shows.
+   */
+  settle: (group: string, patch: Pick<Toast, 'title'> & Partial<Pick<Toast, 'tone' | 'detail'>>) => void
   dismiss: (id: number) => void
 }
 
@@ -71,6 +76,13 @@ export const useToasts = create<ToastState>((set, get) => {
       const id = next++
       set((s) => ({ toasts: [...s.toasts.slice(-3), { ...t, id, writes: 1 }] }))
       expire(id, t.pending ? GROUP_WAIT_MS : TOAST_MS)
+    },
+    settle: (group, patch) => {
+      const prev = get().toasts.find((x) => x.group === group)
+      if (!prev) return
+      const settled: Toast = { ...prev, ...patch, pending: false }
+      set((s) => ({ toasts: s.toasts.map((x) => (x.id === prev.id ? settled : x)) }))
+      expire(prev.id, TOAST_MS)
     },
     dismiss: (id) => {
       clearTimeout(timers.get(id))

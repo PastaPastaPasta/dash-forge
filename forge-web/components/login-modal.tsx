@@ -44,7 +44,7 @@ import { lockedIdentityOf } from '@/lib/auth/last-identity'
 import { readCreationJournal } from '@/lib/auth/create-identity'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
-import { KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, PUSH_COST_DASH, dashRange, typicalIssueCredits } from '@/lib/sdk'
+import { KEY_ADD_FLOOR_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
 
@@ -245,7 +245,7 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
         />
       ) : null}
       {walletFirst ? walletTile : null}
-      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(typicalIssueCredits())} DASH per issue, ${dashRange(PUSH_COST_DASH.byo)} per push.`} onClick={() => onPick('create')} />
+      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(typicalIssueCredits())} DASH per issue, ${pushCostPhrase()}.`} onClick={() => onPick('create')} />
       <Tile
         testId="tile-import"
         icon={Upload}
@@ -689,8 +689,9 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         {renewing
           ? ` (renewing: ~${creditsAsDash(KEY_RENEW_CREDITS)} DASH, one master-key signature; the old key is disabled in the same update).`
           : // Platform meters the update: an identity that already holds a Forge key (from another
-            // browser or dg) pays the lower figure (QW-043).
-            ` (${creditsAsDash(KEY_RENEW_CREDITS)}–${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature; the lower figure when the identity already has a Forge key).`}
+            // browser or dg) pays the lower figure (QW-043). Its floor is the least one was measured to
+            // cost, the low end Settings → Spend shows too (QW3-037: 0.00028 quoted, 0.000269 charged).
+            ` (${creditsAsDash(KEY_ADD_FLOOR_CREDITS)}–${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature; the lower figure when the identity already has a Forge key).`}
       </p>
       {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
       <div ref={errorRef} hidden={error === null}>

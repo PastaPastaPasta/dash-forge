@@ -230,12 +230,13 @@ export function AuthProvider({
 
   const onSpend = useCallback(
     (event: SpendEvent) => {
-      const refused = event.kind.startsWith('refused:')
-      toast({
-        ...spendToast(event),
-        credits: event.actualCredits ?? null,
-        ...(refused ? { title: 'Platform refused that write', tone: 'warn' as const, detail: 'A refused write still pays its processing fee.' } : {}),
-      })
+      const credits = event.actualCredits ?? null
+      // A refused write is its own warning, never folded into its action's total.
+      if (event.kind.startsWith('refused:')) {
+        toast({ title: 'Platform refused that write', credits, tone: 'warn', detail: 'A refused write still pays its processing fee.' })
+      } else {
+        toast({ ...spendToast(event), credits })
+      }
       // The row first, then the balance: a refresh that lands before the row would let Settings →
       // Spend reconcile a balance with this write in it against a ledger without it.
       void recordSpend(event)
