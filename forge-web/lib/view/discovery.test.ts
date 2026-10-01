@@ -477,7 +477,7 @@ describe('rankedRepos on a fused-star contract (RC2 C1: O-08 applied on read)', 
     return s
   }
 
-  it('drops the private repo and owners\' stars on new repos, reading ahead, one owner check per new public repo', async () => {
+  it('drops the private repo and owners\' stars on new repos, reading ahead, with no request of its own for the owner checks', async () => {
     const seen = fresh()
     const r = await rankedRepos(mockSdk(fusedStore(), seen, { fused: true }), 'week', { network: NET })
     // ripgrep keeps its owner's star (an old repo: when it was made is not known); hot loses its
@@ -486,14 +486,65 @@ describe('rankedRepos on a fused-star contract (RC2 C1: O-08 applied on read)', 
     expect(r.repos.map((x) => x.rankCount)).toEqual([3, 2])
     expect(r.missing).toBe(0)
     expect(seen.ranked[0]).toMatchObject({ documentTypeName: 'star', limit: 24, timeRange: [{ field: '$createdAt', selector: 'oldest' }] })
-    expect(seen.queries.map((q) => q.where)).toEqual(
-      expect.arrayContaining([
-        [['$ownerId', '==', OWNER_A], ['repoId', '==', id('Rhot')]],
-        [['$ownerId', '==', OWNER_A], ['repoId', '==', id('Rsolo')]],
-      ]),
-    )
-    expect(seen.queries).toHaveLength(2)
-    expect(requests(seen)).toBe(4)
+    // Ranked read + one composite: the owners' stars are a lookup in the repos' composite, not
+    // a read per new repo (that was the 39-request Explore).
+    expect(seen.queries).toHaveLength(0)
+    expect(requests(seen)).toBe(2)
+    const lookup = seen.composites[0]?.subQueries.find((s) => s.documentType === 'star' && s.kind !== 'counts')
+    expect(lookup).toMatchObject({ bind: { source: 'page', sourceProperty: '$ownerId', field: '$ownerId' }, orderBy: [['$ownerId', 'desc']], limit: 100 })
+  })
+
+  it('keeps an owner\'s own star out of the count however many repos are on the page', async () => {
+    const s = fusedStore()
+    const many = Array.from({ length: 8 }, (_, i) => repo(`fresh-${i}`, NOW - 60_000, OWNER_A))
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, ...many]
+    const star = (owner: string, target: string): Doc => ({ $id: id(`S${owner}${target}`), $ownerId: owner, repoId: target })
+    // Each new repo: its owner's star and one stranger's. The stranger's is all that counts.
+    s[FORGE.community]!['star'] = [...s[FORGE.community]!['star']!, ...many.flatMap((r) => [star(OWNER_A, String(r['$id'])), star('X9', String(r['$id']))])]
+    const seen = fresh()
+    const r = await rankedRepos(mockSdk(s, seen, { fused: true }), 'week', { network: NET, limit: 12 })
+    expect(r.repos.filter((x) => x.slug.startsWith('fresh-')).map((x) => x.rankCount)).toEqual(Array(8).fill(1))
+    expect(r.repos.find((x) => x.slug === 'hot')?.rankCount).toBe(2)
+    expect(seen.queries).toHaveLength(0)
+    expect(requests(seen)).toBe(2)
+  })
+
+  it('reads a pair on its own when the lookup ran out of rows before its owner\'s stars ended', async () => {
+    const s = fusedStore()
+    // OWNER_A stars 120 other repos: the lookup returns 100 of OWNER_A's stars, which may not include hot's.
+    s[FORGE.community]!['star'] = [
+      ...s[FORGE.community]!['star']!.filter((d) => !(d['$ownerId'] === OWNER_A && d['repoId'] === id('Rhot'))),
+      ...Array.from({ length: 120 }, (_, i) => ({ $id: id(`SA${i}`), $ownerId: OWNER_A, repoId: id(`Rother${i}`) })),
+      // Its id sorts last in the descending walk, after the 100 rows the lookup keeps.
+      { $id: id('S0hot'), $ownerId: OWNER_A, repoId: id('Rhot') },
+    ]
+    const seen = fresh()
+    const r = await rankedRepos(mockSdk(s, seen, { fused: true }), 'week', { network: NET })
+    expect(r.repos.find((x) => x.slug === 'hot')?.rankCount).toBe(2)
+    expect(seen.queries.map((q) => q.where)).toContainEqual([['$ownerId', '==', OWNER_A], ['repoId', '==', id('Rhot')]])
+  })
+
+  /** `sdk` on a node that refuses every composite. */
+  function withoutComposite(sdk: EvoSDK): EvoSDK {
+    const base = sdk as unknown as { documents: Record<string, unknown> }
+    return {
+      ...base,
+      documents: {
+        ...base.documents,
+        composite: async () => {
+          throw new Error("grpc error: code: 'Client specified an invalid argument'")
+        },
+      },
+    } as unknown as EvoSDK
+  }
+
+  it('reads each pair on its own when the composite is refused', async () => {
+    const seen = fresh()
+    const r = await rankedRepos(withoutComposite(mockSdk(fusedStore(), seen, { fused: true })), 'week', { network: NET })
+    // The plain repos read has no counts, so the ranking is the ranked read's alone; the owner
+    // of `hot` still does not count toward it.
+    expect(r.repos.find((x) => x.slug === 'hot')?.rankCount).toBe(2)
+    expect(seen.queries.map((q) => q.where)).toContainEqual([['$ownerId', '==', OWNER_A], ['repoId', '==', id('Rhot')]])
   })
 
   it('shows at most the limit after re-ranking', async () => {
@@ -502,7 +553,8 @@ describe('rankedRepos on a fused-star contract (RC2 C1: O-08 applied on read)', 
   })
 
   it('counts a star as read when its owner check fails', async () => {
-    const r = await rankedRepos(mockSdk(fusedStore(), fresh(), { fused: true, failQuery: 'star' }), 'week', { network: NET })
+    // Only the per-pair read can fail: the composite's lookup is part of a proved read.
+    const r = await rankedRepos(withoutComposite(mockSdk(fusedStore(), fresh(), { fused: true, failQuery: 'star' })), 'week', { network: NET })
     expect(names(r.repos)).toEqual(['ripgrep', 'hot', 'solo'])
     expect(r.repos.map((x) => x.rankCount)).toEqual([3, 3, 1])
   })

@@ -6,17 +6,21 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { base58Encode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import { resetStarShapes } from './star-shape'
 import { STAR_BEAT_GRID } from '../rules/parity'
 import { rc1Contracts } from '../sdk/rc1-validate'
 import {
+  OWNER_STAR_LOOKUP_LIMIT,
   SELF_STAR_CLOCK_MARGIN_MS,
   TRENDING_DEFAULT,
   TRENDING_PREF_KEY,
   fusedTrending,
+  ownerStarLookupOf,
   readMostFollowed,
   readMostStarred,
+  readOwnerStars,
   readTrending,
   selfStarDecidable,
   setTrendingPref,
@@ -170,5 +174,68 @@ describe('fused-star Trending, filtered on read (RC2 C1: O-08 moves to readers)'
       ['b', 2],
     ])
     expect(fusedTrending([entry('A', 3, 'aa'), entry('D', 2, 'dd')], repos, new Set(), 1).map((r) => r.name)).toEqual(['a'])
+  })
+})
+
+describe('readOwnerStars with the batched lookup', () => {
+  /** A distinct 32-byte identifier, base58. */
+  const ident = (n: number): string => base58Encode(new Uint8Array(32).fill(n))
+  const [O1, O2, O3, R1, R2, R9] = [1, 2, 3, 11, 12, 19].map(ident) as [string, string, string, string, string, string]
+  const pairs = [
+    { repoId: R1, ownerId: O1 },
+    { repoId: R2, ownerId: O2 },
+  ]
+  const row = (owner: string, repo: string): Record<string, unknown> => ({ $ownerId: owner, repoId: repo })
+  /** An sdk whose every `documents.query` is counted: the per-pair reads. */
+  function counting(starred: readonly string[] = []): { sdk: EvoSDK; reads: () => number } {
+    let n = 0
+    const sdk = {
+      documents: {
+        query: async (q: { where: readonly (readonly [string, string, string])[] }) => {
+          n++
+          const repo = q.where.find(([f]) => f === 'repoId')?.[2] ?? ''
+          return new Map(starred.includes(repo) ? [[repo, { id: repo }]] : [])
+        },
+      },
+    } as unknown as EvoSDK
+    return { sdk, reads: () => n }
+  }
+
+  it('settles every pair from a complete lookup with no read of its own', async () => {
+    const { sdk, reads } = counting()
+    const out = await readOwnerStars(sdk, FORGE, pairs, ownerStarLookupOf([row(O1, R1), row(O1, R9), row(O2, R9)]))
+    // O1's own star of R1 is found; O2 stars R9 only, not its own R2.
+    expect([...out]).toEqual([R1])
+    expect(reads()).toBe(0)
+  })
+
+  it('never takes another owner\'s star of a repo for its owner\'s', async () => {
+    const { sdk, reads } = counting()
+    // O2, also on the page, stars R1, which O1 owns: not O1's own star.
+    expect([...(await readOwnerStars(sdk, FORGE, pairs, ownerStarLookupOf([row(O2, R1)])))]).toEqual([])
+    expect(reads()).toBe(0)
+  })
+
+  it('reads the pairs a full lookup did not show, and only those', async () => {
+    const { sdk, reads } = counting([R2])
+    const rows = Array.from({ length: OWNER_STAR_LOOKUP_LIMIT }, (_, i) => row(i === 0 ? O1 : O3, i === 0 ? R1 : ident(100 + i)))
+    const lookup = ownerStarLookupOf(rows)
+    expect(lookup.complete).toBe(false)
+    expect([...(await readOwnerStars(sdk, FORGE, pairs, lookup))].sort()).toEqual([R1, R2].sort())
+    expect(reads()).toBe(1)
+  })
+
+  it('does not trust a lookup whose rows lack identifiers: every pair it cannot see is read', async () => {
+    const { sdk, reads } = counting([R1])
+    const lookup = ownerStarLookupOf([{ repoId: R9 }, { $ownerId: O2 }])
+    expect(lookup).toMatchObject({ stars: [], complete: false })
+    expect([...(await readOwnerStars(sdk, FORGE, pairs, lookup))]).toEqual([R1])
+    expect(reads()).toBe(2)
+  })
+
+  it('reads every pair when there was no lookup', async () => {
+    const { sdk, reads } = counting([R1])
+    expect([...(await readOwnerStars(sdk, FORGE, pairs))]).toEqual([R1])
+    expect(reads()).toBe(2)
   })
 })

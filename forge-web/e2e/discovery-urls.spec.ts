@@ -101,7 +101,9 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
 
   // Request budget, derived from the page's shape rather than from the devnet's size: Featured is
   // one composite of the showcase repos (1, QW-045); trending,
-  // most starred and most forked are a proved ranked read and one composite each (6); recent is
+  // most starred and most forked are a proved ranked read and one composite each (6; on the
+  // fused star Trending's owner self-star check is a lookup in that composite, not a read per
+  // repo created in the week, which made this 39 on a young devnet); recent is
   // one composite per page (2 here); "Recently released" reads the latest release of each repo
   // on the first recent page (one read per card, `firstPage`). Stars, issue counts, pushes and
   // the owners' DPNS names ride in those composites, so however many repos or distinct owners
