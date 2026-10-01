@@ -327,19 +327,24 @@ fn dg_read(cfg: &Config, args: &[&str]) -> Result<serde_json::Value> {
 
 /// The repository's pull requests (`dg pr list --state all`, the newest `limit`).
 pub fn list_pulls(cfg: &Config, repo: &RepoConfig, limit: u32) -> Result<Vec<PullRow>> {
-    let v = dg_read(
-        cfg,
-        &[
-            "pr",
-            "list",
-            &repo.repo,
-            "--state",
-            "all",
-            "--limit",
-            &limit.to_string(),
-        ],
-    )?;
+    let limit = limit.to_string();
+    let v = dg_read(cfg, &list_pulls_args(&repo.repo, &limit))?;
     serde_json::from_value(v["prs"].clone()).context("dg pr list: unexpected rows")
+}
+
+/// `dg pr list`'s arguments for [`list_pulls`]. `--include-hidden`: a maintainer's hide is display
+/// only, and CI must see every PR (a hidden PR still merges, and a required check still gates it).
+fn list_pulls_args<'a>(repo: &'a str, limit: &'a str) -> [&'a str; 8] {
+    [
+        "pr",
+        "list",
+        repo,
+        "--state",
+        "all",
+        "--include-hidden",
+        "--limit",
+        limit,
+    ]
 }
 
 /// One pull request, read by number (`dg pr view`), whatever its age.
@@ -1124,6 +1129,15 @@ mod tests {
             oid: "ab".repeat(20),
             before: None,
         }
+    }
+
+    /// Hiding is display only: the runner lists every PR, hidden ones too, so a hidden PR still
+    /// gets its required checks.
+    #[test]
+    fn the_runner_lists_hidden_pull_requests_too() {
+        let args = list_pulls_args("a/b", "50");
+        assert!(args.contains(&"--include-hidden"), "{args:?}");
+        assert_eq!(&args[..3], ["pr", "list", "a/b"]);
     }
 
     #[test]
