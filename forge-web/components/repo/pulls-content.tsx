@@ -230,6 +230,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
             icon={GitPullRequest}
             title={filtered ? 'No pull requests match' : query.state === 'all' ? 'No pull requests yet' : `No ${query.state} pull requests`}
             body={emptyPullsBody(filtered, query.state, settled)}
+            action={filtered && query.state !== 'all' ? <Button onClick={() => change({ state: 'all' })} data-testid="pulls-search-all">Search all pull requests</Button> : undefined}
           />
         ) : (
           <ul aria-label="Pull requests" aria-busy={loading}>

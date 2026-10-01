@@ -296,8 +296,14 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           <EmptyState
             icon={CircleDot}
             title={filtered ? 'No issues match' : query.state === 'closed' ? 'No closed issues' : query.state === 'all' ? 'No issues yet' : 'No open issues'}
-            body={emptyIssuesBody(filtered, query.state, data?.closedCount ?? null)}
-            action={filtered || !canCompose || archived ? undefined : <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>}
+            body={emptyIssuesBody(filtered, query.state, data?.closedCount ?? null, data?.openCount ?? null)}
+            action={
+              filtered ? (
+                query.state === 'all' ? undefined : <Button onClick={() => change({ state: 'all' })} data-testid="issues-search-all">Search all issues</Button>
+              ) : !canCompose || archived ? undefined : (
+                <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>
+              )
+            }
           />
         ) : (
           <ul aria-label="Issues" aria-busy={loading}>

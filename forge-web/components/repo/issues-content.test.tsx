@@ -15,10 +15,12 @@ vi.mock('next/link', async () => {
   const { forwardRef } = await import('react')
   return { default: forwardRef<HTMLAnchorElement, React.AnchorHTMLAttributes<HTMLAnchorElement>>((props, ref) => <a ref={ref} {...props} />) }
 })
+let params = ''
+const replaced: string[] = []
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: () => undefined, push: () => undefined }),
+  useRouter: () => ({ replace: (href: string) => replaced.push(href), push: () => undefined }),
   usePathname: () => '/repo/issues/',
-  useSearchParams: () => new URLSearchParams(''),
+  useSearchParams: () => new URLSearchParams(params),
 }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet', status: { phase: 'ready' } }) }))
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: null, signer: null, locked: false }) }))
@@ -76,6 +78,8 @@ let el: HTMLDivElement
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   asked.length = 0
+  params = ''
+  replaced.length = 0
   answer = {
     rows: [issue(5612), issue(5600)],
     pinned: [],
@@ -125,5 +129,20 @@ describe('IssuesContent pinned issues (QW3-003)', () => {
     await settle()
     expect(el.querySelector('[data-testid="pins-unread"]')).toBeNull()
     expect(el.querySelectorAll('[data-testid="pinned-issue"]')).toHaveLength(1)
+  })
+})
+
+describe('IssuesContent search with no match in its tab (QW3-051)', () => {
+  it('says how many match in the other state and searches every state when asked', async () => {
+    params = 'q=label%3Abug'
+    answer = { ...answer, rows: [], matching: 0, hasNext: false, openCount: 0, closedCount: 1, pinsUnread: false }
+    act(() => root.render(<IssuesContent home={HOME} addr={{ owner: 'o', name: 'n' }} />))
+    await settle()
+    expect(asked[0]?.q.state).toBe('open')
+    expect(el.textContent).toContain('No issues match')
+    expect(el.textContent).toContain('None is open; 1 closed issue matches.')
+    act(() => el.querySelector<HTMLButtonElement>('[data-testid="issues-search-all"]')?.click())
+    await settle()
+    expect(replaced.at(-1)).toBe('/repo/issues/?owner=o&name=n&state=all&label=bug')
   })
 })

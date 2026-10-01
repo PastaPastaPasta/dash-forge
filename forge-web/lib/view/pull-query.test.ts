@@ -95,6 +95,7 @@ describe('PR list query (L-44)', () => {
   it('never invites the first PR while some are merged or closed', () => {
     expect(emptyPullsBody(false, 'open', 3)).toMatch(/3 pull requests are merged or closed/)
     expect(emptyPullsBody(false, 'open', 0)).toMatch(/Push a branch/)
-    expect(emptyPullsBody(true, 'open', 3)).toBe('Try fewer filters.')
+    expect(emptyPullsBody(true, 'open', 3)).toBe('Try fewer filters, or search every state.')
+    expect(emptyPullsBody(true, 'all', 3)).toBe('Try fewer filters.')
   })
 })

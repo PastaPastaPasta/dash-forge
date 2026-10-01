@@ -286,6 +286,15 @@ describe('PullsContent (L-44)', () => {
     expect((el.querySelector('#pull-search') as HTMLInputElement).value).toBe('is:merged label:bug sort:created-asc')
   })
 
+  it('a search that matches none in its tab offers every state (QW3-051)', async () => {
+    search = 'owner=o&name=n&label=bug'
+    answer = { ...answer, rows: [], matching: 0, hasNext: false, counts: { open: 0, merged: 2, closed: 0 } }
+    await render()
+    expect(el.textContent).toContain('Try fewer filters, or search every state.')
+    act(() => (el.querySelector('[data-testid="pulls-search-all"]') as HTMLButtonElement).click())
+    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&state=all&label=bug')
+  })
+
   it('writes a tab change and the next page to the URL', async () => {
     await render()
     act(() => button('40 Merged').click())
