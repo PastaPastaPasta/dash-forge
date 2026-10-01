@@ -5,11 +5,13 @@
  * `ux-dx-spec.md` §2.3): keep this identity's ENCRYPTION key in the browser vault, beside the
  * limited key and protected the same way (passkey PRF or passphrase), dropped on lock.
  *
- * Three ways in, each checked against the identity before anything is stored: an identity file
- * (its encryption key, or one derived from its recovery phrase), a pasted private key, or, for
- * an identity with no encryption key yet, registering one from the recovery phrase (one
- * master-key signature). The key never reaches React state: file text and pasted keys are held
- * in refs and dropped after use.
+ * Four ways in, each checked against the identity before anything is stored: the recovery phrase
+ * (derives the identity's existing encryption key, free: QW3-032, an identity created in this
+ * browser has no file and was offered only a paid "Register"), an identity file (its encryption
+ * key, or one derived from its recovery phrase), a pasted private key, or, for an identity with
+ * no encryption key yet, registering one from the recovery phrase (one master-key signature).
+ * The key never reaches React state: file text, words and pasted keys are held in refs and
+ * dropped after use.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -28,13 +30,14 @@ import {
 } from '@/lib/auth/encryption-key'
 import { onEncryptionKeyChange, removeEncryptionKey, storedEncryptionKeyId } from '@/lib/auth/vault'
 import { errorMessage } from '@/lib/utils'
+import { otherIdentityFileMessage } from '@/lib/auth/controller'
 import { PRIVATE_REPOS_ANCHOR } from '@/lib/settings-links'
 import { Button } from '@/components/ui/button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { useConfirmAction } from '@/components/ui/confirm-action'
 
-type Mode = 'file' | 'paste' | 'register'
+type Mode = 'phrase' | 'file' | 'paste' | 'register'
 
 /** An identity update adding one key (measured like the limited-key registration). */
 const REGISTER_COST = '~0.0005 DASH'
@@ -44,7 +47,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
   const { sdk, ready, network } = useSdk()
   const core = NETWORKS[network].v2?.core ?? null
   const [keyId, setKeyId] = useState<number | null | undefined>(undefined)
-  const [mode, setMode] = useState<Mode>('file')
+  const [mode, setMode] = useState<Mode>('phrase')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -91,7 +94,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
     try {
       const id = await work()
       if (id === null) {
-        setError('This identity has no encryption key that opens with that. Register one below (Register), or run `dg auth keys add --encryption`.')
+        setError('This identity has no encryption key that opens with that. Register one (Register a new key), or run `dg auth keys add --encryption`.')
       } else {
         setNote(`Private repos enabled: encryption key ${id} is stored in this browser.`)
       }
@@ -108,12 +111,18 @@ export function EncryptionKeyPanel(): JSX.Element | null {
     void run(async () => {
       const material = encryptionMaterialFromFile(await file.text())
       try {
-        if (material.identityId !== identity) throw new Error('that identity file is for another identity')
+        if (material.identityId !== identity) throw new Error(otherIdentityFileMessage(material.identityId, identity, file.name))
         return await importEncryptionKey(sdk!, network, identity, core, material)
       } finally {
         wipeMaterial(material)
       }
     })
+  }
+
+  // The identity's existing encryption key, derived from its words: nothing is signed or paid.
+  const fromPhrase = (): void => {
+    const mnemonic = phrase.current?.value ?? ''
+    void run(() => importEncryptionKey(sdk!, network, identity, core, { mnemonic }))
   }
 
   const fromPaste = (): void => {
@@ -188,6 +197,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
           <div role="tablist" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
             {(
               [
+                ['phrase', 'Recovery phrase'],
                 ['file', 'Identity file'],
                 ['paste', 'Paste key'],
                 ['register', 'Register a new key'],
@@ -205,6 +215,20 @@ export function EncryptionKeyPanel(): JSX.Element | null {
               </button>
             ))}
           </div>
+          {mode === 'phrase' ? (
+            <div className="space-y-2">
+              <Field
+                label="Recovery phrase (12 or 24 words)"
+                htmlFor="enc-phrase"
+                hint="Derives your identity's encryption key, checks it against the identity, and stores it here. Nothing is signed or paid; the words are not stored."
+              >
+                <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
+              </Field>
+              <Button variant="primary" loading={busy} onClick={fromPhrase}>
+                Use my encryption key
+              </Button>
+            </div>
+          ) : null}
           {mode === 'file' ? (
             <Field label="Identity file" htmlFor="enc-file" hint="Its encryption key (or one derived from its recovery phrase) is checked against your identity, then stored.">
               <input
@@ -235,10 +259,13 @@ export function EncryptionKeyPanel(): JSX.Element | null {
           ) : null}
           {mode === 'register' ? (
             <div className="space-y-2">
+              <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
+                Only for an identity with no encryption key yet. If yours has one, use Recovery phrase above: it is free.
+              </p>
               <Field
                 label="Recovery phrase (12 or 24 words)"
                 htmlFor="enc-phrase"
-                hint={`Derives the new key and your master key, which signs one identity update (${REGISTER_COST}, one master-key signature). Neither is stored.`}
+                hint={`Derives the new key and your master key, which signs one identity update (${REGISTER_COST}, one master-key signature). Neither is stored. An existing encryption key is used instead, at no cost.`}
               >
                 <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
               </Field>

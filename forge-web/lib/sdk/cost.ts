@@ -204,6 +204,12 @@ export const DELETE_CREDITS: Readonly<Record<string, number>> = {
 export const KEY_LIMITS_UPDATE_CREDITS = 2_300_000
 
 /**
+ * Disabling a key (Settings → "Revoke on chain"): one master-key `IdentityUpdate` that only
+ * disables. Measured on bonsia (QA wave 3): 1.7M–2.3M credits; the preview is the upper bound.
+ */
+export const KEY_DISABLE_CREDITS = 2_300_000
+
+/**
  * An `IdentityUpdate` that adds this browser's limited key (a renewal also disables the old one
  * in the same update), signed by the master key and paid from the identity balance. Platform
  * meters it (storage + processing, no flat fee; the key's budget is a cap, not escrow), so the
@@ -214,7 +220,7 @@ export const KEY_LIMITS_UPDATE_CREDITS = 2_300_000
  *   pass, three registrations; a renewal here, 27.3M); on bonsia (beta.7, QA wave 2) a sign-in's
  *   key 26.8M-27.8M.
  * The preview is the upper bound for each case; the ledger records the measured actual.
- * (Disabling alone, a revoke, has not been measured, so it gets no estimate.)
+ * (Disabling alone, a revoke, is {@link KEY_DISABLE_CREDITS}.)
  */
 export const KEY_REGISTER_CREDITS = 48_000_000
 /** Adding a key when the identity already holds a budgeted one, e.g. a renewal (see above). */
