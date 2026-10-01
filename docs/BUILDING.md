@@ -16,7 +16,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 
 | Tool | Version | Why |
 |---|---|---|
-| Rust | pinned by `rust-toolchain.toml` (1.98.0) | rustup installs it automatically; MSRV floor is 1.98, which the pinned Platform packages (v4.2.0-beta.7) require |
+| Rust | pinned by `rust-toolchain.toml` (1.98.0) | rustup installs it automatically; MSRV floor is 1.98, which the pinned Platform packages (v5.0.0-beta.1) require |
 | **protoc** | ≥ 25 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
@@ -78,7 +78,7 @@ declared in the root `Cargo.toml` as **git dependencies pinned to an immutable u
 tag**, and `Cargo.lock` records the exact commit:
 
 ```toml
-dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.7", default-features = false }
+dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.1", default-features = false }
 ```
 
 This is deliberate. They used to be path dependencies on a sibling `../platform` checkout,
