@@ -290,6 +290,7 @@ Merging PR #7 of <owner>/project into refs/heads/main
 2. Fast-forward if it can. Otherwise build a merge commit, authored with your git `user.name` and `user.email`. `--squash` instead makes one commit on the base with the PR's changes, with a `Co-authored-by` line for each other author (`--message` sets its message).
 3. Push the result to the base branch. The push uses your `dash.storage` settings when you run `dg pr merge` inside a clone of the repository.
 4. Post the `merge` event naming the commit that landed.
+5. Close the open issues the description closes (`Fixes #12`, `closes #3`, `resolves #7`; at most 10), as GitHub and the web's merge box do. `--keep-linked-open` leaves them open, and each close is quoted with the merge.
 
 Each step is reported. If one fails, the output says what already happened. If the push landed but the event did not, `dg pr merge --event-only` records the event. `--delete-branch` deletes the PR's branch afterwards. This needs write access to the repository it lives in.
 

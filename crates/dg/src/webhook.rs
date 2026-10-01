@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde_json::json;
 
-use forge_core::cost::estimate;
 use forge_core::envelope::SecretBytes;
 use forge_core::user_error::{codes, UserError};
 use forge_core::webhooks::{
@@ -100,6 +99,44 @@ pub async fn run(ctx: &Ctx, cmd: &WebhookCommand) -> Result<()> {
     }
 }
 
+/// The listed hook `input` names (QW3-023): the name it was added under, its full id (64 hex
+/// digits), or a prefix of the id (the 12 digits `dg webhook list` prints, or any 4 or more).
+/// None, or a prefix several hooks share, is an error saying so.
+fn find_hook(input: &str, listed: &[[u8; 32]], repo: &str) -> Result<[u8; 32]> {
+    let not_found = || {
+        crate::errors::not_found(
+            format!("no webhook {input} on {repo}"),
+            format!("`dg webhook list {repo}` lists the webhooks and their ids"),
+        )
+    };
+    // A name it was added under first: `beef` is that hook, not one whose id starts `beef`.
+    let by_name = parse_hook(input);
+    if listed.contains(&by_name) {
+        return Ok(by_name);
+    }
+    let wanted = input.trim().to_ascii_lowercase();
+    let hex_ok = wanted.len() >= 4 && wanted.bytes().all(|b| b.is_ascii_hexdigit());
+    if hex_ok {
+        let hits: Vec<&[u8; 32]> = listed
+            .iter()
+            .filter(|id| hex::encode(id).starts_with(&wanted))
+            .collect();
+        match hits.as_slice() {
+            [one] => return Ok(**one),
+            [] => {}
+            many => {
+                return Err(UserError::new(
+                    codes::USAGE,
+                    format!("{input} names {} webhooks on {repo}", many.len()),
+                )
+                .fix("pass more of the id (`dg webhook list` prints 12 digits; the full id is 64)")
+                .into())
+            }
+        }
+    }
+    Err(not_found())
+}
+
 /// A hook id from the user: 64 hex characters, else the hash of a name.
 fn parse_hook(input: &str) -> [u8; 32] {
     let mut id = [0u8; 32];
@@ -145,7 +182,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         .context("preparing the webhook")?;
 
     let price = ctx.usd_price();
-    let credits = estimate(prepared.approx_bytes).total();
+    let credits = crate::quote::webhook(prepared.approx_bytes);
     if !ctx.json {
         println!(
             "Adding a webhook to {} → {url} (relay {relay}, key {})\n  webhook document     {}",
@@ -333,46 +370,63 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
 
 async fn remove(ctx: &Ctx, repo: &str, hook: &str) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
-    let hook_id = parse_hook(hook);
-    if !ctx.confirm(&format!(
-        "Remove webhook {hook} from {repo}? (deletes your documents for it; if another \
-         maintainer's still delivers, writes a small disabled one over it)"
-    ))? {
-        return Err(crate::errors::cancelled());
-    }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = WebhookService::new(&client, &identity, &bridge);
     svc.require_maintainer(&handle).await?;
+    // QW3-023: the id `dg webhook list` prints (its first 12 hex digits) names the hook, and
+    // one that names none is an error, not a silent no-op.
+    let listed: Vec<[u8; 32]> = newest_per_hook(
+        WebhookReader::new(&client)
+            .for_repo(handle.id())
+            .await
+            .context("listing webhooks")?,
+    )
+    .iter()
+    .map(|h| h.hook_id)
+    .collect();
+    let hook_id = find_hook(hook, &listed, &handle.display())?;
+    if !ctx.confirm(&format!(
+        "Remove webhook {} from {repo}? (deletes your documents for it; if another \
+         maintainer's still delivers, writes a small disabled one over it)",
+        &hex::encode(hook_id)[..12]
+    ))? {
+        return Err(crate::errors::cancelled());
+    }
     let report = svc
         .remove(&handle, hook_id)
         .await
         .context("removing the webhook")?;
     let found = !report.deleted.is_empty() || report.tombstone.is_some();
+    if !found {
+        return Err(crate::errors::not_found(
+            format!(
+                "no webhook {hook} of yours to remove on {}",
+                handle.display()
+            ),
+            format!("`dg webhook list {}` lists the webhooks", handle.display()),
+        ));
+    }
     ctx.emit(
         json!({
-            "status": if found { "removed" } else { "not_found" },
+            "status": "removed",
             "repo": handle.display(),
             "hookId": hex::encode(hook_id),
             "deleted": report.deleted,
             "tombstone": report.tombstone,
         }),
         || {
-            if found {
-                println!(
-                    "Removed webhook {} from {} ({} deleted{}).",
-                    hex::encode(hook_id),
-                    handle.display(),
-                    report.deleted.len(),
-                    report
-                        .tombstone
-                        .as_deref()
-                        .map(|t| format!(", disabled by {t}"))
-                        .unwrap_or_default()
-                );
-            } else {
-                println!("No webhook {hook} on {}.", handle.display());
-            }
+            println!(
+                "Removed webhook {} from {} ({} deleted{}).",
+                hex::encode(hook_id),
+                handle.display(),
+                report.deleted.len(),
+                report
+                    .tombstone
+                    .as_deref()
+                    .map(|t| format!(", disabled by {t}"))
+                    .unwrap_or_default()
+            );
         },
     );
     Ok(())
@@ -381,6 +435,37 @@ async fn remove(ctx: &Ctx, repo: &str, hook: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW3-023: the listed 12-digit id removes its hook; an unknown or shared one is an error.
+    #[test]
+    fn a_listed_short_id_names_its_hook() {
+        let a = [0xab; 32];
+        let mut b = [0xab; 32];
+        b[31] = 0xcd;
+        let named = hook_id_for_label("ci");
+        let listed = [a, b, named];
+        assert_eq!(find_hook(&hex::encode(b), &listed, "o/r").unwrap(), b);
+        assert_eq!(
+            find_hook(&hex::encode(named)[..12], &listed, "o/r").unwrap(),
+            named
+        );
+        assert_eq!(find_hook("ci", &listed, "o/r").unwrap(), named);
+        // a hex-looking name is its hook, not the hook whose id it prefixes
+        let beef = hook_id_for_label("beef");
+        let mut beef_id = [0u8; 32];
+        beef_id[0] = 0xbe;
+        beef_id[1] = 0xef;
+        assert_eq!(find_hook("beef", &[beef_id, beef], "o/r").unwrap(), beef);
+        let shared = find_hook(&hex::encode(a)[..12], &listed, "o/r").unwrap_err();
+        let u = shared.downcast_ref::<UserError>().unwrap();
+        assert_eq!(u.code, "E201", "{u:?}");
+        assert!(u.message.contains("names 2 webhooks"), "{u:?}");
+        for unknown in ["a60a5e9676ee", "nosuchname"] {
+            let e = find_hook(unknown, &listed, "o/r").unwrap_err();
+            let u = e.downcast_ref::<UserError>().unwrap();
+            assert_eq!(u.code, "E102", "{u:?}");
+        }
+    }
 
     #[test]
     fn hook_ids_parse_from_hex_or_name() {

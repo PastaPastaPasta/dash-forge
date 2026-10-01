@@ -761,8 +761,13 @@ fn confirm_plan(
             );
         }
         println!("  {}", packs_line(&plan.storage.policy, plan.size));
-        if plan.storage.source != Source::Flag {
-            println!("  (storage: {})", plan.storage.source.label());
+        if plan.storage.source != Source::Flag && plan.existing.is_none() {
+            // QW3-072: this is recorded in the repository's public config (the web's storage
+            // badge, where readers look first), not only used by this machine's pushes.
+            println!(
+                "  (storage: {}; recorded in the repository's public config, which readers and the web follow; `--storage <profile|platform>` records another)",
+                plan.storage.source.label()
+            );
         }
     }
     ctx.proceed("Proceed?")?;

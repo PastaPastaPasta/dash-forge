@@ -465,6 +465,15 @@ pub struct RepoPolicySetArgs {
     /// Allowed merge methods, comma-separated: `ff`, `merge`, `squash`, `rebase`, or `any`.
     #[arg(long = "merge-methods")]
     pub merge_methods: Option<String>,
+    /// A check a merge requires, by name (`build`), or pinned to the one source whose runs count
+    /// (`build=@ci-runner`, an identity id or DPNS name). Repeat it for each check; the list
+    /// replaces the current one and turns `--require-checks` on. Pin every check or none.
+    #[arg(
+        long = "required-check",
+        value_name = "NAME[=SOURCE]",
+        conflicts_with = "clear_required_checks"
+    )]
+    pub required_check: Vec<String>,
     /// Drop the required check names and their pinned sources (otherwise the current policy's
     /// are kept).
     #[arg(long = "clear-required-checks")]
@@ -1036,6 +1045,10 @@ pub struct PrMergeArgs {
     /// Only post the merge event (the merge was pushed some other way).
     #[arg(long)]
     pub event_only: bool,
+    /// Leave open the issues the description closes ("Fixes #12"); by default they are closed
+    /// after the merge, as on GitHub and in the web's merge box.
+    #[arg(long = "keep-linked-open")]
+    pub keep_linked_open: bool,
     /// With --event-only: the commit the event names (default: the PR head, or the base
     /// tip when the head is already in it).
     #[arg(long = "merge-oid", requires = "event_only")]
