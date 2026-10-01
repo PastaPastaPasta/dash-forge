@@ -79,7 +79,8 @@ pub const DOC_CHECK_RUN: &str = "checkRun";
 /// forge-community: a star (`indexOnly`).
 pub const DOC_STAR: &str = "star";
 /// forge-community: a trending beat (`indexOnly`, non-deletable): written beside a star when the starrer counts
-/// toward Trending (platform-parity-spec §4.3).
+/// toward Trending (platform-parity-spec §4.3). RC2's fused star (C1) drops the type: the star's
+/// own `byWeek` index counts it ([`Collab::fused_star`]).
 pub const DOC_STAR_BEAT: &str = "starBeat";
 /// forge-community: a watch (`indexOnly`): cross-device "watching this repo".
 pub const DOC_WATCH: &str = "watch";
@@ -1662,6 +1663,11 @@ pub fn review_props(
     }
     insert_imported(&mut p, imported)?;
     Ok(p)
+}
+
+/// Whether `community` is a fused-star forge-community (RC2 C1): it has no `starBeat` type.
+fn fused_star(community: &LoadedContract) -> bool {
+    !community.has_document_type(DOC_STAR_BEAT)
 }
 
 /// Whether a star of `repo` by `signer` also beats for Trending: RC1's `starBeat` names a public
@@ -5437,15 +5443,24 @@ impl<'a> Collab<'a> {
         Ok(self.own_star(&community, repo).await?.is_some())
     }
 
+    /// Whether `repo`'s forge-community counts a star toward Trending by itself: the RC2 fused
+    /// star (C1: `star.byWeek` on `[$createdAt, repoId]`, `outlivesDelete`, and no `starBeat`
+    /// type). Then there is no beat to write or to opt out of. RC1 (and RC2 with C1 off) has a
+    /// `starBeat` type, written beside a star ([`Self::star`]).
+    pub async fn fused_star(&self, repo: &RepoRef) -> Result<bool> {
+        Ok(fused_star(&self.community_contract(repo).await?))
+    }
+
     /// Star `repo`; with `trending`, a new star also counts toward Trending (a `starBeat`,
     /// once per identity and repo, platform-parity-spec §4.3). Returns `false` when it was
-    /// already starred (nothing written, no beat either).
+    /// already starred (nothing written, no beat either). On a fused-star contract
+    /// ([`Self::fused_star`]) the star is all there is, whatever `trending` says.
     pub async fn star(&self, repo: &RepoRef, trending: bool) -> Result<bool> {
         let community = self.community_contract(repo).await?;
         let starred = self
             .create_own_index_only(&community, repo, DOC_STAR, BTreeMap::new())
             .await?;
-        if starred && trending && beats(repo, &self.signer_id()?) {
+        if starred && trending && !fused_star(&community) && beats(repo, &self.signer_id()?) {
             // The star stands whatever happens to the beat, which only feeds a ranking. A beat
             // from an earlier star of this repo makes this a no-op (one per identity and repo,
             // ever: it cannot be deleted).
@@ -6329,6 +6344,46 @@ fn create_journal_path(
         kind.doc_type(),
         &digest[..16]
     ))
+}
+
+#[cfg(test)]
+mod fused_star_tests {
+    use super::*;
+
+    /// RC2's fused star (C1) is read off the contract. Where it is on, every `star` index over
+    /// `$createdAt` outlives a delete, so an unstar carries no `$createdAt`
+    /// ([`Collab::unstar`] sends none): v5 commits an indexOnly row to it only when some index
+    /// over it does not (`v5:packages/rs-dpp/src/data_contract/document_type/index/
+    /// outlives_delete.rs:21-26`).
+    #[test]
+    fn a_fused_star_contract_counts_the_star_itself() {
+        let community = crate::test_support::rc1::loaded(crate::layout::ForgeContract::Community);
+        let json: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../forge-contracts/contracts/forge-community.json"
+        ))
+        .unwrap();
+        let types = &json["documentSchemas"];
+        assert_eq!(fused_star(&community), types.get(DOC_STAR_BEAT).is_none());
+        let star = &types[DOC_STAR];
+        let over_created_at: Vec<&serde_json::Value> = star["indices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| {
+                i["properties"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.get("$createdAt").is_some())
+            })
+            .collect();
+        if fused_star(&community) {
+            assert!(!over_created_at.is_empty(), "the star's byWeek index");
+            assert!(over_created_at.iter().all(|i| i["outlivesDelete"] == true));
+        } else {
+            assert!(over_created_at.is_empty());
+        }
+    }
 }
 
 #[cfg(test)]

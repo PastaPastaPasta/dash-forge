@@ -16,7 +16,7 @@ cd forge-web && pnpm install --frozen-lockfile && pnpm build   # the static web 
 
 | Tool | Version | Why |
 |---|---|---|
-| Rust | pinned by `rust-toolchain.toml` (1.98.0) | rustup installs it automatically; MSRV floor is 1.98, which the pinned Platform packages (v4.2.0-beta.7) require |
+| Rust | pinned by `rust-toolchain.toml` (1.98.0) | rustup installs it automatically; MSRV floor is 1.98, which the pinned Platform packages (v5.0.0-beta.1) require |
 | **protoc** | ≥ 25 | `tenderdash-proto`, a transitive dependency of the Platform SDK, compiles `.proto` files in its build script |
 | Node | 22 | forge-web |
 | pnpm | 11 | forge-web (`pnpm-lock.yaml` is committed) |
@@ -78,7 +78,7 @@ declared in the root `Cargo.toml` as **git dependencies pinned to an immutable u
 tag**, and `Cargo.lock` records the exact commit:
 
 ```toml
-dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.7", default-features = false }
+dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.1", default-features = false }
 ```
 
 This is deliberate. They used to be path dependencies on a sibling `../platform` checkout,
@@ -133,7 +133,7 @@ The patch stays active until you remove it. Confirm which source is in use with
 
 ### Protocol versions (SDK v4.2)
 
-The pinned SDK (`v4.2.0-beta.7` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `4.2.0-beta.7` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
+The pinned SDK (`v5.0.0-beta.1` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `4.2.0-beta.7` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
 protocol 13 (testnet, mainnet) and protocol 14 (devnets such as bonsia). Neither client pins
 a version. The SDK starts at a per-network floor (13 for testnet and mainnet, 14 for a
 devnet) and raises it from the metadata of the first **proof-verified** response. So

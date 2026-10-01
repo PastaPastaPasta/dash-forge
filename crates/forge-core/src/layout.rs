@@ -71,6 +71,11 @@ pub const COMMUNITY_TYPES: [&str; 12] = [
     "starBeat",
 ];
 
+/// The listed types a contract build may leave out: RC2's fused star (C1, a `build.py` flag)
+/// drops `starBeat`, whose count the star's own `byWeek` index takes over. Clients read the
+/// shape from the loaded contract (`Collab::fused_star`), so both builds work.
+pub const OPTIONAL_TYPES: [&str; 1] = ["starBeat"];
+
 impl ForgeContract {
     /// The contract that holds `doc_type`, or `None` for a type RC1 does not define (such as
     /// the removed `manifestPart`).
@@ -211,6 +216,8 @@ mod tests {
                 ForgeContract::Community => COMMUNITY_TYPES.to_vec(),
             };
             listed.sort_unstable();
+            // A type a build flag left out is listed all the same (both shapes are read).
+            listed.retain(|t| types.contains(t) || !OPTIONAL_TYPES.contains(t));
             assert_eq!(types, listed, "{file}");
             for t in types {
                 assert_eq!(ForgeContract::of(t), Some(want), "{t}");
@@ -261,7 +268,11 @@ mod tests {
             (&mut public, PUBLIC_VIS_TYPES.to_vec()),
             (&mut member, MEMBER_PROOF_TYPES.to_vec()),
         ] {
-            let mut want: Vec<String> = want.into_iter().map(str::to_owned).collect();
+            let mut want: Vec<String> = want
+                .into_iter()
+                .filter(|t| !OPTIONAL_TYPES.contains(t) || got.iter().any(|g| g == t))
+                .map(str::to_owned)
+                .collect();
             got.sort();
             want.sort();
             assert_eq!(*got, want);

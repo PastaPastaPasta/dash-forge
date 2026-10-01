@@ -6,7 +6,7 @@
 //!   gate (`ownerRefersTo anyOf [runner, maintainer, writer]`) refuses its next create or
 //!   replace at consensus (40120).
 //! * **Check run** = a forge-community `checkRun` `{repoId, headOid, name, status, conclusion?, …}`,
-//!   mutable, with `[repoId, headOid, name]` immutable. The newest per `(headOid, name)` by
+//!   mutable, with `[repoId, headOid, name, vis]` immutable. The newest per `(headOid, name)` by
 //!   `($createdAt, $id)` is what readers show ([`crate::collab::v2::newest_check_runs`]), so a
 //!   run's progress (`queued → in_progress → completed`) is a **replace** of the reporter's own
 //!   document, and a re-run of the same check on the same commit is a new document. The
@@ -14,7 +14,10 @@
 //!   `externalId` once set and tie them to the status; [`check_run_write`] decides each write
 //!   so they hold: `startedAt` on the first report that is not `queued`, `completedAt` on the
 //!   first `completed` one, a stored time never changed, and a report that would move a run
-//!   backwards or change its conclusion is a new run.
+//!   backwards or change its conclusion is a new run. RC2 (S1, Platform v5's conditional
+//!   `immutable`) also freezes a completed run's evidence (`summary`, `detailsUrl`, `logUrl`,
+//!   `logSha256`, `artifacts`; [`EVIDENCE_FIELDS`]): a report that continues a completed run
+//!   leaves them as stored ([`ReportPlan::evidence_frozen`]).
 //! * **The runner's key** is AUTHENTICATION / HIGH bound to `(forge-community, checkRun)`
 //!   ([`ContractBounds::SingleContractDocumentType`], admitted on AUTHENTICATION keys from protocol
 //!   14), with a budget and an expiry: consensus refuses anything else it signs with 20014
@@ -89,6 +92,30 @@ pub const MS_EPOCH: u64 = 1_000_000_000_000;
 /// The fields a private repository's run cannot carry (`privateNoText`), by property name.
 pub const PRIVATE_TEXT_FIELDS: [&str; 5] =
     ["summary", "detailsUrl", "logUrl", "artifacts", "externalId"];
+
+/// A run's set-once fields, by property name: forge-community freezes each once it is set
+/// (`immutableAllowSetting` on RC1, `"when": {"present": "$old.<field>"}` on RC2), and
+/// [`check_run_write`] only ever sets them on a run that does not hold them yet.
+pub const SET_ONCE_FIELDS: [&str; 4] = ["startedAt", "completedAt", "conclusion", "externalId"];
+
+/// A completed run's evidence, by property name. RC2 forge-community (S1) freezes these once the
+/// stored run is `completed` (`immutable` entries with `"when": {"equal": ["$old.status",
+/// {"const": "completed"}]}`), and consensus refuses a replace that changes one with 40128
+/// (`DocumentImmutablePropertyChangedError`). So a report that continues a completed run (the
+/// same completion again, such as a runner's retry after an ambiguous failure) leaves them as
+/// stored: [`CheckReport::replace_changes`].
+pub const EVIDENCE_FIELDS: [&str; 5] =
+    ["summary", "detailsUrl", "logUrl", "logSha256", "artifacts"];
+
+/// Whether `stored`'s [`EVIDENCE_FIELDS`] are final: it is a completed run, and `community`
+/// freezes them (S1 is a build flag: a contract without it leaves them editable).
+#[must_use]
+pub fn evidence_frozen(community: &LoadedContract, stored: &FetchedDocument) -> bool {
+    stored.field_str("status").as_deref() == Some("completed")
+        && EVIDENCE_FIELDS
+            .iter()
+            .any(|f| community.freezes_when(DOC_CHECK_RUN, f))
+}
 
 /// A `checkRun`'s `outcome` (`outcomeOf`): 0 while the run is not completed, 1 for a completed
 /// run that passed (`success`, `neutral`, `skipped`), 2 for any other conclusion.
@@ -520,6 +547,24 @@ impl CheckReport {
         }
         c
     }
+
+    /// What a replace sets: [`Self::changes`], less the [`EVIDENCE_FIELDS`] when `frozen` (the
+    /// stored run already completed, and the contract freezes them: [`evidence_frozen`]). Those
+    /// stay as stored, so the same completion reported again writes nothing new rather than
+    /// being refused at consensus.
+    pub(crate) fn replace_changes(
+        &self,
+        w: &RunWrite,
+        frozen: bool,
+    ) -> BTreeMap<String, Option<FieldValue>> {
+        let mut c = self.changes(w);
+        if frozen {
+            for f in EVIDENCE_FIELDS {
+                c.remove(f);
+            }
+        }
+        c
+    }
 }
 
 /// A stored `checkRun` as the monotonic rules read it.
@@ -648,7 +693,7 @@ impl<'a> CheckRuns<'a> {
                     &plan.community,
                     DOC_CHECK_RUN,
                     &run.id,
-                    &report.changes(&plan.write),
+                    &report.replace_changes(&plan.write, plan.evidence_frozen()),
                 )
                 .await?;
             return Ok(Reported {
@@ -692,6 +737,15 @@ impl ReportPlan {
     /// Whether the report replaces an existing run (else it creates one).
     pub fn replaces(&self) -> bool {
         self.target.is_some()
+    }
+
+    /// Whether the report continues a run that already completed, whose evidence (summary,
+    /// details link, log, artifacts) stays as stored ([`EVIDENCE_FIELDS`]): a caller need not
+    /// upload a log or artifacts the write will not record.
+    pub fn evidence_frozen(&self) -> bool {
+        self.target
+            .as_ref()
+            .is_some_and(|t| evidence_frozen(&self.community, t))
     }
 
     /// The report's fields left out because the repository is private (`privateNoText`), as
@@ -892,7 +946,13 @@ mod tests {
         now: u64,
     ) -> (RunWriteAction, BTreeMap<String, Option<FieldValue>>) {
         let w = r.write(stored, now).expect("a valid report");
-        (w.action, r.changes(&w))
+        // As on RC2 with S1: a completed run's evidence is frozen.
+        let frozen = stored.is_some_and(|s| s.field_str("status").as_deref() == Some("completed"));
+        let c = match w.action {
+            RunWriteAction::Replace => r.replace_changes(&w, frozen),
+            RunWriteAction::Create => r.changes(&w),
+        };
+        (w.action, c)
     }
 
     #[test]
@@ -1023,6 +1083,22 @@ mod tests {
         let (action, c) = written(&report("completed", Some("success")), Some(&finished), 99);
         assert_eq!(action, RunWriteAction::Replace);
         assert_eq!(c.keys().collect::<Vec<_>>(), ["outcome", "status"]);
+        // Nor does a repeat that carries other evidence (a runner's retry without its
+        // artifacts): a completed run's summary, links, log and artifacts are frozen (RC2 S1),
+        // so they stay as stored instead of drawing 40128.
+        let mut again = report("completed", Some("success"));
+        again.summary = Some("ok; artifacts not recorded: their upload failed".into());
+        again.details_url = Some("https://ci.example.com/run/2".into());
+        again.log = Some(("https://x/log2".into(), [9; 32]));
+        again.artifacts = Some("[]".into());
+        let (action, c) = written(&again, Some(&finished), 99);
+        assert_eq!(action, RunWriteAction::Replace);
+        assert_eq!(c.keys().collect::<Vec<_>>(), ["outcome", "status"]);
+        // A run that completes now still records its evidence.
+        let (_, c) = written(&again, Some(&running), 99);
+        for f in EVIDENCE_FIELDS {
+            assert!(c.contains_key(f), "{f}");
+        }
         // A backwards report or a changed conclusion is a new run with its own times.
         let (action, c) = written(&report("queued", None), Some(&finished), 99);
         assert_eq!(action, RunWriteAction::Create);
@@ -1030,6 +1106,30 @@ mod tests {
         let (action, c) = written(&report("completed", Some("failure")), Some(&finished), 99);
         assert_eq!(action, RunWriteAction::Create);
         assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(99))));
+    }
+
+    #[test]
+    fn the_generated_community_freezes_what_a_report_leaves_as_stored() {
+        let community = crate::test_support::rc1::loaded(crate::layout::ForgeContract::Community);
+        // M1: each set-once field is a conditional `immutable` entry (`check_run_write` never
+        // changes one).
+        for f in SET_ONCE_FIELDS {
+            assert!(community.freezes_when(DOC_CHECK_RUN, f), "{f}");
+        }
+        // S1 is a build flag: all of the evidence freezes, or none of it.
+        let frozen: Vec<bool> = EVIDENCE_FIELDS
+            .iter()
+            .map(|f| community.freezes_when(DOC_CHECK_RUN, f))
+            .collect();
+        assert!(frozen.iter().all(|f| *f == frozen[0]), "{frozen:?}");
+        let done = stored(&[("status", FieldValue::text("completed"))]);
+        assert_eq!(evidence_frozen(&community, &done), frozen[0]);
+        let running = stored(&[("status", FieldValue::text("in_progress"))]);
+        assert!(!evidence_frozen(&community, &running));
+        // Only a conditional entry counts: `name` is always immutable, `status` mutable.
+        assert!(!community.freezes_when(DOC_CHECK_RUN, "name"));
+        assert!(!community.freezes_when(DOC_CHECK_RUN, "status"));
+        assert!(!community.freezes_when("noSuchType", "summary"));
     }
 
     /// The RC1 accept/refuse vectors of one document type (`forge-contracts/vectors/rc1`).
