@@ -838,6 +838,11 @@ async function findOwnIndexOnly(
   return null
 }
 
+/** Whether `ownerId` stars `repoId` now (its `star` on `byOwner`; Trending's owner check reads it too). */
+export async function hasStar(sdk: EvoSDK, forge: ForgeIds, ownerId: string, repoId: string): Promise<boolean> {
+  return (await findOwnIndexOnly(sdk, forge, 'star', ownerId, repoId)) !== null
+}
+
 /** Create the signer's `star` / `follow` (indexOnly), with `payload` besides the target. Idempotent: a duplicate is success. */
 function createIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: IndexOnlyType, targetId: string, payload: Record<string, unknown> = {}): Promise<WriteResult> {
   const field = targetField(type)
@@ -899,7 +904,7 @@ export async function writeStarBeat(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef)
  */
 export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, repo: RepoRef, trending = false): Relation {
   return {
-    read: async () => (await findOwnIndexOnly(sdk, repo.forge, 'star', viewer, repo.repoId)) !== null,
+    read: () => hasStar(sdk, repo.forge, viewer, repo.repoId),
     add: async () => {
       const a = need(auth)
       const confirmed = (await createIndexOnly(sdk, a, repo.forge, 'star', repo.repoId)).confirmed
