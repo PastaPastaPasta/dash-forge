@@ -190,6 +190,11 @@ pub struct CommentAnchor {
     /// The `review` this comment belongs to (a pending review's batched comments). Consensus
     /// requires the review to be the signer's and on the same PR.
     pub review_id: Option<String>,
+    /// The source's diff hunk of a mirrored review comment (RC2 rider QW2-010,
+    /// `comment.diffHunk`, ≤ 1,024 bytes, immutable). Written only on a public repository whose
+    /// contract has the property: the sealed comment format carries body and path alone, and
+    /// `noPlain` refuses a plaintext hunk beside `enc`.
+    pub diff_hunk: Option<String>,
 }
 
 // ===========================================================================

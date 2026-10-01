@@ -52,6 +52,7 @@ use crate::rules::v2::{
     Review as RuleReview, Role, RoleOracle, StateAction, Transition, TransitionMove,
     TransitionTarget, Visibility, TRANSITION_KINDS,
 };
+use crate::rules::v2::{CloseReason, ClosedAs};
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
@@ -365,6 +366,19 @@ pub struct Comment {
     pub created_at: u64,
     /// Importer provenance.
     pub imported: Option<Imported>,
+    /// A mirrored review comment's source diff hunk (QW2-010, `diffHunk`): text a reader shows
+    /// as text, and only on an imported comment with a path ([`Comment::shown_hunk`]).
+    pub diff_hunk: Option<String>,
+}
+
+impl Comment {
+    /// The diff hunk a reader shows: a mirrored (`imported`) comment's, on a file (`path`).
+    #[must_use]
+    pub fn shown_hunk(&self) -> Option<&str> {
+        self.diff_hunk
+            .as_deref()
+            .filter(|_| self.imported.is_some() && self.anchor.path.is_some())
+    }
 }
 
 /// A `review`, flattened.
@@ -751,6 +765,9 @@ pub struct StateChange {
     pub kind: u8,
     /// The state code after it.
     pub after: i64,
+    /// The close reason it records (QW-069): `None` when none was asked for, or the registered
+    /// contract has no `transition.reason` (an RC1 contract, or RC2 with the rider off).
+    pub closed_as: Option<ClosedAs>,
 }
 
 // ===========================================================================
@@ -846,6 +863,8 @@ pub fn transition_from_doc(d: &FetchedDocument) -> Option<Transition> {
             .and_then(|n| u32::try_from(n).ok())
             .unwrap_or(0),
         created_at: d.created_at.unwrap_or_default(),
+        reason: d.field_u64("reason").and_then(|n| u8::try_from(n).ok()),
+        dup_number: d.field_u64("dupNumber").and_then(|n| u32::try_from(n).ok()),
     })
 }
 
@@ -874,6 +893,7 @@ fn comment_from_doc(d: &FetchedDocument) -> Comment {
         },
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
+        diff_hunk: d.field_str(COMMENT_DIFF_HUNK),
     }
 }
 
@@ -1383,6 +1403,47 @@ pub fn transition_props(
     Ok(p)
 }
 
+/// The `transition` property that records a close reason (QW-069; a `build.py` rider flag, so a
+/// writer feature-detects it on the registered contract).
+pub const TRANSITION_REASON: &str = "reason";
+
+/// Add an issue close's reason (QW-069) to the properties of its transition: `reason`, and for a
+/// duplicate of another issue of the repo `dupNumber`. Only an issue close (kind 1) records one,
+/// and only a duplicate names a canonical, never the issue itself (the reading of
+/// [`crate::rules::v2::close_reason_of`]; no consensus rule checks it).
+pub fn insert_close_reason(
+    p: &mut BTreeMap<String, FieldValue>,
+    target: &Target,
+    mv: &TransitionMove,
+    closed: &ClosedAs,
+) -> Result<()> {
+    if mv.kind != crate::rules::transition::ISSUE_CLOSE {
+        return Err(Error::Config(format!(
+            "only an issue close records a reason; a kind-{} transition does not",
+            mv.kind
+        )));
+    }
+    if let Some(n) = closed.duplicate_of {
+        if closed.reason != CloseReason::Duplicate {
+            return Err(Error::Config(
+                "only a close as a duplicate names the issue it duplicates".into(),
+            ));
+        }
+        if n == 0 || n == target.number {
+            return Err(Error::Config(format!(
+                "issue #{} cannot be a duplicate of #{n}",
+                target.number
+            )));
+        }
+        p.insert("dupNumber".to_string(), FieldValue::integer(u64::from(n)));
+    }
+    p.insert(
+        TRANSITION_REASON.to_string(),
+        FieldValue::integer(u64::from(closed.reason.code())),
+    );
+    Ok(())
+}
+
 /// The request a state change is: its [`StateAction`], and the verb the messages use.
 fn action_verb(action: StateAction) -> &'static str {
     match action {
@@ -1623,10 +1684,23 @@ pub fn comment_props(
                 FieldValue::identifier(platform::decode_identifier(r)?),
             );
         }
+        if let Some(h) = &a.diff_hunk {
+            if h.is_empty() || a.path.is_none() {
+                return Err(Error::Config(
+                    "a diff hunk goes on a comment on a file, and is not empty".into(),
+                ));
+            }
+            check_text("diff hunk", h, 1024, 1024)?;
+            p.insert(COMMENT_DIFF_HUNK.to_string(), FieldValue::text(h));
+        }
     }
     insert_imported(&mut p, imported)?;
     Ok(p)
 }
+
+/// The `comment` property of a mirrored review comment's diff hunk (QW2-010; a `build.py` rider
+/// flag, so a writer feature-detects it on the registered contract).
+pub const COMMENT_DIFF_HUNK: &str = "diffHunk";
 
 /// The properties of a `review` (without `repoId`): `verdict` on `commit_oid`, with the number
 /// of `reviewId` comments its submit will write.
@@ -1666,6 +1740,30 @@ pub fn review_props(
 }
 
 /// Whether `community` is a fused-star forge-community (RC2 C1): it has no `starBeat` type.
+/// [`insert_close_reason`] when `closed` is asked for and `collab` has `transition.reason`;
+/// returns what was recorded. A contract without it (RC1, or RC2 with the rider off) gets the
+/// plain close, with a warning.
+fn with_close_reason(
+    p: &mut BTreeMap<String, FieldValue>,
+    collab: &LoadedContract,
+    target: &Target,
+    mv: &TransitionMove,
+    closed: Option<&ClosedAs>,
+) -> Result<Option<ClosedAs>> {
+    let Some(closed) = closed else {
+        return Ok(None);
+    };
+    if !collab.has_property(DOC_TRANSITION, TRANSITION_REASON) {
+        tracing::warn!(
+            reason = closed.reason.as_str(),
+            "this forge-collab has no transition.reason: the close is written without its reason"
+        );
+        return Ok(None);
+    }
+    insert_close_reason(p, target, mv, closed)?;
+    Ok(Some(*closed))
+}
+
 fn fused_star(community: &LoadedContract) -> bool {
     !community.has_document_type(DOC_STAR_BEAT)
 }
@@ -3523,7 +3621,7 @@ impl<'a> Collab<'a> {
             return Ok(None);
         }
         let e = match self
-            .set_state_from(repo, &target, StateAction::Draft, None, Some(code))
+            .set_state_from(repo, &target, StateAction::Draft, None, Some(code), None)
             .await
         {
             Ok(c) => return Ok(Some(c.transition_id)),
@@ -4107,6 +4205,14 @@ impl<'a> Collab<'a> {
             if let Some(parent) = &a.reply_to {
                 a.reply_to = Some(self.thread_root(repo, &collab, target_id, parent).await?);
             }
+            // A hunk is public text: a private repo's sealed comment has no room for it, and a
+            // contract without the rider has no property for it.
+            if a.diff_hunk.is_some()
+                && (repo.visibility == Visibility::Private
+                    || !collab.has_property(DOC_COMMENT, COMMENT_DIFF_HUNK))
+            {
+                a.diff_hunk = None;
+            }
         }
         let p = comment_props(target_id, body, anchor.as_ref(), imported)?;
         self.require_unlocked_or_member(repo, target_id).await?;
@@ -4278,13 +4384,28 @@ impl<'a> Collab<'a> {
         action: StateAction,
         merge_oid: Option<&[u8]>,
     ) -> Result<StateChange> {
-        self.set_state_from(repo, target, action, merge_oid, None)
+        self.set_state_from(repo, target, action, merge_oid, None, None)
+            .await
+    }
+
+    /// Close the issue `target` saying why (QW-069): [`Self::set_state`]'s close, whose
+    /// transition also records `closed` (`reason`, and a duplicate's `dupNumber`). On a contract
+    /// without `transition.reason` the close is written without it
+    /// ([`StateChange::closed_as`] is then `None`).
+    pub async fn close_as(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        closed: &ClosedAs,
+    ) -> Result<StateChange> {
+        self.set_state_from(repo, target, StateAction::Close, None, None, Some(closed))
             .await
     }
 
     /// Write the transition `mv` on `target` as it is (the importer's primitive: it computed
-    /// the move from the state code it read, as a member). No pre-check: consensus judges it,
-    /// and a move the target's state no longer allows is refused before execution
+    /// the move from the state code it read, as a member), with an issue close's reason
+    /// (`closed`; dropped on a contract without `transition.reason`). No pre-check: consensus
+    /// judges it, and a move the target's state no longer allows is refused before execution
     /// ([`Error::RuleRefused`] naming a `c*` rule).
     pub async fn write_transition(
         &self,
@@ -4292,9 +4413,11 @@ impl<'a> Collab<'a> {
         target: &Target,
         mv: &TransitionMove,
         merge_oid: Option<&[u8]>,
+        closed: Option<&ClosedAs>,
     ) -> Result<String> {
-        let props = transition_props(target, mv, merge_oid)?;
+        let mut props = transition_props(target, mv, merge_oid)?;
         let collab = self.collab_contract(repo).await?;
+        with_close_reason(&mut props, &collab, target, mv, closed)?;
         self.write(repo, &collab, DOC_TRANSITION, props).await
     }
 
@@ -4306,6 +4429,7 @@ impl<'a> Collab<'a> {
         action: StateAction,
         merge_oid: Option<&[u8]>,
         known_code: Option<i64>,
+        closed: Option<&ClosedAs>,
     ) -> Result<StateChange> {
         let me = self.signer_id()?;
         let role = self.signer_role(repo).await?;
@@ -4335,14 +4459,16 @@ impl<'a> Collab<'a> {
             ),
             None => return Err(no_move(target, code, action, actor)),
         };
-        let props = transition_props(target, &mv, merge_oid)?;
+        let mut props = transition_props(target, &mv, merge_oid)?;
         let collab = self.collab_contract(repo).await?;
+        let closed_as = with_close_reason(&mut props, &collab, target, &mv, closed)?;
         match self.write(repo, &collab, DOC_TRANSITION, props).await {
             Ok(transition_id) => Ok(StateChange {
                 route,
                 transition_id,
                 kind: mv.kind,
                 after: mv.after,
+                closed_as,
             }),
             Err(e) if is_state_rule_refusal(&e) => {
                 let now = self.state_sum(repo, &target.id).await.unwrap_or(code);
@@ -6766,6 +6892,42 @@ mod tests {
         assert!(transition_props(&pr, &close, Some(&[7; 20])).is_err());
         // A PR move never names an issue (a_kindOfTarget / the tk agreement).
         assert!(transition_props(&issue, &close, None).is_err());
+    }
+
+    /// QW-069: an issue close records its reason (and a duplicate its canonical); nothing
+    /// else does, and an issue is never a duplicate of itself.
+    #[test]
+    fn a_close_reason_goes_on_an_issue_close_only() {
+        let (issue, pr) = (target("alice"), pr("alice"));
+        let closed = |reason, duplicate_of| ClosedAs {
+            reason,
+            duplicate_of,
+        };
+        let props = |t: &Target, m: &TransitionMove, c: &ClosedAs| {
+            let mut p = transition_props(t, m, None).unwrap();
+            insert_close_reason(&mut p, t, m, c).map(|()| {
+                (
+                    p.get("reason").and_then(FieldValue::as_u64),
+                    p.get("dupNumber").and_then(FieldValue::as_u64),
+                )
+            })
+        };
+        let close = mv(&issue, 0, StateAction::Close, Actor::Member);
+        assert_eq!(
+            props(&issue, &close, &closed(CloseReason::NotPlanned, None)).unwrap(),
+            (Some(2), None)
+        );
+        assert_eq!(
+            props(&issue, &close, &closed(CloseReason::Duplicate, Some(1))).unwrap(),
+            (Some(3), Some(1))
+        );
+        // its own number, a canonical beside another reason, a reopen, a PR close
+        assert!(props(&issue, &close, &closed(CloseReason::Duplicate, Some(3))).is_err());
+        assert!(props(&issue, &close, &closed(CloseReason::Completed, Some(1))).is_err());
+        let reopen = mv(&issue, 1, StateAction::Reopen, Actor::Member);
+        assert!(props(&issue, &reopen, &closed(CloseReason::Completed, None)).is_err());
+        let pr_close = mv(&pr, 0, StateAction::Close, Actor::Member);
+        assert!(props(&pr, &pr_close, &closed(CloseReason::NotPlanned, None)).is_err());
     }
 
     /// No legal move: a clear refusal before anything is signed.

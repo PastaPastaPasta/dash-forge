@@ -203,6 +203,16 @@ impl LoadedContract {
         self.0.has_document_type_for_name(name)
     }
 
+    /// Whether `document_type` declares a top-level `property`: feature-detects an optional
+    /// property a build flag adds (the RC2 riders' `transition.reason`, `comment.diffHunk`), so a
+    /// client writes it only where the registered contract has it. `false` for an unknown type.
+    pub fn has_property(&self, document_type: &str, property: &str) -> bool {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        self.0
+            .document_type_for_name(document_type)
+            .is_ok_and(|t| t.properties().contains_key(property))
+    }
+
     /// Whether `document_type` lists `property` in `immutable` with a condition (Platform v5;
     /// `v5:packages/rs-dpp/src/data_contract/document_type/accessors/v2/mod.rs:136-143`): a
     /// replace that changes it while the condition holds is refused with 40128. `false` for an

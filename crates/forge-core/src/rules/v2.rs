@@ -49,10 +49,10 @@ pub use super::review::{
     SuggestionError,
 };
 pub use super::transition::{
-    delta_of, dense_number, fold_sum, is_locked, merge_transition, names_dense_rule,
-    next_transition, repo_counts, state_code, state_sum, status_of_code, Actor, RepoCounts,
-    StateAction, StateStatus, Transition, TransitionMove, TransitionTarget, DENSE_RULE, LOCK_DELTA,
-    TRANSITION_KINDS,
+    close_reason_of, current_close_reason, delta_of, dense_number, fold_sum, is_locked,
+    merge_transition, names_dense_rule, next_transition, repo_counts, state_code, state_sum,
+    status_of_code, Actor, CloseReason, ClosedAs, RepoCounts, StateAction, StateStatus, Transition,
+    TransitionMove, TransitionTarget, DENSE_RULE, LOCK_DELTA, TRANSITION_KINDS,
 };
 
 use serde::{Deserialize, Serialize};

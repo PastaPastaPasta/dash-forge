@@ -1194,6 +1194,11 @@ fn print_conversations(conv: &threads::Conversations) {
             format!(" [{}]", tags.join(", "))
         };
         println!("  ▸ {}{tags}  (thread {})", safe(&t.location), short(&t.id));
+        if let Some(h) = &t.diff_hunk {
+            for line in safe(h).lines() {
+                println!("    │ {line}");
+            }
+        }
         for c in &t.comments {
             println!("    — {} [{}]:", c.author, short(&c.id));
             for line in safe(&c.body).lines() {

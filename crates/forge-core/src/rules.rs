@@ -1912,6 +1912,13 @@ mod tests {
     }
 
     #[derive(Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CloseReasonInput {
+        target_number: u32,
+        transitions: Vec<v2::Transition>,
+    }
+
+    #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct Totals {
         issues: u64,
@@ -1969,6 +1976,14 @@ mod tests {
                     })
                     .collect();
                 assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
+            }
+            "close_reason" => {
+                let inp: CloseReasonInput = input(v);
+                assert_eq!(
+                    v2::current_close_reason(&inp.transitions, inp.target_number),
+                    expected::<Option<v2::ClosedAs>>(v),
+                    "vector `{ctx}`"
+                );
             }
             "transition_sum" => {
                 let inp: Transitions = input(v);
@@ -2070,7 +2085,7 @@ mod tests {
             "fold_issue" | "fold_pr" => run_fold_case(v),
             "transition_moves" | "transition_status" | "transition_sum" | "transition_fold"
             | "repo_counts" | "dense_number" | "dense_refusal" | "upstream_number"
-            | "check_run_write" => {
+            | "check_run_write" | "close_reason" => {
                 run_transition_case(v);
             }
             "pack_copies" => run_pack_copies(v),

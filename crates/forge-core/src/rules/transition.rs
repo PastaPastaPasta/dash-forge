@@ -30,8 +30,12 @@
 //! * [`repo_counts`] — the open / closed / merged / draft totals of a repo from its two target
 //!   totals and one count of transitions grouped by kind (§4).
 //!
-//! The `"rules": "v2"` vectors `transition__*` in `forge-contracts/vectors/` hold this module in
-//! parity with `forge-web/lib/rules/transition.ts`.
+//! * [`close_reason_of`] / [`current_close_reason`] — why an issue was closed (RC2 rider QW-069:
+//!   `transition.reason` and `dupNumber`, which no consensus rule reads, so every reader judges
+//!   them the same way here).
+//!
+//! The `"rules": "v2"` vectors `transition__*` and `close_reason__*` in `forge-contracts/vectors/`
+//! hold this module in parity with `forge-web/lib/rules/transition.ts`.
 
 use std::collections::BTreeMap;
 
@@ -279,6 +283,103 @@ pub struct Transition {
     /// Consensus `$createdAt` (ms).
     #[serde(default)]
     pub created_at: u64,
+    /// `transition.reason` (QW-069): 1 completed, 2 not planned, 3 duplicate; read only on an
+    /// issue close ([`close_reason_of`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<u8>,
+    /// `transition.dupNumber` (QW-069): the canonical issue's number in the same repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dup_number: Option<u32>,
+}
+
+/// Why an issue was closed (`transition.reason`, GitHub's `stateReason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseReason {
+    /// Done (1; GitHub's default close).
+    Completed,
+    /// Won't be done (2).
+    NotPlanned,
+    /// A duplicate of another issue (3).
+    Duplicate,
+}
+
+impl CloseReason {
+    /// The stored `transition.reason`.
+    #[must_use]
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Completed => 1,
+            Self::NotPlanned => 2,
+            Self::Duplicate => 3,
+        }
+    }
+
+    /// The reason a stored code stands for; `None` outside 1..=3.
+    #[must_use]
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Completed),
+            2 => Some(Self::NotPlanned),
+            3 => Some(Self::Duplicate),
+            _ => None,
+        }
+    }
+
+    /// The reason's name as `gh` and GitHub's REST `state_reason` spell it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::NotPlanned => "not_planned",
+            Self::Duplicate => "duplicate",
+        }
+    }
+}
+
+/// An issue's close, read: its reason and, for a duplicate, the canonical issue's number when
+/// the transition names one other than the issue itself. A reader links `duplicate_of` only when
+/// it resolves (the `number` index) to an issue of the same repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClosedAs {
+    /// Why it was closed.
+    pub reason: CloseReason,
+    /// The canonical issue's number (a duplicate only).
+    pub duplicate_of: Option<u32>,
+}
+
+/// The close reason one transition records, as every reader judges it (no consensus rule
+/// reads `reason` or `dupNumber`): only an issue close (kind 1) has one, and it carries a reason
+/// in 1..=3 (absent or out of range: a plain close, `None`). A PR close's reason is reserved and
+/// ignored. `dupNumber` counts only with reason 3 and when it is not the target's own number.
+#[must_use]
+pub fn close_reason_of(t: &Transition, target_number: u32) -> Option<ClosedAs> {
+    if t.kind != ISSUE_CLOSE {
+        return None;
+    }
+    let reason = CloseReason::from_code(t.reason?)?;
+    let duplicate_of = t
+        .dup_number
+        .filter(|&n| reason == CloseReason::Duplicate && n != target_number && n != 0);
+    Some(ClosedAs {
+        reason,
+        duplicate_of,
+    })
+}
+
+/// An issue's current close reason: the reason of its newest close or reopen (kinds 1 / 2, by
+/// `($createdAt, $id)`; locks are skipped), and only while its state code is 1 (closed).
+#[must_use]
+pub fn current_close_reason(transitions: &[Transition], target_number: u32) -> Option<ClosedAs> {
+    if state_code(transitions) != 1 {
+        return None;
+    }
+    transitions
+        .iter()
+        .filter(|t| matches!(t.kind, ISSUE_CLOSE | ISSUE_REOPEN))
+        .max_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))
+        .and_then(|t| close_reason_of(t, target_number))
 }
 
 /// The sum of a target's transition deltas (unknown kinds count 0). On chain every stored
@@ -458,6 +559,8 @@ mod tests {
             oid: None,
             as_author: 0,
             created_at: 0,
+            reason: None,
+            dup_number: None,
         };
         let log = [t(ISSUE_CLOSE), t(ISSUE_LOCK)];
         assert_eq!(
@@ -502,6 +605,64 @@ mod tests {
                 next_transition(TransitionTarget::Patch, 2, a, Actor::Member, 1),
                 None
             );
+        }
+    }
+
+    #[test]
+    fn a_close_reason_is_read_off_the_newest_issue_close() {
+        let t = |id: &str, at: u64, kind: u8, reason: Option<u8>, dup: Option<u32>| Transition {
+            id: id.into(),
+            kind,
+            actor: String::new(),
+            oid: None,
+            as_author: 0,
+            created_at: at,
+            reason,
+            dup_number: dup,
+        };
+        let dup = |n| ClosedAs {
+            reason: CloseReason::Duplicate,
+            duplicate_of: n,
+        };
+        // the reason of the newest close, a lock after it skipped
+        let log = [
+            t("a", 1, ISSUE_CLOSE, Some(2), None),
+            t("b", 2, ISSUE_REOPEN, None, None),
+            t("c", 3, ISSUE_CLOSE, Some(3), Some(4)),
+            t("d", 4, ISSUE_LOCK, None, None),
+        ];
+        assert_eq!(current_close_reason(&log, 7), Some(dup(Some(4))));
+        // reopened: none
+        assert_eq!(current_close_reason(&log[..2], 7), None);
+        // its own number, or a dupNumber beside another reason, links nothing
+        assert_eq!(
+            close_reason_of(&t("x", 1, ISSUE_CLOSE, Some(3), Some(7)), 7),
+            Some(dup(None))
+        );
+        assert_eq!(
+            close_reason_of(&t("x", 1, ISSUE_CLOSE, Some(1), Some(5)), 7)
+                .map(|c| (c.reason, c.duplicate_of)),
+            Some((CloseReason::Completed, None))
+        );
+        // a PR close, a reopen and an out-of-range code carry none
+        assert_eq!(
+            close_reason_of(&t("x", 1, PR_CLOSE, Some(2), None), 7),
+            None
+        );
+        assert_eq!(
+            close_reason_of(&t("x", 1, ISSUE_REOPEN, Some(2), None), 7),
+            None
+        );
+        assert_eq!(
+            close_reason_of(&t("x", 1, ISSUE_CLOSE, Some(9), None), 7),
+            None
+        );
+        for r in [
+            CloseReason::Completed,
+            CloseReason::NotPlanned,
+            CloseReason::Duplicate,
+        ] {
+            assert_eq!(CloseReason::from_code(r.code()), Some(r));
         }
     }
 
