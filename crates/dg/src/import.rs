@@ -78,7 +78,7 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
         Status::Partial => Some(
             UserError::new(codes::PARTIAL, "some items were not mirrored")
                 .cause(if summary.incomplete {
-                    "the source refused part of what was asked for; see the warnings".to_string()
+                    "part of what was asked for was left out (the source refused to list it, or a release's asset could not be sealed); see the warnings".to_string()
                 } else {
                     format!(
                         "{} item(s) and {} optional git push(es) skipped; see the warnings",

@@ -65,6 +65,10 @@ pub struct Ledger<'a> {
     /// Items (`(tk, source number)`) the destination refused this run: a content error, so
     /// retrying the same item cannot help ([`crate::state::SyncState::refused`]).
     pub refused: BTreeSet<(u8, u32)>,
+    /// Something was mirrored without part of it (a release's asset it could not seal or list):
+    /// the run ends `partial` and its state does not advance, so the next run tries again (as
+    /// [`crate::model::SrcCollab::incomplete`] does for what the source refused to list).
+    pub incomplete: bool,
 }
 
 impl<'a> Ledger<'a> {
@@ -109,6 +113,7 @@ impl<'a> Ledger<'a> {
             counts: Counts::default(),
             warnings: Vec::new(),
             refused: BTreeSet::new(),
+            incomplete: false,
         }
     }
 

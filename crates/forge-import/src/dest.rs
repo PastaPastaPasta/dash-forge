@@ -284,6 +284,7 @@ pub async fn finish(mut summary: Summary, outcome: Outcome<'_>, result: Result<(
         summary.counts = ledger.counts;
         summary.spent_credits = ledger.budget.spent();
         summary.warnings.extend(ledger.warnings);
+        summary.incomplete |= ledger.incomplete;
     }
     if let Some((client, signer)) = outcome.signer {
         summary.balance_credits = client.get_balance(&signer.id()).await.ok();
@@ -511,6 +512,33 @@ mod tests {
             }),
             ..SrcCollab::default()
         }
+    }
+
+    /// A ledger that mirrored a release without an asset it could not seal ends the run
+    /// `partial` (nothing skipped, nothing refused), with its warnings in the summary.
+    #[tokio::test]
+    async fn a_run_that_left_an_asset_out_ends_partial() {
+        let summary = |incomplete: bool| async move {
+            let mut ledger = Ledger::offline(false);
+            ledger.warn("release v1 asset \"a\": mirrored without it");
+            ledger.incomplete = incomplete;
+            let outcome = Outcome {
+                ledger: Some(ledger),
+                signer: None,
+            };
+            finish(
+                Summary::new("testnet".into(), "o/r".into()),
+                outcome,
+                Ok(()),
+            )
+            .await
+        };
+        let done = summary(false).await;
+        assert_eq!(done.status, Status::Ok);
+        let partial = summary(true).await;
+        assert_eq!(partial.status, Status::Partial);
+        assert_eq!(partial.counts.skipped, 0);
+        assert_eq!(partial.warnings.len(), 1);
     }
 
     #[test]

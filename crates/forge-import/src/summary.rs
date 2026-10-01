@@ -146,8 +146,9 @@ pub struct Summary {
     pub warnings: Vec<String>,
     /// The error, when `status` is `error` or `cap_exceeded`.
     pub error: Option<String>,
-    /// The source refused part of what was asked for (the warnings say what): the run
-    /// ends `partial`, and the next run with more access reads it.
+    /// Part of what was asked for was left out (the warnings say what): the source refused to
+    /// list it, or a release's asset could not be sealed or listed. The run ends `partial`,
+    /// its state does not advance, and the next run tries it again.
     #[serde(skip)]
     pub incomplete: bool,
 }
