@@ -27,6 +27,13 @@ export const CONTRACTS = Object.fromEntries(
   ['core', 'collab', 'community'].map((c) => [c, JSON.parse(readFileSync(join(ROOT, 'contracts', `forge-${c}.json`), 'utf8'))]),
 );
 
+/**
+ * RC2 C1 (schema/build.py `fused_star`): the star itself sits in the trending window (its
+ * `byWeek` index outlives an unstar), and starBeat is gone. Read from the committed schema, the
+ * one deploy-v2.mjs registers; a fee probe that fails turns the flag off and brings starBeat back.
+ */
+export const FUSED_STAR = !('starBeat' in CONTRACTS.community.documentSchemas);
+
 /** The contract (`core`, `collab`, `community`) that holds each document type. */
 export const CONTRACT_OF = Object.fromEntries(
   Object.entries(CONTRACTS).flatMap(([c, json]) => Object.keys(json.documentSchemas).map((t) => [t, c])),

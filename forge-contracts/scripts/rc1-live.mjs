@@ -17,14 +17,17 @@
 //   state     dense numbering (issues and PRs), transitions c1..c5 (mod 16; kinds 1, 2, 11..17),
 //             the lock bit c6 and lockGate on comments and reviews (R-15), a stranger's transition
 //             (40120), an author's close, member verdicts (R-16), the grouped count / sum keying
-//             (§3.1 1-2), set-once check-run fields (D-5, 40128)
+//             (§3.1 1-2), set-once check-run fields (D-5 / RC2 M1, 40128), and with RC2 S2/S3 the
+//             proved review feeds (toAuthor, author)
 //   threads   reply roots (R-14): a reply to a reply and a reply across threads are refused
 //   packs     platformChunks (R-09) incl. a missing and a stray seq, i64 sizeBytes (O-05), and a
 //             raw push -> clone round trip of a real git pack under its identifier packHash
 //   releases  oneLive (O-04): one live release per tag, unpublish, a sealed publish, no delete
 //   topics    atMost20 (R-20) and public-only topics
-//   ci        runner (O-02) and check sources (R-08), notFuture (R-17), private CI (R-18), outcome
-//   social    starBeat where + distinctFrom (O-08), public-only webhooks (R-19), repoKey wraps
+//   ci        runner (O-02) and check sources (R-08), notFuture (R-17), private CI (R-18), outcome,
+//             and with RC2 S1 a completed run's frozen evidence (40128)
+//   social    starBeat where + distinctFrom (O-08), or with RC2 C1 the fused star (unstar and
+//             star again inside the window), public-only webhooks (R-19), repoKey wraps
 //             to members only (R-13), events and author events across contracts (O-01)
 //
 // Every refusal is matched on the node's numeric code (and, for a rule, its name in the
@@ -48,6 +51,12 @@ const CORE = dep.v2?.forgeCore?.contractId;
 const COLLAB = dep.v2?.forgeCollab?.contractId;
 const COMM = dep.v2?.forgeCommunity?.contractId;
 if (!CORE || !COLLAB || !COMM) throw new Error(`devnet-${devnetName}.json records no RC1 forge-v2 contracts (core, collab and community)`);
+// The RC2 items (schema/build.py flags) the registered schemas carry: the committed JSONs, which
+// are what deploy-v2.mjs registered
+const SCHEMAS = Object.fromEntries(['collab', 'community'].map((c) => [c, JSON.parse(readFileSync(join(ROOT, 'contracts', `forge-${c}.json`), 'utf8')).documentSchemas]));
+const FUSED_STAR = !SCHEMAS.community.starBeat;
+const EVIDENCE_FROZEN = SCHEMAS.community.checkRun.immutable.some((e) => typeof e === 'object' && e.property === 'logUrl');
+const REVIEW_INDEXES = new Set(SCHEMAS.collab.review.indices.map((i) => i.name));
 
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey, Identifier } = evo;
@@ -332,6 +341,23 @@ if (want('state') && I1 && I2 && PR3) {
   await sleep(A_BLOCK);
   await ok('R-16', "a stranger's approve (verdict 4)", S, COLLAB, 'review', { repoId: R, patchId: id(docId(PR3)), verdict: 4, commitOid: bytes(20, 2), vis: 'public' });
   await no('R-03', 'review stamped private on a public PR', S, COLLAB, 'review', { repoId: R, patchId: id(docId(PR3)), verdict: 3, commitOid: bytes(20, 2), vis: 'private' }, [40127]);
+  // RC2 S2 / S3: the proved review feeds. PR #3 is the member's; the owner and the stranger
+  // reviewed it above. A derived property is queried like any index property (v5 book
+  // contract-keywords/derived-index-properties.md:96).
+  const feed = async (item, label, index, where, want) => {
+    try {
+      const got = await eventually(async () => {
+        const q = await sdk.documents.queryWithProof({ dataContractId: COLLAB, documentTypeName: 'review', where, orderBy: [[where[0][0], 'asc'], ['$createdAt', 'asc']], limit: 100 });
+        return [...(q.data ?? q).values()].filter(Boolean).map((d) => d.toObject()).filter(want).length;
+      }, (n) => n > 0);
+      record({ item, label: `${label} (${index})`, expect: 'at least one', got: String(got), pass: got > 0 });
+    } catch (e) {
+      record({ item, label: `${label} (${index})`, expect: 'at least one', got: `error ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
+    }
+  };
+  const onPr3 = (r) => Buffer.from(r.patchId).equals(id(docId(PR3)));
+  if (REVIEW_INDEXES.has('toAuthor')) await feed('S2', "reviews on the member's PRs", 'toAuthor', [['patchId.$ownerId', '==', M.id]], onPr3);
+  if (REVIEW_INDEXES.has('author')) await feed('S3', "the stranger's reviews", 'author', [['$ownerId', '==', S.id]], onPr3);
   await ok('state', 'merge', M, COLLAB, 'transition', T(PR3, 3, 1, 13, 2, { oid: bytes(20, 3) }), 'transition: member merge');
   await no('state', 'reopen a merged PR (c2)', M, COLLAB, 'transition', T(PR3, 3, 1, 12, -1), [10422], 'c2_openAfter');
   await no('state', 'draft a merged PR (c4)', M, COLLAB, 'transition', T(PR3, 3, 1, 14, 8), [10422], 'c4_draftAfter');
@@ -487,7 +513,8 @@ if (want('ci')) {
   await no('R-17', 'completedAt far in the future (notFuture)', RN, COMM, 'checkRun', run({ startedAt: now, completedAt: 9_000_000_000_000_000 }), [10422], 'notFuture');
   await no('R-18', 'check run stamped private on a public repo', RN, COMM, 'checkRun', run({ vis: 'private' }), [40127]);
   const q0 = await ok('O-07', 'queued run (outcome 0)', RN, COMM, 'checkRun', { repoId: R, headOid: bytes(20, 2), name: 'lint', status: 'queued', outcome: 0, vis: 'public' });
-  // D-5: startedAt, completedAt, conclusion and externalId are set once (immutableAllowSetting)
+  // D-5 / RC2 M1: startedAt, completedAt, conclusion and externalId are set once (conditional
+  // `immutable` entries, `{"present": "$old.<p>"}`)
   const d5 = await ok('D-5', 'queued run to advance', RN, COMM, 'checkRun', { repoId: R, headOid: bytes(20, 9), name: 'd5', status: 'queued', outcome: 0, vis: 'public' });
   if (d5) {
     let started = null;
@@ -502,6 +529,21 @@ if (want('ci')) {
     if (started) {
       await sleep(A_BLOCK);
       await refusedOp('D-5', 'a replace that moves startedAt (set once)', () => sdk.documents.replace({ document: revised(started, { startedAt: now - 500 }), ...ownOps(RN) }), [40128]);
+      // RC2 S1: the replace that completes the run writes its evidence; after it, the log stands
+      const done = revised(started, { status: 'completed', completedAt: now, conclusion: 'success', outcome: 1, logUrl: 'https://logs.example.com/rc2.txt', logSha256: bytes(32, 6) });
+      let completed = null;
+      await sleep(A_BLOCK);
+      try {
+        await sdk.documents.replace({ document: done, ...ownOps(RN) });
+        completed = done;
+        record({ item: 'S1', label: 'in progress -> completed with its log', expect: 'ok', got: 'ok', pass: true });
+      } catch (e) {
+        record({ item: 'S1', label: 'in progress -> completed with its log', expect: 'ok', got: `refused ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
+      }
+      if (completed && EVIDENCE_FROZEN) {
+        await sleep(A_BLOCK);
+        await refusedOp('S1', "a completed run's logUrl replaced", () => sdk.documents.replace({ document: revised(completed, { logUrl: 'https://logs.example.com/forged.txt' }), ...ownOps(RN) }), [40128]);
+      }
     }
   }
   await ok('R-08', 'policy pinning the runner and a maintainer', O, COMM, 'policy', { repoId: R, requiredApprovals: 1, requiredChecks: ['build', 'lint'], requiredCheckSources: [id(RN.id), id(O.id)], mergeMethods: 15 }, 'policy');
@@ -520,11 +562,27 @@ if (want('ci')) {
 
 // ---------------- social, hooks, keys, events across contracts ----------------
 if (want('social')) {
-  await ok('O-08', "a stranger's beat on the owner's repo", S, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(O.id) }, 'starBeat');
-  await no('O-08', "the owner's beat on its own repo (distinctFrom)", O, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(O.id) }, [10419]);
-  await no('O-08', 'a beat naming the wrong repo owner', M, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(S.id) }, [40127]);
-  await no('O-08', 'a beat on a private repo', S, COMM, 'starBeat', { repoId: P, vis: 'public', repoOwner: id(O.id) }, [40127]);
-  await ok('COMM-9', 'star', S, COMM, 'star', { repoId: R }, 'star');
+  if (!FUSED_STAR) {
+    await ok('O-08', "a stranger's beat on the owner's repo", S, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(O.id) }, 'starBeat');
+    await no('O-08', "the owner's beat on its own repo (distinctFrom)", O, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(O.id) }, [10419]);
+    await no('O-08', 'a beat naming the wrong repo owner', M, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(S.id) }, [40127]);
+    await no('O-08', 'a beat on a private repo', S, COMM, 'starBeat', { repoId: P, vis: 'public', repoOwner: id(O.id) }, [40127]);
+  }
+  const star = await ok(FUSED_STAR ? 'C1' : 'COMM-9', FUSED_STAR ? 'star (the trending entry too)' : 'star', S, COMM, 'star', { repoId: R }, 'star');
+  if (FUSED_STAR && star) {
+    // RC2 C1: an unstar leaves the window entry (outlivesDelete), and a star again inside the
+    // window writes over it instead of being refused as a duplicate (v5 book
+    // contract-keywords/index-only.md:220-221)
+    await sleep(A_BLOCK);
+    try {
+      await sdk.documents.delete({ document: star, ...ownOps(S) });
+      record({ item: 'C1', label: 'unstar (a delete with no $createdAt)', expect: 'ok', got: 'ok', pass: true });
+      await sleep(A_BLOCK);
+      await ok('C1', 'star again inside the window', S, COMM, 'star', { repoId: R });
+    } catch (e) {
+      record({ item: 'C1', label: 'unstar (a delete with no $createdAt)', expect: 'ok', got: `refused ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
+    }
+  }
   await ok('COMM-9', 'watch', S, COMM, 'watch', { repoId: R }, 'watch');
   const hook = { repoId: R, hookId: bytes(32), url: 'https://hooks.example.com/rc1', events: ['push'], relayIdentityId: id(M.id), relayKeyId: M.encKeyId, senderKeyId: O.encKeyId, secret: bytes(48), vis: 'public' };
   await ok('R-19', 'webhook on a public repo', O, COMM, 'webhook', hook);

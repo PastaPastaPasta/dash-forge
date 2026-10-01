@@ -1,7 +1,7 @@
 // Register the forge-v2 contracts (forge-core, forge-collab, forge-community) in one PV14
 // contract group.
 //
-//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.7, pinned
+//   (cd forge-contracts/sdk-v2 && npm ci)           # the @dashevo/evo-sdk sdk-v2/package.json pins
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name bonsia [--addresses https://ip:1443,...] [--dry-run]
 //        [--only collab|community] [--force-new [--same-group]] [--update core]
@@ -65,7 +65,8 @@
 // hash_double("contract_group" || owner || nonce) (rs-dpp contract_group::generate_contract_group_id).
 // The JS below derives the group id itself because evo-sdk exposes no helper; the Rust validator
 // (tools/contract-validate) prints a known-answer vector that --self-test checks.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -73,7 +74,14 @@ import { createHash } from 'node:crypto';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
 // The pinned protocol-14 SDK lives in sdk-v2/ (`npm ci` there). The package is ESM-only.
-const EVO_SDK_ENTRY = join(ROOT, 'sdk-v2', 'node_modules', '@dashevo', 'evo-sdk', 'dist', 'evo-sdk.module.js');
+const EVO_SDK_DIR = join(ROOT, 'sdk-v2', 'node_modules', '@dashevo', 'evo-sdk');
+const EVO_SDK_ENTRY = join(EVO_SDK_DIR, 'dist', 'evo-sdk.module.js');
+/** `<name>@<version>` of the installed SDK package (the deployment record's `sdk`). */
+export function installedSdk(packageJson = join(EVO_SDK_DIR, 'package.json')) {
+  const { name, version } = JSON.parse(readFileSync(packageJson, 'utf8'));
+  if (!name || !version) throw new Error(`${packageJson} names no package version`);
+  return `${name}@${version}`;
+}
 export async function loadEvoSdk() {
   if (!existsSync(EVO_SDK_ENTRY)) throw new Error('run `npm ci` in forge-contracts/sdk-v2 first');
   const evo = await import(pathToFileURL(EVO_SDK_ENTRY).href);
@@ -172,6 +180,16 @@ function selfTest() {
     ids[placeholderFor(schemaName)] = want.contract;
   }
   log(`schemas self-test: ok (forge-core + ${DEPENDENT_CONTRACTS.map((c) => c.schemaName).join(', ')})`);
+  // The record names the SDK the run used, read from the installed package (never a literal)
+  const tmp = mkdtempSync(join(tmpdir(), 'deploy-v2-'));
+  try {
+    const pkg = join(tmp, 'package.json');
+    writeFileSync(pkg, JSON.stringify({ name: '@dashevo/evo-sdk', version: '5.0.0-beta.1' }));
+    if (installedSdk(pkg) !== '@dashevo/evo-sdk@5.0.0-beta.1') throw new Error(`installedSdk read ${installedSdk(pkg)}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  log(`sdk self-test: ok${existsSync(EVO_SDK_DIR) ? ` (installed: ${installedSdk()})` : ' (sdk-v2 not installed)'}`);
 }
 
 // ---- deployment record ----
@@ -637,7 +655,7 @@ async function main() {
     v2.contractGroupId = groupIdFinal;
     v2.contractGroup = { id: groupIdFinal, name: GROUP.name, owner: ownerId, verifiedAt: new Date().toISOString() };
     v2.protocolVersion = PROTOCOL_VERSION;
-    v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.7';
+    v2.sdk = installedSdk();
     if (devnetName) v2.devnet = { name: devnetName, addresses: addresses ?? null };
     record();
     log(`contract group ${groupIdFinal} verified: owner ${ownerId}, every recorded contract enrolled`);
