@@ -682,6 +682,12 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             rule,
             detail,
         } => rule_refused(ctx, document_type, rule, detail),
+        // 40128: a replace changed a property the type freezes.
+        CoreError::FrozenField {
+            document_type,
+            property,
+            detail,
+        } => frozen_field(ctx, Some(document_type), property, detail),
         CoreError::V2NotDeployed { network } => not_deployed(ctx, network),
         CoreError::ContractsMissing { network, detail } => contracts_missing(ctx, network, detail),
         CoreError::Timeout { retryable } => timed_out(ctx, *retryable),
@@ -914,6 +920,15 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
             &format!("40120: {}", one_line(msg)),
         ));
     }
+    // 40128 DocumentImmutablePropertyChanged, as text: the same rendering as the typed error.
+    if let Some((document_type, property)) = frozen_property(msg) {
+        return Some(frozen_field(
+            ctx,
+            document_type.as_deref(),
+            &property,
+            &format!("40128: {}", one_line(msg)),
+        ));
+    }
     // 10422 DocumentPropertyConstraintViolated, as text: the same rendering as the typed error.
     if let Some((document_type, rule)) = violated_rule(msg) {
         return Some(rule_refused(ctx, &document_type, &rule, &one_line(msg)));
@@ -1106,6 +1121,51 @@ fn missing_reference(
     )
     .cause(detail)
     .fix("check the id you passed for that field; the cause names the missing entity")
+}
+
+/// E604 for a 40128: a replace changed `property`, which the document type freezes: always,
+/// once set, or (a check run's evidence, RC2 S1) once the run completed.
+fn frozen_field(
+    ctx: &ErrorContext<'_>,
+    document_type: Option<&str>,
+    property: &str,
+    detail: &str,
+) -> UserError {
+    use crate::ci::{EVIDENCE_FIELDS, SET_ONCE_FIELDS};
+    let check_run = document_type == Some(crate::collab::v2::DOC_CHECK_RUN);
+    let once_completed = check_run && EVIDENCE_FIELDS.contains(&property);
+    let when = if once_completed {
+        "once the run completed"
+    } else {
+        "once set"
+    };
+    let fix = if once_completed || (check_run && SET_ONCE_FIELDS.contains(&property)) {
+        "report a re-run as a new check run: give it a new --external-id"
+    } else {
+        "leave it as it is: a different value takes a new document, not an edit"
+    };
+    UserError::new(
+        codes::REJECTED,
+        ctx.rejected_headline(&format!("this field ({property}) can't change {when}")),
+    )
+    .cause(detail)
+    .fix(fix)
+    .note("refused at consensus: nothing was written")
+}
+
+/// `(document type, property)` of a 40128 message: `property 'logUrl' of document … (type
+/// 'checkRun') is immutable and cannot be changed by a replace` (quotes plain or escaped).
+fn frozen_property(msg: &str) -> Option<(Option<String>, String)> {
+    let msg = msg.replace("\\'", "'");
+    let at = msg.find("is immutable and cannot be changed by a replace")?;
+    let head = &msg[..at];
+    let rest = &head[head.rfind("property '")? + "property '".len()..];
+    let property = rest[..rest.find('\'')?].to_string();
+    let document_type = rest
+        .find("(type '")
+        .map(|i| &rest[i + "(type '".len()..])
+        .and_then(|t| t.find('\'').map(|j| t[..j].to_string()));
+    Some((document_type, property))
 }
 
 /// E604 for a 10422: the document breaks `rule` of its type's `propertyConstraints`. The
@@ -2301,6 +2361,63 @@ mod tests {
             "{u:?}"
         );
         assert!(u.fix.iter().all(|f| !f.contains("--network ")), "{u:?}");
+    }
+
+    /// `DocumentImmutablePropertyChangedError`'s Display (code 40128) inside the broadcast error:
+    /// a replace of a completed run's log (RC2 S1).
+    const FROZEN_40128: &str = "state transition broadcast error: property 'logUrl' of document 5DtbWjpyYyNtMd3FBwyXGr3NTZzGUBGHnPHM3gs6ndmQ (type 'checkRun') is immutable and cannot be changed by a replace";
+
+    #[test]
+    fn a_frozen_field_40128_says_it_cannot_change() {
+        let ci = ErrorContext {
+            goal: Some("check run not reported"),
+            repo: Some("alice/project"),
+            ..Default::default()
+        };
+        // Typed, and as the node's text: the same rendering.
+        let typed = core_chain(
+            CoreError::FrozenField {
+                document_type: "checkRun".into(),
+                property: "logUrl".into(),
+                detail: "40128: property 'logUrl' of document 5Dtb (type 'checkRun') is immutable and cannot be changed by a replace".into(),
+            },
+            &ci,
+        );
+        let text = core_chain(CoreError::Platform(FROZEN_40128.into()), &ci);
+        for u in [&typed, &text] {
+            assert_eq!((u.code, u.exit_code()), ("E604", 6));
+            assert_eq!(
+                u.message,
+                "check run not reported: this field (logUrl) can't change once the run completed"
+            );
+            assert!(u.cause.as_deref().unwrap().starts_with("40128: "), "{u:?}");
+            assert!(u.fix[0].contains("--external-id"), "{u:?}");
+        }
+        // A check run's set-once field: once set.
+        let u = core_chain(
+            CoreError::Platform(FROZEN_40128.replace("'logUrl'", "'conclusion'")),
+            &ci,
+        );
+        assert_eq!(
+            u.message,
+            "check run not reported: this field (conclusion) can't change once set"
+        );
+        assert!(u.fix[0].contains("--external-id"), "{u:?}");
+        // Any other type's frozen field (a Debug-printed error escapes its quotes).
+        let u = core_chain(
+            CoreError::Platform(
+                FROZEN_40128
+                    .replace("'logUrl'", "'name'")
+                    .replace("'checkRun'", "'repo'")
+                    .replace('\'', "\\'"),
+            ),
+            &ci,
+        );
+        assert_eq!(
+            u.message,
+            "check run not reported: this field (name) can't change once set"
+        );
+        assert!(u.fix[0].contains("new document"), "{u:?}");
     }
 
     #[test]

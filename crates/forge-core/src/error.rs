@@ -160,6 +160,21 @@ pub enum Error {
         detail: String,
     },
 
+    /// Consensus refused a replace that changes a property its document type freezes (code
+    /// 40128, `DocumentImmutablePropertyChangedError`): one that is always immutable, or one a
+    /// conditional `immutable` entry froze (Platform v5; RC2 forge-community: a check run's
+    /// start, completion, conclusion and external id once set, and its evidence once the run
+    /// completed). Nothing landed.
+    #[error("consensus refused {document_type}: {property} can't change ({detail})")]
+    FrozenField {
+        /// The refused document type.
+        document_type: String,
+        /// The property the replace changed.
+        property: String,
+        /// The consensus error.
+        detail: String,
+    },
+
     /// Consensus refused a document because a rule of its type's `propertyConstraints` does not
     /// hold (code 10422): refused before execution, so nothing landed. `rule` is the rule's name
     /// (forge-v2 `dense`, `c1_closedAfter`, …), `detail` the node's message.
