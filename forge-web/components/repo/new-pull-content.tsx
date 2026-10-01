@@ -34,6 +34,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { PushBranchHint } from '@/components/repo/push-branch-hint'
 import { cn } from '@/lib/utils'
+import { spendAction } from '@/lib/spend-toast'
 
 /** A branch a PR can come from: this repo's, or one of the viewer's forks'. */
 interface HeadOption {
@@ -162,8 +163,11 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     setError(null)
     setNote(null)
     try {
-      const created = await createPatch(sdk, signer, repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
-        setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
+      // The PR and its draft mark are one action: one toast with their total (QW3-039).
+      const created = await spendAction({ running: 'Opening the pull request…', done: 'Pull request opened' }, (tag) =>
+        createPatch(sdk, tag(signer), repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
+          setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
+        ),
       )
       dropPrDraft(repo)
       router.push(repoHref('/repo/pull', addr, { number: String(created.number), created: '1' }))

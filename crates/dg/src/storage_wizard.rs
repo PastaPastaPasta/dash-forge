@@ -325,6 +325,19 @@ fn ipfs(
     Ok(())
 }
 
+/// Why there is no "paste it now" choice: the keychain is switched off, or there is none.
+fn no_keychain_note(by_env: bool) -> String {
+    let why = if by_env {
+        format!("{} is set", keychain::DISABLE_ENV)
+    } else {
+        "this system has no keychain dg can use".to_string()
+    };
+    format!(
+        "  no OS keychain is in use here ({why}), so a secret can't be pasted: name an \
+         environment variable that holds it, or a keychain entry that already exists"
+    )
+}
+
 /// Ask how a secret is stored; returns its reference. A pasted value goes into `pasted`.
 fn secret_ref(
     p: &mut dyn Prompter,
@@ -343,6 +356,9 @@ fn secret_ref(
     ];
     if keychain_ok {
         options.insert(0, &paste);
+    } else {
+        // Without this the "paste it now" option the docs mention is simply missing (QW3-067).
+        p.say(&no_keychain_note(keychain::disabled_by_env()));
     }
     let choice = p.choose(
         &format!("{what} — how do you want to store it?"),
@@ -777,6 +793,49 @@ mod tests {
             a.args.secret_access_key.as_deref(),
             Some("env:S3_SECRET_ACCESS_KEY")
         );
+    }
+
+    #[test]
+    fn without_a_keychain_the_wizard_says_why_there_is_no_paste_option() {
+        let answers = [
+            "b",
+            "1",
+            "4",
+            "http://h",
+            "",
+            "bk",
+            "",
+            "AK",
+            "1",
+            "MY_SECRET",
+            "",
+        ];
+        let mut none = Scripted::new(&answers);
+        collect(&mut none, &[], false).unwrap();
+        assert!(
+            none.said.iter().any(|l| l.contains("can't be pasted")),
+            "{:?}",
+            none.said
+        );
+        // The reason is the real one: the switch, or no keychain at all.
+        assert!(no_keychain_note(true).contains("DASH_FORGE_NO_KEYCHAIN is set"));
+        assert!(!no_keychain_note(false).contains("DASH_FORGE_NO_KEYCHAIN"));
+        // With a keychain there is nothing to explain.
+        let mut some = Scripted::new(&[
+            "b",
+            "1",
+            "4",
+            "http://h",
+            "",
+            "bk",
+            "",
+            "AK",
+            "2",
+            "MY_SECRET",
+            "",
+        ]);
+        collect(&mut some, &[], true).unwrap();
+        assert!(!some.said.iter().any(|l| l.contains("can't be pasted")));
     }
 
     #[test]
