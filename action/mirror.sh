@@ -11,7 +11,7 @@ die() {
 
 [ -z "${FORGE_BIN_DIR:-}" ] || PATH="$FORGE_BIN_DIR:$PATH"
 for bin in forge-import git-remote-dash; do
-    command -v "$bin" >/dev/null || die "$bin is not on PATH. Leave 'install' at true, or build it and add it to PATH before this step."
+    command -v "$bin" >/dev/null || die "$bin is not on PATH. With install: 'false', build it and add it to PATH before this step, or let the Action install it (install: 'true' or 'source')."
 done
 
 # Start from a clean slate so a failure below cannot leave last run's summary behind.

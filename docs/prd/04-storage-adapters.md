@@ -27,9 +27,9 @@ Hash verification lives in PackPipeline, outside backends — a malicious backen
 `chunk` docs (3 × 4.9 KiB fields), pipelined STs, ranged reads by chunk seq via the `objectLocator`. ~$9/MiB @ $34/DASH, refundable; repack-with-refund keeps steady-state ≈ current size.
 
 ### 2. IPFS
-- Write: local Kubo or pinning-service API (Storacha/Pinata — yappr-proven clients); URI `ipfs://CID` (CIDv1 raw-leaves; CID must re-derive from bytes → double verification with manifest sha256).
+- Write: local Kubo, optionally plus any IPFS Pinning Service API endpoint (for example Pinata, Filebase or 4EVERLAND; endpoints in the [storage guide](../guides/bring-your-own-storage.md#ipfs-kubo--a-pinning-service)); URI `ipfs://CID` (CIDv1 raw-leaves; CID must re-derive from bytes → double verification with manifest sha256).
 - Read: CLI via local Kubo else gateways; browser via gateway race (configurable list + self-host option from yappr `ipfs/` docker).
-- Availability = pinning; `dg reseed` re-pins + appends mirror URIs; any clone can restore a dead repo's availability.
+- Availability = pinning; `dg reseed --from-local` re-uploads a lost copy to its recorded address from a clone that has the pack. Recording a copy at a new address needs repo membership (no `packMirror` type yet).
 
 ### 3. S3-compatible (AWS/R2/MinIO/B2)
 Write with credentials (CLI; browser when CORS allows); manifest stores `s3://` **plus** public `https://` URL when available so browsers read credential-free. Ranged GET supported → partial clone friendly.
@@ -97,7 +97,7 @@ A Platform-tier manifest of the same size written for this pack is accepted with
 
 **Old git.** `git config --show-scope` needs git ≥ 2.26. On older git the policy keys are read with plain `--get` rather than dropped.
 
-**Deferred:** browser uploads and the web app's settings UI (Phase 1, web workstream); `packMirror` announcements from push (reseed has them already); multipart upload for packs above S3's 5 GiB single-PUT limit; streaming verification for very large packs.
+**Deferred:** `packMirror` announcements (no contract has that type yet; it is planned as a new type in a later contract update); multipart upload for packs above S3's 5 GiB single-PUT limit; streaming verification for very large packs. (Browser uploads and the web app's storage settings, deferred here at first, have since landed.)
 
 ## Acceptance
 

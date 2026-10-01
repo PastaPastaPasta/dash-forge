@@ -240,8 +240,8 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
     `s3-bucket: '${R2.bucket}'`,
     `s3-public-url: '${R2.publicUrl}'`,
     "sync: 'code,releases,labels,issues,prs'",
-    `ref: ${commit}`,
-    'uses: ./.dash-forge/action',
+    `uses: PastaPastaPasta/dash-forge/action@${commit}`,
+    "install: 'source'",
     'S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}',
   ]) {
     expect(yaml, line).toContain(line)

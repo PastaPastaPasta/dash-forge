@@ -2,7 +2,12 @@
 # releases, labels) into a Dash Forge repository with forge-import. See action/README.md.
 #
 # `version` below is the Dash Forge release this action version pins. It is defined once,
-# as the input's default; bump it together with the action when cutting a release.
+# as the input's default, and is empty until the commit that cuts the first release sets it:
+# until then `install: 'true'` builds the binaries from the Action's own source, and a pinned
+# commit never switches to downloaded binaries behind the workflow's back.
+#
+# The network defaults to the devnet the hosted site (forge.dashhq.org) targets: Forge's
+# contracts are registered there, and not on mainnet yet (forge-contracts/deployments/).
 name: Dash Forge mirror
 description: Mirror a GitHub repository into Dash Forge (Dash Platform), idempotently and under a per-run cost cap.
 author: PastaPastaPasta
@@ -15,11 +20,11 @@ inputs:
     description: "Destination Forge repository: dash://<owner>/<name>, <owner>/<name>, or a bare name (the signer's own; created if missing)."
     required: true
   network:
-    description: "mainnet, testnet or devnet."
-    default: mainnet
+    description: "mainnet, testnet or devnet. The default is the devnet the hosted site targets; Forge is not deployed on mainnet yet."
+    default: devnet
   devnet-name:
-    description: "Devnet name (required when network is devnet), e.g. sakura."
-    default: ""
+    description: "Devnet name, used only when network is devnet."
+    default: sakura
   sync:
     description: "Comma list of code,issues,prs,releases,labels."
     default: code,releases
@@ -66,10 +71,13 @@ inputs:
     description: "GitHub repository to mirror (owner/repo)."
     default: ${{ github.repository }}
   version:
-    description: "Dash Forge release to install (the release this action version pins)."
-    default: "0.1.0"
+    description: "Dash Forge release to install (the release this action version pins). Empty: none is pinned yet, so install 'true' builds from source."
+    default: ""
   install:
-    description: "false: use dg, git-remote-dash and forge-import already on PATH."
+    description: "true: install release `version`, or build the Action's own source (the ref in uses:) when `version` is empty. source: always build the Action's own source. false: use dg, git-remote-dash and forge-import already on PATH."
+    default: "true"
+  build-cache:
+    description: "A source build reuses compiled dependencies from actions/cache, trusted like any other cache of this repository. false: compile everything every run."
     default: "true"
   state-cache:
     description: "Keep the incremental sync state in actions/cache (speed only; correctness does not depend on it)."
@@ -112,6 +120,7 @@ runs:
         INPUT_GITHUB_REPO: ${{ inputs.github-repo }}
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_INSTALL: ${{ inputs.install }}
+        INPUT_BUILD_CACHE: ${{ inputs.build-cache }}
         INPUT_STATE_CACHE: ${{ inputs.state-cache }}
         INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
       run: bash "$GITHUB_ACTION_PATH/validate.sh"
@@ -130,8 +139,17 @@ runs:
           echo "state=$DIR/state/state.json"
         } >>"$GITHUB_OUTPUT"
 
+    - name: Choose how to install Dash Forge
+      id: install
+      if: inputs.install != 'false'
+      shell: bash
+      env:
+        INPUT_INSTALL: ${{ inputs.install }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: bash "$GITHUB_ACTION_PATH/install-forge.sh" plan
+
     - name: Install Dash Forge ${{ inputs.version }}
-      if: inputs.install == 'true'
+      if: steps.install.outputs.method == 'release'
       shell: bash
       env:
         DASH_FORGE_VERSION: ${{ inputs.version }}
@@ -141,7 +159,48 @@ runs:
         GH_TOKEN: ${{ github.token }}
       # install.sh ships with this action (same ref): it checks the archive's sha256
       # against SHA256SUMS and, with gh logged in, the build provenance attestation.
-      run: sh "$GITHUB_ACTION_PATH/../install.sh"
+      run: |
+        sh "$GITHUB_ACTION_PATH/../install.sh" || {
+          echo "::error title=Dash Forge install::Dash Forge v${DASH_FORGE_VERSION#v} could not be installed (the log above says why). If that release is not published, set install: 'source' to build from the Action's own source."
+          exit 1
+        }
+
+    # A source build. The compiled dependencies are cached across runs (build-cache), keyed by
+    # Cargo.lock and the pinned toolchain, so only the first run compiles everything.
+    - name: Restore the Dash Forge build cache
+      id: build-cache
+      if: steps.install.outputs.method == 'source' && inputs.build-cache == 'true'
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          ${{ runner.temp }}/dash-forge-build
+        key: ${{ steps.install.outputs.cache-key }}
+        restore-keys: |
+          dash-forge-build@${{ runner.os }}-${{ runner.arch }}@
+
+    - name: Build Dash Forge from the Action's source
+      if: steps.install.outputs.method == 'source'
+      shell: bash
+      env:
+        FORGE_BIN_DIR: ${{ steps.paths.outputs.bin }}
+        FORGE_TARGET_DIR: ${{ runner.temp }}/dash-forge-build
+        FORGE_TOOLS_DIR: ${{ steps.paths.outputs.dir }}/tools
+        DASH_FORGE_ACTION_REF: ${{ github.action_ref }}
+      run: bash "$GITHUB_ACTION_PATH/install-forge.sh" build
+
+    - name: Save the Dash Forge build cache
+      if: steps.install.outputs.method == 'source' && inputs.build-cache == 'true' && steps.build-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          ${{ runner.temp }}/dash-forge-build
+        key: ${{ steps.install.outputs.cache-key }}
 
     - name: Restore sync state
       if: inputs.state-cache == 'true'
@@ -152,9 +211,9 @@ runs:
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ${{ steps.paths.outputs.dir }}/state
-        key: forge-mirror-state@${{ inputs.network }}@${{ inputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}
+        key: forge-mirror-state@${{ inputs.network }}@${{ steps.validate.outputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
-          forge-mirror-state@${{ inputs.network }}@${{ inputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@
+          forge-mirror-state@${{ inputs.network }}@${{ steps.validate.outputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@
 
     - name: Mirror
       id: mirror
@@ -162,7 +221,7 @@ runs:
       env:
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_NETWORK: ${{ inputs.network }}
-        INPUT_DEVNET_NAME: ${{ inputs.devnet-name }}
+        INPUT_DEVNET_NAME: ${{ steps.validate.outputs.devnet-name }}
         INPUT_SYNC: ${{ inputs.sync }}
         INPUT_STORAGE_KIND: ${{ inputs.storage-kind }}
         INPUT_S3_ENDPOINT: ${{ inputs.s3-endpoint }}
@@ -178,7 +237,7 @@ runs:
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
         INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
         INPUT_GITHUB_REPO: ${{ inputs.github-repo }}
-        FORGE_BIN_DIR: ${{ inputs.install == 'true' && steps.paths.outputs.bin || '' }}
+        FORGE_BIN_DIR: ${{ inputs.install != 'false' && steps.paths.outputs.bin || '' }}
         FORGE_SUMMARY: ${{ steps.paths.outputs.summary }}
         FORGE_STATE: ${{ steps.paths.outputs.state }}
         FORGE_WORK_DIR: ${{ steps.paths.outputs.dir }}/git
@@ -211,7 +270,7 @@ runs:
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ${{ steps.paths.outputs.dir }}/state
-        key: forge-mirror-state@${{ inputs.network }}@${{ inputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}
+        key: forge-mirror-state@${{ inputs.network }}@${{ steps.validate.outputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}
 
     # Keep only the state and the summary; the git work dir's config may hold the token.
     - name: Remove the key file, storage profile and work dir

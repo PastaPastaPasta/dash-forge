@@ -1,8 +1,8 @@
 # PRD 03 — Forge Web (zero backend)
 
-> **Historical.** Written for forge-v1 (a global registry contract plus one contract per repository, with token access control). forge-v1 was removed on 2026-09-26 with no backwards compatibility; the token collaborator UI described below no longer exists. The current design is [forge-v2](../contracts/forge-v2.md) and the current web spec is [ux-dx-spec.md](../design/ux-dx-spec.md).
+> **Historical.** Written for forge-v1 (a global registry contract plus one contract per repository, with token access control). forge-v1 was removed on 2026-09-26 with no backwards compatibility; the token collaborator UI described below no longer exists. The current design is [forge-v2](../contracts/forge-v2.md) and the current web spec is [ux-dx-spec.md](../design/ux-dx-spec.md). The shipped web app uses neither isomorphic-git nor lightning-fs: it reads and writes git packs with its own code (`forge-web/lib/browse`, `forge-web/lib/merge`).
 
-Static SPA deployable to IPFS or any static host, fully replacing github.com browsing and collaboration. Stack: Next.js static export (query-param routing, yappr rules), **wasm/evo-sdk for all Platform reads/writes**, and the zero-backend trick: **in-browser repo materialization** — isomorphic-git + lightning-fs in a web worker, cloning from chunk/CID fetches, never from a git server.
+Static SPA deployable to IPFS or any static host, fully replacing github.com browsing and collaboration. Stack: Next.js static export (query-param routing, yappr rules), **wasm/evo-sdk for all Platform reads/writes**, and the zero-backend trick: **in-browser repo materialization** — Forge's own git pack code, cloning from chunk/CID fetches, never from a git server.
 
 ## Stack (reuse-first, per INIT.md)
 
@@ -10,7 +10,7 @@ Static SPA deployable to IPFS or any static host, fully replacing github.com bro
 |---|---|
 | Platform I/O | wasm/evo-sdk via **`testnetTrusted()` + `*WithProof` reads** — the only WASM-viable path (S0.3: `EvoSDK.testnet()` and `{proofs:false}` both crash WASM). Proofs are always on; ~0% per-query overhead |
 | **Browsing (default path)** | **browse plane — no materialization**: cold repo-home loads refs + config + the **root tree via `objectLocator`** (~101 KB, size-independent) — **flatIndex is deferred** to deep tree-browse / filename-search (it is O(files): ~471 KB @ 10k, ~4.5 MB @ 100k, so never on the home view); `objectLocator` ranged reads serve single blobs/commits (architecture §6.3); IndexedDB caches artifacts + fetched objects by hash |
-| Repo materialization (search/blame/merge/edit only) | isomorphic-git + lightning-fs in a web worker; IndexedDB pack store |
+| Repo materialization (search/blame/merge/edit only) | Forge's own git pack code (merges in a web worker); IndexedDB pack store |
 | Highlighting | Shiki (lazy per-language) |
 | Diffs | diffs.com embedding if licensing allows, else diff2html/Monaco diff — decision after reading Pierre's "On Rendering Diffs" |
 | In-browser edits | CodeMirror 6: edit → commit → push via wasm identity signing |
@@ -24,9 +24,9 @@ Static SPA deployable to IPFS or any static host, fully replacing github.com bro
 
 ## User stories (v1)
 
-1. **Browse**: code/tree/blame/history, README rendering, file raw download — all verification-badged (proofs + hashes + source: platform/ipfs/s3). Submodules: gitlink entries (mode 160000) render as links — resolved to a Forge repo page when the `.gitmodules` URL is a `dash://` URL, otherwise shown as an external-repo badge with the pinned commit. Blame is its own implementation task (isomorphic-git provides no blame primitive — see implementation plan Phase 3).
+1. **Browse**: code/tree/blame/history, README rendering, file raw download — all verification-badged (proofs + hashes + source: platform/ipfs/s3). Submodules: gitlink entries (mode 160000) render as links — resolved to a Forge repo page when the `.gitmodules` URL is a `dash://` URL, otherwise shown as an external-repo badge with the pinned commit. Blame is its own implementation task (see implementation plan Phase 3).
 2. **Issues**: list/filter (state, labels)/create/comment/close/reopen; label management (MAINTAIN); event timeline fold.
-3. **PRs** (TARGET, largely unbuilt — see below): diff view, **inline review comments**, approve/request-changes, **merge from browser for fast-forward and clean merges** via isomorphic-git (conflicted merges → dg); patch checkout instructions.
+3. **PRs** (TARGET, largely unbuilt — see below): diff view, **inline review comments**, approve/request-changes, **merge from browser for fast-forward and clean merges** with Forge's own merge engine (`forge-web/lib/merge/engine.ts`; a clean merge means the two sides changed different paths, and anything else goes to dg); patch checkout instructions.
    **As built:** the web app lists PRs, folds their state, and renders their timeline including review verdicts posted from the CLI. It renders **no diff**, cannot **open** a PR, and cannot **record a verdict**; its merge button appends a `merge` event and performs no git merge. The checkout instructions are shown as a `dg pr checkout` command.
 4. **Releases** with asset manifests (hash-verified downloads).
 5. **Repo lifecycle**: create (contract instantiation + cost preview), settings, backend switch, delete (refund estimate).

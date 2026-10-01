@@ -158,7 +158,7 @@ dg storage add            # e.g. a profile named r2-main; offers to make it your
 dg storage test r2-main   # re-run the checks at any time
 ```
 
-**In the browser**, open **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. The wizard has the same providers, tests them from the page (so it checks what the browser will actually do), and keeps the credentials encrypted in this browser's vault. Browser storage settings are used for what the web app uploads, such as release assets; `git push` uses `dg`'s profiles.
+**In the browser**, open **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. The wizard has the same providers, tests them from the page (so it checks what the browser will actually do), and keeps the credentials encrypted in this browser's vault. Browser storage settings are used for everything the web app uploads: a merge's pack, a commit the browser makes to a pull request's branch (applying suggestions, "Update branch"), and release assets. `git push` uses `dg`'s profiles.
 
 [Bring your own storage](bring-your-own-storage.md) has the provider-by-provider setup and the flags for scripts.
 

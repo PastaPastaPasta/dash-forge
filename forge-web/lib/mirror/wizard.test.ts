@@ -232,26 +232,26 @@ const OPTIONS: WorkflowOptions = {
 }
 
 describe('workflowYaml', () => {
-  it('pins the build and the Action to one commit and fills in every input', () => {
+  it('pins the Action, and the build it makes, to one commit and fills in every input', () => {
     const y = workflowYaml(OPTIONS)
-    expect(y).toContain(`ref: ${SHA}`)
-    expect(y).toContain('uses: ./.dash-forge/action')
+    expect(y).toContain(`uses: PastaPastaPasta/dash-forge/action@${SHA}`)
+    // The Action builds the binaries from that same commit: no release is published yet.
+    expect(y).toContain("install: 'source'")
     expect(y).toContain(`repo: 'dash://${ID}/project'`)
+    // Written out though it is the Action's default today, so a later default cannot move it.
     expect(y).toContain("network: 'devnet'")
     expect(y).toContain("devnet-name: 'sakura'")
     expect(y).toContain("sync: 'code,releases,labels,issues,prs'")
     expect(y).toContain("s3-endpoint: 'https://abc123.r2.cloudflarestorage.com'")
     expect(y).toContain("cost-cap: '0.1'")
-    expect(y).toContain("install: 'false'")
     expect(y).toContain('DASH_FORGE_KEY: ${{ secrets.DASH_FORGE_KEY }}')
     expect(y).toContain('S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}')
     expect(y).toContain('pull_request_target:')
     // The job never checks out the mirrored repository (pull_request_target stays safe).
-    expect(y.match(/actions\/checkout/g)).toHaveLength(1)
-    expect(y).toMatch(/actions\/checkout@[0-9a-f]{40} # v[\d.]+\n {8}with:\n {10}repository: PastaPastaPasta\/dash-forge\n/)
-    // Nothing the job builds from can move: every action by commit, protoc by checksum.
-    for (const uses of y.matchAll(/uses: (\S+)/g)) expect(uses[1]).toMatch(/@[0-9a-f]{40}$|^\.\//)
-    expect(y).toContain("echo '0ad949f04a6a174da83cdcbdb36dee0a4925272a5b6d83f79a6bf9852076d53f  /tmp/protoc.zip' | sha256sum -c -")
+    expect(y).not.toContain('actions/checkout')
+    // Nothing the job runs can move: its one action is pinned by commit.
+    const uses = [...y.matchAll(/uses: (\S+)/g)].map((m) => m[1])
+    expect(uses).toEqual([`PastaPastaPasta/dash-forge/action@${SHA}`])
   })
 
   it('drops the issue and PR triggers when only code is mirrored, and devnet-name off a devnet', () => {
@@ -287,6 +287,7 @@ describe('workflowYaml', () => {
       if (m) env[`INPUT_${m[1]!.toUpperCase().replace(/-/g, '_')}`] = m[2]!
     }
     expect(env['INPUT_REPO']).toBe(`dash://${ID}/project`)
+    expect(env['INPUT_INSTALL']).toBe('source')
     const script = resolve(__dirname, '../../../action/validate.sh')
     expect(() => execFileSync('bash', [script], { env: { ...process.env, ...env }, stdio: 'pipe' })).not.toThrow()
   })

@@ -84,7 +84,7 @@ Host the Dash Forge repo itself on mainnet Forge: `dg repo create dash-forge` (o
 
 - Contracts are immutable in their gates and cannot be deleted — there is no "undo register." A bad registration means registering a *new* pair (`--force-new`) and shipping clients that read it; repositories created under the old pair stay there, unread. So **rehearse on sakura (and testnet once it runs protocol 14) and dry-run on mainnet first**.
 - A client bug ships via a normal client release (Pages redeploy / new `dg` binary) — no on-chain action.
-- External-backend outage: `dg reseed` from any clone restores availability; refs/manifests on Platform are unaffected.
+- External-backend outage: `dg reseed --from-local` from any clone restores a lost copy at its recorded address (given write access to that storage); a member can record copies at a new address with `dg reseed --profile` or `dg repack --profile`. Refs/manifests on Platform are unaffected.
 
 ## Pre-flight checklist
 
