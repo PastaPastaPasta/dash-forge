@@ -34,19 +34,13 @@ async fn route_for(
     }
     // `post_target_event` refuses the same way; asking here keeps the confirmation prompt
     // from offering a write that cannot land.
-    let author_kind = forge_core::rules::v2::is_author_kind(kind);
-    Err(forge_core::Error::NotPermitted {
-        action: format!("{} pull request #{}", verb(kind), view.patch.number),
-        reason: if author_kind {
-            format!(
-                "you are neither a member of {} nor the pull request's author",
-                repo.display()
-            )
-        } else {
-            format!("you are not a member of {}", repo.display())
-        },
-        needs: "writer".into(),
-    }
+    Err(forge_core::collab::v2::kind_refusal(
+        role,
+        repo,
+        &view.patch.target(),
+        kind,
+        format!("{} pull request #{}", verb(kind), view.patch.number),
+    )
     .into())
 }
 

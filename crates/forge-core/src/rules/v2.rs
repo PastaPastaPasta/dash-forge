@@ -9,7 +9,8 @@
 //! What is left client-side, and must be identical in every client, is here:
 //!
 //! * [`RoleOracle`] — membership as the set of *current* `maintainer`/`writer` documents
-//!   (a revoked member's document is deleted, so it is simply absent).
+//!   (a revoked member's document is deleted, so it is simply absent), with the writer
+//!   document's role (writer, triage, reader) and who counts as an approver.
 //! * [`issue_state_v2`] / [`pr_state_v2`] — issue/PR state from the transitions' state code,
 //!   labels, assignees and the base ref from `event` (§3); the moves themselves are
 //!   [`super::transition`].
@@ -74,14 +75,73 @@ pub const FORGE_RULES_V2: &str = "FORGE_RULES_V2";
 // Membership
 // ===========================================================================
 
-/// A membership role: which forge-core document type grants it. Maintainer ranks first.
+/// A membership role: a `maintainer` document, or a `writer` document's `role` (RC2 member
+/// roles: 1 writer, 2 triage, 3 reader). Ordered best first: maintainer, writer, triage,
+/// reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Role {
     /// A `maintainer` document.
     Maintainer,
-    /// A `writer` document.
+    /// A `writer` document with `role` 1 (or none: read tolerant).
     Writer,
+    /// A `writer` document with `role` 2: may close, reopen and lock, label, assign, set
+    /// milestones, request reviews and resolve threads; may not push, merge, mark draft or
+    /// ready, retarget, dismiss reviews, update heads, pin, bypass policy or post check runs.
+    Triage,
+    /// A `writer` document with `role` 3: reads a private repository (it receives key wraps)
+    /// but writes no role-gated document as a member.
+    Reader,
+}
+
+impl Role {
+    /// The `writer` document's `role` integer for this role (`None` for a maintainer, which
+    /// is a document type of its own).
+    #[must_use]
+    pub fn writer_role_code(self) -> Option<u64> {
+        match self {
+            Role::Maintainer => None,
+            Role::Writer => Some(1),
+            Role::Triage => Some(2),
+            Role::Reader => Some(3),
+        }
+    }
+
+    /// The role a `writer` document's `role` integer grants. Read tolerant: an absent `role`
+    /// (a pre-RC2 document) is a writer; an out-of-range code (consensus admits none) is
+    /// `None`.
+    #[must_use]
+    pub fn from_writer_role_code(code: Option<u64>) -> Option<Role> {
+        match code {
+            None | Some(1) => Some(Role::Writer),
+            Some(2) => Some(Role::Triage),
+            Some(3) => Some(Role::Reader),
+            Some(_) => None,
+        }
+    }
+
+    /// Whether this role counts as an approver: a maintainer or a role-1 writer.
+    #[must_use]
+    pub fn is_approver(self) -> bool {
+        matches!(self, Role::Maintainer | Role::Writer)
+    }
+
+    /// The name shown to users (`maintainer`, `writer`, `triage`, `reader`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Maintainer => "maintainer",
+            Role::Writer => "writer",
+            Role::Triage => "triage",
+            Role::Reader => "reader",
+        }
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// One current `maintainer` or `writer` document of a repository, flattened.
@@ -126,10 +186,25 @@ impl RoleOracle {
             .min()
     }
 
-    /// Whether `identity` was a maintainer or writer at `at`.
+    /// Whether `identity` held any membership document at `at` (consensus `asMember` admits
+    /// every `writer` document, triage and reader included).
     #[must_use]
     pub fn member_at(&self, identity: &str, at: u64) -> bool {
         self.role_at(identity, at).is_some()
+    }
+
+    /// Whether `identity` was an approver at `at`: a maintainer or a role-1 writer
+    /// ([`Role::is_approver`]). Approvals, `approverRole 0` policies, requested changes and
+    /// imported provenance count only approvers.
+    #[must_use]
+    pub fn approver_at(&self, identity: &str, at: u64) -> bool {
+        self.role_at(identity, at).is_some_and(Role::is_approver)
+    }
+
+    /// Whether `identity` is an approver now (any current document).
+    #[must_use]
+    pub fn current_approver(&self, identity: &str) -> bool {
+        self.approver_at(identity, u64::MAX)
     }
 
     /// The best role `identity` holds now (any current document).
@@ -219,7 +294,8 @@ pub fn pr_state_v2(
 
 /// The upstream number to show beside a mirrored issue's or PR's own (`#12 · upstream #7761`),
 /// and to resolve `#7761` in a body through: `upstreamNumber` is a free field, so it is trusted
-/// only from the repo owner (the mirror signer) or a current maintainer or writer.
+/// only from the repo owner (the mirror signer) or a current approver (a maintainer or a
+/// role-1 writer; triage and readers are not trusted).
 #[must_use]
 pub fn trusted_upstream_number(
     upstream_number: Option<u32>,
@@ -228,7 +304,7 @@ pub fn trusted_upstream_number(
     oracle: &RoleOracle,
 ) -> Option<u32> {
     let n = upstream_number.filter(|&n| n > 0)?;
-    (author == repo_owner || oracle.current_role(author).is_some()).then_some(n)
+    (author == repo_owner || oracle.current_approver(author)).then_some(n)
 }
 
 // ===========================================================================
@@ -258,11 +334,12 @@ pub struct PackCopy {
     pub supersedes: Vec<String>,
 }
 
-/// Maintainers' copies, then writers', then everyone else's.
+/// Maintainers' copies, then other current members' (any `writer` document), then everyone
+/// else's.
 fn role_rank(role: Option<Role>) -> u8 {
     match role {
         Some(Role::Maintainer) => 0,
-        Some(Role::Writer) => 1,
+        Some(Role::Writer | Role::Triage | Role::Reader) => 1,
         None => 2,
     }
 }
@@ -565,8 +642,9 @@ pub struct Approvals {
 /// malformed review is skipped by readers, so it does not count here either.
 ///
 /// A review counts only if it is on `head_oid` (the PR's folded head, so a head update after
-/// it resets it) and its reviewer was a maintainer or writer at the review's `created_at`
-/// ([`RoleOracle::member_at`]). A reviewer's standing verdict is their newest counting approve
+/// it resets it) and its reviewer was an approver (a maintainer or role-1 writer) at the
+/// review's `created_at` ([`RoleOracle::approver_at`]). Consensus admits a triage member's or
+/// reader's member verdict (`asMember` is role-blind); it is shown, never counted. A reviewer's standing verdict is their newest counting approve
 /// or request-changes review by `(created_at, id)`. Comment reviews (3), unknown codes and
 /// reviews in `dismissed` (the review ids a `reviewDismiss` names,
 /// [`PrReviewState::dismissed_reviews`]) neither approve nor clear an earlier verdict; a
@@ -596,7 +674,7 @@ pub fn count_approvals(
                 && r.reviewer != pr_author
                 && !dismissed.contains(&r.id)
                 && r.commit_oid == head_oid
-                && oracle.member_at(&r.reviewer, r.created_at)
+                && oracle.approver_at(&r.reviewer, r.created_at)
         })
         .collect();
     counting.sort_by(|(a, _), (b, _)| {

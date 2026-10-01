@@ -2785,6 +2785,16 @@ async fn write_access_denied(
     if members.is_empty() {
         return Some(write_denied(&conn.repo.display(), &me));
     }
+    // RC2 member roles: a triage member or reader cannot push (every push document claims
+    // `r` 1, and their writer document's role is 2 or 3).
+    if let Some(role) = members
+        .iter()
+        .map(|m| m.role)
+        .min()
+        .filter(|r| !r.is_approver())
+    {
+        return Some(role_denied(&conn.repo, &me, role));
+    }
     // A writer (not a maintainer) cannot update a protected ref: its `protectedRefUpdate`
     // is maintainer-only at consensus. Refuse before the pack is stored and paid for.
     if members
@@ -2824,6 +2834,33 @@ fn protected_denied(repo: &str, me: &str, refs: &[&str]) -> Denied {
         .note(NOTE_PRECHECK),
         wire: "protected ref: maintainers only",
         refs: refs.iter().map(|r| (*r).to_string()).collect(),
+    }
+}
+
+/// The push refusal for a triage member or reader: what their role allows.
+fn role_denied(
+    repo: &forge_core::scope::RepoRef,
+    me: &str,
+    role: forge_core::rules::v2::Role,
+) -> Denied {
+    let display = repo.display();
+    Denied {
+        error: UserError::new(
+            codes::NOT_A_WRITER,
+            format!("push rejected: you are a {role} of {display}, not a writer"),
+        )
+        .cause(forge_core::members::role_limits(role, repo).unwrap_or_default())
+        .fix(format!(
+            "ask the owner to run `dg collab add {display} {me} --role writer`"
+        ))
+        .fix("push to a repo of your own (`dg repo create <name>`) and open a pull request")
+        .note(NOTE_PRECHECK),
+        wire: if role == forge_core::rules::v2::Role::Triage {
+            "triage members cannot push"
+        } else {
+            "readers cannot push"
+        },
+        refs: Vec::new(),
     }
 }
 

@@ -283,7 +283,8 @@ pub struct PolicyStatus {
 
 /// Whether `approvals` (from [`super::v2::count_approvals`] on the current head, dismissed
 /// reviews and the PR author's own reviews excluded) meet `policy`. An approver counts when their current role satisfies
-/// `approver_role` (1: maintainer only). A client rule for the merge box, never consensus.
+/// `approver_role` (0: a maintainer or role-1 writer, never triage or reader; 1: maintainer
+/// only). A client rule for the merge box, never consensus.
 #[must_use]
 pub fn meets_policy(approvals: &Approvals, oracle: &RoleOracle, policy: &Policy) -> PolicyStatus {
     let have = approvals
@@ -292,7 +293,8 @@ pub fn meets_policy(approvals: &Approvals, oracle: &RoleOracle, policy: &Policy)
         .filter(|a| match oracle.current_role(a) {
             Some(Role::Maintainer) => true,
             Some(Role::Writer) => policy.approver_role == 0,
-            None => false,
+            // Never approvers: their verdicts are shown, not counted.
+            Some(Role::Triage | Role::Reader) | None => false,
         })
         .count();
     let have = u32::try_from(have).unwrap_or(u32::MAX);

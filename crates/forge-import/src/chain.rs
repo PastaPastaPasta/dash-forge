@@ -69,7 +69,7 @@ pub trait Chain {
     async fn comments(&self, repo: &RepoRef, target_id: &str) -> Result<Vec<Written>>;
     /// The reviews of `patch_id`.
     async fn reviews(&self, repo: &RepoRef, patch_id: &str) -> Result<Vec<Written>>;
-    /// The destination's members (maintainers and writers).
+    /// The destination's approvers (maintainers and role-1 writers; not triage or readers).
     async fn members(&self, repo: &RepoRef) -> Result<BTreeSet<String>>;
     /// The label definitions.
     async fn labels(&self, repo: &RepoRef) -> Result<Vec<Label>>;
@@ -229,10 +229,13 @@ impl Chain for CollabChain<'_> {
     }
 
     async fn members(&self, repo: &RepoRef) -> Result<BTreeSet<String>> {
+        // RC2 member roles: imported provenance is trusted from approvers only (maintainers
+        // and role-1 writers), never from triage members or readers.
         Ok(forge_core::members::MemberReader::new(self.client)
             .list(repo)
             .await?
             .into_iter()
+            .filter(|m| m.role.is_approver())
             .map(|m| m.identity_id)
             .collect())
     }

@@ -206,7 +206,7 @@ impl Collab<'_> {
             ));
         }
         let p = milestone_props(title, description, due_on, closed);
-        self.require_role(repo, Role::Writer, &format!("define milestone {title}"))
+        self.require_role(repo, Role::Triage, &format!("define milestone {title}"))
             .await?;
         let community = self.community_contract(repo).await?;
         self.write(repo, &community, DOC_MILESTONE, p).await

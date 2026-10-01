@@ -376,7 +376,8 @@ pub fn members_of(v: &serde_json::Value) -> Result<Members> {
         let role = match role {
             "maintainer" => Author::Maintainer,
             "writer" => Author::Writer,
-            // A role this runner does not know is not a member's.
+            // A role this runner does not know is not a member's; triage members and readers
+            // (RC2 member roles) cannot push, so they are strangers here too.
             _ => continue,
         };
         let held = m.entry(id.to_string()).or_insert(role);
@@ -1303,10 +1304,16 @@ mod tests {
                 {"identityId": "W", "role": "writer"},
                 {"identityId": "B", "role": "writer"},
                 {"identityId": "B", "role": "maintainer"},
+                {"identityId": "T", "role": "triage"},
+                {"identityId": "R", "role": "reader"},
             ],
             "ownerId": "O",
         });
         let m = members_of(&v).unwrap();
+        // RC2 member roles: triage members and readers cannot push, so a PR of theirs is a
+        // stranger's to the runner (no trusted-branch run, no secrets).
+        assert_eq!(author_of(&m, "T"), Author::Stranger);
+        assert_eq!(author_of(&m, "R"), Author::Stranger);
         assert_eq!(author_of(&m, "M"), Author::Maintainer);
         assert_eq!(author_of(&m, "W"), Author::Writer);
         assert_eq!(

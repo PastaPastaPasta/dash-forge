@@ -309,8 +309,9 @@ pub fn reviewer_rows(
                         Standing::NotMember
                     }
                     Some(r) if matches!(r.verdict, Verdict::Approve | Verdict::RequestChanges) => {
-                        if !oracle.member_at(id, r.created_at) || oracle.current_role(id).is_none()
-                        {
+                        // Triage members and readers are members, never approvers: their
+                        // member verdict is shown, not counted (as `count_approvals`).
+                        if !oracle.approver_at(id, r.created_at) || !oracle.current_approver(id) {
                             Standing::NotMember
                         } else if r.commit_oid != head {
                             Standing::Stale
