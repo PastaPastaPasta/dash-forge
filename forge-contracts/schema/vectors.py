@@ -112,7 +112,7 @@ if F['fused_star']:
     del BASE['starBeat']   # C1: the star carries the trending window
 # RC2 member roles: a writer document carries its role, and every writer-gated type its claimed `r`
 # (1: the role a maintainer, an author, a runner or a role-1 writer sends)
-ROLE_GATED = ('refUpdate', 'packManifest', 'chunk', 'label', 'transition', 'event', 'milestone', 'checkRun')
+ROLE_GATED = build.ROLE_GATED
 if F['member_roles']:
     BASE['writer']['role'] = 1
     for _t in ROLE_GATED:
@@ -695,7 +695,7 @@ if F['member_roles']:
         no('ROLES', f'{t} without r', t, 'required', r=DROP)
         no('ROLES', f'{t} claiming r 0', t, 'minimum', r=0)
     # push class and check runs: role 1 only
-    for t in ('refUpdate', 'packManifest', 'chunk', 'checkRun'):
+    for t in (t for t, hi in ROLE_GATED.items() if hi == 1):
         no('ROLES', f'{t} claiming triage (r 2)', t, 'maximum', r=2)
     # labels and milestones: writer or triage, never a reader
     for t in ('label', 'milestone'):

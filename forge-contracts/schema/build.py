@@ -117,6 +117,10 @@ RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fuse
 # review dismiss (15), head update (16), pin / unpin (19, 20), policy bypass (23); merge (13),
 # draft (14), ready (15).
 WRITER_EVENT_KINDS = [8, 15, 16, 19, 20, 23]
+# The role-gated types (forge-core, forge-collab, forge-community) and the highest role `r` each
+# admits: push class and check runs are role 1 only, the triage types 1..2.
+ROLE_GATED = {'refUpdate': 1, 'packManifest': 1, 'chunk': 1, 'transition': 2, 'event': 2, 'label': 2,
+              'milestone': 2, 'checkRun': 1}
 WRITER_TRANSITION_KINDS = [13, 14, 15]
 # The riders: independent of the RC2 items (other types and properties), so variants.py turns
 # each off only with every RC2 item on, the largest build.
@@ -646,8 +650,10 @@ def build(flags):
         def writer_leaf(t):
             return next(leaf for leaf in leaves(t['ownerRefersTo']) if leaf['documentType'] == 'writer')
 
-        for home, t, hi in ((cd, 'refUpdate', 1), (cd, 'packManifest', 1), (cd, 'chunk', 1), (ld, 'transition', 2),
-                            (ev_home, 'event', 2), (cd, 'label', 2), (ev_home, 'milestone', 2), (md, 'checkRun', 1)):
+        homes = {'refUpdate': cd, 'packManifest': cd, 'chunk': cd, 'transition': ld, 'event': ev_home, 'label': cd,
+                 'milestone': ev_home, 'checkRun': md}
+        for t, hi in ROLE_GATED.items():
+            home = homes[t]
             add_prop(home[t], 'r', {"type": "integer", "minimum": 1, "maximum": hi}, required=True)
             writer_leaf(home[t]).setdefault('where', {})['role'] = 'r'
         # Triage closes, reopens and locks; merge, draft and ready need role 1. transition keeps 15

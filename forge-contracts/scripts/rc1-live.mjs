@@ -54,7 +54,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEvoSdk } from './deploy-v2.mjs';
-import { CONTRACTS, FUSED_STAR, MEMBER_ROLES, ROLE_GATED } from './lib/seed-io.mjs';
+import { CONTRACTS, FUSED_STAR, MEMBER_ROLES, withRole } from './lib/seed-io.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
@@ -79,7 +79,6 @@ const HIDE_PROOF = 'asMaintainer' in CONTRACTS.community.documentSchemas.event.p
 // RC2 member roles (design/v5/RECUT-OR-NEVER.md): writer.role, and a claimed `r` on every
 // role-gated type. A case that names no `r` (or no writer `role`) writes 1, what a maintainer, an
 // author, a runner or a role-1 writer sends.
-const ROLES = MEMBER_ROLES;
 
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey, Identifier } = evo;
@@ -171,8 +170,7 @@ const TOTALS = new Set(['issue', 'patch', 'transition', 'comment', 'review', 'pa
 
 async function create(who, contract, type, data) {
   if (TOTALS.has(type)) await sleep(A_BLOCK);
-  if (ROLES && ROLE_GATED.has(type) && !('r' in data)) data = { ...data, r: 1 };
-  if (ROLES && type === 'writer' && !('role' in data)) data = { ...data, role: 1 };
+  data = withRole(type, data);
   const base = new Document({ properties: {}, documentTypeName: type, dataContractId: contract, ownerId: who.id });
   const document = Document.fromObject({ ...base.toObject(), ...data }, version);
   try {
@@ -682,7 +680,7 @@ if (want('moderation') && I1 && HIDE_PROOF) {
 }
 
 // ---------------- roles: triage and reader (RC2 member roles) ----------------
-if (want('roles') && ROLES) {
+if (want('roles') && MEMBER_ROLES) {
   // The member is triage (role 2) of a second public repo, and reader (role 3) of a second
   // private repo; the owner opens issue #1 and PR #2 in the public one
   const r2 = need(await ok('ROLES', 'second public repo', O, CORE, 'repo', { name: `rc1r-${tag}`, visibility: 'public' }), 'the roles repo');
