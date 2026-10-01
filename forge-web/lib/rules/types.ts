@@ -89,7 +89,7 @@ export interface Holdings {
 }
 
 /**
- * A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–22, string-tagged in vectors).
+ * A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–25, string-tagged in vectors).
  * 1–10 change the issue/PR state; 11–18 are the review state (`foldPrReviewV2`); 17–22 are a
  * thread's milestone, pin and lock (`foldThreadMetaV2`).
  */
@@ -118,6 +118,10 @@ export type EventKind =
   | 'unlock'
   /** 23: a maintainer merged by bypassing the branch rules (`value` the rules, `oid` the merge commit). No fold reads it. */
   | 'policyBypass'
+  /** 24: a maintainer hides a comment or review (`refId`) or, without one, the thread (`value` an optional reason). Display only (`hiddenItems`). */
+  | 'hide'
+  /** 25: a maintainer unhides what 24 hid. */
+  | 'unhide'
 
 /** A single `event` document (§2.3), flattened for the fold. */
 export interface Event {

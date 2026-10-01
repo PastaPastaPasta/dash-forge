@@ -1,0 +1,56 @@
+{
+  "name": "unknown_reason_is_none",
+  "description": "A value outside the reasons reads as no reason.",
+  "case": "hidden_items",
+  "rules": "v2",
+  "input": {
+    "threadId": "T",
+    "threadAuthor": "bob",
+    "owner": "own",
+    "maintainers": [
+      "alice",
+      "carol"
+    ],
+    "proved": true,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "hide",
+        "actor": "alice",
+        "value": "rude",
+        "oid": null,
+        "createdAt": 10,
+        "refId": "c1"
+      }
+    ],
+    "comments": [
+      {
+        "id": "c1",
+        "author": "bob"
+      },
+      {
+        "id": "c2",
+        "author": "dave"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "author": "bob"
+      }
+    ]
+  },
+  "expected": {
+    "thread": null,
+    "items": {
+      "c1": {
+        "by": "alice",
+        "reason": null,
+        "at": 10,
+        "eventId": "e1",
+        "via": "item"
+      }
+    }
+  }
+}

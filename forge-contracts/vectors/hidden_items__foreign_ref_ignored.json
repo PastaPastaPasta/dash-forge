@@ -1,0 +1,48 @@
+{
+  "name": "foreign_ref_ignored",
+  "description": "A refId that names no comment or review of this thread (another issue's comment) is ignored.",
+  "case": "hidden_items",
+  "rules": "v2",
+  "input": {
+    "threadId": "T",
+    "threadAuthor": "bob",
+    "owner": "own",
+    "maintainers": [
+      "alice",
+      "carol"
+    ],
+    "proved": true,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "hide",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 10,
+        "refId": "cX"
+      }
+    ],
+    "comments": [
+      {
+        "id": "c1",
+        "author": "bob"
+      },
+      {
+        "id": "c2",
+        "author": "dave"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "author": "bob"
+      }
+    ]
+  },
+  "expected": {
+    "thread": null,
+    "items": {}
+  }
+}

@@ -512,6 +512,9 @@ pub enum IssueCommand {
         repo: String,
         /// The issue number.
         number: u64,
+        /// Show what maintainers hid (collapsed to one line by default).
+        #[arg(long)]
+        show_hidden: bool,
     },
     /// Create an issue.
     Create {
@@ -666,6 +669,24 @@ pub enum IssueCommand {
         #[arg(long)]
         off: bool,
     },
+    /// Hide a comment (`--comment`), or the whole issue, from readers (unhide with `--off`).
+    /// Maintainers only. Nothing is deleted: readers see a collapsed "hidden by" row they can
+    /// expand, and the hide stays in the timeline as the record of who hid what.
+    Hide {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The issue number.
+        number: u64,
+        /// The comment's document id (`id` in `dg issue view --json`); omit to hide the issue.
+        #[arg(long, value_name = "ID")]
+        comment: Option<String>,
+        /// Why, as GitHub's "hide comment" says it.
+        #[arg(long, value_enum, conflicts_with = "off")]
+        reason: Option<HideReasonArg>,
+        /// Unhide.
+        #[arg(long)]
+        off: bool,
+    },
 }
 
 /// `dg milestone` subcommands.
@@ -754,6 +775,9 @@ pub enum PrCommand {
         /// resolved marked), replies, suggestions, and general comments.
         #[arg(long)]
         comments: bool,
+        /// Show what maintainers hid (collapsed to one line by default).
+        #[arg(long)]
+        show_hidden: bool,
     },
     /// Check out a pull request as branch `pr/<n>`, fetching its head from the source repo,
     /// and switch to it (left for `git switch` when there are uncommitted changes).
@@ -819,6 +843,27 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
         /// Unlock.
+        #[arg(long)]
+        off: bool,
+    },
+    /// Hide a comment (`--comment`), a review (`--review`), or the whole pull request, from
+    /// readers (unhide with `--off`). Maintainers only. Nothing is deleted, and a hidden
+    /// review's verdict still counts: dismiss it (`dg pr dismiss`) to stop it counting.
+    Hide {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// The comment's document id (`dg pr view --comments --json`).
+        #[arg(long, value_name = "ID", conflicts_with = "review")]
+        comment: Option<String>,
+        /// The review's document id (`dg pr view --json`).
+        #[arg(long, value_name = "ID")]
+        review: Option<String>,
+        /// Why, as GitHub's "hide comment" says it.
+        #[arg(long, value_enum, conflicts_with = "off")]
+        reason: Option<HideReasonArg>,
+        /// Unhide.
         #[arg(long)]
         off: bool,
     },
@@ -1414,6 +1459,39 @@ pub enum CloseReasonArg {
     NotPlanned,
     /// A duplicate of another issue.
     Duplicate,
+}
+
+/// Why a maintainer hid something (`dg issue hide --reason`, `dg pr hide --reason`): GitHub's
+/// "hide comment" reasons, as `event.value` (forge-core `HIDE_REASONS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum HideReasonArg {
+    /// Spam.
+    Spam,
+    /// Abusive.
+    Abuse,
+    /// Off-topic.
+    #[value(alias = "off_topic")]
+    OffTopic,
+    /// Outdated.
+    Outdated,
+    /// Resolved.
+    Resolved,
+    /// A duplicate.
+    Duplicate,
+}
+
+impl HideReasonArg {
+    /// The stored reason (`event.value`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HideReasonArg::Spam => "spam",
+            HideReasonArg::Abuse => "abuse",
+            HideReasonArg::OffTopic => "off-topic",
+            HideReasonArg::Outdated => "outdated",
+            HideReasonArg::Resolved => "resolved",
+            HideReasonArg::Duplicate => "duplicate",
+        }
+    }
 }
 
 /// A storage backend mode (`repo backend set`).

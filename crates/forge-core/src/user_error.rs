@@ -1271,6 +1271,10 @@ const RULE_EXPLANATIONS: &[(&str, &str)] = &[
     ("needRefId", "this event needs refId (a thread, a reviewer or a review)"),
     ("needOid", "a head update names the new head commit (oid)"),
     ("noState", "a state change (draft, ready, lock, unlock) is a transition, not an event"),
+    (
+        "hideByMaint",
+        "a hide or unhide must name your own maintainer document (asMaintainer): only a maintainer of the repository can hide content",
+    ),
 ];
 
 /// The rules whose meaning on one document type differs from [`RULE_EXPLANATIONS`]' entry.

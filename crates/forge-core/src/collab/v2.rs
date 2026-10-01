@@ -1310,6 +1310,17 @@ pub fn event_payload_props(
         EventKind::MilestoneSet if value.is_none() => {
             return missing("a milestone name");
         }
+        // RC2 MOD: a hide's reason is one of the reader's list (any other reads as none, so it
+        // is refused rather than written to no effect); an unhide carries none.
+        EventKind::Hide if value.is_some_and(|v| !rules::v2::is_hide_reason(v)) => {
+            return Err(Error::Config(format!(
+                "a hide reason is one of {}",
+                rules::v2::HIDE_REASONS.join(", ")
+            )));
+        }
+        EventKind::Unhide if value.is_some() => {
+            return Err(Error::Config("an unhide carries no reason".to_string()));
+        }
         EventKind::PolicyBypass
             if value.is_none() || !oid.is_some_and(|o| matches!(o.len(), 20 | 32)) =>
         {
@@ -5701,6 +5712,8 @@ fn kind_verb(kind: EventKind) -> &'static str {
         EventKind::Lock => "lock",
         EventKind::Unlock => "unlock",
         EventKind::PolicyBypass => "record a rules bypass on",
+        EventKind::Hide => "hide content on",
+        EventKind::Unhide => "unhide content on",
     }
 }
 

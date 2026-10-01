@@ -25,6 +25,8 @@
 //! * [`ref_name_hashes_agree`] — the ref-name / hash binding, public (`sha256`) or private
 //!   (`HMAC-SHA256(K_ref,e, name)`, applied after decryption).
 //! * [`is_valid_repo_name`] / [`normalize_repo_name`] — the `repo.name` slug (§2).
+//! * [`hidden_items`] — what a reader collapses after a maintainer's hide (RC2 MOD, §3.3; the
+//!   [`super::moderation`] module).
 //!
 //! The event ordering and per-kind state changes are the parent module's base rules
 //! (`apply_issue_event`, `apply_pr_event`, `event_order`), alongside ref
@@ -35,6 +37,10 @@
 
 use std::collections::BTreeSet;
 
+pub use super::moderation::{
+    hidden_items, is_hide_reason, Hidden, HiddenItems, HiddenVia, HideScope, ThreadItem,
+    HIDE_REASONS,
+};
 pub use super::parity::{
     check_run_write, checks_state, fold_milestones_v2, fold_thread_meta_v2, pinned_targets,
     trending_recount, trending_window, CheckRunRow, CheckState, ChecksPolicy, ChecksState,
