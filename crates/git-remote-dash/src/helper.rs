@@ -186,6 +186,9 @@ impl Helper {
                     .await
                     .with_context(|| format!("resolving repo {id}"))?,
             };
+            // Before anything is read or a key opened: is this still the repository the
+            // clone was made from (a DPNS name can change hands)?
+            self.check_pin(&repo)?;
             let keyring = forge_core::repo::KeyringCache::default();
             let mut signer = None;
             if repo.visibility == forge_core::rules::v2::Visibility::Private {
@@ -213,6 +216,31 @@ impl Helper {
             });
         }
         Ok(self.conn.as_ref().expect("conn populated"))
+    }
+
+    /// Pin a named URL's resolution in the repository git runs us for, or refuse one that now
+    /// resolves elsewhere (E504; [`crate::pin`]). Only when git named a repository
+    /// (`GIT_DIR`): `git ls-remote` outside one has nothing to pin, and a directory git
+    /// declined to use (safe.directory) is not written to.
+    fn check_pin(&self, repo: &RepoRef) -> Result<()> {
+        if std::env::var_os("GIT_DIR").is_none() {
+            return Ok(());
+        }
+        let git_dir = LocalRepo::git_dir()?;
+        let now = crate::pin::Pin {
+            repo_id: repo.id().to_string(),
+            owner_id: repo.owner_id().to_string(),
+            network: self.target.network.key(),
+        };
+        let outcome = crate::pin::guard(
+            &self.url,
+            &git_dir,
+            self.remote.as_deref(),
+            &now,
+            crate::pin::allow_repin,
+        )?;
+        tracing::debug!(?outcome, "dash:// pin");
+        Ok(())
     }
 
     /// [`Self::ensure_conn`], plus the signing identity (loaded once, on first need): a push
