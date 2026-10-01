@@ -190,8 +190,9 @@ pub enum Command {
     Import(Box<import::ImportArgs>),
     /// Diagnose the identity, network, contracts, storage, git config and toolchain.
     Doctor {
-        /// Apply the safe automatic fixes (create config directories with 0700, set missing
-        /// git config keys in this repository). Never anything that spends credits.
+        /// Apply the safe automatic fixes (create config directories with 0700, tighten an
+        /// identity file to 0600, set missing git config keys with `git config --global`).
+        /// Never overwrites a value you set, never anything that spends credits.
         #[arg(long)]
         fix: bool,
     },
