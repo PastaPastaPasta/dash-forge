@@ -182,7 +182,7 @@ fn validate_devnet_name(name: &str) -> Result<()> {
     let ok_chars = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     if !ok_chars || name.starts_with('-') || name.ends_with('-') {
         return Err(Error::Config(format!(
-            "invalid devnet name {name:?}: use letters, digits and inner hyphens (e.g. `bonsia`)"
+            "invalid devnet name {name:?}: use letters, digits and inner hyphens (e.g. `sakura`)"
         )));
     }
     // These alias a real network's quorum host (quorums.mainnet.networks.dash.org).
@@ -236,6 +236,10 @@ struct DeploymentFile {
     dapi_addresses: Option<Vec<String>>,
     #[serde(default)]
     quorum_base_url: Option<String>,
+    /// A devnet that is gone (reset or upgraded past its contracts). Its record stays for
+    /// history and tests, but no message points a user at it.
+    #[serde(default)]
+    retired: bool,
     /// The forge-v2 record `deploy-v2.mjs` read-modify-writes (`forge-contracts/scripts`).
     #[serde(default)]
     v2: Option<V2Record>,
@@ -437,6 +441,8 @@ pub struct Deployment {
     pub quorum_base_url: Option<String>,
     /// The forge-v2 contracts, or `None` when none are fully registered here.
     pub v2: Option<ForgeIds>,
+    /// The file marks the network retired: it is gone, and nothing suggests it.
+    pub retired: bool,
 }
 
 impl Deployment {
@@ -452,8 +458,8 @@ pub fn deployment_keys() -> impl Iterator<Item = &'static str> {
 }
 
 /// The network a "not deployed here" message points to: the first embedded deployment with
-/// forge-v2 contracts, mainnet first, then testnet, then the devnets by name. `None` when no
-/// network has a deployment.
+/// forge-v2 contracts that is not retired, mainnet first, then testnet, then the devnets by
+/// name. `None` when no live network has a deployment.
 pub fn suggested_v2_network() -> Option<Network> {
     let rank = |k: &str| match k {
         "mainnet" => 0,
@@ -462,7 +468,12 @@ pub fn suggested_v2_network() -> Option<Network> {
     };
     // deployment_keys() is sorted, so ties on rank keep name order.
     deployment_keys()
-        .filter(|k| deployment(k).ok().flatten().is_some_and(|d| d.v2.is_some()))
+        .filter(|k| {
+            deployment(k)
+                .ok()
+                .flatten()
+                .is_some_and(|d| d.v2.is_some() && !d.retired)
+        })
         .min_by_key(|k| rank(k))
         .map(Network::from_key)
 }
@@ -487,6 +498,7 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
         dapi_addresses,
         quorum_base_url: file.quorum_base_url.filter(|s| !s.is_empty()),
         v2: file.v2.as_ref().and_then(V2Record::ids),
+        retired: file.retired,
     }))
 }
 
@@ -588,7 +600,7 @@ pub fn full_network_key(key: &str) -> Option<String> {
 }
 
 /// A network value in the `devnet-<name>` form every tool prints ([`Network::key`]), split
-/// into `devnet` and the name, so `DASH_FORGE_NETWORK=devnet-bonsia` means what it says. A
+/// into `devnet` and the name, so `DASH_FORGE_NETWORK=devnet-sakura` means what it says. A
 /// name that disagrees with the layer's own devnet name is left as given, and
 /// [`NetworkSettings::resolve`] refuses the pair.
 fn split_devnet_key(
@@ -862,7 +874,7 @@ mod tests {
     fn every_embedded_deployment_parses() {
         let keys: Vec<_> = deployment_keys().collect();
         assert!(keys.contains(&"devnet-moutai"), "{keys:?}");
-        assert!(keys.contains(&"devnet-bonsia"), "{keys:?}");
+        assert!(keys.contains(&"devnet-sakura"), "{keys:?}");
         for key in keys {
             deployment(key).unwrap().expect("listed key has a file");
         }
@@ -1050,10 +1062,10 @@ mod tests {
     }
 
     #[test]
-    fn bonsia_resolves_its_addresses_quorum_service_and_rc1_contracts() {
+    fn sakura_resolves_its_addresses_and_quorum_service_before_its_contracts() {
         let t = NetworkSettings {
             network: Some("devnet".into()),
-            devnet_name: Some("bonsia".into()),
+            devnet_name: Some("sakura".into()),
             ..Default::default()
         }
         .resolve()
@@ -1062,20 +1074,31 @@ mod tests {
             panic!("expected devnet, got {:?}", t.network);
         };
         assert_eq!(dapi_addresses.len(), 13);
-        assert!(dapi_addresses.contains(&"https://68.67.122.224:1443".to_string()));
-        assert!(dapi_addresses.contains(&"https://68.67.122.247:1443".to_string()));
-        assert_eq!(t.network.key(), "devnet-bonsia");
+        assert!(dapi_addresses.contains(&"https://68.67.122.86:1443".to_string()));
+        assert!(dapi_addresses.contains(&"https://68.67.122.241:1443".to_string()));
+        assert_eq!(t.network.key(), "devnet-sakura");
         assert_eq!(
             t.network.quorum_base_url(),
-            "https://quorums.bonsia.networks.dash.org"
+            "https://quorums.sakura.networks.dash.org"
         );
-        // The RC1 registration (forge-contracts/deployments/devnet-bonsia.json), with web
-        // constants.test.ts
-        let v2 = t.v2.expect("bonsia records forge-v2");
-        assert_eq!(v2.core, "6SbihK14KP8RhUpSH4Tc6WNvWKziWEoAbkNZmi7RadwJ");
-        assert_eq!(v2.collab, "H1H5VfTt2KWy1NhwEHoHuwYZGJm8eoetUCUt5xGNuZUp");
-        // its own forge-community (a pre-split record would fall back to collab's id)
-        assert_eq!(v2.community, "6ktYsH3cpxC7FbazwtVWGiNuVb4TNE5YrHD1hNY8XqNx");
+        // forge-contracts/deployments/devnet-sakura.json records the network only until the
+        // RC2 registration adds its `v2` record (web constants.test.ts checks the same file).
+        let file = deployment("devnet-sakura").unwrap().unwrap();
+        assert!(!file.retired);
+        assert_eq!(t.v2, file.v2);
+    }
+
+    #[test]
+    fn a_retired_devnet_is_never_suggested() {
+        // moutai keeps its forge-v2 record (tests read it) but is gone: no message names it.
+        let moutai = deployment("devnet-moutai").unwrap().unwrap();
+        assert!(moutai.retired && moutai.v2.is_some());
+        let suggested = suggested_v2_network().map(|n| n.key());
+        assert_ne!(suggested.as_deref(), Some("devnet-moutai"));
+        if let Some(key) = suggested {
+            let d = deployment(&key).unwrap().unwrap();
+            assert!(d.v2.is_some() && !d.retired, "{key}");
+        }
     }
 
     #[test]
@@ -1286,8 +1309,6 @@ mod tests {
             "git config dash.network mainnet"
         );
         assert_eq!(main.env_assignments(), "DASH_FORGE_NETWORK=mainnet");
-        // the devnets tie on rank and keep name order: bonsia before moutai
-        assert_eq!(suggested_v2_network().unwrap().key(), "devnet-bonsia");
     }
 
     #[test]
@@ -1438,23 +1459,23 @@ mod tests {
 
     #[test]
     fn the_devnet_key_form_every_tool_prints_selects_that_devnet() {
-        // QW-032: `DASH_FORGE_NETWORK=devnet-bonsia` (what dg prints) was E204.
+        // QW-032: `DASH_FORGE_NETWORK=devnet-sakura` (what dg prints) was E204.
         let env = |k: &str| match k {
-            ENV_NETWORK => Some("devnet-bonsia".to_string()),
+            ENV_NETWORK => Some("devnet-sakura".to_string()),
             _ => None,
         };
         let layer = NetworkSettings::from_lookup(env, ENV_KEYS);
         assert_eq!(layer.network.as_deref(), Some("devnet"));
-        assert_eq!(layer.devnet_name.as_deref(), Some("bonsia"));
-        assert_eq!(layer.resolve().unwrap().network.key(), "devnet-bonsia");
-        let flags = NetworkSettings::from_flags(Some("DEVNET-bonsia".into()), None, None);
-        assert_eq!(flags.resolve().unwrap().network.key(), "devnet-bonsia");
+        assert_eq!(layer.devnet_name.as_deref(), Some("sakura"));
+        assert_eq!(layer.resolve().unwrap().network.key(), "devnet-sakura");
+        let flags = NetworkSettings::from_flags(Some("DEVNET-sakura".into()), None, None);
+        assert_eq!(flags.resolve().unwrap().network.key(), "devnet-sakura");
         // the same name twice is fine; two names are refused, not silently picked
         let same =
-            NetworkSettings::from_flags(Some("devnet-bonsia".into()), Some("bonsia".into()), None);
-        assert_eq!(same.resolve().unwrap().network.key(), "devnet-bonsia");
+            NetworkSettings::from_flags(Some("devnet-sakura".into()), Some("sakura".into()), None);
+        assert_eq!(same.resolve().unwrap().network.key(), "devnet-sakura");
         let clash =
-            NetworkSettings::from_flags(Some("devnet-bonsia".into()), Some("moutai".into()), None);
+            NetworkSettings::from_flags(Some("devnet-sakura".into()), Some("moutai".into()), None);
         let err = clash.resolve().unwrap_err().to_string();
         assert!(err.contains("disagree"), "{err}");
         // a bare `devnet-` names nothing

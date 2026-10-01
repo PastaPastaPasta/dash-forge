@@ -1682,8 +1682,8 @@ mod tests {
             c.fix
                 .as_deref()
                 .unwrap()
-                // the first devnet by name with forge-v2 (bonsia, since the RC1 registration)
-                .contains("dg auth new --network devnet --devnet-name bonsia"),
+                // the live network with forge-v2, or a placeholder before any is registered
+                .contains(&format!("dg auth new {}", deployed_network_flags())),
             "{:?}",
             c.fix
         );

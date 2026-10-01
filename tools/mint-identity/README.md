@@ -31,6 +31,7 @@ npm test        # offline unit tests (no network)
 | Flag | Network | Default funding | Lock proof |
 |---|---|---|---|
 | `--network testnet` (default) | public testnet, protocol 13 | `faucet` | InstantSend (islock via `getislocks` JSON-RPC) |
+| `--network devnet --devnet-name sakura` | devnet sakura (`dash-devnet-sakura`), protocol 14 | `fund-from-key` | chain lock (`ChainAssetLockProof`) |
 | `--network devnet --devnet-name moutai` | devnet moutai (`dash-devnet-moutai`), protocol 14 | `fund-from-key` | chain lock (`ChainAssetLockProof`) |
 
 Devnets are listed in the `DEVNETS` registry in `src/config.mjs` (Insight URL,
