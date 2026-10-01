@@ -966,14 +966,20 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
   // the tab by the scan): every candidate above that point is named. A row whose state the scan
   // has not settled yet (its newest change on the watermark's timestamp, or only a lock read) is
   // named only when it must be (`unsettled`): the next scan page usually settles it, unread.
-  const nominate = (floor = gapFloor(), unsettled = false): { numbers: number[]; sure: number } => {
+  // `held` counts the sure rows already loaded; `whole`: the descent looked at every number down to 1.
+  const nominate = (floor = gapFloor(), unsettled = false): { numbers: number[]; sure: number; held: number; whole: boolean } => {
     const numbers: number[] = []
     let sure = 0
-    for (let m = tab.max; m >= 1 && (tab.direction === 'asc' || sure < need); m--) {
-      const held = index.byNumber.get(m)
-      if (held !== undefined) {
-        const r = index.rows.get(held)
-        if (r !== undefined && tab.matches(r)) sure++
+    let held = 0
+    let m = tab.max
+    for (; m >= 1 && (tab.direction === 'asc' || sure < need); m--) {
+      const loaded = index.byNumber.get(m)
+      if (loaded !== undefined) {
+        const r = index.rows.get(loaded)
+        if (r !== undefined && tab.matches(r)) {
+          sure++
+          held++
+        }
         continue
       }
       if (index.notNumbers.has(m)) continue
@@ -992,7 +998,7 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
         sure++
       }
     }
-    return { numbers, sure }
+    return { numbers, sure, held, whole: m < 1 }
   }
   // A row the scan settles needs no state sum: one read per batch, not two.
   const known: KnownCodes = (docs) => scanCodes(scan, docs)
@@ -1013,7 +1019,8 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
     const named = nominate(gapFloor(), atEnd)
     const batch = named.numbers.length
     // Settled rows are sure; unnamed numbers are this type's open rows at `openShare`.
-    const expected = named.sure + (batch - named.sure) * tab.openShare
+    const settled = named.sure - named.held
+    const expected = named.sure + (batch - settled) * tab.openShare
     if (batch > 0 && (atEnd || expected >= need || batch >= CHUNK || sinceRead >= RESOLVE_EVERY)) {
       await resolve(named.numbers)
       rows = tabRows()
@@ -1021,11 +1028,21 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
     }
     if (scan.done && scan.complete) {
       // Every state change is read: every candidate the page needs is named; once they are read,
-      // the page is proved (the whole tab only when every row of it is held).
-      const rest = nominate(1, true).numbers
-      if (rest.length > 0) await resolve(rest)
-      const held = tabRows()
-      return done(held, held.length >= tab.known)
+      // the page is proved. A named row that turns out not to be one (hidden, another type) lets
+      // the descent name more, so it names again until nothing new is named. The whole tab is
+      // held when its count is, or when the descent looked at every number (a count read before
+      // a later close can be one too many: the scan is the newer proof).
+      const tried = new Set<number>()
+      for (;;) {
+        const rest = nominate(1, true)
+        const fresh = rest.numbers.filter((n) => !tried.has(n))
+        if (fresh.length === 0) {
+          const held = tabRows()
+          return done(held, held.length >= tab.known || rest.whole)
+        }
+        for (const n of fresh) tried.add(n)
+        await resolve(fresh)
+      }
     }
     // The page's last row created after the watermark: every number above it was too, so every
     // candidate above it is named; once they are read, the page is proved.

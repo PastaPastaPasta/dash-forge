@@ -285,6 +285,20 @@ describe('list request budget on a dash-sized repo (QW2-002, QW3-003)', () => {
     expect(listReads(r.seen)).toBe(before)
   })
 
+  it('an Open tab whose count was read before someone else closed one of its PRs ends whole, at the rows the scan proves', async () => {
+    const r = fresh({ ...DASH, items: 1200, openPrDepths: [0, 4, 300] })
+    // The counts are read (and kept by the index) on another tab first.
+    await queryPulls(r.sdk, r.repo, { ...pulls, state: 'merged' }, r.prs, 'devnet')
+    // Then a maintainer elsewhere closes the open PR 300 numbers down (one the index has not read).
+    const closed = r.openPrs[2]!
+    r.store.COLLAB!.transition!.push({ $id: id(`${r.repo.repoId}:late-close`), $ownerId: MAINT, $createdAt: 90_000_000, repoId: r.repo.repoId, targetId: id(`${r.repo.repoId}:${closed}`), targetNumber: closed, targetKind: 1, kind: 11, delta: 1, asAuthor: 0 })
+    const { page } = await settledPulls(r, pulls)
+    expect(page.rows.map((x) => x.number)).toEqual(r.openPrs.filter((n) => n !== closed))
+    expect(page.hasNext).toBe(false)
+    expect(page.searchedOf).toBeNull()
+    expect(page.matching).toBe(2)
+  })
+
   it('the Open tab costs what the depth of its oldest open PR costs, not what the repo holds', async () => {
     const reads: number[] = []
     for (const items of [5615, 15_000, 30_000]) {
