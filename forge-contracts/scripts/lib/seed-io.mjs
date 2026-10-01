@@ -31,8 +31,10 @@ export const CONTRACTS = Object.fromEntries(
  * RC2 C1 (schema/build.py `fused_star`): the star itself sits in the trending window (its
  * `byWeek` index outlives an unstar), and starBeat is gone. Read from the committed schema, the
  * one deploy-v2.mjs registers; a fee probe that fails turns the flag off and brings starBeat back.
+ * The same test as forge-web's `lib/repo/star-shape.ts` and `e2e/trending.spec.ts`: the star has
+ * a time-window index.
  */
-export const FUSED_STAR = !('starBeat' in CONTRACTS.community.documentSchemas);
+export const FUSED_STAR = (CONTRACTS.community.documentSchemas.star?.indices ?? []).some((index) => index.timeRange !== undefined);
 
 /** The contract (`core`, `collab`, `community`) that holds each document type. */
 export const CONTRACT_OF = Object.fromEntries(

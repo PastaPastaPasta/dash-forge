@@ -323,13 +323,12 @@ export async function validateRc1(type: string, doc: Record<string, unknown>, op
 function structureErrors(schema: Schema, doc: Record<string, unknown>, owner: string): string[] {
   const errors: string[] = []
   const props = (schema.properties ?? {}) as Record<string, Schema & { distinctFrom?: string; encryptedFor?: unknown }>
-  const same = (a: unknown, b: unknown): boolean => a instanceof Uint8Array && b instanceof Uint8Array && a.length === b.length && a.every((x, i) => x === b[i])
   for (const [name, prop] of Object.entries(props)) {
     const value = doc[name]
     if (value === undefined) continue
     if (typeof prop.distinctFrom === 'string') {
       const other = prop.distinctFrom === '$ownerId' ? base58Decode(owner) : doc[prop.distinctFrom]
-      if (same(value, other)) errors.push(`distinctFrom at /${name}: equals ${prop.distinctFrom} (${DISTINCT_FROM_CODE})`)
+      if (value instanceof Uint8Array && sameValue(value, other)) errors.push(`distinctFrom at /${name}: equals ${prop.distinctFrom} (${DISTINCT_FROM_CODE})`)
     }
     if (prop.encryptedFor !== undefined && value instanceof Uint8Array && (value.length < 32 || value.length % 16 !== 0)) {
       errors.push(`encryptedFor at /${name}: ${value.length} bytes is no AES-CBC ciphertext (${ENCRYPTED_SHAPE_CODE})`)
@@ -382,6 +381,9 @@ function sameValue(a: unknown, b: unknown): boolean {
 function conditionHolds(cond: unknown, doc: Json, stored: Json): boolean {
   const read = (path: string): unknown => {
     const [from, rest] = path.startsWith('$old.') ? [stored, path.slice(5)] : [doc, path]
+    // A system field ($updatedAt is the replace's block time, $ownerId, ...) is not in the
+    // properties this judge holds: refuse to guess rather than read it as absent.
+    if (rest.startsWith('$')) throw new Error(`rc1-validate: an immutable condition reads ${path}, which this judge does not hold`)
     return rest.split('.').reduce<unknown>((o, k) => (o !== null && typeof o === 'object' ? (o as Json)[k] : undefined), from)
   }
   const operand = (o: unknown): unknown => (typeof o === 'string' ? read(o) : o !== null && typeof o === 'object' && 'const' in o ? (o as Json).const : o)
@@ -419,45 +421,62 @@ export async function validateRc1Replace(type: string, stored: Json, doc: Json, 
   return { ok: true }
 }
 
-/** One index of a document type as the pinned SDK parsed it, and whether Drive lays it out. */
+/** One index of a document type, as Drive lays it out for the pinned SDK's parse of the contract. */
 export interface Rc1IndexFacts {
+  /** The index's properties in order (a time window's property without its `#range#step`). */
   readonly properties: readonly string[]
   readonly flags: Readonly<Record<'unique' | 'rangeCountable' | 'rankedCountable' | 'outlivesDelete' | 'timeRange' | 'derived', boolean>>
-  /** Drive's layout of the type (`documentTypeLayout`) has a tree for it. */
-  readonly laidOut: boolean
+}
+
+/** A node of `documentTypeLayout` (wasm-sdk 5.0.0-beta.1 `DocumentTypeLayoutNode`), as far as this reads it. */
+interface LayoutNode {
+  readonly key: { readonly kind: string; readonly label?: string }
+  readonly role: string
+  readonly element: string
+  readonly rankedAxes: readonly string[]
+  readonly indexes: readonly string[]
+  readonly notes: readonly { readonly code: string }[]
+  readonly alternative?: { readonly node: LayoutNode }
+  readonly children: readonly LayoutNode[]
 }
 
 /**
- * Whether `contract` has document type `type`, and its indexes by name: as the pinned SDK parsed
- * them (full validation) and as Drive lays them out (`documentTypeLayout`), for the RC2 index
- * vectors (`<contract>.indices.json`).
+ * Whether `contract` has document type `type`, and its indexes by name, read from Drive's layout
+ * of the pinned SDK's (fully validated) parse (`documentTypeLayout`), for the RC2 index vectors
+ * (`<contract>.indices.json`). Below the type's root, every tree of an index names it: its
+ * property trees give the order, a `timeRangeBucket` layer the time window, a `count` ranking
+ * axis `rankedCountable`, a provable count tree `rangeCountable`, and an `outlivesDelete` note
+ * the delete rule. `unique` (not visible in the layout) comes from the parsed schema; `derived`
+ * is a property read through a reference (`patchId.$ownerId`).
  */
 export async function rc1Indexes(contract: Rc1ContractName, type: string): Promise<ReadonlyMap<string, Rc1IndexFacts> | null> {
   const { evo, contracts } = await judge()
   const parsed = contracts[contract]
   const schema = (parsed.schemas as Record<string, { indices?: Json[] }>)[type]
   if (!schema) return null
-  const laidOut = new Set<string>()
-  const walk = (node: { indexes: string[]; children: unknown[]; alternative?: { node: unknown } }): void => {
-    for (const name of node.indexes) laidOut.add(name)
-    for (const child of node.children) walk(child as typeof node)
-    if (node.alternative) walk(node.alternative.node as typeof node)
+  const nodes = new Map<string, LayoutNode[]>()
+  const walk = (node: LayoutNode): void => {
+    if (node.role !== 'documentType') for (const name of node.indexes) nodes.set(name, [...(nodes.get(name) ?? []), node])
+    for (const child of node.children) walk(child)
+    if (node.alternative) walk(node.alternative.node)
   }
-  walk(evo.documentTypeLayout(parsed, type, PLATFORM_VERSION).root as unknown as Parameters<typeof walk>[0])
+  walk(evo.documentTypeLayout(parsed, type, PLATFORM_VERSION).root as unknown as LayoutNode)
   const out = new Map<string, Rc1IndexFacts>()
   for (const index of schema.indices ?? []) {
-    const properties = (index.properties as Record<string, string>[]).map((p) => Object.keys(p)[0] as string)
-    out.set(index.name as string, {
+    const name = index.name as string
+    const path = nodes.get(name) ?? []
+    if (path.length === 0) continue // not laid out: absent as far as Drive is concerned
+    const properties = path.filter((n) => n.role === 'indexProperty' || n.role === 'nextIndexProperty').map((n) => (n.key.label ?? '').split('#')[0] as string)
+    out.set(name, {
       properties,
       flags: {
         unique: index.unique === true,
-        rangeCountable: index.rangeCountable === true,
-        rankedCountable: index.rankedCountable === true,
-        outlivesDelete: index.outlivesDelete === true,
-        timeRange: index.timeRange !== undefined && index.timeRange !== null,
+        rangeCountable: path.some((n) => n.element.startsWith('ProvableCount')),
+        rankedCountable: path.some((n) => n.rankedAxes.includes('count')),
+        outlivesDelete: path.some((n) => n.notes.some((note) => note.code === 'outlivesDelete')),
+        timeRange: path.some((n) => n.key.kind === 'timeRangeBucket'),
         derived: properties.some((p) => p.includes('.')),
       },
-      laidOut: laidOut.has(index.name as string),
     })
   }
   return out

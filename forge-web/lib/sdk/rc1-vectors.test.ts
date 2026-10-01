@@ -54,12 +54,17 @@ function materialise(value: unknown): unknown {
   return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, materialise(v)]))
 }
 
-const vectors: Record<Rc1ContractName, VectorCase[]> = Object.fromEntries(
-  CONTRACTS.map((name) => {
-    const path = resolve(__dirname, '..', '..', '..', 'forge-contracts', 'vectors', 'rc1', `${name}.json`)
-    return [name, JSON.parse(readFileSync(path, 'utf8')) as VectorCase[]]
-  }),
-) as Record<Rc1ContractName, VectorCase[]>
+/** `<contract><suffix>` of every contract; a missing optional file is no cases. */
+function loadVectors<T>(suffix: string, optional = false): Record<Rc1ContractName, T[]> {
+  return Object.fromEntries(
+    CONTRACTS.map((name) => {
+      const path = resolve(__dirname, '..', '..', '..', 'forge-contracts', 'vectors', 'rc1', `${name}${suffix}`)
+      return [name, optional && !existsSync(path) ? [] : (JSON.parse(readFileSync(path, 'utf8')) as T[])]
+    }),
+  ) as Record<Rc1ContractName, T[]>
+}
+
+const vectors = loadVectors<VectorCase>('.json')
 
 describe('RC1 conformance vectors', () => {
   beforeAll(async () => {
@@ -112,20 +117,15 @@ interface IndexCase {
   has?: Record<string, boolean>
 }
 
-/** `<contract>.<kind>.json`, or no cases when vectors.py wrote none for that contract. */
-function optionalVectors<T>(kind: 'replace' | 'indices'): Record<Rc1ContractName, T[]> {
-  return Object.fromEntries(
-    CONTRACTS.map((name) => {
-      const path = resolve(__dirname, '..', '..', '..', 'forge-contracts', 'vectors', 'rc1', `${name}.${kind}.json`)
-      return [name, existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as T[]) : []]
-    }),
-  ) as Record<Rc1ContractName, T[]>
-}
+const replaces = loadVectors<ReplaceCase>('.replace.json', true)
+const indices = loadVectors<IndexCase>('.indices.json', true)
 
-const replaces = optionalVectors<ReplaceCase>('replace')
-const indices = optionalVectors<IndexCase>('indices')
+/** Loads the wasm SDK and parses the contracts once, outside any one case's timeout. */
+const warmUp = (): Promise<unknown> => validateRc1('star', { repoId: new Uint8Array(32).fill(1) })
 
 describe('RC2 replace vectors (v5 immutable, with conditions)', () => {
+  beforeAll(warmUp, 60_000)
+
   it('has the checkRun cases (M1 set-once fields, S1 frozen evidence)', () => {
     expect(replaces['forge-community'].filter((c) => c.type === 'checkRun').length).toBeGreaterThan(0)
     expect(replaces['forge-community'].some((c) => c.why === '40128')).toBe(true)
@@ -153,7 +153,15 @@ describe('RC2 replace vectors (v5 immutable, with conditions)', () => {
   }
 })
 
-describe('RC2 index vectors: the pinned SDK parses, and Drive lays out, the indexes the flags ask for', () => {
+describe('RC2 index vectors: Drive lays out, for the pinned SDK\'s parse, the indexes the flags ask for', () => {
+  beforeAll(warmUp, 60_000)
+
+  // vectors.py writes them whichever way each flag is set (an off flag asks for the index absent).
+  it('has the forge-collab (S2, S3) and forge-community (C1) cases', () => {
+    expect(indices['forge-collab'].filter((c) => c.item === 'S2' || c.item === 'S3').length).toBe(2)
+    expect(indices['forge-community'].some((c) => c.item === 'C1')).toBe(true)
+  })
+
   for (const name of CONTRACTS) {
     if (indices[name].length === 0) continue
     describe(name, () => {
@@ -168,8 +176,7 @@ describe('RC2 index vectors: the pinned SDK parses, and Drive lays out, the inde
           expect(index).toBeUndefined()
           return
         }
-        expect(index, `${c.type}.${c.index}`).toBeDefined()
-        expect(index?.laidOut, `Drive lays out ${c.type}.${c.index}`).toBe(true)
+        expect(index, `Drive lays out ${c.type}.${c.index}`).toBeDefined()
         if (c.properties) expect(index?.properties).toEqual(c.properties)
         for (const [flag, want] of Object.entries(c.has ?? {})) {
           expect(index?.flags[flag as keyof NonNullable<typeof index>['flags']], `${c.type}.${c.index} ${flag}`).toBe(want)
