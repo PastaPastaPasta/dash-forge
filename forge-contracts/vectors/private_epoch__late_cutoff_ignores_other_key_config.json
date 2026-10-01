@@ -1,0 +1,130 @@
+{
+  "name": "late_cutoff_ignores_other_key_config",
+  "description": "a since-removed maintainer's config for epoch 1 at block 500 carries another key's commitment; the anchor (alice, block 1000) is the first statement of epoch 1's key. The cut-off for epoch 0 is 1000 + 240: stated(1) counts only configs carrying the anchor's commitment, so the other-key config does not move it earlier (a removed member's content under epoch 0 at 900 and 1240 is shown, a manifest at 900 is not suspect), and at 1241 content is Late (§8.2).",
+  "case": "private_epoch",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "reader": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "memberships": [
+      {
+        "identity": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "role": "maintainer",
+        "createdAt": 1
+      },
+      {
+        "identity": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "role": "writer",
+        "createdAt": 1
+      }
+    ],
+    "configs": [
+      {
+        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 0,
+        "createdAtBlockHeight": 10,
+        "createdAt": 10000,
+        "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
+      },
+      {
+        "id": "3b6dddf9699422f7f4f60e52637f3c6f9501d1d88dcbc03bc386963c912b2c2a",
+        "owner": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+        "epoch": 1,
+        "createdAtBlockHeight": 500,
+        "createdAt": 500000,
+        "enc": "021ecbf4ea78765243d245004c59952f11e91cd2ff0fc6dc3129a4fe6b331f0ca3000102030405060708090a0baa1b0d92b9bb942ffdd80ee15856206ae1694d0b02990c78dd5fc41f1d2da0f883970a7f5b45c4a0d550629e88e21de5c1cc1de8fbe67f1c3e50"
+      },
+      {
+        "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4898659d397f967261d56c0a0c8d07b86"
+      }
+    ],
+    "wraps": [
+      {
+        "id": "b265e93eb6376543dcf2ffc99affdc444badbba0dd7da46faebb69367b77c24c",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "de3a6739d8d6278298377c211a7a2117e7fd3ec305d1e77c8cc777689f9eb9a7",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      {
+        "id": "2db50e98e2978ae5b5805c2705fe29d350ade703c92202242386d4357b6c9012",
+        "owner": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    ],
+    "contentQueries": [
+      {
+        "epoch": 0,
+        "createdAtBlockHeight": 900,
+        "owner": "9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      {
+        "epoch": 0,
+        "createdAtBlockHeight": 1240,
+        "owner": "9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      {
+        "epoch": 0,
+        "createdAtBlockHeight": 1241,
+        "owner": "9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    ],
+    "manifestQueries": [
+      {
+        "headerEpoch": 0,
+        "createdAtBlockHeight": 900,
+        "owner": "9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    ]
+  },
+  "expected": {
+    "currentEpoch": 1,
+    "anchors": {
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+      "1": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86"
+    },
+    "readable": [
+      0,
+      1
+    ],
+    "writeEpoch": 1,
+    "unanchored": [],
+    "alerts": [],
+    "repair": {
+      "rotate": false,
+      "nonMembers": [],
+      "missingWraps": []
+    },
+    "content": [
+      "shown",
+      "shown",
+      "late"
+    ],
+    "manifests": [
+      {
+        "suspect": false,
+        "readable": true
+      }
+    ]
+  }
+}

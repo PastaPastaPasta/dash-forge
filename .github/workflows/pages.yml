@@ -145,3 +145,21 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+      # forge.dashhq.org sits behind Cloudflare, whose Web Analytics injects a beacon script
+      # that the page's CSP refuses (a console error on every page; QW3-040). That is a zone
+      # setting this repository cannot change, so this only reports it (docs/dev/hosting.md §6).
+      - name: Check the live page for an injected third-party script
+        continue-on-error: true
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          # A fresh deploy can take a moment to answer: retry on any error, not just timeouts.
+          if ! html="$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' "$PAGE_URL")"; then
+            echo "::warning title=Beacon check skipped::could not fetch $PAGE_URL to look for an injected analytics beacon"
+            exit 0
+          fi
+          if printf '%s' "$html" | grep -q -i -E 'cloudflareinsights|data-cf-beacon'; then
+            echo "::warning title=Cloudflare Web Analytics beacon injected::$PAGE_URL serves a Cloudflare Web Analytics script that the page CSP blocks. Turn automatic setup off on the zone: docs/dev/hosting.md section 6."
+          else
+            echo "No injected analytics beacon on $PAGE_URL"
+          fi

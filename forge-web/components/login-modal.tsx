@@ -29,7 +29,8 @@ import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protecti
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { StepFailed } from '@/components/auth/step-status'
-import { FORGET_CONFIRM } from '@/components/keys-panel'
+import { forgetConfirm } from '@/components/keys-panel'
+import { otherIdentityFileMessage } from '@/lib/auth/controller'
 import { useConfirmAction } from '@/components/ui/confirm-action'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { GRANT_COPY } from '@/lib/auth/key-registration'
@@ -44,7 +45,7 @@ import { lockedIdentityOf } from '@/lib/auth/last-identity'
 import { readCreationJournal } from '@/lib/auth/create-identity'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
-import { KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, PUSH_COST_DASH, dashRange, typicalIssueCredits } from '@/lib/sdk'
+import { KEY_ADD_FLOOR_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
 
@@ -98,12 +99,12 @@ export function LoginModal(): JSX.Element {
     if (open && view === 'unlock' && vaultsLoaded && !vaultsError && !hasVault) setView('choose')
   }, [open, view, vaultsLoaded, vaultsError, hasVault])
 
-  const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' ? null : () => setView('choose')
+  const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' ? null : () => setView('choose')
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
   const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys)
   // A write asked for the sheet: say which, and what it costs once signed in (L-62).
-  const title = view === 'grant' ? grantTitle : intent ? `Sign in to ${intent.action}` : 'Sign in to Dash Forge'
+  const title = view === 'grant' ? grantTitle : view === 'renew' ? "Renew this browser's key" : intent ? `Sign in to ${intent.action}` : 'Sign in to Dash Forge'
 
   return (
     <Dialog open={open} onClose={close} title={title} description={description} className="max-w-lg">
@@ -129,9 +130,10 @@ export function LoginModal(): JSX.Element {
       {view === null && !vaultsError ? <Spinner label="Checking this browser for a stored key" /> : null}
       {view === 'unlock' ? <UnlockView initial={unlockFor} onDone={close} onOther={() => setView('choose')} onRenew={() => setView('import')} /> : null}
       {view === 'choose' ? <ChooseView onPick={setView} /> : null}
-      {view === 'import' ? (
+      {view === 'import' || view === 'renew' ? (
         limitedKeys ? (
           <ImportView
+            renew={view === 'renew'}
             onDone={close}
             onStored={(id) => {
               setUnlockFor(id)
@@ -156,6 +158,7 @@ function describeView(view: View, limitedKeys: boolean): string {
   if (view === 'wallet' || view === 'grant') return 'Your wallet sends this browser a key it derives for Dash Forge. Your recovery phrase and master key stay on the phone.'
   if (!limitedKeys) return `Dash Forge is not deployed on ${ACTIVE_NETWORK.key}, so there is nothing to sign in to here.`
   const limits = `at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days`
+  if (view === 'renew') return `A new key for this browser (${limits}) replaces the current one, which is disabled in the same update.`
   if (view === 'create' || view === 'import') return `Forge signs with a limited key: ${limits}.`
   if (view === 'unlock') return 'Unlock the key this browser already holds.'
   // The tile list: a wallet's key comes with no limits (docs/design/wallet-login.md).
@@ -245,7 +248,7 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
         />
       ) : null}
       {walletFirst ? walletTile : null}
-      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(typicalIssueCredits())} DASH per issue, ${dashRange(PUSH_COST_DASH.byo)} per push.`} onClick={() => onPick('create')} />
+      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(typicalIssueCredits())} DASH per issue, ${pushCostPhrase()}.`} onClick={() => onPick('create')} />
       <Tile
         testId="tile-import"
         icon={Upload}
@@ -456,9 +459,11 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
         <button
           type="button"
           onClick={() => {
-            void confirm(FORGET_CONFIRM).then((ok) => {
-              if (ok) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
-            })
+            void forgetConfirm(v.identityId)
+              .then(confirm)
+              .then((ok) => {
+                if (ok) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
+              })
           }}
           className="hit-area text-danger-700 dark:text-danger-400 underline"
         >
@@ -473,8 +478,8 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
   )
 }
 
-function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
-  const { importIdentity, isLoading, step, vaults, identity, controller, unlockScope, storage } = useAuth()
+function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; onStored: (identityId: string) => void; renew?: boolean }): JSX.Element {
+  const { importIdentity, isLoading, step, vaults, identity, controller, unlockScope, storage, keyId } = useAuth()
   const wantsPrivate = useUiStore((s) => s.loginIntent?.privateRepo === true)
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
   // The identity file holds every private key: a ref (not React state), dropped on unmount
@@ -500,7 +505,8 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
     else if (el !== null) setMnemonic('')
     mnemonicRef.current = el
   }, [])
-  const [identityId, setIdentityId] = useState('')
+  // A renewal is of the signed-in identity's key: its words are checked against it (QW3-031).
+  const [identityId, setIdentityId] = useState(renew && identity !== null ? identity : '')
   const [error, setError] = useState<string | null>(null)
   // Errors show beside the button that caused them, scrolled into view: in a tall sheet the
   // button can sit at the bottom edge of a phone (or a 800 px laptop) screen.
@@ -508,20 +514,28 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   useEffect(() => {
     if (error !== null) errorRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [error])
-  const { fields, protection, problem } = useProtection()
+  // Enter in a passphrase field submits (QW3-027); `submit` is declared below, so through a ref.
+  const submitRef = useRef<() => void>(() => undefined)
+  const { fields, protection, problem } = useProtection({ onSubmit: () => submitRef.current() })
   // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
   const [enablePrivate, setEnablePrivate] = useState(wantsPrivate)
   // The identity the words found, which this browser already holds a key for: filled into the ID
   // field, and cleared with it when the words change (other words, another identity).
   const [foundId, setFoundId] = useState<string | null>(null)
   const foundStored = foundId !== null && identityId === foundId
-  const who = mode === 'file' ? fileIdentity : identityId.trim()
+  // A renewal is of the signed-in identity, whatever is chosen (another file is refused below).
+  const who = renew && identity !== null ? identity : mode === 'file' ? fileIdentity : identityId.trim()
   const previous = who === '' ? undefined : vaults.find((v) => v.identityId === who)
+  // Only a staged key (a sign-in that did not finish, D-016): it may never have reached Platform,
+  // so it is no key to "replace" or to disable (QW3-007).
+  const unfinished = previous?.staged === true
   // Offer Unlock for a key this device already holds, unless this is a renewal of the
   // signed-in identity (then the old key is disabled in the same update).
-  const alreadyStored = previous !== undefined && who !== identity
+  const alreadyStored = previous !== undefined && !unfinished && who !== identity
   // A key this device holds for the identity is replaced (renew), which costs less than a new one.
-  const renewing = previous !== undefined
+  const renewing = previous !== undefined && !unfinished
+  // A renewal from Settings with another identity's file: refused before anything is signed.
+  const otherFile = renew && identity !== null && mode === 'file' && fileIdentity !== '' && fileIdentity !== identity
   // Replacing a key this tab has not unlocked drops what was sealed with it: its encryption key
   // for private repos goes unless this import brings it again (QW-052). Ticked by default then.
   // (A pasted-key session is "full" too, but it is not the vault: the vault stays locked.)
@@ -532,6 +546,9 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   useEffect(() => {
     setEnablePrivate(dropsEncryption || wantsPrivate)
   }, [dropsEncryption, wantsPrivate])
+  // The renewal of a tab that holds the encryption key carries it to the new key by itself: no
+  // choice to offer (QW3-031: "Enable private repos" showed unticked although key 4 was kept).
+  const carriesEncryption = previous?.encryptionKey === true && !dropsEncryption && who === identity
 
   const onFile = async (file: File): Promise<void> => {
     setError(null)
@@ -557,15 +574,15 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
     setBadFile('')
   }
 
-  const ready = protection !== null && !isLoading && (mode === 'file' ? fileChosen : mnemonic.trim() !== '')
+  const ready = protection !== null && !isLoading && !otherFile && (mode === 'file' ? fileChosen : mnemonic.trim() !== '')
   const submit = async (): Promise<void> => {
-    if (!protection || isLoading) return
+    if (!protection || isLoading || otherFile) return
     setError(null)
     try {
       const text = fileRef.current
       if (mode === 'file' && text === null) return
       await importIdentity(mode === 'file' ? { fileText: text as string } : { mnemonic, identityId }, protection, undefined, {
-        enablePrivateRepos: enablePrivate,
+        enablePrivateRepos: enablePrivate && !carriesEncryption,
         // Signed in as the identity being imported: this is a renewal of its key.
         renew: identity !== null,
       })
@@ -592,6 +609,9 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
     }
   }
   const [unlockFirst, setUnlockFirst] = useState(false)
+  submitRef.current = () => {
+    if (ready) void submit()
+  }
 
   return (
     <div className="space-y-3">
@@ -634,13 +654,24 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
             />
           </Field>
           <Field
-            label="Identity ID (optional)"
+            label={renew ? 'Identity ID' : 'Identity ID (optional)'}
             htmlFor="import-id"
-            hint="Leave empty: Forge finds the identity these words created. Enter it to check the words against a known identity."
+            hint={
+              renew
+                ? 'The identity signed in here: the words are checked against it.'
+                : 'Leave empty: Forge finds the identity these words created. Enter it to check the words against a known identity.'
+            }
           >
             <Input
               id="import-id"
               value={identityId}
+              readOnly={renew && identity !== null}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  submitRef.current()
+                }
+              }}
               onChange={(e) => {
                 setIdentityId(e.target.value)
                 setFoundId(null)
@@ -652,6 +683,20 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
           </Field>
         </>
       )}
+      {otherFile ? (
+        <p role="alert" data-testid="import-other-file" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
+          {otherIdentityFileMessage(fileIdentity, identity as string, fileName)}
+        </p>
+      ) : null}
+      {unfinished ? (
+        <div data-testid="import-unfinished" className="rounded-md border border-anvil-200 px-3 py-2 text-dense dark:border-anvil-800">
+          An earlier sign-in for this identity on this device did not finish; its key may never have reached Platform.{' '}
+          <button type="button" className="text-forge-700 underline dark:text-forge-400" onClick={() => onStored(who)}>
+            Unlock it
+          </button>{' '}
+          with the passphrase you chose then to finish it, or carry on to register a new key (a key that did reach Platform asks you to unlock first).
+        </div>
+      ) : null}
       {alreadyStored ? (
         <div role={foundStored ? 'status' : undefined} data-testid="import-already-stored" className="rounded-md border border-anvil-200 px-3 py-2 text-dense dark:border-anvil-800">
           {foundStored ? 'These words belong to an identity this browser already holds a key for (its ID is filled in above). ' : 'This device already holds a key for this identity. '}
@@ -662,6 +707,12 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         </div>
       ) : null}
       {fields}
+      {carriesEncryption ? (
+        <p className="rounded-md border border-anvil-200 p-3 text-dense dark:border-anvil-800" data-testid="import-carries-encryption">
+          <span className="font-medium">Private repos stay enabled.</span>{' '}
+          <span className="text-anvil-600 dark:text-anvil-300">The encryption key this browser holds moves to the new key.</span>
+        </p>
+      ) : (
       <label className="flex items-start gap-2 rounded-md border border-anvil-200 p-3 text-dense dark:border-anvil-800">
         <input
           type="checkbox"
@@ -684,20 +735,22 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
           ) : null}
         </span>
       </label>
+      )}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Registers a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days
+        {renew && keyId !== null ? `Disables key #${keyId} and registers` : 'Registers'} a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days
         {renewing
           ? ` (renewing: ~${creditsAsDash(KEY_RENEW_CREDITS)} DASH, one master-key signature; the old key is disabled in the same update).`
           : // Platform meters the update: an identity that already holds a Forge key (from another
-            // browser or dg) pays the lower figure (QW-043).
-            ` (${creditsAsDash(KEY_RENEW_CREDITS)}–${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature; the lower figure when the identity already has a Forge key).`}
+            // browser or dg) pays the lower figure (QW-043). Its floor is the least one was measured to
+            // cost, the low end Settings → Spend shows too (QW3-037: 0.00028 quoted, 0.000269 charged).
+            ` (${creditsAsDash(KEY_ADD_FLOOR_CREDITS)}–${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature; up to ${creditsAsDash(KEY_RENEW_CREDITS)} when the identity already has a Forge key).`}
       </p>
       {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
       <div ref={errorRef} hidden={error === null}>
         <ErrorBox error={error} className="mt-0" />
       </div>
       <Button variant="primary" className="w-full" onClick={submit} loading={isLoading} disabled={!ready}>
-        {isLoading && step ? `${step}…` : alreadyStored ? <>Replace this browser&apos;s key</> : <>Create this browser&apos;s key</>}
+        {isLoading && step ? `${step}…` : renew ? <>Renew this browser&apos;s key</> : alreadyStored ? <>Replace this browser&apos;s key</> : <>Create this browser&apos;s key</>}
       </Button>
       {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
       {unlockFirst ? (

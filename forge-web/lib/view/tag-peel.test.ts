@@ -31,7 +31,7 @@ function prefixReader(s: Store): PrefixReader {
   const inner = s.reader()
   return {
     ...inner,
-    findByPrefix: (p, limit = 16) => [...s.objects.keys()].filter((o) => o.startsWith(p)).sort().slice(0, limit),
+    findByPrefix: async (p, limit = 16) => [...s.objects.keys()].filter((o) => o.startsWith(p)).sort().slice(0, limit),
     objectType: async (oid) => s.objects.get(oid)?.type ?? null,
     memoScope: s,
   }
@@ -212,7 +212,7 @@ describe('short ids in ?ref= (L-32)', () => {
     const { s } = repo()
     const a = s.commit(s.tree([]), [], 'a')
     const b = s.commit(s.tree([]), [], 'b')
-    const r: PrefixReader = { ...prefixReader(s), findByPrefix: () => [a, b] }
+    const r: PrefixReader = { ...prefixReader(s), findByPrefix: async () => [a, b] }
     const e = await resolveTip(r, 'abcd').catch((x: unknown) => x)
     expect(e).toBeInstanceOf(CommitIdError)
     expect((e as CommitIdError).kind).toBe('ambiguous')
@@ -271,7 +271,7 @@ describe('review follow-ups', () => {
 
   it('says a pinned full id the repo does not hold is "Commit not found", which Try again may fix', async () => {
     const { s } = repo()
-    const r: PrefixReader = { ...prefixReader(s), locate: () => null }
+    const r: PrefixReader = { ...prefixReader(s), locate: async () => null }
     const e = await resolveTip(r, 'f'.repeat(40), { pinned: true }).catch((x: unknown) => x)
     expect(e).toBeInstanceOf(CommitIdError)
     expect((e as CommitIdError).kind).toBe('not-found')

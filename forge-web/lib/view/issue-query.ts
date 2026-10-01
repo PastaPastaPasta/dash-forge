@@ -253,10 +253,18 @@ export function commentRange(v: string | null): CountRange | null {
 /**
  * The empty issue list's line. "Open the first issue" only when the repo has none at all: when
  * the open list is empty but issues were closed (or the closed count is unknown), it says so
- * rather than inviting the first issue (L-37).
+ * rather than inviting the first issue (L-37). A search that matches none in its tab says how
+ * many match in the other, when that is proved, or that every state can be searched (QW3-051).
  */
-export function emptyIssuesBody(filtered: boolean, state: IssueStateFilter, closedCount: number | null): string {
-  if (filtered) return 'Try fewer filters.'
+export function emptyIssuesBody(filtered: boolean, state: IssueStateFilter, closedCount: number | null, openCount: number | null = null): string {
+  if (filtered) {
+    const other = state === 'open' ? closedCount : state === 'closed' ? openCount : null
+    if (other !== null && other > 0) {
+      const there = state === 'open' ? 'closed' : 'open'
+      return `None ${state === 'open' ? 'is open' : 'is closed'}; ${plural(other, `${there} issue`)} ${other === 1 ? 'matches' : 'match'}.`
+    }
+    return state === 'all' ? 'Try fewer filters.' : 'Try fewer filters, or search every state.'
+  }
   if (state === 'closed') return 'Nothing has been closed yet.'
   if (state === 'all' || closedCount === 0) return 'Everything is quiet. Open the first issue to start the conversation.'
   if (closedCount === null) return 'No issue is open right now.'
@@ -578,15 +586,30 @@ export function searchText(q: IssueListQuery): string {
   return parts.join(' ')
 }
 
+/** One free-text search term: a word or a phrase, and whether a row must not hold it. */
+export interface SearchTerm {
+  readonly text: string
+  /** `-word` or `-"a phrase"` (QW3-018); a `-` inside quotes (`"-x"`) is literal. */
+  readonly not: boolean
+}
+
 /**
  * The free text's search terms (QW-021): a `"quoted phrase"` is one term, spaces and all, and
- * any other word is one term; lowercased, quotes never part of a term.
+ * any other word is one term; lowercased, quotes never part of a term. A leading `-` outside
+ * quotes negates the term (QW3-018); a lone `-` is a word.
  */
-export function searchTerms(text: string): string[] {
-  const out: string[] = []
-  for (const m of text.toLowerCase().matchAll(/"([^"]*)"|(\S+)/g)) {
-    const term = (m[1] ?? m[2] ?? '').replace(/"/g, '').trim()
-    if (term !== '') out.push(term)
+export function searchTerms(text: string): SearchTerm[] {
+  const out: SearchTerm[] = []
+  for (const m of text.toLowerCase().matchAll(/(-?)"([^"]*)"|(\S+)/g)) {
+    if (m[2] !== undefined) {
+      const phrase = m[2].trim()
+      if (phrase !== '') out.push({ text: phrase, not: m[1] === '-' })
+      continue
+    }
+    const word = (m[3] ?? '').replace(/"/g, '').trim()
+    if (word === '') continue
+    const not = word.length > 1 && word.startsWith('-')
+    out.push({ text: not ? word.slice(1) : word, not })
   }
   return out
 }

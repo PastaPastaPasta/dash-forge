@@ -347,7 +347,11 @@ pub enum RepoCommand {
     },
     /// List an owner's repositories.
     List {
-        /// The owner (identity id or DPNS name); defaults to the signing identity.
+        /// The owner (identity id or DPNS name); defaults to the signing identity. `--owner`
+        /// works too.
+        #[arg(value_name = "OWNER", conflicts_with = "owner")]
+        owner_arg: Option<String>,
+        /// The owner, as an option.
         #[arg(long)]
         owner: Option<String>,
     },
@@ -465,6 +469,15 @@ pub struct RepoPolicySetArgs {
     /// Allowed merge methods, comma-separated: `ff`, `merge`, `squash`, `rebase`, or `any`.
     #[arg(long = "merge-methods")]
     pub merge_methods: Option<String>,
+    /// A check a merge requires, by name (`build`), or pinned to the one source whose runs count
+    /// (`build=@ci-runner`, an identity id or DPNS name). Repeat it for each check; the list
+    /// replaces the current one and turns `--require-checks` on. Pin every check or none.
+    #[arg(
+        long = "required-check",
+        value_name = "NAME[=SOURCE]",
+        conflicts_with = "clear_required_checks"
+    )]
+    pub required_check: Vec<String>,
     /// Drop the required check names and their pinned sources (otherwise the current policy's
     /// are kept).
     #[arg(long = "clear-required-checks")]
@@ -761,9 +774,9 @@ pub enum PrCommand {
         /// Max results (0 = one page of 100).
         #[arg(long, default_value_t = 0)]
         limit: u32,
-        /// State filter.
+        /// State filter (`closed` includes merged ones, as on GitHub).
         #[arg(long, value_enum, default_value = "open")]
-        state: StateArg,
+        state: PrStateArg,
     },
     /// View a pull request: state, reviewers, approvals, reviews, threads.
     View {
@@ -1087,6 +1100,10 @@ pub struct PrMergeArgs {
     /// Only post the merge event (the merge was pushed some other way).
     #[arg(long)]
     pub event_only: bool,
+    /// Leave open the issues the description closes ("Fixes #12"); by default they are closed
+    /// after the merge, as on GitHub and in the web's merge box.
+    #[arg(long = "keep-linked-open")]
+    pub keep_linked_open: bool,
     /// With --event-only: the commit the event names (default: the PR head, or the base
     /// tip when the head is already in it).
     #[arg(long = "merge-oid", requires = "event_only")]
@@ -1141,9 +1158,12 @@ pub enum ReleaseCommand {
         #[arg(long)]
         asset: Option<String>,
         /// A directory to save the assets in, by name (default: the current directory), or a
-        /// file name for a single asset.
-        #[arg(long)]
+        /// file name for a single asset. `-o` works too.
+        #[arg(long, short = 'O', short_alias = 'o', conflicts_with = "dir")]
         output: Option<PathBuf>,
+        /// A directory to save the assets in, made if it does not exist (gh's `-D/--dir`).
+        #[arg(long, short = 'D')]
+        dir: Option<PathBuf>,
     },
     /// Unpublish a live release (maintainers only): writes a revision with `delta` −1, so the
     /// tag no longer shows as a release. The tag itself, and its previous revisions, are kept
@@ -1528,6 +1548,49 @@ impl Backend {
     }
 }
 
+/// Pull request state filter: [`StateArg`] plus `merged`, as `gh pr list --state` takes
+/// (QW3-069).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PrStateArg {
+    All,
+    Open,
+    /// Closed or merged.
+    Closed,
+    Merged,
+}
+
+impl PrStateArg {
+    /// Whether a PR that is `open` (and `merged`) passes this filter.
+    pub fn matches(self, open: bool, merged: bool) -> bool {
+        match self {
+            PrStateArg::All => true,
+            PrStateArg::Open => open,
+            PrStateArg::Closed => !open,
+            PrStateArg::Merged => merged,
+        }
+    }
+
+    /// What an empty list says ([`StateArg::empty`]).
+    pub fn empty(self, plural: &str) -> String {
+        match self {
+            PrStateArg::All => format!("no {plural}"),
+            PrStateArg::Open => format!("no open {plural}"),
+            PrStateArg::Closed => format!("no closed {plural}"),
+            PrStateArg::Merged => format!("no merged {plural}"),
+        }
+    }
+
+    /// The states this filter leaves out, for the empty list's hint (`None` for `all`).
+    pub fn others(self) -> Option<&'static str> {
+        match self {
+            PrStateArg::All => None,
+            PrStateArg::Open => Some("closed or merged"),
+            PrStateArg::Closed => Some("open"),
+            PrStateArg::Merged => Some("open or closed"),
+        }
+    }
+}
+
 /// Issue state filter.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum StateArg {
@@ -1684,6 +1747,19 @@ fn usage_error(text: &str) -> (UserError, String) {
         .filter(|l| !l.starts_with("For more information"))
         .collect::<Vec<_>>()
         .join("\n");
+    // "invalid value 'abc' for '<NUMBER>': invalid digit found in string" (QW3-069).
+    if let Some(value) = cause
+        .split_once("invalid value '")
+        .and_then(|(_, rest)| rest.split_once("' for '<NUMBER>'"))
+        .map(|(v, _)| v)
+    {
+        let u = UserError::new(
+            codes::USAGE,
+            format!("{value:?} is not an issue or PR number"),
+        )
+        .fix("pass the number `dg issue list` / `dg pr list` shows (e.g. `dg issue view 3`)");
+        return (u, usage.trim().to_string());
+    }
     let u = UserError::new(codes::USAGE, "invalid arguments")
         .cause(cause.trim_start_matches("error: "))
         .fix("see `dg --help` or `dg <command> --help`");
@@ -1791,7 +1867,8 @@ mod tests {
             };
             assert_eq!(pos.or(sha_flag).as_deref(), Some(sha.as_str()), "{args:?}");
         }
-        assert!(Cli::try_parse_from(["dg", "ci", "status", "o/r"]).is_err());
+        // QW3-026: no commit is the clone's HEAD (resolved when it runs).
+        assert!(Cli::try_parse_from(["dg", "ci", "status", "o/r"]).is_ok());
         assert!(Cli::try_parse_from(["dg", "ci", "status", "o/r", &sha, "--sha", &sha]).is_err());
     }
 
@@ -1810,6 +1887,69 @@ mod tests {
         assert!(!cause.starts_with("error:"), "{cause}");
         assert!(usage.starts_with("Usage: dg issue list"), "{usage}");
         assert!(!usage.contains("For more information"), "{usage}");
+    }
+
+    /// QW3-069: a non-number where an issue or PR number goes says so.
+    #[test]
+    fn a_bad_number_is_named_as_one() {
+        let e = Cli::try_parse_from(["dg", "issue", "view", "o/r", "abc"]).unwrap_err();
+        let (u, _) = usage_error(&e.to_string());
+        assert_eq!(u.code, "E201");
+        assert_eq!(u.message, "\"abc\" is not an issue or PR number");
+        assert!(u.fix[0].contains("dg issue view 3"), "{u:?}");
+    }
+
+    /// QW3-069: gh's argument shapes: `--state merged`, `repo list <owner>`, and
+    /// `release download -O/-o/-D/--dir`.
+    #[test]
+    fn gh_shaped_arguments_parse() {
+        let cli = Cli::parse_from(["dg", "pr", "list", "o/r", "--state", "merged"]);
+        assert!(matches!(
+            cli.command,
+            Command::Pr(PrCommand::List {
+                state: PrStateArg::Merged,
+                ..
+            })
+        ));
+        assert!(PrStateArg::Merged.matches(false, true));
+        assert!(!PrStateArg::Merged.matches(false, false));
+        assert!(PrStateArg::Closed.matches(false, true));
+        assert_eq!(
+            PrStateArg::Merged.empty("pull requests"),
+            "no merged pull requests"
+        );
+        let cli = Cli::parse_from(["dg", "repo", "list", "alice"]);
+        assert!(matches!(
+            cli.command,
+            Command::Repo(RepoCommand::List { ref owner_arg, owner: None }) if owner_arg.as_deref() == Some("alice")
+        ));
+        assert!(Cli::try_parse_from(["dg", "repo", "list", "alice", "--owner", "bob"]).is_err());
+        for flag in ["-o", "-O", "--output"] {
+            let cli = Cli::parse_from(["dg", "release", "download", "o/r", "v1", flag, "out"]);
+            assert!(
+                matches!(
+                    cli.command,
+                    Command::Release(ReleaseCommand::Download { ref output, dir: None, .. })
+                        if output.as_deref() == Some(std::path::Path::new("out"))
+                ),
+                "{flag}"
+            );
+        }
+        for flag in ["-D", "--dir"] {
+            let cli = Cli::parse_from(["dg", "release", "download", "o/r", "v1", flag, "out"]);
+            assert!(
+                matches!(
+                    cli.command,
+                    Command::Release(ReleaseCommand::Download { output: None, ref dir, .. })
+                        if dir.as_deref() == Some(std::path::Path::new("out"))
+                ),
+                "{flag}"
+            );
+        }
+        assert!(Cli::try_parse_from([
+            "dg", "release", "download", "o/r", "v1", "-o", "a", "-D", "b"
+        ])
+        .is_err());
     }
 
     #[test]

@@ -6,7 +6,7 @@
  *
  *   /alice/project
  *   /alice/project/tree/<ref>/<path>     /alice/project/blob/<ref>/<path>
- *   /alice/project/issues[/<n>]          /alice/project/pulls, /alice/project/pull/<n>[/files|commits|checks]
+ *   /alice/project/issues[/<n>|/new]     /alice/project/pulls, /alice/project/pull/<n>[/files|commits|checks]
  *   /alice/project/releases[/<tag>]      /alice/project/commits[/<ref>]
  *   /alice/project/releases/tag/<tag>    /alice/project/commit/<oid>
  *   /alice/project/commits/<ref>/<path>  (a path's History)   /alice/project/blame/<ref>/<path>
@@ -52,6 +52,8 @@ export type ShortTarget =
   | { readonly kind: 'commits'; readonly ref?: string; readonly path?: string }
   | { readonly kind: 'issues' | 'pulls' | 'releases' }
   | { readonly kind: 'issue'; readonly number: number }
+  /** GitHub's `/issues/new`: the Issues list with its New issue composer open (QW3-063). */
+  | { readonly kind: 'newIssue' }
   | { readonly kind: 'pull'; readonly number: number; readonly tab?: 'commits' | 'checks' | 'files' }
   | { readonly kind: 'release'; readonly tag: string }
   | { readonly kind: 'branches' | 'tags' | 'stargazers' | 'labels' | 'milestones' }
@@ -95,6 +97,8 @@ export function shortRepoPath(repo: { readonly owner: string; readonly name: str
       return `${base}/${target.kind}`
     case 'issue':
       return `${base}/issues/${target.number}`
+    case 'newIssue':
+      return `${base}/issues/new`
     case 'pull':
       return `${base}/pull/${target.number}${target.tab ? `/${target.tab}` : ''}`
     case 'release':
@@ -178,6 +182,8 @@ function canonicalPath(repo: { readonly owner: string; readonly name: string; re
       return route(`/${target.kind}`)
     case 'issue':
       return route('/issue', { number: String(target.number) })
+    case 'newIssue':
+      return route('/issues', { new: '1' })
     case 'pull':
       return route('/pull', { number: String(target.number), tab: target.tab })
     case 'release':
@@ -244,6 +250,7 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   if (tail.length > 0) return null;
   if (kind === 'commits') return q('/repo/commits/', ['ref', ref]);
   if (kind === 'issues' && rest.length === 1) return q('/repo/issues/', []);
+  if (kind === 'issues' && arg === 'new') return q('/repo/issues/', ['new', '1']);
   if (kind === 'issues' && number) return q('/repo/issue/', ['number', number]);
   if (kind === 'pulls' && rest.length === 1) return q('/repo/pulls/', []);
   if ((kind === 'pull' || kind === 'pulls') && number) return q('/repo/pull/', ['number', number]);

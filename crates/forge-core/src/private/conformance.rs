@@ -207,10 +207,21 @@ struct DocSealIn {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OpenCtxIn {
     keys: BTreeMap<String, String>,
-    anchors: BTreeMap<String, AnchorRef>,
+    anchors: BTreeMap<String, AnchorIn>,
     members: Vec<String>,
     #[serde(default)]
     burned: Vec<u32>,
+}
+
+/// A context anchor: `statedHeight` (stated(e), §5.3) defaults to `height`, an anchor that is
+/// itself the first statement of its key.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AnchorIn {
+    id: String,
+    height: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stated_height: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -439,7 +450,14 @@ fn open_context(repo_id: &[u8; 32], c: &OpenCtxIn) -> OpenContext {
         anchors: c
             .anchors
             .iter()
-            .map(|(e, a)| (e.parse().unwrap(), a.clone()))
+            .map(|(e, a)| {
+                let anchor = AnchorRef {
+                    id: h32(&a.id),
+                    height: a.height,
+                    stated_height: a.stated_height.unwrap_or(a.height),
+                };
+                (e.parse().unwrap(), anchor)
+            })
             .collect(),
         members: c.members.iter().map(|m| h32(m)).collect(),
         burned: c.burned.iter().copied().collect(),
@@ -1003,6 +1021,7 @@ fn a_reseal_edit_is_the_create_transform() {
                 AnchorRef {
                     id: [9; 32],
                     height: 1,
+                    stated_height: 1,
                 },
             )]
             .into(),

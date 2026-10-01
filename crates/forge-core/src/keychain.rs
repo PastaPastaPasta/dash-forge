@@ -52,6 +52,11 @@ fn disabled() -> bool {
     std::env::var_os(DISABLE_ENV).is_some_and(|v| !v.is_empty() && v != "0")
 }
 
+/// Whether [`DISABLE_ENV`] switches the keychain off (so a message can say why none is used).
+pub fn disabled_by_env() -> bool {
+    disabled()
+}
+
 /// Whether an OS credential store can be used on this machine.
 pub fn available() -> bool {
     available_unless(disabled())

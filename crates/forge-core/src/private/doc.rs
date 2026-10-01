@@ -283,14 +283,17 @@ pub enum Opened {
 }
 
 /// One epoch's anchor, as [`open_content`] needs it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnchorRef {
     /// The anchor config's `$id` (32 bytes, compared as bytes).
-    #[serde(with = "hex32")]
     pub id: [u8; 32],
     /// Its `$createdAtBlockHeight`.
     pub height: u64,
+    /// The block height of stated(e) (§5.3): the first config, by anyone, carrying this anchor's
+    /// commitment, i.e. when the epoch's key was first stated on chain. Never above `height`,
+    /// and a re-anchor (same commitment, later height) does not move it. The late-content
+    /// cut-off of the epoch below counts from it (§8.2), never from `height`.
+    pub stated_height: u64,
 }
 
 /// What a reader knows when opening content: its keys, the anchors of the existing epochs, and
@@ -309,8 +312,8 @@ pub struct OpenContext {
 
 impl OpenContext {
     /// Whether content under `epoch` at block height `height` by `owner` is late (§8.2): after
-    /// the next existing epoch's anchor plus [`GRACE_BLOCKS`], or under a burned epoch at any
-    /// height, by someone who is not a current member.
+    /// stated(next(epoch)) plus [`GRACE_BLOCKS`], or under a burned epoch at any height, by
+    /// someone who is not a current member.
     #[must_use]
     pub fn is_late(&self, epoch: u32, height: u64, owner: &[u8; 32]) -> bool {
         is_late(
@@ -323,7 +326,11 @@ impl OpenContext {
     }
 }
 
-/// The late-content rule over anchor heights (§8.2), and burned epochs (§5.3).
+/// The late-content rule (§8.2), and burned epochs (§5.3). The cut-off `H` is the height at
+/// which the next existing epoch's key was first stated on chain (its anchor's
+/// [`AnchorRef::stated_height`]), not the selected anchor's own height: a re-anchor of that
+/// epoch after its first anchor's author left repeats the commitment at a later height, and
+/// must not reopen the window for a removed member's content under `epoch`.
 pub(crate) fn is_late(
     anchors: &BTreeMap<u32, AnchorRef>,
     burned: &BTreeSet<u32>,
@@ -342,7 +349,7 @@ pub(crate) fn is_late(
     let next = epoch
         .checked_add(1)
         .and_then(|from| anchors.range(from..).next());
-    next.is_some_and(|(_, a)| height > a.height.saturating_add(GRACE_BLOCKS))
+    next.is_some_and(|(_, a)| height > a.stated_height.saturating_add(GRACE_BLOCKS))
 }
 
 /// Decrypt and parse `enc` of `header` under `keys`, as the anchor or not. Steps 1, 3–6 of §8.1
@@ -520,6 +527,7 @@ mod tests {
             AnchorRef {
                 id: [0xc0; 32],
                 height: 1,
+                stated_height: 1,
             },
         );
         assert_eq!(

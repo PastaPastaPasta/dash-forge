@@ -135,6 +135,23 @@ const INFLATE_CHUNK = 64 * 1024
  * entries costs only the stream.
  */
 export function inflateZlib(buf: Uint8Array, from: number, expected: number, maxBytes = Infinity): Uint8Array {
+  return inflateStream(buf, from, expected, maxBytes).bytes
+}
+
+/**
+ * {@link inflateZlib}, also saying how many input bytes the stream took (`consumed`): where the
+ * next pack entry starts. Only a stream that ended counts: one cut short throws.
+ */
+export function inflateZlibMeasured(buf: Uint8Array, from: number, expected: number, maxBytes = Infinity): { readonly bytes: Uint8Array; readonly consumed: number } {
+  const { bytes, inflater } = inflateStream(buf, from, expected, maxBytes)
+  // pako keeps zlib's stream state; its typings leave it out.
+  const state = inflater as unknown as { readonly ended?: boolean; readonly strm?: { readonly total_in?: number } }
+  const consumed = state.strm?.total_in
+  if (state.ended !== true || consumed === undefined) throw new Error('inflate size mismatch')
+  return { bytes, consumed }
+}
+
+function inflateStream(buf: Uint8Array, from: number, expected: number, maxBytes: number): { readonly bytes: Uint8Array; readonly inflater: Inflate } {
   if (expected > maxBytes) throw new ObjectTooLargeError(expected, maxBytes)
   const input = buf.subarray(from)
   if (expected > input.length * DEFLATE_MAX_RATIO + 64) throw new Error('inflate size mismatch')
@@ -151,7 +168,36 @@ export function inflateZlib(buf: Uint8Array, from: number, expected: number, max
   inflater.onEnd = () => {}
   inflater.push(input, true)
   if (inflater.err !== 0 || got !== expected) throw new Error('inflate size mismatch')
-  return out
+  return { bytes: out, inflater }
+}
+
+/** Stops a prefix inflate once it has what it wants. */
+class PrefixDone extends Error {}
+
+/**
+ * The first `want` bytes a zlib stream at `buf[from..]` inflates to (fewer when the stream, or
+ * `buf`, ends first): enough to sniff an object too large to read whole, without inflating the
+ * rest. `buf` may stop mid-stream. Nothing here is hash-checked: a caller only classifies.
+ */
+export function inflatePrefix(buf: Uint8Array, from: number, want: number): Uint8Array {
+  // pako never returns from a push with a zero-byte output chunk.
+  if (!(want > 0)) return new Uint8Array(0)
+  const out = new Uint8Array(want)
+  let got = 0
+  const inflater = new Inflate({ chunkSize: Math.min(INFLATE_CHUNK, want), windowBits: 15 })
+  inflater.onData = (chunk: Uint8Array) => {
+    const take = Math.min(chunk.length, want - got)
+    out.set(chunk.subarray(0, take), got)
+    got += take
+    if (got >= want) throw new PrefixDone()
+  }
+  inflater.onEnd = () => {}
+  try {
+    inflater.push(buf.subarray(from), false)
+  } catch (e) {
+    if (!(e instanceof PrefixDone)) throw e
+  }
+  return out.subarray(0, got)
 }
 
 /**

@@ -113,7 +113,7 @@ export async function resolveTip(
       byRepo.set(tip.toLowerCase(), id)
       trimOldest(byRepo, KEEP)
     }
-  } else if (pinned && reader.locate?.(id) === null && !reader.incomplete) {
+  } else if (pinned && !reader.incomplete && (await reader.locate?.(id)) === null) {
     // A full id in the URL that no pack holds: say so as the commit page does.
     throw new CommitIdError('not-found', tip)
   }

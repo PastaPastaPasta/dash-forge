@@ -12,5 +12,5 @@ fn init_cli_keeps_the_global_max_level_at_rust_log() {
     assert_eq!(LevelFilter::current(), LevelFilter::WARN);
     assert!(!tracing::enabled!(target: "h2::codec", tracing::Level::TRACE));
     assert!(!tracing::enabled!(target: "dash_sdk", tracing::Level::DEBUG));
-    assert!(tracing::enabled!(target: "dash_sdk", tracing::Level::WARN));
+    assert!(tracing::enabled!(target: "forge_core::platform", tracing::Level::WARN));
 }

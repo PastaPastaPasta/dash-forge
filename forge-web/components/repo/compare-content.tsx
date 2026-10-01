@@ -18,7 +18,8 @@ import { repoKey } from '@/lib/repo'
 import { branchName, plural, selectedTip, selectRef, shortOid, type RepoHome, type SelectedRef } from '@/lib/view'
 import { loadComparison } from '@/lib/view/compare'
 import { MergeBaseCancelledError } from '@/lib/view/pull-diff'
-import { resolveTip } from '@/lib/view/tip'
+import { resolveTip, type PeeledTip } from '@/lib/view/tip'
+import { AncestryError, parseAncestry, walkAncestry, type Ancestry, type AncestryStep } from '@/lib/view/ancestry'
 import { useAsync } from '@/hooks/use-async'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
@@ -38,8 +39,11 @@ export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const baseGiven = useParam('base')
   const baseParam = baseGiven || home.defaultBranch
   const headParam = useParam('head')
-  const base = selectRef(home.branches, home.tags, home.defaultBranch, baseParam)
-  const head = headParam ? selectRef(home.branches, home.tags, home.defaultBranch, headParam) : null
+  // `master~5`, `HEAD^`: the ref they start from, then steps back through its history (QW3-046).
+  const baseAncestry = parseAncestry(baseParam, home.defaultBranch)
+  const headAncestry = parseAncestry(headParam, home.defaultBranch)
+  const base = shownAs(selectRef(home.branches, home.tags, home.defaultBranch, baseAncestry.rev), baseParam, baseAncestry)
+  const head = headParam ? shownAs(selectRef(home.branches, home.tags, home.defaultBranch, headAncestry.rev), headParam, headAncestry) : null
   const missing = [base, head].find((s): s is SelectedRef => s !== null && selectedTip(s) === null)
   return (
     <div className="space-y-4">
@@ -52,23 +56,30 @@ export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           {headParam ? <CopyLinkButton repo={addr} target={{ kind: 'compare', head: headParam, ...(baseGiven ? { base: baseGiven } : {}) }} className="ml-auto" /> : null}
         </div>
         <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
-          Pick two branches, tags or commits: this shows what the second has that the first does not, from where their histories meet.
+          Pick two branches, tags or commits (<span className="font-mono">master~5</span> and <span className="font-mono">HEAD^</span> work too): this shows what the second has that the first does not, from where their histories meet.
         </p>
       </div>
       <ComparePicker key={`${baseParam}\0${headParam}`} home={home} addr={addr} base={baseParam} head={headParam} />
       {/* The page has no rail (the diff takes the width), so its Verification card sits here,
           collapsed to its one line, as on every other code page (QW2-042). It attests the
           compare side: the ref whose changes are shown. */}
-      {head !== null && missing === undefined ? <CompareVerification home={home} selected={head} /> : null}
+      {head !== null && missing === undefined && headAncestry.steps.length === 0 ? <CompareVerification home={home} selected={head} /> : null}
       {head === null ? null : missing !== undefined ? (
         <EmptyState icon={GitCompare} title="Nothing to compare" body={`No branch, tag or commit named ${missing.name} in ${home.repo.name}.`} />
       ) : (
         <BrowseBoundary repo={home.repo} addr={addr}>
-          {(reader, retry) => <Resolve reader={reader} retry={retry} home={home} addr={addr} base={base} head={head} params={[baseParam, headParam]} />}
+          {(reader, retry) => (
+            <Resolve reader={reader} retry={retry} home={home} addr={addr} base={base} head={head} params={[baseParam, headParam]} steps={[baseAncestry.steps, headAncestry.steps]} />
+          )}
         </BrowseBoundary>
       )}
     </div>
   )
+}
+
+/** A selected ref under the name the URL gave it when it carries ancestry steps (`master~5`). */
+function shownAs(selected: SelectedRef, param: string, ancestry: Ancestry): SelectedRef {
+  return ancestry.steps.length === 0 ? selected : { ...selected, name: param }
 }
 
 /** The Verification card for the compared refs: a leaf, so a content check re-renders only it. */
@@ -124,6 +135,7 @@ function Resolve({
   base,
   head,
   params,
+  steps,
 }: {
   reader: BrowseReader
   retry: () => void
@@ -133,28 +145,39 @@ function Resolve({
   head: SelectedRef
   /** The refs as the URL names them (`tags/v1`, a full commit id), for links that keep them. */
   params: readonly [string, string]
+  /** Each side's ancestry steps back from its ref (`~5`), none for a plain ref. */
+  steps: readonly [readonly AncestryStep[], readonly AncestryStep[]]
 }): JSX.Element {
   const key = repoKey(home.repo)
   const baseTip = selectedTip(base) as string
   const headTip = selectedTip(head) as string
-  const tips = useAsync(
-    () =>
-      Promise.all([
-        resolveTip(reader, baseTip, { repoKey: key, pinned: base.pinned !== undefined }),
-        resolveTip(reader, headTip, { repoKey: key, pinned: head.pinned !== undefined }),
-      ]),
-    [baseTip, headTip, key],
-  )
+  const tips = useAsync(async () => {
+    const side = async (tip: string, selected: SelectedRef, back: readonly AncestryStep[]): Promise<PeeledTip> => {
+      const t = await resolveTip(reader, tip, { repoKey: key, pinned: selected.pinned !== undefined })
+      return back.length === 0 || t.type !== 'commit' ? t : { type: 'commit', oid: await walkAncestry(reader, t.oid, back, selected.name) }
+    }
+    try {
+      return await Promise.all([side(baseTip, base, steps[0]), side(headTip, head, steps[1])])
+    } catch (e) {
+      if (e instanceof AncestryError) return e
+      throw e
+    }
+  }, [baseTip, headTip, key, params[0], params[1]])
   if (tips.error !== null) return <ReadErrorState cause={tips.cause} retry={retry} addr={addr} repo={home.repo} />
   if (tips.data === null) return <Progress label="Reading both refs" />
+  if (tips.data instanceof AncestryError) return <EmptyState icon={GitCompare} title="Nothing to compare" body={tips.data.message} />
   const [b, h] = tips.data
   const notCommit = ([[b, base], [h, head]] as const).find(([tip]) => tip.type !== 'commit')?.[1]
   if (notCommit !== undefined) return <EmptyState icon={GitCompare} title={`${notCommit.name} is not a commit`} body="Only commits (a branch, a tag of a commit, a commit id) have a history to compare." />
+  // Other pages take no ancestry suffix: their links name a stepped-back side by its commit id.
+  const linked = [steps[0].length > 0 ? b.oid : params[0], steps[1].length > 0 ? h.oid : params[1]] as const
+  // A stepped-back side is a commit, not its branch: no pull request is offered from or into it.
+  const [shownBase, shownHead] = [steps[0].length > 0 ? { ...base, ref: undefined } : base, steps[1].length > 0 ? { ...head, ref: undefined } : head]
   return (
     <>
       {/* `t`: a file at the head side (QW2-043). */}
-      <GoToFileHotkey reader={reader} repo={home.repo} tip={h} addr={addr} refParam={params[1]} />
-      <Compared key={`${b.oid}...${h.oid}`} reader={reader} addr={addr} base={base} head={head} params={params} baseOid={b.oid} headOid={h.oid} />
+      <GoToFileHotkey reader={reader} repo={home.repo} tip={h} addr={addr} refParam={linked[1]} />
+      <Compared key={`${b.oid}...${h.oid}`} reader={reader} addr={addr} base={shownBase} head={shownHead} params={linked} baseOid={b.oid} headOid={h.oid} />
     </>
   )
 }

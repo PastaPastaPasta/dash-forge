@@ -115,6 +115,16 @@ export function repoFilesWalk(
   return walk
 }
 
+/**
+ * Whether the history index of `tipOid` lists its files exactly: a full index of that very tip,
+ * not a delta (which can still name a file deleted since its base). Go to file then needs no tree
+ * walk, which on a large repo reads its whole object index (QW3-001: 9.65 MB on dashpay/dash).
+ */
+export function indexListsTip(reader: { readonly memoScope?: object }, tipOid: string): boolean {
+  const entry = historyOf(reader)?.byTip.get(tipOid)
+  return entry !== undefined && entry.baseTip === null
+}
+
 /** Each history index's file paths, worked out once. */
 const indexedFiles = new WeakMap<object, readonly string[]>()
 
@@ -185,7 +195,7 @@ export async function loadRepoFacts(
     }
     if (known.languages === undefined) {
       const walk = await repoFilesWalk(repoKey, tipOid, reader, rootTree)
-      publish(key, { languages: languageStats(walk, (oid) => (reader.locate?.(oid)?.deltaDepth ?? 0) > 0) })
+      publish(key, { languages: languageStats(walk) })
     }
   } finally {
     setLoading(key, -1)

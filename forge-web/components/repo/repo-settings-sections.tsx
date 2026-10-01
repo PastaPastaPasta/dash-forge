@@ -67,7 +67,7 @@ import {
   type SourceOption,
 } from '@/lib/view/required-checks'
 import type { Policy } from '@/lib/rules/v2'
-import { previewCreate, type CostPreview as Cost } from '@/lib/sdk'
+import { previewCreate, type CostPreview as Cost, type FirstWrite } from '@/lib/sdk'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
@@ -75,7 +75,7 @@ import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
-import { Field, Input, Textarea } from '@/components/ui/input'
+import { disabledField, Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -172,11 +172,17 @@ interface PendingConfig {
  */
 function useConfigWrite(home: RepoHome, onSaved: () => void) {
   const { sdk } = useSdk(repoContractIds(home.repo))
-  const { signer } = useAuth()
+  const { signer, identity } = useAuth()
   const guard = useWriteGuard()
   const [pending, setPending] = useState<PendingConfig | null>(null)
   const current = home.config ?? DEFAULT_CONFIG
-  const cost = (change: ConfigChange): Cost => previewConfig(applyConfigChange(current, change))
+  // A repo with a config holds the config subtree already, and its owner has written to forge-core
+  // (its repo document): a later config costs about three quarters of the first (QW3-037).
+  const first: FirstWrite = {
+    ...(home.config !== null ? { repo: false } : {}),
+    ...(identity !== null && identity === home.repo.ownerId ? { contract: false } : {}),
+  }
+  const cost = (change: ConfigChange): Cost => previewConfig(applyConfigChange(current, change), first)
   const ask = (p: PendingConfig): void => {
     if (guard.check(cost(p.change))) setPending(p)
   }
@@ -238,7 +244,7 @@ export function GeneralSettings({
             <div className="flex flex-wrap items-center gap-2">
               <select
                 id="default-branch"
-                className="rounded-md border border-anvil-300 bg-white px-2 py-1.5 font-mono text-dense coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-950"
+                className={`rounded-md border border-anvil-300 bg-white px-2 py-1.5 font-mono text-dense coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-950 ${disabledField}`}
                 value={shownBranch}
                 disabled={!maintainer || cfg.sealed}
                 onChange={(e) => setBranch(e.target.value)}
@@ -390,6 +396,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
         }
         cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility) : null}
         confirmLabel="Sign & save"
+        toast={{ running: 'Saving the repo details…', done: 'Repository details saved' }}
         onConfirm={run}
       />
     </div>
@@ -789,7 +796,7 @@ function SourcePicker({
       onChange={(e) => onPick(e.target.value)}
       aria-invalid={errorId !== undefined}
       aria-describedby={errorId}
-      className="h-9 min-w-0 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 coarse:text-base sm:w-64 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
+      className={`h-9 min-w-0 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 coarse:text-base sm:w-64 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100 ${disabledField}`}
       data-testid="required-check-source"
     >
       <option value="" disabled>

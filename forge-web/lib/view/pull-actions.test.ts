@@ -238,6 +238,19 @@ describe('mergeGate — the merge button against the branch rules (QW-001) and a
     expect(g.enabled).toBe(false)
     expect(g.reason).toMatch(/Unlock above to merge/)
   })
+
+  it('is disabled while the source branch is past the PR head, bypass or not (QW3-013)', () => {
+    const branchAhead = { branch: 'feature-ff', tip: 'b'.repeat(40), head: '9'.repeat(40) }
+    for (const g of [
+      mergeGate({ unmet: [], canBypass: false, bypassTicked: false, storageLocked: false, branchAhead }),
+      mergeGate({ unmet, canBypass: true, bypassTicked: true, storageLocked: false, branchAhead }),
+    ]) {
+      expect(g.enabled).toBe(false)
+      expect(g.bypassing).toBe(false)
+      expect(g.reason).toBe('feature-ff is at bbbbbbb, ahead of this PR\'s head 9999999. Update the PR head first, so the merge includes those commits.')
+    }
+    expect(mergeGate({ unmet: [], canBypass: false, bypassTicked: false, storageLocked: false, branchAhead: null }).enabled).toBe(true)
+  })
 })
 
 describe('mergeButton — a head the base already holds (QW-002)', () => {

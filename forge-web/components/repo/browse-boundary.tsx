@@ -12,7 +12,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { AlertTriangle, HardDriveDownload, PackageOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { EmptyState, ErrorState } from '@/components/ui/states'
+import { BrowseLoading } from '@/components/repo/browse-loading'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import { useTrustView } from '@/hooks/use-trust-view'
 import type { BrowseReader } from '@/lib/browse'
@@ -119,7 +120,7 @@ export function BrowseBoundary({
 
   switch (state.kind) {
     case 'loading':
-      return <LoadingBlock label={state.label} />
+      return <BrowseLoading repoKey={key} label={state.label} />
     case 'error':
       if (state.cause instanceof StorageUnreachableError) {
         return <StorageUnreachableCard repo={repo} addr={addr} packs={state.cause.packs} retry={state.retry} />

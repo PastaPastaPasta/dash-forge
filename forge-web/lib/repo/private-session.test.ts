@@ -33,7 +33,7 @@ import { queryIssues } from './issue-index'
 import { anchorVerdict, epochsAnchoredBy, needsKeepWrap, planRepair, planRotation, removalEffect, rotationCost, wrapOutcome } from './private-members'
 import { privateGate, sealedGate } from './private-content'
 import { editFields, sealContent } from './private-writes'
-import { loadPrivateSession, closePrivateSessions, type SessionSource, type SessionUnwrapper } from './private-session'
+import { loadPrivateSession, closePrivateSessions, parseConfigRow, type SessionSource, type SessionUnwrapper } from './private-session'
 import { assertNoPlaintext, grantMember, revokeMember } from './writes'
 import type { PackManifest, RepoRef } from './index'
 
@@ -272,6 +272,20 @@ describe('the private session', () => {
     w.configs = [await sealed('config', k0, ALICE, {}, { defaultBranch: 'refs/heads/trunk' }, { backend: { mode: 0 } }, 10, { anchor: true })]
     const s = await sessionFor(w, BOB)
     expect(s.config?.defaultBranch).toBe('trunk')
+  })
+})
+
+describe('config rows', () => {
+  it('a config without enc states no key and is no row, as in forge-core (§5.3)', () => {
+    const doc = {
+      $id: base58Encode(new Uint8Array(32).fill(0x10)),
+      $ownerId: base58Encode(new Uint8Array(32).fill(0xa1)),
+      $createdAtBlockHeight: 900,
+      epoch: 1,
+    }
+    expect(parseConfigRow(doc)).toBeNull()
+    expect(parseConfigRow({ ...doc, enc: '' })).toBeNull()
+    expect(parseConfigRow({ ...doc, enc: bytesToBase64(new Uint8Array(61).fill(2)) })?.enc.length).toBe(61)
   })
 })
 

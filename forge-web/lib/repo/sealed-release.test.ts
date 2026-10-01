@@ -92,8 +92,8 @@ beforeEach(async () => {
       [1, k1],
     ]),
     anchors: new Map([
-      [0, { id: new Uint8Array(32).fill(9), height: 1 }],
-      [1, { id: new Uint8Array(32).fill(8), height: 2 }],
+      [0, { id: new Uint8Array(32).fill(9), height: 1, statedHeight: 1 }],
+      [1, { id: new Uint8Array(32).fill(8), height: 2, statedHeight: 2 }],
     ]),
     members: new IdSet(),
   }

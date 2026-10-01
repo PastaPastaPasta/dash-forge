@@ -2,8 +2,10 @@
 
 /**
  * "Master key, used once": the identity file or recovery phrase a master-key update signs with
- * (a key top-up, a CI runner key). Neither enters React state: the file's text lives in a ref,
- * the phrase in an uncontrolled textarea, both read by `take()` at submit and cleared by it.
+ * (a key top-up, a CI runner key, a revoke). Neither enters React state: the file's text lives in
+ * a ref, the phrase in an uncontrolled textarea, both read by `take()` at submit and cleared by
+ * it, unless the caller keeps them for a correction (`take({ keep: true })`: words that turn out
+ * to be another identity's stay in the field to fix, QW3-028) and clears them on success.
  * Only "something was given" is state.
  */
 
@@ -12,6 +14,7 @@ import { KeyRound, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Field, Textarea } from '@/components/ui/input'
 import { masterMaterialFromFile, type MasterInput } from '@/lib/auth'
+import { otherIdentityFileMessage } from '@/lib/auth/controller'
 import { cn, errorMessage } from '@/lib/utils'
 
 export interface MasterKeyInput {
@@ -21,8 +24,10 @@ export interface MasterKeyInput {
   readonly ready: boolean
   /** Why the chosen file was refused, or null. */
   readonly error: string | null
-  /** What was given, cleared from the page as it is returned. */
-  take: () => MasterInput
+  /** What was given, cleared from the page as it is returned (unless `keep`). */
+  take: (opts?: { readonly keep?: boolean }) => MasterInput
+  /** Clear what was given. */
+  clear: () => void
 }
 
 /**
@@ -43,7 +48,7 @@ export function useMasterKeyInput(identityId: string | null, { id, fileLabel }: 
     const text = await f.text()
     try {
       const m = masterMaterialFromFile(text)
-      if (m.identityId !== identityId) throw new Error('that identity file is for another identity')
+      if (m.identityId !== identityId) throw new Error(identityId === null ? 'Sign in first.' : otherIdentityFileMessage(m.identityId, identityId, f.name))
       fileRef.current = text
       setFileName(f.name)
     } catch (e) {
@@ -53,13 +58,16 @@ export function useMasterKeyInput(identityId: string | null, { id, fileLabel }: 
     }
   }
 
-  const take = (): MasterInput => {
-    const input = mode === 'file' ? { fileText: fileRef.current ?? '' } : { mnemonic: phraseRef.current?.value ?? '' }
+  const clear = (): void => {
     fileRef.current = null
     setFileName('')
     if (phraseRef.current) phraseRef.current.value = ''
     setPhraseTyped(false)
     setError(null)
+  }
+  const take = (opts: { readonly keep?: boolean } = {}): MasterInput => {
+    const input = mode === 'file' ? { fileText: fileRef.current ?? '' } : { mnemonic: phraseRef.current?.value ?? '' }
+    if (opts.keep !== true) clear()
     return input
   }
 
@@ -75,8 +83,10 @@ export function useMasterKeyInput(identityId: string | null, { id, fileLabel }: 
             type="button"
             aria-pressed={mode === m}
             onClick={() => {
-              // The textarea remounts empty: nothing typed stays counted.
+              // The textarea remounts empty: nothing typed stays counted, and a refused file's
+              // error does not stand in for what the other source says.
               setPhraseTyped(false)
+              setError(null)
               setMode(m)
             }}
             className={cn('rounded px-3 py-1 text-dense font-medium coarse:min-h-11', mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
@@ -119,5 +129,5 @@ export function useMasterKeyInput(identityId: string | null, { id, fileLabel }: 
     </fieldset>
   )
 
-  return { element, ready: mode === 'file' ? fileName !== '' : phraseTyped, error, take }
+  return { element, ready: mode === 'file' ? fileName !== '' : phraseTyped, error, take, clear }
 }

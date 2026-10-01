@@ -390,6 +390,17 @@ export function expandExportSubst(text: string, ctx: FormatContext): string {
   return text.replace(/\$Format:([^$]*)\$/g, (_, fmt: string) => formatCommit(fmt, ctx))
 }
 
+/**
+ * The fewest digits (at least 4) that name `oid` alone, through an index read on demand: every
+ * longer prefix is unique too, so `oid`'s abbreviation of at least `min` digits is its first
+ * `max(min, this)` ({@link uniqueAbbrev}, worked out ahead of a synchronous expansion).
+ */
+export async function uniqueAbbrevLength(oid: string, findByPrefix: (prefix: string, limit?: number) => Promise<string[]>): Promise<number> {
+  let len = 4
+  while (len < oid.length && (await findByPrefix(oid.slice(0, len), 2)).length > 1) len++
+  return len
+}
+
 /** The shortest unique abbreviation of `oid` of at least `min` digits, as git finds one. */
 export function uniqueAbbrev(oid: string, min: number, findByPrefix?: (prefix: string, limit?: number) => string[]): string {
   let len = Math.max(4, min)

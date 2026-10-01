@@ -18,6 +18,8 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 /** Where verified artifacts are kept. Tests pass an in-memory one. */
 export interface ArtifactStore {
   get(key: string): Promise<Uint8Array | undefined>
+  /** Several entries in one read (one IndexedDB transaction). */
+  getMany?(keys: readonly string[]): Promise<(Uint8Array | undefined)[]>
   put(key: string, bytes: Uint8Array): Promise<void>
   delete(key: string): Promise<void>
 }
@@ -86,20 +88,27 @@ export function idbArtifactStore(budget = INDEX_CACHE_BUDGET_BYTES, name = DB_NA
       db?.close()
     }
   }
-  return {
-    get: (key) =>
-      withDb(async (db) => {
-        const tx = db.transaction([BYTES, META], 'readwrite')
+  const getMany = async (keys: readonly string[]): Promise<(Uint8Array | undefined)[]> =>
+    (await withDb(async (db) => {
+      const tx = db.transaction([BYTES, META], 'readwrite')
+      const reqs = keys.map((key) => {
         const req = tx.objectStore(BYTES).get(key)
         req.onsuccess = () => {
           const rec = req.result as { bytes?: unknown } | undefined
           // Touch: eviction is least recently USED, so a repo visited daily stays.
           if (rec?.bytes instanceof ArrayBuffer) tx.objectStore(META).put({ key, size: rec.bytes.byteLength, at: Date.now() } satisfies Meta)
         }
-        await done(tx)
+        return req
+      })
+      await done(tx)
+      return reqs.map((req) => {
         const rec = req.result as { bytes?: unknown } | undefined
         return rec?.bytes instanceof ArrayBuffer ? new Uint8Array(rec.bytes) : undefined
-      }),
+      })
+    })) ?? keys.map(() => undefined)
+  return {
+    get: async (key) => (await getMany([key]))[0],
+    getMany,
     put: async (key, bytes) => {
       await withDb(async (db) => {
         const tx = db.transaction([BYTES, META], 'readwrite')
@@ -185,13 +194,62 @@ export async function loadIndexArtifact(
 ): Promise<Uint8Array> {
   const want = packHash.toLowerCase()
   if (store === null) return load()
+  const hit = await storedIndexArtifact(scope, want, store)
+  if (hit !== undefined) return hit
+  const bytes = await load()
+  if ((await sha256Hex(bytes)) === want) void store.put(`${scope}:${want}`, bytes).catch(() => undefined)
+  return bytes
+}
+
+/**
+ * The stored copy of the artifact whose sha256 is `packHash`, if the store holds one that still
+ * hashes to it ({@link loadIndexArtifact}'s hit, without loading anything on a miss).
+ */
+export async function storedIndexArtifact(
+  scope: string,
+  packHash: string,
+  store: ArtifactStore | null = indexArtifactStore(),
+): Promise<Uint8Array | undefined> {
+  if (store === null) return undefined
+  const want = packHash.toLowerCase()
   const key = `${scope}:${want}`
   const hit = await store.get(key).catch(() => undefined)
-  if (hit !== undefined) {
-    if ((await sha256Hex(hit)) === want) return hit
-    await store.delete(key).catch(() => undefined)
-  }
-  const bytes = await load()
-  if ((await sha256Hex(bytes)) === want) void store.put(key, bytes).catch(() => undefined)
-  return bytes
+  if (hit === undefined) return undefined
+  if ((await sha256Hex(hit)) === want) return hit
+  await store.delete(key).catch(() => undefined)
+  return undefined
+}
+
+/**
+ * Where an index range is kept: unlike a whole artifact (checked against its sha256 before it is
+ * kept or served), a range is unchecked, so it is keyed by the copy it was read from, `copy` (the
+ * network's repo and uploader, whose Platform chunks only that uploader can write), never by the
+ * pack hash alone: another repo's manifest naming the same hash must not supply its rows.
+ */
+const rangeKey = (copy: string, packHash: string, start: number, end: number): string => `${copy}:${packHash.toLowerCase()}@${start}-${end}`
+
+/**
+ * The kept copies of byte ranges `[start, end)` of the artifact whose sha256 is `packHash`
+ * (QW3-001: a large index's fanout and the slices pages looked objects up in), in one store read;
+ * undefined for each one not kept. A range cannot be hashed on its own, so the caller checks what
+ * it gets: an index slice's shape, then every object read through it against its oid.
+ */
+export async function storedIndexRanges(
+  copy: string,
+  packHash: string,
+  ranges: readonly (readonly [number, number])[],
+  store: ArtifactStore | null = indexArtifactStore(),
+): Promise<(Uint8Array | undefined)[]> {
+  if (store === null || ranges.length === 0) return ranges.map(() => undefined)
+  const keys = ranges.map(([start, end]) => rangeKey(copy, packHash, start, end))
+  const got = await (store.getMany !== undefined ? store.getMany(keys) : Promise.all(keys.map((k) => store.get(k)))).catch(() => keys.map(() => undefined))
+  return got.map((bytes, i) => {
+    const [start, end] = ranges[i] as readonly [number, number]
+    return bytes !== undefined && bytes.length === end - start ? bytes : undefined
+  })
+}
+
+/** Keep range `[start, end)` of copy `copy` of artifact `packHash` for the next visit ({@link storedIndexRanges}). */
+export function keepIndexRange(copy: string, packHash: string, start: number, end: number, bytes: Uint8Array, store: ArtifactStore | null = indexArtifactStore()): void {
+  if (store !== null && bytes.length === end - start) void store.put(rangeKey(copy, packHash, start, end), bytes).catch(() => undefined)
 }

@@ -10,7 +10,7 @@
  */
 
 import { diffTreesWithRenames, type DiffSides, type TreeDiff } from './commit-log'
-import type { ReadObjectOptions } from '../browse'
+import type { LocatorEntry, ReadObjectOptions } from '../browse'
 import { readCommit, type ObjectReader } from './tree-nav'
 
 /**
@@ -37,8 +37,14 @@ export interface PullComparisonInput {
   /** The base ref's tip when the PR was opened (`''` when it had none). */
   readonly baseOidAtOpen: string
   readonly headOid: string
-  /** The PR is merged: its base now contains the head, so compare from the tip at open first. */
+  /** The PR is merged: its base now contains the head, so compare from the tip before the merge, else at open. */
   readonly merged: boolean
+  /**
+   * A merged PR's base tip just before the merge (`PullView.baseOidAtMerge`), or `''`: tried first
+   * for a merged PR, so base commits merged into the PR branch later ("Update branch") are not
+   * counted as the PR's own (QW3-014).
+   */
+  readonly baseOidAtMerge?: string
   /**
    * An archived PR from another forge: its source's recorded base is tried first, and a
    * fallback diff links the source's own (the view's job).
@@ -95,7 +101,9 @@ export function preferring(primary: ObjectReader, fallback: ObjectReader): Objec
   if (primary === fallback) return primary
   return {
     async readObject(oid: string, options?: ReadObjectOptions) {
-      if (primary.locate?.(oid) === null && (fallback.locate?.(oid) ?? null) !== null) return fallback.readObject(oid, options)
+      // A lookup that cannot be made (an index range that did not load) decides nothing: the reads below try both.
+      const located = async (r: ObjectReader): Promise<LocatorEntry | null | undefined> => r.locate?.(oid).catch(() => undefined)
+      if ((await located(primary)) === null && ((await located(fallback)) ?? null) !== null) return fallback.readObject(oid, options)
       try {
         return await primary.readObject(oid, options)
       } catch (primaryError) {
@@ -106,15 +114,15 @@ export function preferring(primary: ObjectReader, fallback: ObjectReader): Objec
         }
       }
     },
-    locate(oid: string) {
-      return primary.locate?.(oid) ?? fallback.locate?.(oid) ?? null
+    async locate(oid: string) {
+      return (await primary.locate?.(oid)) ?? (await fallback.locate?.(oid)) ?? null
     },
   }
 }
 
 const short = (oid: string): string => oid.slice(0, 7)
 
-type Baseline = 'current tip' | 'tip when opened' | 'source base'
+type Baseline = 'current tip' | 'tip when opened' | 'tip before the merge' | 'source base'
 
 /**
  * Load a PR's comparison: the head against its merge base with the base branch, as a code
@@ -122,8 +130,9 @@ type Baseline = 'current tip' | 'tip when opened' | 'source base'
  *
  * Two baselines are recorded for a PR: the base ref's current tip and its tip when the PR was
  * opened. An unmerged PR is compared from the current tip first. A merged PR is compared from
- * the tip at open first, because the current tip now contains the head — its merge base would
- * be the head itself, an empty diff. An imported PR tries first the base commit its source
+ * the base's tip just before the merge (GitHub's merge base at merge time), else the tip at open,
+ * because the current tip now contains the head — its merge base would be the head itself, an
+ * empty diff. An imported PR tries first the base commit its source
  * recorded (GitHub's `base.sha`, the base branch's tip when the PR was last updated; GitLab's
  * `diff_refs.base_sha`): its merge base with the head is where the PR branched, even after the
  * mirrored branch moved on. When no baseline works, the head commit's first parent is used, with
@@ -158,7 +167,8 @@ export async function loadPullComparison(
   // search, which then names where the PR branched; a merged PR's head is already in the mirror's
   // current base tip, so the source's commit is the one that still predates the merge.
   const recorded = { oid: input.imported ? (input.sourceBaseOid ?? '') : '', which: 'source base' as Baseline }
-  const candidates = [recorded, ...(input.merged ? [atOpen, tip] : [tip, atOpen])].filter(
+  const atMerge = { oid: input.merged ? (input.baseOidAtMerge ?? '') : '', which: 'tip before the merge' as Baseline }
+  const candidates = [recorded, ...(input.merged ? [atMerge, atOpen, tip] : [tip, atOpen])].filter(
     (c, i, all) => c.oid !== '' && all.findIndex((d) => d.oid === c.oid) === i,
   )
   const failed: string[] = []
@@ -208,6 +218,10 @@ export async function loadPullComparison(
         ? `Compared from where this PR branched off the base commit its source records, ${short(oid)}${why}.`
         : which === 'tip when opened'
           ? `Compared against the base branch as it stood when this PR was opened, ${short(oid)}${why || (input.merged ? ', because the PR is merged' : '')}.`
+          : which === 'tip before the merge'
+            ? failed.length > 0
+              ? `Compared against the base branch as it stood just before the merge, ${short(oid)}${why}.`
+              : null
           : failed.length > 0
             ? `Compared against the base branch's current tip${why}.`
             : null

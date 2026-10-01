@@ -14,11 +14,11 @@ import type { TopUpReason } from '@/lib/view/write-errors'
 export type { TopUpReason }
 
 /**
- * A sign-in sheet view to open on directly (e.g. `import` to renew this browser's key; `grant`
- * asks the signed-in identity's wallet for a key on the contract named with it, when the
- * session lacks one).
+ * A sign-in sheet view to open on directly (`renew`: Settings → Renew key, the import form worded
+ * as a renewal of the signed-in identity's key, QW3-031; `grant` asks the signed-in identity's
+ * wallet for a key on the contract named with it, when the session lacks one).
  */
-export type LoginView = 'import' | 'create' | 'wallet' | 'grant' | 'unlock'
+export type LoginView = 'import' | 'renew' | 'create' | 'wallet' | 'grant' | 'unlock'
 
 /**
  * What a signed-out click asked to do (L-62): the sheet says "Sign in to star this repo" and what

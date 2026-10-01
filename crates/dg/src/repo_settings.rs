@@ -25,7 +25,7 @@ use forge_core::rules::review::Policy;
 use forge_core::rules::v2::Role;
 use forge_core::user_error::{codes, UserError};
 
-use crate::common::{Reader, Session};
+use crate::common::{resolve_identity, Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe};
 use crate::{RepoEditArgs, RepoPolicyCommand, RepoPolicySetArgs, RepoProtectCommand};
@@ -500,6 +500,57 @@ async fn refuse_stale_sources(
     .into())
 }
 
+/// `--required-check NAME[=SOURCE]` values as the policy's names and (unresolved) sources:
+/// every check pinned to a source, or none (the policy pairs them by position); each name once.
+fn required_checks(values: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut names = Vec::new();
+    let mut sources = Vec::new();
+    for v in values {
+        // The source after the last `=`, when it reads as one (an identity id, `@name` or a
+        // DPNS name): a name may hold `=` itself (`test (os=linux)`).
+        let (name, source) = match v.rsplit_once('=') {
+            Some((n, s)) if s.trim().is_empty() || looks_like_source(s.trim()) => {
+                (n.trim(), Some(s.trim()))
+            }
+            _ => (v.trim(), None),
+        };
+        if name.is_empty() || source.is_some_and(str::is_empty) {
+            return Err(crate::errors::usage(format!(
+                "--required-check {v:?}: give a check name, optionally `=<source>`"
+            )));
+        }
+        if names.iter().any(|n: &String| n == name) {
+            return Err(crate::errors::usage(format!(
+                "--required-check names {name:?} twice"
+            )));
+        }
+        names.push(name.to_string());
+        if let Some(s) = source {
+            sources.push(s.to_string());
+        }
+    }
+    if !sources.is_empty() && sources.len() != names.len() {
+        return Err(crate::errors::usage(format!(
+            "{} of {} required checks name a source: pin every check (`name=<source>`) or none",
+            sources.len(),
+            names.len()
+        )));
+    }
+    if names.len() > 10 || names.iter().any(|n| n.chars().count() > 100) {
+        return Err(crate::errors::usage(
+            "a policy takes at most 10 required checks, each named in 1-100 characters",
+        ));
+    }
+    Ok((names, sources))
+}
+
+/// Whether `s` reads as a check source: an identity id, `@name`, or a DPNS name.
+fn looks_like_source(s: &str) -> bool {
+    s.starts_with('@')
+        || forge_core::resolve::looks_like_identity_id(s)
+        || forge_core::resolve::dpns_label(s).is_some()
+}
+
 async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
     let methods = args
         .merge_methods
@@ -509,6 +560,12 @@ async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
     if args.required_approvals.is_some_and(|n| n > 10) {
         return Err(crate::errors::usage("--required-approvals takes 0-10"));
     }
+    // Checked before connecting, like the merge methods (QW3-066).
+    let checks = if args.required_check.is_empty() {
+        None
+    } else {
+        Some(required_checks(&args.required_check)?)
+    };
     let s = Session::open(ctx, &args.repo).await?;
     let collab = s.collab();
     collab
@@ -523,10 +580,21 @@ async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
         base.required_checks.clear();
         base.required_check_sources.clear();
     }
+    // QW3-066: named required checks, each optionally pinned to its source.
+    let naming = checks.is_some();
+    if let Some((names, sources)) = checks {
+        let mut ids = Vec::with_capacity(sources.len());
+        for who in &sources {
+            ids.push(resolve_identity(&s.client, who, "check source").await?);
+        }
+        base.required_checks = names;
+        base.required_check_sources = ids;
+    }
     let next = Policy {
         required_approvals: args.required_approvals.unwrap_or(base.required_approvals),
         approver_role: args.maintainers_only.map_or(base.approver_role, u8::from),
-        require_checks: args.require_checks.unwrap_or(base.require_checks),
+        // Naming the checks a merge requires turns the requirement on (unless said otherwise).
+        require_checks: args.require_checks.unwrap_or(base.require_checks || naming),
         merge_methods: methods.unwrap_or(base.merge_methods),
         ..base
     };
@@ -647,7 +715,40 @@ fn capitalize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{full_pattern, method_names, parse_methods, parse_topics};
+    use super::{full_pattern, method_names, parse_methods, parse_topics, required_checks};
+
+    /// QW3-066: required checks by name, each pinned to a source or none pinned.
+    #[test]
+    fn required_checks_take_names_and_optional_sources() {
+        let v = |xs: &[&str]| xs.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            required_checks(&v(&["build", "lint"])).unwrap(),
+            (v(&["build", "lint"]), vec![])
+        );
+        assert_eq!(
+            required_checks(&v(&["build=@ci", "lint=alice"])).unwrap(),
+            (v(&["build", "lint"]), v(&["@ci", "alice"]))
+        );
+        // a name may hold `=` when what follows is no source
+        assert_eq!(
+            required_checks(&v(&["test (os=linux)"])).unwrap(),
+            (v(&["test (os=linux)"]), vec![])
+        );
+        let eleven: Vec<String> = (0..11).map(|i| format!("c{i}")).collect();
+        assert!(required_checks(&eleven).is_err());
+        for bad in [
+            &["build=@ci", "lint"][..],
+            &["build", "build"],
+            &["=x"],
+            &["build="],
+        ] {
+            let e = required_checks(&v(bad)).unwrap_err();
+            let u = e
+                .downcast_ref::<forge_core::user_error::UserError>()
+                .unwrap();
+            assert_eq!(u.code, "E201", "{bad:?}: {u:?}");
+        }
+    }
 
     #[test]
     fn bare_branches_become_full_ref_patterns() {

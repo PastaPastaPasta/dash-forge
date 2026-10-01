@@ -15,16 +15,24 @@ import {
   contentChecks,
   deriveTrust,
   NO_CONTENT_CHECKS,
+  pinnedAt,
   readGatewaysFor,
   subscribeContentChecks,
   type RepoHome,
   type SelectedRef,
+  type TrustInputs,
   type TrustReport,
 } from '@/lib/view'
 import { repoContractIds, repoKey } from '@/lib/repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { useTrustView } from '@/hooks/use-trust-view'
+
+/** A pinned commit, with the ref whose proven tip it is, if any (QW3-043). */
+function pinnedTip(pinned: string, home: RepoHome): TrustInputs['tip'] {
+  const at = pinnedAt(pinned, home.branches, home.tags, home.defaultBranch)
+  return at === undefined ? { pinned } : { pinned, at }
+}
 
 export function useRepoTrust(home: RepoHome, selected: SelectedRef): TrustReport {
   const { connection, network } = useSdk(repoContractIds(home.repo))
@@ -46,7 +54,7 @@ export function useRepoTrust(home: RepoHome, selected: SelectedRef): TrustReport
     connection,
     quorum,
     refName: selected.name,
-    tip: selected.pinned ? { pinned: selected.pinned } : selected.ref?.state ?? 'missing',
+    tip: selected.pinned ? pinnedTip(selected.pinned, home) : selected.ref?.state ?? 'missing',
     checks,
     configuredBackend: home.backend.label,
     configuredUris: home.backend.uris,

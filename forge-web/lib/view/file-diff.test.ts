@@ -151,7 +151,7 @@ describe('loadFilePatch over a pack (the live read path)', () => {
       { name: 'old.cpp', bytes: enc.encode(before) },
       { name: 'new.cpp', delta: { base: enc.encode(chunk), size } },
     ])
-    expect(reader.locate(oids['new.cpp']!)?.deltaDepth).toBeGreaterThan(0)
+    expect((await reader.locate(oids["new.cpp"]!))?.deltaDepth).toBeGreaterThan(0)
     const live = await loadFilePatch({ base: reader, head: reader }, change({ baseOid: oids['old.cpp']!, headOid: oids['new.cpp']! }))
     const want = await offline(enc.encode(before), enc.encode(after))
     expect(want).toMatchObject({ kind: 'placeholder', reason: 'large', added: 1, deleted: 1 })
@@ -170,6 +170,29 @@ describe('loadFilePatch over a pack (the live read path)', () => {
     expect(uncountedReasons([patch.change], () => patch)).toBe('1 too large to diff in the browser')
   })
 
+  it('tells a binary file over the count limit by its first bytes, as git does, and leaves the totals whole (QW3-045)', async () => {
+    // dash's root commit adds a 1.4 MB libeay32.dll: git counts it as no lines.
+    const dll = new Uint8Array(COUNT_BLOB_MAX_BYTES + 300_000)
+    for (let i = 0; i < dll.length; i++) dll[i] = (i * 7919) % 251
+    dll.set(enc.encode('MZ'), 0)
+    dll[2] = 0x90
+    dll[3] = 0
+    const { reader, oids } = imageRepo([{ name: 'libeay32.dll', bytes: dll }])
+    const patch = await loadFilePatch({ base: reader, head: reader }, change({ baseOid: null, headOid: oids['libeay32.dll']! }))
+    expect(patch).toMatchObject({ kind: 'placeholder', reason: 'binary' })
+    if (patch.kind === 'placeholder') expect(patch.note).toMatch(/^Binary file not shown \(too large to read whole here/)
+    expect(diffTotals([patch.change], () => patch)).toMatchObject({ added: 0, deleted: 0, uncounted: 0 })
+    expect(uncountedReasons([patch.change], () => patch)).toBe('')
+  })
+
+  it('a reader that ignores the limit tells a binary file over it the same way', async () => {
+    const s = new Store()
+    const r = s.reader()
+    const bin = 'MZ\u0000' + lines(45_000, 'b')
+    const patch = await loadFilePatch({ base: r, head: r }, change({ baseOid: null, headOid: s.blob(bin) }))
+    expect(patch).toMatchObject({ kind: 'placeholder', reason: 'binary' })
+  })
+
   it('names a measured size over the count limit (a reader that ignores the limit)', async () => {
     const s = new Store()
     const r = s.reader()
@@ -184,7 +207,7 @@ describe('loadFilePatch over a pack (the live read path)', () => {
     const small = s.blob('ok\n')
     const length = 20 * COUNT_BLOB_MAX_BYTES
     const lying = {
-      locate: () => ({ packRef: 0, offset: 0, length, deltaChainSpan: 0, deltaDepth: 1 }),
+      locate: async () => ({ packRef: 0, offset: 0, length, deltaChainSpan: 0, deltaDepth: 1 }),
       readObject: () => Promise.reject(new ObjectTooLargeError(length, COUNT_BLOB_MAX_BYTES)),
     }
     const patch = await loadFilePatch({ base: s.reader(), head: lying }, change({ baseOid: null, headOid: small }), { ignoreSizeHint: true })

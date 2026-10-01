@@ -18,6 +18,7 @@ import type { PackManifest, RepoRef } from '../repo'
 import { bytesToBase64 } from '../sdk'
 import { base58Decode, base58Encode } from '../auth/base58'
 import { DOC, resetForkParents } from '../repo'
+import { ObjectLocator } from '../browse'
 import { serializeLocator, type IndexedObject } from '../browse/indexer'
 import {
   artifactRangeFetch,
@@ -747,6 +748,7 @@ describe('loadBrowseContext for a fork (QW-023)', () => {
     expect(state.kind).toBe('ready')
     if (state.kind !== 'ready') return
     const { locator } = state.context
+    if (!(locator instanceof ObjectLocator)) throw new Error('a fork reads its parent index whole')
     expect(locator.lookup(oidBytes(0x11))).toMatchObject({ packRef: 1, offset: 100 + 0x11 })
     expect(locator.lookup(oidBytes(0x22))).toMatchObject({ packRef: 0, offset: 100 + 0x22 })
     // Pushed to the parent after the fork: not the fork's, so it does not resolve.

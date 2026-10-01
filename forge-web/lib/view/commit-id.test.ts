@@ -34,8 +34,8 @@ function reader(): PrefixReader {
     ),
   )
   return {
-    findByPrefix: (p, limit) => locator.findByPrefix(p, limit),
-    locate: (oid) => locator.lookup(Uint8Array.from(oid.match(/../g) ?? [], (h) => parseInt(h, 16))),
+    findByPrefix: async (p, limit) => locator.findByPrefix(p, limit),
+    locate: async (oid) => locator.lookup(Uint8Array.from(oid.match(/../g) ?? [], (h) => parseInt(h, 16))),
     readObject: async (oid) => {
       const type = types.get(oid)
       if (type === undefined) throw new Error(`object not in locator: ${oid}`)
@@ -45,14 +45,14 @@ function reader(): PrefixReader {
 }
 
 describe('ObjectLocator.findByPrefix', () => {
-  it('finds the run of OIDs sharing an even or odd-length prefix', () => {
+  it('finds the run of OIDs sharing an even or odd-length prefix', async () => {
     const r = reader()
-    expect(r.findByPrefix?.('ce97e47')).toEqual([COMMIT_A])
-    expect(r.findByPrefix?.('CE97E47A')).toEqual([COMMIT_A])
-    expect(r.findByPrefix?.('ab12345', 5)).toEqual([COMMIT_B, BLOB_B])
-    expect(r.findByPrefix?.('0dd1ce', 5)).toEqual([COMMIT_C1, COMMIT_C2])
-    expect(r.findByPrefix?.('ffff')).toEqual([])
-    expect(r.findByPrefix?.('zz')).toEqual([])
+    expect(await r.findByPrefix?.('ce97e47')).toEqual([COMMIT_A])
+    expect(await r.findByPrefix?.('CE97E47A')).toEqual([COMMIT_A])
+    expect(await r.findByPrefix?.('ab12345', 5)).toEqual([COMMIT_B, BLOB_B])
+    expect(await r.findByPrefix?.('0dd1ce', 5)).toEqual([COMMIT_C1, COMMIT_C2])
+    expect(await r.findByPrefix?.('ffff')).toEqual([])
+    expect(await r.findByPrefix?.('zz')).toEqual([])
   })
 })
 
@@ -142,7 +142,7 @@ describe('resolveCommitOid edge cases', () => {
   it('reports a prefix matching 16 or more objects as ambiguous, not a guess', async () => {
     const many: PrefixReader = {
       ...base,
-      findByPrefix: (_p, limit = 2) => Array.from({ length: limit }, (_, i) => `abcd${i.toString(16).padStart(36, '0')}`),
+      findByPrefix: async (_p, limit = 2) => Array.from({ length: limit }, (_, i) => `abcd${i.toString(16).padStart(36, '0')}`),
       objectType: async (oid) => (oid.endsWith('f') ? 'commit' : 'blob'),
     }
     const e = await resolveCommitOid(many, 'abcd').catch((x: unknown) => x)

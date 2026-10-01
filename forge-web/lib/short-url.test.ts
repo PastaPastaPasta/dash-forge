@@ -32,6 +32,8 @@ describe('shortRepoPath → shim → canonical route', () => {
     [{ kind: 'blame', ref: 'main', path: 'src/a.rs' }, '/alice/project/blame/main/src/a.rs', '/repo/blame/?owner=alice&name=project&ref=main&path=src%2Fa.rs'],
     [{ kind: 'issues' }, '/alice/project/issues', '/repo/issues/?owner=alice&name=project'],
     [{ kind: 'issue', number: 42 }, '/alice/project/issues/42', '/repo/issue/?owner=alice&name=project&number=42'],
+    // QW3-063: GitHub's New issue URL opens the composer.
+    [{ kind: 'newIssue' }, '/alice/project/issues/new', '/repo/issues/?owner=alice&name=project&new=1'],
     [{ kind: 'pulls' }, '/alice/project/pulls', '/repo/pulls/?owner=alice&name=project'],
     [{ kind: 'pull', number: 7 }, '/alice/project/pull/7', '/repo/pull/?owner=alice&name=project&number=7'],
     [{ kind: 'pull', number: 7, tab: 'files' }, '/alice/project/pull/7/files', '/repo/pull/?owner=alice&name=project&number=7&tab=files'],

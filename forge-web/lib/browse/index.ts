@@ -17,11 +17,18 @@ export {
   ObjectLocator,
   SPAN_SENTINEL,
   SPAN_SINGLE_READ_THRESHOLD,
-  lookupRanged,
   singleReadAdvised,
   type LocatorEntry,
   type RangeFetch,
 } from './locator'
+export {
+  ESCALATE_FRACTION,
+  FragmentedIndex,
+  RangedLocator,
+  indexOf,
+  type ObjectIndex,
+  type RangedSource,
+} from './object-index'
 export {
   FlatIndex,
   MODE_GITLINK,

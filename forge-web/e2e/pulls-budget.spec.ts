@@ -23,6 +23,14 @@ test.beforeEach(quorumGuard)
 
 /** S-1's cold page budget. */
 const COLD_BUDGET = 25
+/**
+ * QW3-002: what the dash Open tab adds to find every open PR its count reports, by the state scan:
+ * one light `transition` read per 100 state changes above the oldest open PR, and a read by number
+ * every few of them. Like the commit column's walk (`page-budget.spec.ts` COLUMN_WALK_MAX) it grows
+ * with how deep that PR sits, not with the repo; tracked apart from S-1. bonsia, 2026-09-30: the
+ * oldest open PR (#4604) sat 1,011 numbers below the newest, 12 scan reads and 3 by number.
+ */
+const OPEN_SCAN_MAX = 20
 
 type Row = { readonly method: string; readonly type: string }
 
@@ -82,6 +90,11 @@ async function cold(
 const listReady = async (page: Page): Promise<void> => {
   await expect(prRows(page).first()).toBeVisible({ timeout: 90_000 })
 }
+/** The Open tab once it has found every open PR (its state scan's note gone). */
+const openSettled = async (page: Page): Promise<void> => {
+  await listReady(page)
+  await expect(page.getByRole('status').filter({ hasText: 'Finding the older' })).toHaveCount(0, { timeout: 180_000 })
+}
 const detailReady = async (page: Page): Promise<void> => {
   await expect(page.locator('main h1').first()).toBeVisible({ timeout: 90_000 })
 }
@@ -112,12 +125,20 @@ test.describe('PR request budget (L-77)', () => {
       const dash = await showcaseRepo('DASHPAY', 'dash').catch(() => null)
       test.skip(dash === null, `the dash mirror is not imported on ${E2E_DEVNET}`)
       if (dash === null) return
-      const list = await cold(browser, 'dash PR list', repoUrl('pulls', '', dash), listReady)
-      expect(list.rows.length, summary(list.rows)).toBeLessThanOrEqual(COLD_BUDGET)
-      // L-44: the list pages past 100 and counts every tab, instead of stopping at 100 silently.
-      await expect(list.page.getByRole('tab', { name: /^\d+ Open$/ })).toBeVisible({ timeout: 60_000 })
-      await expect(list.page.getByRole('tab', { name: /^\d+ Merged$/ })).toBeVisible()
-      await expect(list.page.getByRole('tab', { name: /^\d+ Closed$/ })).toBeVisible()
+      const list = await cold(browser, 'dash PR list', repoUrl('pulls', '', dash), openSettled)
+      // QW3-002: the Open tab lists every open PR its count reports (dash's few open PRs sit
+      // anywhere in thousands of merged ones), with no "Look through older" to press.
+      const open = Number((await list.page.getByRole('tab', { name: /^[\d,]+ Open$/ }).textContent())?.replace(/[^\d]/g, ''))
+      if (open <= 25) await expect(prRows(list.page)).toHaveCount(open)
+      await expect(list.page.getByRole('button', { name: /Look through older/ })).toHaveCount(0)
+      // The scan's reads: `transition` by repo, newest first (`$createdAt <=` its watermark after the first).
+      const scan = list.rows.filter((r) => r.type === 'transition(repoId)' || r.type === 'transition(repoId,$createdAt)').length
+      expect(list.rows.length - scan, summary(list.rows)).toBeLessThanOrEqual(COLD_BUDGET)
+      expect(scan, summary(list.rows)).toBeLessThanOrEqual(OPEN_SCAN_MAX)
+      // L-44: the list pages past 100 and counts every tab (digit-grouped, QW3-058), instead of stopping at 100 silently.
+      await expect(list.page.getByRole('tab', { name: /^[\d,]+ Merged$/ })).toBeVisible()
+      await expect(list.page.getByRole('tab', { name: /^[\d,]+ Closed$/ })).toBeVisible()
+      await expect(list.page.getByRole('tab', { name: /^\d{1,3}(,\d{3})+ Merged$/ })).toBeVisible()
       await list.page.getByRole('tab', { name: 'All', exact: true }).click()
       await expect(list.page.getByTestId('page-indicator')).toContainText(/Page 1 of ([5-9]|\d{2,})/, { timeout: 60_000 })
       await shot(list.page, 'prb-03-dash-pulls-cold')
@@ -129,6 +150,19 @@ test.describe('PR request budget (L-77)', () => {
         expect(tab.rows.length, summary(tab.rows)).toBeLessThanOrEqual(COLD_BUDGET)
         await expect(tab.page.getByTestId('page-indicator')).toContainText(/Page 1 of \d+/, { timeout: 60_000 })
         await shot(tab.page, `prb-03-dash-pulls-${state}-cold`)
+        await tab.close()
+      }
+
+      // QW3-004 / QW3-019: a sort by comments and a search read one load's worth, show it, and say
+      // how far they read ("Look through older" reads on), rather than reading thousands of PRs first.
+      for (const [label, extra] of [
+        ['most commented', '&state=all&sort=comments'],
+        ['search', '&q=is%3Apr+is%3Amerged+masternode'],
+      ] as const) {
+        const tab = await cold(browser, `dash PR list, ${label}`, repoUrl('pulls', extra, dash), listReady)
+        expect(tab.rows.length, summary(tab.rows)).toBeLessThanOrEqual(COLD_BUDGET)
+        await expect(tab.page.getByTestId('list-read-budget').or(tab.page.getByText(/^Searched the newest/))).toBeVisible()
+        await shot(tab.page, `prb-03-dash-pulls-${label.replace(/ /g, '-')}-cold`)
         await tab.close()
       }
 

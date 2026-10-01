@@ -42,6 +42,17 @@ pub fn release(text_bytes: u64, assets_bytes: u64) -> u64 {
     )
 }
 
+/// What a `webhook` document's index entries cost beyond its bytes (QW3-022: it was priced by
+/// its bytes alone, ~0.000093 DASH, and charged 0.00077 by dg and 0.00102 by the web on bonsia,
+/// beta.7, 2026-09-30): the larger charge, rounded up.
+const WEBHOOK_INDEX_OVERHEAD: u64 = 110_000_000;
+
+/// A `webhook` document of `bytes` (its encrypted secret and URL included), priced as the
+/// repository's first: an upper bound.
+pub fn webhook(bytes: u64) -> u64 {
+    forge_core::cost::estimate(bytes).total() + WEBHOOK_INDEX_OVERHEAD
+}
+
 /// The bytes a history-index part is priced at when its size is not known before the push (a
 /// small repository's parts are a few hundred bytes; each is at least one `chunk` when Platform
 /// stores it).
@@ -55,7 +66,17 @@ pub struct MergePush {
     pub history_index: bool,
     /// Platform stores the pushed bytes, the history index's included, as `chunk`s.
     pub platform_bytes: bool,
+    /// The head's commits are not in the base repository yet (a pull request from a fork):
+    /// the push uploads them as a pack, with its browse index (QW3-022).
+    pub uploads_head: bool,
 }
+
+/// The pack a merge uploads from a fork is priced at this size: a pull request's few commits
+/// are usually a few KiB (the fork-PR merge QA wave 3 measured charged 920.5M credits in all).
+/// A larger head costs more; `git push` prices it as it runs.
+const MERGE_PACK_BYTES: u64 = 4096;
+/// The objects that pack is priced at (its browse index grows with them).
+const MERGE_PACK_OBJECTS: u64 = 16;
 
 /// What `dg pr merge` writes on Platform: the merge `transition`; unless it only records a
 /// merge (`push` is `None`), the push of the base branch (its ref update, and its history
@@ -68,7 +89,21 @@ pub fn merge(push: Option<MergePush>, deletes_source: bool) -> u64 {
         } else {
             0
         };
-        push_fees::estimate_ref_updates(1) + history
+        let pack = if p.uploads_head {
+            push_fees::estimate_push(&push_fees::PushShape {
+                pack_bytes: MERGE_PACK_BYTES,
+                objects: MERGE_PACK_OBJECTS,
+                index_objects: MERGE_PACK_OBJECTS,
+                refs: 0,
+                external_targets: 0,
+                platform_bytes: p.platform_bytes,
+                sealed: false,
+            })
+            .total()
+        } else {
+            0
+        };
+        push_fees::estimate_ref_updates(1) + history + pack
     });
     let delete = if deletes_source {
         push_fees::estimate_ref_updates(1)
@@ -104,6 +139,18 @@ mod tests {
         // 500.5M (fixes/costs/04-quotes-vs-charges.txt; it was quoted 0.00416 DASH before the
         // history index's chunks were counted).
         assert!(merge(Some(DEFAULT_ON_PLATFORM), false) >= 532_741_400);
+        // QW3-022: the same merge of a pull request from a fork, which uploads the head's
+        // commits into the base: 920.5M (quoted 760M before).
+        let from_fork = MergePush {
+            uploads_head: true,
+            ..DEFAULT_ON_PLATFORM
+        };
+        assert!(merge(Some(from_fork), false) >= 920_538_820);
+        assert!(merge(Some(from_fork), false) < 2 * 920_538_820);
+        // `dg webhook add`: 77.2M (dg), 102.1M (the web's larger document); a document of
+        // about 600 bytes.
+        assert!(webhook(600) >= 102_100_000);
+        assert!(webhook(600) < 2 * 102_100_000);
     }
 
     /// The quotes stay quotes, not overestimates by an order of magnitude.
@@ -117,6 +164,7 @@ mod tests {
             Some(MergePush {
                 history_index,
                 platform_bytes,
+                uploads_head: false,
             })
         };
         assert!(merge(on(false, true), false) > merge(None, false));
@@ -132,5 +180,6 @@ mod tests {
     const DEFAULT_ON_PLATFORM: MergePush = MergePush {
         history_index: true,
         platform_bytes: true,
+        uploads_head: false,
     };
 }

@@ -43,6 +43,16 @@
  *     patch anywhere as well 125.8M. review: 35.9M; the PR's first 40.2M / 41.9M.
  *   release (6 B tag): 53.3M; repo's first 64.0M; + 200 B notes 58.4M.
  *   limited key: registering 44.1M–47.1M; renewing (register + disable the old one) 27.3M.
+ * Measured on bonsia (drive 4.2.0-beta.7, QA wave 3, 2026-09-30; spend-ledger balance deltas,
+ * QW3-037), where several types cost more or less than on moutai:
+ *   repo (fork, 62 B description) 91.4M; a first repo 81.5M–88.5M. config: a repo's first 35.5M,
+ *     a later one (Settings) 27.4M–28.1M. topic 61.7M–62.6M; the repo's first 72.9M.
+ *   refUpdate: an existing ref 58.7M–59.0M; a new ref name 66.0M–66.4M; the repo's first 89.4M.
+ *   packManifest: 85.5M–87.4M; the repo's first 134.3M. webhook: 77.2M; the repo's first 102.1M.
+ *   transition: 47.3M–56.5M; a thread's first 63M; with the repo's first of its kind 74.2M.
+ *   label 33.8M–35.1M; the repo's first 41.8M. review 49.6M–49.9M; a PR's first 69.7M–78.0M.
+ *   follow 37.0M (an identity's first follow of someone). A replace: the repo's description and
+ *     topics 5.8M, a comment's body 7.8M.
  *
  * Platform accepts a write only when the key budget and the balance cover what Drive
  * estimates it may take, which is more than it charges: see {@link Admission}. The pre-sign
@@ -66,19 +76,19 @@ export const HEADROOM = 1.06
  * already exists), in credits. Types never measured fall back to {@link DEFAULT_BASE_CREDITS}.
  */
 export const BASE_CREDITS: Readonly<Record<string, number>> = {
-  // forge-core
-  repo: 56_500_000,
+  // forge-core (bonsia, QA wave 3: see the header)
+  repo: 66_000_000,
   maintainer: 40_000_000,
   writer: 40_000_000,
-  config: 35_500_000,
+  config: 27_000_000,
   release: 53_300_000,
-  label: 45_000_000,
-  refUpdate: 45_000_000,
-  protectedRefUpdate: 45_000_000,
-  // Not yet measured from the browser: forge-core's per-byte model (fixed shape plus the
-  // storage of its byte fields, which `textBytes` does not count — see `estimateBytesCredits`).
-  // A chunk's fixed cost is `CHUNK_FEES.flat`; `estimateChunkCredits` prices its bytes too.
-  packManifest: 60_000_000,
+  label: 34_000_000,
+  // An update of an existing ref (its name's subtree exists); its byte fields (the oids) are in.
+  refUpdate: 56_000_000,
+  protectedRefUpdate: 56_000_000,
+  // Its byte fields (the pack hash) are in; its URIs are text. A chunk's fixed cost is
+  // `CHUNK_FEES.flat`; `estimateChunkCredits` prices its bytes too.
+  packManifest: 76_000_000,
   chunk: 140_000_000,
   // forge-collab
   issue: 59_000_000,
@@ -86,21 +96,27 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   comment: 52_000_000,
   event: 43_000_000,
   authorEvent: 41_500_000,
-  // Measured on bonsia (QA wave 2, IP-14): an issue close charged 74.1M, above the 46M this was
-  // priced at before any transition had been measured (the close then read "~0.000615", QW-043).
-  transition: 70_000_000,
-  review: 35_900_000,
+  // Bonsia (QA wave 3): 47.3M–56.5M in a thread that has one; a thread's first, and the repo's
+  // first of its kind, add their subtrees (74.1M for both, QA wave 2).
+  transition: 53_500_000,
+  // Bonsia (QA wave 3): 49.6M–49.9M; a PR's first review 69.7M–78.0M (35.9M on moutai).
+  review: 47_500_000,
   policy: 34_000_000,
   // C-1: the ranked star, steady (the starrer holds stars, the repo has some): 17.8M on moutai,
   // 19.4M on bonsia (QA wave 2, N-17)
   star: 18_500_000,
-  follow: 28_300_000,
+  // 28.3M on moutai; 37.0M on bonsia (QA wave 3) for a follow whose subtrees are not all known.
+  follow: 31_000_000,
   starBeat: 15_300_000,
   watch: 27_400_000,
   milestone: 45_000_000,
   checkRun: 45_000_000,
   // A member's consent, one unique index and a repo reference: 30.8M on bonsia (QA wave 2, N-17).
   consent: 29_500_000,
+  // Bonsia (QA wave 3): a topic 61.7M–62.6M with its name; a webhook 77.2M, its secret and ids
+  // being byte fields (`webhookCost` sizes them as text would not).
+  topic: 59_000_000,
+  webhook: 76_000_000,
 }
 
 /** Which index subtrees a create may be the first to write. Unknown fields count as first. */
@@ -144,8 +160,20 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   maintainer: { member: 7_400_000 },
   writer: { member: 7_400_000 },
   patch: { repo: 34_100_000, author: 9_600_000, sourceRef: 9_800_000 },
-  review: { target: 6_200_000 },
+  // A PR's first review builds both of its `patchId` subtrees (bonsia, QA wave 3).
+  review: { target: 20_000_000 },
   release: { repo: 10_700_000 },
+  // `target`: the thread's first transition (`perTarget`); `repo`: the repo's first of its kind.
+  transition: { target: 11_000_000, repo: 11_000_000 },
+  label: { repo: 8_000_000 },
+  config: { repo: 8_600_000 },
+  topic: { repo: 10_000_000 },
+  webhook: { repo: 20_000_000 },
+  // `target`: the first update of this ref name (its `refState` subtree); `repo`: the repo's first
+  // ref update (its `reflog` and pusher subtrees too).
+  refUpdate: { target: 7_000_000, repo: 23_000_000 },
+  protectedRefUpdate: { target: 7_000_000, repo: 23_000_000 },
+  packManifest: { repo: 47_000_000 },
 }
 
 /** An identity's first write to a contract also stores its identity-contract nonce. */
@@ -170,6 +198,13 @@ export const STEADY: FirstWrite = {
   member: false,
   sourceRef: false,
 }
+
+/**
+ * A write into a repo that already holds documents of its type and, for a ref update, a ref of
+ * that name (a merge's pack and base-branch update): no repo or ref subtree to build. Whether the
+ * signer has written to the contract stays unknown.
+ */
+export const EXISTING: FirstWrite = { repo: false, target: false }
 
 const DEFAULT_BASE_CREDITS = 50_000_000
 /** A delete of a type never measured: a conservative refund estimate. */
@@ -204,6 +239,12 @@ export const DELETE_CREDITS: Readonly<Record<string, number>> = {
 export const KEY_LIMITS_UPDATE_CREDITS = 2_300_000
 
 /**
+ * Disabling a key (Settings → "Revoke on chain"): one master-key `IdentityUpdate` that only
+ * disables. Measured on bonsia (QA wave 3): 1.7M–2.3M credits; the preview is the upper bound.
+ */
+export const KEY_DISABLE_CREDITS = 2_300_000
+
+/**
  * An `IdentityUpdate` that adds this browser's limited key (a renewal also disables the old one
  * in the same update), signed by the master key and paid from the identity balance. Platform
  * meters it (storage + processing, no flat fee; the key's budget is a cap, not escrow), so the
@@ -214,7 +255,7 @@ export const KEY_LIMITS_UPDATE_CREDITS = 2_300_000
  *   pass, three registrations; a renewal here, 27.3M); on bonsia (beta.7, QA wave 2) a sign-in's
  *   key 26.8M-27.8M.
  * The preview is the upper bound for each case; the ledger records the measured actual.
- * (Disabling alone, a revoke, has not been measured, so it gets no estimate.)
+ * (Disabling alone, a revoke, is {@link KEY_DISABLE_CREDITS}.)
  */
 export const KEY_REGISTER_CREDITS = 48_000_000
 /** Adding a key when the identity already holds a budgeted one, e.g. a renewal (see above). */
@@ -310,10 +351,24 @@ export function dashRange({ min, max }: { readonly min: number; readonly max: nu
   return `${min}–${max}`
 }
 
+/**
+ * A push's cost for copy that cannot know where the packs go (sign-in, /start, funding): both
+ * figures, each named, so it never reads as a second price for the same push (QW3-038: "0.004–0.0055
+ * per push" there, "a small push ≈ 0.004–0.011" on an empty repo).
+ */
+export function pushCostPhrase(): string {
+  return `${dashRange(PUSH_COST_DASH.byo)} DASH per push with your own storage, up to ${PUSH_COST_DASH.platform.max} with packs on Platform`
+}
+
 /** A pre-sign cost preview for the confirm UI. */
 export interface CostPreview {
   /** Estimated credits (an upper bound); negative when the action refunds storage. */
   readonly credits: number
+  /**
+   * The low end, when the charge is known to range far below `credits` (an edit pays only for
+   * the text it adds): the preview then shows `min–max`, as Settings → Spend does (QW3-037).
+   */
+  readonly minCredits?: number
   readonly dash: number
   /** What Platform needs available to accept it (see {@link Admission}). */
   readonly admit: Admission
@@ -432,18 +487,25 @@ export function estimateChunkCredits(bytes: number): number {
 /**
  * What a replace (an edit) costs: the processing of a document write plus the storage of the
  * changed text. Measured on moutai (2026-09-27): a patch title replaced with one of the same
- * length 17.0M credits, a comment body grown by 10 bytes 3.9M. The estimate is the larger
- * fixed part plus every changed byte, an upper bound.
+ * length 17.0M credits, a comment body grown by 10 bytes 3.9M; on bonsia (QA wave 3) the repo's
+ * description and topics 5.8M, a comment's body 7.8M. The estimate is the larger fixed part plus
+ * every changed byte, an upper bound: text that replaces as much text pays only for the
+ * difference, so the charge is usually far below it.
  */
 export const REPLACE_BASE_CREDITS = 17_000_000
+/**
+ * The least a replace was measured to cost (3.9M, moutai): the low end of its range in Settings →
+ * Spend, so an edit charged a fraction of its upper bound is not flagged as a miss (QW3-037).
+ */
+export const REPLACE_MIN_CREDITS = 3_500_000
 
-/** Preview for replacing a document's `changes`. */
+/** Preview for replacing a document's `changes`: a range, from {@link REPLACE_MIN_CREDITS}. */
 export function previewReplace(documentType: string, changes: Readonly<Record<string, unknown>> = {}): CostPreview {
   const bytes = textBytes(changes)
   const credits = REPLACE_BASE_CREDITS + CREDITS_PER_TEXT_BYTE * bytes
   // Drive estimates a replace like a create of the document; its requirement is at most that.
   const measured = ADMISSION_CREDITS[documentType]
-  return previewCredits(credits, measured ? admissionFor(documentType, bytes, credits) : undefined)
+  return { ...previewCredits(credits, measured ? admissionFor(documentType, bytes, credits) : undefined), minCredits: REPLACE_MIN_CREDITS }
 }
 
 /** Preview for deleting one document of `documentType` (usually a refund: negative credits). */
