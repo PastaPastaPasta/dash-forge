@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { forgetShownOwnReviews, OWN_REVIEW_TTL_MS, ownReviewScope, rememberOwnReview, unshownOwnReviews } from './own-reviews'
 
@@ -26,5 +26,18 @@ describe('own reviews awaiting a read (QW3-047)', () => {
   it('ignores a malformed record', () => {
     sessionStorage.setItem(`forge:own-reviews:${scope}`, '{"not":"a list"}')
     expect(unshownOwnReviews(scope, new Set(), 1)).toEqual([])
+  })
+
+  it('keeps the note for this page view when session storage refuses the write', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota')
+    })
+    try {
+      const other = ownReviewScope('devnet', 'R', 9, 'me')
+      rememberOwnReview(other, { id: 'r9', verdict: 'comment', at: 10 })
+      expect(unshownOwnReviews(other, new Set(), 20)).toEqual([{ id: 'r9', verdict: 'comment', at: 10 }])
+    } finally {
+      setItem.mockRestore()
+    }
   })
 })
