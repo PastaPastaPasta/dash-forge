@@ -168,7 +168,7 @@ runs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           ${{ runner.temp }}/dash-forge-build
-        key: dash-forge-build@${{ runner.os }}-${{ runner.arch }}@${{ steps.install.outputs.source-hash }}
+        key: ${{ steps.install.outputs.cache-key }}
         restore-keys: |
           dash-forge-build@${{ runner.os }}-${{ runner.arch }}@
 
@@ -191,7 +191,7 @@ runs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           ${{ runner.temp }}/dash-forge-build
-        key: dash-forge-build@${{ runner.os }}-${{ runner.arch }}@${{ steps.install.outputs.source-hash }}
+        key: ${{ steps.install.outputs.cache-key }}
 
     - name: Restore sync state
       if: inputs.state-cache == 'true'

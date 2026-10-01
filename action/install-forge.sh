@@ -2,7 +2,7 @@
 # How the Mirror Action gets dg, git-remote-dash and forge-import (`install` input):
 #
 #   install-forge.sh plan    decide: download the pinned release, or build from source.
-#                            Writes method=release|source (and source-hash) to $GITHUB_OUTPUT.
+#                            Writes method=release|source (and cache-key) to $GITHUB_OUTPUT.
 #   install-forge.sh build   build the binaries from the Action's own source into $FORGE_BIN_DIR.
 #
 # "The Action's own source" is the checkout this script sits in: the commit, branch or tag the
@@ -53,7 +53,7 @@ plan() {
             if [ "$status" = 404 ]; then
                 # Not published (no Dash Forge release is tagged yet): build the same code instead.
                 method=source
-                printf '::notice title=Forge mirror install::Dash Forge v%s is not published, so this run builds dg, git-remote-dash and forge-import from the Action'"'"'s own source (the ref in uses:). The first build takes several minutes; later runs reuse the build cache. Set install: '"'"'source'"'"' to skip this check.\n' "$version"
+                printf "::notice title=Forge mirror install::Dash Forge v%s is not published, so this run builds dg, git-remote-dash and forge-import from the Action's own source (the ref in uses:). The first build takes several minutes; later runs reuse the build cache. Set install: 'source' to skip this check.\n" "$version"
             else
                 # Published, or GitHub did not answer: install.sh retries and names the problem.
                 method=release
@@ -64,8 +64,11 @@ plan() {
     echo "method=$method" >>"$GITHUB_OUTPUT"
     if [ "$method" = source ]; then
         [ -f "$src/Cargo.lock" ] || die "the Action's source at $src has no Cargo.lock, so it cannot be built. Use the Action from the dash-forge repository (uses: $REPO/action@<commit>)."
-        # The build cache key: the dependency set and the toolchain (workspace crates rebuild anyway).
-        echo "source-hash=$(cat "$src/Cargo.lock" "$src/rust-toolchain.toml" 2>/dev/null | sha256 -)" >>"$GITHUB_OUTPUT"
+        # The build cache key: the runner platform, the dependency set and the toolchain (workspace
+        # crates rebuild anyway). action.yml restores by its prefix, `dash-forge-build@<os>-<arch>@`.
+        local hash
+        hash=$(cat "$src/Cargo.lock" "$src/rust-toolchain.toml" 2>/dev/null | sha256 -)
+        echo "cache-key=dash-forge-build@${RUNNER_OS:-}-${RUNNER_ARCH:-}@$hash" >>"$GITHUB_OUTPUT"
     fi
 }
 

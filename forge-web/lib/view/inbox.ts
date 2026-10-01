@@ -111,6 +111,11 @@ export interface ThreadSub {
   readonly since: number
 }
 
+/** Whether I follow `t` for any of `rs` (a thread an earlier build stored has only `reason`). */
+function has(t: ThreadSub, ...rs: ThreadReason[]): boolean {
+  return (t.reasons ?? [t.reason]).some((r) => rs.includes(r))
+}
+
 /**
  * The RC2 review indexes the registered forge-collab has (`build.py` flags `review_to_author`
  * S2 and `review_author` S3, kept or dropped by the fee probe): each is queried only where it
@@ -224,7 +229,7 @@ export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string): 
     // A PR author who is not a member asks for a review with an `authorEvent`. Of its kinds only
     // a review request naming me is news ({@link stateWhat}), and the addressee index has already
     // made such a thread 'review-requested': read the feed for those threads only.
-    const asked = threads.filter((t) => (t.reasons ?? [t.reason]).includes('review-requested'))
+    const asked = threads.filter((t) => has(t, 'review-requested'))
     if (asked.length > 0) feeds.push({ kind: 'state', type: 'authorEvent', repo, threads: asked })
   }
   for (const { repo, reason } of subs.repos) {
@@ -967,7 +972,6 @@ export function followMentions(subs: Subscriptions, items: readonly InboxItem[])
  * followed for, as the inbox's reason filters match it, not only its strongest one.
  */
 export function watchCounts(subs: Subscriptions): { readonly member: number; readonly watched: number; readonly starred: number; readonly joined: number; readonly addressed: number; readonly seen: number } {
-  const has = (t: ThreadSub, ...rs: ThreadReason[]): boolean => (t.reasons ?? [t.reason]).some((r) => rs.includes(r))
   return {
     member: subs.repos.filter((r) => r.reason !== 'starred' && r.reason !== 'watched').length,
     watched: subs.repos.filter((r) => r.reason === 'watched').length,

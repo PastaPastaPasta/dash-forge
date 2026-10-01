@@ -17,12 +17,17 @@ run_summary() {
     GITHUB_STEP_SUMMARY="$tmp/md" GITHUB_OUTPUT="$tmp/out" FORGE_MIRROR_NOW_MS=1788000000000 \
         bash "$here/summary.sh" "$here/testdata/$1" >"$tmp/ann"
 }
+# fail <message>: report and count a failed check of the current case.
+fail() {
+    echo "FAIL [$case] $*"
+    fails=$((fails + 1))
+}
 # expect <file> <fixed string> / reject <file> <fixed string>
 expect() {
-    grep -qF -- "$2" "$tmp/$1" || { echo "FAIL [$case] $1 lacks: $2"; fails=$((fails + 1)); }
+    grep -qF -- "$2" "$tmp/$1" || fail "$1 lacks: $2"
 }
 reject() {
-    ! grep -qF -- "$2" "$tmp/$1" || { echo "FAIL [$case] $1 has: $2"; fails=$((fails + 1)); }
+    ! grep -qF -- "$2" "$tmp/$1" || fail "$1 has: $2"
 }
 
 case=ok
@@ -66,7 +71,7 @@ expect ann '::warning title=Runner key nearly used up::0.05 of 0.5 DASH left. Re
 expect ann '::warning title=Runner key expires soon::The runner key expires in 23 days.'
 expect ann '::warning title=Forge mirror::line one ::error::injected'
 expect ann '::error title=Forge mirror cap_exceeded::estimate 0.09 DASH exceeds'
-[ "$(grep -c '^::' "$tmp/ann")" = 4 ] || { echo "FAIL [$case] an annotation was split or injected"; fails=$((fails + 1)); }
+[ "$(grep -c '^::' "$tmp/ann")" = 4 ] || fail "an annotation was split or injected"
 expect out 'status=cap_exceeded'
 
 case=partial
@@ -110,7 +115,7 @@ expect out 'status=error'
 case=drift
 printf '{"status":"ok","repo":"x","counts":null,"warnings":"w","spentCredits":1e30,"key":{"expiresAt":1e30}}' \
     >"$here/testdata/.drift.json"
-run_summary .drift.json || { echo "FAIL [$case] exited non-zero"; fails=$((fails + 1)); }
+run_summary .drift.json || fail "exited non-zero"
 rm -f "$here/testdata/.drift.json"
 expect out 'status=ok'
 expect out 'spent-dash=0'
@@ -129,13 +134,12 @@ validate() {
 }
 good() {
     case="validate ok $*"
-    validate "$@" || { echo "FAIL [$case] rejected: $(cat "$tmp/val")"; fails=$((fails + 1)); }
+    validate "$@" || fail "rejected: $(cat "$tmp/val")"
 }
 bad() {
     case="validate bad $*"
     if validate "$@"; then
-        echo "FAIL [$case] accepted"
-        fails=$((fails + 1))
+        fail accepted
     fi
 }
 good
@@ -203,7 +207,7 @@ mirror() {
         "$@" bash "$here/mirror.sh" >"$tmp/log" 2>&1
 }
 case="mirror dfk1"
-mirror DASH_FORGE_KEY=' dfk1:devnet:Id1:3:cWIFsecret ' || echo "FAIL [$case] exited $?"
+mirror DASH_FORGE_KEY=' dfk1:devnet:Id1:3:cWIFsecret ' || fail "exited $?"
 expect log '::add-mask::cWIFsecret'
 expect env 'DASH_FORGE_KEY=dfk1:devnet:Id1:3:cWIFsecret'
 expect env 'GH_TOKEN=ghtok'
@@ -217,12 +221,12 @@ reject args 'dash.storage'
 case="mirror json + s3"
 mirror DASH_FORGE_KEY='{"identityId":"Id1","identityKeys":[{"privateKeyWif":"cJSONsecret"}]}' \
     INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.example INPUT_S3_BUCKET=b \
-    S3_ACCESS_KEY_ID=AK S3_SECRET_ACCESS_KEY=SK INPUT_DRY_RUN=false || echo "FAIL [$case] exited $?"
+    S3_ACCESS_KEY_ID=AK S3_SECRET_ACCESS_KEY=SK INPUT_DRY_RUN=false || fail "exited $?"
 expect log '::add-mask::cJSONsecret'
 expect env "DASH_FORGE_KEY=$tmp/identity.json"
 expect identity.json 'cJSONsecret'
 [ "$(stat -c %a "$tmp/identity.json" 2>/dev/null || stat -f %Lp "$tmp/identity.json")" = 600 ] ||
-    { echo "FAIL [$case] identity file is not 0600"; fails=$((fails + 1)); }
+    fail "identity file is not 0600"
 expect dg 'env:S3_SECRET_ACCESS_KEY'
 reject dg 'SK'
 expect env 'GIT_CONFIG_KEY_0=dash.storage'
@@ -235,24 +239,24 @@ reject dg '--virtual-hosted'
 case="mirror s3 virtual-hosted"
 mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com \
     INPUT_S3_BUCKET=b INPUT_S3_VIRTUAL_HOSTED=true S3_ACCESS_KEY_ID=AK S3_SECRET_ACCESS_KEY=SK ||
-    echo "FAIL [$case] exited $?"
+    fail "exited $?"
 expect dg '--virtual-hosted'
 
 case="mirror exit codes"
-mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=4 || { echo "FAIL [$case] partial (4) failed the step"; fails=$((fails + 1)); }
+mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=4 || fail "partial (4) failed the step"
 expect log 'the next run retries them'
 if mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=4 INPUT_FAIL_ON_PARTIAL=true; then
-    echo "FAIL [$case] partial with fail-on-partial passed"; fails=$((fails + 1))
+    fail "partial with fail-on-partial passed"
 fi
 for rc in 1 3; do
-    if mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=$rc; then echo "FAIL [$case] exit $rc passed"; fails=$((fails + 1)); fi
+    if mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=$rc; then fail "exit $rc passed"; fi
 done
 
 case="mirror empty key"
-if mirror DASH_FORGE_KEY=''; then echo "FAIL [$case] accepted"; fails=$((fails + 1)); fi
+if mirror DASH_FORGE_KEY=''; then fail "accepted"; fi
 expect log 'DASH_FORGE_KEY is empty'
 case="mirror s3 without secrets"
-if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_STORAGE_KIND=s3; then echo "FAIL [$case] accepted"; fails=$((fails + 1)); fi
+if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_STORAGE_KIND=s3; then fail "accepted"; fi
 expect log 'S3_SECRET_ACCESS_KEY'
 
 # action.yml's defaults: a network Forge is deployed on (the hosted site's devnet), and the
@@ -261,11 +265,11 @@ case="action.yml defaults"
 default_of() {
     awk -v want="  $1:" '$0 == want { found = 1; next } found && /^    default:/ { sub(/^    default: */, ""); gsub(/"/, ""); print; exit }' "$here/action.yml"
 }
-[ "$(default_of network)" = devnet ] || { echo "FAIL [$case] network defaults to '$(default_of network)'"; fails=$((fails + 1)); }
+[ "$(default_of network)" = devnet ] || fail "network defaults to '$(default_of network)'"
 devnet_default=$(default_of devnet-name)
 [ -f "$here/../forge-contracts/deployments/devnet-$devnet_default.json" ] ||
-    { echo "FAIL [$case] no deployment for the default devnet '$devnet_default'"; fails=$((fails + 1)); }
-[ "$(default_of install)" = true ] || { echo "FAIL [$case] install defaults to '$(default_of install)'"; fails=$((fails + 1)); }
+    fail "no deployment for the default devnet '$devnet_default'"
+[ "$(default_of install)" = true ] || fail "install defaults to '$(default_of install)'"
 # The defaults pass validation as they are.
 good INPUT_NETWORK="$(default_of network)" INPUT_DEVNET_NAME="$devnet_default" INPUT_VERSION="$(default_of version)"
 expect vout "devnet-name=$devnet_default"
@@ -300,82 +304,78 @@ EOF
 printf '#!/bin/sh\necho "libprotoc ${STUB_PROTOC:-28.3}"\n' >"$ib/protoc"
 printf '#!/bin/sh\ncase "$1" in -s) echo "${STUB_OS:-Linux}" ;; -m) echo "${STUB_ARCH:-x86_64}" ;; esac\n' >"$ib/uname"
 chmod +x "$ib"/*
+# install_forge plan|build [VAR=value...]: run install-forge.sh with stub tools.
 install_forge() {
+    local sub=$1
+    shift
     : >"$tmp/iout"
-    rm -rf "$tmp/curl" "$tmp/cargo" "$tmp/cargo-pwd" "$tmp/cargo-env" "$tmp/forge-bin" "$tmp/target" "$tmp/tools"
+    rm -rf "$tmp/curl" "$tmp/cargo" "$tmp/cargo-pwd" "$tmp/cargo-env" "$tmp/forge-bin" "$tmp/tools"
     env -i PATH="$ib:/usr/bin:/bin" STUB_OUT="$tmp" GITHUB_OUTPUT="$tmp/iout" \
         INPUT_INSTALL=true INPUT_VERSION=0.1.0 FORGE_BIN_DIR="$tmp/forge-bin" \
         FORGE_TARGET_DIR="$tmp/target" FORGE_TOOLS_DIR="$tmp/tools" \
-        "$@" "$BASH" "$here/install-forge.sh" "$cmd" >"$tmp/ilog" 2>&1
+        "$@" "$BASH" "$here/install-forge.sh" "$sub" >"$tmp/ilog" 2>&1
 }
 
-cmd=plan
 case="install plan: release not published (404) builds from source"
-install_forge STUB_HTTP=404 || echo "FAIL [$case] exited $?"
+install_forge plan STUB_HTTP=404 RUNNER_OS=Linux RUNNER_ARCH=X64 || fail "exited $?"
 expect curl 'https://github.com/PastaPastaPasta/dash-forge/releases/download/v0.1.0/SHA256SUMS'
 expect iout 'method=source'
-expect iout 'source-hash='
+expect iout 'cache-key=dash-forge-build@Linux-X64@'
 expect ilog '::notice title=Forge mirror install::Dash Forge v0.1.0 is not published'
 case="install plan: release published"
-install_forge STUB_HTTP=200 INPUT_VERSION=v0.2.0 || echo "FAIL [$case] exited $?"
+install_forge plan STUB_HTTP=200 INPUT_VERSION=v0.2.0 || fail "exited $?"
 expect curl 'download/v0.2.0/SHA256SUMS'
 expect iout 'method=release'
-reject iout 'source-hash'
+reject iout 'cache-key'
 case="install plan: GitHub unreachable leaves it to install.sh"
-install_forge STUB_HTTP=000 || echo "FAIL [$case] exited $?"
+install_forge plan STUB_HTTP=000 || fail "exited $?"
 expect iout 'method=release'
 case="install plan: source"
-install_forge INPUT_INSTALL=source INPUT_VERSION='' || echo "FAIL [$case] exited $?"
+install_forge plan INPUT_INSTALL=source INPUT_VERSION='' || fail "exited $?"
 expect iout 'method=source'
-[ ! -e "$tmp/curl" ] || { echo "FAIL [$case] probed for a release"; fails=$((fails + 1)); }
+[ ! -e "$tmp/curl" ] || fail "probed for a release"
 
-cmd=build
 case="install build"
-install_forge || { echo "FAIL [$case] exited: $(cat "$tmp/ilog")"; fails=$((fails + 1)); }
+install_forge build || fail "exited: $(cat "$tmp/ilog")"
 expect cargo 'build --locked -p dg -p git-remote-dash -p forge-import'
 expect cargo-env 'CARGO_PROFILE_DEV_DEBUG=0'
 reject cargo-env 'DASH_FORGE_BUILD_SHA'
 [ "$(cat "$tmp/cargo-pwd")" = "$(cd "$here/.." && pwd)" ] ||
-    { echo "FAIL [$case] cargo did not run from the Action's source root"; fails=$((fails + 1)); }
+    fail "cargo did not run from the Action's source root"
 for b in dg git-remote-dash forge-import; do
-    [ -x "$tmp/forge-bin/$b" ] || { echo "FAIL [$case] $b not installed"; fails=$((fails + 1)); }
+    [ -x "$tmp/forge-bin/$b" ] || fail "$b not installed"
 done
-[ ! -e "$tmp/curl" ] || { echo "FAIL [$case] downloaded protoc though a new one is on PATH"; fails=$((fails + 1)); }
+[ ! -e "$tmp/curl" ] || fail "downloaded protoc though a new one is on PATH"
 case="install build forgets cached workspace crates"
-install_build_cached() {
-    mkdir -p "$tmp/target/debug/.fingerprint/forge-core-0123abcd" "$tmp/target/debug/.fingerprint/dg-77" \
-        "$tmp/target/debug/.fingerprint/serde-0123abcd" "$tmp/target/debug/.fingerprint/dgx-1"
-    env -i PATH="$ib:/usr/bin:/bin" STUB_OUT="$tmp" FORGE_BIN_DIR="$tmp/forge-bin" \
-        FORGE_TARGET_DIR="$tmp/target" FORGE_TOOLS_DIR="$tmp/tools" \
-        "$BASH" "$here/install-forge.sh" build >"$tmp/ilog" 2>&1
-}
-install_build_cached || echo "FAIL [$case] exited $?"
+mkdir -p "$tmp/target/debug/.fingerprint/forge-core-0123abcd" "$tmp/target/debug/.fingerprint/dg-77" \
+    "$tmp/target/debug/.fingerprint/serde-0123abcd" "$tmp/target/debug/.fingerprint/dgx-1"
+install_forge build || fail "exited $?"
 for d in forge-core-0123abcd dg-77; do
-    [ ! -e "$tmp/target/debug/.fingerprint/$d" ] || { echo "FAIL [$case] kept $d"; fails=$((fails + 1)); }
+    [ ! -e "$tmp/target/debug/.fingerprint/$d" ] || fail "kept $d"
 done
 for d in serde-0123abcd dgx-1; do
-    [ -e "$tmp/target/debug/.fingerprint/$d" ] || { echo "FAIL [$case] removed dependency $d"; fails=$((fails + 1)); }
+    [ -e "$tmp/target/debug/.fingerprint/$d" ] || fail "removed dependency $d"
 done
 case="install build at a pinned commit"
-install_forge DASH_FORGE_ACTION_REF=0123456789abcdef0123456789abcdef01234567 || echo "FAIL [$case] exited $?"
+install_forge build DASH_FORGE_ACTION_REF=0123456789abcdef0123456789abcdef01234567 || fail "exited $?"
 expect cargo-env 'DASH_FORGE_BUILD_SHA=0123456789abcdef0123456789abcdef01234567'
 case="install build at a branch"
-install_forge DASH_FORGE_ACTION_REF=master || echo "FAIL [$case] exited $?"
+install_forge build DASH_FORGE_ACTION_REF=master || fail "exited $?"
 reject cargo-env 'DASH_FORGE_BUILD_SHA'
 case="install build without cargo"
 mv "$ib/cargo" "$ib/cargo.off"
-if install_forge; then echo "FAIL [$case] succeeded"; fails=$((fails + 1)); fi
+if install_forge build; then fail "succeeded"; fi
 expect ilog 'needs Rust (cargo)'
 mv "$ib/cargo.off" "$ib/cargo"
 case="install build: old protoc on macOS"
-if install_forge STUB_PROTOC=3.21.12 STUB_OS=Darwin STUB_ARCH=arm64; then echo "FAIL [$case] succeeded"; fails=$((fails + 1)); fi
+if install_forge build STUB_PROTOC=3.21.12 STUB_OS=Darwin STUB_ARCH=arm64; then fail "succeeded"; fi
 expect ilog 'needs protoc 28.3 (25 or newer) on PATH'
-[ ! -e "$tmp/cargo" ] || { echo "FAIL [$case] built anyway"; fails=$((fails + 1)); }
+[ ! -e "$tmp/cargo" ] || fail "built anyway"
 case="install build: protoc download with a bad checksum"
-if install_forge STUB_PROTOC=3.21.12; then echo "FAIL [$case] succeeded"; fails=$((fails + 1)); fi
+if install_forge build STUB_PROTOC=3.21.12; then fail "succeeded"; fi
 expect curl 'protoc-28.3-linux-x86_64.zip'
 expect ilog 'protoc 28.3 checksum mismatch'
-[ ! -e "$tmp/cargo" ] || { echo "FAIL [$case] built anyway"; fails=$((fails + 1)); }
+[ ! -e "$tmp/cargo" ] || fail "built anyway"
 
 if [ "$fails" -ne 0 ]; then
     echo "$fails check(s) failed"
