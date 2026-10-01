@@ -25,7 +25,7 @@
 //! * [`ref_name_hashes_agree`] — the ref-name / hash binding, public (`sha256`) or private
 //!   (`HMAC-SHA256(K_ref,e, name)`, applied after decryption).
 //! * [`is_valid_repo_name`] / [`normalize_repo_name`] — the `repo.name` slug (§2).
-//! * [`hidden_items`] — what a reader collapses after a maintainer's hide (RC2 MOD, §3.3; the
+//! * [`hidden_items`] — what a reader collapses after a maintainer's hide (RC2 MOD, §3.2; the
 //!   [`super::moderation`] module).
 //!
 //! The event ordering and per-kind state changes are the parent module's base rules

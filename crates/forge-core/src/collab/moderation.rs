@@ -1,4 +1,4 @@
-//! Maintainer moderation (RC2 MOD, `docs/contracts/forge-v2.md` §3.3): hide and unhide a
+//! Maintainer moderation (RC2 MOD, `docs/contracts/forge-v2.md` §3.2): hide and unhide a
 //! comment, a review or a whole issue or PR. A third `impl` of [`super::v2::Collab`].
 //!
 //! A hide is an immutable member `event` (kind 24; 25 unhides) that names the item in `refId`

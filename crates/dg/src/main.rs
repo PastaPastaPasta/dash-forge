@@ -848,7 +848,7 @@ pub enum PrCommand {
     },
     /// Hide a comment (`--comment`), a review (`--review`), or the whole pull request, from
     /// readers (unhide with `--off`). Maintainers only. Nothing is deleted, and a hidden
-    /// review's verdict still counts: dismiss it (`dg pr dismiss`) to stop it counting.
+    /// review's verdict still counts: dismiss it (`dg pr dismiss-review`) to stop it counting.
     Hide {
         /// The repository (`owner/name`).
         repo: String,

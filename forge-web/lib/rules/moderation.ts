@@ -1,5 +1,5 @@
 /**
- * Maintainer moderation (RC2 MOD, `docs/contracts/forge-v2.md` §3.3; part of FORGE_RULES_V2):
+ * Maintainer moderation (RC2 MOD, `docs/contracts/forge-v2.md` §3.2; part of FORGE_RULES_V2):
  * what a reader collapses after a maintainer's hide. TypeScript port of
  * `crates/forge-core/src/rules/moderation.rs`; the `"rules": "v2"` vectors `hidden_items__*` hold
  * the two in parity.

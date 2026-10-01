@@ -1,4 +1,4 @@
-//! Maintainer moderation (RC2 MOD, `docs/contracts/forge-v2.md` §3.3; part of
+//! Maintainer moderation (RC2 MOD, `docs/contracts/forge-v2.md` §3.2; part of
 //! `FORGE_RULES_V2`): what a reader collapses after a maintainer's hide.
 //!
 //! Platform v5 cannot delete someone else's document in one repo only: contract moderation is

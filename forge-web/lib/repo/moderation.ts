@@ -1,5 +1,5 @@
 /**
- * Maintainer moderation (RC2 MOD, `docs/contracts/forge-v2.md` §3.3): hide and unhide a comment,
+ * Maintainer moderation (RC2 MOD, `docs/contracts/forge-v2.md` §3.2): hide and unhide a comment,
  * a review or a whole issue or PR, and what readers collapse. Parity: forge-core
  * `collab/moderation.rs` (`set_hidden`, `hidden_items`), `dg issue hide` / `dg pr hide`.
  *
