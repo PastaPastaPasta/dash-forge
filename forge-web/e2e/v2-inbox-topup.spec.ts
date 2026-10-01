@@ -8,7 +8,7 @@ import { E2E_DEVNET, SCREENSHOT_DIR, idFile, idOrEmpty, runAxe, shot, signedIn, 
  * Signed in as CI-RUNNER, live on a devnet (real spend, ~0.0003 DASH plus a key if the stored
  * one is gone):
  *
- *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_PORT=4323 pnpm exec playwright test v2-inbox-topup.spec.ts
+ *   E2E_DEVNET=sakura E2E_WRITE=1 E2E_PORT=4323 pnpm exec playwright test v2-inbox-topup.spec.ts
  *
  * t1. Explore's "my" sections render honest empty states or data.
  * t2. The inbox starts empty with the local-only copy; after CI-RUNNER stars a repo the write

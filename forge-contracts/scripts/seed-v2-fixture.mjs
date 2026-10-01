@@ -2,7 +2,7 @@
 // seed-v2-fixture.mjs — seed the forge-v2 read fixture that forge-web's devnet Playwright
 // specs and live tests read.
 //
-//   node forge-contracts/scripts/seed-v2-fixture.mjs [--network devnet --devnet-name bonsia]
+//   node forge-contracts/scripts/seed-v2-fixture.mjs [--network devnet --devnet-name sakura]
 //        [--identities <dir>] [--state <file>] [--summary <file>] [--deployment <file>]
 //
 // Writes the RC1 documents (contracts/forge-{core,collab,community}.json; the rules are in
@@ -10,7 +10,7 @@
 // the three-contract deployment in deployments/<network>.json, and the test identities OWNER,
 // MAINTAINER, COLLAB and CONTRIB in --identities (default
 // ~/.config/dash-forge/test-identities/<network>/). The network defaults to
-// DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet bonsia.
+// DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura.
 //
 // It writes:
 //   * repo `forge-v2-demo` owned by OWNER, OWNER and MAINTAINER as maintainers and COLLAB as a

@@ -69,7 +69,7 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub network: Option<NetworkArg>,
 
-    /// Devnet name (e.g. `bonsia`); implies `--network devnet`.
+    /// Devnet name (e.g. `sakura`); implies `--network devnet`.
     #[arg(long, global = true, value_name = "NAME")]
     pub devnet_name: Option<String>,
 

@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 /** The devnet the build under test (or the live test) reads. Keep in step with playwright.config.ts. */
-export const E2E_DEVNET = process.env['E2E_DEVNET'] || 'bonsia'
+export const E2E_DEVNET = process.env['E2E_DEVNET'] || 'sakura'
 
 const ROOT = resolve(__dirname, '../..')
 

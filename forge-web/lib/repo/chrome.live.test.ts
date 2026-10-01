@@ -1,7 +1,7 @@
 /**
- * Live: the repo chrome composite on bonsia, read-only — SKIPPED by default (needs network + WASM).
+ * Live: the repo chrome composite on sakura, read-only — SKIPPED by default (needs network + WASM).
  *
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
  *     pnpm exec vitest run lib/repo/chrome.live.test.ts
  *
  * Against the read fixture `forge-v2-demo`: the first read is one composite and answers what the
@@ -22,7 +22,7 @@ const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
 const OWNER = process.env['E2E_V2_OWNER'] ?? seedRepo('demo')?.owner ?? ''
 const NAME = process.env['E2E_V2_NAME'] ?? 'forge-v2-demo'
 
-describe.skipIf(!LIVE)('live repo chrome composite (bonsia fixture)', () => {
+describe.skipIf(!LIVE)('live repo chrome composite (sakura fixture)', () => {
   it(
     'first read and delta read are both served as composites and agree with the plain reads',
     async () => {

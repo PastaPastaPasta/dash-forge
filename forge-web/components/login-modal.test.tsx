@@ -78,7 +78,7 @@ vi.mock('@/contexts/auth-context', () => ({
       supportsLimitedKeys: () => false,
       checkGroup: async () => ({ notice: null }),
       checkFileNetwork: (key: string | null) => {
-        if (key !== null && key !== 'devnet-bonsia') throw new Error(`This identity file is for ${key}, but this site is on devnet-bonsia.`)
+        if (key !== null && key !== 'devnet-sakura') throw new Error(`This identity file is for ${key}, but this site is on devnet-sakura.`)
       },
     },
   }),
@@ -321,7 +321,7 @@ describe('QA wave 2 (bonsia): sign-in intent and polish', () => {
       input.dispatchEvent(new Event('change', { bubbles: true }))
     })
     await flush()
-    expect(q('[role="alert"]')!.textContent).toMatch(/for devnet-moutai, but this site is on devnet-bonsia/)
+    expect(q('[role="alert"]')!.textContent).toMatch(/for devnet-moutai, but this site is on devnet-sakura/)
     expect(byText(/Create this browser's key/)!.hasAttribute('disabled')).toBe(true)
   })
 })

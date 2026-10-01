@@ -112,7 +112,7 @@ struct NetArgs {
     #[arg(long, global = true, value_parser = ["testnet", "mainnet", "devnet"])]
     network: Option<String>,
 
-    /// Devnet name (e.g. `bonsia`); implies `--network devnet`.
+    /// Devnet name (e.g. `sakura`); implies `--network devnet`.
     #[arg(long, global = true)]
     devnet_name: Option<String>,
 

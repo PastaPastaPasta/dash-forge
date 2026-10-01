@@ -66,16 +66,16 @@ export function parseArgs(argv, multi = []) {
 
 /**
  * The network to write to: `--network` / `--devnet-name`, else `DASH_FORGE_NETWORK` /
- * `DASH_FORGE_DEVNET_NAME`, else devnet bonsia. Its contract ids come from
+ * `DASH_FORGE_DEVNET_NAME`, else devnet sakura. Its contract ids come from
  * `deployments/<network>.json` (or `--deployment <file>`), which must record all three RC1
  * contracts. moutai is refused: it runs the beta.6 contracts, which refuse every RC1 document.
  */
 export function resolveNetwork(a, env = process.env) {
   const network = a.network ?? env.DASH_FORGE_NETWORK ?? 'devnet';
-  const devnetName = network === 'devnet' ? (a['devnet-name'] ?? env.DASH_FORGE_DEVNET_NAME ?? 'bonsia') : null;
+  const devnetName = network === 'devnet' ? (a['devnet-name'] ?? env.DASH_FORGE_DEVNET_NAME ?? 'sakura') : null;
   const key = devnetName ? `devnet-${devnetName}` : network;
   if (devnetName === 'moutai') {
-    throw new Error('devnet moutai runs the beta.6 contracts, which refuse the RC1 documents these scripts write; use --devnet-name bonsia (DASH_FORGE_DEVNET_NAME may still say moutai until the cut-over)');
+    throw new Error('devnet moutai runs the beta.6 contracts, which refuse the RC1 documents these scripts write; use --devnet-name sakura (DASH_FORGE_DEVNET_NAME may still say moutai until the cut-over)');
   }
   const file = a.deployment ?? join(ROOT, 'deployments', `${key}.json`);
   const dep = JSON.parse(readFileSync(file, 'utf8'));

@@ -10,17 +10,23 @@
  * Detected once, app-wide (`useContractsMissing` in hooks/use-sdk.ts): the app shell shows this
  * state in place of the page instead of each view failing with its own read error.
  *
- * devnet moutai is a special case, not a generic reset: it was upgraded in place to Platform
- * v4.2.0-beta.7, which retired every contract this build reads, and the forge is moving to a new
- * devnet (bonsia) rather than being redeployed on moutai. This is gated on the same detected
- * condition — devnet moutai's contracts missing — not a hard-coded date, so it stops matching on
- * its own once bonsia becomes the default network.
+ * The devnets Forge has left are a special case, not a generic reset: moutai was upgraded in place
+ * to Platform v4.2.0-beta.7 and bonsia was retired for Platform v5, each taking every contract
+ * this build reads with it, and the forge moved to devnet sakura (Platform v5.0.0-beta.1) rather
+ * than being redeployed there. This is gated on the same detected condition — a left devnet's
+ * contracts missing — not a hard-coded date, so a sakura build never matches it.
  */
 
 import { Unplug } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ACTIVE_NETWORK, type NetworkConfig } from '@/lib/constants'
+
+/** The devnet the forge moved to. */
+export const CURRENT_DEVNET = 'sakura'
+
+/** The devnets the forge left for {@link CURRENT_DEVNET}: their contracts are gone for good. */
+const LEFT_DEVNETS: readonly string[] = ['moutai', 'bonsia']
 
 /** The network as a person reads it: `devnet moutai`, `testnet`, `mainnet`. */
 function networkName(config: NetworkConfig): string {
@@ -37,7 +43,7 @@ export function ContractsMissingState({
 }): JSX.Element {
   const devnet = config.network === 'devnet'
   const where = networkName(config)
-  const movingToBonsia = devnet && config.devnetName === 'moutai'
+  const moved = devnet && config.devnetName !== null && LEFT_DEVNETS.includes(config.devnetName)
   return (
     <div
       role="alert"
@@ -48,15 +54,15 @@ export function ContractsMissingState({
         <Unplug className="h-5 w-5" aria-hidden />
       </span>
       <h2 className="text-prose font-medium text-anvil-900 dark:text-anvil-50">
-        {movingToBonsia
-          ? 'Dash Forge is moving to a new devnet'
+        {moved
+          ? 'Dash Forge moved to a new devnet'
           : devnet
             ? `Dash Forge isn't deployed on ${where} right now`
             : `This build's contracts were not found on ${where}`}
       </h2>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
-        {movingToBonsia
-          ? 'Devnet moutai was upgraded to Platform v4.2.0-beta.7, which retired the old contracts. The forge is being re-registered on devnet bonsia with a new contract design; repos will be back shortly.'
+        {moved
+          ? `${where[0]!.toUpperCase()}${where.slice(1)} was retired, and the contracts this build reads went with it. Dash Forge moved to devnet ${CURRENT_DEVNET} (Platform v5.0.0-beta.1), where its new contracts are being registered; repos will be back there shortly.`
           : devnet
             ? `${where} is a development network, and devnets are reset from time to time. This one was most likely reset, so the contracts Dash Forge reads are gone until it is redeployed. This page works again once a build with the new contracts is published.`
             : `${where} has no contracts with the ids this build reads, so nothing can be read here. The build may be misconfigured or made for another network.`}

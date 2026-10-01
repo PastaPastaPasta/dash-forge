@@ -4,9 +4,9 @@
 // prints (and with --report writes) one line per case.
 //
 //   (cd forge-contracts/sdk-v2 && npm ci)
-//   node forge-contracts/scripts/rc1-live.mjs --devnet-name bonsia --identities <dir> [--report <file.json>] [--only <group,...>]
+//   node forge-contracts/scripts/rc1-live.mjs --devnet-name sakura --identities <dir> [--report <file.json>] [--only <group,...>]
 //
-// <dir> holds owner/member/stranger/runner.identity.json (`QA_NETWORK=bonsia qa mint rc1 <name>`).
+// <dir> holds owner/member/stranger/runner.identity.json (`QA_NETWORK=sakura qa mint rc1 <name>`).
 // Roles: `owner` owns the repos; `member` is a writer (after consenting), and for a moment a writer
 // of the private repo; `stranger` is never a member; `runner` is a CI runner of the owner's repo.
 //
@@ -50,7 +50,7 @@ import { CONTRACTS, FUSED_STAR } from './lib/seed-io.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
-const devnetName = args['devnet-name'] || 'bonsia';
+const devnetName = args['devnet-name'] || 'sakura';
 const only = args.only ? new Set(String(args.only).split(',')) : null;
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 

@@ -57,10 +57,10 @@ has "--conclusion=failure"
 
 case="explicit sha wins, dash url, devnet"
 resolve INPUT_JOB_STATUS=success PR_HEAD_SHA=$HEAD INPUT_SHA=ABCDEF0123456789ABCDEF0123456789ABCDEF01 INPUT_REPO=dash://alice/project \
-  INPUT_NETWORK=devnet INPUT_DEVNET_NAME=bonsia || fail "exit $?"
+  INPUT_NETWORK=devnet INPUT_DEVNET_NAME=sakura || fail "exit $?"
 has "--sha=abcdef0123456789abcdef0123456789abcdef01"
 has "alice/project"
-has "--devnet-name=bonsia"
+has "--devnet-name=sakura"
 
 case="matrix legs are separate checks"
 resolve INPUT_JOB_STATUS=success JOB_TOTAL=2 JOB_INDEX=1 MATRIX_JSON='{"os":"ubuntu","rust":1.8}' || fail "exit $?"

@@ -18,7 +18,7 @@ inputs:
     description: "mainnet, testnet or devnet."
     default: mainnet
   devnet-name:
-    description: "Devnet name (required when network is devnet), e.g. bonsia."
+    description: "Devnet name (required when network is devnet), e.g. sakura."
     default: ""
   sync:
     description: "Comma list of code,issues,prs,releases,labels."

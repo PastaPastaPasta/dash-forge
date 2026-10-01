@@ -2,7 +2,7 @@
 //! read.
 //!
 //! ```text
-//! DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=bonsia \
+//! DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=sakura \
 //!   cargo run -p forge-core --example seed_check_run -- \
 //!   <identity file> <repo id> <head oid> <name> <status> [conclusion] [details url]
 //! ```

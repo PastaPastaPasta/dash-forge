@@ -5,7 +5,7 @@ import { EMPTY, repoUrl, shot, waitForRepoResolved } from './helpers'
  * D-501: a pull request can only be opened against a branch the repo has. Read-only against
  * the devnet fixture (nothing is signed or written):
  *
- *   E2E_DEVNET=bonsia pnpm exec playwright test pr-base.spec.ts
+ *   E2E_DEVNET=sakura pnpm exec playwright test pr-base.spec.ts
  *
  * A `?base=` link (or a kept draft) naming a branch that does not exist used to leave the
  * create button live, and the resulting PR could later be "merged" by creating the branch.

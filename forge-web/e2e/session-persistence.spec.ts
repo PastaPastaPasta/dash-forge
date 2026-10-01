@@ -5,7 +5,7 @@ import { FUNDS_PILL, PASSPHRASE, SESSION_UNLOCK, expectLocked, expectSignedIn, i
 /**
  * The session lasts until it locks (G1, L-04, L-05; G19), live on moutai:
  *
- *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_IDENTITY_DIR=<dir> E2E_SESSION_IDENTITY=<name> \
+ *   E2E_DEVNET=sakura E2E_WRITE=1 E2E_IDENTITY_DIR=<dir> E2E_SESSION_IDENTITY=<name> \
  *     pnpm exec playwright test session-persistence.spec.ts
  *
  * One import registers one limited key for a FRESH identity (E2E_SESSION_IDENTITY, default

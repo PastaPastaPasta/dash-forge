@@ -21,9 +21,14 @@ vi.mock('./discovery', async (orig) => {
 })
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { listShowcaseRepos, showcaseFor } from './showcase'
+import { listShowcaseRepos, type ShowcaseEntry } from './showcase'
 
-const entries = showcaseFor('devnet-bonsia')
+// A network's entries, as SHOWCASE lists them (bonsia's mirrors and demo repo).
+const entries: readonly ShowcaseEntry[] = [
+  { owner: '3gvojK6k3Kt3QjeerN5JE8tbvFhUaTChwhZMbYKjizzs', name: 'dips', repoId: '9iRKx1dVvr4Eu3ckjGCo7dKwPKoM1cTdbfge72mCp993' },
+  { owner: '7A1MEuLjzcHZq8bLBzGYSUkpb2VM9dv7gtNuNYrPxKt3', name: 'dash', repoId: '6qf6HGBvKAaMyDuV8xn1CijNQE3xysLzAGzKXZiXZUvW' },
+  { owner: '2X2XM6kF5DK9Vx8Mfot4wetvppBKLE1W3tC87NA36jXP', name: 'forge-v2-demo', repoId: 'HhkpzikUjK1k5f3JHpYGBLYHf9mYZJFKbyeK7mwrpYA3' },
+]
 const doc = (i: number, over: Record<string, unknown> = {}): Record<string, unknown> => {
   const e = entries[i]!
   return { $id: e.repoId, $ownerId: e.owner, name: e.name, visibility: 'public', description: e.name, ...over }
@@ -36,7 +41,7 @@ beforeEach(() => {
 describe('listShowcaseRepos', () => {
   it('reads every entry at once and keeps the configured order', async () => {
     answer = [doc(2), doc(0), doc(1)]
-    const got = await listShowcaseRepos({} as EvoSDK, 'devnet', 'devnet-bonsia')
+    const got = await listShowcaseRepos({} as EvoSDK, 'devnet', 'devnet-sakura', entries)
     expect(queries).toHaveLength(1)
     expect((queries[0] as { where: unknown[] }).where).toEqual([['$id', 'in', entries.map((e) => e.repoId)]])
     expect(got.map((r) => r.slug)).toEqual(['dips', 'dash', 'forge-v2-demo'])
@@ -46,7 +51,7 @@ describe('listShowcaseRepos', () => {
 
   it('leaves out a document that is not the entry’s, a private one, and a missing one', async () => {
     answer = [doc(0, { $ownerId: '6eBY8D5'.padEnd(44, 'x') }), doc(1, { visibility: 'private' })]
-    expect(await listShowcaseRepos({} as EvoSDK, 'devnet', 'devnet-bonsia')).toEqual([])
+    expect(await listShowcaseRepos({} as EvoSDK, 'devnet', 'devnet-sakura', entries)).toEqual([])
   })
 
   it('reads nothing on a network with no showcase', async () => {

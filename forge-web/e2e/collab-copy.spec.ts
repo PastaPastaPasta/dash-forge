@@ -7,7 +7,7 @@ import { expectLanded, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn
  * G17 (L-36, L-37, L-38): plurals, the follower / following lists, PR and issue copy, and the
  * inline cost hints, live on a devnet.
  *
- *   E2E_DEVNET=bonsia E2E_SKIP_BUILD=1 E2E_PORT=<p> pnpm exec playwright test collab-copy.spec.ts
+ *   E2E_DEVNET=sakura E2E_SKIP_BUILD=1 E2E_PORT=<p> pnpm exec playwright test collab-copy.spec.ts
  *
  * The read checks use the shared read fixture (`DEMO`) and write nothing. The follow checks need
  * two identities of the spec's own (E2E_IDENTITY_DIR holding FOLLOWER and FOLLOWED; never the

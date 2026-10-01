@@ -12,7 +12,7 @@ test.beforeEach(quorumGuard)
  * recount of the stars themselves (platform-parity-spec §4.3, C-1):
  *
  *   E2E_TRENDING_SEED=<file written by forge-contracts/scripts/seed-trending.mjs> \
- *   E2E_DEVNET=bonsia pnpm exec playwright test trending.spec.ts
+ *   E2E_DEVNET=sakura pnpm exec playwright test trending.spec.ts
  *
  * The seed script mints nothing and writes as identities minted for the run (never the shared
  * fixtures): it creates repos, stars them from several identities (each star writing its

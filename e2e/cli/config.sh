@@ -12,7 +12,7 @@
 
 # --- network -----------------------------------------------------------------
 : "${DASH_FORGE_NETWORK:=devnet}"
-: "${DASH_FORGE_DEVNET_NAME:=bonsia}"
+: "${DASH_FORGE_DEVNET_NAME:=sakura}"
 export DASH_FORGE_NETWORK DASH_FORGE_DEVNET_NAME
 
 # --- minting run-only identities (scenarios 19, 24, 25, 26, 33, 36) -------------
@@ -31,7 +31,7 @@ export E2E_MINT_FUNDING E2E_MINT_LOCK
 
 # --- fixture identity files --------------------------------------------------
 # Per-network directory (`make devnet-identities` provisions devnet-<name>, e.g.
-# devnet-bonsia). The testnet pool lives directly under test-identities/.
+# devnet-sakura). The testnet pool lives directly under test-identities/.
 if [[ "$DASH_FORGE_NETWORK" == devnet ]]; then
   : "${E2E_IDENTITY_DIR:=${HOME}/.config/dash-forge/test-identities/devnet-${DASH_FORGE_DEVNET_NAME}}"
 else

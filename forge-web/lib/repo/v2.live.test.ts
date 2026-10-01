@@ -2,10 +2,10 @@
  * Live forge-v2 read smoke — SKIPPED by default (needs network + WASM).
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
  *     pnpm exec vitest run lib/repo/v2.live.test.ts
  *
- * Reads the forge-v2 fixture `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on bonsia
+ * Reads the forge-v2 fixture `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on sakura
  * end to end through the same functions the pages use: resolution by `(owner, name)` and by
  * DPNS-less id, refs, config, membership, the issue/PR folds over `event` + `authorEvent`,
  * approvals, and the browse plane (locator + Platform chunks, hash-checked objects).
@@ -87,7 +87,7 @@ const hex = (v: unknown): string => {
   throw new TypeError('not bytes')
 }
 
-describe.skipIf(!LIVE)('live forge-v2 reads (bonsia fixture)', () => {
+describe.skipIf(!LIVE)('live forge-v2 reads (sakura fixture)', () => {
   it(
     'resolves, folds and browses the fixture repo',
     async () => {

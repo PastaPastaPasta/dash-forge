@@ -1,6 +1,6 @@
 name: Deploy forge-web to Pages
 
-# The hosted build (forge.dashhq.org) targets devnet bonsia: forge-v2 needs Platform
+# The hosted build (forge.dashhq.org) targets devnet sakura: forge-v2 needs Platform
 # protocol 14, which only the devnet runs today. The network is a build-time choice
 # (NEXT_PUBLIC_NETWORK / NEXT_PUBLIC_DEVNET_NAME); override it with the repository variables
 # PAGES_NETWORK / PAGES_DEVNET_NAME (e.g. PAGES_NETWORK=testnet once forge-v2 is deployed
@@ -45,7 +45,7 @@ jobs:
       - name: Build (${{ vars.PAGES_NETWORK || 'devnet' }})
         env:
           NEXT_PUBLIC_NETWORK: ${{ vars.PAGES_NETWORK || 'devnet' }}
-          NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'bonsia') || '' }}
+          NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'sakura') || '' }}
           # The /mirror wizard pins the Mirror Action and its binaries to the commit deployed.
           FORGE_BUILD_COMMIT: ${{ github.sha }}
         run: pnpm build
