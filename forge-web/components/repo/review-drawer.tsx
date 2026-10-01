@@ -50,6 +50,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { Oid } from '@/components/ui/oid'
 import type { PendingReview } from '@/components/repo/inline-comments'
 import { cn } from '@/lib/utils'
+import { spendAction } from '@/lib/spend-toast'
 
 const VERDICTS: readonly { value: VerdictInput; label: string; help: string }[] = [
   { value: 'comment', label: 'Comment', help: 'General feedback without an explicit verdict.' },
@@ -242,7 +243,10 @@ export function ReviewDrawer({
     setError(null)
     setProgress({ done: 0, total: documents })
     try {
-      const r = await submitReviewDraft(sdk, signer, repo, toSubmit, { isMember, locked }, (p) => setProgress(p))
+      // The review and its inline comments are one action: one toast with their total (QW3-039).
+      const r = await spendAction({ running: 'Submitting the review…', done: 'Review submitted', failed: 'Review submitted part-way' }, (tag) =>
+        submitReviewDraft(sdk, tag(signer), repo, toSubmit, { isMember, locked }, (p) => setProgress(p)),
+      )
       update(null)
       setOpen(false)
       setProgress(null)

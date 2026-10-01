@@ -24,6 +24,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { affordability } from '@/lib/view/funds'
 import { creditsAsDash } from '@/lib/view/format'
+import { spendAction, type SpendActionLabels } from '@/lib/spend-toast'
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -38,6 +39,12 @@ export interface ConfirmDialogProps {
   onConfirm: (intent: string) => Promise<void>
   /** A short success note shown briefly before auto-close. */
   successNote?: string
+  /**
+   * What the action's one toast says while its writes land and once they all did (QW3-039: one
+   * toast with their total). Defaults to each write's own title, then `successNote` or "Saved";
+   * an action of one write ends under that write's own title.
+   */
+  toast?: SpendActionLabels
 }
 
 export function ConfirmDialog({
@@ -49,7 +56,8 @@ export function ConfirmDialog({
   refund,
   confirmLabel,
   onConfirm,
-  successNote = 'Confirmed on Platform',
+  successNote,
+  toast,
 }: ConfirmDialogProps): JSX.Element {
   const { identity, balance, keyLimits } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
@@ -78,7 +86,9 @@ export function ConfirmDialog({
     setPending(true)
     setError(null)
     try {
-      await onConfirm(intent)
+      // However many writes the action signs, they show one toast with their total (QW3-039).
+      // The dialog is modal: every write reported while it runs is this action's.
+      await spendAction(toast ?? { done: successNote ?? 'Saved' }, () => onConfirm(intent), { scope: true })
       setDone(true)
       setTimeout(() => {
         setDone(false)
@@ -129,7 +139,7 @@ export function ConfirmDialog({
           </div>
         ) : null}
 
-        {done ? <p className="text-dense text-verify-700 dark:text-verify-400">{successNote}</p> : null}
+        {done ? <p className="text-dense text-verify-700 dark:text-verify-400">{successNote ?? 'Confirmed on Platform'}</p> : null}
 
         {error ? (
           <div role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">
