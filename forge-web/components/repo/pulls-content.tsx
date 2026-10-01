@@ -137,7 +137,9 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       }
       return track(signal, (options) => queryPulls(sdk!, home.repo, selection, total, network, options))
     },
-    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', total ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
+    // Not `total`: it arrives while page 1 reads, and the same query again reads on a load (a sort or
+    // search would read two loads cold). The page's own proved count fills in for it.
+    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 

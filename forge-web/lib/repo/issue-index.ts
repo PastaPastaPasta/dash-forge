@@ -347,7 +347,7 @@ function stateCount(state: IssueSelection['state'], open: number | null, closed:
  * candidates by id or up to `PAGE_CHUNKS` chunks per load (a search, reported through
  * `onProgress`, read on when asked); a sort by comments the same. Page 1 reads its pinned issues
  * beside the list when the feed is short, or when asked (`pins`). `total` is the repo's issue
- * count (the countable index), or null when it is not known.
+ * count (the countable index), or null for the proved count this call reads.
  */
 export async function queryIssues(
   sdk: EvoSDK,
@@ -422,7 +422,7 @@ export async function queryIssues(
     hasNext: page.hasNext,
     openCount,
     closedCount,
-    searchedOf: searchedOfPage(selected, total),
+    searchedOf: searchedOfPage(selected, total ?? bound?.issues ?? null),
     stateComplete: logsVerified(index, [...rows, ...(pinnedNow ?? [])]),
     labels: index.labels,
     hidden: index.hidden.total,

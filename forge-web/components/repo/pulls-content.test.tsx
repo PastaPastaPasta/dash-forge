@@ -28,7 +28,9 @@ vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: null }) 
 let mirrorTrust: ReadonlySet<string> | null = null
 vi.mock('@/hooks/use-mirror-trust', () => ({ useMirrorTrust: () => mirrorTrust }))
 vi.mock('@/hooks/use-repo-chrome', () => ({ useRepoWriteGeneration: () => 0 }))
-vi.mock('@/components/repo/use-repo-totals', () => ({ useRepoTotals: () => 203 }))
+/** The repo's PR total as `useRepoTotals` reads it (null until its count arrives). */
+let repoTotal: number | null = 203
+vi.mock('@/components/repo/use-repo-totals', () => ({ useRepoTotals: () => repoTotal }))
 vi.mock('@/components/repo/mirror-note', () => ({ MirrorNote: () => null }))
 vi.mock('@/components/repo/byline', () => ({ Byline: () => <span>someone</span> }))
 
@@ -143,6 +145,7 @@ beforeEach(() => {
   answers = []
   laterGate = null
   forkParent = null
+  repoTotal = 203
   answer = {
     rows: [
       row(203, { comments: 2, state: { open: true, merged: false, draft: false, baseRef: null, labels: ['bug'], assignees: [], mergeOnBase: null } }),
@@ -293,6 +296,16 @@ describe('PullsContent (L-44)', () => {
     expect(el.textContent).toContain('Try fewer filters, or search every state.')
     act(() => (el.querySelector('[data-testid="pulls-search-all"]') as HTMLButtonElement).click())
     expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&state=all&label=bug')
+  })
+
+  it("reads page 1 once when the repo's total arrives while it reads: the same query again would read on", async () => {
+    repoTotal = null
+    search = 'owner=o&name=n&state=all&sort=comments'
+    await render()
+    expect(asked).toHaveLength(1)
+    repoTotal = 203
+    await render()
+    expect(asked).toHaveLength(1)
   })
 
   it('writes a tab change and the next page to the URL', async () => {

@@ -262,7 +262,7 @@ function sum(c: PullCounts): number | null {
  * when that is cheaper; filtered, a filter's candidates by id or up to `PAGE_CHUNKS` chunks per
  * load (a search, reported through `onProgress`, read on when asked); a sort by comments the
  * same (QW3-004). The member-event feed is read only for a filter on what it decides. `total` is
- * the repo's PR count (the countable index), or null when it is not known.
+ * the repo's PR count (the countable index), or null for the proved count this call reads.
  */
 export async function queryPulls(
   sdk: EvoSDK,
@@ -324,7 +324,7 @@ export async function queryPulls(
     matching: matchingOf(selected, filtered, tabCount),
     hasNext: page.hasNext,
     counts,
-    searchedOf: searchedOfPage(selected, total),
+    searchedOf: searchedOfPage(selected, total ?? bound?.patches ?? null),
     stateComplete: logsVerified(index, rows),
     labels: index.labels,
     hidden: index.hidden.total,

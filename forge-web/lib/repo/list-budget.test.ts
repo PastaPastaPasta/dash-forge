@@ -361,6 +361,14 @@ describe('list request budget on a dash-sized repo (QW2-002, QW3-003)', () => {
     expect(more.searchedOf).toMatchObject({ kind: 'sort', more: true, searched: 694 })
   })
 
+  it("a sort by comments says how far it read out of the proved total when the caller's total has not arrived", async () => {
+    const r = fresh(DASH)
+    const page = await queryPulls(r.sdk, r.repo, { ...pulls, state: 'all', sort: 'comments' }, null, 'devnet')
+    expect(page.searchedOf).toMatchObject({ kind: 'sort', searched: 397, total: r.prs })
+    const iss = await queryIssues(r.sdk, r.repo, { ...issues, state: 'all', sort: 'comments' }, null, 'devnet')
+    expect(iss.searchedOf).toMatchObject({ kind: 'sort', total: r.issues })
+  })
+
   it('a sort by comments over a tab its proved count shows held reads no further and claims no partial sort', async () => {
     const r = fresh({ ...DASH, openPrDepths: [0, 3] })
     const page = await queryPulls(r.sdk, r.repo, { ...pulls, sort: 'comments' }, r.prs, 'devnet')
