@@ -8,6 +8,7 @@
  * build that says "not deployed".
  */
 
+import devnetBonsia from '../../forge-contracts/deployments/devnet-bonsia.json'
 import devnetMoutai from '../../forge-contracts/deployments/devnet-moutai.json'
 import devnetSakura from '../../forge-contracts/deployments/devnet-sakura.json'
 import mainnet from '../../forge-contracts/deployments/mainnet.json'
@@ -30,6 +31,11 @@ export interface SupersededRecord {
 export interface DeploymentFile {
   /** The Platform chain id a devnet reports (`dash-devnet-sakura`); not derivable from its name. */
   readonly chainId?: string
+  /**
+   * A devnet Forge has left (moutai, bonsia): its record stays for history and for a stale build,
+   * which words its missing contracts as the move (parity with forge-core `Deployment::retired`).
+   */
+  readonly retired?: boolean
   readonly dapiAddresses?: readonly string[]
   readonly quorumBaseUrl?: string | null
   /**
@@ -149,6 +155,7 @@ export function groupTrust(file: DeploymentFile | undefined): GroupTrust | null 
 export const DEPLOYMENTS: Readonly<Record<string, DeploymentFile>> = {
   testnet,
   mainnet,
+  'devnet-bonsia': devnetBonsia,
   'devnet-moutai': devnetMoutai,
   'devnet-sakura': devnetSakura,
 }

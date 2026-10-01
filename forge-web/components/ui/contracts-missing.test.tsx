@@ -24,10 +24,12 @@ const MOUTAI: NetworkConfig = {
   quorumBaseUrl: null,
   dpnsContractId: 'dpns',
   v2: forge,
+  retired: true,
 }
-const MAINNET: NetworkConfig = { ...MOUTAI, network: 'mainnet', devnetName: null, key: 'mainnet' }
+const MAINNET: NetworkConfig = { ...MOUTAI, network: 'mainnet', devnetName: null, key: 'mainnet', retired: false }
 const BONSIA: NetworkConfig = { ...MOUTAI, devnetName: 'bonsia', key: 'devnet-bonsia' }
-const OTHER_DEVNET: NetworkConfig = { ...MOUTAI, devnetName: 'sakura', key: 'devnet-sakura' }
+const OTHER_DEVNET: NetworkConfig = { ...MOUTAI, devnetName: 'tango', key: 'devnet-tango', retired: false }
+const SAKURA: NetworkConfig = { ...MOUTAI, devnetName: 'sakura', key: 'devnet-sakura', retired: false }
 
 let root: Root
 let el: HTMLDivElement
@@ -58,14 +60,25 @@ describe('ContractsMissingState', () => {
       const { title, body } = render(config)
       expect(title).toBe('Dash Forge moved to a new devnet')
       expect(body).toContain(`${name} was retired`)
-      expect(body).toContain('devnet sakura (Platform v5.0.0-beta.1)')
+      expect(body).toContain('devnet sakura (Platform v5)')
+      expect(body).toContain('re-push from your clone')
+      expect(body).toContain('/mirror wizard')
       expect(body).not.toMatch(/reset/i)
+      const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href'))
+      expect(hrefs).toContain('https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/devnet-move.md')
     }
+  })
+
+  it('on devnet sakura (not retired): the generic wording, never the move', () => {
+    const { title, body } = render(SAKURA)
+    expect(title).toBe("Dash Forge isn't deployed on devnet sakura right now")
+    expect(body).toContain('devnets are reset from time to time')
+    expect(el.querySelector('a[href$="devnet-move.md"]')).toBeNull()
   })
 
   it('on another devnet: names it, says devnets are reset and it is being redeployed', () => {
     const { title, body } = render(OTHER_DEVNET)
-    expect(title).toBe("Dash Forge isn't deployed on devnet sakura right now")
+    expect(title).toBe("Dash Forge isn't deployed on devnet tango right now")
     expect(body).toContain('devnets are reset from time to time')
     expect(body).toContain('redeployed')
   })

@@ -55,6 +55,12 @@ export interface NetworkConfig {
    * is not deployed on this network — see {@link NotDeployedError}.
    */
   readonly v2: ForgeIds | null
+  /**
+   * The deployment file marks this devnet retired: Forge has left it (moutai, bonsia). A build for
+   * it words missing contracts as the move, and only such a build honours the `moving` notice
+   * (`lib/devnet-notice.ts`). Absent = false.
+   */
+  readonly retired?: boolean
 }
 
 /** Build-time network selection (`NEXT_PUBLIC_*`, inlined by Next at build). */
@@ -153,6 +159,7 @@ export function resolveNetworks(
       quorumBaseUrl: envQuorum ?? nonEmpty(file?.quorumBaseUrl),
       dpnsContractId: DPNS_CONTRACT_ID,
       v2: forgeV2Ids(file),
+      retired: file?.retired === true,
     }
   }
 

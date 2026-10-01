@@ -1090,11 +1090,20 @@ mod tests {
 
     #[test]
     fn a_retired_devnet_is_never_suggested() {
-        // moutai keeps its forge-v2 record (tests read it) but is gone: no message names it.
-        let moutai = deployment("devnet-moutai").unwrap().unwrap();
-        assert!(moutai.retired && moutai.v2.is_some());
+        // moutai and bonsia keep their forge-v2 records (tests and stale builds read them) but
+        // are gone: no message names them.
+        for key in ["devnet-moutai", "devnet-bonsia"] {
+            let d = deployment(key).unwrap().unwrap();
+            assert!(d.retired && d.v2.is_some(), "{key}");
+        }
         let suggested = suggested_v2_network().map(|n| n.key());
-        assert_ne!(suggested.as_deref(), Some("devnet-moutai"));
+        assert!(
+            !matches!(
+                suggested.as_deref(),
+                Some("devnet-moutai" | "devnet-bonsia")
+            ),
+            "{suggested:?}"
+        );
         if let Some(key) = suggested {
             let d = deployment(&key).unwrap().unwrap();
             assert!(d.v2.is_some() && !d.retired, "{key}");
@@ -1459,7 +1468,7 @@ mod tests {
 
     #[test]
     fn the_devnet_key_form_every_tool_prints_selects_that_devnet() {
-        // QW-032: `DASH_FORGE_NETWORK=devnet-sakura` (what dg prints) was E204.
+        // QW-032: `DASH_FORGE_NETWORK=devnet-<name>` (what dg prints) was E204.
         let env = |k: &str| match k {
             ENV_NETWORK => Some("devnet-sakura".to_string()),
             _ => None,

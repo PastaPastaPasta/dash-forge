@@ -44,6 +44,10 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 Measured on devnet bonsia: creating a repository costs about **0.0016 DASH**. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0008–0.0012 DASH. Storing packs on Platform costs about 0.33 DASH per MiB. On devnet moutai, a fork of a small repository cost about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On a devnet all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
 
+## What happened to devnet bonsia?
+
+It was retired, and everything on it is gone. Forge moved to devnet sakura (Platform v5), where it is being registered with new contracts. An installed `dg` built for 4.2.0-beta.7 does not work on sakura. Your git clone and your storage bucket are untouched. See [Dash Forge moved to devnet sakura](guides/devnet-move.md) for what is lost and kept and how to re-push.
+
 ## When is it on mainnet?
 
 After **Dash Platform protocol 14** activates on mainnet and the project owner registers the forge-v2 contracts there. forge-v2 depends on protocol 14 for its shared contracts, membership checks and limited keys. Until then:

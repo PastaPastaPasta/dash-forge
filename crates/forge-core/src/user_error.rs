@@ -2406,18 +2406,28 @@ mod tests {
             &ctx,
         );
         assert_eq!(u.code, "E702");
-        if let Some(there) = crate::network::suggested_v2_network() {
-            assert_eq!(
-                u.fix[0],
-                format!(
-                    "use a network where it is: `{}`, then run the git command again",
-                    there.git_config_command("--global ")
-                )
-            );
-            assert!(
-                u.fix[1].contains(&format!("{} git", there.env_assignments())),
+        match crate::network::suggested_v2_network() {
+            Some(there) => {
+                assert_eq!(
+                    u.fix[0],
+                    format!(
+                        "use a network where it is: `{}`, then run the git command again",
+                        there.git_config_command("--global ")
+                    )
+                );
+                assert!(
+                    u.fix[1].contains(&format!("{} git", there.env_assignments())),
+                    "{u:?}"
+                );
+            }
+            // Between a devnet's bring-up and its registration no network has forge-v2.
+            None => assert!(
+                u.note
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("no network has a forge-v2 deployment"),
                 "{u:?}"
-            );
+            ),
         }
         assert!(u.fix.iter().all(|f| !f.contains("--network ")), "{u:?}");
     }

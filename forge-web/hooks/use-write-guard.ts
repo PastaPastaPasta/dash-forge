@@ -4,7 +4,8 @@
  * useWriteGuard — the checks every signing button runs before it signs, and what it does when
  * a write fails (`ux-dx-spec.md` §4):
  *
- * - before: signed out opens the sign-in sheet; an empty balance, a spent or expired key, or
+ * - before: while the devnet is moving (`NEXT_PUBLIC_DEVNET_NOTICE=moving`) every write is refused
+ *   with the reason; else signed out opens the sign-in sheet; an empty balance, a spent or expired key, or
  *   a write whose preview does not fit either budget (D-012: what Platform needs available,
  *   `CostPreview.admit`, not the raw estimate) opens the top-up sheet with the shortfall. A
  *   write to a Forge contract the session holds no key for (a wallet granted forge-core only)
@@ -18,6 +19,7 @@ import { useCallback } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { toast } from '@/hooks/use-toasts'
+import { writesPausedReason } from '@/lib/devnet-notice'
 import { affordability, type WriteNeed } from '@/lib/view/funds'
 import { writeFailure } from '@/lib/view/write-errors'
 
@@ -49,6 +51,12 @@ export function useWriteGuard(): WriteGuard {
 
   const check = useCallback(
     (need: WriteNeed, contract: 'core' | 'collab' | 'community' = 'core', action?: string): boolean => {
+      // The devnet is moving: nothing written now would survive it, whoever is signed in.
+      const paused = writesPausedReason()
+      if (paused !== null) {
+        toast({ title: 'Writing is paused', detail: paused })
+        return false
+      }
       if (!identity || !signer) {
         // A kept session is still being picked up (a moment after a reload): not a sign-in.
         if (resuming) {
@@ -95,6 +103,6 @@ export function useWriteGuard(): WriteGuard {
     [openTopUp, refreshBalance],
   )
 
-  const disabledReason = funds?.level === 'empty' ? EMPTY_REASON[funds.reason ?? 'balance'] : null
+  const disabledReason = writesPausedReason() ?? (funds?.level === 'empty' ? EMPTY_REASON[funds.reason ?? 'balance'] : null)
   return { check, failed, disabledReason }
 }

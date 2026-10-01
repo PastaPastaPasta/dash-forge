@@ -17,4 +17,6 @@ export const DOCS = {
   movingFromGithub: `${GUIDES}/moving-from-github.md`,
   storage: `${GUIDES}/bring-your-own-storage.md`,
   mirror: `${GUIDES}/mirror-a-github-repo.md`,
+  /** What the move to a new devnet (bonsia to sakura) loses and keeps, and how to re-push (the devnet notice). */
+  devnetMove: `${GUIDES}/devnet-move.md`,
 } as const

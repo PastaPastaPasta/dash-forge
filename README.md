@@ -9,6 +9,8 @@
 
 ## Status
 
+> **Forge moved to devnet sakura (Platform v5); bonsia was retired.** Everything on bonsia (repos, issues, stars, identities and keys) is gone, and Forge is being registered on sakura with new contracts. Your git clone and your storage bucket are untouched, and your own repos need a re-push from your clone once the registration lands. An installed `dg` built for Platform 4.2.0-beta.7 does not work on sakura. What is lost, what is kept and how to re-push: **[Dash Forge moved to devnet sakura](docs/guides/devnet-move.md)**.
+
 | Network | Platform protocol | Forge |
 |---|---|---|
 | **Devnet sakura** | 14 | **RC2 on Platform v5.0.0-beta.1 — being registered.** Sakura (chain id `dash-devnet-sakura`) replaced bonsia on 2026-10-01. `dg` and `git-remote-dash` built from this source target sakura; until Forge's three contracts (forge-core, forge-collab, forge-community) are registered there, they stop with "not deployed". The web app at [forge.dashhq.org](https://forge.dashhq.org) moves to sakura with the registration. |
@@ -66,6 +68,7 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
 | [Collaborating](docs/guides/collaborating.md) | members, issues, pull requests, reviews, merges, releases, webhooks |
 | [Identity and keys](docs/guides/identity-and-keys.md) | limited keys, the browser vault, backups, recovery, trust roots |
 | [What things cost](docs/guides/costs.md) | measured costs, deposits, refunds |
+| [Dash Forge moved to devnet sakura](docs/guides/devnet-move.md) | what the move from bonsia lost and kept, and how to re-push on sakura |
 | [Check that Forge isn't lying to you](docs/guides/verify-forge.md) | proofs, hashes, the Verification card, running your own web app |
 | [FAQ](docs/FAQ.md) · [Error codes](docs/errors.md) | |
 

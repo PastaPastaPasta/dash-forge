@@ -9,6 +9,7 @@
 import type { ReactNode } from 'react'
 import { AppHeader } from '@/components/app-header'
 import { AppFooter } from '@/components/app-footer'
+import { DevnetNoticeBanner } from '@/components/devnet-notice-banner'
 import { ContractsMissingState } from '@/components/ui/contracts-missing'
 import { useContractsMissing } from '@/hooks/use-sdk'
 import { useOfflineNavigation } from '@/hooks/use-offline-navigation'
@@ -43,6 +44,7 @@ export function AppShell({
         Skip to content
       </a>
       <AppHeader />
+      <DevnetNoticeBanner />
       <ClockSkewBanner />
       <LowFundsBanner />
       <main

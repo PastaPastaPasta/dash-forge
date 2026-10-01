@@ -10,23 +10,18 @@
  * Detected once, app-wide (`useContractsMissing` in hooks/use-sdk.ts): the app shell shows this
  * state in place of the page instead of each view failing with its own read error.
  *
- * The devnets Forge has left are a special case, not a generic reset: moutai was upgraded in place
- * to Platform v4.2.0-beta.7 and bonsia was retired for Platform v5, each taking every contract
- * this build reads with it, and the forge moved to devnet sakura (Platform v5.0.0-beta.1) rather
- * than being redeployed there. This is gated on the same detected condition — a left devnet's
- * contracts missing — not a hard-coded date, so a sakura build never matches it.
+ * A devnet Forge has left is a special case, not a generic reset: its deployment file is marked
+ * `retired` (moutai, upgraded in place to Platform v4.2.0-beta.7; bonsia, retired for Platform v5),
+ * every contract this build reads went with it, and the forge moved to devnet sakura rather than
+ * being redeployed there. This is gated on the same detected condition — a retired devnet's
+ * contracts missing — not a date or the build's devnet notice, so a sakura build never matches it.
  */
 
 import { Unplug } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ACTIVE_NETWORK, type NetworkConfig } from '@/lib/constants'
-
-/** The devnet the forge moved to. */
-export const CURRENT_DEVNET = 'sakura'
-
-/** The devnets the forge left for {@link CURRENT_DEVNET}: their contracts are gone for good. */
-const LEFT_DEVNETS: readonly string[] = ['moutai', 'bonsia']
+import { CURRENT_DEVNET, CURRENT_DEVNET_PLATFORM, DEVNET_MOVE_DOC } from '@/lib/devnet-notice'
 
 /** The network as a person reads it: `devnet moutai`, `testnet`, `mainnet`. */
 function networkName(config: NetworkConfig): string {
@@ -43,7 +38,7 @@ export function ContractsMissingState({
 }): JSX.Element {
   const devnet = config.network === 'devnet'
   const where = networkName(config)
-  const moved = devnet && config.devnetName !== null && LEFT_DEVNETS.includes(config.devnetName)
+  const moved = devnet && config.retired === true
   return (
     <div
       role="alert"
@@ -62,7 +57,7 @@ export function ContractsMissingState({
       </h2>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
         {moved
-          ? `${where[0]!.toUpperCase()}${where.slice(1)} was retired, and the contracts this build reads went with it. Dash Forge moved to devnet ${CURRENT_DEVNET} (Platform v5.0.0-beta.1), where its new contracts are being registered; repos will be back there shortly.`
+          ? `${where[0]!.toUpperCase()}${where.slice(1)} was retired, and the contracts this build reads went with it. Dash Forge moved to devnet ${CURRENT_DEVNET} (${CURRENT_DEVNET_PLATFORM}), where it is registered with new contracts. Mirrors need setting up again with the /mirror wizard, and your own repos need a re-push from your clone. This page works again once the build for ${CURRENT_DEVNET} is published.`
           : devnet
             ? `${where} is a development network, and devnets are reset from time to time. This one was most likely reset, so the contracts Dash Forge reads are gone until it is redeployed. This page works again once a build with the new contracts is published.`
             : `${where} has no contracts with the ids this build reads, so nothing can be read here. The build may be misconfigured or made for another network.`}
@@ -77,6 +72,11 @@ export function ContractsMissingState({
         >
           Dash Forge on GitHub
         </a>
+        {moved ? (
+          <a href={DEVNET_MOVE_DOC} className="text-dense text-forge-700 underline dark:text-forge-400">
+            What is lost and kept
+          </a>
+        ) : null}
       </div>
       <details className="mt-4 w-full max-w-md text-left text-dense text-anvil-600 dark:text-anvil-300">
         <summary className="w-fit cursor-pointer coarse:-mx-2 coarse:flex coarse:min-h-11 coarse:min-w-11 coarse:items-center coarse:px-2">

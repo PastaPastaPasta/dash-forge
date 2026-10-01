@@ -191,10 +191,12 @@ quorum service (`https://quorums.sakura.networks.dash.org`), so `--devnet-name s
 for every tool; it has no `v2` record until the RC2 contracts are registered there, so until
 then sakura is "not deployed". A devnet's chain id is not derived from its name (bonsia's was
 `dash-devnet-bonsia-g1`, sakura's has no suffix): the deployment file records it.
-Devnet bonsia (Platform 4.2.0-beta.7, the RC1 contracts) is gone, and its deployment file with
-it. Devnet moutai was upgraded in place to beta.7, which retired the forge-v2 contracts
-registered there; `devnet-moutai.json` stays in the tree as the record of them, marked
-`"retired": true` so no "not deployed" message suggests it.
+Devnet bonsia (Platform 4.2.0-beta.7, the RC1 contracts) is gone, and devnet moutai was
+upgraded in place to beta.7, which retired the forge-v2 contracts registered there.
+`devnet-bonsia.json` and `devnet-moutai.json` stay in the tree as the record of them, marked
+`"retired": true`: no "not deployed" message suggests them, a stale web build for them words its
+missing contracts as the move to sakura, and only such a build honours the `moving` devnet
+notice (`forge-web/lib/devnet-notice.ts`).
 
 Contract ids are never written into code: they come from the `v2` section of
 `forge-contracts/deployments/<key>.json`, where the key is `testnet`, `mainnet` or

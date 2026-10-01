@@ -108,11 +108,9 @@ pub enum Error {
 
     /// The selected network has no forge-v2 deployment (no fully registered `v2` record in
     /// its deployment file). Returned instead of falling back to another network's
-    /// contracts.
-    #[error(
-        "forge-v2 isn't deployed on {network} yet; use --network devnet --devnet-name sakura \
-         (see docs/mainnet-runbook.md)"
-    )]
+    /// contracts. Names no other network: `user_error` and `dg doctor` add the one
+    /// [`crate::network::suggested_v2_network`] picks, if any.
+    #[error("forge-v2 isn't deployed on {network} yet (see docs/mainnet-runbook.md)")]
     V2NotDeployed {
         /// The network key (`testnet`, `mainnet`).
         network: String,
