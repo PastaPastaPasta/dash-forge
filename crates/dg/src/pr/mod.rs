@@ -73,6 +73,7 @@ fn check_id_args(cmd: &PrCommand) -> Result<()> {
 }
 
 /// Dispatch a `pr` subcommand.
+#[allow(clippy::too_many_lines)] // one arm per subcommand
 pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
     use crate::PrSuggestionCommand as Sg;
     check_id_args(cmd)?;

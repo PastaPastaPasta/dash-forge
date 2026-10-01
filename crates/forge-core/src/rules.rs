@@ -2194,7 +2194,7 @@ mod tests {
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
             | "linked_issues" => run_review_case(v),
             "checks" | "thread_meta" | "pinned" | "milestones" | "trending" | "hidden_items" => {
-                run_parity_case(v)
+                run_parity_case(v);
             }
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }

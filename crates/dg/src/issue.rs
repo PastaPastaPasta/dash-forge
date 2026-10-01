@@ -22,6 +22,7 @@ use crate::fmt::{cost_json, cost_line, safe, transition_phrase, transition_route
 use crate::{CloseReasonArg, HideReasonArg, IssueCommand, IssueListArgs};
 
 /// Dispatch an `issue` subcommand.
+#[allow(clippy::too_many_lines)] // one arm per subcommand
 pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
     match cmd {
         IssueCommand::List(args) => list(ctx, args).await,
@@ -418,6 +419,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)] // one view: the reads, the JSON, then the human lines
 async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
 
