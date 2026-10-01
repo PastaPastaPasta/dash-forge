@@ -146,6 +146,21 @@ fn source_facts(source: &std::path::Path) -> SourceFacts {
     }
 }
 
+/// The network a stored key file's name records: `dg auth login` stores a key as
+/// `<network>-<identityId>.key` (`devnet-bonsia-ErxF….key`). Any other name says nothing.
+/// Only for messages (QW3-073: `dg auth balance --network mainnet` names the key's network);
+/// it does not select the network.
+fn stored_key_network(source: &std::path::Path) -> Option<String> {
+    let parsed = source
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(|stem| stem.rsplit_once('-'))
+        .filter(|(network, id)| {
+            !network.is_empty() && forge_core::resolve::looks_like_identity_id(id)
+        });
+    forge_core::network::full_network_key(parsed?.0)
+}
+
 /// Fetch the signing identity: E304 naming this network (and the key's own, when it records
 /// another) when Platform has no such identity.
 async fn fetch_signer(client: &PlatformClient, bridge: &BridgeIdentity) -> Result<LoadedIdentity> {
@@ -374,6 +389,17 @@ impl Ctx {
         })
     }
 
+    /// The network the key source says it is for, without opening it (`dfk1:<network>:…`,
+    /// a keychain account, a plaintext file's `network`, a sealed file's name).
+    pub fn key_network_hint(&self) -> Option<String> {
+        let path = self.identity_path.as_ref()?;
+        self.source_facts
+            .network
+            .as_deref()
+            .and_then(forge_core::network::full_network_key)
+            .or_else(|| stored_key_network(path))
+    }
+
     /// The configured identity's id, read without unsealing its key: an inline `dfk1:` key
     /// and a `keychain:` source name it, config.toml records it for the default, and a
     /// plaintext identity file holds it. `None` when it cannot be told without the key (a
@@ -600,6 +626,24 @@ mod tests {
             network: Some(network.into()),
             ..Default::default()
         }
+    }
+
+    /// QW3-073: a stored key file's name says its network (for the E304 a balance read on
+    /// another network gives); any other name says nothing.
+    #[test]
+    fn a_stored_key_file_name_says_its_network() {
+        let p = |s: &str| super::stored_key_network(std::path::Path::new(s));
+        assert_eq!(
+            p("/h/.config/dash-forge/identities/devnet-bonsia-7TTVrxb6vzggNDmerQnSERAiJJpxDgKdsa31yLVj9cH3.key")
+                .as_deref(),
+            Some("devnet-bonsia")
+        );
+        assert_eq!(
+            p("testnet-7TTVrxb6vzggNDmerQnSERAiJJpxDgKdsa31yLVj9cH3.key").as_deref(),
+            Some("testnet")
+        );
+        assert_eq!(p("/tmp/my-key.json"), None);
+        assert_eq!(p("/tmp/key"), None);
     }
 
     /// [`super::stack`] without a repository pin or a key's network.

@@ -796,6 +796,10 @@ fn from_config(msg: &str, chain: &str, ctx: &ErrorContext<'_>) -> UserError {
     if m.contains("authentication key") {
         return key_cannot_sign(msg);
     }
+    // The stored signing key is garbled: the key source, not the configuration (QW3-024).
+    if m.contains("invalid signing key wif") {
+        return identity_unreadable(msg);
+    }
     if m.starts_with("secret ") && (m.contains("is not set") || m.contains("keychain")) {
         return UserError::new(
             codes::STORAGE_SECRET,

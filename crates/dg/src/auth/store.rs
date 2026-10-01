@@ -209,7 +209,11 @@ impl Storer {
             } else {
                 "there is no OS keychain here, so the key goes to a passphrase-encrypted file"
             };
-            let pass = sealed::passphrase(&format!("the key file {}", path.display()), true)
+            // Named as the file the key ends up in: a new key is written beside it as
+            // `….key.pending` until the chain confirms it (QW3-070).
+            let shown =
+                slot_file(network, identity_id, Slot::Main).unwrap_or_else(|_| path.clone());
+            let pass = sealed::passphrase(&format!("the key file {}", shown.display()), true)
                 .map_err(|e| {
                     UserError::new(codes::USAGE, "the key could not be stored")
                         .cause(format!("{why}, and {e}"))

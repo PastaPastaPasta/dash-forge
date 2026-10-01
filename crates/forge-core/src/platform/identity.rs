@@ -1168,6 +1168,32 @@ impl LoadedIdentity {
             .and_then(|k| self.key_id_for(k.private_key_wif.expose(), network))
     }
 
+    /// The id of the key `bridge` signs documents with, live or disabled, and whether it is
+    /// disabled: what `dg auth status` reports for a key that can no longer sign (QW3-024).
+    pub fn signing_key_standing(
+        &self,
+        bridge: &BridgeIdentity,
+        network: &Network,
+    ) -> Option<(u32, bool)> {
+        let wif = bridge
+            .doc_op_key()
+            .ok()?
+            .private_key_wif
+            .expose()
+            .to_string();
+        let public = public_key_hex(&wif, network).ok()?;
+        let mut matching: Vec<_> = self
+            .0
+            .public_keys()
+            .values()
+            .filter(|k| hex::encode(k.data().as_slice()) == public)
+            .map(|k| (IdentityPublicKeyGettersV0::id(k), k.is_disabled()))
+            .collect();
+        // A live copy of the same public key wins over a disabled one.
+        matching.sort_by_key(|&(id, disabled)| (disabled, id));
+        matching.first().copied()
+    }
+
     /// The id of the live key `wif` controls, if this identity has one.
     pub fn key_id_for(&self, wif: &str, network: &Network) -> Option<u32> {
         let public = public_key_hex(wif, network).ok()?;
@@ -1241,6 +1267,13 @@ pub fn dpns_label_kind(label: &str) -> (bool, bool) {
 /// The homograph-safe form DPNS compares names in (`Alice` → `a11ce`).
 pub fn dpns_normalize(label: &str) -> String {
     convert_to_homograph_safe_chars(label)
+}
+
+/// Whether `wif` is a private key in WIF form at all (any network): what loading an inline
+/// `dfk1:` key checks, so a garbled one is refused when it is read, not when it first signs
+/// (QW3-024).
+pub fn is_wif(wif: &str) -> bool {
+    PrivateKey::from_wif(wif.trim()).is_ok()
 }
 
 /// The public key (hex) a WIF controls, for display and matching.
