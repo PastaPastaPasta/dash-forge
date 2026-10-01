@@ -118,7 +118,8 @@ reject ann 'expires soon'
 
 # validate.sh: every INPUT_* is set explicitly; one override per case.
 validate() {
-    env -i PATH="$PATH" GITHUB_ENV="$tmp/env" \
+    : >"$tmp/vout"
+    env -i PATH="$PATH" GITHUB_ENV="$tmp/env" GITHUB_OUTPUT="$tmp/vout" \
         INPUT_REPO=alice/project INPUT_GITHUB_REPO=alice/project INPUT_NETWORK=mainnet \
         INPUT_DEVNET_NAME='' INPUT_SYNC=code,releases INPUT_STORAGE_KIND=platform \
         INPUT_REPLICAS=1 INPUT_COST_CAP=0.05 INPUT_DRY_RUN=false INPUT_INSTALL=true \
@@ -142,6 +143,13 @@ good INPUT_REPO=dash://alice/project
 good INPUT_REPO=project INPUT_SYNC=code,issues,prs,releases,labels INPUT_COST_CAP=0.25
 good INPUT_GITHUB_REPO=https://github.com/alice/project.js
 good INPUT_NETWORK=devnet INPUT_DEVNET_NAME=moutai
+expect vout 'devnet-name=moutai'
+# devnet-name has a default, so it is ignored (and not passed on) for the other networks.
+good INPUT_NETWORK=testnet INPUT_DEVNET_NAME=bonsia
+expect vout 'devnet-name='
+reject vout 'bonsia'
+good INPUT_INSTALL=source INPUT_VERSION=latest
+good INPUT_INSTALL=false INPUT_VERSION=''
 good INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.r2.cloudflarestorage.com INPUT_S3_BUCKET=forge
 good INPUT_STORAGE_KIND=ipfs-pinning INPUT_PINNING_ENDPOINT=https://api.pinata.cloud/psa
 bad INPUT_REPO='alice/project; rm -rf /'
@@ -156,7 +164,9 @@ bad INPUT_SYNC=code,wiki
 bad INPUT_SYNC=''
 bad INPUT_SYNC=code,
 bad INPUT_SYNC=$'code\n--dry-run'
-bad INPUT_DEVNET_NAME='x@y'
+bad INPUT_NETWORK=devnet INPUT_DEVNET_NAME='x@y'
+bad INPUT_INSTALL=yes
+bad INPUT_INSTALL=true INPUT_VERSION=''
 bad INPUT_COST_CAP=abc
 bad INPUT_COST_CAP=0
 bad INPUT_COST_CAP=1e3
@@ -244,6 +254,128 @@ expect log 'DASH_FORGE_KEY is empty'
 case="mirror s3 without secrets"
 if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_STORAGE_KIND=s3; then echo "FAIL [$case] accepted"; fails=$((fails + 1)); fi
 expect log 'S3_SECRET_ACCESS_KEY'
+
+# action.yml's defaults: a network Forge is deployed on (the hosted site's devnet), and the
+# install mode that works without a published release.
+case="action.yml defaults"
+default_of() {
+    awk -v want="  $1:" '$0 == want { found = 1; next } found && /^    default:/ { sub(/^    default: */, ""); gsub(/"/, ""); print; exit }' "$here/action.yml"
+}
+[ "$(default_of network)" = devnet ] || { echo "FAIL [$case] network defaults to '$(default_of network)'"; fails=$((fails + 1)); }
+devnet_default=$(default_of devnet-name)
+[ -f "$here/../forge-contracts/deployments/devnet-$devnet_default.json" ] ||
+    { echo "FAIL [$case] no deployment for the default devnet '$devnet_default'"; fails=$((fails + 1)); }
+[ "$(default_of install)" = true ] || { echo "FAIL [$case] install defaults to '$(default_of install)'"; fails=$((fails + 1)); }
+# The defaults pass validation as they are.
+good INPUT_NETWORK="$(default_of network)" INPUT_DEVNET_NAME="$devnet_default" INPUT_VERSION="$(default_of version)"
+expect vout "devnet-name=$devnet_default"
+
+# install-forge.sh with stub curl, cargo, protoc and uname, on a PATH without the real ones.
+ib="$tmp/ibin"
+mkdir -p "$ib"
+# curl: --write-out probes print $STUB_HTTP; downloads write junk to the --output file.
+cat >"$ib/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$STUB_OUT/curl"
+out=''
+probe=false
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --output) out=$2; shift ;;
+        --write-out) probe=true; shift ;;
+    esac
+    shift
+done
+if [ "$probe" = true ]; then printf '%s' "$STUB_HTTP"; exit 0; fi
+printf 'not a zip' >"$out"
+EOF
+cat >"$ib/cargo" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >"$STUB_OUT/cargo"
+pwd >"$STUB_OUT/cargo-pwd"
+env >"$STUB_OUT/cargo-env"
+mkdir -p "$CARGO_TARGET_DIR/debug"
+for b in dg git-remote-dash forge-import; do printf '#!/bin/sh\n' >"$CARGO_TARGET_DIR/debug/$b"; done
+EOF
+printf '#!/bin/sh\necho "libprotoc ${STUB_PROTOC:-28.3}"\n' >"$ib/protoc"
+printf '#!/bin/sh\ncase "$1" in -s) echo "${STUB_OS:-Linux}" ;; -m) echo "${STUB_ARCH:-x86_64}" ;; esac\n' >"$ib/uname"
+chmod +x "$ib"/*
+install_forge() {
+    : >"$tmp/iout"
+    rm -rf "$tmp/curl" "$tmp/cargo" "$tmp/cargo-pwd" "$tmp/cargo-env" "$tmp/forge-bin" "$tmp/target" "$tmp/tools"
+    env -i PATH="$ib:/usr/bin:/bin" STUB_OUT="$tmp" GITHUB_OUTPUT="$tmp/iout" \
+        INPUT_INSTALL=true INPUT_VERSION=0.1.0 FORGE_BIN_DIR="$tmp/forge-bin" \
+        FORGE_TARGET_DIR="$tmp/target" FORGE_TOOLS_DIR="$tmp/tools" \
+        "$@" "$BASH" "$here/install-forge.sh" "$cmd" >"$tmp/ilog" 2>&1
+}
+
+cmd=plan
+case="install plan: release not published (404) builds from source"
+install_forge STUB_HTTP=404 || echo "FAIL [$case] exited $?"
+expect curl 'https://github.com/PastaPastaPasta/dash-forge/releases/download/v0.1.0/SHA256SUMS'
+expect iout 'method=source'
+expect iout 'source-hash='
+expect ilog '::notice title=Forge mirror install::Dash Forge v0.1.0 is not published'
+case="install plan: release published"
+install_forge STUB_HTTP=200 INPUT_VERSION=v0.2.0 || echo "FAIL [$case] exited $?"
+expect curl 'download/v0.2.0/SHA256SUMS'
+expect iout 'method=release'
+reject iout 'source-hash'
+case="install plan: GitHub unreachable leaves it to install.sh"
+install_forge STUB_HTTP=000 || echo "FAIL [$case] exited $?"
+expect iout 'method=release'
+case="install plan: source"
+install_forge INPUT_INSTALL=source INPUT_VERSION='' || echo "FAIL [$case] exited $?"
+expect iout 'method=source'
+[ ! -e "$tmp/curl" ] || { echo "FAIL [$case] probed for a release"; fails=$((fails + 1)); }
+
+cmd=build
+case="install build"
+install_forge || { echo "FAIL [$case] exited: $(cat "$tmp/ilog")"; fails=$((fails + 1)); }
+expect cargo 'build --locked -p dg -p git-remote-dash -p forge-import'
+expect cargo-env 'CARGO_PROFILE_DEV_DEBUG=0'
+reject cargo-env 'DASH_FORGE_BUILD_SHA'
+[ "$(cat "$tmp/cargo-pwd")" = "$(cd "$here/.." && pwd)" ] ||
+    { echo "FAIL [$case] cargo did not run from the Action's source root"; fails=$((fails + 1)); }
+for b in dg git-remote-dash forge-import; do
+    [ -x "$tmp/forge-bin/$b" ] || { echo "FAIL [$case] $b not installed"; fails=$((fails + 1)); }
+done
+[ ! -e "$tmp/curl" ] || { echo "FAIL [$case] downloaded protoc though a new one is on PATH"; fails=$((fails + 1)); }
+case="install build forgets cached workspace crates"
+install_build_cached() {
+    mkdir -p "$tmp/target/debug/.fingerprint/forge-core-0123abcd" "$tmp/target/debug/.fingerprint/dg-77" \
+        "$tmp/target/debug/.fingerprint/serde-0123abcd" "$tmp/target/debug/.fingerprint/dgx-1"
+    env -i PATH="$ib:/usr/bin:/bin" STUB_OUT="$tmp" FORGE_BIN_DIR="$tmp/forge-bin" \
+        FORGE_TARGET_DIR="$tmp/target" FORGE_TOOLS_DIR="$tmp/tools" \
+        "$BASH" "$here/install-forge.sh" build >"$tmp/ilog" 2>&1
+}
+install_build_cached || echo "FAIL [$case] exited $?"
+for d in forge-core-0123abcd dg-77; do
+    [ ! -e "$tmp/target/debug/.fingerprint/$d" ] || { echo "FAIL [$case] kept $d"; fails=$((fails + 1)); }
+done
+for d in serde-0123abcd dgx-1; do
+    [ -e "$tmp/target/debug/.fingerprint/$d" ] || { echo "FAIL [$case] removed dependency $d"; fails=$((fails + 1)); }
+done
+case="install build at a pinned commit"
+install_forge DASH_FORGE_ACTION_REF=0123456789abcdef0123456789abcdef01234567 || echo "FAIL [$case] exited $?"
+expect cargo-env 'DASH_FORGE_BUILD_SHA=0123456789abcdef0123456789abcdef01234567'
+case="install build at a branch"
+install_forge DASH_FORGE_ACTION_REF=master || echo "FAIL [$case] exited $?"
+reject cargo-env 'DASH_FORGE_BUILD_SHA'
+case="install build without cargo"
+mv "$ib/cargo" "$ib/cargo.off"
+if install_forge; then echo "FAIL [$case] succeeded"; fails=$((fails + 1)); fi
+expect ilog 'needs Rust (cargo)'
+mv "$ib/cargo.off" "$ib/cargo"
+case="install build: old protoc on macOS"
+if install_forge STUB_PROTOC=3.21.12 STUB_OS=Darwin STUB_ARCH=arm64; then echo "FAIL [$case] succeeded"; fails=$((fails + 1)); fi
+expect ilog 'needs protoc 28.3 (25 or newer) on PATH'
+[ ! -e "$tmp/cargo" ] || { echo "FAIL [$case] built anyway"; fails=$((fails + 1)); }
+case="install build: protoc download with a bad checksum"
+if install_forge STUB_PROTOC=3.21.12; then echo "FAIL [$case] succeeded"; fails=$((fails + 1)); fi
+expect curl 'protoc-28.3-linux-x86_64.zip'
+expect ilog 'protoc 28.3 checksum mismatch'
+[ ! -e "$tmp/cargo" ] || { echo "FAIL [$case] built anyway"; fails=$((fails + 1)); }
 
 if [ "$fails" -ne 0 ]; then
     echo "$fails check(s) failed"

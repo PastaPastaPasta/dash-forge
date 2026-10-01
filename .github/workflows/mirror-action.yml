@@ -93,30 +93,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pinned modern protoc: Ubuntu's 3.21 breaks the tenderdash proto build
-      # (nightly.yml has the details).
-      - name: Install protoc
-        env:
-          PROTOC_VERSION: '28.3'
-        run: |
-          curl -sSLo /tmp/protoc.zip \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
-          sudo chmod +x /usr/local/bin/protoc
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: mirror-action
-
-      # No release is published yet, so the action runs with install: 'false' on binaries
-      # built from this commit.
-      - name: Build forge-import, git-remote-dash, dg
-        timeout-minutes: 30
-        run: |
-          cargo build --locked -p forge-import -p git-remote-dash -p dg
-          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
-
+      # No release is published yet, so the action builds forge-import, git-remote-dash and dg
+      # from this checkout itself (install: 'source', the path the /mirror wizard's workflows
+      # and the default install take today), installing protoc and caching the build.
       - name: Mirror (first run)
         id: first
         uses: ./action
@@ -128,7 +107,7 @@ jobs:
           sync: code,issues,prs,releases,labels
           storage-kind: platform
           cost-cap: '0.25'
-          install: 'false'
+          install: 'source'
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_BONSIA_IDENTITY_OWNER }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -147,7 +126,7 @@ jobs:
           sync: code,issues,prs,releases,labels
           storage-kind: platform
           cost-cap: '0.25'
-          install: 'false'
+          install: 'source'
           state-cache: 'false'
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_BONSIA_IDENTITY_OWNER }}

@@ -37,9 +37,9 @@ Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New â
 | 5. Workflow file | The wizard lists the secrets to add first (`DASH_FORGE_KEY`, plus `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` for a bucket), with copy buttons and a link to GitHub's *New repository secret* page. It then builds [the workflow below](#the-workflow) with every input filled in. **Create this file on GitHub** opens GitHub's new-file page with it filled in. | nothing |
 | 6. First run | Committing the file starts the first run. The page checks Platform every 10 seconds until the mirror's branches appear, then links to the repository. | the run, under its cost cap, paid through the runner key |
 
-The wizard pins the build and the Action to one Dash Forge commit, the one the site was built from. The workflow checks out that commit, builds the three tools, and runs the Action from the checkout (`uses: ./.dash-forge/action`). Progress is saved in the browser, so a closed tab picks up where it stopped. A key is never saved.
+The wizard pins the Action to one Dash Forge commit, the one the site was built from (`uses: PastaPastaPasta/dash-forge/action@<commit>`), and sets `install: 'source'`, so the Action builds the three tools from that same commit. Progress is saved in the browser, so a closed tab picks up where it stopped. A key is never saved.
 
-**How long it takes.** A timed run on devnet bonsia (2026-09-30) mirrored a small public repository (two commits) with Platform storage. The wizard's own steps took 16 seconds of machine time: the GitHub check, signing in, creating the repository, the runner key and the workflow. A person reading, typing and pasting needs a few minutes more. From the workflow commit to the first mirrored push took 3 minutes 50 seconds. Of that, compiling the tools took 3 minutes 9 seconds, because no Dash Forge release is published yet. Mirroring took under 30 seconds and spent 0.018 DASH, the Action's own up-front estimate. Counted from opening the page, the mirror was live after 6 minutes 11 seconds, and that included a two-minute fix made during the run. Later runs reuse rust-cache: the run for the next push took 1 minute 41 seconds in all.
+**How long it takes.** A timed run on devnet bonsia (2026-09-30) mirrored a small public repository (two commits) with Platform storage. The wizard's own steps took 16 seconds of machine time: the GitHub check, signing in, creating the repository, the runner key and the workflow. A person reading, typing and pasting needs a few minutes more. From the workflow commit to the first mirrored push took 3 minutes 50 seconds. Of that, compiling the tools took 3 minutes 9 seconds, because no Dash Forge release is published yet. Mirroring took under 30 seconds and spent 0.018 DASH, the Action's own up-front estimate. Counted from opening the page, the mirror was live after 6 minutes 11 seconds, and that included a two-minute fix made during the run. Later runs reuse a build cache: the run for the next push took 1 minute 41 seconds in all. (That run built the tools in its own workflow steps with rust-cache; the wizard now leaves the build, and its cache, to the Action.)
 
 ---
 
@@ -220,7 +220,7 @@ Add your storage secrets too, for example `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCE
 
 ### The workflow
 
-Save this as `.github/workflows/forge-mirror.yml` in the GitHub repository. Replace the owner id and repository name.
+Save this as `.github/workflows/forge-mirror.yml` in the GitHub repository. Replace the commit, the owner id and the repository name, and the bucket settings (or use `storage-kind: platform` and drop the `s3-*` lines and the two `S3_*` secrets).
 
 ```yaml
 name: Forge mirror
@@ -236,26 +236,14 @@ concurrency: { group: forge-mirror, cancel-in-progress: false }
 jobs:
   mirror:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions: { contents: read, issues: read, pull-requests: read }
     steps:
-      # Until the first Dash Forge release, build the binaries (see below).
-      - name: Install protoc
-        run: |
-          curl -sSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip
-          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
-      - name: Build dg, git-remote-dash and forge-import
-        env:
-          DASH_FORGE_REF: <a dash-forge commit you have reviewed>
-        run: |
-          git clone https://github.com/PastaPastaPasta/dash-forge "$RUNNER_TEMP/dash-forge"
-          cd "$RUNNER_TEMP/dash-forge" && git checkout --detach "$DASH_FORGE_REF"
-          cargo build --release --locked -p dg -p git-remote-dash -p forge-import
-          echo "$RUNNER_TEMP/dash-forge/target/release" >> "$GITHUB_PATH"
-
-      - uses: PastaPastaPasta/dash-forge/action@<the same commit>
+      # A dash-forge commit you have reviewed (all 40 characters).
+      - uses: PastaPastaPasta/dash-forge/action@<commit>
         with:
           repo: dash://<owner identity id>/<repo name>
-          network: devnet                 # the default is mainnet, which has no Forge deployment yet
+          network: devnet                 # Forge's network today (also the Action's default)
           devnet-name: bonsia
           sync: code,releases,issues,prs
           storage-kind: s3
@@ -264,7 +252,7 @@ jobs:
           s3-bucket: forge
           s3-public-url: https://pub-9a1.r2.dev
           cost-cap: '0.05'
-          install: 'false'                # use the binaries built above
+          install: 'source'               # build dg, git-remote-dash and forge-import from <commit>
         env:
           DASH_FORGE_KEY: ${{ secrets.DASH_FORGE_KEY }}
           S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
@@ -278,8 +266,9 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 
 Before you copy it:
 
-- **No release is published yet.** The Action's default `install: 'true'` downloads a release with `install.sh`, so for now it has nothing to install; that is why the workflow builds the binaries and passes `install: 'false'`. The first build takes several minutes; [`Swatinem/rust-cache`](https://github.com/Swatinem/rust-cache) speeds up later runs. [`.github/workflows/mirror-action.yml`](../../.github/workflows/mirror-action.yml) is this repository's own live test of the Action. Once releases exist, drop the two build steps and `install: 'false'`.
-- **Pin a reviewed commit** for both the build and the Action. The binaries run with your key, so building whatever `master` holds on each run would hand the key to any future change there.
+- **No release is published yet,** so the Action builds the tools itself. `install: 'source'` compiles them from the commit in `uses:` (Rust is preinstalled on `ubuntu-latest`; the Action installs a pinned, checksummed protoc). The first build takes several minutes, and the Action caches it for later runs. The default, `install: 'true'`, does the same while the release it pins is unpublished, and downloads that release once it exists. [`.github/workflows/mirror-action.yml`](../../.github/workflows/mirror-action.yml) is this repository's own live test of the Action. To build the tools in your own steps instead, put them on `PATH` and set `install: 'false'`.
+- **Pin a reviewed commit** in `uses:`. The binaries run with your key, so building whatever `master` holds on each run would hand the key to any future change there.
+- **Forge runs on devnet bonsia.** The Action's default network is the one the hosted site uses. Mainnet and testnet have no Forge deployment yet, so `network: mainnet` fails until one is registered.
 - **Anyone who can open an issue or a PR can make a run spend**, up to `cost-cap` per event, until the key's budget or the identity's balance runs out. On a busy public repository, drop the event triggers and let the daily schedule do the work, or remove `issues,prs` from `sync`.
 - **Status.** `ok`, `dry_run` and `partial` succeed (`partial` with a warning, since the next run retries; `fail-on-partial: 'true'` fails it). `cap_exceeded` and `error` fail the step. The job summary shows what was written, the spend against the estimate, and the runner key's remaining budget and expiry.
 - Release assets are not copied. They are recorded by GitHub URL with a sha256: GitHub's digest when it reports one, otherwise one the importer computes by downloading the asset once (nothing is kept, and a re-run reuses the recorded hash). An asset that cannot be hashed is recorded without one, with a warning; `dg release download` and the web refuse to hand out such an asset unverified. GitHub's download links cannot be read by a web page (no CORS), so the web's release page links to them directly and offers to check the downloaded file against the hash.
