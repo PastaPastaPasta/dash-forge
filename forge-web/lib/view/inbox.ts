@@ -5,7 +5,8 @@
  * **Subscriptions** (recomputed every {@link SUBS_TTL_MS}): repos I own or belong to (`repo` by
  * `$ownerId`, `maintainer`/`writer` by `memberId`), repos I starred (opt-in, `star.byOwner`),
  * and the issues and PRs I opened (`issue`/`patch` `author`), commented on (`comment.author`
- * → `targetId`), was assigned to or asked to review (`event.addressee`, QW2-009), reviewed (RC2 S3
+ * → `targetId`), was assigned to or asked to review (`event.addressee` and `authorEvent.addressee`,
+ * QW2-009: a PR author who is not a member asks with an `authorEvent`), reviewed (RC2 S3
  * `review.author`, where the registered forge-collab has it), and those this browser saw me
  * review or be mentioned in (`./participation`: a mention has no index, nor a review without S3).
  * Both sets are capped ({@link MAX_REPOS}, {@link MAX_THREADS}), newest first.
@@ -17,7 +18,8 @@
  * **Feeds**, one proof-checked query each, `$createdAt > cursor` ascending, {@link PAGE} rows:
  *   - my repos: new issues and PRs (`issue`/`patch` `created`), pushes (opt-in, the reflogs);
  *   - repos holding my threads: what happened on those threads (`event` `feed`: labels, assignees)
- *     and their state changes (`transition` `feed`);
+ *     and their state changes (`transition` `feed`); where I was asked for a review, the PR
+ *     author's own requests too (`authorEvent` `feed`: a non-member author's review request);
  *   - each thread: comments (`comment.target`); each PR I opened: reviews (`review.patch`), or,
  *     where the registered forge-collab has the RC2 S2 `review.toAuthor` index, one feed of the
  *     reviews on every PR I opened (`patchId.$ownerId`), past the thread cap too.
@@ -181,7 +183,7 @@ export interface InboxItem {
 export type Feed =
   | { readonly kind: 'new'; readonly type: 'issue' | 'patch'; readonly repo: RepoLite }
   | { readonly kind: 'push'; readonly type: 'refUpdate' | 'protectedRefUpdate'; readonly repo: RepoLite }
-  | { readonly kind: 'state'; readonly type: 'event' | 'transition'; readonly repo: RepoLite; readonly threads: readonly ThreadSub[] }
+  | { readonly kind: 'state'; readonly type: 'event' | 'authorEvent' | 'transition'; readonly repo: RepoLite; readonly threads: readonly ThreadSub[] }
   | { readonly kind: 'comments'; readonly thread: ThreadSub }
   | { readonly kind: 'reviews'; readonly thread: ThreadSub }
   /** The reviews on every PR `owner` opened (S2 `toAuthor`); `threads` name the PRs already known. */
@@ -219,6 +221,11 @@ export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string): 
   for (const [, threads] of threadsByRepo) {
     const repo = threads[0]!.repo
     feeds.push({ kind: 'state', type: 'event', repo, threads }, { kind: 'state', type: 'transition', repo, threads })
+    // A PR author who is not a member asks for a review with an `authorEvent`. Of its kinds only
+    // a review request naming me is news ({@link stateWhat}), and the addressee index has already
+    // made such a thread 'review-requested': read the feed for those threads only.
+    const asked = threads.filter((t) => (t.reasons ?? [t.reason]).includes('review-requested'))
+    if (asked.length > 0) feeds.push({ kind: 'state', type: 'authorEvent', repo, threads: asked })
   }
   for (const { repo, reason } of subs.repos) {
     if (reason === 'starred' && !prefs.stars) continue
@@ -412,8 +419,10 @@ export function transitionWhat(kind: number): string | null {
 }
 
 /**
- * What an `event` kind means to a reader of the inbox (state kinds are transitions). `refId`: the
- * identity an assign names (also in `value`, which a private repo seals) or a review request asks.
+ * What an `event` or `authorEvent` kind means to a reader of the inbox (state kinds are
+ * transitions; the kinds share their codes, and of an author's only the review request is news).
+ * `refId`: the identity an assign names (also in `value`, which a private repo seals) or a review
+ * request asks.
  */
 export function stateWhat(kind: number, value: string | undefined, me: string, refId?: string): string | null {
   const who = refId ?? value

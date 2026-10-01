@@ -8,7 +8,26 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { idbGet, idbPut, resetMemoryStores } from '../idb'
 import type { DocumentQuery } from '../sdk'
-import { computeSubscriptions, DEFAULT_PREFS, followMentions, groupThreads, matchesFilter, pollOnce, stateWhat, subsByThread, threadReasons, toItems, watchCounts, type Feed, type InboxItem, type Subscriptions, type ThreadSub } from './inbox'
+import {
+  computeSubscriptions,
+  DEFAULT_PREFS,
+  feedQuery,
+  followMentions,
+  groupThreads,
+  loadItems,
+  matchesFilter,
+  planFeeds,
+  pollOnce,
+  stateWhat,
+  subsByThread,
+  threadReasons,
+  toItems,
+  watchCounts,
+  type Feed,
+  type InboxItem,
+  type Subscriptions,
+  type ThreadSub,
+} from './inbox'
 import { listParticipation, MAX_PARTICIPATION, noteParticipation } from './participation'
 
 const ME = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
@@ -24,8 +43,8 @@ const thread = (over: Partial<ThreadSub> = {}): ThreadSub => ({ id: ISSUE_ID, ki
 
 beforeEach(() => resetMemoryStores())
 
-/** A chain of documents answering `==`, `in` and `>` / `>=` / `<=` where clauses. */
-function chainSdk(docs: readonly Record<string, unknown>[]): EvoSDK {
+/** A chain of documents answering `==`, `in` and `>` / `>=` / `<=` where clauses. Every query is recorded. */
+function chainSdk(docs: readonly Record<string, unknown>[]): EvoSDK & { queries: DocumentQuery[] } {
   const holds = (d: Record<string, unknown>, [f, op, v]: readonly unknown[]): boolean => {
     const x = d[f as string]
     if (op === 'in') return (v as unknown[]).includes(x)
@@ -33,16 +52,19 @@ function chainSdk(docs: readonly Record<string, unknown>[]): EvoSDK {
     const n = v as number
     return op === '>' ? (x as number) > n : op === '>=' ? (x as number) >= n : op === '<' ? (x as number) < n : (x as number) <= n
   }
+  const queries: DocumentQuery[] = []
   return {
+    queries,
     // An RC1 forge-collab: no RC2 review indexes.
     contracts: { fetch: async () => ({ schemas: {} }) },
     documents: {
       query: async (q: DocumentQuery) => {
+        queries.push(q)
         const rows = docs.filter((d) => d['type'] === q.documentTypeName && (q.where ?? []).every((w) => holds(d, w)))
         return new Map(rows.slice(0, q.limit ?? 100).map((d) => [String(d['$id']), d]))
       },
     },
-  } as unknown as EvoSDK
+  } as unknown as EvoSDK & { queries: DocumentQuery[] }
 }
 
 describe('stateWhat and reasons', () => {
@@ -115,6 +137,57 @@ describe('computeSubscriptions (QW2-009)', () => {
     const byId = new Map(subs.threads.map((t) => [t.id, t]))
     expect(byId.get(ISSUE_ID)).toMatchObject({ reason: 'author', reasons: ['author', 'assigned'], since: 100 })
     expect(byId.get(PR_ID)).toMatchObject({ reason: 'commented', reasons: ['commented', 'review-requested'], since: 2999 })
+  })
+})
+
+describe('a review request from a PR author who is not a member (P1-1)', () => {
+  // MAINTAINER owns the repo; OTHER opened #2 and is no member, so OTHER's request is an
+  // `authorEvent`, not an `event`.
+  const MAINTAINER = REVIEWED_ID
+  const docs = [
+    { type: 'repo', $id: REPO_ID, $ownerId: MAINTAINER, $createdAt: 1, name: 'demo' },
+    { type: 'patch', $id: PR_ID, $ownerId: OTHER, $createdAt: 200, repoId: REPO_ID, number: 2, title: 'Fix' },
+    { type: 'authorEvent', $id: 'ae1', $ownerId: OTHER, $createdAt: 7000, repoId: REPO_ID, targetId: PR_ID, kind: 13, refId: ME },
+    // A request of another reviewer, and the author resolving a thread: not news to me.
+    { type: 'authorEvent', $id: 'ae2', $ownerId: OTHER, $createdAt: 7001, repoId: REPO_ID, targetId: PR_ID, kind: 13, refId: MAINTAINER },
+    { type: 'authorEvent', $id: 'ae3', $ownerId: OTHER, $createdAt: 7002, repoId: REPO_ID, targetId: PR_ID, kind: 11, refId: 'c1' },
+  ]
+  const isAddressee = (q: DocumentQuery): boolean => (q.where ?? []).some(([f, op, v]) => f === 'refId' && op === '==' && v === ME)
+
+  it('follows the PR, with one more addressee read than before', async () => {
+    const sdk = chainSdk(docs)
+    const subs = await computeSubscriptions(sdk, 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000)
+    expect(subs.threads).toEqual([expect.objectContaining({ id: PR_ID, kind: 'pull', reason: 'review-requested', since: 6999 })])
+    expect(subs.incomplete ?? []).toEqual([])
+    // The member events' addressee index and the author events' one, once each, and no other
+    // `authorEvent` read.
+    expect(sdk.queries.filter(isAddressee).map((q) => q.documentTypeName).sort()).toEqual(['authorEvent', 'event'])
+    expect(sdk.queries.filter((q) => q.documentTypeName === 'authorEvent')).toHaveLength(1)
+  })
+
+  it('reads the author events only of repos holding threads I was asked to review', () => {
+    const asked = thread({ id: PR_ID, kind: 'pull', number: 2, reason: 'commented', reasons: ['commented', 'review-requested'] })
+    const other = thread({ id: REVIEWED_ID, kind: 'pull', number: 3, reason: 'author' })
+    const elsewhere = thread({ id: ISSUE_ID, repo: { ...REPO, id: 'OTHER-REPO' }, reason: 'commented' })
+    const subs: Subscriptions = { at: 1000, repos: [], threads: [asked, other, elsewhere], droppedRepos: 0, droppedThreads: 0 }
+    const state = planFeeds(subs, DEFAULT_PREFS, ME).filter((f) => f.kind === 'state')
+    expect(state.map((f) => (f.kind === 'state' ? [f.type, f.repo.id, f.threads.map((t) => t.id)] : null))).toEqual([
+      ['event', REPO_ID, [PR_ID, REVIEWED_ID]],
+      ['transition', REPO_ID, [PR_ID, REVIEWED_ID]],
+      ['authorEvent', REPO_ID, [PR_ID]],
+      ['event', 'OTHER-REPO', [ISSUE_ID]],
+      ['transition', 'OTHER-REPO', [ISSUE_ID]],
+    ])
+    // The feed is the repo's `authorEvent` `feed` index, in forge-community.
+    const f = state.find((x) => x.kind === 'state' && x.type === 'authorEvent')!
+    expect(feedQuery(FORGE, f, { at: 5 })).toMatchObject({ dataContractId: 'COMMUNITY', documentTypeName: 'authorEvent', where: [['repoId', '==', REPO_ID], ['$createdAt', '>', 5]] })
+  })
+
+  it('notifies the reviewer asked, and only them', async () => {
+    const sdk = chainSdk(docs)
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 10_000 })
+    const items = await loadItems('devnet', ME)
+    expect(items.map((i) => [i.id, i.what, i.reason, i.target?.number])).toEqual([['ae1', 'requested your review', 'review_requested', 2]])
   })
 })
 
