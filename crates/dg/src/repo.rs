@@ -549,24 +549,27 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
     }
     // `archived` is `null` when the config cannot be read, not a guessed `false` (QW-081);
     // likewise `description` (`""` when the repo has none, as `repo list` has it).
-    let (default_branch, config, description) = tokio::join!(
+    let member_reader = MemberReader::new(client);
+    let (default_branch, config, description, refs, manifests, members) = tokio::join!(
         svc.read_default_branch(handle),
         svc.current_config(handle),
-        repo_description(client, handle)
+        repo_description(client, handle),
+        svc.read_refs(handle),
+        svc.read_pack_manifests(handle),
+        member_reader.list(handle),
     );
-    let default_branch = default_branch.unwrap_or(None);
     let archived = config.ok().map(|c| c.archived);
     let description = description.ok();
     let visibility = match handle.visibility {
         Visibility::Private => "private",
         Visibility::Public => "public",
     };
-    let refs = live_refs(svc.read_refs(handle).await.unwrap_or_default());
-    let manifests = svc.read_pack_manifests(handle).await.unwrap_or_default();
-    let members = MemberReader::new(client)
-        .list(handle)
-        .await
-        .map_or(0, |m| m.len());
+    let ViewListing {
+        default_branch,
+        refs,
+        manifests,
+        members,
+    } = view_listing(default_branch, refs, manifests, members.map(|m| m.len()))?;
 
     let refs_json: Vec<_> = refs
         .iter()
@@ -622,6 +625,31 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// What `repo view` lists: the default branch, live refs, pack manifests and member count.
+struct ViewListing {
+    default_branch: Option<String>,
+    refs: Vec<(String, forge_core::rules::RefState)>,
+    manifests: Vec<forge_core::repo::PackManifestInfo>,
+    members: usize,
+}
+
+/// Every read `repo view` lists must have succeeded: a failed read (a DAPI outage, an
+/// incomplete history) is the error, named, not a repo shown with no refs, no packs and no
+/// members, which reads as "this repository is empty".
+fn view_listing(
+    default_branch: forge_core::Result<Option<String>>,
+    refs: forge_core::Result<Vec<(String, forge_core::rules::RefState)>>,
+    manifests: forge_core::Result<Vec<forge_core::repo::PackManifestInfo>>,
+    members: forge_core::Result<usize>,
+) -> Result<ViewListing> {
+    Ok(ViewListing {
+        default_branch: default_branch.context("reading the default branch")?,
+        refs: live_refs(refs.context("reading the refs")?),
+        manifests: manifests.context("reading the pack manifests")?,
+        members: members.context("reading the members")?,
+    })
 }
 
 /// Keep only refs that currently point at a commit: `read_refs` enumerates every ref name
@@ -767,6 +795,43 @@ mod tests {
         assert!(fork_estimate(&[1, 1], 3) > fork_estimate(&[1, 1], 2));
         // A pack replicated to more stores records more URIs, and costs more.
         assert!(fork_estimate(&[4, 4], 2) > fork_estimate(&[1, 1], 2));
+    }
+
+    /// A DAPI failure on any listed read is an error naming that read, never an empty repo
+    /// (`refs: 0`, `packs: 0`, `members: 0`).
+    #[test]
+    fn repo_view_surfaces_a_failed_read_instead_of_an_empty_repo() {
+        let down = || forge_core::Error::Timeout { retryable: true };
+        let ok = view_listing(Ok(Some("main".into())), Ok(vec![]), Ok(vec![]), Ok(2)).unwrap();
+        assert_eq!(ok.default_branch.as_deref(), Some("main"));
+        assert_eq!(ok.members, 2);
+
+        let cases = [
+            (
+                view_listing(Err(down()), Ok(vec![]), Ok(vec![]), Ok(1)),
+                "default branch",
+            ),
+            (
+                view_listing(Ok(None), Err(down()), Ok(vec![]), Ok(1)),
+                "refs",
+            ),
+            (
+                view_listing(Ok(None), Ok(vec![]), Err(down()), Ok(1)),
+                "pack manifests",
+            ),
+            (
+                view_listing(Ok(None), Ok(vec![]), Ok(vec![]), Err(down())),
+                "members",
+            ),
+        ];
+        for (r, what) in cases {
+            let Err(e) = r else {
+                panic!("a failed {what} read rendered as a repo")
+            };
+            let msg = format!("{e:#}");
+            assert!(msg.contains(what), "{msg}");
+            assert!(msg.contains("timed out"), "the cause is kept: {msg}");
+        }
     }
 
     #[test]
