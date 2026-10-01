@@ -189,7 +189,10 @@ def check(contracts):
                             problems.append(f'40137 {at}: no unique index of {target_name}.{rt} over exactly {sorted(keys)}')
                         if td.get('indexOnly'):
                             problems.append(f'40137 {at}: {rt} is indexOnly, which findBy cannot reference')
-                        fixed = SYSTEM_FIXED | set(td.get('immutable', []))
+                        # Only a name listed outright is fixed: a property frozen under a v5
+                        # condition is "not fixed once written", so a findBy key may not rely
+                        # on it (book contract-keywords/mutability.md:131)
+                        fixed = SYSTEM_FIXED | {e for e in td.get('immutable', []) if isinstance(e, str)}
                         for k, src in keys.items():
                             dk = SYSTEM_KINDS.get(k) if k.startswith('$') else (kind(tc, target_props[k]) if k in target_props else None)
                             sk = source_kind(src)
@@ -259,6 +262,8 @@ def self_test(d):
         ('40121', 'unknown type', lambda cs: cs['forge-community']['documentSchemas']['checkRun']['properties']['repoId']['refersTo'].update({"documentType": "nope"})),
         ('40137', 'findBy with no unique index', lambda cs: cs['forge-community']['documentSchemas']['webhook']['ownerRefersTo']['findBy'].update({"repoId": "repoId", "memberId": ".", "vis": "vis"})),
         ('40137', 'findBy into a type whose key can move', lambda cs: cs['forge-core']['documentSchemas']['maintainer'].update({"documentsMutable": True})),
+        ('40137', 'findBy into a type whose key is frozen only under a condition', lambda cs: cs['forge-core']['documentSchemas']['maintainer'].update({
+            "documentsMutable": True, "immutable": [{"property": p, "when": {"present": f"$old.{p}"}} for p in ('repoId', 'memberId')]})),
         ('40126', 'where on an element reference', lambda cs: cs['forge-community']['documentSchemas']['policy']['properties']['requiredCheckSources']['items']['refersTo']['anyOf'][1].update({"where": {"vis": "requiredApprovals"}})),
         ('40121', 'a collab-placeholder leaf naming a missing type', lambda cs: cs['forge-community']['documentSchemas']['event']['properties']['targetId']['refersTo']['anyOf'][0].update({"documentType": "nope"})),
         ('40121', 'a reference to a contract registered later', lambda cs: cs['forge-core']['documentSchemas']['repo']['properties']['forkOf']['refersTo'].update({"contractId": "FORGE_COLLAB_CONTRACT_ID", "documentType": "issue"})),

@@ -160,63 +160,6 @@
           ],
           "terminal": "repoId",
           "countable": true
-        }
-      ],
-      "required": [
-        "repoId"
-      ],
-      "additionalProperties": false
-    },
-    "starBeat": {
-      "type": "object",
-      "documentsMutable": false,
-      "canBeDeleted": false,
-      "indexOnly": true,
-      "properties": {
-        "repoId": {
-          "type": "array",
-          "byteArray": true,
-          "minItems": 32,
-          "maxItems": 32,
-          "contentMediaType": "application/x.dash.dpp.identifier",
-          "refersTo": {
-            "type": "permanentDocument",
-            "contractId": "FORGE_CORE_CONTRACT_ID",
-            "documentType": "repo",
-            "where": {
-              "visibility": "vis",
-              "$ownerId": "repoOwner"
-            }
-          },
-          "position": 0
-        },
-        "vis": {
-          "type": "string",
-          "enum": [
-            "public"
-          ],
-          "maxLength": 6,
-          "position": 1
-        },
-        "repoOwner": {
-          "type": "array",
-          "byteArray": true,
-          "minItems": 32,
-          "maxItems": 32,
-          "contentMediaType": "application/x.dash.dpp.identifier",
-          "distinctFrom": "$ownerId",
-          "position": 2
-        }
-      },
-      "indices": [
-        {
-          "name": "byOwner",
-          "properties": [
-            {
-              "$ownerId": "asc"
-            }
-          ],
-          "terminal": "repoId"
         },
         {
           "name": "byWeek",
@@ -235,20 +178,15 @@
             "ttl": 604800
           },
           "rangeCountable": true,
-          "rankedCountable": true
+          "rankedCountable": true,
+          "outlivesDelete": true
         }
       ],
       "required": [
-        "$createdAt",
         "repoId",
-        "vis",
-        "repoOwner"
+        "$createdAt"
       ],
-      "additionalProperties": false,
-      "entryPayload": [
-        "vis",
-        "repoOwner"
-      ]
+      "additionalProperties": false
     },
     "watch": {
       "type": "object",
@@ -510,11 +448,86 @@
         "repoId",
         "headOid",
         "name",
-        "startedAt",
-        "completedAt",
-        "conclusion",
-        "externalId",
-        "vis"
+        "vis",
+        {
+          "property": "startedAt",
+          "when": {
+            "present": "$old.startedAt"
+          }
+        },
+        {
+          "property": "completedAt",
+          "when": {
+            "present": "$old.completedAt"
+          }
+        },
+        {
+          "property": "conclusion",
+          "when": {
+            "present": "$old.conclusion"
+          }
+        },
+        {
+          "property": "externalId",
+          "when": {
+            "present": "$old.externalId"
+          }
+        },
+        {
+          "property": "summary",
+          "when": {
+            "equal": [
+              "$old.status",
+              {
+                "const": "completed"
+              }
+            ]
+          }
+        },
+        {
+          "property": "detailsUrl",
+          "when": {
+            "equal": [
+              "$old.status",
+              {
+                "const": "completed"
+              }
+            ]
+          }
+        },
+        {
+          "property": "logUrl",
+          "when": {
+            "equal": [
+              "$old.status",
+              {
+                "const": "completed"
+              }
+            ]
+          }
+        },
+        {
+          "property": "logSha256",
+          "when": {
+            "equal": [
+              "$old.status",
+              {
+                "const": "completed"
+              }
+            ]
+          }
+        },
+        {
+          "property": "artifacts",
+          "when": {
+            "equal": [
+              "$old.status",
+              {
+                "const": "completed"
+              }
+            ]
+          }
+        }
       ],
       "ownerRefersTo": {
         "anyOf": [
@@ -963,13 +976,7 @@
             }
           ]
         }
-      },
-      "immutableAllowSetting": [
-        "startedAt",
-        "completedAt",
-        "conclusion",
-        "externalId"
-      ]
+      }
     },
     "policy": {
       "type": "object",
