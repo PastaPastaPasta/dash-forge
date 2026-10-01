@@ -90,6 +90,26 @@ pub const MS_EPOCH: u64 = 1_000_000_000_000;
 pub const PRIVATE_TEXT_FIELDS: [&str; 5] =
     ["summary", "detailsUrl", "logUrl", "artifacts", "externalId"];
 
+/// A run's set-once fields, by property name: forge-community freezes each once it is set
+/// (`immutableAllowSetting` on RC1, `"when": {"present": "$old.<field>"}` on RC2), and
+/// [`check_run_write`] only ever sets them on a run that does not hold them yet.
+pub const SET_ONCE_FIELDS: [&str; 4] = ["startedAt", "completedAt", "conclusion", "externalId"];
+
+/// A completed run's evidence, by property name. RC2 forge-community (S1) freezes these once the
+/// stored run is `completed` (`immutable` entries with `"when": {"equal": ["$old.status",
+/// {"const": "completed"}]}`), and consensus refuses a replace that changes one with 40128
+/// (`DocumentImmutablePropertyChangedError`). So a report that continues a completed run (the
+/// same completion again, such as a runner's retry after an ambiguous failure) leaves them as
+/// stored: [`CheckReport::replace_changes`].
+pub const EVIDENCE_FIELDS: [&str; 5] =
+    ["summary", "detailsUrl", "logUrl", "logSha256", "artifacts"];
+
+/// Whether `stored`'s [`EVIDENCE_FIELDS`] are final: it is a completed run.
+#[must_use]
+pub fn evidence_frozen(stored: &FetchedDocument) -> bool {
+    stored.field_str("status").as_deref() == Some("completed")
+}
+
 /// A `checkRun`'s `outcome` (`outcomeOf`): 0 while the run is not completed, 1 for a completed
 /// run that passed (`success`, `neutral`, `skipped`), 2 for any other conclusion.
 #[must_use]
@@ -520,6 +540,24 @@ impl CheckReport {
         }
         c
     }
+
+    /// What a replace of `stored` with this report sets: [`Self::changes`], less the
+    /// [`EVIDENCE_FIELDS`] when `stored` already completed ([`evidence_frozen`]). Those stay as
+    /// stored, so the same completion reported again writes nothing new rather than being
+    /// refused at consensus.
+    pub(crate) fn replace_changes(
+        &self,
+        w: &RunWrite,
+        stored: &FetchedDocument,
+    ) -> BTreeMap<String, Option<FieldValue>> {
+        let mut c = self.changes(w);
+        if evidence_frozen(stored) {
+            for f in EVIDENCE_FIELDS {
+                c.remove(f);
+            }
+        }
+        c
+    }
 }
 
 /// A stored `checkRun` as the monotonic rules read it.
@@ -648,7 +686,7 @@ impl<'a> CheckRuns<'a> {
                     &plan.community,
                     DOC_CHECK_RUN,
                     &run.id,
-                    &report.changes(&plan.write),
+                    &report.replace_changes(&plan.write, run),
                 )
                 .await?;
             return Ok(Reported {
@@ -692,6 +730,13 @@ impl ReportPlan {
     /// Whether the report replaces an existing run (else it creates one).
     pub fn replaces(&self) -> bool {
         self.target.is_some()
+    }
+
+    /// Whether the report continues a run that already completed, whose evidence (summary,
+    /// details link, log, artifacts) stays as stored ([`EVIDENCE_FIELDS`]): a caller need not
+    /// upload a log or artifacts the write will not record.
+    pub fn evidence_frozen(&self) -> bool {
+        self.target.as_ref().is_some_and(evidence_frozen)
     }
 
     /// The report's fields left out because the repository is private (`privateNoText`), as
@@ -892,7 +937,11 @@ mod tests {
         now: u64,
     ) -> (RunWriteAction, BTreeMap<String, Option<FieldValue>>) {
         let w = r.write(stored, now).expect("a valid report");
-        (w.action, r.changes(&w))
+        let c = match (w.action, stored) {
+            (RunWriteAction::Replace, Some(s)) => r.replace_changes(&w, s),
+            _ => r.changes(&w),
+        };
+        (w.action, c)
     }
 
     #[test]
@@ -1023,6 +1072,22 @@ mod tests {
         let (action, c) = written(&report("completed", Some("success")), Some(&finished), 99);
         assert_eq!(action, RunWriteAction::Replace);
         assert_eq!(c.keys().collect::<Vec<_>>(), ["outcome", "status"]);
+        // Nor does a repeat that carries other evidence (a runner's retry without its
+        // artifacts): a completed run's summary, links, log and artifacts are frozen (RC2 S1),
+        // so they stay as stored instead of drawing 40128.
+        let mut again = report("completed", Some("success"));
+        again.summary = Some("ok; artifacts not recorded: their upload failed".into());
+        again.details_url = Some("https://ci.example.com/run/2".into());
+        again.log = Some(("https://x/log2".into(), [9; 32]));
+        again.artifacts = Some("[]".into());
+        let (action, c) = written(&again, Some(&finished), 99);
+        assert_eq!(action, RunWriteAction::Replace);
+        assert_eq!(c.keys().collect::<Vec<_>>(), ["outcome", "status"]);
+        // A run that completes now still records its evidence.
+        let (_, c) = written(&again, Some(&running), 99);
+        for f in EVIDENCE_FIELDS {
+            assert!(c.contains_key(f), "{f}");
+        }
         // A backwards report or a changed conclusion is a new run with its own times.
         let (action, c) = written(&report("queued", None), Some(&finished), 99);
         assert_eq!(action, RunWriteAction::Create);
