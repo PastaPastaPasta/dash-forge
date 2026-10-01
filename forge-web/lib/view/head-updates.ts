@@ -27,12 +27,15 @@ export interface HeadUpdatePhrase {
 /**
  * The words for each head update, by its event id. `pushers` maps a commit to the identity whose
  * ref update first set the PR's source branch to it ({@link firstPushers}); empty: unknown.
+ * `base`, when given, is a base commit the PR is compared with: commits it already has (the base
+ * commits an "Update branch" merge brings in) are not counted as pushed.
  */
 export async function headUpdatePhrases(
   reader: ObjectReader,
   initialHead: string,
   updates: readonly HeadUpdate[],
   pushers: ReadonlyMap<string, string> = new Map(),
+  base = '',
 ): Promise<Map<string, HeadUpdatePhrase>> {
   const out = new Map<string, HeadUpdatePhrase>()
   let prev = initialHead
@@ -44,7 +47,7 @@ export async function headUpdatePhrases(
     try {
       if (prev === u.oid) phrase = { text: `re-posted the head ${u.oid.slice(0, 7)}` }
       else if (prev !== '') {
-        const added = await newCommits(reader, u.oid, [prev], WALK_CAP)
+        const added = await newCommits(reader, u.oid, base === '' ? [prev] : [prev, base], WALK_CAP)
         // The old head is in the new one's history when walking it back from the new head
         // finds nothing new.
         const descends = (await newCommits(reader, prev, [u.oid], WALK_CAP)).length === 0

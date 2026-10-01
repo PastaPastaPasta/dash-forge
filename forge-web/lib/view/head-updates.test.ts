@@ -38,6 +38,19 @@ describe('headUpdatePhrases', () => {
     const own = await headUpdatePhrases(s.reader(), h1, [at('u1', h2, 1, 'member')], pushers)
     expect(own.get('u1')).toEqual({ text: `pushed 1 commit (${h1.slice(0, 7)} → ${h2.slice(0, 7)})` })
   })
+
+  it('does not count the base commits an "Update branch" merge brought in', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ a: '1' }), [], 'root')
+    const head = s.commit(s.files({ a: '1', p: 'x' }), [root], 'pr')
+    const b1 = s.commit(s.files({ a: '2' }), [root], 'base 1')
+    const b2 = s.commit(s.files({ a: '3' }), [b1], 'base 2')
+    const merged = s.commit(s.files({ a: '3', p: 'x' }), [head, b2], 'merge main')
+    const plain = await headUpdatePhrases(s.reader(), head, [at('u1', merged, 1)])
+    expect(plain.get('u1')?.text).toMatch(/^pushed 3 commits/)
+    const based = await headUpdatePhrases(s.reader(), head, [at('u1', merged, 1)], new Map(), b2)
+    expect(based.get('u1')).toEqual({ text: `pushed 1 commit (${head.slice(0, 7)} → ${merged.slice(0, 7)})` })
+  })
 })
 
 describe('firstPushers', () => {

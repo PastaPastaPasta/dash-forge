@@ -362,19 +362,21 @@ function PullPage({
   // The repo holding the PR's source branch: this one for a same-repo PR, else the fork once read.
   const sourceRefOf = (): RepoRef | null =>
     pull.sourceId === '' || pull.sourceId === repo.repoId ? repo : comparison.source.kind === 'found' ? comparison.source.repo : null
-  // Who pushed each head (QW3-048): the source branch's ref updates, read only when someone other
-  // than the PR's author posted a head update (an author's own push is credited to them anyway).
-  const updatedByOthers = review.headUpdates.some((u) => u.actor !== pull.author)
+  // Who pushed each head (QW3-048): the source branch's ref updates (one read, both update
+  // types), on the Conversation tab only, where the timeline words each head update.
+  const wantPhrases = tab === 'conversation' && review.headUpdates.length > 0
   const pushers = useAsync(
     async () => firstPushers(await readBranchUpdates(sdk!, sourceRefOf()!, pull.sourceRefName!)),
     [ready, pull.sourceId, pull.sourceRefName ?? '', review.headUpdates.length, comparison.source.kind],
-    { enabled: ready && sdk !== null && updatedByOthers && pull.sourceRefName !== null && sourceRefOf() !== null },
+    { enabled: ready && sdk !== null && wantPhrases && pull.sourceRefName !== null && sourceRefOf() !== null },
   )
-  const pushersSettled = !updatedByOthers || pushers.settled
+  const pushersSettled = pull.sourceRefName === null || sourceRefOf() === null || pushers.settled
+  // Commits the base already had (an "Update branch" merge brings them in) are not counted as pushed.
+  const comparedBase = cmp === null || cmp.fellBack === true ? '' : cmp.comparedBaseOid
   const phrases = useAsync(
-    () => headUpdatePhrases(headReader!, pull.initialHeadOid, review.headUpdates, pushers.data ?? undefined),
-    [comparison.sidesKey, review.headUpdates.map((u) => u.id).join(','), headReader === null, pushers.data === null ? 0 : pushers.data.size],
-    { enabled: headReader !== null && review.headUpdates.length > 0 && pushersSettled },
+    () => headUpdatePhrases(headReader!, pull.initialHeadOid, review.headUpdates, pushers.data ?? undefined, comparedBase),
+    [comparison.sidesKey, review.headUpdates.map((u) => u.id).join(','), headReader === null, pushers.data === null ? 0 : pushers.data.size, comparedBase],
+    { enabled: headReader !== null && wantPhrases && pushersSettled && cmp !== null },
   )
 
   // ---- checks on the head ---------------------------------------------------------------------
