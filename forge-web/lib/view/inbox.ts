@@ -328,22 +328,27 @@ export function backfillWindow(thread: ThreadSub, cursor: Cursor, floor: number)
   return (at) => at > from && at <= cursor.at
 }
 
-/** What the per-PR review feeds read before the S2 feed took over: PR id → read up to (ms). */
-async function oldReviewCursors(prefix: string): Promise<Map<string, number>> {
-  const out = new Map<string, number>()
+/** What the per-PR review feeds read before the S2 feed took over: PR id → its cursor. */
+async function oldReviewCursors(prefix: string): Promise<Map<string, Cursor>> {
+  const out = new Map<string, Cursor>()
   const head = `${prefix}cursor:reviews:`
   for (const [k, v] of await idbEntries<unknown>('inbox', head)) {
-    const at = asCursor(v)?.at
-    if (at !== undefined) out.set(k.slice(head.length), at)
+    const c = asCursor(v)
+    if (c !== undefined) out.set(k.slice(head.length), c)
   }
   return out
 }
 
-/** Whether a review was within what its PR's own feed had read (`old`, {@link oldReviewCursors}). */
-function readByOldFeed(d: PlainDocument, old: ReadonlyMap<string, number>): boolean {
+/**
+ * Whether a review was within what its PR's own feed had read (`old`, {@link oldReviewCursors}).
+ * A cursor that stopped inside a block (`afterId`) read only part of its last timestamp: those
+ * reviews count as unread (one may be stored twice, by id never; none is lost).
+ */
+function readByOldFeed(d: PlainDocument, old: ReadonlyMap<string, Cursor>): boolean {
   const [r] = parseDocs(reviewOnDoc, [d])
-  const at = r === undefined ? undefined : old.get(r.patchId)
-  return r !== undefined && at !== undefined && r.$createdAt <= at
+  const c = r === undefined ? undefined : old.get(r.patchId)
+  if (r === undefined || c === undefined) return false
+  return c.afterId === undefined ? r.$createdAt <= c.at : r.$createdAt < c.at
 }
 
 /** Failed backfill attempts of one thread before it is given up (its future events still come). */
@@ -849,7 +854,7 @@ export async function pollOnce(
     const cursor = asCursor(await idbGet<unknown>('inbox', key)) ?? start
     // The S2 feed after per-PR review feeds (an earlier build, or a contract without S2): what
     // each PR's feed already read is not stored again, so a pruned notification stays gone.
-    const oldReviews = f.kind === 'myReviews' ? await oldReviewCursors(p) : new Map<string, number>()
+    const oldReviews = f.kind === 'myReviews' ? await oldReviewCursors(p) : new Map<string, Cursor>()
     // A repo's state feed is shared by its threads: a thread that joined it after the cursor
     // moved past its events is read once from its own history (L-17).
     if (f.kind === 'state') {
@@ -907,8 +912,10 @@ export async function pollOnce(
     const page = parseDocs(baseDoc, docs).map((d) => ({ at: d.$createdAt, id: d.$id }))
     const next = advanceCursor(cursor, page, feedLimit(f))
     await idbPut('inbox', key, next)
-    // The per-PR review cursors an earlier read left: dropped once the S2 feed is past them all.
-    if (oldReviews.size > 0 && next.at >= Math.max(...oldReviews.values()) && !stopped()) {
+    // The per-PR review cursors an earlier read left: dropped once the S2 feed is wholly past
+    // them all (not inside the block of the last one).
+    const lastOld = Math.max(...[...oldReviews.values()].map((c) => c.at))
+    if (oldReviews.size > 0 && (next.at > lastOld || (next.at === lastOld && next.afterId === undefined)) && !stopped()) {
       await idbBatch('inbox', [...oldReviews.keys()].map((id) => [`${p}cursor:reviews:${id}`, undefined] as const))
     }
   }

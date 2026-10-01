@@ -494,9 +494,9 @@ export async function repoChromeTimelines(
   const hit = touch(key)
   if (hit === undefined || hit.repoId !== repo.repoId) return null
   // A read-on in flight is joined (as the browse cache joins a re-resolve in flight), a read
-  // answers within `maxAgeMs` if issued after `issuedAfter`; neither when it was issued before
-  // this tab's last write.
-  if (hit.generation === generationOf(key) && (hit.pending || (Date.now() - hit.at < maxAgeMs && hit.at > issuedAfter))) return hit.read
+  // answers within `maxAgeMs`; either only if issued after `issuedAfter` (a read-on started late
+  // still carries its composite's page), and neither when issued before this tab's last write.
+  if (hit.generation === generationOf(key) && hit.at > issuedAfter && (hit.pending || Date.now() - hit.at < maxAgeMs)) return hit.read
   const chrome = await readRepoChrome(sdk, repo.forge, repo.ownerId, repo.name, network)
   return chrome?.repo.repoId === repo.repoId ? chrome.read : null
 }

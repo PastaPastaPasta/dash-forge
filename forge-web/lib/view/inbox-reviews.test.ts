@@ -202,6 +202,21 @@ describe('the S2 feed', () => {
   })
 })
 
+describe('the switch from per-PR review feeds', () => {
+  const review = (id: string, at: number): Record<string, unknown> => ({ type: 'review', $id: id, $ownerId: OTHER, $createdAt: at, patchId: PR_ID, 'patchId.$ownerId': ME, verdict: 3 })
+
+  it("counts an old cursor's last block as unread when it stopped inside it", async () => {
+    await idbPut('inbox', `devnet:${ME}:subs`, subsWith([myPr()], { toAuthor: true, author: false }))
+    // #2's feed read part of the reviews at 1500 (up to v1) and none after.
+    await idbPut('inbox', `devnet:${ME}:cursor:reviews:${PR_ID}`, { at: 1500, afterId: 'v1' })
+    await pollOnce(chainSdk([review('v0', 1400), review('v1', 1500), review('v2', 1500)]), 'devnet', FORGE, ME, { now: 2000 })
+    // v0 was read; the block at 1500 is stored again rather than risk losing v2.
+    expect((await loadItems('devnet', ME)).map((i) => i.id).sort()).toEqual(['v1', 'v2'])
+    // The feed ended at 1500 on a short page (no afterId): past the old cursor's block, so it goes.
+    expect(await idbGet('inbox', `devnet:${ME}:cursor:reviews:${PR_ID}`)).toBeUndefined()
+  })
+})
+
 describe('computeSubscriptions with S3 (QW2-009)', () => {
   const docs = [
     { type: 'repo', $id: REPO_ID, $ownerId: OTHER, $createdAt: 1, name: 'demo' },

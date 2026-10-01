@@ -130,11 +130,15 @@ function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress
       lastGood.set(key, entry.settled)
       // A home asked for the default branch alone that came out whole (the repo's refs fit the
       // chrome read), or a not-found, answers every page: the repo's other pages take it too.
+      // Only the current load of its key: one a write invalidated, or a reload superseded, was
+      // read before that and must not come back under the full key.
       const [full] = homeCacheKeys(key)
-      if (full !== undefined && full !== key && value?.refsPartial !== true) {
+      if (full !== undefined && full !== key && value?.refsPartial !== true && homeCache.get(key) === entry) {
         const held = homeCache.get(full)
-        if (held === undefined || held.at < entry.at) homeCache.set(full, entry)
-        lastGood.set(full, entry.settled)
+        if (held === undefined || held.at < entry.at) {
+          homeCache.set(full, entry)
+          lastGood.set(full, entry.settled)
+        }
       }
     })
     .catch(() => {

@@ -129,6 +129,8 @@ export function readOneRef(
  * bytes is no ref's). A reader that holds a type's whole timeline takes one ref's history from it.
  */
 export function rowsOfRef(rows: readonly PlainDocument[], refNameHashHex: string): PlainDocument[] {
+  // A row whose hash does not parse is no row of this ref: skipped here, where the whole-timeline
+  // read (`groupByRef`) refuses it, since there it would be some ref's.
   return rows.filter((d) => {
     try {
       return refHashHexOf(d, '') === refNameHashHex
