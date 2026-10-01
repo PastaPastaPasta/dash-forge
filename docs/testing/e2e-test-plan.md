@@ -4,7 +4,7 @@ Full pyramid with emphasis on **real end-to-end testing against live networks**,
 
 ## 1. Test infrastructure: identities & funding
 
-forge-v2 (shared contracts forge-core + forge-collab, Platform protocol 14; [contracts/forge-v2.md](../contracts/forge-v2.md)) targets **devnet sakura** (the RC2 contracts on Platform v5.0.0-beta.1, being registered; bonsia with the RC1 contracts until 2026-10-01, moutai until 2026-09-29), so every live suite runs there. Testnet runs resume once protocol 14 reaches testnet and forge-v2 is registered there.
+forge-v2 (shared contracts forge-core + forge-collab, Platform protocol 14; [contracts/forge-v2.md](../contracts/forge-v2.md)) targets **devnet sakura** (the RC2 contracts on Platform v5.0.0-beta.1, registered 2026-10-01; bonsia with the RC1 contracts until 2026-10-01, moutai until 2026-09-29), so every live suite runs there. Testnet runs resume once protocol 14 reaches testnet and forge-v2 is registered there.
 
 ### 1.1 Obtaining identities (devnet sakura)
 

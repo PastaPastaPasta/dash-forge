@@ -46,7 +46,7 @@ Measured on devnet bonsia: creating a repository costs about **0.0016 DASH**. A 
 
 ## What happened to devnet bonsia?
 
-It was retired, and everything on it is gone. Forge moved to devnet sakura (Platform v5), where it is being registered with new contracts. An installed `dg` built for 4.2.0-beta.7 does not work on sakura. Your git clone and your storage bucket are untouched. See [Dash Forge moved to devnet sakura](guides/devnet-move.md) for what is lost and kept and how to re-push.
+It was retired, and everything on it is gone. Forge moved to devnet sakura (Platform v5), where it is registered with new contracts (RC2, 2026-10-01). An installed `dg` built for 4.2.0-beta.7 does not work on sakura. Your git clone and your storage bucket are untouched. See [Dash Forge moved to devnet sakura](guides/devnet-move.md) for what is lost and kept and how to re-push.
 
 ## When is it on mainnet?
 
@@ -54,7 +54,7 @@ After **Dash Platform protocol 14** activates on mainnet and the project owner r
 
 | Network | Status |
 |---|---|
-| **Devnet sakura** | **RC2 on Platform v5.0.0-beta.1 — being registered.** Sakura (Platform v5.0.0-beta.1) replaced bonsia on 2026-10-01. The CLI defaults to testnet, so select sakura explicitly with `--network devnet --devnet-name sakura`; until the contracts are registered, it stops with "not deployed". forge.dashhq.org moves to sakura with the registration. See [the root README's status table](../README.md#status) for the current state. |
+| **Devnet sakura** | **RC2 registered on Platform v5.0.0-beta.1** (2026-10-01). Sakura (Platform v5.0.0-beta.1) replaced bonsia on 2026-10-01. The CLI defaults to testnet, so select sakura explicitly with `--network devnet --devnet-name sakura`. forge.dashhq.org runs on sakura. See [the root README's status table](../README.md#status) for the current state. |
 | **Devnet bonsia** | **Gone.** The RC1 contracts registered there on 2026-09-29 (Platform v4.2.0-beta.7, tag `contracts-rc1-frozen`) went with the devnet. forge.dashhq.org ran on bonsia from 2026-09-30. |
 | **Devnet moutai** | **Retired for Forge.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired its forge-v2 contracts. forge.dashhq.org moved off moutai to bonsia on 2026-09-30. |
 | **Testnet** | Not deployed yet. Testnet runs protocol 13; forge-v2 is registered there as soon as protocol 14 reaches it, expected soon. |

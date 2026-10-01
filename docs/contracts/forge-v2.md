@@ -34,6 +34,15 @@ The per-repo "sovereign" tier is dropped. Anyone who wants different rules can r
 
 Each is a `build.py` flag, on by default. S2, S3 and MOD ship only if a fee probe on the v5 network shows at most +10 % per review write (MOD: per hide, the `rc1-live.mjs` group `moderation` against the same event without the proof), ROLES only if `r` adds at most +1 % to a refUpdate and a transition (one stored byte, about 27.4 k credits, so 0.02–0.06 % by §7's table; the `rc1-live.mjs` group `roles` records both with `r` to confirm it), and C1 only if a fused star costs at most 54.9 M credits (a star plus a beat today). A probe that fails turns its flag off in `build.py`, and the contracts are regenerated before registration (§8). Until the C1 probe decides, the clients (`dg`, forge-core, forge-web) must handle both star shapes: a star that carries the trending window, or a star plus a `starBeat`. The seed and verify scripts already do (`FUSED_STAR` in `forge-contracts/scripts/lib/seed-io.mjs`).
 
+**Decided at the sakura registration (2026-10-01, Platform 5.0.0-beta.1):**
+- **S2 and S3 are off.** The fee probe priced a review at 53.9 M credits without either index, +26.7 % with S2 and +26.7 % with S3, against the +10 % gate.
+- **C1 is on.** A fused star costs 45.5 M, under star + starBeat (55.1 M) and under 54.9 M.
+- **MOD is on.** In `rc1-live.mjs`'s full run a hide costs 58.5 M against 56.9 M for the same event without `asMaintainer`, +2.9 %.
+- **ROLES is on.** `r` adds +0.58 % to a refUpdate and +0.61 % to a merge transition.
+- **S1 is on.**
+
+The registered forge-collab therefore has no `toAuthor` or `author` review index, and the clients read reviews without them.
+
 ## 2. Types and who can write them
 
 "Gate" means the consensus `ownerRefersTo` check on create. M = the writer has a `maintainer` document for the repo. W = the writer has a `writer` document for the repo; with ROLES, **W1** = one with `role` 1 (writer) and **W2** = one with `role` 1 or 2 (writer or triage), proved by the claimed `r` (§2.1). Replace and delete are always limited to the document's owner (Platform rule), and documents cannot be transferred.

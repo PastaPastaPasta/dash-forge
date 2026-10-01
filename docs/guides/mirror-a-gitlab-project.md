@@ -31,7 +31,7 @@ You need:
   - GitLab.com plans to limit anonymous API use to 60 requests an hour. Use a token for anything but a quick look.
 - Optional but recommended: a storage profile for your own bucket ([Bring your own storage](bring-your-own-storage.md)), set with `dg storage use <profile> --global`, so pack bytes do not go on Platform.
 
-> **Network.** Forge runs on devnet sakura (`--network devnet --devnet-name sakura`; RC2 on Platform v5.0.0-beta.1 — being registered). See [Which network](README.md#which-network).
+> **Network.** Forge runs on devnet sakura (`--network devnet --devnet-name sakura`; RC2 registered on Platform v5.0.0-beta.1). See [Which network](README.md#which-network).
 
 ---
 
