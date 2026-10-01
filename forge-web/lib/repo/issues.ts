@@ -42,7 +42,7 @@ import {
   type RepoRef,
   repoKey,
 } from './contract'
-import { repoTimelines, type RepoTimelines } from './chrome'
+import { repoChromeTimelines, type ChromeTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
 import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents } from './private-content'
@@ -818,10 +818,13 @@ export interface BaseRefReaders {
 
 /**
  * The config and base-ref histories PR reads share, each read at most once per reader set. A
- * public repo's come from the repo chrome store (`repoTimelines`): the page's own chrome read of
- * up to `maxAgeMs` ago (no request), else one delta request for what is new; the ref histories
- * are the complete timelines the Code tab folds. A private repo's (no store) are read here: one
- * config read, one update-history read per base ref, so a list costs O(base refs), not O(PRs).
+ * public repo's come from the repo chrome store (`repoChromeTimelines`): the page's own chrome
+ * read of up to `maxAgeMs` ago, else one delta request for what is new. From it, the config
+ * timeline and each base ref's own history, never every ref's: no request when the composite held
+ * them whole or the page's home already read that ref (a list's base is usually the default
+ * branch), else one equality read per ref-update type (QW3: a PR list no longer waits for the dash
+ * mirror's ~700 ref updates). A private repo's (no store) are read here: one config read, one
+ * update-history read per base ref, so a list costs O(base refs), not O(PRs).
  */
 export function baseRefReaders(sdk: EvoSDK, repo: RepoRef, { maxAgeMs = FEED_TTL_MS }: { readonly maxAgeMs?: number } = {}): BaseRefReaders {
   // Each read is kept for the reader set's life, unless it fails transiently: then the next caller
@@ -840,11 +843,20 @@ export function baseRefReaders(sdk: EvoSDK, repo: RepoRef, { maxAgeMs = FEED_TTL
     }
     return hit
   }
-  const stored = (): Promise<RepoTimelines | null> => once('timelines', () => repoTimelines(sdk, repo, { maxAgeMs }))
+  const stored = (): Promise<ChromeTimelines | null> => once('timelines', () => repoChromeTimelines(sdk, repo, { maxAgeMs }))
   return {
-    configHistory: () => once('config', () => stored().then((t) => (t === null ? readConfigHistory(sdk, repo) : configBundleOf(repo, t.config).history))),
+    configHistory: () =>
+      once('config', async () => {
+        const t = await stored()
+        return t === null ? readConfigHistory(sdk, repo) : configBundleOf(repo, await t.config()).history
+      }),
     refUpdates: (hash) =>
-      once(`ref:${hash}`, () => stored().then((t) => (t === null ? readRefUpdates(sdk, repo, hash) : refUpdatesFromRows(repo, t.refUpdate, t.protectedRefUpdate, hash)))),
+      once(`ref:${hash}`, async () => {
+        const t = await stored()
+        if (t === null) return readRefUpdates(sdk, repo, hash)
+        const rows = await t.ref(hash)
+        return refUpdatesFromRows(repo, rows.refUpdate, rows.protectedRefUpdate, hash)
+      }),
   }
 }
 

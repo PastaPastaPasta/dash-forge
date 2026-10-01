@@ -34,6 +34,8 @@ function chainSdk(docs: readonly Record<string, unknown>[]): EvoSDK {
     return op === '>' ? (x as number) > n : op === '>=' ? (x as number) >= n : op === '<' ? (x as number) < n : (x as number) <= n
   }
   return {
+    // An RC1 forge-collab: no RC2 review indexes.
+    contracts: { fetch: async () => ({ schemas: {} }) },
     documents: {
       query: async (q: DocumentQuery) => {
         const rows = docs.filter((d) => d['type'] === q.documentTypeName && (q.where ?? []).every((w) => holds(d, w)))

@@ -47,7 +47,8 @@ cat >"$W/bin/dg" <<'EOF'
 #!/usr/bin/env bash
 # Reads answer from fixture files (and are not recorded); reports are recorded.
 case " $* " in
-  *" pr list "*) cat "$FAKE_PRS" 2>/dev/null || echo '{"prs":[]}'; exit 0 ;;
+  *" pr list "*" --include-hidden "*) cat "$FAKE_PRS" 2>/dev/null || echo '{"prs":[]}'; exit 0 ;;
+  *" pr list "*) echo "fake dg: the runner must list hidden PRs too (--include-hidden)" >&2; exit 2 ;;
   *" pr view "*) python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
   *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}],"ownerId":"OWNER"}'; exit 0 ;;
 esac

@@ -761,6 +761,12 @@ pub struct IssueListArgs {
     /// Page number, 1-based.
     #[arg(long, default_value_t = 1)]
     pub page: u32,
+    /// Also list the issues maintainers hid, marked with who hid them and why (left out by
+    /// default, as on the web). Meant for maintainers reviewing hides; reading them is public.
+    /// In `--json`, `count` (rows shown) plus `hiddenOmitted` (rows left out) is the page's size;
+    /// `truncated` says whether more pages follow.
+    #[arg(long)]
+    pub include_hidden: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -777,6 +783,12 @@ pub enum PrCommand {
         /// State filter (`closed` includes merged ones, as on GitHub).
         #[arg(long, value_enum, default_value = "open")]
         state: PrStateArg,
+        /// Also list the pull requests maintainers hid, marked with who hid them and why (left
+        /// out by default, as on the web). Meant for maintainers reviewing hides; reading them
+        /// is public. In `--json`, `count` (rows shown) plus `hiddenOmitted` (rows left out) is
+        /// the rows read in the state asked for; `truncated` says whether older PRs exist.
+        #[arg(long)]
+        include_hidden: bool,
     },
     /// View a pull request: state, reviewers, approvals, reviews, threads.
     View {
@@ -1911,6 +1923,18 @@ mod tests {
                 ..
             })
         ));
+        let cli = Cli::parse_from(["dg", "pr", "list", "o/r", "--include-hidden"]);
+        assert!(matches!(
+            cli.command,
+            Command::Pr(PrCommand::List {
+                include_hidden: true,
+                ..
+            })
+        ));
+        let cli = Cli::parse_from(["dg", "issue", "list", "o/r", "--include-hidden"]);
+        assert!(
+            matches!(cli.command, Command::Issue(IssueCommand::List(ref a)) if a.include_hidden)
+        );
         assert!(PrStateArg::Merged.matches(false, true));
         assert!(!PrStateArg::Merged.matches(false, false));
         assert!(PrStateArg::Closed.matches(false, true));

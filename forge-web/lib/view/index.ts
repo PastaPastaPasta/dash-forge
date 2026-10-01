@@ -138,6 +138,7 @@ export {
   type BackendInfo,
   type PrivateAccess,
   type RepoHome,
+  type RepoHomeRefs,
 } from './repo-view'
 export { namesFromDomains, prefetchDpnsNames, resolveDpnsId, resolveDpnsName, resolveDpnsNames, seedDpnsNames } from './dpns'
 export {

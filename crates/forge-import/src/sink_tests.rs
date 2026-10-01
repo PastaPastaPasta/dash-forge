@@ -81,6 +81,9 @@ struct Recorded {
     cost_pct: u64,
     /// Source URLs whose document the chain refuses for its content (before it lands).
     refuse: BTreeSet<String>,
+    /// Source URLs whose create loses its number to another create (an item error that is
+    /// not final: the next run creates it).
+    contend: BTreeSet<String>,
 }
 
 impl Recorded {
@@ -92,6 +95,7 @@ impl Recorded {
             }),
             cost_pct: 100,
             refuse: BTreeSet::new(),
+            contend: BTreeSet::new(),
         }
     }
 
@@ -299,6 +303,9 @@ impl Chain for &Recorded {
                 rule: "hasTitle".into(),
                 detail: url,
             });
+        }
+        if self.contend.contains(&url) {
+            return Err(forge_core::Error::DuplicateUniqueIndex("number".into()));
         }
         self.land(None, |st| {
             // dense: the count of issues and PRs, plus one
@@ -1055,4 +1062,217 @@ async fn a_duplicate_names_its_canonical_by_its_mirror_number() {
         six.contains(&format!("t 1 as duplicate of #{n3}")),
         "{six:?} (#6 is #{n6})"
     );
+}
+
+/// Plain open issues numbered `numbers`, as GitHub would list them; `closes` closes some as
+/// duplicates: `(issue, Some(canonical))` of an issue of this repository, `(issue, None)` of
+/// one of another repository (GitHub names no same-repository canonical then).
+fn issues(numbers: impl IntoIterator<Item = u32>, closes: &[(u32, Option<u32>)]) -> SrcCollab {
+    let targets = numbers
+        .into_iter()
+        .map(|number| {
+            let close = closes.iter().find(|(n, _)| *n == number);
+            SrcTarget {
+                kind: TargetKind::Issue,
+                number,
+                title: format!("issue {number}"),
+                body: "b".into(),
+                imported: imported(&format!("issues/{number}")),
+                closed: close.is_some(),
+                close_reason: close.map(|(_, of)| SrcCloseReason {
+                    reason: CloseReason::Duplicate,
+                    duplicate_of: of.map(|n| (n, format!("https://github.com/o/r/issues/{n}"))),
+                }),
+                merged_oid: None,
+                merged_without_sha: false,
+                labels: BTreeSet::new(),
+                draft: false,
+                patch: None,
+                comments: Vec::new(),
+                reviews: Vec::new(),
+            }
+        })
+        .collect();
+    SrcCollab {
+        targets,
+        ..SrcCollab::default()
+    }
+}
+
+/// A recorded chain whose mirror numbers start at 2 (#1 is a stranger's), so a canonical's
+/// mirror number differs from its source number.
+fn shifted() -> Recorded {
+    let chain = Recorded::new();
+    chain.st().items.push(Item {
+        target: Target {
+            kind: TargetKind::Issue,
+            id: "squat".into(),
+            number: 1,
+            author: "someone".into(),
+        },
+        url: String::new(),
+        upstream: 0,
+        code: 0,
+        labels: BTreeSet::new(),
+        log: Vec::new(),
+    });
+    chain
+}
+
+/// The spend a dry run prices for `src` over `chain`.
+async fn dry_spend(
+    chain: &Recorded,
+    src: &SrcCollab,
+    lanes: usize,
+) -> (u64, crate::summary::Counts) {
+    let sink = sink(chain, true, Budget::new(None), lanes);
+    sink.sync(src).await.unwrap();
+    let ledger = sink.into_ledger();
+    (ledger.budget.spent(), ledger.counts)
+}
+
+/// QW-069: on a first import a duplicate whose canonical is numbered after it still names it.
+/// Its close waits until every item is placed, then is written once with the canonical's
+/// mirror number; one of a lower-numbered canonical names it at once; one whose canonical never
+/// appears, or is in another repository, is a duplicate of nothing, also once. Sequential or
+/// pipelined alike, and the dry run prices exactly what lands.
+#[tokio::test(start_paused = true)]
+async fn a_duplicate_of_a_later_issue_names_it_on_a_first_import() {
+    // #2 duplicates #5 (later); #6 duplicates #3 (earlier); #4 duplicates #99 (never mirrored);
+    // #7 duplicates an issue of another repository.
+    let src = issues(
+        1..=8,
+        &[(2, Some(5)), (6, Some(3)), (4, Some(99)), (7, None)],
+    );
+    for lanes in [1, 8] {
+        let (priced, priced_counts) = dry_spend(&shifted(), &src, lanes).await;
+        let chain = shifted();
+        let run = import(&chain, &src, lanes, None).await;
+        run.result.unwrap();
+        let logs = chain.logs();
+        let n = |upstream: u32| logs[&upstream].0;
+        assert_eq!(n(5), 6, "numbers moved up by one");
+        assert_eq!(
+            logs[&2].1,
+            [format!("t 1 as duplicate of #{}", n(5))],
+            "lanes {lanes}"
+        );
+        assert_eq!(
+            logs[&6].1,
+            [format!("t 1 as duplicate of #{}", n(3))],
+            "lanes {lanes}"
+        );
+        assert_eq!(logs[&4].1, ["t 1 as duplicate"], "lanes {lanes}");
+        assert_eq!(logs[&7].1, ["t 1 as duplicate"], "lanes {lanes}");
+        for open in [1, 3, 5, 8] {
+            assert!(logs[&open].1.is_empty(), "#{open} stays open");
+        }
+        assert_eq!(run.counts.transitions, 4, "each close once");
+        assert_eq!(
+            run.counts, priced_counts,
+            "the dry run counts the deferred close once"
+        );
+        assert_eq!(run.spent, priced, "and prices it with its dupNumber");
+        let violations = chain.st().violations.clone();
+        assert!(violations.is_empty(), "{violations:?}");
+
+        // A re-run writes nothing: a close is immutable, never written twice.
+        let again = import(&chain, &src, lanes, None).await;
+        again.result.unwrap();
+        assert_eq!(again.counts.item_documents(), 0);
+        assert_eq!(chain.logs(), logs);
+    }
+}
+
+/// A canonical numbered after its duplicate that the destination refuses (so it is never
+/// placed): the duplicate still closes, once, as a duplicate of nothing.
+#[tokio::test(start_paused = true)]
+async fn a_duplicate_whose_later_canonical_is_refused_closes_without_it() {
+    let src = issues(1..=5, &[(2, Some(5))]);
+    let mut chain = shifted();
+    chain
+        .refuse
+        .insert("https://github.com/o/r/issues/5".into());
+    let run = import(&chain, &src, 4, None).await;
+    run.result.unwrap();
+    let logs = chain.logs();
+    assert!(!logs.contains_key(&5), "#5 refused");
+    assert_eq!(logs[&2].1, ["t 1 as duplicate"]);
+    assert_eq!(run.counts.transitions, 1);
+}
+
+/// An incremental run whose canonical is already mirrored names it at once; one that brings a
+/// new duplicate of a new later issue defers it to the end of the run as a first import does.
+#[tokio::test(start_paused = true)]
+async fn an_incremental_duplicate_names_a_canonical_already_mirrored() {
+    let chain = shifted();
+    import(&chain, &issues(1..=5, &[]), 4, None)
+        .await
+        .result
+        .unwrap();
+    // #2 is now closed as a duplicate of #5 (mirrored); new #7 duplicates new #8.
+    let mut src = issues([2, 6, 7, 8], &[(2, Some(5)), (7, Some(8))]);
+    src.incremental = true;
+    for lanes in [1, 4] {
+        let run = import(&chain, &src, lanes, None).await;
+        run.result.unwrap();
+        let logs = chain.logs();
+        assert_eq!(logs[&2].1, [format!("t 1 as duplicate of #{}", logs[&5].0)]);
+        assert_eq!(logs[&7].1, [format!("t 1 as duplicate of #{}", logs[&8].0)]);
+        let want = if lanes == 1 { 2 } else { 0 };
+        assert_eq!(
+            run.counts.transitions, want,
+            "each close once, over both runs"
+        );
+        let st = chain.st();
+        assert!(st.violations.is_empty(), "{:?}", st.violations);
+    }
+}
+
+/// A run cut by `--limit` before a later canonical leaves its duplicate open (skipped, so the
+/// state holds) instead of closing it for good without the link; the next, complete run
+/// closes it naming the canonical, once.
+#[tokio::test(start_paused = true)]
+async fn a_duplicate_of_an_issue_past_the_limit_stays_open_for_the_next_run() {
+    let chain = shifted();
+    let mut cut = issues(1..=3, &[(2, Some(5))]);
+    cut.truncated = true;
+    let run = import(&chain, &cut, 4, None).await;
+    run.result.unwrap();
+    assert!(chain.logs()[&2].1.is_empty(), "#2 left open");
+    assert_eq!(run.counts.transitions, 0);
+    assert_eq!(run.counts.skipped, 1, "the skip holds the state");
+
+    let run = import(&chain, &issues(1..=5, &[(2, Some(5))]), 4, None).await;
+    run.result.unwrap();
+    let logs = chain.logs();
+    assert_eq!(logs[&2].1, [format!("t 1 as duplicate of #{}", logs[&5].0)]);
+    assert_eq!(run.counts.transitions, 1);
+    assert_eq!(run.counts.skipped, 0);
+}
+
+/// A later canonical this run could not place for a reason that is not final (another create
+/// took its number) leaves its duplicate open; the next run places it and closes the duplicate
+/// naming it, once.
+#[tokio::test(start_paused = true)]
+async fn a_duplicate_of_an_issue_skipped_this_run_stays_open_for_the_next_run() {
+    let src = issues(1..=5, &[(2, Some(5))]);
+    let mut chain = shifted();
+    chain
+        .contend
+        .insert("https://github.com/o/r/issues/5".into());
+    let run = import(&chain, &src, 4, None).await;
+    run.result.unwrap();
+    assert!(!chain.logs().contains_key(&5), "#5 not placed");
+    assert!(chain.logs()[&2].1.is_empty(), "#2 left open");
+    assert_eq!(run.counts.transitions, 0);
+    assert!(run.refused.is_empty(), "not a final refusal");
+    assert_eq!(run.counts.skipped, 2, "#5, and #2 left open");
+
+    chain.contend.clear();
+    let run = import(&chain, &src, 4, None).await;
+    run.result.unwrap();
+    let logs = chain.logs();
+    assert_eq!(logs[&2].1, [format!("t 1 as duplicate of #{}", logs[&5].0)]);
+    assert_eq!(run.counts.transitions, 1);
 }

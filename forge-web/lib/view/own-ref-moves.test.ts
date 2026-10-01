@@ -47,6 +47,18 @@ describe('own ref moves (L-09)', () => {
     expect(showsOwnRefMoves(REPO, [{ refName: 'refs/heads/gone', refNameHash: 'y', state: { state: 'unborn' } }])).toBe(true)
   })
 
+  it('a read of the default branch alone judges its moves only, and leaves the others waiting', () => {
+    repoContentWritten(REPO, { refName: 'refs/heads/feature', newOid: NEW })
+    const onlyMain = new Set(['refs/heads/main'])
+    expect(showsOwnRefMoves(REPO, [main(OLD)], onlyMain)).toBe(true)
+    expect(awaitingOwnRefMoves()).toBe(true)
+    repoContentWritten(REPO, { refName: 'refs/heads/main', newOid: NEW })
+    expect(showsOwnRefMoves(REPO, [main(OLD)], onlyMain)).toBe(false)
+    expect(showsOwnRefMoves(REPO, [main(NEW)], onlyMain)).toBe(true)
+    // `feature` is still awaited by a full read.
+    expect(showsOwnRefMoves(REPO, [main(NEW)])).toBe(false)
+  })
+
   it('forgetOwnRefMoves drops what a full run of re-reads never saw', () => {
     repoContentWritten(REPO, { refName: 'refs/heads/main', newOid: NEW })
     forgetOwnRefMoves(REPO)

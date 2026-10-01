@@ -11,7 +11,7 @@ export function IssueClient(): JSX.Element {
   // `?upstream=N`: a mirrored body's `#N` (the source's number), resolved to this repo's item.
   const upstream = Number.parseInt(useParam('upstream'), 10)
   return (
-    <RepoScaffold addr={addr} rail={false}>
+    <RepoScaffold addr={addr} rail={false} refs="default">
       {(home) => (Number.isFinite(upstream) ? <UpstreamRedirect home={home} addr={addr} upstream={upstream} /> : <IssueContent key={number} home={home} addr={addr} number={number} />)}
     </RepoScaffold>
   )

@@ -258,9 +258,6 @@ fn not_found(repo: &str, number: u64) -> anyhow::Error {
     )
 }
 
-/// One listed issue: number, title, author, state.
-type Row = (u64, String, String, IssueState, bool);
-
 fn labels_of(state: &IssueState) -> String {
     state.labels.iter().cloned().collect::<Vec<_>>().join(", ")
 }
@@ -334,42 +331,41 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     // newest page (SR-04), and there is no per-row read. A private repo's issues open with
     // the reader's keys.
     let (all, hidden) = s.collab().issues_with_state(&s.repo).await?;
-    let mut matching: Vec<Row> = all
+    let mut matching: Vec<(IssueView, bool)> = all
         .into_iter()
         .filter(|v| issue_matches(args, author.as_deref(), assignee.as_ref(), v))
         .map(|v| {
             let pinned = forge_core::rules::v2::fold_thread_meta_v2(&v.log.events).pinned;
-            (
-                u64::from(v.issue.number),
-                v.issue.title,
-                v.issue.author,
-                v.state,
-                pinned,
-            )
+            (v, pinned)
         })
         .collect();
     // Pinned issues first (a member's pin, kinds 19/20), each group newest first as read.
-    matching.sort_by_key(|r| !r.4);
+    matching.sort_by_key(|r| !r.1);
     let total = matching.len();
     let per = args.limit as usize;
     let pages = total.div_ceil(per).max(1);
     let start = (args.page as usize - 1) * per;
-    let rows: Vec<&Row> = matching.iter().skip(start).take(per).collect();
+    let page: Vec<&(IssueView, bool)> = matching.iter().skip(start).take(per).collect();
+    // RC2 MOD: the page's issues a maintainer hid, from the events already read (the feed).
+    // Paged first, as on the web: the totals stay the consensus ones.
+    let threads: Vec<(Target, &[Event])> = page
+        .iter()
+        .map(|(v, _)| (v.issue.target(), v.log.events.as_slice()))
+        .collect();
+    let hides = s.collab().hidden_threads(&s.repo, &threads).await;
+    let (rows, omitted) = crate::fmt::split_hidden(
+        page,
+        &hides,
+        |(v, _)| v.issue.document_id.as_str(),
+        args.include_hidden,
+    );
+    let names =
+        crate::common::hider_names(ctx, &s.client, rows.iter().filter_map(|(_, h)| *h)).await;
+    let who = |id: &str| with_name(id, &names);
 
     let json_rows: Vec<_> = rows
         .iter()
-        .map(|(n, title, author, st, pinned)| {
-            json!({
-                "number": n,
-                "title": title,
-                "author": author,
-                "open": st.open,
-                "state": state_word(st.open),
-                "labels": st.labels,
-                "assignees": st.assignees,
-                "pinned": pinned,
-            })
-        })
+        .map(|((v, pinned), h)| issue_row_json(v, *pinned, *h))
         .collect();
     ctx.emit(
         json!({
@@ -379,30 +375,19 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
             "pages": pages,
             "issues": json_rows,
             "hidden": hidden,
+            "hiddenOmitted": omitted,
             "truncated": args.page as usize * per < total,
         }),
         || {
-            if rows.is_empty() {
+            if rows.is_empty() && omitted == 0 {
                 println!("{}", empty_issues_line(args, total, pages));
             }
-            for (n, title, _, st, pinned) in &rows {
-                let mark = state_word(st.open);
-                let mark = if *pinned {
-                    format!("{mark}, pinned")
-                } else {
-                    mark.to_string()
-                };
-                let labels = if st.labels.is_empty() {
-                    String::new()
-                } else {
-                    format!("  [{}]", labels_of(st))
-                };
-                let who = if st.assignees.is_empty() {
-                    String::new()
-                } else {
-                    format!("  ({} assigned)", st.assignees.len())
-                };
-                println!("#{n:<4} {mark:<6} {}{}{who}", safe(title), safe(&labels));
+            for ((v, pinned), h) in &rows {
+                let hid = h.map(|h| crate::fmt::hidden_row_mark(h, &who));
+                println!("{}", issue_line(v, *pinned, &hid.unwrap_or_default()));
+            }
+            if let Some(note) = crate::fmt::hidden_rows_note(omitted) {
+                println!("{note}");
             }
             if pages > 1 {
                 println!(
@@ -417,6 +402,57 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// One `dg issue list --json` row, with its `hiddenBy`.
+fn issue_row_json(
+    v: &IssueView,
+    pinned: bool,
+    h: Option<&forge_core::rules::v2::Hidden>,
+) -> serde_json::Value {
+    let st = &v.state;
+    crate::fmt::with_hidden_by(
+        json!({
+            "number": v.issue.number,
+            "title": v.issue.title,
+            "author": v.issue.author,
+            "open": st.open,
+            "state": state_word(st.open),
+            "labels": st.labels,
+            "assignees": st.assignees,
+            "pinned": pinned,
+        }),
+        h,
+    )
+}
+
+/// One `dg issue list` row: number, state (pinned), title, labels, how many are assigned, and
+/// `hid`, a hidden issue's mark (`--include-hidden`).
+fn issue_line(v: &IssueView, pinned: bool, hid: &str) -> String {
+    let st = &v.state;
+    let mark = state_word(st.open);
+    let mark = if pinned {
+        format!("{mark}, pinned")
+    } else {
+        mark.to_string()
+    };
+    let labels = if st.labels.is_empty() {
+        String::new()
+    } else {
+        format!("  [{}]", labels_of(st))
+    };
+    let assigned = if st.assignees.is_empty() {
+        String::new()
+    } else {
+        format!("  ({} assigned)", st.assignees.len())
+    };
+    format!(
+        "#{:<4} {mark:<6} {}{}{assigned}{}",
+        v.issue.number,
+        safe(&v.issue.title),
+        safe(&labels),
+        safe(hid)
+    )
 }
 
 #[allow(clippy::too_many_lines)] // one view: the reads, then its JSON and its human rendering
