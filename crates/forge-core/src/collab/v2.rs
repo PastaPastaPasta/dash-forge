@@ -6063,7 +6063,10 @@ fn missed_revision_warning(
         None => "no revision".to_string(),
     };
     Some(format!(
-        "your revision of release {tag} was carried forward from {}, but it follows {between}:          another maintainer wrote one after the releases you had read, and what it changed (a          yank, the flags, the notes) is not carried into yours; check it with `dg release          list` and write the release again",
+        "your revision of release {tag} was carried forward from {}, but it follows {between}: \
+         another maintainer wrote one after the releases you had read, and what it changed (a \
+         yank, the flags, the notes) is not carried into yours; check it with `dg release \
+         list` and write the release again",
         carried.unwrap_or("no earlier revision")
     ))
 }
@@ -7521,6 +7524,64 @@ mod tests {
         assert!(check_sealed_input(&input("", true)).is_ok());
         assert!(check_sealed_input(&input("new", false)).is_ok());
         assert!(check_sealed_input(&input("new", true)).is_err());
+    }
+
+    /// A sealed write carried forward from an older view than the tag's newest revision is
+    /// warned about (its carried fields replace the newer revision's); one that follows the
+    /// revision it carried from, the first of a tag, and one not visible yet are not.
+    #[test]
+    fn a_sealed_writer_is_warned_when_it_carried_from_an_older_view() {
+        let rel = |id: &str, tag: &str, at: u64| Release {
+            document_id: id.into(),
+            tag_name: tag.into(),
+            name: String::new(),
+            notes: String::new(),
+            yanked: false,
+            assets: Vec::new(),
+            publisher: "bob".into(),
+            created_at: at,
+            delta: 0,
+            sealed: None,
+        };
+        // r1 (carried from), then bob's r2 landed meanwhile, then ours (newest)
+        let after = ReleaseList {
+            current: vec![rel("ours", "v1", 3), rel("other-tag", "v2", 9)],
+            previous: vec![rel("r2", "v1", 2), rel("r1", "v1", 1)],
+            ..ReleaseList::default()
+        };
+        let w = missed_revision_warning(&after, "v1", Some("r1"), "ours").unwrap();
+        assert!(
+            w.contains("bob") && w.contains("r2") && w.contains("r1"),
+            "{w}"
+        );
+        assert!(!w.contains("  "), "no runs of spaces: {w}");
+        // it follows what it carried from: nothing missed (another tag's revision is no matter)
+        assert_eq!(
+            missed_revision_warning(&after, "v1", Some("r2"), "ours"),
+            None
+        );
+        // the tag's first revision, carried from nothing, is alone
+        let first = ReleaseList {
+            current: vec![rel("ours", "v1", 1)],
+            ..ReleaseList::default()
+        };
+        assert_eq!(missed_revision_warning(&first, "v1", None, "ours"), None);
+        // …unless someone else's came first
+        let raced = ReleaseList {
+            current: vec![rel("ours", "v1", 2)],
+            previous: vec![rel("theirs", "v1", 1)],
+            ..ReleaseList::default()
+        };
+        let w = missed_revision_warning(&raced, "v1", None, "ours").unwrap();
+        assert!(
+            w.contains("no earlier revision") && w.contains("theirs"),
+            "{w}"
+        );
+        // not visible yet: `not_newest_warning` says so, this stays silent
+        assert_eq!(
+            missed_revision_warning(&after, "v1", Some("r1"), "unseen"),
+            None
+        );
     }
 
     /// §16.3 over stored documents: a sealed revision opens to its tag, a later yank is the
