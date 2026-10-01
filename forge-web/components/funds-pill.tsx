@@ -28,7 +28,7 @@ export function FundsPill(): JSX.Element | null {
       ? Math.max(0, Math.min(1, Number(keyLimits.remaining) / Number(keyLimits.total)))
       : null
   // The key's budget as Settings and the account menu word it, the balance cap included (QW3-033).
-  const keyBudget = keyLimits === null ? null : keyBudgetWords(keyLimits, BigInt(balance), creditsAsDash)
+  const keyBudget = keyBudgetWords(keyLimits, balance, creditsAsDash)
   const tooltip = [
     `Balance ${balanceToDash(balance)} DASH`,
     keyBudget !== null ? `This browser's key: ${keyBudget.left} left${keyBudget.cap !== null ? ` (${keyBudget.cap})` : ''}` : null,

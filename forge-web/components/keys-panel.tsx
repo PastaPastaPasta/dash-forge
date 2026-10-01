@@ -19,7 +19,7 @@ import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { keyBudgetWords } from '@/lib/view/funds'
 import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
-import { hasTopUpNote } from '@/lib/auth/identity-top-up'
+import { topUpRecords } from '@/lib/auth/identity-top-up'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { KeyRevokeDialog } from '@/components/key-revoke-dialog'
@@ -34,22 +34,43 @@ export const FORGET_CONFIRM: ConfirmActionOptions = {
 }
 
 /**
- * What stays after a forget or a revoke, for an identity topped up in this browser (QW3-034):
- * the note of where its next top-up starts. Said rather than silently kept.
+ * What stays after a forget or a revoke, for an identity topped up in this browser (QW3-034).
+ * Said rather than silently kept. `next`: where its next top-up starts; `unfinished`: a top-up
+ * that has not finished.
  */
-export const TOP_UP_NOTE_STAYS =
-  'One note about this identity stays in this browser because you topped it up here: which top-up address comes next (no keys, no words), so a later top-up never reuses an address or misses a deposit left at one.'
+export function topUpRecordsStay(r: { readonly next: boolean; readonly unfinished: boolean }): string | null {
+  if (r.unfinished) {
+    return 'Your unfinished top-up of this identity stays in this browser (its deposit address and lock, no keys or words), so typing your recovery phrase in Top up still finishes it.'
+  }
+  if (r.next) {
+    return 'One note about this identity stays in this browser because you topped it up here: where its next top-up starts (no keys or words), so a later top-up picks the right address and still collects anything left at the last one.'
+  }
+  return null
+}
+
+/** How long the forget confirmation waits to learn what stays: a stalled storage read never blocks it. */
+const RECORDS_READ_MS = 1500
+
+/** What stays for `identityId` ({@link topUpRecordsStay}), or null; never waits long. */
+export async function topUpStays(identityId: string): Promise<string | null> {
+  const none = { next: false, unfinished: false }
+  const records = await Promise.race([
+    topUpRecords(ACTIVE_NETWORK.network, identityId).catch(() => none),
+    new Promise<typeof none>((resolve) => setTimeout(() => resolve(none), RECORDS_READ_MS)),
+  ])
+  return topUpRecordsStay(records)
+}
 
 /** {@link FORGET_CONFIRM}, saying what stays when the identity was topped up here. */
 export async function forgetConfirm(identityId: string): Promise<ConfirmActionOptions> {
-  const note = await hasTopUpNote(ACTIVE_NETWORK.network, identityId).catch(() => false)
-  return note ? { ...FORGET_CONFIRM, body: `${FORGET_CONFIRM.body} ${TOP_UP_NOTE_STAYS}` } : FORGET_CONFIRM
+  const stays = await topUpStays(identityId)
+  return stays === null ? FORGET_CONFIRM : { ...FORGET_CONFIRM, body: `${FORGET_CONFIRM.body} ${stays}` }
 }
 
 export function KeysPanel(): JSX.Element {
   const { identity, keyId, heldOnly, keyLimits, storage, funds, balance, logout, forget, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
   // What is left of the key's budget, and when the balance is lower, that it caps it (QW3-033).
-  const budget = keyLimits === null ? null : keyBudgetWords(keyLimits, balance === null ? null : BigInt(balance), creditsAsDash)
+  const budget = keyBudgetWords(keyLimits, balance, creditsAsDash)
   // Revoke opens a dialog that explains it and takes the identity file or the recovery phrase
   // (QW2-017): a browser-created identity has no file.
   const [revokeOpen, setRevokeOpen] = useState(false)

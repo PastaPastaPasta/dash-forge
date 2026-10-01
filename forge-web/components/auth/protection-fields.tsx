@@ -14,6 +14,10 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { cn, errorMessage } from '@/lib/utils'
 import { clockSkewErrorCopy } from '@/lib/sdk/clock-skew'
+import { AUTO_LOCK_MS } from '@/lib/auth/vault'
+import { KEPT_IDLE_MS } from '@/lib/auth/session-resume'
+
+const HOUR_MS = 60 * 60 * 1000
 
 /**
  * `preferPasskey`: the key has no budget or expiry (a shipped wallet's key), so a passkey is the
@@ -122,7 +126,8 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
         </Field>
       ) : null}
       <p className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-        <KeyRound className="h-3 w-3" aria-hidden /> Locks itself after 12 hours or when you sign out. Reloads keep only the spend-capped key for public repos, and lock after 4 hours without use.
+        <KeyRound className="h-3 w-3" aria-hidden /> Locks itself after {AUTO_LOCK_MS / HOUR_MS} hours or when you sign out. Reloads keep only the spend-capped key for
+        public repos, and lock after {KEPT_IDLE_MS / HOUR_MS} hours without use.
       </p>
     </form>
   )

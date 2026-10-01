@@ -13,6 +13,7 @@
 import { Wallet } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
 import { Qr } from '@/components/ui/qr'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 
 /** `dash:<address>?amount=<DASH>` (amount in DASH, at most 8 decimals, no trailing zeros). */
 export function dashPaymentUri(address: string, amountDash?: number): string {
@@ -36,6 +37,9 @@ export function PaymentAddress({ address, amountDash, label }: { address: string
       >
         <Wallet className="h-3.5 w-3.5" aria-hidden /> Open in a Dash wallet
       </a>
+      {ACTIVE_NETWORK.network !== 'mainnet' ? (
+        <p className="text-center text-[12px] text-anvil-500 dark:text-anvil-400">Needs a wallet set to {ACTIVE_NETWORK.key}.</p>
+      ) : null}
     </div>
   )
 }

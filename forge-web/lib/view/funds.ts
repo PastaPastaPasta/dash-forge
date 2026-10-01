@@ -55,15 +55,19 @@ export function fundsState(balance: bigint, key: KeyLimits | null = null, now = 
  * below that, that the balance caps it. Null for a key without a budget.
  */
 export function keyBudgetWords(
-  key: Pick<KeyLimits, 'remaining' | 'total'>,
-  balance: bigint | null,
+  key: KeyLimits | null,
+  balance: bigint | string | null,
   dash: (credits: number) => string,
+  now = Date.now(),
 ): { readonly left: string; readonly cap: string | null } | null {
-  if (key.remaining === null || key.total === null) return null
-  return {
-    left: `${dash(Number(key.remaining))} of ${dash(Number(key.total))} DASH`,
-    cap: balance !== null && balance < key.remaining ? `capped by your ${dash(Number(balance < 0n ? 0n : balance))} DASH balance` : null,
-  }
+  if (key === null || key.remaining === null || key.total === null) return null
+  const left = dash(Number(key.remaining))
+  const have = balance === null ? null : BigInt(balance) < 0n ? 0n : BigInt(balance)
+  // No cap for an expired key (it spends nothing; its expiry says so), nor one the rounding
+  // would print as "0.05 of 0.05 DASH, capped by your 0.05 DASH balance".
+  const expired = key.expiresAt !== null && key.expiresAt <= now
+  const capped = have !== null && have < key.remaining && !expired && dash(Number(have)) !== left
+  return { left: `${left} of ${dash(Number(key.total))} DASH`, cap: capped ? `capped by your ${dash(Number(have))} DASH balance` : null }
 }
 
 /**

@@ -19,7 +19,7 @@ export function KeyFundsLine({ className }: { className?: string }): JSX.Element
   const warn = funds?.reason === 'key-budget' || funds?.reason === 'key-expiry'
   // A budget above the balance is not all spendable (QW2-035: "0.05 of 0.05 DASH left" beside a
   // 0.0054 DASH balance): say the balance caps it, in the words Settings and the pill use.
-  const budget = keyBudgetWords(keyLimits, balance === null ? null : BigInt(balance), creditsAsDash)
+  const budget = keyBudgetWords(keyLimits, balance, creditsAsDash)
   const parts = [
     budget !== null ? `${budget.left} budget left` : null,
     budget?.cap ?? null,

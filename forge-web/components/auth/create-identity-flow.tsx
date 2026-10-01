@@ -55,6 +55,9 @@ const STAGE_TEXT: Readonly<Record<CreateStage, string>> = {
   verifying: 'Checking your browser key on Platform…',
 }
 
+/** What the funding step suggests sending, and the amount its wallet link fills in (DASH). */
+const SUGGESTED_DEPOSIT_DASH = 0.05
+
 export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Element {
   const { controller, reloadVaults } = useAuth()
   const network = ACTIVE_NETWORK.network
@@ -443,11 +446,11 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   return (
     <div className="space-y-3" data-testid="fund-step">
       <p className="text-dense">
-        Send at least <span className="font-mono">0.02 DASH</span> (0.05 suggested) to this address from any Dash wallet. It becomes your
+        Send at least <span className="font-mono">{MIN_DEPOSIT_DUFFS / 1e8} DASH</span> ({SUGGESTED_DEPOSIT_DASH} suggested) to this address from any Dash wallet. It becomes your
         Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue, {pushCostPhrase()}.
       </p>
       {/* Copy, and a wallet link for paying from this same phone (QW3-008). */}
-      {address ? <PaymentAddress address={address} amountDash={0.05} label="Deposit address" /> : null}
+      {address ? <PaymentAddress address={address} amountDash={SUGGESTED_DEPOSIT_DASH} label="Deposit address" /> : null}
       {address ? <span data-testid="deposit-address" className="sr-only">{address}</span> : null}
       {faucet ? (
         <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-700 underline dark:text-forge-400">

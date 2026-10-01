@@ -12,9 +12,9 @@ import { useAuth } from '@/contexts/auth-context'
 import { BROWSER_KEY_DEFAULTS } from '@/lib/auth'
 import { askToUnlockEveryVisit } from '@/lib/auth/vault'
 import { KEPT_IDLE_MS, KEPT_TTL_MS } from '@/lib/auth/session-resume'
+import { errorMessage } from '@/lib/utils'
 
 const HOUR_MS = 60 * 60 * 1000
-import { errorMessage } from '@/lib/utils'
 
 export function SecurityPanel(): JSX.Element {
   const { controller, storage } = useAuth()
