@@ -24,6 +24,10 @@
 //! passphrase on `/dev/tty` (git owns stdin and stdout), or reads `DASH_FORGE_PASSPHRASE`, and
 //! with neither (no terminal, or `GIT_TERMINAL_PROMPT=0`) fails with E303 naming the ways out.
 //!
+//! **The repository pin.** A named URL's resolution (repo id, owner id, network) is recorded
+//! in the clone's git config the first time it is resolved there, and a later resolution to
+//! another repository is refused (E504) unless `dash.allowRepin` is set: see [`pin`].
+//!
 //! **Errors.** Any failure is rendered once, as the `dash: error: … [Ennn]` block of
 //! [`forge_core::user_error`] on stderr (git shows it verbatim), and the process exits with
 //! the code's class digit — always non-zero, so git reports the operation as failed.
@@ -40,6 +44,7 @@ mod git;
 mod helper;
 mod journal;
 mod options;
+mod pin;
 mod policy;
 mod pr_sync;
 mod progress;
