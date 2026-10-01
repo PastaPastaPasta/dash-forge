@@ -311,8 +311,9 @@ done
 EOF
 printf '#!/bin/sh\necho "libprotoc ${STUB_PROTOC:-28.3}"\n' >"$ib/protoc"
 printf '#!/bin/sh\ncase "$1" in -s) echo "${STUB_OS:-Linux}" ;; -m) echo "${STUB_ARCH:-x86_64}" ;; esac\n' >"$ib/uname"
-ln -s "$(command -v jq)" "$ib/jq"
 chmod +x "$ib"/*
+# After the chmod: through the link it would reach the real jq, which a CI runner does not own.
+ln -s "$(command -v jq)" "$ib/jq"
 # install_forge plan|build [VAR=value...]: run install-forge.sh with stub tools.
 install_forge() {
     local sub=$1
