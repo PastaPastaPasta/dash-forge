@@ -8,6 +8,8 @@
  * and hand them in as plain objects; the only clock is the consensus `createdAt`.
  */
 
+import type { Role } from './v2'
+
 /** A git object id, hex-encoded. All-zero (any length) or empty string = the null oid. */
 export type Oid = string
 
@@ -88,7 +90,7 @@ export type RefState =
 export interface Holdings {
   readonly member: boolean
   readonly maintain: boolean
-  readonly role: 'maintainer' | 'writer' | 'triage' | 'reader' | null
+  readonly role: Role | null
 }
 
 /**

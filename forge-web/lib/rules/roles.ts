@@ -50,6 +50,14 @@ export const ROLE_LABEL: Readonly<Record<Role, string>> = {
   reader: 'Reader',
 }
 
+/** How a sentence names a holder of a role ("a triage member can't …"). */
+export const ROLE_NOUN: Readonly<Record<Role, string>> = {
+  maintainer: 'a maintainer',
+  writer: 'a writer',
+  triage: 'a triage member',
+  reader: 'a reader',
+}
+
 /** One line on what a role may do (the Collaborators picker and badges). */
 export const ROLE_SUMMARY: Readonly<Record<Role, string>> = {
   maintainer: 'Everything a writer can, plus protected branches, settings, releases and moderation.',
@@ -168,7 +176,7 @@ export class RoleRefusedError extends Error {
     readonly role: Role,
     what: string,
   ) {
-    super(`your role on this repo is ${role}: ${role === 'reader' ? 'a reader' : 'a triage member'} cannot ${what}`)
+    super(`your role on this repo is ${role}: ${ROLE_NOUN[role]} cannot ${what}`)
     this.name = 'RoleRefusedError'
   }
 }
@@ -236,7 +244,7 @@ export function claimedRole(documentType: string, data: Readonly<Record<string, 
  */
 export function roleLimit(role: Role | null | undefined, what: string): string | null {
   if (role !== 'triage' && role !== 'reader') return null
-  return `Your role here is ${role}: ${role === 'reader' ? 'a reader' : 'a triage member'} can't ${what}.`
+  return `Your role here is ${role}: ${ROLE_NOUN[role]} can't ${what}.`
 }
 
 /**

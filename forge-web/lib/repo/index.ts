@@ -59,6 +59,7 @@ export {
   readMemberships,
   readMembershipsCached,
   memberDocOf,
+  grantDescription,
   readProvenanceTrust,
   readRoleOracle,
   readViewerPermissions,

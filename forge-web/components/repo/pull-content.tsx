@@ -94,7 +94,7 @@ import {
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { branchShown, headSync, readBranchState, readBranchTip, readBranchUpdates, type BranchWrite } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
-import { capabilitiesOf, memberMayWriteEvent } from '@/lib/rules/roles'
+import { ROLE_NOUN, capabilitiesOf, memberMayWriteEvent } from '@/lib/rules/roles'
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
@@ -1526,7 +1526,7 @@ function PullPage({
                     ) : !isApprover(viewerRole) && holdings.settled ? (
                       <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="approval-not-counted-note">
                         {viewerRole === 'triage' || viewerRole === 'reader'
-                          ? `Your role here is ${viewerRole}: your review is recorded, but only approvals from maintainers and writers count.`
+                          ? `You're ${ROLE_NOUN[viewerRole]} here: your review is recorded, but only approvals from maintainers and writers count.`
                           : 'Only approvals from maintainers and writers count.'}
                       </span>
                     ) : null}

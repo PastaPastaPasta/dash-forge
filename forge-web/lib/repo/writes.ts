@@ -996,6 +996,11 @@ export class MemberRoleTakenError extends Error {
   }
 }
 
+/** Refuse a role the owner cannot grant on `repo` (a reader on a public repo: everyone can read it). */
+function assertGrantable(repo: RepoRef, role: Role): void {
+  if (!grantableRoles(repo.visibility).includes(role)) throw new Error('a reader role is only for private repos: everyone can read a public one')
+}
+
 /**
  * The `role` a `writer` document of `role` carries, where the registered forge-core declares it
  * (RC2 member roles); a contract without it has writers only, so a triage or reader grant is
@@ -1124,7 +1129,7 @@ export async function grantMembershipDoc(
   intent?: string,
 ): Promise<WriteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can add members')
-  if (!grantableRoles(repo.visibility).includes(role)) throw new Error('a reader role is only for private repos: everyone can read a public one')
+  assertGrantable(repo, role)
   const roleData = await writerRoleData(sdk, repo, role)
   const held = await findMembership(sdk, repo, role, memberId)
   if (held !== null) {
@@ -1186,7 +1191,7 @@ export async function changeMemberRole(
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
   if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
   if (from === to) throw new Error(`they are already a ${to}`)
-  if (!grantableRoles(repo.visibility).includes(to)) throw new Error('a reader role is only for private repos: everyone can read a public one')
+  assertGrantable(repo, to)
   await writerRoleData(sdk, repo, to)
   if (memberDocOf(from) !== memberDocOf(to)) {
     const other = await findMembership(sdk, repo, to, memberId)

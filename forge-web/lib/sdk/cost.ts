@@ -62,6 +62,8 @@
  * ledger, so drift shows up there (`ux-dx-spec.md` §4 rule 2).
  */
 
+import { isRoleGated } from '../rules/roles'
+
 /** 1 DASH = 1e11 credits (parity with forge-core `credits_to_dash`). */
 export const CREDITS_PER_DASH = 100_000_000_000
 
@@ -120,13 +122,14 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
 }
 
 /**
- * The RC2 member-roles integers the measured costs above predate: the claimed role `r` on the
- * eight role-gated types, and a `writer` document's `role` (one stored byte each, about one text
- * byte's credits: `RECUT-OR-NEVER.md` §6). Priced on every network: an upper bound either way.
+ * Whether a create of `documentType` stores an RC2 member-roles integer the measured costs above
+ * predate: the claimed role `r` on a role-gated type, or a `writer` document's `role` (one stored
+ * byte each, about one text byte's credits: `RECUT-OR-NEVER.md` §6). Priced on every network: an
+ * upper bound either way.
  */
-export const ROLE_BYTE_TYPES: ReadonlySet<string> = new Set([
-  'refUpdate', 'packManifest', 'chunk', 'checkRun', 'label', 'milestone', 'transition', 'event', 'writer',
-])
+function storesRoleByte(documentType: string): boolean {
+  return isRoleGated(documentType) || documentType === 'writer'
+}
 
 /** Which index subtrees a create may be the first to write. Unknown fields count as first. */
 export interface FirstWrite {
@@ -429,7 +432,7 @@ export function estimateCreateCredits(
   data: Readonly<Record<string, unknown>> = {},
   first: FirstWrite = {},
 ): number {
-  const base = (BASE_CREDITS[documentType] ?? DEFAULT_BASE_CREDITS) + (ROLE_BYTE_TYPES.has(documentType) ? CREDITS_PER_TEXT_BYTE : 0)
+  const base = (BASE_CREDITS[documentType] ?? DEFAULT_BASE_CREDITS) + (storesRoleByte(documentType) ? CREDITS_PER_TEXT_BYTE : 0)
   return Math.ceil((base + firstWriteCredits(documentType, first) + CREDITS_PER_TEXT_BYTE * textBytes(data)) * HEADROOM)
 }
 

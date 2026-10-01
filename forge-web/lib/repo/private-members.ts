@@ -43,6 +43,7 @@ import {
   GATE_REFUSED_CODE,
   createDocumentIdempotent,
   previewCreate,
+  previewDelete,
   queryDocumentsWithProof,
   sumPreviews,
   type CostPreview,
@@ -229,6 +230,11 @@ function mustBurn(
     const r = recipients.find((x) => x.identity === id)
     return r !== undefined && r.keyId !== w.row.recipientKeyId
   })
+}
+
+/** The cost shown before a public repo's role change `from` → `to`: the old document's delete, then the new one. */
+export function roleChangeCost(from: Role, to: Role): CostPreview {
+  return sumPreviews([previewDelete(memberDocOf(from)), previewCreate(memberDocOf(to))])
 }
 
 /** The cost shown before a rotation: its wraps plus the anchor (§5.5: members + 1). */

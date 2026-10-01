@@ -12,12 +12,13 @@ import { useState } from 'react'
 import { Fingerprint, HardDrive, Lock, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { ConsentMissingError, changeMemberRole, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, changeMemberRole, grantDescription, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { roleChangeCost } from '@/lib/repo/private-members'
 import { Invitations } from '@/components/repo/invite-banner'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
-import { previewCreate, previewDelete, sumPreviews } from '@/lib/sdk'
-import { ROLE_LABEL, grantableRoles } from '@/lib/rules/roles'
+import { previewCreate, previewDelete } from '@/lib/sdk'
+import { ROLE_LABEL, ROLE_NOUN, grantableRoles } from '@/lib/rules/roles'
 import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import { decodeIdentifier } from '@/lib/auth'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -39,6 +40,11 @@ import { WebhookSettings } from '@/components/repo/webhook-settings'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
+
+/** A Collaborators write awaiting its confirm; `change` (public repos) deletes `role`'s document, then adds `to`. */
+type MemberAction =
+  | { readonly kind: 'grant' | 'revoke'; readonly member: string; readonly role: MemberRole }
+  | { readonly kind: 'change'; readonly member: string; readonly role: MemberRole; readonly to: MemberRole }
 
 export function SettingsContent({ home, reload }: { home: RepoHome; reload: () => void }): JSX.Element {
   // QW-079: a private repo's settings are its members' (GitHub answers anyone else with a 404).
@@ -79,8 +85,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const [awaiting, setAwaiting] = useState<string | null>(null)
   const [memberId, setMemberId] = useState('')
   const [role, setRole] = useState<MemberRole>('writer')
-  // `change`: a role change (public repos): delete `role`'s document, then add `to`.
-  const [action, setAction] = useState<{ kind: 'grant' | 'revoke' | 'change'; member: string; role: MemberRole; to?: MemberRole } | null>(null)
+  const [action, setAction] = useState<MemberAction | null>(null)
   // The member row whose role picker is open (`role:identity`).
   const [changing, setChanging] = useState<string | null>(null)
   const idError = (() => {
@@ -94,7 +99,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   })()
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
-    if (action.kind === 'change' && action.to !== undefined) {
+    if (action.kind === 'change') {
       try {
         await changeMemberRole(sdk, signer, repo, action.member, action.role, action.to, intent)
       } catch (e) {
@@ -122,9 +127,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     }
     // The write landed, but the node the next read hits may be a block behind: re-read until
     // the change shows (then it is what the cache holds), else keep the last answer.
-    const { kind, member, role: r, to } = action
+    const done = action
     const shows = (rows: Membership[]): boolean =>
-      kind === 'change' ? rows.some((m) => m.identity === member && m.role === to) : rows.some((m) => m.identity === member && m.role === r) === (kind === 'grant')
+      done.kind === 'change'
+        ? rows.some((m) => m.identity === done.member && m.role === done.to)
+        : rows.some((m) => m.identity === done.member && m.role === done.role) === (done.kind === 'grant')
     await retryWhileMissing(async () => {
       invalidateMembers(repo, network)
       return shows(await readMembershipsCached(sdk, repo, network)) ? true : null
@@ -145,7 +152,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               : viewerRole === 'writer'
                 ? "You're a writer here: only maintainers can change the repo's settings. Where your own browser stores what you push (Storage) is yours to set."
                 : viewerRole === 'triage' || viewerRole === 'reader'
-                  ? `You're a ${viewerRole === 'triage' ? 'triage member' : 'reader'} here: only maintainers can change the repo's settings.`
+                  ? `You're ${ROLE_NOUN[viewerRole]} here: only maintainers can change the repo's settings.`
                   : "You're viewing this repo's settings read-only: only its maintainers can change them."}
           </span>
         </p>
@@ -203,8 +210,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                           )}
                           disabled={guard.disabledReason !== null}
                           onChange={(to) => {
-                            const cost = sumPreviews([previewDelete(memberDocOf(m.role)), previewCreate(memberDocOf(to))])
-                            if (guard.check(cost)) setAction({ kind: 'change', member: m.identity, role: m.role, to })
+                            if (guard.check(roleChangeCost(m.role, to))) setAction({ kind: 'change', member: m.identity, role: m.role, to })
                           }}
                         />
                         <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -279,14 +285,14 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           title={
             action?.kind === 'grant'
               ? `Add ${action.role}`
-              : action?.kind === 'change' && action.to !== undefined
+              : action?.kind === 'change'
                 ? `Change role to ${ROLE_LABEL[action.to]}`
                 : `Remove ${action?.role ?? 'member'}`
           }
           description={
             action?.kind === 'grant'
-              ? `Creates a ${memberDocOf(action.role)} document${memberDocOf(action.role) === 'writer' ? ` with the ${action.role} role` : ''} for ${action.member.slice(0, 8)}… on this repo.`
-              : action?.kind === 'change' && action.to !== undefined
+              ? `Creates ${grantDescription(action.role)} for ${action.member.slice(0, 8)}… on this repo.`
+              : action?.kind === 'change'
                 ? `Deletes ${action.member.slice(0, 8)}…'s ${action.role} document, then adds them as ${action.to} (their acceptance still stands). Two transitions.`
                 : 'Deletes their membership document. Their past pushes and events stay valid; new ones are refused.'
           }
@@ -295,8 +301,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               ? previewCreate('writer')
               : action.kind === 'revoke'
                 ? previewDelete(memberDocOf(action.role))
-                : action.kind === 'change' && action.to !== undefined
-                  ? sumPreviews([previewDelete(memberDocOf(action.role)), previewCreate(memberDocOf(action.to))])
+                : action.kind === 'change'
+                  ? roleChangeCost(action.role, action.to)
                   : previewCreate(memberDocOf(action.role))
           }
           confirmLabel={action?.kind === 'grant' ? 'Sign & add' : action?.kind === 'change' ? 'Sign & change' : 'Sign & remove'}

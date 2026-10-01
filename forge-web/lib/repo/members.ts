@@ -28,6 +28,11 @@ export function memberDocOf(role: Role): MemberDoc {
   return role === 'maintainer' ? DOC.maintainer : DOC.writer
 }
 
+/** What adding `role` creates, for a confirm dialog: "a writer document with the triage role". */
+export function grantDescription(role: Role): string {
+  return role === 'maintainer' ? 'a maintainer document' : `a writer document with the ${role} role`
+}
+
 /**
  * The role a membership document grants: a `maintainer` document's, or a `writer` document's
  * `role` (read tolerant: absent is writer; an out-of-range code grants nothing).

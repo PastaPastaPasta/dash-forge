@@ -12,12 +12,13 @@ import { isLate, openWithKey, type AnchorRef, type OpenContext } from './doc'
 import type { DocFields } from './tlv'
 import { IdSet, bytesEqual, compareBytes, type PrivateId } from './ids'
 import { EpochKeys, importEpochKeyAndWipe } from './keys'
+import type { Role } from '../rules/v2'
 
 /**
- * A membership role; maintainer outranks the `writer` document's roles (writer, triage, reader).
- * Every `writer` document, a reader's included, is a member and a key-wrap recipient.
+ * A membership role (`rules/v2`); maintainer outranks the `writer` document's roles (writer,
+ * triage, reader). Every `writer` document, a reader's included, is a member and a key-wrap recipient.
  */
-export type Role = 'maintainer' | 'writer' | 'triage' | 'reader'
+export type { Role }
 
 /** One current `maintainer` or `writer` document of the repo. */
 export interface PrivateMembership {
