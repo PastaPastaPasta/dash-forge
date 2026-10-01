@@ -559,6 +559,11 @@ export const DUPLICATE_UNIQUE_CODE = 40105
 
 /** An `ownerRefersTo` gate was not satisfied (not a member, not the author). */
 export const GATE_REFUSED_CODE = 40120
+/**
+ * A gate's referenced document was found but disagrees with a `where` entry (RC2 member roles: the
+ * signer's writer document holds another `role` than the claimed `r`).
+ */
+export const WHERE_MISMATCH_CODE = 40127
 /** A document breaks one of its type's `propertyConstraints` rules (the message names the rule). */
 export const RULE_REFUSED_CODE = 10422
 

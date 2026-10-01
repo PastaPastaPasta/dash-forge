@@ -49,7 +49,7 @@ import { DOC, withVis, type RepoRef } from './contract'
 import { packHashOperand } from './pack-hash'
 import { refusedAtBroadcast, retryAfterLag } from './lag-retry'
 import { privateWriter, sealForRepo, sealedIntent } from './private-writes'
-import { roleClaim } from './role-claim'
+import { refreshRoleOnRefusal, roleClaim } from './role-claim'
 import { repoSource } from './source'
 import { assertNoPlaintext } from './writes'
 
@@ -220,7 +220,7 @@ export async function writePackManifest(
     // at the broadcast check until it has applied them, so that (free) refusal is retried after
     // about a block. One inside a block is judged on current state: the chunks really are missing.
     return await retryAfterLag(
-      () => createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.packManifest, data, ...(intent ? { intent } : {}) }),
+      () => refreshRoleOnRefusal(repo, auth, DOC.packManifest, () => createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.packManifest, data, ...(intent ? { intent } : {}) })),
       PLATFORM_CHUNKS_RULE,
       undefined,
       refusedAtBroadcast,
@@ -302,12 +302,14 @@ export async function putPlatformChunks(
       data[`d${i}`] = new Uint8Array(f)
     })
     try {
-      await createDocumentIdempotent(sdk, auth, {
-        contractId: repo.forge.core,
-        documentType: DOC.chunk,
-        data,
-        intent: `chunk:${repo.repoId}:${packHashHex}:${chunk.seq}`,
-      })
+      await refreshRoleOnRefusal(repo, auth, DOC.chunk, () =>
+        createDocumentIdempotent(sdk, auth, {
+          contractId: repo.forge.core,
+          documentType: DOC.chunk,
+          data,
+          intent: `chunk:${repo.repoId}:${packHashHex}:${chunk.seq}`,
+        }),
+      )
       written += 1
     } catch (e) {
       if (!isDuplicate(e)) throw e
@@ -397,13 +399,16 @@ export async function writeRefUpdate(
   data = { ...data, ...(await roleClaim(sdk, auth, repo, documentType, data)) }
   let moved: MovedRef | undefined
   try {
-    const r = await createDocumentIdempotent(sdk, auth, {
-      contractId: repo.forge.core,
-      documentType,
-      // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
-      data: { repoId: decodeIdentifier(repo.repoId), ...withVis(repo.visibility, documentType, data) },
-      ...(options.intent ? { intent: options.intent } : {}),
-    })
+    const signed = data
+    const r = await refreshRoleOnRefusal(repo, auth, documentType, () =>
+      createDocumentIdempotent(sdk, auth, {
+        contractId: repo.forge.core,
+        documentType,
+        // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
+        data: { repoId: decodeIdentifier(repo.repoId), ...withVis(repo.visibility, documentType, signed) },
+        ...(options.intent ? { intent: options.intent } : {}),
+      }),
+    )
     moved = { refName: input.refName, newOid: input.newOid.toLowerCase() }
     return { ...r, documentType }
   } finally {

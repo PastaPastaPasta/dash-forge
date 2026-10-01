@@ -58,7 +58,7 @@ import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, 
 import { invalidateRepoFeed } from './issues'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
-import { roleClaim } from './role-claim'
+import { refreshRoleOnRefusal, roleClaim } from './role-claim'
 import { WRITER_ROLE_CODE, grantableRoles } from '../rules/roles'
 import { repoSource } from './source'
 import { starShape } from './star-shape'
@@ -300,14 +300,17 @@ export async function writeRepoDoc(
   assertNoPlaintext(repo, documentType, data)
   let result: WriteResult | undefined
   try {
-    result = await createDocumentIdempotent(sdk, auth, {
-      contractId: contractFor(repo, documentType),
-      documentType,
-      // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
-      data: scoped(repo, withVis(repo.visibility, documentType, { ...data, ...claim })),
-      ...(intent ? { intent } : {}),
-      ...(contentKey ? { contentKey } : {}),
-    })
+    const signed = data
+    result = await refreshRoleOnRefusal(repo, auth, documentType, () =>
+      createDocumentIdempotent(sdk, auth, {
+        contractId: contractFor(repo, documentType),
+        documentType,
+        // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
+        data: scoped(repo, withVis(repo.visibility, documentType, { ...signed, ...claim })),
+        ...(intent ? { intent } : {}),
+        ...(contentKey ? { contentKey } : {}),
+      }),
+    )
     return result
   } finally {
     // A new issue or PR raises its total's floor BEFORE the caches drop: dropping them tells the

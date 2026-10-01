@@ -11,7 +11,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { RoleRefusedError, claimedRole, isRoleGated } from '../rules/roles'
-import type { WriteAuth } from '../sdk'
+import { ConsensusRefusal, GATE_REFUSED_CODE, WHERE_MISMATCH_CODE, type WriteAuth } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { contractHasProperty } from './contract-shape'
 import { invalidateMembers, readRoleOracle } from './members'
@@ -49,5 +49,27 @@ export async function roleClaim(
     if (!(e instanceof RoleRefusedError)) throw e
     invalidateMembers(repo, auth.network)
     return claim()
+  }
+}
+
+/**
+ * Whether `e` is the gate refusing the signer's membership or claimed role: 40120 (no document the
+ * gate refers to) or 40127 (a writer document whose `role` is not the claimed `r`).
+ */
+export function isMemberGateRefusal(e: unknown): boolean {
+  return e instanceof ConsensusRefusal && (e.code === GATE_REFUSED_CODE || e.code === WHERE_MISMATCH_CODE)
+}
+
+/**
+ * Run the create of a `documentType` write; when the gate refuses a role-gated write
+ * ({@link isMemberGateRefusal}), drop the repo's cached membership, so the next claim reads the
+ * signer's role afresh instead of repeating a stale one until the cache expires.
+ */
+export async function refreshRoleOnRefusal<T>(repo: RepoRef, auth: Pick<WriteAuth, 'network'>, documentType: string, write: () => Promise<T>): Promise<T> {
+  try {
+    return await write()
+  } catch (e) {
+    if (isRoleGated(documentType) && isMemberGateRefusal(e)) invalidateMembers(repo, auth.network)
+    throw e
   }
 }

@@ -13,7 +13,7 @@ const creates: Create[] = []
 let nextId = 0
 
 // RC2 member roles: the claimed role (`r`) is role-claim.test.ts's and rc1-writers.test.ts's.
-vi.mock('./role-claim', () => ({ roleClaim: async () => ({}) }))
+vi.mock('./role-claim', async (orig) => ({ ...(await orig<typeof import('./role-claim')>()), roleClaim: async () => ({}) }))
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {

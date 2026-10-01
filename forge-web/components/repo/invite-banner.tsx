@@ -18,7 +18,7 @@ import { useSearchParams } from 'next/navigation'
 import { UserPlus } from 'lucide-react'
 import { acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
 import type { Role } from '@/lib/rules/v2'
-import { ROLE_LABEL, ROLE_SUMMARY } from '@/lib/rules/roles'
+import { ROLE_LABEL, ROLE_SUMMARY, grantableRoles } from '@/lib/rules/roles'
 import { repoHref } from '@/hooks/use-query-param'
 import { CopyRow } from '@/components/ui/copy-row'
 import { previewCreate } from '@/lib/sdk'
@@ -35,15 +35,22 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 /** The query parameter an invite link carries: the role the owner means to add them as (`1`: unstated). */
 export const INVITE_PARAM = 'invite'
 
-/** The role an invite link names (`&invite=triage`), or null (`&invite=1`, or anything else). */
-export function invitedRole(param: string | null): Role | null {
-  return param === 'maintainer' || param === 'writer' || param === 'triage' || param === 'reader' ? param : null
+/**
+ * The role an invite link names (`&invite=triage`) when the owner could grant it on a repo of
+ * `visibility` (a reader only on a private repo), else null (`&invite=1`, anything else). Only a
+ * hint: the owner picks the role when they add the member.
+ */
+export function invitedRole(param: string | null, visibility: 'public' | 'private'): Role | null {
+  const role = grantableRoles(visibility).find((r) => r === param)
+  return role ?? null
 }
 
-/** "as a triage member": how the banner names the offered role (empty when the link names none). */
-export function asRoleWords(role: Role | null): string {
-  if (role === null) return ''
-  return ` as ${role === 'triage' ? 'a triage member' : `a ${role}`}`
+/**
+ * " (the invite suggests the triage role)": how the banner names the role a link suggests (empty
+ * when it names none). A suggestion only: the owner picks the role when adding the member.
+ */
+export function suggestedRoleWords(role: Role | null): string {
+  return role === null ? '' : ` (the invite suggests the ${role} role)`
 }
 
 /** How soon the owner's Settings re-reads the pending invitations while the page is visible. */
@@ -57,8 +64,8 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
   const params = useSearchParams()
   const invited = params.get(INVITE_PARAM) !== null
   // The role the owner picked for the link: what the banner says they will be added as.
-  const offered = invitedRole(params.get(INVITE_PARAM))
-  const asRole = asRoleWords(offered)
+  const offered = invitedRole(params.get(INVITE_PARAM), repo.visibility)
+  const suggested = suggestedRoleWords(offered)
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, signer, locked, resuming, vaultsLoaded, vaultsError, lockedIdentity } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
@@ -92,7 +99,7 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
         <UserPlus className="mt-0.5 h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
         <div className="min-w-0 flex-1">
           <p>
-            <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo{asRole}. {locked ? 'Unlock' : 'Sign in'} to accept
+            <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo{suggested}. {locked ? 'Unlock' : 'Sign in'} to accept
             the invitation.
           </p>
           <Button
@@ -130,14 +137,13 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
       <div className="min-w-0 flex-1">
         {shown === 'accepted' ? (
           <p data-testid="invite-accepted">
-            You accepted the invitation to collaborate on this repo. <Author identityId={repo.ownerId} link={false} /> can now add you
-            {offered !== null ? asRole : ' as a member'}; they choose the role.
-            {offered !== null ? <RoleWhat role={offered} /> : null}
+            You accepted the invitation to collaborate on this repo. <Author identityId={repo.ownerId} link={false} /> can now add you as a member;
+            they choose the role{suggested}.
           </p>
         ) : (
           <>
             <p>
-              <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo{asRole}. Accepting lets them add you as a member
+              <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo{suggested}. Accepting lets them add you as a member
               (they choose the role: maintainer, writer, triage{repo.visibility === 'private' ? ' or reader' : ''}); nobody can be made a member without it.
             </p>
             {offered !== null ? <RoleWhat role={offered} /> : null}
@@ -271,7 +277,7 @@ export function Invitations({
       ) : null}
       {link !== '' ? (
         <div className="mt-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="invite-link">
-          <p className="mb-1">Invite link{asRoleWords(role)}: the member opens it and accepts before you add them. It names the role picked above.</p>
+          <p className="mb-1">Invite link: the member opens it and accepts before you add them. It suggests the role picked above ({role}); you choose the role when you add them.</p>
           <CopyRow text={link} label="Copy the invite link" />
         </div>
       ) : null}
@@ -293,11 +299,11 @@ export function Invitations({
   )
 }
 
-/** What the offered role may do, under the invitation. */
+/** What the suggested role may do, under the invitation. */
 function RoleWhat({ role }: { role: Role }): JSX.Element {
   return (
     <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="invite-role">
-      {ROLE_LABEL[role]}: {ROLE_SUMMARY[role]}
+      Suggested role, {ROLE_LABEL[role]}: {ROLE_SUMMARY[role]}
     </p>
   )
 }
