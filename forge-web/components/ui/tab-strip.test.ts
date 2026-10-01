@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { stripScroll, type TabBox } from './tab-strip'
+import { MIN_FADE, edgeFades, stripScroll, type TabBox } from './tab-strip'
 
 /** Tabs of these widths, 4 px apart (`gap-1`). */
 function row(widths: number[]): TabBox[] {
@@ -49,5 +49,38 @@ describe('stripScroll (QW2-072)', () => {
 
   it('copes with no tabs', () => {
     expect(stripScroll([], 0, 300)).toEqual({ left: 0, pad: 0 })
+  })
+})
+
+describe('edgeFades (QW3-057)', () => {
+  // The repo tabs on a 360 px phone (dips): Code, Issues 5, Pull requests 22, Releases.
+  const repo = row([80, 100, 160, 108])
+
+  it('fades nothing on a strip that fits', () => {
+    expect(edgeFades(row([80, 90, 100]), 0, 328)).toEqual({ left: 0, right: 0 })
+  })
+
+  it('covers all of a tab the edge cuts, not just its count', () => {
+    // At 360 px (a 328 px strip) "Pull requests 22" (188..348) is cut at 328: 88 % of it shows.
+    const f = edgeFades(repo, 0, 328)
+    expect(f.left).toBe(0)
+    expect(f.right).toBe(Math.min(164, 328 - at(repo, 2).left))
+    expect(f.right).toBeGreaterThan(MIN_FADE)
+  })
+
+  it('keeps at least the minimum fade where only whole tabs lie beyond the edge', () => {
+    const f = edgeFades(repo, 0, at(repo, 2).left + at(repo, 2).width + 2)
+    expect(f.right).toBe(MIN_FADE)
+  })
+
+  it('never covers more than half the strip', () => {
+    expect(edgeFades(row([60, 300]), 0, 200).right).toBe(100)
+  })
+
+  it('fades the leading edge over a tab scrolled partly out of view', () => {
+    const f = edgeFades(repo, 100, 328)
+    // "Issues 5" (84..184) is cut at 100; "Releases" (352..460) at 428.
+    expect(f.left).toBe(at(repo, 1).left + at(repo, 1).width - 100)
+    expect(f.right).toBe(428 - at(repo, 3).left)
   })
 })

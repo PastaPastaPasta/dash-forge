@@ -4,7 +4,7 @@
  * A row of tabs that scrolls sideways when it is wider than the screen (the repo tabs, a PR's
  * tabs). The active tab (`aria-current="page"` or `aria-selected="true"`) is scrolled into
  * view, and an edge fade marks each side that has more tabs (`data-more`), so a clipped tab is
- * never mistaken for the last one (L-58).
+ * never mistaken for the last one (L-58); it covers all of a tab the edge cuts (QW3-057).
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
@@ -36,6 +36,32 @@ export function stripScroll(tabs: readonly TabBox[], active: number, viewport: n
   return { left, pad: Math.max(0, Math.ceil(left - (contentRight - viewport))) }
 }
 
+/** The narrowest an edge fade is: enough to read as "more this way". */
+export const MIN_FADE = 32
+
+/**
+ * How wide each edge fade is: over the whole visible part of a tab the edge cuts, so a cut tab
+ * fades out entirely instead of showing a clipped count (QW3-057: "Pull requests 22" read
+ * "Pull requests 2" and "Releases" read "Rele" under a 32 px fade), and at least
+ * {@link MIN_FADE} wherever more lies beyond the edge. 0: nothing beyond that edge.
+ */
+export function edgeFades(tabs: readonly TabBox[], scrollLeft: number, viewport: number): { left: number; right: number } {
+  const last = tabs[tabs.length - 1]
+  if (last === undefined) return { left: 0, right: 0 }
+  const right = scrollLeft + viewport
+  const moreLeft = scrollLeft > 1
+  const moreRight = last.left + last.width > right + 1
+  const cutRight = tabs.find((t) => t.left < right - 1 && t.left + t.width > right + 1)
+  const cutLeft = tabs.find((t) => t.left < scrollLeft - 1 && t.left + t.width > scrollLeft + 1)
+  // Never more than half the strip: the active tab stays readable.
+  const cap = Math.max(MIN_FADE, Math.floor(viewport / 2))
+  const width = (cut: TabBox | undefined, visible: (t: TabBox) => number): number => Math.min(cap, Math.max(MIN_FADE, cut ? visible(cut) : 0))
+  return {
+    left: moreLeft ? width(cutLeft, (t) => t.left + t.width - scrollLeft) : 0,
+    right: moreRight ? width(cutRight, (t) => right - t.left) : 0,
+  }
+}
+
 export function TabStrip({
   activeKey,
   label,
@@ -55,13 +81,19 @@ export function TabStrip({
   // Room after the last tab, so the strip can scroll far enough (see `stripScroll`); sized in
   // `reveal`, in the same layout pass as the scroll.
   const padRef = useRef<HTMLSpanElement>(null)
-  const [more, setMore] = useState<{ left: boolean; right: boolean }>({ left: false, right: false })
+  // Each edge fade's width (0: nothing beyond that edge), from `edgeFades`.
+  const [more, setMore] = useState<{ left: number; right: number }>({ left: 0, right: 0 })
   const measure = useCallback(() => {
     const el = ref.current
     if (!el) return
-    const left = el.scrollLeft > 1
-    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - (padRef.current?.offsetWidth ?? 0) - 1
-    setMore((m) => (m.left === left && m.right === right ? m : { left, right }))
+    const tabs = ([...el.children] as HTMLElement[]).filter((t) => t !== padRef.current)
+    const origin = tabs[0]?.offsetLeft ?? 0
+    const next = edgeFades(
+      tabs.map((t) => ({ left: t.offsetLeft - origin, width: t.offsetWidth })),
+      el.scrollLeft,
+      el.clientWidth,
+    )
+    setMore((m) => (m.left === next.left && m.right === next.right ? m : next))
   }, [])
   useEffect(() => {
     const el = ref.current
@@ -100,10 +132,11 @@ export function TabStrip({
       for (const g of gestures) el.removeEventListener(g, touched)
     }
   }, [activeKey, measure])
-  const fade = 'pointer-events-none absolute inset-y-0 w-8 from-anvil-50 to-transparent dark:from-anvil-950'
+  // Opaque at the edge for a third of its width, so what the edge cuts (a count) is not legible.
+  const fade = 'pointer-events-none absolute inset-y-0 from-anvil-50 from-35% to-transparent dark:from-anvil-950'
   const Tag = role === 'tablist' ? 'div' : 'nav'
   return (
-    <div className={cn('relative', className)} data-more={[more.left && 'left', more.right && 'right'].filter(Boolean).join(' ') || undefined}>
+    <div className={cn('relative', className)} data-more={[more.left > 0 && 'left', more.right > 0 && 'right'].filter(Boolean).join(' ') || undefined}>
       <Tag
         ref={ref as React.RefObject<HTMLDivElement>}
         role={role}
@@ -115,8 +148,8 @@ export function TabStrip({
         {/* -ml-1 cancels the gap before it: at width 0 it adds nothing. */}
         <span ref={padRef} aria-hidden className="-ml-1 w-0 shrink-0" />
       </Tag>
-      {more.left ? <span aria-hidden className={cn(fade, 'left-0 bg-gradient-to-r')} /> : null}
-      {more.right ? <span aria-hidden className={cn(fade, 'right-0 bg-gradient-to-l')} /> : null}
+      {more.left > 0 ? <span aria-hidden className={cn(fade, 'left-0 bg-gradient-to-r')} style={{ width: more.left }} /> : null}
+      {more.right > 0 ? <span aria-hidden className={cn(fade, 'right-0 bg-gradient-to-l')} style={{ width: more.right }} /> : null}
     </div>
   )
 }

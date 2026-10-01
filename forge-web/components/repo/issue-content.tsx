@@ -426,7 +426,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
         {/* Body */}
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-          <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
             <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="authored" />
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
           </div>

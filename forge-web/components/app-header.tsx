@@ -145,14 +145,14 @@ export function AppHeader(): JSX.Element {
           ) : null}
           <Link
             href="/explore/"
-            className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
+            className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 coarse:h-11 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
           >
             <Compass className="h-4 w-4" aria-hidden /> Explore
           </Link>
           {/* What Forge is and how identities and credits work (QW-013), as GitHub links Docs. */}
           <Link
             href="/start/"
-            className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
+            className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 coarse:h-11 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
           >
             <BookOpen className="h-4 w-4" aria-hidden /> Docs
           </Link>
@@ -361,7 +361,7 @@ function JumpBox({ compact = false, onDismiss, onJump }: { compact?: boolean; on
           request.current++
           setBusy(false)
         }}
-        placeholder={inRepo ? 'repo, owner/name, @name or #n' : 'repo, owner/name or @name'}
+        placeholder={inRepo ? 'repo, @name or #42' : 'repo, owner/name or @name'}
         aria-describedby={note ? `${id}-note` : undefined}
         aria-busy={busy}
         onKeyDown={(e) => {

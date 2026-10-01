@@ -931,8 +931,10 @@ function PullPage({
         // Every reader is told the PR shows an older head than its branch (QW2-007: an
         // interrupted browser commit, or a push with auto-sync off); who can move it gets the button.
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="head-sync-banner">
-          <RefreshCw className="h-4 w-4 text-forge-700 dark:text-forge-400" aria-hidden />
-          <span className="min-w-0 flex-1">
+          <RefreshCw className="h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
+          {/* At least 16rem: on a phone the text keeps the row and the cost and button wrap below it,
+              instead of squeezing it into a narrow column beside them (QW3-054). */}
+          <span className="min-w-[min(16rem,100%)] flex-1">
             {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortBranch(pull.sourceRefName ?? '')}</span> is at{' '}
             <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
             {authorOrMember ? null : (
@@ -1017,7 +1019,7 @@ function PullPage({
             <>
               {/* Description */}
               <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-                <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
                   <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
