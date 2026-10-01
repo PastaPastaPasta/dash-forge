@@ -39,6 +39,8 @@ import { compareRows, eventFiltered, rowMatches, selectionFiltered, type RowFilt
 import { baseRefReaders, countsSettled, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
 import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE } from '../rules/transition'
 import { linkedIssues } from '../rules/review'
+import type { Event } from '../rules'
+import { threadHidesOf } from './moderation-fold'
 import { referencedNumbers } from '../view/cross-refs'
 import type { LabelDef } from './labels'
 import type { HiddenCounts } from './private-content'
@@ -73,6 +75,8 @@ import {
  */
 export interface PullRow extends PullView {
   readonly comments: number | null
+  /** Its hides and unhides of the whole PR (RC2 MOD): `hiddenThreadIds` judges them. */
+  readonly threadHides?: readonly Event[]
 }
 
 /**
@@ -103,10 +107,11 @@ function readersOf(sdk: EvoSDK, index: PullIndex): BaseRefReaders {
  */
 const indexOf = indexCache<PullRow>('patch', async (sdk, index, doc, log, code) => {
   const base = readersOf(sdk, index)
-  return readPull(sdk, index.repo, doc, log, base.configHistory, base.refUpdates, { code }).catch((e: unknown) => {
+  const view = await readPull(sdk, index.repo, doc, log, base.configHistory, base.refUpdates, { code }).catch((e: unknown) => {
     if (!(e instanceof IncompleteReadError)) throw e
     return incompletePullView(doc, code)
   })
+  return { ...view, threadHides: threadHidesOf(log.events) }
 })
 
 // ---------------------------------------------------------------------------

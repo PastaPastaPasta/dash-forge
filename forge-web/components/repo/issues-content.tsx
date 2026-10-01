@@ -18,6 +18,7 @@ import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useState } from 'react'
+import { HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { CheckCircle2, CircleDot, CircleSlash, MessageSquarePlus, Pin, X } from 'lucide-react'
@@ -153,6 +154,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const reasons = useAsync(() => readCloseReasons(sdk!, home.repo, closedRows), [ready, repoKey(home.repo), closedKey], {
     enabled: ready && sdk !== null && closedRows.length > 0,
   })
+  // RC2 MOD: issues a maintainer hid are left out of the list behind a toggle (counts stay as proved).
+  const [showHidden, setShowHidden] = useState(false)
+  const hiddenIds = useHiddenThreads(sdk, ready, home.repo, network, data?.rows)
+  const rows = (data?.rows ?? []).filter((r) => showHidden || !hiddenIds.has(r.id))
+  const hiddenOnPage = (data?.rows ?? []).filter((r) => hiddenIds.has(r.id)).length
   const empty = data !== null && data.rows.length === 0
   const filtered = hasFilters(query)
   const lastPage = empty ? pastLastPage(query.page, data?.matching ?? null, ISSUE_PAGE_SIZE) : null
@@ -260,8 +266,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
             action={filtered || !canCompose || archived ? undefined : <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>}
           />
         ) : (
+          <>
+          <HiddenThreadsToggle count={hiddenOnPage} shown={showHidden} onToggle={() => setShowHidden((s) => !s)} noun="issue" />
           <ul aria-label="Issues" aria-busy={loading}>
-            {data?.rows.map((issue) => (
+            {rows.map((issue) => (
               <li key={issue.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="issue-row" data-number={issue.number}>
                 {issue.state.open ? (
                   <><CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden /><span className="sr-only">Open</span></>
@@ -294,6 +302,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               </li>
             ))}
           </ul>
+          </>
         )}
       </div>
 

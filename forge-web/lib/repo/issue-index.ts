@@ -35,6 +35,8 @@ import { countsSettled, issueViewOf, type IssueView } from './issues'
 import { ISSUE_CLOSE } from '../rules/transition'
 import type { LabelDef } from './labels'
 import { foldThreadMetaV2, pinnedTargets } from '../rules/parity'
+import type { Event } from '../rules'
+import { threadHidesOf } from './moderation-fold'
 import { searchableBody, trustedOrigin } from './provenance'
 import { commentRange, searchTerms, type CountRange, type ExtraFilters, type TextScope } from '../view/issue-query'
 import type { HiddenCounts } from './private-content'
@@ -70,6 +72,8 @@ export interface IssueRow extends IssueView {
   readonly comments: number | null
   /** The milestone title its member events leave it in (`foldThreadMetaV2`), or null. */
   readonly milestone?: string | null
+  /** Its hides and unhides of the whole issue (RC2 MOD): `hiddenThreadIds` judges them. */
+  readonly threadHides?: readonly Event[]
 }
 
 type IssueIndex = ListIndex<IssueRow>
@@ -84,6 +88,7 @@ const indexOf = indexCache<IssueRow>(
   async (_sdk, _index, doc, log, code) => ({
     ...issueViewOf(doc, log, code),
     milestone: foldThreadMetaV2(log.events).milestone,
+    threadHides: threadHidesOf(log.events),
   }),
   // Page 1 shows the pinned issues, which only the whole feed names: its first page rides the first composite.
   { withFeed: true },
