@@ -33,6 +33,7 @@ import {
   queryAllDocuments,
   replaceDocumentIdempotent,
   type CostPreview,
+  type FirstWrite,
   type PlainDocument,
   type ReplaceResult,
   type WriteAuth,
@@ -198,9 +199,12 @@ export function configData(next: RepoConfig): Record<string, unknown> {
   return data
 }
 
-/** The pre-sign cost of appending `next` as a config. */
-export function previewConfig(next: RepoConfig): CostPreview {
-  return previewCreate(DOC.config, configData(next))
+/**
+ * The pre-sign cost of appending `next` as a config. `first`: what is known of the subtrees it
+ * builds (a repo that has a config already: none of its own).
+ */
+export function previewConfig(next: RepoConfig, first: FirstWrite = {}): CostPreview {
+  return previewCreate(DOC.config, configData(next), first)
 }
 
 /** The branches (short names) each pattern matches, in `branches` order. */
@@ -383,9 +387,11 @@ export function previewRepoEdit(
   if (Object.keys(changes).length === 0) return previewCredits(0)
   if (edit.topics === undefined || visibility === 'private') return previewReplace(DOC.repo, changes)
   const { added, removed } = held === null ? { added: [...edit.topics], removed: [] } : topicChanges(held, edit.topics)
+  // Only the owner edits, and they wrote the repo document to forge-core; only the repo's first
+  // topic builds its subtree (QW3-037).
   return sumPreviews([
     previewReplace(DOC.repo, changes),
-    ...added.map((name) => previewCreate(DOC.topic, withVis('public', DOC.topic, { name }))),
+    ...added.map((name, i) => previewCreate(DOC.topic, withVis('public', DOC.topic, { name }), { contract: false, ...(held !== null && (held.length > 0 || i > 0) ? { repo: false } : {}) })),
     ...removed.map(() => previewDelete(DOC.topic)),
   ])
 }

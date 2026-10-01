@@ -106,10 +106,11 @@ dg auth login --network devnet --devnet-name bonsia ~/Downloads/dash-identity-<i
 ```
 Registering a limited key for this computer on 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB (devnet-bonsia):
   it can spend at most 0.25 DASH, only on Dash Forge, until it expires in 180 day(s)
-  one identity update, ~0.0005 DASH ≈ $0.02; the master key signs once and is not stored
+  one identity update, ~0.0005 DASH; the master key signs once and is not stored
 Register the key? [y/N] y
 ✓ signed in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on devnet-bonsia
   key #6: limited, 0.25 DASH budget, expires in 180 day(s)
+  with encryption key #4: private repositories you are a member of open with it
   stored in macOS Keychain (dash-forge/devnet-bonsia/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
   balance 0.0496 DASH
   the identity file is no longer needed here; keep it (or the words) offline
@@ -150,7 +151,7 @@ Forge hosts nothing, so you decide where the pack bytes (the git objects) live. 
 | Your IPFS node (kubo) or a pinning service | the same on Platform | |
 | Dash Platform | about **0.004–0.011 DASH** for a small push (the top of the range when it moves the default branch), plus about **0.33 DASH per MiB** (the tools quote up to 0.39), permanently | no account needed; fine for tiny repositories |
 
-**From the terminal**, `dg storage add` with no arguments asks for each value, stores a pasted secret in your OS keychain, and tests the storage as it goes, printing the fix for anything that fails (usually CORS):
+**From the terminal**, `dg storage add` with no arguments asks for each value and tests the storage as it goes, printing the fix for anything that fails (usually CORS). For the secret access key it offers to paste it, hidden, into your OS keychain. Where there is no keychain (`DASH_FORGE_NO_KEYCHAIN=1`, which is what you want over SSH, or a container) it says so and leaves two choices: an environment variable that holds the secret (`env:R2_SECRET_ACCESS_KEY`; export it where `dg` and `git push` run), or a keychain entry that already exists. A scripted `--secret-access-key` takes one of those two references, never the secret itself ([E501](../errors.md#e501)):
 
 ```sh
 dg storage add            # e.g. a profile named r2-main; offers to make it your default
@@ -174,25 +175,31 @@ dg init                   # = dg repo create --push, for this directory
 
 ```
 Creating 8hJm…/my-project on devnet-bonsia
-  repo + maintainer + config     ~0.002 DASH ≈ $0.06
+  repo + maintainer + config     ~0.002 DASH
   packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
   (storage: git config dash.storage)
 Proceed? [Y/n] y
 ✓ created  https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ✓ remote 'origin' → dash://8hJm…/my-project
-✓ git config dash.storage=r2-main
+✓ git config dash.storage=r2-main, dash.network=devnet, dash.devnetName=bonsia
 dash: 8hJm…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
 dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0066 DASH
 dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
 dash: platform     manifest 4 · refUpdate 1     est 0.0066 DASH
+dash: stored pack 6ce98e05facd (1.2 MiB, 312 objects)
+dash: pack 6ce98e05facd (1.2 MiB) stored on r2-main (1 verified)
+dash: updated main → 8f3e2a1
 dash: history index published (full, 42 paths, 1 commits)
 dash: done · Platform charged ≈0.0052 DASH · remaining 0.0428 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
-✓ main → 8f3e2a1   this push ~0.0052 DASH ≈ $0.16
-  total ~0.0069 DASH ≈ $0.21 (create ~0.0016 DASH ≈ $0.05 + push ~0.0052 DASH ≈ $0.16) · balance 0.0428 DASH
+To dash://8hJm…/my-project
+ * [new branch]      main -> main
+branch 'main' set up to track 'origin/main'.
+✓ main → 8f3e2a1   this push ~0.0052 DASH
+  total ~0.0068 DASH (create ~0.0016 DASH + push ~0.0052 DASH) · balance 0.0428 DASH
 Open it: https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ```
 
-(The charges are the ones measured on devnet bonsia on 2026-09-30 for a first push to your own bucket; the size and paths are illustrative. See [Costs](costs.md).)
+(The charges are the ones measured on devnet bonsia on 2026-09-30 for a first push to your own bucket; the size and paths are illustrative. On a testnet or devnet, DASH is test money and `dg` prints no dollar figures; only on mainnet does it add `≈ $…`. See [Costs](costs.md).)
 
 A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH** on bonsia, is printed afterwards. See [Costs](costs.md).
 

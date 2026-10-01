@@ -9,7 +9,7 @@
  */
 
 import { useState } from 'react'
-import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
+import { Fingerprint, HardDrive, Lock, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 import { ConsentMissingError, grantMember, invalidateMembers, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
@@ -62,7 +62,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const isOwner = identity === repo.ownerId
-  const viewerRole = useViewerRole(repo).role
+  const viewer = useViewerRole(repo)
+  const viewerRole = viewer.role
   // The encryption key is in this browser, but this tab resumed with the signing key only: the
   // page's one unlock sits under Collaborators (Storage points to it).
   const locked = home.private?.access === 'locked'
@@ -117,6 +118,20 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   return (
     <div className="mx-auto max-w-2xl space-y-8">
       <SettingsNav />
+
+      {/* Settings are a maintainer's (QW3-055): anyone else reads them, plainly read-only. */}
+      {viewer.known && viewerRole !== 'maintainer' ? (
+        <p role="note" className="flex gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-200" data-testid="settings-read-only">
+          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
+          <span>
+            {identity === null
+              ? "You're viewing this repo's settings read-only. Sign in as one of its maintainers to change them."
+              : viewerRole === 'writer'
+                ? "You're a writer here: only maintainers can change the repo's settings. Where your own browser stores what you push (Storage) is yours to set."
+                : "You're viewing this repo's settings read-only: only its maintainers can change them."}
+          </span>
+        </p>
+      ) : null}
 
       <GeneralSettings home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
 
@@ -248,10 +263,15 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
 
       <Section id="storage" title="Storage" icon={<UserCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
-        <h3 className="mb-2 mt-5 flex items-center gap-2 text-dense font-medium">
-          <HardDrive className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Your browser pushes
-        </h3>
-        <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
+        {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
+        {!(viewer.known && viewerRole === null) ? (
+          <>
+            <h3 className="mb-2 mt-5 flex items-center gap-2 text-dense font-medium">
+              <HardDrive className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Your browser pushes
+            </h3>
+            <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
+          </>
+        ) : null}
       </Section>
 
       <WebhookSettings home={home} maintainer={viewerRole === 'maintainer'} />

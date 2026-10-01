@@ -259,7 +259,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         Storage: packs go to <span className="font-mono">{configured ? home.backend.label : 'Platform'}</span>
         {configured
           ? ` (set by the owner) · Platform: manifest + refs only, ~${dashRange(PUSH_COST_DASH.byo)} DASH per push`
-          : ` · a small push ≈ ${dashRange(PUSH_COST_DASH.platform)} DASH`}
+          : ` · a small push ≈ ${dashRange(PUSH_COST_DASH.platform)} DASH with packs on Platform (${dashRange(PUSH_COST_DASH.byo)} with your own storage)`}
       </p>
       <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
         No git-remote-dash yet?{' '}
@@ -267,17 +267,18 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
           href="https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/INSTALL.md"
           target="_blank"
           rel="noreferrer noopener"
-          className="text-forge-700 underline dark:text-forge-400"
+          className="hit-area text-forge-700 underline dark:text-forge-400"
         >
           Install →
         </a>
       </p>
       {!configured ? (
-        <p role="note" className="mt-3 flex items-start gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200">
+        // Touch: far enough below Install that the two links' 44 px hit areas do not overlap (QW3-060).
+        <p role="note" className="mt-3 flex items-start gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] coarse:mt-6 text-anvil-700 dark:text-anvil-200">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
           <span>
             No storage configured: pushes will be stored on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB.{' '}
-            <Link href="/settings/storage/" className="font-medium text-forge-700 underline dark:text-forge-400">
+            <Link href="/settings/storage/" className="hit-area font-medium text-forge-700 underline dark:text-forge-400">
               Configure storage →
             </Link>
           </span>

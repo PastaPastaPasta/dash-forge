@@ -45,13 +45,17 @@ export {
 } from './write'
 export {
   CREDITS_PER_DASH,
+  KEY_DISABLE_CREDITS,
   KEY_LIMITS_UPDATE_CREDITS,
+  KEY_ADD_FLOOR_CREDITS,
   KEY_REGISTER_CREDITS,
   KEY_RENEW_CREDITS,
   typicalIssueCredits,
   PUSH_COST_DASH,
   dashRange,
+  pushCostPhrase,
   STEADY,
+  EXISTING,
   type FirstWrite,
   creditsToDash,
   firstWriteRead,

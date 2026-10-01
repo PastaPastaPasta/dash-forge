@@ -22,8 +22,10 @@ import type { Network } from '../constants'
 import type { GroupTrust } from '../deployments'
 import { CREDITS_PER_DASH } from '../sdk/cost'
 import { authSdk, type WasmKey } from '../sdk/facade'
+import { isQuorumMiss } from '../sdk/unreachable'
 import type { KeyLimits } from '../view/funds'
 import { retryWhileMissing } from '../view/retry'
+import { abbreviate, errorMessage } from '../utils'
 import { assertGroupHolds } from './group-trust'
 import { controlsKey } from './wif'
 
@@ -43,6 +45,85 @@ export function defaultLimits(now = Date.now()): LimitedKeyRequest {
   return {
     budgetCredits: BigInt(Math.round(BROWSER_KEY_DEFAULTS.budgetDash * CREDITS_PER_DASH)),
     expiresAt: now + BROWSER_KEY_DEFAULTS.days * DAY_MS,
+  }
+}
+
+/** An identity id as the key-mismatch copy names it: `DhRR5hs…` ({@link abbreviate}'s 7 characters). */
+export function shortId(id: string): string {
+  return id.length > 8 ? `${abbreviate(id)}…` : id
+}
+
+/**
+ * The master key given is not a live MASTER key of the identity (QW3-028: the update was refused
+ * as "that key is not this identity's master key", or by the SDK's "Signer does not have a
+ * private key for any of the identity's master keys" after a network round trip). Checked before
+ * anything is signed; the caller words it for what was given (a file, the words).
+ */
+export class WrongMasterKeyError extends Error {
+  constructor(
+    readonly identityId: string,
+    message = `That master key doesn't belong to identity ${shortId(identityId)}. Use this identity's own identity file or recovery phrase.`,
+  ) {
+    super(message)
+    this.name = 'WrongMasterKeyError'
+  }
+}
+
+/** Refuse `masterWif` unless it is a live MASTER key of `identity` ({@link WrongMasterKeyError}). */
+export async function assertMasterKeyOf(identity: { readonly publicKeys: readonly WasmKey[] }, identityId: string, masterWif: string, network: Network): Promise<void> {
+  const { PrivateKey } = await import('@dashevo/evo-sdk')
+  const master = PrivateKey.fromWIF(masterWif)
+  try {
+    const bytes = master.toBytes()
+    const ok = identity.publicKeys.some((k) => k.securityLevelNumber === 0 && k.disabledAt === undefined && safeValidate(k, bytes, network))
+    bytes.fill(0)
+    if (!ok) throw new WrongMasterKeyError(identityId)
+  } finally {
+    master.free()
+  }
+}
+
+/** wasm-sdk's identity update (`state_transitions/identity.rs`) reads the nonce before it signs or sends anything. */
+const NONCE_READ_FAILED = /^Failed to get identity nonce/
+
+/**
+ * An identity update that was never sent: its nonce read failed, which happens before anything
+ * is signed (QW3-007: during a quorum rotation it surfaced as the raw "Failed to get identity
+ * nonce: Proof verification error: … Quorum not found in cache …"). Nothing was charged.
+ */
+export class IdentityUpdateNotSentError extends Error {
+  constructor(readonly causeError: unknown) {
+    super(
+      isQuorumMiss(causeError)
+        ? "Platform is switching to a new quorum and couldn't take this update yet. Nothing was sent and nothing was charged: try again in a minute."
+        : `Couldn't reach Platform for this update (${errorMessage(causeError)}). Nothing was sent and nothing was charged: try again in a moment.`,
+    )
+    this.name = 'IdentityUpdateNotSentError'
+  }
+}
+
+/**
+ * Send a master-key identity update (`update`, which calls `identities.update` on `sdk`). Its
+ * nonce read fails before anything is signed, so such a failure is safe to retry: one on a
+ * rotated quorum (#212) waits, as reads do, for the network's quorum service (a proved read of
+ * the same nonce, `EvoSdkService.waitForQuorum`, which reconnects), then the update runs again
+ * on the new connection. Gives up as {@link IdentityUpdateNotSentError}. A failure past the
+ * nonce read (the broadcast) is passed on as it is: that update may have landed.
+ */
+export async function sendIdentityUpdate(sdk: EvoSDK, identityId: string, update: () => Promise<void>, attempts = 3): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await update()
+      return
+    } catch (e) {
+      if (!NONCE_READ_FAILED.test(errorMessage(e, ''))) throw e
+      if (attempt >= attempts || !isQuorumMiss(e)) throw new IdentityUpdateNotSentError(e)
+      try {
+        await authSdk(sdk).identities.nonce(identityId)
+      } catch (read) {
+        throw new IdentityUpdateNotSentError(read)
+      }
+    }
   }
 }
 
@@ -91,6 +172,12 @@ export async function registerLimitedKey(
     readonly disableHeld?: readonly HeldKey[]
     /** Store the prepared key durably before the chain changes (see above). */
     readonly persist?: (key: PreparedKey) => Promise<void>
+    /**
+     * Drop what `persist` stored: called only when the update was provably never sent (its nonce
+     * read failed, {@link IdentityUpdateNotSentError}), so no key is left behind that Platform
+     * never saw (QW3-007: a "phantom" stored key, "Session locked" and a false renewal offer).
+     */
+    readonly unpersist?: (key: PreparedKey) => Promise<void>
   } & (
     | {
         /** The group's pinned trust root (`groupTrust`), checked on chain first. */
@@ -110,16 +197,8 @@ export async function registerLimitedKey(
 
   // The master key must be one of this identity's MASTER keys; say so plainly rather than
   // letting consensus refuse an update signed by the wrong key.
+  await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
   const master = PrivateKey.fromWIF(params.masterWif)
-  const masterBytes = master.toBytes()
-  const isMaster = identity.publicKeys.some(
-    (k) => k.securityLevelNumber === 0 && k.disabledAt === undefined && safeValidate(k, masterBytes, params.network),
-  )
-  masterBytes.fill(0)
-  if (!isMaster) {
-    master.free()
-    throw new Error("that key is not this identity's master key")
-  }
 
   const fresh = PrivateKey.fromBytes(crypto.getRandomValues(new Uint8Array(32)), params.network === 'mainnet' ? 'mainnet' : 'testnet')
   const keyId = Math.max(...identity.publicKeys.map((k) => k.keyId)) + 1
@@ -151,8 +230,15 @@ export async function registerLimitedKey(
     const disable = new Set(heldToDisable(identity.publicKeys, params.disableHeld ?? [], params.network))
     if (old && old.disabledAt === undefined && isForgeBrowserKey(old)) disable.add(old.keyId)
     try {
-      await authSdk(sdk).identities.update({ identity, addPublicKeys: [key], ...(disable.size ? { disablePublicKeys: [...disable] } : {}), signer })
+      await sendIdentityUpdate(sdk, params.identityId, () =>
+        authSdk(sdk).identities.update({ identity, addPublicKeys: [key], ...(disable.size ? { disablePublicKeys: [...disable] } : {}), signer }),
+      )
     } catch (e) {
+      // Never sent: the stored key is no key of the identity's, so it does not stay here.
+      if (e instanceof IdentityUpdateNotSentError) {
+        await params.unpersist?.({ keyId, wif }).catch(() => undefined)
+        throw e
+      }
       // Two tabs registering at once both pick max+1; the second is refused.
       if (/revision|duplicate|already exists|key id/i.test(String((e as { message?: unknown })?.message ?? e))) {
         throw new Error('another key was registered on this identity at the same moment; try again')
@@ -204,7 +290,10 @@ export async function disableHeldKeys(
   if (!identity) throw new Error(`identity ${params.identityId} not found`)
   const ids = heldToDisable(identity.publicKeys, params.keys, params.network)
   if (ids.length === 0) return false
-  await withMasterSigner(params.masterWif, (signer) => authSdk(sdk).identities.update({ identity, disablePublicKeys: ids, signer }))
+  await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
+  await withMasterSigner(params.masterWif, (signer) =>
+    sendIdentityUpdate(sdk, params.identityId, () => authSdk(sdk).identities.update({ identity, disablePublicKeys: ids, signer })),
+  )
   return true
 }
 
@@ -404,6 +493,15 @@ export async function topUpLimitedKey(
   const addBudget = params.request.addCredits !== null && params.request.addCredits > 0n ? params.request.addCredits : null
   assertTopUp({ addCredits: addBudget, expiresAt })
 
+  await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
+  // The SDK's limits update reads the nonce itself, and its failures cannot be told apart from a
+  // broadcast's (so any is "may have been sent"). A proved read of the same nonce first waits
+  // out a quorum rotation like any read (QW3-007) and leaves the connection with current keys.
+  try {
+    await authSdk(sdk).identities.nonce(params.identityId)
+  } catch (e) {
+    throw new IdentityUpdateNotSentError(e)
+  }
   let master: ReturnType<typeof PrivateKey.fromWIF> | null = null
   let signer: InstanceType<typeof IdentitySigner> | null = null
   let sent = false
@@ -411,12 +509,6 @@ export async function topUpLimitedKey(
   try {
     master = PrivateKey.fromWIF(params.masterWif)
     signer = new IdentitySigner()
-    const bytes = master.toBytes()
-    const isMaster = identity.publicKeys.some(
-      (x) => x.securityLevelNumber === 0 && x.disabledAt === undefined && safeValidate(x, bytes, params.network),
-    )
-    bytes.fill(0)
-    if (!isMaster) throw new Error("that key is not this identity's master key")
     signer.addKey(master)
     sent = true
     const updated = await authSdk(sdk).identities.updateKeyLimits({
@@ -471,6 +563,10 @@ export async function revokeLimitedKey(
   if (!isForgeBrowserKey(k)) {
     throw new Error(`key ${params.keyId} is not a Forge browser key; refusing to disable it here`)
   }
-  await withMasterSigner(params.masterWif, (signer) => authSdk(sdk).identities.update({ identity, disablePublicKeys: [params.keyId], signer }))
+  // Before anything is sent (QW3-028: wrong words surfaced as the SDK's own refusal).
+  await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
+  await withMasterSigner(params.masterWif, (signer) =>
+    sendIdentityUpdate(sdk, params.identityId, () => authSdk(sdk).identities.update({ identity, disablePublicKeys: [params.keyId], signer })),
+  )
   return true
 }

@@ -19,7 +19,13 @@ const GROUP = 'G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2'
 const wifOf = (n: number): string => encodeWif(new Uint8Array(32).fill(n), NET)
 
 /** What reached the chain: identity updates (added key ids, disabled key ids). */
-const chain = vi.hoisted(() => ({ updates: [] as { add: number[]; disable: number[] }[], failUpdate: null as Error | null }))
+const chain = vi.hoisted(() => ({
+  updates: [] as { add: number[]; disable: number[] }[],
+  failUpdate: null as Error | null,
+  /** Fail this many updates with this error first (then they go through). */
+  failFirst: { times: 0, error: null as Error | null },
+  nonceReads: 0,
+}))
 
 vi.mock('@dashevo/evo-sdk', () => {
   class PK {
@@ -83,7 +89,15 @@ const sdk = {
   identities: {
     fetch: async () => ({ balance: 10n ** 11n, publicKeys: keys, getPublicKeyById: () => ({}) }),
     keysRemainingBudgets: async (_id: string, ids: number[]) => new Map(ids.map((i) => [i, 5_000_000_000n])),
+    nonce: async () => {
+      chain.nonceReads += 1
+      return 7n
+    },
     update: async (o: { addPublicKeys?: { o: { keyId: number; data: Uint8Array; totalBudget: bigint; expiresAt: bigint } }[]; disablePublicKeys?: number[] }) => {
+      if (chain.failFirst.times > 0 && chain.failFirst.error) {
+        chain.failFirst.times -= 1
+        throw chain.failFirst.error
+      }
       if (chain.failUpdate) throw chain.failUpdate
       const add = (o.addPublicKeys ?? []).map((k) => k.o.keyId)
       chain.updates.push({ add, disable: o.disablePublicKeys ?? [] })
@@ -96,7 +110,7 @@ const sdk = {
   },
 } as unknown as EvoSDK
 
-const { registerLimitedKey } = await import('./limited-key')
+const { IdentityUpdateNotSentError, WrongMasterKeyError, registerLimitedKey, revokeLimitedKey } = await import('./limited-key')
 const vault = await import('./vault')
 const idb = await import('../idb')
 
@@ -105,6 +119,8 @@ beforeEach(() => {
   vault.lockVault()
   chain.updates.length = 0
   chain.failUpdate = null
+  chain.failFirst = { times: 0, error: null }
+  chain.nonceReads = 0
   keys = [keyFor(0, decodeWif(wifOf(1)).privateKey, 0), browserKey(5, decodeWif(wifOf(5)).privateKey)]
 })
 
@@ -130,6 +146,61 @@ describe('registerLimitedKey stores before it changes the chain (D-016)', () => 
     expect(order).toEqual(['store 6', 'registered 6'])
     expect(stored).toEqual({ keyId: key.keyId, wif: key.wif })
     expect(chain.updates).toEqual([{ add: [6], disable: [5] }])
+  })
+})
+
+/** wasm-sdk's update() when its nonce read hits a rotated quorum (QW3-007, as seen on bonsia). */
+const QUORUM_NONCE = new Error(
+  'Failed to get identity nonce: Proof verification error: context provider error: invalid quorum: Quorum not found in cache for hash: 446f75d0',
+)
+
+describe('a sign-in during a quorum rotation (QW3-007)', () => {
+  it('waits out the rotation like a read and registers on the next try', async () => {
+    chain.failFirst = { times: 1, error: QUORUM_NONCE }
+    const key = await register(async () => undefined)
+    expect(chain.nonceReads).toBe(1)
+    expect(chain.updates).toEqual([{ add: [key.keyId], disable: [5] }])
+  })
+
+  it('gives up in plain words, sends nothing, and leaves no stored key behind', async () => {
+    chain.failFirst = { times: 9, error: QUORUM_NONCE }
+    const dropped: number[] = []
+    const err = await registerLimitedKey(sdk, {
+      network: NET,
+      identityId: ID,
+      masterWif: wifOf(1),
+      group: GROUP,
+      replaceKeyId: 5,
+      groupChecked: true,
+      persist: async () => undefined,
+      unpersist: async (k) => {
+        dropped.push(k.keyId)
+      },
+    }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(IdentityUpdateNotSentError)
+    expect(String((err as Error).message)).toMatch(/switching to a new quorum.*Nothing was sent and nothing was charged/)
+    expect(String((err as Error).message)).not.toMatch(/Proof verification|446f75d0/)
+    expect(dropped).toEqual([6])
+    expect(chain.updates).toEqual([])
+  })
+
+  it('keeps the stored key when the update may have been sent', async () => {
+    chain.failUpdate = new Error('Failed to broadcast update: timeout waiting for result')
+    const dropped: number[] = []
+    await expect(
+      registerLimitedKey(sdk, { network: NET, identityId: ID, masterWif: wifOf(1), group: GROUP, groupChecked: true, persist: async () => undefined, unpersist: async (k) => void dropped.push(k.keyId) }),
+    ).rejects.toThrow(/broadcast/)
+    expect(dropped).toEqual([])
+  })
+})
+
+describe('a master key of another identity is refused before anything is sent (QW3-028)', () => {
+  it('on register and on revoke', async () => {
+    await expect(registerLimitedKey(sdk, { network: NET, identityId: ID, masterWif: wifOf(9), group: GROUP, groupChecked: true })).rejects.toBeInstanceOf(WrongMasterKeyError)
+    await expect(revokeLimitedKey(sdk, { network: NET, identityId: ID, masterWif: wifOf(9), keyId: 5 })).rejects.toBeInstanceOf(WrongMasterKeyError)
+    expect(chain.updates).toEqual([])
+    await expect(revokeLimitedKey(sdk, { network: NET, identityId: ID, masterWif: wifOf(1), keyId: 5 })).resolves.toBe(true)
+    expect(chain.updates).toEqual([{ add: [], disable: [5] }])
   })
 })
 

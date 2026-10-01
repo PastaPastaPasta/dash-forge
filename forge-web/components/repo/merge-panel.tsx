@@ -6,8 +6,9 @@
  * The button says what it will do, decided in the merge worker before anything is offered:
  * `Merge (fast-forward)`, `Create merge commit and merge` (only when the two sides changed
  * disjoint paths; file contents are never merged in the browser), or a disabled
- * `Conflicts or overlapping changes — merge with \`dg pr merge\`` with the `dg pr checkout`
- * line. A writer on a
+ * `Can't merge in the browser — merge with \`dg pr merge\`` with the paths both sides changed
+ * (the browser never merges a file's contents, so git may still merge them cleanly) and the
+ * `dg pr checkout` line. A writer on a
  * protected base branch sees `Protected branch — maintainers only`; a narrow screen, "Use a
  * desktop browser for this step". The click runs the step list (fetch → merge → build and
  * verify the pack → upload → packManifest → browse index → ref update → merge event), and a
@@ -31,7 +32,7 @@ import { GitMerge, Loader2 } from 'lucide-react'
 
 import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
 import { matchesProtected } from '@/lib/rules'
-import { bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
+import { EXISTING, bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
 import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
 import { mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
@@ -57,6 +58,7 @@ import { Oid } from '@/components/ui/oid'
 import { Textarea } from '@/components/ui/input'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
+import { spendAction } from '@/lib/spend-toast'
 
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
 export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
@@ -104,6 +106,9 @@ export function MergePanel({
   active = true,
   unmetRules = [],
   canBypass = false,
+  branchAhead = null,
+  checkSourceBranch,
+  onBranchDeleted,
 }: {
   repo: RepoRef
   pull: PullView
@@ -136,6 +141,18 @@ export function MergePanel({
   unmetRules?: readonly string[]
   /** The merger is a maintainer and may bypass {@link unmetRules} (explicit, confirmed, recorded). */
   canBypass?: boolean
+  /**
+   * The PR's source branch is past its head (the head-sync banner's "ahead"): the merge waits for
+   * "Update PR head" (QW3-013), or it would merge the older head and leave the newer commits out.
+   */
+  branchAhead?: { readonly branch: string; readonly tip: string } | null
+  /**
+   * Re-read the source branch just before merging: why not to merge (it moved past the head since
+   * the page read it), or null. A failed read does not stop the merge.
+   */
+  checkSourceBranch?: () => Promise<string | null>
+  /** Told once "Delete the branch after merging" deleted it (the page shows it deleted at once). */
+  onBranchDeleted?: () => void
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer, locked: sessionLocked } = useAuth()
@@ -277,6 +294,7 @@ export function MergePanel({
   const [failure, setFailure] = useState<{ step: MergeStepId; message: string } | null>(null)
   const [stopped, setStopped] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const starting = useRef(false)
   useEffect(() => {
     onRunning?.(busy)
     // Unmounted mid-run: the page must not keep the box pinned for a run that is gone.
@@ -290,7 +308,7 @@ export function MergePanel({
   const [bypassTicked, setBypassTicked] = useState(false)
   const [confirmingBypass, setConfirmingBypass] = useState(false)
   const [bypassed, setBypassed] = useState<readonly string[] | null>(null)
-  const gate = mergeGate({ unmet: unmetRules, canBypass, bypassTicked, storageLocked: storageNeedsUnlock })
+  const gate = mergeGate({ unmet: unmetRules, canBypass, bypassTicked, storageLocked: storageNeedsUnlock, branchAhead: branchAhead === null ? null : { ...branchAhead, head: pull.headOid } })
   // The branch deletion's outcome, with the label it was run for: the page stops offering the
   // option once the PR reads merged, which is exactly when this is shown.
   const [deleted, setDeleted] = useState<{ label: string; error: string | null } | null>(null)
@@ -300,10 +318,12 @@ export function MergePanel({
   const deletable = deleteBranch !== null && 'run' in deleteBranch ? deleteBranch : null
   const deleting = deletable !== null && alsoDelete
   const cost = sumPreviews([
-    previewCreate('packManifest'),
-    previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'),
+    // The repo has packs and the base branch has updates: neither builds a subtree (QW3-037).
+    previewCreate('packManifest', {}, EXISTING),
+    // A base only lately protected may hold no protectedRefUpdate yet: its subtrees stay unknown.
+    baseProtected ? previewCreate('protectedRefUpdate') : previewCreate('refUpdate', {}, EXISTING),
     previewCreate('event'),
-    ...(deleting ? [previewCreate('refUpdate')] : []),
+    ...(deleting ? [previewCreate('refUpdate', {}, EXISTING)] : []),
     ...closing.map(() => previewCreate('transition')),
     ...(gate.bypassing || bypassed !== null ? [previewCreate('event', { value: bypassValue(bypassed ?? unmetRules) })] : []),
   ])
@@ -322,72 +342,92 @@ export function MergePanel({
     if (storageNeedsUnlock) return
     // Signed out or a locked session: the guard opens sign-in / unlock (never a silent no-op).
     if (!guard.check(cost, 'core', 'merge this pull request') || !sdk || !signer) return
-    // The run starts: its bypass (if any) is what its retries record.
-    setBypassed(bypass)
+    // One run at a time, from the first click on (the re-read below takes a moment).
+    if (starting.current) return
+    starting.current = true
     setBusy(true)
     setFailure(null)
     setStopped(null)
+    // The branch moved past the head since the page read it (QW3-013): merging now would leave
+    // the newer commits out. Only a fresh run checks; a retry resumes the merge it started.
+    if (checkSourceBranch !== undefined && run.done.length === 0) {
+      const moved = await checkSourceBranch().catch(() => null)
+      if (moved !== null) {
+        setStopped(moved)
+        setBusy(false)
+        starting.current = false
+        return
+      }
+    }
+    // The run starts: its bypass (if any) is what its retries record.
+    setBypassed(bypass)
     begin(preAgreedCredits)
     const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : input.noFastForward ? ':no-ff' : ''}`
     try {
-      const done = await runMergeSteps(
-        {
-          sdk,
-          auth: signer,
-          repo,
-          pull: { id: pull.id, number: pull.number, author: pull.author, baseRefName, openedBaseRefName: pull.baseRefName },
-          input,
-          merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
-          upload,
-          publishIndex: upload === null ? null : async (pack, packHash) => {
-            const r = await publishMergeIndex(sdk, signer, repo, pack, packHash, upload, `${intent}:index`)
-            return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
+      // The merge's writes are one action: one toast with their total (QW3-039). The merge panel is
+      // not modal, so its own signer marks them; a branch delete or issue close after it is its own.
+      await spendAction({ running: `Merging #${pull.number}…`, done: `Merged #${pull.number}`, failed: `Merge of #${pull.number} stopped part-way` }, async (tag) => {
+        const auth = tag(signer)
+        const done = await runMergeSteps(
+          {
+            sdk,
+            auth,
+            repo,
+            pull: { id: pull.id, number: pull.number, author: pull.author, baseRefName, openedBaseRefName: pull.baseRefName },
+            input,
+            merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
+            upload,
+            publishIndex: upload === null ? null : async (pack, packHash) => {
+              const r = await publishMergeIndex(sdk, auth, repo, pack, packHash, upload, `${intent}:index`)
+              return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
+            },
+            verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, (readers ?? { base: baseOnly }).base),
+            readBaseTip: async () => {
+              // The same rule the page's tip came from (resolveRef, then the provisional tip).
+              const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
+              return tipOidOf(ref ?? undefined) ?? ''
+            },
+            intent,
+            ...(bypass !== null && bypass.length > 0
+              ? {
+                  recordBypass: async (tip: string, eventIntent: string) =>
+                    (await recordPolicyBypass(sdk, auth, repo, { target: { id: pull.id, number: pull.number }, rules: bypass, mergeOid: tip, intent: eventIntent })).documentId,
+                }
+              : {}),
           },
-          verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, (readers ?? { base: baseOnly }).base),
-          readBaseTip: async () => {
-            // The same rule the page's tip came from (resolveRef, then the provisional tip).
-            const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
-            return tipOidOf(ref ?? undefined) ?? ''
+          run,
+          (e) => {
+            setSteps((s) => ({ ...s, [e.step]: e.state }))
+            if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
           },
-          intent,
-          ...(bypass !== null && bypass.length > 0
-            ? {
-                recordBypass: async (tip: string, eventIntent: string) =>
-                  (await recordPolicyBypass(sdk, signer, repo, { target: { id: pull.id, number: pull.number }, rules: bypass, mergeOid: tip, intent: eventIntent })).documentId,
-              }
-            : {}),
-        },
-        run,
-        (e) => {
-          setSteps((s) => ({ ...s, [e.step]: e.state }))
-          if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
-        },
-      )
-      setRun(done)
-      setMergedHere(true)
-      setNewTip(done.result?.newTip ?? null)
-      onMerged()
-      if (deletable !== null && alsoDelete) {
-        try {
-          await deletable.run()
-          setDeleted({ label: deletable.label, error: null })
-        } catch (e) {
-          setDeleted({ label: deletable.label, error: e instanceof Error ? e.message : String(e) })
-        }
-      }
-      if (closeIssues !== null && closing.length > 0) {
-        // One at a time (each is a transition from this identity): a failure is reported and the rest still close.
-        const outcome: { number: number; error: string | null }[] = []
-        for (const n of closing) {
+        )
+        setRun(done)
+        setMergedHere(true)
+        setNewTip(done.result?.newTip ?? null)
+        onMerged()
+        if (deletable !== null && alsoDelete) {
           try {
-            await closeIssues.close(n)
-            outcome.push({ number: n, error: null })
+            await deletable.run()
+            setDeleted({ label: deletable.label, error: null })
+            onBranchDeleted?.()
           } catch (e) {
-            outcome.push({ number: n, error: e instanceof Error ? e.message : String(e) })
+            setDeleted({ label: deletable.label, error: e instanceof Error ? e.message : String(e) })
           }
         }
-        setClosed(outcome)
-      }
+        if (closeIssues !== null && closing.length > 0) {
+          // One at a time (each is a transition from this identity): a failure is reported and the rest still close.
+          const outcome: { number: number; error: string | null }[] = []
+          for (const n of closing) {
+            try {
+              await closeIssues.close(n)
+              outcome.push({ number: n, error: null })
+            } catch (e) {
+              outcome.push({ number: n, error: e instanceof Error ? e.message : String(e) })
+            }
+          }
+          setClosed(outcome)
+        }
+      })
     } catch (e) {
       if (e instanceof MergeStepError) {
         setRun(e.run)
@@ -398,8 +438,9 @@ export function MergePanel({
       }
     } finally {
       setBusy(false)
+      starting.current = false
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, onBranchDeleted])
   const onMergeClick = (): void => {
     // Locked: the click opens Unlock (the guard); merging is the next click, once unlocked.
     if (unlockFirst) {
@@ -517,7 +558,11 @@ export function MergePanel({
       ) : null}
       {button.kind === 'conflicts' && !mergedHere ? (
         <div className="mt-3">
-          <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400">Both sides changed the same files or folders. Check the PR out, merge it with the CLI, and push:</p>
+          <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="browser-merge-limit">
+            {conflictPaths.length > 0
+              ? 'Both sides changed these files since the PR branched. The browser merges only changes to different files and never merges the contents of one, so this is not necessarily a conflict: git may merge it cleanly. Check the PR out, merge it with the CLI, and push:'
+              : 'The two histories have more than one merge base, which only git merges. Check the PR out, merge it with the CLI, and push:'}
+          </p>
           {conflictPaths.length > 0 ? (
             <ul className="mb-2 list-disc pl-5 font-mono text-[12px] text-anvil-700 dark:text-anvil-200" aria-label="Conflicting paths" data-testid="conflict-paths">
               {conflictPaths.slice(0, 20).map((p) => (

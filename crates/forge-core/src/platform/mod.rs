@@ -960,6 +960,96 @@ impl PlatformClient {
         Ok(documents)
     }
 
+    /// [`Self::query_all_documents`] for documents of ~15 KB each (pack `chunk`s), whose
+    /// pages are paced by an [`AdaptivePager`] instead of a fixed size and the SDK's fixed
+    /// deadline (QW3-005).
+    ///
+    /// A 100-row page of chunks is about 1.5 MB. Under the SDK's default request deadline
+    /// (10 s plus the 5 s connect timeout) a DAPI node serving 30-65 KB/s can never answer
+    /// it: every node timed out, was banned for it, and `dg repo clone` of a 2.8 MB repo
+    /// failed with "no available addresses" after 11 minutes. Here a page starts at
+    /// [`LARGE_PAGE_START`] rows with a deadline sized for a slow link, the deadline follows
+    /// the rate the network actually delivered, and a page that still runs out of time is
+    /// asked again from the same cursor with half the rows and twice the time. The nodes are
+    /// not banned for it (the deadline is ours, not their fault). Rows already read are kept:
+    /// a slow page costs that page, not the read.
+    ///
+    /// `order` must be all-ascending with no `$createdAt` tie handling needed (chunks are
+    /// read by `seq`); any other read goes through [`Self::query_all_documents`].
+    pub async fn query_all_large_documents(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        order: &[QueryOrder],
+    ) -> Result<Vec<FetchedDocument>> {
+        if !order.iter().all(|o| o.ascending) || tie_probe_allowed(filters, order) {
+            return self
+                .query_all_documents(contract, document_type, filters, order)
+                .await;
+        }
+        let what = format!("querying {document_type} documents");
+        let what = what.as_str();
+        page_adaptively(
+            document_type,
+            AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX),
+            |start_after: Option<String>, limit: u32, timeout: std::time::Duration| async move {
+                let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
+                    .map_err(|e| {
+                        PageFailure::Other(Error::Platform(format!("building document query: {e}")))
+                    })?;
+                for f in filters {
+                    query = query.with_where(f.to_where_clause());
+                }
+                for o in order {
+                    query = query.with_order_by(o.to_order_clause());
+                }
+                query = query.with_limit(limit);
+                if let Some(after) = &start_after {
+                    let id =
+                        parse_id(after, "start_after document id").map_err(PageFailure::Other)?;
+                    query.start = Some(Start::StartAfter(id.to_vec()));
+                }
+                let settings = large_page_settings(timeout);
+                let documents = retry_with_quorum_waits(
+                    "query documents",
+                    RETRY_BACKOFF_BASE,
+                    // A page that ran out of time is the pager's to shrink, not a flake to
+                    // repeat at the same size.
+                    |e: &dash_sdk::Error| is_transient_node_error(e) && !is_deadline(e),
+                    rate_limit_reset,
+                    (quorum::is_quorum_miss, &quorum::QUORUM_WAITS),
+                    || {
+                        let fut = Document::fetch_many_with_metadata(
+                            &self.sdk,
+                            query.clone(),
+                            Some(settings),
+                        );
+                        async move {
+                            crate::budget::acquire().await;
+                            fut.await.map(|(docs, _metadata)| docs)
+                        }
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    if is_deadline(&e) {
+                        PageFailure::Deadline(e.to_string())
+                    } else {
+                        PageFailure::Other(self.read_error(&contract.id(), &e, what))
+                    }
+                })?;
+                Ok(documents
+                    .into_iter()
+                    .filter_map(|(_id, maybe_doc)| {
+                        maybe_doc.as_ref().map(FetchedDocument::from_document)
+                    })
+                    .collect())
+            },
+        )
+        .await
+    }
+
     /// Fetch several contracts in ONE proved `getDataContracts` request (those not already
     /// held by this process or the disk cache), registering each like
     /// [`Self::fetch_contract`]. A contract the network does not have is skipped; the next
@@ -2207,7 +2297,7 @@ impl<'a> WriteEngine<'a> {
                 Ok(_) => return Ok(prepared),
                 Err(Error::StaleProtocolVersion(reason)) if attempt == 0 => {
                     let version = self.client.refresh_protocol_version().await?;
-                    tracing::warn!(%reason, version, "stale protocol version; re-preparing once");
+                    tracing::debug!(%reason, version, "stale protocol version; re-preparing once");
                 }
                 Err(e) => return Err(e),
             }
@@ -2943,6 +3033,252 @@ where
     })
 }
 
+/// Rows in the first page of a [`PlatformClient::query_all_large_documents`] read: 16 chunks,
+/// about 235 KB (the browser reads chunk bytes in 256 KiB blocks).
+const LARGE_PAGE_START: u32 = 16;
+/// The most rows a large-document page grows to on a fast link: 48 chunks, about 700 KB.
+const LARGE_PAGE_MAX: u32 = 48;
+/// The shortest per-request deadline a large page is given.
+const LARGE_PAGE_MIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// The longest: a page of one ~15 KB document that takes longer than this is a network that
+/// does not deliver, and the read fails rather than waiting on it forever.
+const LARGE_PAGE_MAX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// The rate assumed before any page was measured, in documents per second: one chunk
+/// (~15 KB) a second, below the 30-65 KB/s bonsia's slowest nodes served during QA wave 3.
+const LARGE_PAGE_ASSUMED_RATE: f64 = 1.0;
+/// A page's deadline is this many times the time the measured rate says it needs.
+const LARGE_PAGE_HEADROOM: f64 = 3.0;
+
+/// The page size and per-request deadline of a large-document read
+/// ([`PlatformClient::query_all_large_documents`]), driven by the progress the network makes:
+/// the deadline is [`LARGE_PAGE_HEADROOM`] times what the last page's rate needs (within
+/// [`LARGE_PAGE_MIN_TIMEOUT`]..[`LARGE_PAGE_MAX_TIMEOUT`]); a page answered within a quarter
+/// of its deadline lets the next one double, up to a ceiling; a page that runs out of time is
+/// asked again with half the rows and twice the deadline, and the ceiling drops to that size
+/// until [`LARGE_PAGE_RECOVERY`] quick pages in a row raise it again (one slow node must not
+/// shrink a whole read). One row at the longest deadline failing ends the read.
+#[derive(Debug, Clone, PartialEq)]
+struct AdaptivePager {
+    limit: u32,
+    /// The size a quick page may grow to: [`Self::max`], lowered by a deadline.
+    ceiling: u32,
+    max: u32,
+    /// Quick pages since the ceiling last moved.
+    quick: u32,
+    timeout: std::time::Duration,
+}
+
+/// Quick pages in a row after which a lowered ceiling doubles again.
+const LARGE_PAGE_RECOVERY: u32 = 8;
+
+impl AdaptivePager {
+    fn new(start: u32, max: u32) -> Self {
+        let max = max.max(1);
+        let limit = start.clamp(1, max);
+        Self {
+            limit,
+            ceiling: max,
+            max,
+            quick: 0,
+            timeout: Self::deadline_for(limit, LARGE_PAGE_ASSUMED_RATE),
+        }
+    }
+
+    /// The deadline for `limit` rows at `rate` rows per second.
+    fn deadline_for(limit: u32, rate: f64) -> std::time::Duration {
+        let secs = f64::from(limit) / rate.max(f64::MIN_POSITIVE) * LARGE_PAGE_HEADROOM;
+        std::time::Duration::try_from_secs_f64(secs)
+            .unwrap_or(LARGE_PAGE_MAX_TIMEOUT)
+            .clamp(LARGE_PAGE_MIN_TIMEOUT, LARGE_PAGE_MAX_TIMEOUT)
+    }
+
+    /// A page of `rows` came back after `elapsed`.
+    fn on_page(&mut self, rows: usize, elapsed: std::time::Duration) {
+        if rows == 0 {
+            return;
+        }
+        let rate =
+            f64::from(u32::try_from(rows).unwrap_or(u32::MAX)) / elapsed.as_secs_f64().max(0.001);
+        if elapsed.saturating_mul(4) < self.timeout {
+            self.quick += 1;
+            if self.ceiling < self.max && self.quick >= LARGE_PAGE_RECOVERY {
+                self.ceiling = self.ceiling.saturating_mul(2).min(self.max);
+                self.quick = 0;
+            }
+            self.limit = self.limit.saturating_mul(2).min(self.ceiling);
+        } else {
+            self.quick = 0;
+        }
+        self.timeout = Self::deadline_for(self.limit, rate);
+    }
+
+    /// A page ran out of time: `false` when it was already one row at the longest deadline
+    /// (the read gives up), else the next attempt is smaller and longer.
+    fn on_deadline(&mut self) -> bool {
+        if self.limit == 1 && self.timeout >= LARGE_PAGE_MAX_TIMEOUT {
+            return false;
+        }
+        self.limit = (self.limit / 2).max(1);
+        self.ceiling = self.limit;
+        self.quick = 0;
+        self.timeout = self
+            .timeout
+            .saturating_mul(2)
+            .clamp(LARGE_PAGE_MIN_TIMEOUT, LARGE_PAGE_MAX_TIMEOUT);
+        true
+    }
+}
+
+/// Why one large-document page failed: it ran out of its deadline (the pager shrinks it and
+/// asks again), or anything else (the read fails with it).
+#[derive(Debug)]
+enum PageFailure {
+    Deadline(String),
+    Other(Error),
+}
+
+/// The request settings of one large-document page: `timeout` per attempt, up to two more
+/// tries inside the SDK (each on a node it picks among those not banned), and no new bans.
+/// A node that has not finished a big answer by a deadline we chose is slow, not broken;
+/// banning it sent every node of bonsia to the ban list in QA wave 3, and the read then died
+/// with "no available addresses". Bans other requests of this process set still apply, and
+/// an unreachable node fails within the 5 s connect timeout.
+fn large_page_settings(timeout: std::time::Duration) -> RequestSettings {
+    RequestSettings {
+        timeout: Some(timeout),
+        retries: Some(2),
+        ban_failed_address: Some(false),
+        ..RequestSettings::default()
+    }
+}
+
+/// The transport error inside `e`, wherever the SDK wrapped it: directly, or as the last error
+/// behind "no available addresses to retry" once it had banned every node it tried.
+fn transport_error(
+    e: &dash_sdk::Error,
+) -> Option<&dash_sdk::dapi_client::transport::TransportError> {
+    use dash_sdk::dapi_client::DapiClientError;
+    match e {
+        dash_sdk::Error::DapiClientError(DapiClientError::Transport(t)) => Some(t),
+        dash_sdk::Error::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(t)) => {
+            Some(t)
+        }
+        dash_sdk::Error::NoAvailableAddressesToRetry(inner) => transport_error(inner),
+        _ => None,
+    }
+}
+
+/// Whether `e` is a request that ran out of its deadline: gRPC `DeadlineExceeded` (the SDK's
+/// own attempt deadline, or the node honouring `grpc-timeout`), a gateway's timeout answered
+/// as `Unavailable` / `Cancelled` ("upstream request timeout", "Timeout expired"), or the
+/// SDK's `TimeoutReached`.
+fn is_deadline(e: &dash_sdk::Error) -> bool {
+    use dapi_grpc::tonic::Code;
+    use dash_sdk::dapi_client::transport::TransportError;
+    if matches!(e, dash_sdk::Error::TimeoutReached(..)) {
+        return true;
+    }
+    let Some(TransportError::Grpc(s)) = transport_error(e) else {
+        return false;
+    };
+    let message = s.message().to_ascii_lowercase();
+    s.code() == Code::DeadlineExceeded
+        || (matches!(s.code(), Code::Unavailable | Code::Cancelled)
+            && (message.contains("timeout") || message.contains("timed out")))
+}
+
+/// Said once per process, the first time a large read has to slow down.
+static SLOW_READ_SAID: AtomicBool = AtomicBool::new(false);
+
+/// Page a `$id`-cursored, all-ascending read to exhaustion with an [`AdaptivePager`]: the
+/// transport-free loop behind [`PlatformClient::query_all_large_documents`]. `fetch` gets the
+/// cursor, the page size and the per-request deadline. As in [`page_to_exhaustion`], only a
+/// short page (fewer rows than were asked for) proves the end; rows are deduplicated by `$id`.
+/// A page that runs out of time is asked again from the same cursor, smaller and longer, so
+/// the rows already read are never read again. The safety cap is the same number of rows as
+/// [`page_to_exhaustion`]'s (`MAX_PAGES` full pages of `PAGE_SIZE`), not of pages, which here
+/// can be one row each; a full page that adds no new row fails the read (its cursor does not
+/// advance).
+async fn page_adaptively<F, Fut>(
+    document_type: &str,
+    mut pager: AdaptivePager,
+    mut fetch: F,
+) -> Result<Vec<FetchedDocument>>
+where
+    F: FnMut(Option<String>, u32, std::time::Duration) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<Vec<FetchedDocument>, PageFailure>>,
+{
+    let mut out: Vec<FetchedDocument> = Vec::new();
+    let mut held: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut start_after: Option<String> = None;
+    let max_rows = MAX_PAGES * PAGE_SIZE as usize;
+    while out.len() < max_rows {
+        let (limit, timeout) = (pager.limit, pager.timeout);
+        let started = std::time::Instant::now();
+        let page = match fetch(start_after.clone(), limit, timeout).await {
+            Ok(page) => page,
+            Err(PageFailure::Other(e)) => return Err(e),
+            Err(PageFailure::Deadline(detail)) => {
+                if !pager.on_deadline() {
+                    return Err(Error::Platform(format!(
+                        "querying {document_type} documents: the network did not deliver even \
+                         one document within {} s, after {} were read ({detail})",
+                        timeout.as_secs(),
+                        out.len()
+                    )));
+                }
+                tracing::debug!(
+                    document_type,
+                    limit = pager.limit,
+                    timeout_ms = duration_ms(pager.timeout),
+                    "a page ran out of time; asking again for fewer rows with a longer deadline"
+                );
+                if !SLOW_READ_SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!(
+                        "dash: Dash Platform is answering slowly; reading in smaller pieces \
+                         with longer waits (this can take a few minutes)"
+                    );
+                }
+                continue;
+            }
+        };
+        let n = page.len();
+        pager.on_page(n, started.elapsed());
+        let last = page.last().map(|d| d.id.clone());
+        let before = out.len();
+        for d in page {
+            if held.insert(d.id.clone()) {
+                out.push(d);
+            }
+        }
+        if n < limit as usize {
+            return Ok(out);
+        }
+        if out.len() == before {
+            return Err(Error::IncompleteRead {
+                document_type: document_type.to_string(),
+                fetched: out.len(),
+                reason: "a full page held no new document: the cursor did not advance".into(),
+            });
+        }
+        let Some(cursor) = last else {
+            return Err(Error::IncompleteRead {
+                document_type: document_type.to_string(),
+                fetched: out.len(),
+                reason: "a full page yielded no cursor document".to_string(),
+            });
+        };
+        start_after = Some(cursor);
+    }
+    Err(Error::IncompleteRead {
+        document_type: document_type.to_string(),
+        fetched: out.len(),
+        reason: format!(
+            "the {max_rows}-document safety cap was reached before a short page proved the end"
+        ),
+    })
+}
+
 /// Encode raw 32 identifier bytes back to base58 (the form ids are named by everywhere
 /// else in the workspace).
 pub fn encode_identifier(bytes: [u8; 32]) -> String {
@@ -3308,7 +3644,7 @@ where
                     // No answer: can it still land? (A quorum miss asks after its pause.)
                     Err(f @ WriteFailure::Retryable(_)) => {
                         if nonce_spent().await {
-                            tracing::warn!(
+                            tracing::debug!(
                                 document_type,
                                 attempt,
                                 elapsed_elapsed_ms = duration_ms(started.elapsed()),
@@ -3343,7 +3679,7 @@ where
             WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
             WriteFailure::Retryable(reason) if used < MAX_BROADCAST_ATTEMPTS => {
                 let delay = backoff_delay(backoff, used);
-                tracing::warn!(
+                tracing::debug!(
                     document_type,
                     attempt,
                     elapsed_elapsed_ms = duration_ms(started.elapsed()),
@@ -3354,9 +3690,11 @@ where
                 tokio::time::sleep(delay).await;
             }
             // Only a broadcast answers TxKnown, and that is handled above; a wait cannot. A
-            // quorum miss was made Retryable above.
-            WriteFailure::Retryable(_) | WriteFailure::TxKnown | WriteFailure::QuorumMiss(_) => {
-                tracing::warn!(document_type, attempt, "write not confirmed; giving up");
+            // quorum miss was made Retryable above. Warned with why (re-broadcasts are debug).
+            f @ (WriteFailure::Retryable(_)
+            | WriteFailure::TxKnown
+            | WriteFailure::QuorumMiss(_)) => {
+                tracing::warn!("write not confirmed; giving up ({document_type}: {f:?})");
                 return Err(Error::Timeout { retryable: true });
             }
             // A total-reading rule refused it: the judging node may not hold this identity's
@@ -3515,22 +3853,10 @@ fn composite_refusal(e: &dash_sdk::Error) -> Error {
 /// it tried). A `ResourceExhausted` without the header is not a rate limit (drive-abci's
 /// busy check-tx answer): `None`, and the caller's ordinary backoff applies.
 fn rate_limit_reset(e: &dash_sdk::Error) -> Option<std::time::Duration> {
-    use dash_sdk::dapi_client::transport::TransportError;
-    use dash_sdk::dapi_client::DapiClientError;
     // Only a refusal carrying the gateway's `ratelimit-reset`: drive-abci also answers
     // ResourceExhausted (without the header) when check-tx capacity is briefly busy, which the
     // ordinary short backoff handles.
-    fn of_transport(t: &TransportError) -> Option<std::time::Duration> {
-        t.rate_limit_ban_duration()
-    }
-    match e {
-        dash_sdk::Error::DapiClientError(DapiClientError::Transport(t)) => of_transport(t),
-        dash_sdk::Error::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(t)) => {
-            of_transport(t)
-        }
-        dash_sdk::Error::NoAvailableAddressesToRetry(inner) => rate_limit_reset(inner),
-        _ => None,
-    }
+    transport_error(e).and_then(dash_sdk::dapi_client::CanRetry::rate_limit_ban_duration)
 }
 
 /// [`retry_with_quorum_waits`] with no quorum waits: what the attempt-count and rate-limit tests
@@ -3606,7 +3932,7 @@ where
             return Err(e);
         }
         let delay = backoff_delay(base, attempt);
-        tracing::warn!(
+        tracing::debug!(
             op = label,
             attempt,
             delay_ms = duration_ms(delay),
@@ -4151,6 +4477,204 @@ mod tests {
         )
         .await;
         assert!(matches!(got, Err(Error::Platform(_))));
+    }
+
+    /// QW3-005: the deadline follows the rate the network delivered, a page answered well
+    /// inside it grows, and a page that runs out of time halves with a doubled deadline.
+    #[test]
+    fn the_large_page_deadline_follows_the_network() {
+        use super::{
+            AdaptivePager, LARGE_PAGE_MAX, LARGE_PAGE_MAX_TIMEOUT, LARGE_PAGE_MIN_TIMEOUT,
+            LARGE_PAGE_START,
+        };
+        use std::time::Duration;
+        let mut p = AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX);
+        // One chunk a second assumed, three times over: 16 chunks get 48 s, not the SDK's 15.
+        assert_eq!((p.limit, p.timeout), (16, Duration::from_secs(48)));
+        // 16 chunks in 8 s (about 30 KB/s): well inside 48 s, so the page doubles, and the
+        // deadline is three times what 32 chunks need at 2 a second.
+        p.on_page(16, Duration::from_secs(8));
+        assert_eq!((p.limit, p.timeout), (32, Duration::from_secs(48)));
+        // 32 in 40 s: no growth, and the slower rate gets the longest deadline.
+        p.on_page(32, Duration::from_secs(40));
+        assert_eq!((p.limit, p.timeout), (32, LARGE_PAGE_MAX_TIMEOUT));
+        // A fast link grows to the maximum with the shortest deadline.
+        let mut fast = AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX);
+        for _ in 0..4 {
+            fast.on_page(fast.limit as usize, Duration::from_millis(300));
+        }
+        assert_eq!(
+            (fast.limit, fast.timeout),
+            (LARGE_PAGE_MAX, LARGE_PAGE_MIN_TIMEOUT)
+        );
+        // Out of time: half the rows, twice the time, down to one row at the longest
+        // deadline, which is the last try.
+        let mut slow = AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX);
+        let mut steps = Vec::new();
+        while slow.on_deadline() {
+            steps.push((slow.limit, slow.timeout.as_secs()));
+        }
+        assert_eq!(steps, [(8, 96), (4, 120), (2, 120), (1, 120)]);
+    }
+
+    /// QW3-005: a page that runs out of time is asked again from the same cursor with fewer
+    /// rows; the read completes, in order, with nothing read twice.
+    #[tokio::test]
+    async fn a_slow_large_read_shrinks_its_pages_and_completes() {
+        use super::{
+            page_adaptively, AdaptivePager, PageFailure, LARGE_PAGE_MAX, LARGE_PAGE_START,
+        };
+        let total = 190;
+        let asked = RefCell::new(Vec::new());
+        let got = page_adaptively(
+            "chunk",
+            AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX),
+            |start_after: Option<String>, limit: u32, _timeout| {
+                asked.borrow_mut().push(limit);
+                // The network delivers at most 8 rows before any deadline.
+                let out = if limit > 8 {
+                    Err(PageFailure::Deadline(
+                        "no complete response within 15s".into(),
+                    ))
+                } else {
+                    let from = start_after.map_or(0, |id| {
+                        id.trim_start_matches("d-").parse::<usize>().unwrap() + 1
+                    });
+                    Ok((from..(from + limit as usize).min(total))
+                        .map(doc)
+                        .collect())
+                };
+                std::future::ready(out)
+            },
+        )
+        .await
+        .unwrap();
+        let ids: Vec<String> = got.iter().map(|d| d.id.clone()).collect();
+        let want: Vec<String> = (0..total).map(|i| doc(i).id).collect();
+        assert_eq!(ids, want);
+        let asked = asked.into_inner();
+        // The first page of 16 ran out of time. After it the read stays at 8 and tries 16
+        // again only after 8 quick pages in a row: 24 pages of 8 cover 190 rows (the last one
+        // short), with one retry of 16 per 8 of them.
+        assert_eq!(asked[..2], [16, 8], "{asked:?}");
+        let (big, small): (Vec<u32>, Vec<u32>) = asked.iter().partition(|&&l| l > 8);
+        assert_eq!(small.len(), 24, "{asked:?}");
+        assert!(small.iter().all(|&l| l == 8), "{asked:?}");
+        assert_eq!(big.len(), 3, "{asked:?}");
+    }
+
+    /// QW3-005: a node that was slow once does not keep a fast read small: after
+    /// `LARGE_PAGE_RECOVERY` quick pages the ceiling doubles again.
+    #[test]
+    fn a_lowered_page_ceiling_recovers_after_quick_pages() {
+        use super::{AdaptivePager, LARGE_PAGE_MAX, LARGE_PAGE_RECOVERY, LARGE_PAGE_START};
+        use std::time::Duration;
+        let mut p = AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX);
+        assert!(p.on_deadline());
+        assert_eq!(p.limit, 8);
+        for _ in 0..LARGE_PAGE_RECOVERY - 1 {
+            p.on_page(p.limit as usize, Duration::from_millis(200));
+            assert_eq!(p.limit, 8);
+        }
+        p.on_page(8, Duration::from_millis(200));
+        assert_eq!(p.limit, 16);
+        // A slow page resets the streak.
+        p.on_page(16, Duration::from_secs(19));
+        assert_eq!((p.limit, p.quick), (16, 0));
+    }
+
+    /// A full page that adds nothing new (a cursor that does not advance) fails the read
+    /// instead of looping.
+    #[tokio::test]
+    async fn a_large_read_whose_cursor_does_not_advance_fails() {
+        use super::{page_adaptively, AdaptivePager, LARGE_PAGE_MAX, LARGE_PAGE_START};
+        let got = page_adaptively(
+            "chunk",
+            AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX),
+            |_, limit: u32, _| std::future::ready(Ok((0..limit as usize).map(doc).collect())),
+        )
+        .await;
+        assert!(
+            matches!(&got, Err(Error::IncompleteRead { fetched: 48, .. })),
+            "{got:?}"
+        );
+    }
+
+    /// QW3-005: a network that cannot deliver one row at the longest deadline fails the read
+    /// with what was read so far, after a bounded number of tries; other failures are not
+    /// retried by the pager.
+    #[tokio::test]
+    async fn a_large_read_gives_up_when_nothing_arrives() {
+        use super::{
+            page_adaptively, AdaptivePager, PageFailure, LARGE_PAGE_MAX, LARGE_PAGE_START,
+        };
+        let calls = RefCell::new(0);
+        let got = page_adaptively(
+            "chunk",
+            AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX),
+            |_, _, _| {
+                *calls.borrow_mut() += 1;
+                std::future::ready(Err::<Vec<FetchedDocument>, _>(PageFailure::Deadline(
+                    "late".into(),
+                )))
+            },
+        )
+        .await;
+        match got {
+            Err(Error::Platform(m)) => {
+                assert!(
+                    m.contains("did not deliver even one document within 120 s"),
+                    "{m}"
+                );
+            }
+            other => panic!("expected a Platform error, got {other:?}"),
+        }
+        assert_eq!(*calls.borrow(), 5);
+        let calls = RefCell::new(0);
+        let got = page_adaptively(
+            "chunk",
+            AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX),
+            |_, _, _| {
+                *calls.borrow_mut() += 1;
+                std::future::ready(Err::<Vec<FetchedDocument>, _>(PageFailure::Other(
+                    Error::NotFound,
+                )))
+            },
+        )
+        .await;
+        assert!(matches!(got, Err(Error::NotFound)));
+        assert_eq!(*calls.borrow(), 1);
+    }
+
+    #[test]
+    fn a_deadline_is_recognised_in_every_wrapper() {
+        use super::is_deadline;
+        use dash_sdk::dapi_client::transport::TransportError;
+        use dash_sdk::dapi_client::DapiClientError;
+        let late = || {
+            TransportError::Grpc(dapi_grpc::tonic::Status::deadline_exceeded(
+                "no complete response within 15s",
+            ))
+        };
+        let direct = dash_sdk::Error::DapiClientError(DapiClientError::Transport(late()));
+        assert!(is_deadline(&direct));
+        assert!(is_deadline(&dash_sdk::Error::DapiClientError(
+            DapiClientError::NoAvailableAddressesToRetry(Box::new(late()))
+        )));
+        assert!(is_deadline(&dash_sdk::Error::NoAvailableAddressesToRetry(
+            Box::new(direct)
+        )));
+        assert!(!is_deadline(&dash_sdk::Error::DapiClientError(
+            DapiClientError::Transport(TransportError::Grpc(
+                dapi_grpc::tonic::Status::unavailable("tcp connect error")
+            ))
+        )));
+        // A gateway that enforced the grpc-timeout itself answers 504, which is Unavailable.
+        assert!(is_deadline(&dash_sdk::Error::DapiClientError(
+            DapiClientError::Transport(TransportError::Grpc(
+                dapi_grpc::tonic::Status::unavailable("upstream request timeout")
+            ))
+        )));
     }
 
     #[test]

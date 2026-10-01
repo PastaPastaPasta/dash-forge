@@ -102,9 +102,10 @@ export interface TrustInputs {
   readonly refName?: string
   /**
    * Its folded state, `missing` when the selected name matches no ref, or a commit pinned by
-   * id (a permalink), which no ref vouches for.
+   * id (a permalink). A pinned commit that is a ref's proven tip carries that ref (`at`): the
+   * ref vouches for it as it would on the branch's own page ({@link pinnedAt}).
    */
-  readonly tip: RefState | 'missing' | { readonly pinned: string }
+  readonly tip: RefState | 'missing' | { readonly pinned: string; readonly at?: { readonly name: string; readonly state: RefState } }
   readonly checks: ContentChecks
   /** The repo config's backend label: what the owner declared, not what served bytes. */
   readonly configuredBackend: string
@@ -218,9 +219,10 @@ function newest(heads: readonly RefHead[]): RefHead | undefined {
 function deriveTip(input: TrustInputs): TipLink {
   const tip = deriveTipNow(input)
   // The tip's proof was checked against quorum keys a second source disputes (chain data
-  // Failed): that proof shows nothing, so the tip is not verified, even in part (QW-009). A
-  // commit pinned by id relies on no ref, so its row stands.
-  const pinned = input.tip !== 'missing' && 'pinned' in input.tip
+  // Failed): that proof shows nothing, so the tip is not verified, even in part (QW-009).
+  // A commit pinned by id relies on no ref, so its row stands; one vouched for by a ref's tip
+  // does rely on that ref's proof.
+  const pinned = input.tip !== 'missing' && 'pinned' in input.tip && input.tip.at === undefined
   if (input.quorum?.state === 'mismatch' && !pinned && (tip.state === 'verified' || tip.state === 'partial')) {
     return {
       ...tip,
@@ -237,6 +239,17 @@ function deriveTipNow(input: TrustInputs): TipLink {
   const shown = name === '' ? 'This ref' : `\`${name}\``
   const tip = input.tip
   if (tip !== 'missing' && 'pinned' in tip) {
+    const at = tip.at
+    // The permalink of a ref's tip (`y` on a branch page): that ref's proof vouches for it
+    // (QW3-043: "Partly verified" for the proven tip of master). Folded like the ref itself.
+    if (at !== undefined && at.state.state === 'resolved' && at.state.oid === tip.pinned) {
+      const ref = deriveTipNow({ ...input, refName: at.name, tip: at.state })
+      return {
+        ...ref,
+        name: shortOid(tip.pinned),
+        detail: `Commit \`${shortOid(tip.pinned)}\`, opened by its id, is the tip of \`${at.name}\`. ${ref.detail}`,
+      }
+    }
     return {
       name: shortOid(tip.pinned),
       heads: [],
@@ -306,6 +319,14 @@ function deriveContent(checks: ContentChecks): TrustLink {
     corrupt > 0
       ? ` A mirror served bad data (bytes that fail the manifest sha256) for ${plural(corrupt, 'pack')}; it was refused.`
       : ''
+  if (link.state === 'pending') {
+    // Nothing checked yet, so not even partly verified (QW3-044: "Partly verified" over "No file
+    // contents have been read yet"). The packs still reachable may verify what the page reads.
+    return {
+      state: 'pending',
+      detail: `${plural(missing, 'pack')} could not be fetched from ${missing === 1 ? 'its' : 'their'} storage, so some files may be missing.${bad} ${link.detail}`,
+    }
+  }
   return {
     state: link.state === 'unverified' ? 'unverified' : 'partial',
     detail: `${plural(missing, 'pack')} could not be fetched from ${missing === 1 ? 'its' : 'their'} storage, so some files may be missing.${bad} ${link.detail}`,

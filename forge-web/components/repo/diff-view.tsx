@@ -451,7 +451,9 @@ function FilePatchView({
 }
 
 /** Line numbers and markers on tinted rows: AA on both themes (see `contrast.test.ts`). */
-const GUTTER = 'w-12 select-none border-r border-anvil-100 px-2 text-right align-top text-anvil-600 dark:border-anvil-850 dark:text-anvil-400'
+/** A line number's colours, wherever code is numbered (≥ 4.5:1 on the page and its highlights in both themes). */
+export const GUTTER_TEXT = 'text-anvil-600 dark:text-anvil-400'
+const GUTTER = `w-12 select-none border-r border-anvil-100 px-2 text-right align-top dark:border-anvil-850 ${GUTTER_TEXT}`
 
 function lineTint(kind: TextDiffLine['kind'] | null, palette: DiffPalette): string {
   if (kind === 'added') return DIFF_PALETTES[palette].added.row

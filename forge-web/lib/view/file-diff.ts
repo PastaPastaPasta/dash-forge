@@ -59,7 +59,29 @@ class TooLarge extends Error {
   }
 }
 
-class Binary extends Error {}
+class Binary extends Error {
+  constructor(
+    /** Told from its first bytes only: the file is too large to read whole here. */
+    readonly sniffed = false,
+    /** Too large by the browse index's claim alone: downloading it whole is still offered. */
+    readonly unverifiedSize = false,
+  ) {
+    super('binary')
+  }
+}
+
+/** How many leading bytes git looks at for a NUL to call a file binary (`buffer_is_binary`). */
+const BINARY_SNIFF_BYTES = 8000
+
+/**
+ * A blob too large to read whole that is binary all the same, from its first bytes (QW3-045: a
+ * root commit's 1.4 MB .dll left its totals "partial" though git counts a binary file as no
+ * lines). A blob stored as a delta, or one whose prefix cannot be read, stays unknown.
+ */
+async function sniffedBinary(reader: ObjectReader, oid: string): Promise<boolean> {
+  const prefix = await reader.blobPrefix?.(oid, BINARY_SNIFF_BYTES).catch(() => null)
+  return prefix != null && prefix.includes(0)
+}
 
 /*
  * A skip based on {@link knownMinSize} is labelled as the index's claim and can be overridden
@@ -84,18 +106,28 @@ export interface PatchOptions {
 async function readText(reader: ObjectReader, oid: string | null, options: PatchOptions): Promise<{ text: string; size: number }> {
   if (oid === null) return { text: '', size: 0 }
   const min = options.ignoreSizeHint ? null : knownMinSize(reader, oid)
-  if (min !== null && min > COUNT_BLOB_MAX_BYTES) throw new TooLarge(min, 'hint')
+  if (min !== null && min > COUNT_BLOB_MAX_BYTES) {
+    // The size is the index's claim, and so is where the prefix was read: the reviewer can still
+    // download the file and check it (a false claim must not hide a small file's change).
+    if (await sniffedBinary(reader, oid)) throw new Binary(true, true)
+    throw new TooLarge(min, 'hint')
+  }
   let object
   try {
     object = await reader.readObject(oid, { maxBytes: COUNT_BLOB_MAX_BYTES })
   } catch (e) {
     if (!(e instanceof ObjectTooLargeError)) throw e
     // Refused on the entry's length alone: the index's claim, which nothing has checked.
-    if (e.size === reader.locate?.(oid)?.length) throw new TooLarge(e.size, 'stored')
+    const stored = e.size === reader.locate?.(oid)?.length
+    if (!stored && (await sniffedBinary(reader, oid))) throw new Binary(true)
+    if (stored) throw new TooLarge(e.size, 'stored')
     throw new TooLarge(null, 'refused')
   }
   if (object.type !== 'blob') throw new Error(`${oid.slice(0, 9)} is a ${object.type}, not a blob`)
-  if (object.bytes.length > COUNT_BLOB_MAX_BYTES) throw new TooLarge(object.bytes.length, 'measured')
+  if (object.bytes.length > COUNT_BLOB_MAX_BYTES) {
+    if (object.bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0)) throw new Binary()
+    throw new TooLarge(object.bytes.length, 'measured')
+  }
   const text = decodeTextBlob(object.bytes)
   if (text === null) throw new Binary()
   return { text, size: object.bytes.length }
@@ -184,7 +216,12 @@ export async function loadFilePatch(
     if (size <= INLINE_BLOB_MAX_BYTES) return textPatch(change, lines)
     return { kind: 'placeholder', change, reason: 'large', note: largeNote(size), ...diffStat(lines) }
   } catch (e) {
-    if (e instanceof Binary) return placeholder(change, 'binary', 'Binary file not shown.')
+    if (e instanceof Binary) {
+      if (!e.sniffed) return placeholder(change, 'binary', 'Binary file not shown.')
+      const note = 'Binary file not shown (too large to read whole here; told binary by its first bytes, as git does).'
+      if (!e.unverifiedSize) return placeholder(change, 'binary', note)
+      return { kind: 'placeholder', change, reason: 'binary', note: `${note} Its size is the browse index's claim.`, unverifiedSize: true }
+    }
     if (e instanceof TooLarge) return tooLarge(change, e)
     return placeholder(change, 'unreadable', e instanceof Error ? e.message : 'Could not read this file.')
   }

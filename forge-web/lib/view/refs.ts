@@ -5,6 +5,7 @@
  */
 
 import type { ResolvedRef } from '../repo'
+import type { RefState } from '../rules'
 import { compareRefNames } from '../repo/ref-order'
 
 /** The provisional tip oid of a resolved ref (diverged → newest head), or null if unborn. */
@@ -119,6 +120,25 @@ export function splitRefPath(
  */
 export function selectedTip(selected: SelectedRef): string | null {
   return selected.pinned ?? tipOidOf(selected.ref)
+}
+
+/**
+ * The ref whose proven tip a pinned commit is (the default branch first, then other branches,
+ * then tags), for the Verification card: a permalink to a branch's tip is as verified as the
+ * branch (QW3-043). Only a full commit id matches; a short one is resolved against objects, not
+ * refs. Undefined when no ref's resolved tip is that commit.
+ */
+export function pinnedAt(
+  pinned: string,
+  branches: readonly ResolvedRef[],
+  tags: readonly ResolvedRef[],
+  defaultBranch: string,
+): { readonly name: string; readonly state: RefState } | undefined {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(pinned)) return undefined
+  const named = (r: ResolvedRef): string => r.refName.replace(/^refs\/(?:heads|tags)\//, '')
+  const ordered = [...branches.filter((b) => named(b) === defaultBranch), ...branches.filter((b) => named(b) !== defaultBranch), ...tags]
+  const hit = ordered.find((r) => r.state.state === 'resolved' && r.state.oid === pinned)
+  return hit === undefined ? undefined : { name: named(hit), state: hit.state }
 }
 
 /** The canonical `?ref=` param value for a ref: '' for the default branch, `tags/…` for tags. */

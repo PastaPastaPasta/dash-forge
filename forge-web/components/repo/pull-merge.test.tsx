@@ -185,7 +185,7 @@ describe('the merge box through its own merge', () => {
     // The merge is not checked again against the base it just moved (it would report conflicts).
     expect(checks).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[data-testid="conflict-paths"]')).toBeNull()
-    expect(host.textContent).not.toMatch(/Conflicts or overlapping changes/)
+    expect(host.textContent).not.toMatch(/Can't merge in the browser/)
     // Nothing is left to merge: the header says Merged, with no method menu, button or cost.
     expect(host.querySelector('[data-testid="merge-done"]')?.textContent).toBe('Merged')
     expect(host.querySelector('#merge-method')).toBeNull()
@@ -318,5 +318,48 @@ describe('--no-ff where a fast-forward is possible (QW-069)', () => {
     await act(async () => undefined)
     expect(label('merge')).toBe('Create a merge commit')
     expect(label('no-ff')).toBeUndefined()
+  })
+})
+
+describe('a source branch past the PR head (QW3-013)', () => {
+  const mergeCheck = async (): Promise<{ check: string; conflictPaths: string[]; packEstimate: { bytes: number; objectCount: number } }> => ({ check: 'fast-forward', conflictPaths: [], packEstimate: { bytes: 900, objectCount: 3 } })
+  const render = async (extras: import('./pull-merge').MergeExtras, onMerged: () => void = () => undefined): Promise<void> => {
+    checks.mockReset()
+    checks.mockImplementation(mergeCheck)
+    await act(async () =>
+      root.render(<PullMerge repo={repo} home={homeAt(BASE)} pull={pullOf(false)} canMerge isMaintainer checkout="dg pr checkout …" onMerged={onMerged} extras={{ deleteBranch: null, ...extras }} />),
+    )
+    await act(async () => undefined)
+  }
+  const submit = (): HTMLButtonElement => host.querySelector('[data-testid="merge-submit"]') as HTMLButtonElement
+
+  it('keeps the merge disabled until the PR head is updated, and says why', async () => {
+    await render({ branchAhead: { branch: 'feature', tip: 'dd'.repeat(20) } })
+    expect(submit().disabled).toBe(true)
+    expect(host.querySelector('[data-testid="merge-gate-reason"]')?.textContent).toBe(
+      `feature is at ${'dd'.repeat(20).slice(0, 7)}, ahead of this PR's head ${HEAD.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`,
+    )
+  })
+
+  it('re-reads the branch on click and stops, merging nothing, when it moved since the page read it', async () => {
+    const onMerged = vi.fn()
+    const checkSourceBranch = vi.fn(async () => 'feature moved to ddddddd since this page read it')
+    await render({ checkSourceBranch }, onMerged)
+    expect(submit().disabled).toBe(false)
+    await act(async () => submit().click())
+    await act(async () => undefined)
+    expect(checkSourceBranch).toHaveBeenCalledTimes(1)
+    expect(onMerged).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Merge stopped: feature moved to ddddddd since this page read it')
+  })
+
+  it('tells the page once "Delete … after merging" deleted the branch (QW3-053)', async () => {
+    const onBranchDeleted = vi.fn()
+    const run = vi.fn(async () => undefined)
+    await render({ deleteBranch: { label: 'feature', run }, onBranchDeleted, checkSourceBranch: async () => null })
+    await act(async () => submit().click())
+    await act(async () => undefined)
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(onBranchDeleted).toHaveBeenCalledTimes(1)
   })
 })

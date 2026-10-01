@@ -196,13 +196,18 @@ export function BlameBody({
 
 /**
  * The running blame's status line. The commit count only while commits are walked: versions the
- * history index lists are found without examining any (QW2-039).
+ * history index lists are found without examining any (QW2-039). The count that is moving leads:
+ * while the walk searches the history for older versions, the commits it examines; while it
+ * compares the versions it found, the versions and lines (QW2-039 at a tag: "49 commits examined"
+ * sat unchanged for minutes at the end of a line whose other counts climbed).
  */
 export function blameProgressText(p: BlameProgress | null): string {
   if (p === null) return 'Reading the file’s history…'
   const walked = p.examined > 0 ? ` · ${plural(p.examined, 'commit')} examined` : ''
   if (p.versions === 0) return `Looking for the file’s versions${walked}`
-  return `Compared ${plural(p.versions, 'version')} of up to ${p.versionLimit} · ${plural(p.total - p.pending, 'line')} of ${p.total.toLocaleString('en-US')} attributed${walked}`
+  const compared = `${plural(p.versions, 'version')} of up to ${p.versionLimit} · ${plural(p.total - p.pending, 'line')} of ${p.total.toLocaleString('en-US')} attributed`
+  if (p.searching && p.examined > 0) return `Looking for older versions${walked} · compared ${compared} so far`
+  return `Compared ${compared}${p.examined > 0 ? ` · after examining ${plural(p.examined, 'commit')}` : ''}`
 }
 
 /**

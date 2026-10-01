@@ -155,6 +155,7 @@ export {
   isDiverged,
   isLive,
   matchesRefQuery,
+  pinnedAt,
   refParamFor,
   selectedTip,
   selectRef,

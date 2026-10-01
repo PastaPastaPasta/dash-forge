@@ -3332,7 +3332,7 @@ impl<'a> Collab<'a> {
     async fn check_run_docs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<FetchedDocument>> {
         let community = self.community_contract(repo).await?;
         let oid = hex::decode(head_oid)
-            .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
+            .map_err(|_| Error::InvalidInput(format!("{head_oid:?} is not a hex commit id")))?;
         check_run_docs(self.client, &community, repo, oid).await
     }
 
@@ -3743,7 +3743,7 @@ impl<'a> Collab<'a> {
                         return Ok(done);
                     }
                     floor = number.saturating_add(1);
-                    tracing::warn!(number, attempt, "number taken; counting again");
+                    tracing::debug!(number, attempt, "number taken; counting again");
                 }
                 // The membership was removed since it was read: nothing landed; once, sign
                 // again without the (optional) proof.

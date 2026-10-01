@@ -18,7 +18,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { BROWSER_KEY_DEFAULTS } from '@/lib/auth'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
-import { PUSH_COST_DASH, dashRange, typicalIssueCredits } from '@/lib/sdk'
+import { pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
 
 function Section({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }): JSX.Element {
@@ -72,7 +72,7 @@ export default function GettingStartedPage(): JSX.Element {
         <Section icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />} title="Writes cost a little; reading is free">
           <p>
             Every write (a repository, an issue, a comment, a push) is stored on Dash Platform and pays a small fee from your identity&apos;s{' '}
-            <strong>credits</strong>: about {creditsAsDash(typicalIssueCredits())} DASH for an issue and {dashRange(PUSH_COST_DASH.byo)} DASH for a push. Each
+            <strong>credits</strong>: about {creditsAsDash(typicalIssueCredits())} DASH for an issue, and {pushCostPhrase()}. Each
             write shows its price before you confirm, and Settings → Spend keeps the record.
           </p>
           <p>You add credits by sending DASH to your identity: a new identity is funded when it is made, and Settings → Top up adds more later.</p>

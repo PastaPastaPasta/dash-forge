@@ -74,9 +74,42 @@ fn read_answer(prompt: &str) -> Result<String> {
         .context("reading an answer")?;
     if n == 0 {
         // EOF (Ctrl-D): stop the flow; nothing past this point was written.
-        return Err(crate::errors::cancelled());
+        return Err(input_closed());
     }
     Ok(line.trim().to_string())
+}
+
+/// Print `prompt` and read a hidden answer. A closed terminal (end of input before an answer)
+/// is the user leaving, so it is E803 "cancelled", as at any other prompt, not an unexpected
+/// failure (QW3-068).
+pub fn read_hidden(prompt: String, what: &'static str) -> Result<String> {
+    rpassword::prompt_password(prompt).map_err(|e| hidden_read_error(e, what))
+}
+
+fn hidden_read_error(e: std::io::Error, what: &'static str) -> anyhow::Error {
+    if left_the_prompt(&e) {
+        return input_closed();
+    }
+    anyhow::Error::new(e).context(what)
+}
+
+/// Whether a failed hidden read is the user leaving (end of input, or Ctrl-C) rather than a
+/// terminal that could not be used.
+pub fn left_the_prompt(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::Interrupted
+    )
+}
+
+/// E803 for a prompt that ended without an answer.
+pub fn input_closed() -> anyhow::Error {
+    forge_core::user_error::UserError::new(
+        forge_core::user_error::codes::CANCELLED,
+        "cancelled: the input ended before an answer",
+    )
+    .note("nothing was written")
+    .into()
 }
 
 impl Prompter for TtyPrompter {
@@ -117,8 +150,10 @@ impl Prompter for TtyPrompter {
     fn secret(&mut self, question: &str, hint: &str) -> Result<Secret> {
         print_hint(hint);
         loop {
-            let value = rpassword::prompt_password(format!("? {question} › "))
-                .context("reading the secret from the terminal")?;
+            let value = read_hidden(
+                format!("? {question} › "),
+                "reading the secret from the terminal",
+            )?;
             let value = value.trim().to_string();
             if !value.is_empty() {
                 return Ok(Secret::new(value));
@@ -149,6 +184,8 @@ pub struct Scripted {
     answers: std::collections::VecDeque<String>,
     /// Every question asked, in order.
     pub asked: Vec<String>,
+    /// Every line said between questions, in order.
+    pub said: Vec<String>,
 }
 
 #[cfg(test)]
@@ -157,6 +194,7 @@ impl Scripted {
         Self {
             answers: answers.iter().map(|s| (*s).to_string()).collect(),
             asked: Vec::new(),
+            said: Vec::new(),
         }
     }
 
@@ -198,5 +236,38 @@ impl Prompter for Scripted {
             "" => default,
             other => other.starts_with('y'),
         })
+    }
+
+    fn say(&mut self, line: &str) {
+        self.said.push(line.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_core::user_error::{self, codes, ErrorContext};
+
+    fn code_of(err: &anyhow::Error) -> &'static str {
+        user_error::classify(err.chain(), &ErrorContext::default()).code
+    }
+
+    /// QW3-068: closing the terminal at a hidden prompt (the backup check's word) is the user
+    /// leaving: E803, like end of input at any other prompt, not E101 "unexpected".
+    #[test]
+    fn a_closed_terminal_at_a_hidden_prompt_is_cancelled() {
+        let eof = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "unexpected end of file");
+        assert_eq!(
+            code_of(&hidden_read_error(eof, "reading a word")),
+            codes::CANCELLED
+        );
+    }
+
+    #[test]
+    fn another_read_failure_keeps_its_context() {
+        let other = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let err = hidden_read_error(other, "reading a word");
+        assert_eq!(code_of(&err), codes::UNEXPECTED);
+        assert!(format!("{err:#}").contains("reading a word"));
     }
 }

@@ -7,13 +7,16 @@ import { readMirrorSourceCached, type MirrorKind, type MirrorSource } from '@/li
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 
-/** The repo's mirror source (`lib/view/mirror-source`), or null while unknown or not a mirror. */
+/**
+ * The repo's mirror source (`lib/view/mirror-source`), or null while unknown or not a mirror.
+ * A fork never is one, though it may carry a mirror's description (QW3-011): nothing is read.
+ */
 export function useMirrorSource(home: RepoHome, kind: MirrorKind): MirrorSource | null {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { data } = useAsync(() => readMirrorSourceCached(sdk!, home.repo, home.description, kind, network), [ready, repoKey(home.repo), home.description, kind], {
-    enabled: ready && sdk !== null,
+    enabled: ready && sdk !== null && home.v2.forkOf === null,
   })
-  return data ?? null
+  return home.v2.forkOf === null ? (data ?? null) : null
 }
 
 /**

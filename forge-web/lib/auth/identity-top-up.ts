@@ -73,6 +73,22 @@ function nextKey(network: Network, identityId: string): string {
   return `top-up-next:${network}:${identityId}`
 }
 
+/**
+ * What this browser keeps about `identityId`'s top-ups beyond its key (QW3-034): the note of where
+ * the next top-up starts (its index, and the height to watch from when an address still holds a
+ * deposit: without it a later top-up could reuse a spent address or miss that deposit), and an
+ * unfinished top-up (its deposit address and lock, so typing the words again finishes it).
+ * Neither holds keys or words. Signing out and forgetting the key, or revoking it, leaves both;
+ * the forget and revoke confirmations say so.
+ */
+export async function topUpRecords(network: Network, identityId: string): Promise<{ readonly next: boolean; readonly unfinished: boolean }> {
+  const [next, unfinished] = await Promise.all([
+    idbGet<NextTopUp>('journal', nextKey(network, identityId)).catch(() => undefined),
+    readTopUpJournal(network, identityId).catch(() => undefined),
+  ])
+  return { next: next !== undefined, unfinished: unfinished !== undefined }
+}
+
 export function readTopUpJournal(network: Network, identityId: string): Promise<TopUpJournal | undefined> {
   return idbGet<TopUpJournal>('journal', journalKey(network, identityId))
 }

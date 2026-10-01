@@ -74,6 +74,9 @@ test('c2. contributor forks the fixture; the fork browses through the parent pac
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Fork name').fill(FORK)
   await expect(dialog.getByTestId('fork-plan')).toContainText(/pack manifest/, { timeout: 60_000 })
+  // GitHub's default copies the default branch alone (QW3-010); c3 proposes feature/greeting.
+  await expect(dialog.getByTestId('fork-default-only')).toBeChecked()
+  await dialog.getByTestId('fork-default-only').uncheck()
   await expect(dialog.getByTestId('cost-preview')).toContainText('DASH')
   expect(await runAxe(page, 'fork dialog')).toEqual([])
   await shot(page, 'c-fork-dialog')
