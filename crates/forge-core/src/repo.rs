@@ -1375,7 +1375,7 @@ impl<'a> RepoService<'a> {
                     Ok(owner) => match scope.chunk_filters(&owner, manifest.pack_hash) {
                         Ok(filters) => self
                             .client
-                            .query_all_documents(
+                            .query_all_large_documents(
                                 &contract,
                                 crate::backends::platform::CHUNK_DOC_TYPE,
                                 &filters,

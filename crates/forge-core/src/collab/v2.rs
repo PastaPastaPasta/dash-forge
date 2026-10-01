@@ -3743,7 +3743,7 @@ impl<'a> Collab<'a> {
                         return Ok(done);
                     }
                     floor = number.saturating_add(1);
-                    tracing::warn!(number, attempt, "number taken; counting again");
+                    tracing::debug!(number, attempt, "number taken; counting again");
                 }
                 // The membership was removed since it was read: nothing landed; once, sign
                 // again without the (optional) proof.

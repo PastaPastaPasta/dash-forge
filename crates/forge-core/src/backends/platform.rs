@@ -261,7 +261,7 @@ async fn read_chunks_in(
     loc: &PlatformLocator,
 ) -> Result<Vec<Chunk>> {
     let docs = client
-        .query_all_documents(
+        .query_all_large_documents(
             contract,
             CHUNK_DOC_TYPE,
             &scope.chunk_filters(&loc.owner, loc.pack_hash)?,
