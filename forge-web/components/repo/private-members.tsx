@@ -20,7 +20,9 @@ import { KeyRound } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
 import { ConsentMissingError, repoContractIds } from '@/lib/repo'
-import { Invitations } from '@/components/repo/invite-banner'
+import { ConsentCheck, Invitations, useInviteAccepted } from '@/components/repo/invite-banner'
+import { ROLE_NOUN, membershipTitle } from '@/lib/rules/roles'
+import { namedAction } from '@/lib/spend-toast'
 import { decodeIdentifier } from '@/lib/auth'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
 import type { Role } from '@/lib/rules/v2'
@@ -122,9 +124,11 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
     { enabled: ready && sdk !== null && trimmed !== '' && idError === null },
   )
   const noKey = keyCheck.data === false
+  // Whether they accepted, read before Add prices anything (QW4-036), as their key is.
+  const consent = useInviteAccepted(repo, isOwner && trimmed !== '' && idError === null ? trimmed : null)
   // "Add as …" on an accepted invitation (QW-075): as on a public repo, it opens the confirm, once
-  // the form has checked the identity's encryption key (the add hands them the repo key). If they
-  // have none, the form says so and nothing opens.
+  // the form has checked the identity's encryption key (the add hands them the repo key) and
+  // their acceptance. If either is missing, the form says so and nothing opens.
   const [pickedAdd, setPickedAdd] = useState<string | null>(null)
   useEffect(() => {
     if (pickedAdd === null) return
@@ -133,10 +137,10 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
       setPickedAdd(null)
       return
     }
-    if (!keyCheck.settled) return
+    if (!keyCheck.settled || (consent.accepted === null && consent.error === null)) return
     setPickedAdd(null)
-    if (keyCheck.data === true && guard.check(addMemberCost(role))) setAdding(true)
-  }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, guard, role])
+    if (keyCheck.data === true && consent.accepted === true && guard.check(addMemberCost(role))) setAdding(true)
+  }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, consent.accepted, consent.error, guard, role])
 
   const removalPlan = useMemo((): { plan: RotationPlan | null; error: string | null } => {
     if (removing === null || identity === null || write.context === null) return { plan: null, error: null }
@@ -214,7 +218,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
             <RolePicker value={role} onChange={setRole} visibility="private" />
             <Button
               variant="primary"
-              disabled={trimmed === '' || idError !== null || keyCheck.data !== true || guard.disabledReason !== null || locked || cannotRead}
+              disabled={trimmed === '' || idError !== null || keyCheck.data !== true || consent.accepted !== true || guard.disabledReason !== null || locked || cannotRead}
               onClick={() => {
                 if (guard.check(addMemberCost(role))) setAdding(true)
               }}
@@ -230,6 +234,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
             </p>
           ) : null}
           {keyCheck.error ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">Couldn&apos;t read that identity: {keyCheck.error}</p> : null}
+          {awaiting !== trimmed ? <ConsentCheck identity={trimmed !== '' && idError === null ? trimmed : null} check={consent} /> : null}
           {locked ? (
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Unlock with your encryption key (Settings → Private repos) to add or remove members.</p>
           ) : null}
@@ -254,7 +259,8 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
       <ConfirmDialog
         open={adding}
         onClose={() => setAdding(false)}
-        title={`Add ${role}`}
+        title={`Add ${ROLE_NOUN[role]}`}
+        toast={namedAction(membershipTitle('grant', role))}
         description={`Creates ${grantDescription(role)} for ${shortId(trimmed)} and hands them the current key (epoch ${current ?? 0}): two transitions.${role === 'reader' ? ' A reader reads the repo and its history but changes nothing as a member.' : ''}`}
         cost={addMemberCost(role)}
         confirmLabel="Sign & add"
@@ -269,6 +275,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
             // Nothing was signed: the invitation is pending on them.
             setAwaiting(trimmed)
             setAdding(false)
+            consent.recheck()
           } finally {
             write.done()
           }
@@ -277,7 +284,8 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
       <ConfirmDialog
         open={removing !== null}
         onClose={() => setRemoving(null)}
-        title={`Remove ${removing?.role ?? 'member'}`}
+        title={removing === null ? 'Remove member' : `Remove ${ROLE_NOUN[removing.role]}`}
+        toast={removing === null ? undefined : namedAction(membershipTitle('revoke', removing.role))}
         description={
           removing === null
             ? ''

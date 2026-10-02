@@ -58,6 +58,23 @@ export const ROLE_NOUN: Readonly<Record<Role, string>> = {
   reader: 'a reader',
 }
 
+/** How a title names a holder of a role ("Triage member added"). */
+export const ROLE_HOLDER: Readonly<Record<Role, string>> = {
+  maintainer: 'Maintainer',
+  writer: 'Writer',
+  triage: 'Triage member',
+  reader: 'Reader',
+}
+
+/**
+ * The toast of a membership change, by the role it grants, removes or changes to (QW4-033: a
+ * `writer` document's own title, "Writer added", is wrong for the triage and reader roles).
+ */
+export function membershipTitle(kind: 'grant' | 'revoke' | 'change', role: Role): string {
+  if (kind === 'change') return `Role changed to ${role}`
+  return `${ROLE_HOLDER[role]} ${kind === 'grant' ? 'added' : 'removed'}`
+}
+
 /** One line on what a role may do (the Collaborators picker and badges). */
 export const ROLE_SUMMARY: Readonly<Record<Role, string>> = {
   maintainer: 'Everything a writer can, plus protected branches, settings, releases and moderation.',
@@ -151,6 +168,35 @@ export function capabilitiesOf(role: Role | null | undefined): Capabilities {
     default:
       return NONE
   }
+}
+
+/** How a sentence names the holders of a role, plural ("triage members can …"). */
+const ROLE_PLURAL: Readonly<Record<Role, string>> = {
+  maintainer: 'maintainers',
+  writer: 'writers',
+  triage: 'triage members',
+  reader: 'readers',
+}
+
+/** "a, b and c" / "a, b or c". */
+function listOf(words: readonly string[], joiner: 'and' | 'or'): string {
+  if (words.length <= 1) return words[0] ?? ''
+  return `${words.slice(0, -1).join(', ')} ${joiner} ${words[words.length - 1]}`
+}
+
+/**
+ * Who may `cap`, named from the role table (QW4-032: copy that said "maintainers and writers"
+ * where triage can act too): `'plural'` "maintainers, writers and triage members", `'one'`
+ * "a maintainer, writer or triage member". Every role note, dialog and hint names its roles
+ * through this, so the words follow {@link capabilitiesOf}.
+ */
+export function whoCan(cap: keyof Capabilities, form: 'plural' | 'one' = 'plural'): string {
+  const roles = (['maintainer', 'writer', 'triage', 'reader'] as const).filter((r) => capabilitiesOf(r)[cap])
+  if (form === 'plural') return listOf(roles.map((r) => ROLE_PLURAL[r]), 'and')
+  const [first, ...rest] = roles
+  if (first === undefined) return ''
+  // One article for the list: "a maintainer, writer or triage member".
+  return listOf([ROLE_NOUN[first], ...rest.map((r) => ROLE_HOLDER[r].toLowerCase())], 'or')
 }
 
 /** The types whose gate admits role 1 only (`r` maximum 1). */

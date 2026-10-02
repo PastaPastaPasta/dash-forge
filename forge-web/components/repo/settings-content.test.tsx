@@ -12,11 +12,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RepoHome } from '@/lib/view'
 
 const unlockMore = vi.fn(async () => undefined)
-const viewer = { id: 'owner' }
+const viewer: { id: string | null; locked: string | null } = { id: 'owner', locked: null }
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({
     identity: viewer.id,
-    signer: { identityId: viewer.id },
+    signer: viewer.id === null ? null : { identityId: viewer.id },
+    locked: viewer.locked !== null,
+    lockedIdentity: viewer.locked,
     vaults: [{ identityId: viewer.id, methods: ['passphrase'] }],
     controller: { unlockMore },
     isLoading: false,
@@ -40,7 +42,14 @@ vi.mock('@/components/repo/repo-settings-sections', () => ({
 vi.mock('@/components/storage/repo-storage-policy', () => ({
   RepoStoragePolicy: ({ unlockAbove }: { unlockAbove?: boolean }) => <div data-testid="storage-policy" data-unlock-above={String(unlockAbove === true)} />,
 }))
-vi.mock('@/components/repo/invite-banner', () => ({ Invitations: () => null }))
+/** Whether the identity typed into Add a member accepted (null: still checking). */
+const consent: { accepted: boolean | null } = { accepted: true }
+vi.mock('@/components/repo/invite-banner', () => ({
+  Invitations: () => null,
+  useInviteAccepted: (_repo: unknown, id: string | null) => ({ accepted: id === null ? null : consent.accepted, checking: false, error: null, recheck: () => undefined }),
+  ConsentCheck: ({ identity, check }: { identity: string | null; check: { accepted: boolean | null } }) =>
+    identity !== null && check.accepted === false ? <p data-testid="consent-missing">not accepted</p> : null,
+}))
 vi.mock('@/components/repo/webhook-settings', () => ({ WebhookSettings: () => null }))
 vi.mock('@/components/repo/private-members', () => ({ PrivateMembers: () => <div data-testid="private-members" /> }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>{identityId}</span> }))
@@ -65,7 +74,9 @@ let root: Root
 beforeEach(() => {
   unlockMore.mockClear()
   viewer.id = 'owner'
+  viewer.locked = null
   role.value = 'maintainer'
+  consent.accepted = true
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -175,5 +186,70 @@ describe('a non-maintainer on Settings (QW3-055)', () => {
   it('a maintainer gets no read-only note', async () => {
     await render(repoHome('public'))
     expect(host.querySelector('[data-testid="settings-read-only"]')).toBeNull()
+  })
+})
+
+describe('a viewer whose session is locked, or who is signed out, on Settings (QW4-035)', () => {
+  const note = (): Element | null => host.querySelector('[data-testid="settings-read-only"]')
+
+  it('tells a locked owner to unlock, not to sign in as a maintainer', async () => {
+    viewer.id = null
+    viewer.locked = 'owner'
+    role.value = null
+    await render(repoHome('public'))
+    expect(note()?.textContent).toMatch(/Your session is locked, so these settings are read-only for now\. Unlock to change them\./)
+    expect(note()?.textContent).not.toMatch(/Sign in as one of its maintainers/)
+    expect(host.querySelector('[data-testid="settings-read-only-sign-in"]')?.textContent).toBe('Unlock')
+  })
+
+  it("tells a locked viewer who isn't the owner to unlock if they maintain it", async () => {
+    viewer.id = null
+    viewer.locked = 'someone'
+    role.value = null
+    await render(repoHome('public'))
+    expect(note()?.textContent).toMatch(/Unlock to change them if you're one of its maintainers/)
+  })
+
+  it('asks a signed-out viewer to sign in as a maintainer', async () => {
+    viewer.id = null
+    role.value = null
+    await render(repoHome('public'))
+    expect(note()?.textContent).toMatch(/Sign in as one of its maintainers to change them/)
+    expect(host.querySelector('[data-testid="settings-read-only-sign-in"]')?.textContent).toBe('Sign in')
+  })
+})
+
+describe('Add a member checks the acceptance before pricing the add (QW4-036)', () => {
+  const ID = 'EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35'
+  const add = (): HTMLButtonElement => [...host.querySelectorAll('button')].find((b) => b.textContent === 'Add') as HTMLButtonElement
+  async function type(value: string): Promise<void> {
+    const input = host.querySelector<HTMLInputElement>('#member-id')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setValue?.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  it("keeps Add off and says why when they haven't accepted", async () => {
+    consent.accepted = false
+    await render(repoHome('public'))
+    await type(ID)
+    expect(add().disabled).toBe(true)
+    expect(host.querySelector('[data-testid="consent-missing"]')).not.toBeNull()
+  })
+
+  it('turns Add on once they have', async () => {
+    await render(repoHome('public'))
+    await type(ID)
+    expect(add().disabled).toBe(false)
+    expect(host.querySelector('[data-testid="consent-missing"]')).toBeNull()
+  })
+
+  it('keeps Add off while the check is still running', async () => {
+    consent.accepted = null
+    await render(repoHome('public'))
+    await type(ID)
+    expect(add().disabled).toBe(true)
   })
 })

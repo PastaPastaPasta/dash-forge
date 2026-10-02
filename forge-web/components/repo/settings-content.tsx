@@ -9,16 +9,17 @@
  */
 
 import { useState } from 'react'
-import { Fingerprint, HardDrive, Lock, ShieldPlus, UserCog } from 'lucide-react'
+import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 import { ConsentMissingError, changeMemberRole, grantDescription, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
 import { roleChangeCost } from '@/lib/repo/private-members'
-import { Invitations } from '@/components/repo/invite-banner'
+import { ConsentCheck, Invitations, useInviteAccepted } from '@/components/repo/invite-banner'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
-import { ROLE_LABEL, ROLE_NOUN, grantableRoles } from '@/lib/rules/roles'
+import { ROLE_LABEL, ROLE_NOUN, grantableRoles, membershipTitle } from '@/lib/rules/roles'
+import { namedAction } from '@/lib/spend-toast'
 import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import { decodeIdentifier } from '@/lib/auth'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -35,6 +36,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 import { PrivateMembers } from '@/components/repo/private-members'
+import { SettingsReadOnly } from '@/components/repo/settings-read-only'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { WebhookSettings } from '@/components/repo/webhook-settings'
 import { UnlockMore } from '@/components/auth/unlock-more'
@@ -97,6 +99,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       return 'Not an identity id (base58, 32 bytes).'
     }
   })()
+  // Whether the typed identity accepted, read before Add prices anything (QW4-036).
+  const typed = memberId.trim() !== '' && idError === null ? memberId.trim() : null
+  const consent = useInviteAccepted(repo, isOwner && repo.visibility !== 'private' ? typed : null)
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     if (action.kind === 'change') {
@@ -118,6 +123,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         // Nothing was signed: show the invitation as pending on them instead of an error.
         setAwaiting(action.member)
         setAction(null)
+        consent.recheck()
         return
       }
       setAwaiting(null)
@@ -143,20 +149,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       <SettingsNav />
 
       {/* Settings are a maintainer's (QW3-055): anyone else reads them, plainly read-only. */}
-      {viewer.known && viewerRole !== 'maintainer' ? (
-        <p role="note" className="flex gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-200" data-testid="settings-read-only">
-          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-          <span>
-            {identity === null
-              ? "You're viewing this repo's settings read-only. Sign in as one of its maintainers to change them."
-              : viewerRole === 'writer'
-                ? "You're a writer here: only maintainers can change the repo's settings. Where your own browser stores what you push (Storage) is yours to set."
-                : viewerRole === 'triage' || viewerRole === 'reader'
-                  ? `You're ${ROLE_NOUN[viewerRole]} here: only maintainers can change the repo's settings.`
-                  : "You're viewing this repo's settings read-only: only its maintainers can change them."}
-          </span>
-        </p>
-      ) : null}
+      {viewer.known ? <SettingsReadOnly ownerId={repo.ownerId} role={viewerRole} /> : null}
 
       <GeneralSettings home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
 
@@ -245,9 +238,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               <RolePicker value={role} onChange={setRole} visibility={repo.visibility} />
               <Button
                 variant="primary"
-                disabled={memberId.trim() === '' || idError !== null || guard.disabledReason !== null}
+                disabled={typed === null || consent.accepted !== true || guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(previewCreate(memberDocOf(role)))) setAction({ kind: 'grant', member: memberId.trim(), role })
+                  if (typed !== null && guard.check(previewCreate(memberDocOf(role)))) setAction({ kind: 'grant', member: typed, role })
                 }}
               >
                 Add
@@ -255,6 +248,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             </div>
             <RoleSummary role={role} />
             {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
+            {awaiting !== typed ? <ConsentCheck identity={typed} check={consent} /> : null}
             <Invitations
               repo={repo}
               members={members.data === null ? null : memberRows.map((m) => m.identity)}
@@ -284,11 +278,15 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           onClose={() => setAction(null)}
           title={
             action?.kind === 'grant'
-              ? `Add ${action.role}`
+              ? `Add ${ROLE_NOUN[action.role]}`
               : action?.kind === 'change'
                 ? `Change role to ${ROLE_LABEL[action.to]}`
-                : `Remove ${action?.role ?? 'member'}`
+                : action?.kind === 'revoke'
+                  ? `Remove ${ROLE_NOUN[action.role]}`
+                  : 'Remove member'
           }
+          // The toast says the role granted, not the document type (QW4-033: triage was "Writer added").
+          toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
             action?.kind === 'grant'
               ? `Creates ${grantDescription(action.role)} for ${action.member.slice(0, 8)}… on this repo.`

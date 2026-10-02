@@ -63,7 +63,7 @@ vi.mock('@/lib/repo', async (orig) => ({
 let consentLists: (string[] | 'throw' | { after: number; ids: string[] })[] = []
 let consentListCalls = 0
 
-import { INVITES_POLL_MAX_MS, INVITES_POLL_MS, InviteBanner, Invitations, invitedRole } from './invite-banner'
+import { ConsentCheck, INVITES_POLL_MAX_MS, INVITES_POLL_MS, InviteBanner, Invitations, invitedRole, useInviteAccepted } from './invite-banner'
 import { useUiStore } from '@/hooks/use-ui-store'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -307,5 +307,76 @@ describe('invitedRole: the role an invite link suggests', () => {
     expect(invitedRole('reader', 'private')).toBe('reader')
     expect(invitedRole('1', 'private')).toBeNull()
     expect(invitedRole(null, 'public')).toBeNull()
+  })
+})
+
+describe('a pending invitation picks its own role (QW4-034)', () => {
+  const INVITEE = 'EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35'
+
+  it('preselects no role, even when the page picker says writer, and adds with the role its row picks', async () => {
+    consentLists = [[INVITEE]]
+    consentListCalls = 0
+    const picks: [string, string][] = []
+    act(() =>
+      root.render(<Invitations repo={repo} members={[]} awaiting={null} disabled={false} role="writer" onPick={(id, r) => picks.push([id, r])} />),
+    )
+    await flush()
+    const row = q('pending-invite')!
+    const select = row.querySelector<HTMLSelectElement>('select')!
+    const add = row.querySelector<HTMLButtonElement>('button')!
+    expect(select.value).toBe('')
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'writer', 'triage', 'maintainer'])
+    expect(add.textContent).toBe('Add')
+    expect(add.disabled).toBe(true)
+    await act(async () => {
+      select.value = 'triage'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(add.textContent).toBe('Add as triage')
+    await act(async () => add.click())
+    expect(picks).toEqual([[INVITEE, 'triage']])
+  })
+})
+
+describe('useInviteAccepted: Add knows before it prices anything (QW4-036)', () => {
+  const INVITEE = 'EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35'
+  function Probe({ id }: { id: string | null }): JSX.Element {
+    const check = useInviteAccepted(repo, id)
+    return (
+      <div data-testid="probe" data-accepted={String(check.accepted)}>
+        <ConsentCheck identity={id} check={check} />
+      </div>
+    )
+  }
+  const accepted = (): string | null | undefined => q('probe')?.getAttribute('data-accepted')
+
+  it("says an identity hasn't accepted, and Check again finds an accept made since", async () => {
+    consentReads = [null, 'consent1']
+    act(() => root.render(<Probe id={INVITEE} />))
+    await flush()
+    expect(accepted()).toBe('false')
+    expect(q('consent-missing')?.textContent).toMatch(/hasn.t accepted your invitation yet/)
+    await act(async () => (q('consent-missing')!.querySelector('button') as HTMLButtonElement).click())
+    await flush()
+    expect(accepted()).toBe('true')
+    expect(q('consent-missing')).toBeNull()
+  })
+
+  it('needs no acceptance from the owner, and reads nothing for no identity', async () => {
+    act(() => root.render(<Probe id={OWNER} />))
+    await flush()
+    expect(accepted()).toBe('true')
+    act(() => root.render(<Probe id={null} />))
+    await flush()
+    expect(accepted()).toBe('null')
+    expect(consentCalls).toBe(0)
+  })
+
+  it('reports a failed read with a retry', async () => {
+    consentReads = ['throw']
+    act(() => root.render(<Probe id={INVITEE} />))
+    await flush()
+    expect(accepted()).toBe('null')
+    expect(q('consent-check-error')?.textContent).toMatch(/consent read failed/)
   })
 })
