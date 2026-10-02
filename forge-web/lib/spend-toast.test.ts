@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useToasts } from '../hooks/use-toasts'
 import { currentSpendAction } from './sdk/spend-scope'
 import type { WriteAuth } from './sdk/write'
-import { spendAction, spendTitle, toastSpend, type TagSigner } from './spend-toast'
+import { namedAction, spendAction, spendTitle, toastSpend, type TagSigner } from './spend-toast'
 
 vi.mock('./sdk/write', () => ({ measurementsSettled: () => Promise.resolve() }))
 
@@ -95,6 +95,12 @@ describe('an action of several writes shows one toast with their total (QW3-039)
     await spendAction({ done: 'Saved' }, async () => spend('replace:comment', 7_800_000), { scope: true })
     await settle()
     expect(shown()).toEqual([{ title: 'Comment edited', credits: 7_800_000, writes: 1 }])
+  })
+
+  it('a named action keeps its own title over its one write\'s (QW4-033: a triage grant is not "Writer added")', async () => {
+    await spendAction(namedAction('Triage member added'), async () => spend('create:writer', 48_300_000), { scope: true })
+    await settle()
+    expect(shown()).toEqual([{ title: 'Triage member added', credits: 48_300_000, writes: 1 }])
   })
 
   it('an action that failed says so, even after one write, with what its landed writes cost', async () => {

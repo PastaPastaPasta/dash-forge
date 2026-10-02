@@ -142,7 +142,7 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
+import { InlineCommentsProvider, SuggestedBody, type SuggestionActions, type ThreadActions } from '@/components/repo/inline-comments'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
 import { BranchCommitCost, BranchRunContext, CommitIdentityPrompt, buildUpdateBranch, useSourceWrite, useSuggestions } from '@/components/repo/branch-commit-panel'
@@ -1214,8 +1214,9 @@ function PullPage({
       <div className={cn('grid gap-6', tab !== 'files' && 'lg:grid-cols-[minmax(0,1fr)_16rem]')}>
         <div role="tabpanel" aria-label={tab} className="min-w-0 space-y-4">
           {/* A commit to the PR branch that is running (it may be waiting for a storage choice)
-              stays on screen on every tab, not only where it was started. */}
-          {suggest.runner.busy && !(tab === 'files' || (tab === 'conversation' && !(open && pull.state.draft))) ? suggest.runner.view : null}
+              stays on screen on every tab, not only where it was started. On Conversation a batch's
+              shows in the batch bar (QW4-026) and any other above the merge box. */}
+          {suggest.runner.busy && !(tab === 'files' || (tab === 'conversation' && (suggest.runner.at === 'batch' || !(open && pull.state.draft)))) ? suggest.runner.view : null}
           {tab === 'conversation' ? (
             <>
               {threadHidden !== null ? <HiddenBanner hidden={threadHidden} noun="pull request" revealed={threadRevealed} onReveal={() => setThreadRevealed(true)} /> : null}
@@ -1277,6 +1278,8 @@ function PullPage({
                       // The header already says where it points ("commented on …").
                       context: anchorContext(item.comment, false),
                       onShowFiles: () => setTab('files'),
+                      suggestions: suggest.actions,
+                      carry: withCarried,
                     })
                   }
                 />
@@ -1379,7 +1382,10 @@ function PullPage({
                       )}
                     </section>
                   ) : null}
-                  {tab === 'conversation' ? suggest.runner.view : null}
+                  {/* Every run but the batch's (the batch bar shows that one): Conversation does not
+                      render every comment (hidden, collapsed, being edited), so a suggestion's run
+                      shows here rather than under its comment. */}
+                  {tab === 'conversation' && suggest.runner.at !== 'batch' ? suggest.runner.view : null}
                 </>
               )}
             </>
@@ -1551,6 +1557,7 @@ function PullPage({
                   </div>
                 ) : null}
               </div>
+              {suggest.bar}
             </>
           ) : tab === 'commits' ? (
             <CommitsTab
@@ -1763,6 +1770,7 @@ function PullPage({
                 {!archived ? (
                   <RoleLimitNote
                     role={viewerRole}
+                    cap="canMerge"
                     what={caps.canLock ? 'merge, mark drafts ready, update heads or dismiss reviews' : 'lock, label, assign or set milestones as a member'}
                     className="mt-2"
                   />
@@ -1979,6 +1987,8 @@ function commentSlots({
   resolved,
   context,
   onShowFiles,
+  suggestions,
+  carry,
 }: {
   item: Extract<TimelineItem, { kind: 'comment' }>
   viewer: string | null
@@ -1997,6 +2007,10 @@ function commentSlots({
   /** An inline comment's heading: its place, markers and code (`AnchorContext`). */
   context: ReactNode
   onShowFiles: () => void
+  /** Apply / Add to batch on a comment's suggestions, as in Files changed (QW4-026). */
+  suggestions: SuggestionActions
+  /** The comment where it is on the head now (carried past an unchanged-lines head move). */
+  carry: (c: CommentView) => CommentView
 }): CommentSlots {
   const c = item.comment
   const tags =
@@ -2039,13 +2053,19 @@ function commentSlots({
     body: (
       <div className="space-y-2 px-4 py-3">
         {context}
-        <MarkdownView source={trustedOrigin(c.origin, c.author, trust ?? null) !== null ? mirroredCommentText(c.body, c.anchor).text : c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
+        <SuggestedBody
+          comment={carry(c)}
+          suggestions={suggestions}
+          source={trustedOrigin(c.origin, c.author, trust ?? null) !== null ? mirroredCommentText(c.body, c.anchor).text : c.body}
+          links={links}
+          imported={importedUrlOf(c.importedRaw)}
+        />
         {replies.map((r) => (
           <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
             <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
               <Byline author={r.author} createdAt={r.createdAt} origin={trustedOrigin(r.origin, r.author, trust ?? null)} link={false} />
             </div>
-            <MarkdownView source={r.body} links={links} imported={importedUrlOf(r.importedRaw)} />
+            <SuggestedBody comment={carry(r)} suggestions={suggestions} links={links} imported={importedUrlOf(r.importedRaw)} />
           </div>
         ))}
         <button type="button" onClick={onShowFiles} className="hit-area text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">

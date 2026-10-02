@@ -58,9 +58,12 @@ export interface MergeInput {
   /**
    * Squash (review-parity M1): one commit on the base tip whose tree is the merged tree (the
    * head's own when the base is behind it), message {@link squashMessage} — parity with
-   * `dg pr merge --squash`. Absent: fast-forward when possible, else a merge commit.
+   * `dg pr merge --squash`. Absent: fast-forward when possible, else a merge commit. `author`:
+   * the squash commit's author ({@link squashAuthor}: the PR's author by its oldest commit, as
+   * GitHub credits a squash; QW4-008), the merger ({@link MergeInput.author}) committing it;
+   * absent: the merger is both.
    */
-  readonly squash?: { readonly message: string }
+  readonly squash?: { readonly message: string; readonly author?: { readonly name: string; readonly email: string } }
   /**
    * Always a merge commit (`git merge --no-ff`, GitHub's "Create a merge commit"; QW-069): when
    * the head descends from the base tip, a commit with the head's tree and parents base tip then
@@ -250,14 +253,17 @@ function identLine(who: MergeIdentity): string {
 /**
  * A squash commit's message (review-parity M1), as `dg pr merge --squash` writes it: the PR title
  * with its number, the body, and a `Co-authored-by` trailer for each commit author other than the
- * committer (`authors`: `Name <email>` of the PR's commits, oldest first, each once).
+ * squash commit's own author (`authors`: `Name <email>` of the PR's commits, oldest first, each
+ * once; `author`: {@link squashAuthor}'s, else the merger's).
  */
-export function squashMessage(title: string, body: string, number: number, authors: readonly string[], committer: string): string {
+export function squashMessage(title: string, body: string, number: number, authors: readonly string[], author: string): string {
   // One line of title: the PR author wrote it (it cannot forge trailers or headers). dg uses the
   // raw title; a title holding a newline is the only case where the two differ, deliberately.
   let m = `${title.replace(/[\r\n\0]+/g, ' ').trim()} (#${number})`
   if (body.trim() !== '') m += `\n\n${body.replace(/\s+$/, '')}`
-  const co = authors.filter((a) => a !== committer)
+  // Compared as git writes them (an author line with stray spaces is still the same person).
+  const own = canonicalIdent(author)
+  const co = authors.filter((a) => canonicalIdent(a) !== own)
   if (co.length > 0) m += `\n\n${co.map((a) => `Co-authored-by: ${a}`).join('\n')}`
   return m
 }
@@ -265,37 +271,84 @@ export function squashMessage(title: string, body: string, number: number, autho
 /** The PR's commit authors for a squash: loading (null), read (`complete` false: the list was capped), or unreadable. */
 export type SquashAuthors = { readonly authors: readonly string[]; readonly complete: boolean } | { readonly error: string } | null
 
+/** `Name <email>` split, when it makes an ident line git accepts (no stray `<`, `>` or newline). */
+/** git's `crud()` (ident.c; `.` is not one): what it strips from both ends of an ident's name and email. */
+const CRUD = /^[\0-\x20,:;<>"\\']+|[\0-\x20,:;<>"\\']+$/g
+
+/**
+ * `Name <email>` as git writes it into a commit (`strbuf_addstr_without_crud` on each part), or
+ * null when git would refuse it (an empty part after that, or a stray `<`, `>` or newline). dg's
+ * `squash_identity` applies the same rule, so both write the same bytes.
+ */
+export function parseIdent(line: string): { name: string; email: string } | null {
+  const m = /^([^<>\n]*) <([^<>\n]*)>$/.exec(line)
+  if (m === null) return null
+  const name = (m[1] ?? '').replace(CRUD, '')
+  const email = (m[2] ?? '').replace(CRUD, '')
+  return name === '' || email === '' ? null : { name, email }
+}
+
+/** An author line in the form git writes it, for comparing two of them (the raw line when unparsable). */
+function canonicalIdent(line: string): string {
+  const who = parseIdent(line)
+  return who === null ? line : `${who.name} <${who.email}>`
+}
+
+/**
+ * Who a squash commit is authored by (QW4-008): the PR's author, as GitHub credits a squash, by the
+ * author of its oldest commit (the first of `authors`) — the merger only commits it. Null (the
+ * merger authors it) while the commits are unread or unreadable, when the list was capped (its
+ * first entry is then not the oldest commit), or for an ident git would refuse.
+ */
+export function squashAuthor(authors: SquashAuthors): { name: string; email: string } | null {
+  if (authors === null || 'error' in authors || !authors.complete) return null
+  const first = authors.authors[0]
+  return first === undefined ? null : parseIdent(first)
+}
+
 /**
  * The squash message box's state. The default waits for the authors (a squash made before would
  * drop their credit); a commit list that cannot be read gives a default without them, with a
  * warning, instead of waiting forever. `edited` (the merger's text) wins once typed. `problem`
- * says why "Squash and merge" is disabled, or null.
+ * says why "Squash and merge" is disabled, or null. `author` is the squash commit's author
+ * ({@link squashAuthor}; null: the merger, `merger` as `Name <email>`), whom the default does
+ * not list again as a co-author.
  */
 export function squashDraft(
   pr: { readonly title: string; readonly body: string; readonly number: number },
   authors: SquashAuthors,
-  committer: string,
+  merger: string,
   edited: string | null,
-): { message: string; ready: boolean; warning: string | null; problem: string | null } {
-  const fallback = authors === null ? null : squashMessage(pr.title, pr.body, pr.number, 'error' in authors ? [] : authors.authors, committer)
+): { message: string; ready: boolean; warning: string | null; problem: string | null; author: { name: string; email: string } | null } {
+  const author = squashAuthor(authors)
+  const authorLine = author === null ? merger : `${author.name} <${author.email}>`
+  const fallback = authors === null ? null : squashMessage(pr.title, pr.body, pr.number, 'error' in authors ? [] : authors.authors, authorLine)
   const ready = edited !== null || fallback !== null
   const message = edited ?? fallback ?? ''
   const warning =
     authors !== null && 'error' in authors
-      ? `The PR's commits could not be read (${authors.error}), so the message has no Co-authored-by lines: add them by hand if you want the authors credited.`
+      ? `The PR's commits could not be read (${authors.error}), so you are the commit's author and the message has no Co-authored-by lines: add them by hand, or squash with \`dg pr merge --squash\` to credit the PR's author.`
       : authors !== null && !authors.complete
-        ? 'This PR has more commits than the page lists: add any missing Co-authored-by lines (or squash with `dg pr merge --squash`).'
+        ? "This PR has more commits than the page lists, so its first commit's author is not known here: you are the commit's author. Add any missing Co-authored-by lines, or squash with `dg pr merge --squash` to credit the PR's author."
         : null
   const problem = !ready ? "Reading the PR's commits for the Co-authored-by lines…" : message.trim() === '' ? 'Write a commit message to squash and merge.' : null
-  return { message, ready, warning, problem }
+  return { message, ready, warning, problem, author }
 }
 
-/** The squash commit's bytes: the tree, the base tip as its only parent, the merger as author and committer. */
+/**
+ * The squash commit's bytes: the tree, the base tip as its only parent, the PR's author
+ * (`squash.author`, at the merge's time) as author and the merger as committer — the merger as
+ * both when no author was given.
+ */
 export function squashCommitBytes(tree: string, input: MergeInput): Uint8Array {
-  const ident = identLine(input.author)
+  // One moment for both lines (the clock is read once).
+  const at = { ...input.author, timestamp: input.author.timestamp ?? Math.floor(Date.now() / 1000) }
+  const committer = identLine(at)
+  const by = input.squash?.author
+  const author = by === undefined ? committer : identLine({ ...at, name: by.name, email: by.email })
   const parents = input.baseTip === '' ? '' : `parent ${input.baseTip}\n`
   const message = (input.squash?.message ?? '').replace(/\0/g, '')
-  return new TextEncoder().encode(`tree ${tree}\n${parents}author ${ident}\ncommitter ${ident}\n\n${message.endsWith('\n') ? message : `${message}\n`}`)
+  return new TextEncoder().encode(`tree ${tree}\n${parents}author ${author}\ncommitter ${committer}\n\n${message.endsWith('\n') ? message : `${message}\n`}`)
 }
 
 /** The merge commit's bytes: the merged tree, parents base tip then head, the merger as author and committer. */

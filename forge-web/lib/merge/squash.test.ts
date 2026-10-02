@@ -9,7 +9,7 @@ import { BrowseReader, ObjectLocator, type GitObject } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
 import { parseCommit } from '../view/git-objects'
-import { checkMergeDetailed, packSizeBound, runMerge, squashDraft, squashMessage, type MergeInput } from './engine'
+import { checkMergeDetailed, packSizeBound, runMerge, squashAuthor, squashDraft, squashMessage, type MergeInput } from './engine'
 import { writePack } from './pack-writer'
 import { gitAcceptsHistory, HAVE_GIT } from './git-oracle'
 
@@ -35,13 +35,18 @@ describe('the squash message box', () => {
   const pr = { title: 'Greet', body: '', number: 7 }
   const me = 'M <m@x>'
   it('waits for the authors, then credits them; an edit wins', () => {
-    expect(squashDraft(pr, null, me, null)).toMatchObject({ ready: false, problem: expect.stringMatching(/Reading the PR/) })
-    expect(squashDraft(pr, { authors: ['A <a@x>'], complete: true }, me, null)).toEqual({ message: 'Greet (#7)\n\nCo-authored-by: A <a@x>', ready: true, warning: null, problem: null })
+    expect(squashDraft(pr, null, me, null)).toMatchObject({ ready: false, problem: expect.stringMatching(/Reading the PR/), author: null })
+    // QW4-008: the PR's author (its oldest commit's) authors the squash; the others are co-authors.
+    expect(squashDraft(pr, { authors: ['A <a@x>'], complete: true }, me, null)).toEqual({ message: 'Greet (#7)', ready: true, warning: null, problem: null, author: { name: 'A', email: 'a@x' } })
+    expect(squashDraft(pr, { authors: ['A <a@x>', 'M <m@x>', 'B <b@x>'], complete: true }, me, null)).toMatchObject({
+      message: 'Greet (#7)\n\nCo-authored-by: M <m@x>\nCo-authored-by: B <b@x>',
+      author: { name: 'A', email: 'a@x' },
+    })
     expect(squashDraft(pr, null, me, 'Mine').message).toBe('Mine')
   })
   it('never waits forever: an unreadable commit list gives a message without authors, and says so', () => {
     const d = squashDraft(pr, { error: 'the head repo is unreachable' }, me, null)
-    expect(d).toMatchObject({ message: 'Greet (#7)', ready: true, problem: null })
+    expect(d).toMatchObject({ message: 'Greet (#7)', ready: true, problem: null, author: null })
     expect(d.warning).toMatch(/could not be read \(the head repo is unreachable\).*no Co-authored-by lines/)
   })
   it('says why Squash is disabled with an empty message, and warns about a capped list', () => {
@@ -50,8 +55,30 @@ describe('the squash message box', () => {
   })
 })
 
+describe('squashAuthor (QW4-008)', () => {
+  it("is the oldest commit's author, or null (the merger) when unknown or not a valid ident", () => {
+    expect(squashAuthor({ authors: ['First Author <f@x>', 'B <b@x>'], complete: true })).toEqual({ name: 'First Author', email: 'f@x' })
+    // A capped list's first entry is not the oldest commit: the merger authors it, and is told so.
+    expect(squashAuthor({ authors: ['Capped <c@x>'], complete: false })).toBeNull()
+    expect(squashDraft({ title: 'T', body: '', number: 1 }, { authors: ['Capped <c@x>'], complete: false }, 'M <m@x>', null).warning).toMatch(/you are the commit's author/)
+    // As git writes it: crud stripped from both ends of each part, and refused when nothing is left.
+    // (git 2.56: `author John Doe, <"j@x">` becomes `John Doe <j@x>`; "Jr." keeps its dot; `,;` alone is refused.)
+    expect(squashAuthor({ authors: [' John Doe, <"j@x">'], complete: true })).toEqual({ name: 'John Doe', email: 'j@x' })
+    expect(squashAuthor({ authors: ['A Jr. <j@x>'], complete: true })).toEqual({ name: 'A Jr.', email: 'j@x' })
+    expect(squashAuthor({ authors: [',; <j@x>'], complete: true })).toBeNull()
+    expect(squashAuthor(null)).toBeNull()
+    expect(squashAuthor({ error: 'unreadable' })).toBeNull()
+    expect(squashAuthor({ authors: [], complete: true })).toBeNull()
+    expect(squashAuthor({ authors: ['Bad <name> <b@x>'], complete: true })).toBeNull()
+    expect(squashAuthor({ authors: [' <nobody@x>'], complete: true })).toBeNull()
+  })
+})
+
 describe('squashMessage (parity with dg squash_message)', () => {
-  it('title (#n), the body, and Co-authored-by for every author but the committer', () => {
+  it("does not list the squash commit's own author again, whatever spacing their line has", () => {
+    expect(squashMessage('T', '', 1, ['A  <a@x>', 'B <b@x>'], 'A <a@x>')).toBe('T (#1)\n\nCo-authored-by: B <b@x>')
+  })
+  it("title (#n), the body, and Co-authored-by for every author but the squash commit's own", () => {
     expect(squashMessage('Greet', 'Body text\n\n', 7, ['A <a@x>', 'M <m@x>', 'B <b@x>'], 'M <m@x>')).toBe('Greet (#7)\n\nBody text\n\nCo-authored-by: A <a@x>\nCo-authored-by: B <b@x>')
     expect(squashMessage('Greet', '', 7, [], 'M <m@x>')).toBe('Greet (#7)')
     expect(squashMessage('Two\nlines', '', 1, [], '')).toBe('Two lines (#1)')
@@ -75,6 +102,23 @@ describe('squash and merge', () => {
     expect(c.parents).toEqual([base])
     expect(c.message).toBe(`${msg}\n`)
     if (HAVE_GIT) expect(gitAcceptsHistory([...s.objects.values(), ...objects], out.newTip)).toEqual({ fsck: true, log: true, clone: true })
+  }, 60_000)
+
+  it("is authored by the PR's author and committed by the merger (QW4-008)", async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ 'a.txt': 'a\n' }), [], 'root')
+    const h1 = s.commit(s.files({ 'a.txt': 'a2\n' }), [root], 'feature')
+    const commitText = async (out: Awaited<ReturnType<typeof runMerge>>): Promise<{ text: string; objects: GitObject[]; tip: string }> => {
+      if (out.kind !== 'squash') throw new Error(out.kind)
+      const objects = await packed(out.pack)
+      return { text: new TextDecoder().decode((objects.find((o) => o.type === 'commit') as GitObject).bytes), objects, tip: out.newTip }
+    }
+    const by = await commitText(await runMerge(s.reader(), { ...input(root, h1), squash: { message: 'Feature (#7)', author: { name: 'Contributor', email: 'c@example.com' } } }))
+    expect(by.text).toContain('\nauthor Contributor <c@example.com> 1700000000 +0000\ncommitter Merger <m@example.com> 1700000000 +0000\n')
+    if (HAVE_GIT) expect(gitAcceptsHistory([...s.objects.values(), ...by.objects], by.tip)).toEqual({ fsck: true, log: true, clone: true })
+    // Without one (the commits were unreadable), the merger is both.
+    const self = await commitText(await runMerge(s.reader(), input(root, h1, 'Feature (#7)')))
+    expect(self.text).toContain('\nauthor Merger <m@example.com> 1700000000 +0000\ncommitter Merger <m@example.com> 1700000000 +0000\n')
   }, 60_000)
 
   it('the check sizes the pack before it is built: an upper bound on what the merge stores', async () => {

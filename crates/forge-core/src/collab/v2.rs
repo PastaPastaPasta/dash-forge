@@ -1798,7 +1798,7 @@ fn with_close_reason(
 }
 
 /// Whether `community` is a fused-star forge-community (RC2 C1): it has no `starBeat` type.
-fn fused_star(community: &LoadedContract) -> bool {
+pub(crate) fn fused_star(community: &LoadedContract) -> bool {
     !community.has_document_type(DOC_STAR_BEAT)
 }
 

@@ -2,10 +2,11 @@
  * LockedBanner — the top of an issue's or PR's comment composer while its conversation is locked
  * (RC1: the thread's transition sum is 16 or more, and consensus refuses a comment or review that
  * does not prove membership). As GitHub's: a lock and "This conversation has been locked and
- * limited to collaborators." A maintainer or writer is told they can still comment and keeps the
- * composer (`children`); anyone else gets the banner in its place, since a post from them would
- * be refused (`lockedOut`): so does a viewer whose membership is still being read or could not
- * be read (their post could not carry the proof).
+ * limited to collaborators." A member of any role (consensus's `asMember` proof is role-blind, so
+ * a triage member's or reader's post passes the lock too) is told they can still comment and
+ * keeps the composer (`children`); anyone else gets the banner in its place, since a post from
+ * them would be refused (`lockedOut`): so does a viewer whose membership is still being read or
+ * could not be read (their post could not carry the proof).
  *
  * The lock bit is the page's own composite read (`PullThread.locked`, issue `meta.locked`), and
  * the membership comes from the members that read seeded: the banner costs no request.
@@ -17,6 +18,7 @@ import { Lock, LockOpen } from 'lucide-react'
 import type { Holdings } from '@/lib/rules'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { whoCan } from '@/lib/rules/roles'
 
 /** Who is looking, as the lock sees them. */
 export type LockViewer = 'member' | 'outsider' | 'signedOut' | 'checking' | 'unknown'
@@ -34,15 +36,15 @@ export function lockViewerOf(identity: string | null, holdings: { readonly settl
 function noteFor(viewer: LockViewer, acts: string): string {
   switch (viewer) {
     case 'member':
-      return "You can still comment because you're a maintainer or writer of this repo."
+      return "You can still comment because you're a member of this repo."
     case 'outsider':
-      return `Only maintainers and writers can ${acts}; the network refuses anyone else's.`
+      return `Only this repo's members can ${acts}; the network refuses anyone else's.`
     case 'signedOut':
-      return 'Sign in as a maintainer or writer of this repo to comment.'
+      return 'Sign in as a member of this repo to comment.'
     case 'checking':
-      return 'Checking whether you are a maintainer or writer of this repo…'
+      return 'Checking whether you are a member of this repo…'
     case 'unknown':
-      return "Couldn't check whether you are a maintainer or writer of this repo, so commenting is off."
+      return "Couldn't check whether you are a member of this repo, so commenting is off."
   }
 }
 
@@ -84,7 +86,7 @@ export function lockStateText(locked: boolean): string {
   return locked ? 'Locked to members' : 'Open to everyone'
 }
 
-/** The Lock / Unlock conversation button a maintainer or writer gets in the rail; `onToggle(lock)` asks to confirm. */
+/** The Lock / Unlock conversation button a member who may lock (`canLock`) gets in the rail; `onToggle(lock)` asks to confirm. */
 export function LockToggle({ locked, onToggle }: { locked: boolean; onToggle: (lock: boolean) => void }): JSX.Element {
   const Icon = locked ? LockOpen : Lock
   return (
@@ -102,7 +104,7 @@ export function lockConfirm(lock: boolean, what: string, target: 'issue' | 'pull
   return lock
     ? {
         title: `Lock conversation on ${what}`,
-        description: `Records a lock: from then on the network refuses ${acts} from anyone who is not a maintainer or writer. Any maintainer or writer can unlock it.`,
+        description: `Records a lock: from then on the network refuses ${acts} from anyone who is not a member of this repo. Any of its ${whoCan('canLock')} can unlock it.`,
         label: 'Sign & lock',
       }
     : { title: `Unlock conversation on ${what}`, description: `Records an unlock: everyone can ${again} again.`, label: 'Sign & unlock' }
