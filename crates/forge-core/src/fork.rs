@@ -308,12 +308,21 @@ pub fn sync_decision(
     }
 }
 
-/// The git packs a fork records already, whoever recorded them (a sync may be run by any of its
-/// maintainers and writers, and a pack is recorded once).
+/// The git packs a fork records already: by any of its current maintainers or writers (a sync
+/// may be run by any of them, and a pack is recorded once). A copy recorded by someone who is
+/// no longer one (`roles`: the fork's current members) does not count: its uploader may have
+/// taken that storage down, so the parent's copy is recorded again rather than relied on.
 #[must_use]
-pub fn recorded_packs(fork: &[PackManifestInfo]) -> BTreeSet<[u8; 32]> {
+pub fn recorded_packs(fork: &[PackManifestInfo], roles: &RoleMap) -> BTreeSet<[u8; 32]> {
+    use crate::rules::v2::Role;
     fork.iter()
         .filter(|m| m.kind == u64::from(crate::pack::KIND_GIT_PACK))
+        .filter(|m| {
+            matches!(
+                roles.get(&m.owner_id),
+                Some(Role::Maintainer | Role::Writer)
+            )
+        })
         .map(|m| m.pack_hash)
         .collect()
 }
@@ -330,15 +339,18 @@ pub struct SyncManifests {
 }
 
 /// Plan [`SyncManifests`] from the parent's manifests (with its uploaders' `roles`, reader
-/// order) and the fork's.
+/// order) and the fork's (with the fork's current members, `fork_roles`). Parity: forge-web
+/// `planSyncManifests`.
 pub fn plan_sync_manifests(
     parent: &RepoRef,
     parent_manifests: &[PackManifestInfo],
     roles: &RoleMap,
     fork_manifests: &[PackManifestInfo],
+    fork_roles: &RoleMap,
 ) -> Result<SyncManifests> {
     let mut out = SyncManifests::default();
-    for copies in plan_manifests(parent_manifests, roles, &recorded_packs(fork_manifests)) {
+    let has = recorded_packs(fork_manifests, fork_roles);
+    for copies in plan_manifests(parent_manifests, roles, &has) {
         match fork_manifest(parent, &copies)? {
             Some(m) => out.manifests.push(m),
             None => out.unreferenceable.push(copies[0].pack_hash),
@@ -806,13 +818,29 @@ mod tests {
             manifest("new", 2, 0, 5, &[]),
             manifest("ext", 3, 1, 6, &[]),
         ];
-        // The fork records pack 1 (copied at fork time by someone else than the syncer).
-        let fork_packs = [PackManifestInfo {
-            owner_id: "7Ej2YTftCL23mVwvhviak8ZJMmpqcsVj7CU5KPxzyy4h".into(),
-            ..manifest("f1", 1, 1, 2, &["platform://x"])
-        }];
-        let plan =
-            plan_sync_manifests(&parent(), &parent_packs, &RoleMap::new(), &fork_packs).unwrap();
+        // The fork records pack 1 (copied at fork time by a writer, not the syncer), and pack 2
+        // by a former writer, whose copy is not relied on.
+        let writer = "7Ej2YTftCL23mVwvhviak8ZJMmpqcsVj7CU5KPxzyy4h";
+        let fork_packs = [
+            PackManifestInfo {
+                owner_id: writer.into(),
+                ..manifest("f1", 1, 1, 2, &["platform://x"])
+            },
+            PackManifestInfo {
+                owner_id: "gone".into(),
+                ..manifest("f2", 2, 1, 3, &["https://down.example/p2"])
+            },
+        ];
+        let fork_roles: RoleMap = [(writer.to_string(), crate::rules::v2::Role::Writer)].into();
+        assert!(recorded_packs(&fork_packs, &RoleMap::new()).is_empty());
+        let plan = plan_sync_manifests(
+            &parent(),
+            &parent_packs,
+            &RoleMap::new(),
+            &fork_packs,
+            &fork_roles,
+        )
+        .unwrap();
         assert_eq!(
             plan.manifests
                 .iter()

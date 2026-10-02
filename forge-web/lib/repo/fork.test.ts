@@ -154,8 +154,13 @@ describe('sync fork (P1-4)', () => {
 
   it("records only the parent's packs the fork lacks, whoever recorded the fork's", () => {
     const parent = [manifest('old', 1, 0, 1, []), manifest('new', 2, 0, 5, []), manifest('ext', 3, 1, 6, [])]
-    // The fork records pack 1 (copied at fork time, by someone other than the syncer).
-    const fork = [manifest('f1', 1, 1, 2, ['platform://x'], { uploader: 'SOMEONE' }), manifest('loc', 9, 0, 3, [], { kind: 1 })]
+    // The fork records pack 1 (copied at fork time by a writer, not the syncer), and pack 2 by a
+    // former writer, whose copy is not relied on.
+    const fork = [
+      manifest('f1', 1, 1, 2, ['platform://x'], { uploader: 'SOMEONE', ownerRole: 'writer' }),
+      manifest('f2', 2, 1, 3, ['https://down.example/p2'], { uploader: 'GONE', ownerRole: null }),
+      manifest('loc', 9, 0, 3, [], { kind: 1 }),
+    ]
     expect([...recordedPacks(fork as never)]).toEqual(['01'.repeat(32)])
     const plan = planSyncManifests(parentRepo as never, parent as never, fork as never)
     expect(plan.manifests.map((m) => m.packHash)).toEqual(['02'.repeat(32)])

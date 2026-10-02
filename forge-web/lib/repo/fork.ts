@@ -47,7 +47,7 @@ import { readRepoPackManifests, type PackManifest } from './packs'
 import { MANIFEST_MAX_URIS, MANIFEST_URI_MAX_LEN } from '../constants'
 import { manifestUrisProblem, refNameHash, writePackManifest, writeRefUpdate, type PackManifestInput } from './push'
 import { readRefs, resolveRefByHash, type ResolvedRef } from './refs'
-import { toRepoDoc, repoRefOf, type RepoDoc } from './resolveRepo'
+import { readRepoById, toRepoDoc, repoRefOf, type RepoDoc } from './resolveRepo'
 import { createRepo, normalizeRepoName } from './writes'
 
 /** One copy of a parent pack, as the plan needs it (a `PackManifest` fits). */
@@ -193,19 +193,27 @@ export function syncDecision(forkTip: string | null, parentTip: string | null, f
 
 /**
  * The parent branch a fork's default branch syncs with: the parent's default branch (its newest
- * config's, else `main`, as `dg repo sync` reads it) and where it points (null: no commits). Two
- * reads: the parent's config timeline and that one ref.
+ * config's, else its repo document's, else `main`, as `dg repo sync` and `dg repo fork` read it)
+ * and where it points (null: no commits). Two reads (the parent's config timeline and that one
+ * ref), and the repo document only when no config names a branch.
  */
 export async function readSyncTarget(sdk: EvoSDK, parent: RepoRef): Promise<{ readonly branch: string; readonly tip: string | null }> {
   const bundle = await readConfigBundle(sdk, parent)
-  const branch = bundle.config?.defaultBranch || 'main'
+  const branch = bundle.config?.defaultBranch || (await readRepoById(sdk, parent.forge, parent.repoId))?.defaultBranch || 'main'
   const ref = await resolveRefByHash(sdk, parent, bytesToBase64(refNameHash(`refs/heads/${branch}`)), bundle.history)
   return { branch, tip: ref === null ? null : refTip(ref) }
 }
 
-/** The git packs a fork records already, whoever recorded them. Parity: forge-core `fork::recorded_packs`. */
-export function recordedPacks(fork: readonly Pick<PackManifest, 'kind' | 'packHash'>[]): Set<string> {
-  return new Set(fork.filter((m) => m.kind === PACK_KIND.GIT_PACK).map((m) => m.packHash.toLowerCase()))
+/**
+ * The git packs a fork records already: by any of its current maintainers or writers (`ownerRole`,
+ * the uploader's current role in the fork). A copy recorded by someone who is no longer one does
+ * not count: its storage may be gone, so the parent's copy is recorded again rather than relied
+ * on. Parity: forge-core `fork::recorded_packs`.
+ */
+export function recordedPacks(fork: readonly Pick<PackManifest, 'kind' | 'packHash' | 'ownerRole'>[]): Set<string> {
+  return new Set(
+    fork.filter((m) => m.kind === PACK_KIND.GIT_PACK && (m.ownerRole === 'maintainer' || m.ownerRole === 'writer')).map((m) => m.packHash.toLowerCase()),
+  )
 }
 
 /** The manifests a sync writes: the parent's packs the fork lacks, by reference, and any no fork could name. */

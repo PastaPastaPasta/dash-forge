@@ -22,15 +22,10 @@ use forge_core::repo::RepoService;
 use forge_core::rules::v2::Role;
 use forge_core::user_error::{codes, UserError};
 
-use crate::common::Session;
+use crate::common::{spent_since, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line};
 use crate::git;
-
-/// A short branch name from `main` or `refs/heads/main`.
-fn short_branch(b: &str) -> &str {
-    b.strip_prefix("refs/heads/").unwrap_or(b)
-}
 
 /// Which branches a sync pairs: the fork's `branch` (default: its default branch) and the
 /// parent's branch it follows (the parent's default branch for the fork's default branch, else
@@ -41,7 +36,9 @@ pub fn sync_pair(
     fork_default: &str,
     parent_default: &str,
 ) -> (String, String) {
-    let fork_branch = branch.map_or(fork_default, short_branch).to_string();
+    let fork_branch = branch
+        .map_or(fork_default, forge_core::repo::short_branch_name)
+        .to_string();
     let parent_branch = if fork_branch == fork_default {
         parent_default.to_string()
     } else {
@@ -50,17 +47,72 @@ pub fn sync_pair(
     (fork_branch, parent_branch)
 }
 
-/// What a fast-forward sync writing `manifests` (each recording that many URIs) is quoted:
-/// one manifest into a repository that has some per pack, and one update of an existing ref
-/// (or a new ref name's first, the dearer). An upper bound.
+/// What a fast-forward sync writing `manifests` (each recording that many URIs) is quoted: a
+/// manifest into a repository that has some, the first one dearer when the fork has none
+/// (`fork_has_packs`), and the ref update as a new ref name's first, or the repository's very
+/// first ref update when the fork has no refs at all (`fork_has_refs`). An upper bound.
 #[must_use]
-pub fn sync_estimate(manifest_uris: &[u64]) -> u64 {
+pub fn sync_estimate(manifest_uris: &[u64], fork_has_packs: bool, fork_has_refs: bool) -> u64 {
     use forge_core::cost::push_fees;
-    manifest_uris
+    let manifests: u64 = manifest_uris
         .iter()
-        .map(|uris| push_fees::MANIFEST_LATER + uris * push_fees::URIS_PER_TARGET)
-        .sum::<u64>()
-        + push_fees::REF_NEW_NAME
+        .enumerate()
+        .map(|(i, uris)| {
+            let base = if i == 0 && !fork_has_packs {
+                push_fees::MANIFEST_FIRST
+            } else {
+                push_fees::MANIFEST_LATER
+            };
+            base + uris * push_fees::URIS_PER_TARGET
+        })
+        .sum();
+    manifests
+        + if fork_has_refs {
+            push_fees::REF_NEW_NAME
+        } else {
+            push_fees::REF_FIRST
+        }
+}
+
+/// A repository's default branch as `dg repo fork` and the web read it: its newest config's,
+/// else the one its repo document names, else `main`.
+async fn default_branch(
+    svc: &RepoService<'_>,
+    client: &forge_core::platform::PlatformClient,
+    repo: &forge_core::scope::RepoRef,
+) -> Result<String> {
+    if let Some(b) = svc
+        .read_default_branch(repo)
+        .await
+        .with_context(|| format!("reading {}'s default branch", repo.display()))?
+        .filter(|b| !b.is_empty())
+    {
+        return Ok(b);
+    }
+    let (_, doc_branch) = forge_core::resolve::repo_fork_defaults(client, repo)
+        .await
+        .with_context(|| format!("reading {}'s repo document", repo.display()))?;
+    Ok(doc_branch.unwrap_or_else(|| "main".into()))
+}
+
+/// `name` as a plain branch ref a refspec and a ref update may name, or a usage error.
+fn branch_ref(name: &str) -> Result<String> {
+    let r = git::full_ref(name);
+    git::require_branch_ref(&r).map_err(|_| {
+        crate::errors::usage(format!(
+            "{name:?} is not a plain branch name; sync a branch (refs/heads/<name>)"
+        ))
+    })?;
+    Ok(r)
+}
+
+/// Whether ancestry can be read in `dir`: it holds both tips and all their history (not a
+/// shallow clone, where `merge-base` cannot see past the cut and would call a fast-forward
+/// diverged).
+fn holds_history(dir: &Path, tips: &[&str]) -> bool {
+    tips.iter().all(|t| git::has_object(dir, t))
+        && git::git(dir, &["rev-parse", "--is-shallow-repository"], &[])
+            .is_ok_and(|o| o.trim() == "false")
 }
 
 /// The two ancestry answers a decision needs, in `dir` (holding both tips, or as many of them
@@ -105,28 +157,24 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     parent.require_public("syncing a fork")?;
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
     let (fork_default, parent_default) = tokio::join!(
-        Box::pin(svc.read_default_branch(fork)),
-        Box::pin(svc.read_default_branch(&parent))
+        Box::pin(default_branch(&svc, &s.client, fork)),
+        Box::pin(default_branch(&svc, &s.client, &parent))
     );
-    let fork_default = fork_default
-        .context("reading the fork's default branch")?
-        .unwrap_or_else(|| "main".into());
-    let parent_default = parent_default
-        .context("reading the parent's default branch")?
-        .unwrap_or_else(|| "main".into());
-    let (fork_branch, parent_branch) = sync_pair(branch, &fork_default, &parent_default);
-    let fork_ref = git::full_ref(&fork_branch);
-    let parent_ref = git::full_ref(&parent_branch);
+    let (fork_branch, parent_branch) = sync_pair(branch, &fork_default?, &parent_default?);
     // Both become refspecs below, and the fork's a ref update.
-    git::require_branch_ref(&fork_ref)?;
-    git::require_branch_ref(&parent_ref)?;
+    let fork_ref = branch_ref(&fork_branch)?;
+    let parent_ref = branch_ref(&parent_branch)?;
 
-    // Who may move the branch, before anything is read from storage or paid for.
+    // Who may move the branch, before anything is read from storage or paid for. Unreadable
+    // patterns stop here: a writer's sync of a branch they protect would pay for the manifests
+    // and then be refused its ref update.
     let role = s.collab().signer_role(fork).await?;
-    let protected = svc
-        .protected_patterns(fork)
-        .await
-        .is_ok_and(|p| forge_core::rules::matches_protected(&fork_ref, &p));
+    let protected = forge_core::rules::matches_protected(
+        &fork_ref,
+        &svc.protected_patterns(fork)
+            .await
+            .context("reading the fork's protected branches")?,
+    );
     let may = match role {
         Some(Role::Maintainer) => true,
         Some(Role::Writer) => !protected,
@@ -169,10 +217,8 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
             .find(|(n, _)| n == name)
             .and_then(|(_, st)| forge_core::rules::tip_of(st))
     };
-    let fork_tip = tip_in(
-        &fork_refs.context("reading the fork's branches")?,
-        &fork_ref,
-    );
+    let fork_refs = fork_refs.context("reading the fork's branches")?;
+    let fork_tip = tip_in(&fork_refs, &fork_ref);
     let parent_tip = tip_in(
         &parent_refs.context("reading the parent's branches")?,
         &parent_ref,
@@ -219,8 +265,10 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
 
     // Ancestry: here, when this repository holds both tips; else a scratch fetch.
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    let here = fork_tip.as_deref().is_none_or(|t| git::has_object(&cwd, t))
-        && git::has_object(&cwd, &parent_tip);
+    let here = holds_history(
+        &cwd,
+        &[fork_tip.as_deref().unwrap_or(&parent_tip), &parent_tip],
+    );
     let scratch = if here {
         None
     } else {
@@ -322,7 +370,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
                     "a sync only fast-forwards; it never drops the fork's own commits",
                 )
                 .fix(format!(
-                    "merge the parent's commits with a pull request into the fork: `dg pr create {} --base {fork_branch} --head {parent_branch} --head-repo {}`",
+                    "merge the parent's commits with a pull request into the fork: `dg pr create {} --base {fork_branch} --head {parent_branch} --head-repo {} --title \"Merge {target}\"`",
                     fork.display(),
                     parent.display()
                 ))
@@ -344,16 +392,20 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     }
 
     // The parent's packs the fork does not record yet, by reference.
-    let (parent_packs, fork_packs, roles) = tokio::join!(
+    let (parent_packs, fork_packs, roles, fork_roles) = tokio::join!(
         Box::pin(svc.read_pack_manifests(&parent)),
         Box::pin(svc.read_pack_manifests(fork)),
-        Box::pin(svc.copy_roles(&parent))
+        Box::pin(svc.copy_roles(&parent)),
+        Box::pin(svc.copy_roles(fork))
     );
+    let fork_packs = fork_packs.context("reading the fork's packs")?;
+    let fork_has_packs = !fork_packs.is_empty();
     let plan = plan_sync_manifests(
         &parent,
         &parent_packs.context("reading the parent's packs")?,
         &roles.unwrap_or_default(),
-        &fork_packs.context("reading the fork's packs")?,
+        &fork_packs,
+        &fork_roles.context("reading the fork's members")?,
     )?;
     if !plan.unreferenceable.is_empty() {
         return Err(UserError::new(
@@ -381,6 +433,8 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
             .iter()
             .map(|m| m.uris.len() as u64)
             .collect::<Vec<_>>(),
+        fork_has_packs,
+        !fork_refs.is_empty(),
     );
     let price = ctx.usd_price();
     if !ctx.json {
@@ -395,7 +449,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!("Sync {}?", fork.display()))?;
-    let before = s.client.get_balance(&s.identity.id()).await.ok();
+    let before = s.balance().await;
     let result = sync_fork(
         &svc,
         fork,
@@ -406,10 +460,8 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     )
     .await
     .context("syncing the fork")?;
-    let spent = match before {
-        Some(b) => b.saturating_sub(s.client.get_balance(&s.identity.id()).await.unwrap_or(b)),
-        None => 0,
-    };
+    // Read until the balance moves: a node a block behind still shows the old one.
+    let spent = spent_since(&s.client, &s.identity.id(), before).await;
     emit(
         "synced",
         json!({
@@ -462,11 +514,28 @@ mod tests {
     #[test]
     fn a_sync_quote_covers_each_manifest_and_the_ref() {
         use forge_core::cost::push_fees;
-        assert_eq!(sync_estimate(&[]), push_fees::REF_NEW_NAME);
-        assert!(sync_estimate(&[1, 2]) > sync_estimate(&[1, 1]));
+        assert_eq!(sync_estimate(&[], true, true), push_fees::REF_NEW_NAME);
+        assert!(sync_estimate(&[1, 2], true, true) > sync_estimate(&[1, 1], true, true));
         assert_eq!(
-            sync_estimate(&[1]),
+            sync_estimate(&[1], true, true),
             push_fees::MANIFEST_LATER + push_fees::URIS_PER_TARGET + push_fees::REF_NEW_NAME
         );
+        // A fork with no packs or no refs yet pays the firsts.
+        assert_eq!(
+            sync_estimate(&[1, 1], false, false),
+            push_fees::MANIFEST_FIRST
+                + push_fees::MANIFEST_LATER
+                + 2 * push_fees::URIS_PER_TARGET
+                + push_fees::REF_FIRST
+        );
+    }
+
+    #[test]
+    fn only_a_plain_branch_syncs() {
+        assert_eq!(branch_ref("main").unwrap(), "refs/heads/main");
+        assert_eq!(branch_ref("refs/heads/dev").unwrap(), "refs/heads/dev");
+        let e = branch_ref("refs/tags/v1").unwrap_err().to_string();
+        assert!(e.contains("not a plain branch name"), "{e}");
+        assert!(!e.contains("pull request"), "{e}");
     }
 }
