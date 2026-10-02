@@ -48,6 +48,12 @@ vi.mock('@/lib/auth/connect', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/connect')>()),
   connectPlatform: () => Promise.reject(new Error('offline in tests')),
 }))
+/** Whether Dash Wallet can answer here (testnet); false mutes its tile, as on a devnet. */
+let walletSupported: boolean | null = null
+vi.mock('@/lib/auth/app-connect', async (orig) => {
+  const real = await orig<typeof import('@/lib/auth/app-connect')>()
+  return { ...real, walletSignInSupported: (n: Parameters<typeof real.walletSignInSupported>[0]) => walletSupported ?? real.walletSignInSupported(n) }
+})
 vi.mock('@/lib/auth/create-identity', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/create-identity')>()),
   readCreationJournal: async () => journal,
@@ -135,6 +141,7 @@ beforeEach(() => {
   auth.unlockScope = null
   auth.storage = null
   journal = undefined
+  walletSupported = null
   auth.importIdentity.mockReset()
   auth.forget.mockClear()
   Element.prototype.scrollIntoView = vi.fn()
@@ -369,5 +376,28 @@ describe('QA wave 3 (bonsia): the import form', () => {
     expect(q('[data-testid="import-unfinished"]')!.textContent).toMatch(/did not finish/)
     expect(host.ownerDocument.body.textContent).not.toMatch(/old key is disabled in the same update/)
     expect(byText("Create this browser's key")).not.toBeNull()
+  })
+})
+
+describe('the sheet on a phone (QA wave 4)', () => {
+  it('QW4-041: the muted wallet tile is dashed, not faded, so its helper text keeps its contrast', async () => {
+    auth.vaults = []
+    walletSupported = false
+    act(() => useUiStore.getState().openLogin())
+    // The wallet tile shows once Platform could not be asked (offline in tests): muted on a devnet.
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(q('[data-testid="tile-wallet"]')!.dataset.muted).toBe('true')
+    const tiles = [...host.ownerDocument.querySelectorAll<HTMLElement>('[data-testid^="tile-"]')]
+    expect(tiles.length).toBeGreaterThan(1)
+    // Only a disabled tile (writes paused) fades; an enabled one, muted or not, never does.
+    for (const tile of tiles) expect(tile.className).not.toMatch(/(^|\s)opacity-/)
+    for (const tile of tiles.filter((t) => t.dataset.muted === 'true')) expect(tile.className).toMatch(/border-dashed/)
+  })
+
+  it('QW4-042: "All options" has a 44 px hit area on touch screens', async () => {
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin('import'))
+    await flush()
+    expect(byText('All options')!.className).toMatch(/\bhit-area\b/)
   })
 })

@@ -201,6 +201,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     {changing === rowKey ? (
                       <div className="mt-2">
                         <RolePicker
+                          action
                           value={m.role}
                           visibility={repo.visibility}
                           // Not the current role, nor a role whose document type they already hold in

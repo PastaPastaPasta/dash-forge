@@ -47,11 +47,14 @@ export function EmptyState({
   title,
   body,
   action,
+  heading: Heading = 'h3',
 }: {
   icon?: LucideIcon
   title: string
   body?: string
   action?: ReactNode
+  /** The title's level: `h1` when the state is the whole page (a sign-in gate, QW4-044). */
+  heading?: 'h1' | 'h2' | 'h3'
 }): JSX.Element {
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-anvil-300 px-6 py-12 text-center dark:border-anvil-700">
@@ -60,7 +63,7 @@ export function EmptyState({
           <Icon className="h-5 w-5" aria-hidden />
         </span>
       ) : null}
-      <h3 className="text-prose">{title}</h3>
+      <Heading className="text-prose">{title}</Heading>
       {body ? <p className="mt-1.5 max-w-sm text-anvil-500 dark:text-anvil-400">{body}</p> : null}
       {action ? <div className="mt-4">{action}</div> : null}
     </div>

@@ -128,19 +128,22 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
   // Signed in but whether you already follow is not known yet (or unreadable): no action.
   const followUnknown = identity !== null && signer !== null && follow.on === null
 
-  if (!address) return <EmptyState icon={Users} title="No profile addressed" body="Add ?name= (an identity id or DPNS name) to the URL." />
+  if (!address) return <EmptyState heading="h1" icon={Users} title="No profile addressed" body="Add ?name= (an identity id or DPNS name) to the URL." />
   if (!isForgeDeployed()) return <NotDeployedState />
   if (loading) return <LoadingBlock label="Reading profile" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null && ready) {
-    return <EmptyState icon={Users} title="No such identity" body={`"${address}" is not an identity id or a registered DPNS name on this network.`} />
+    return <EmptyState heading="h1" icon={Users} title="No such identity" body={`"${address}" is not an identity id or a registered DPNS name on this network.`} />
   }
   if (!data) return <LoadingBlock />
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-4 rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900">
-        <IdentityPill identityId={identityId} name={data.name ?? undefined} className="text-prose" />
+        {/* The page's one h1: whose profile this is (QW4-044: its only heading was "Repositories"). */}
+        <h1 className="min-w-0 max-w-full font-normal">
+          <IdentityPill identityId={identityId} name={data.name ?? undefined} className="text-prose" />
+        </h1>
         {/* Your own profile, with no username: how to get one (QW3-035). */}
         {isSelf && data.name === null && ownName === null ? <UsernameHint className="order-last w-full border-t border-anvil-100 pt-3 dark:border-anvil-850" /> : null}
         <div className="flex items-center gap-4 text-dense text-anvil-500 dark:text-anvil-400">

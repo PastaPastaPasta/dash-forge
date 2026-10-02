@@ -13,6 +13,7 @@ import { useAsync } from '@/hooks/use-async'
 import { selectRef, tipOidOf, type RepoHome } from '@/lib/view'
 import { readIssueTemplates, type IssueTemplate } from '@/lib/view/issue-templates'
 import { cn } from '@/lib/utils'
+import { onRadioGroupKeyDown } from '@/components/ui/radio-group'
 
 export function IssueTemplatePicker({
   home,
@@ -35,7 +36,7 @@ export function IssueTemplatePicker({
   return (
     <fieldset className="space-y-1.5">
       <legend className="text-dense font-medium text-anvil-700 dark:text-anvil-200">Template</legend>
-      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Issue template">
+      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Issue template" onKeyDown={onRadioGroupKeyDown}>
         {[null, ...data].map((t) => {
           const on = (t?.file ?? null) === (selected?.file ?? null)
           return (
@@ -44,6 +45,7 @@ export function IssueTemplatePicker({
               type="button"
               role="radio"
               aria-checked={on}
+              tabIndex={on ? 0 : -1}
               onClick={() => onPick(t)}
               title={t?.about || undefined}
               className={cn(

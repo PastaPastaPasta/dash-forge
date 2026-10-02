@@ -34,6 +34,7 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { LabelChip } from '@/components/repo/issue-bits'
 import { TriageNav } from '@/components/repo/triage-nav'
 import { cn, inputProblem } from '@/lib/utils'
+import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
 const HEX = /^#[0-9a-fA-F]{6}$/
 
@@ -133,13 +134,14 @@ function LabelForm({
           </span>
         </Field>
       </div>
-      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Colour">
-        {LABEL_COLORS.map((c) => (
+      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Colour" onKeyDown={onRadioGroupKeyDown}>
+        {LABEL_COLORS.map((c, i) => (
           <button
             key={c}
             type="button"
             role="radio"
             aria-checked={color.toLowerCase() === c}
+            tabIndex={radioTabIndex(color.toLowerCase() === c, i, LABEL_COLORS.includes(color.toLowerCase()))}
             aria-label={c}
             onClick={() => setColor(c)}
             className={cn('h-6 w-6 rounded-full border coarse:h-9 coarse:w-9', color.toLowerCase() === c ? 'border-anvil-900 ring-2 ring-forge-500 dark:border-white' : 'border-transparent')}

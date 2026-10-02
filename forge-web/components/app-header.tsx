@@ -554,10 +554,12 @@ function usePopover(): { open: boolean; setOpen: (v: boolean) => void; ref: Reac
   return { open, setOpen, ref, trigger }
 }
 
-const MENU_ITEM = 'flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense hover:bg-anvil-100 focus-visible:bg-anvil-100 dark:hover:bg-anvil-800 dark:focus-visible:bg-anvil-800'
+/** A menu row, at least 44 px tall on a touch screen (QW4-043: the account menu's were 36 px). */
+const MENU_ITEM =
+  'flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense hover:bg-anvil-100 focus-visible:bg-anvil-100 coarse:min-h-11 dark:hover:bg-anvil-800 dark:focus-visible:bg-anvil-800'
 
-/** A drawer row: a menu item sized for a finger. */
-const ITEM = cn(MENU_ITEM, 'items-center coarse:min-h-11')
+/** A one-line menu or drawer row: its text centred in the finger-sized row. */
+const ITEM = cn(MENU_ITEM, 'items-center')
 
 function NewMenu(): JSX.Element | null {
   const { open, setOpen, ref, trigger } = usePopover()
@@ -676,16 +678,16 @@ function AccountMenu({
               Add credits
             </button>
           </div>
-          <Link href="/notifications/" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/notifications/" className={ITEM} onClick={() => setOpen(false)}>
             Notifications
           </Link>
-          <Link href="/explore/" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/explore/" className={ITEM} onClick={() => setOpen(false)}>
             Explore
           </Link>
-          <Link href="/settings/" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/settings/" className={ITEM} onClick={() => setOpen(false)}>
             Settings &amp; spend
           </Link>
-          <Link href={`/u/?name=${encodeURIComponent(identity)}`} className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href={`/u/?name=${encodeURIComponent(identity)}`} className={ITEM} onClick={() => setOpen(false)}>
             Your profile
           </Link>
           <button

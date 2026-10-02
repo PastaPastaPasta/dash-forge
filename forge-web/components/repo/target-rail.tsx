@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input'
 import { CheckMark, LabelChip } from '@/components/repo/issue-bits'
 import { cn } from '@/lib/utils'
 import type { Milestone } from '@/lib/rules/parity'
+import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
 export function SidebarSection({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }): JSX.Element {
   return (
@@ -392,13 +393,14 @@ export function LabelPicker({
               {canCreate ? (
                 <div className="space-y-2 border-t border-anvil-200 pt-2 dark:border-anvil-750">
                   <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Create “{newName}” for this repo:</p>
-                  <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Label colour">
-                    {LABEL_COLORS.map((c) => (
+                  <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Label colour" onKeyDown={onRadioGroupKeyDown}>
+                    {LABEL_COLORS.map((c, i) => (
                       <button
                         key={c}
                         type="button"
                         role="radio"
                         aria-checked={color === c}
+                        tabIndex={radioTabIndex(color === c, i, LABEL_COLORS.includes(color))}
                         aria-label={`Colour ${c}`}
                         onClick={() => setColor(c)}
                         className={cn('h-5 w-5 rounded-full border', color === c ? 'border-anvil-900 ring-2 ring-forge-500 dark:border-white' : 'border-transparent')}
