@@ -1,0 +1,26 @@
+{
+  "name": "no_retarget_is_the_opened_base",
+  "description": "Without a retarget the merge is judged against the base the patch was opened with, from its $createdAt.",
+  "case": "pr_merge_base",
+  "rules": "v2",
+  "input": {
+    "baseRefName": "refs/heads/main",
+    "openedAt": 100,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "labelAdd",
+        "actor": "maint",
+        "value": "bug",
+        "oid": null,
+        "createdAt": 110
+      }
+    ]
+  },
+  "expected": {
+    "refName": "refs/heads/main",
+    "since": 100,
+    "retargeted": false
+  }
+}

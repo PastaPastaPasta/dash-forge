@@ -165,18 +165,17 @@ function Unavailable({
 /** The base-branch tips a PR's diff (and merge) start from, honoring a `retarget`. */
 export function pullBase(pull: PullView, home: RepoHome): { baseRefName: string; baseTipOid: string; baseOidAtOpen: string; baseOidAtMerge: string } {
   // Diff against the branch the PR targets now: an authorized `retarget` moves it off the
-  // patch's original `baseRefName`. `baseTipOid` / `baseOidAtOpen` were read from the
-  // original ref's history, so they only apply while the PR still targets that ref.
-  const baseRefName = pull.state.baseRef ?? pull.baseRefName
-  const retargeted = baseRefName !== pull.baseRefName
+  // patch's original `baseRefName`, and the PR's base tips were read from that branch
+  // (`mergeBaseRefName`; `baseOidAtOpen` is its tip when the PR was retargeted to it).
+  const baseRefName = pull.mergeBaseRefName
   // The base branch's tip as every other view resolves it (validity- and protection-checked
   // by resolveRef), falling back to the newest raw update when the branch is not listed.
   const resolvedBase = home.branches.find((b) => b.refName === baseRefName)
   return {
     baseRefName,
-    baseTipOid: tipOidOf(resolvedBase) ?? (retargeted ? '' : pull.baseTipOid),
-    baseOidAtOpen: retargeted ? '' : pull.baseOidAtOpen,
-    baseOidAtMerge: retargeted ? '' : pull.baseOidAtMerge ?? '',
+    baseTipOid: tipOidOf(resolvedBase) ?? pull.baseTipOid,
+    baseOidAtOpen: pull.baseOidAtOpen,
+    baseOidAtMerge: pull.baseOidAtMerge ?? '',
   }
 }
 

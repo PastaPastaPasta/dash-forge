@@ -1,0 +1,26 @@
+{
+  "name": "retarget_moves_the_base_from_its_time",
+  "description": "A retarget moves the merge base to its value; the new base must have been a branch at the retarget's $createdAt.",
+  "case": "pr_merge_base",
+  "rules": "v2",
+  "input": {
+    "baseRefName": "refs/heads/main",
+    "openedAt": 100,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/dev",
+        "oid": null,
+        "createdAt": 150
+      }
+    ]
+  },
+  "expected": {
+    "refName": "refs/heads/dev",
+    "since": 150,
+    "retargeted": true
+  }
+}

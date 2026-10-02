@@ -311,6 +311,61 @@ pub fn pr_state_v2(
     state
 }
 
+/// The base a PR's merge is judged against ([`pr_merge_base`]): a ref name and the time from
+/// which it must have been a branch ([`super::pr_base_tips`]'s `opened_at`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeBase {
+    /// The base ref's full name (`refs/heads/main`).
+    pub ref_name: String,
+    /// The patch's `$createdAt`, or the counted retarget's: the base must have been a branch
+    /// then (D-501).
+    pub since: u64,
+    /// Whether a retarget (event kind 8) chose it.
+    pub retargeted: bool,
+}
+
+/// The base a PR merges into, and is judged against: the newest retarget (event kind 8, M or
+/// W1 at write time) whose `value` is a legal ref name, in `(createdAt, id)` order, else the
+/// base the patch was opened with (`baseRefName` at its `$createdAt`).
+///
+/// A retarget written after the merge (`merged_at`, the merge transition's `$createdAt`) does
+/// not count: a merged PR's base is where it was merged. Clients refuse to retarget a PR that
+/// is not open; consensus does not. A reader without the merge transition passes `None` (every
+/// retarget counts). `since` is the counted retarget's `$createdAt`: the new base must have
+/// been a branch when the PR was retargeted to it, as the original one when the PR was opened.
+#[must_use]
+pub fn pr_merge_base(
+    opened_base: &str,
+    opened_at: u64,
+    events: &[Event],
+    merged_at: Option<u64>,
+) -> MergeBase {
+    meta_log(events)
+        .into_iter()
+        .filter(|e| e.kind == EventKind::Retarget)
+        .filter(|e| merged_at.is_none_or(|m| e.created_at <= m))
+        .filter_map(|e| {
+            e.value
+                .as_deref()
+                .filter(|v| super::is_legal_ref_name(v))
+                .map(|v| (v, e.created_at))
+        })
+        .next_back()
+        .map_or_else(
+            || MergeBase {
+                ref_name: opened_base.to_string(),
+                since: opened_at,
+                retargeted: false,
+            },
+            |(v, at)| MergeBase {
+                ref_name: v.to_string(),
+                since: at,
+                retargeted: true,
+            },
+        )
+}
+
 /// The upstream number to show beside a mirrored issue's or PR's own (`#12 · upstream #7761`),
 /// and to resolve `#7761` in a body through: `upstreamNumber` is a free field, so it is trusted
 /// only from the repo owner (the mirror signer) or a current approver (a maintainer or a

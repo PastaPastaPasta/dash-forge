@@ -1,0 +1,44 @@
+{
+  "name": "illegal_retarget_is_inert",
+  "description": "A retarget whose value is not a legal ref name (or has none) is skipped; an older legal one still counts.",
+  "case": "pr_merge_base",
+  "rules": "v2",
+  "input": {
+    "baseRefName": "refs/heads/main",
+    "openedAt": 100,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/dev",
+        "oid": null,
+        "createdAt": 120
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "-x\nrefs/heads/evil",
+        "oid": null,
+        "createdAt": 130
+      },
+      {
+        "id": "e3",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 140
+      }
+    ]
+  },
+  "expected": {
+    "refName": "refs/heads/dev",
+    "since": 120,
+    "retargeted": true
+  }
+}

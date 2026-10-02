@@ -41,7 +41,7 @@ function deps(extra: Partial<MergeRunDeps> = {}): MergeRunDeps {
     sdk: {} as EvoSDK,
     auth: { identityId: 'me', network: 'devnet', getSigningKeyWif: () => '' } as WriteAuth,
     repo: { repoId: 'R', visibility: 'public' } as RepoRef,
-    pull: { id: 'P', number: 7, author: 'alice', baseRefName: 'refs/heads/main', openedBaseRefName: 'refs/heads/main' },
+    pull: { id: 'P', number: 7, author: 'alice', baseRefName: 'refs/heads/main' },
     input: { baseTip: BASE, headOid: HEAD, prNumber: 7, sourceLabel: 'refs/heads/fix', author: { name: 'n', email: 'e@x' }, headInBase: false },
     merge: async (_i, onPhase) => {
       calls.push('worker')
@@ -93,6 +93,16 @@ describe('merge step runner', () => {
     await expect(runMergeSteps({ ...d, input: { ...d.input, noFastForward: true } }, newRun({ baseTip: BASE, headOid: HEAD }), () => undefined)).rejects.toThrow(MergeStopped)
     await expect(runMergeSteps(d, newRun({ baseTip: BASE, headOid: HEAD, noFastForward: true }), () => undefined)).rejects.toThrow(MergeStopped)
     expect(calls).toEqual([])
+  })
+
+  it('refuses to resume a run made for another base branch (the PR was retargeted since)', async () => {
+    const d = deps()
+    // A partial run that moved main; the PR now merges into next, whose tip is the same.
+    await expect(runMergeSteps({ ...d, pull: { ...d.pull, baseRefName: 'refs/heads/next' } }, newRun({ baseTip: BASE, headOid: HEAD }, 'refs/heads/main'), () => undefined)).rejects.toThrow(MergeStopped)
+    expect(calls).toEqual([])
+    const main = { ...newRun({ baseTip: BASE, headOid: HEAD }, 'refs/heads/main'), done: ['merge' as const] }
+    expect(runFor(main, { baseTip: BASE, headOid: HEAD }, 'refs/heads/next').done).toEqual([])
+    expect(runFor(main, { baseTip: BASE, headOid: HEAD }, 'refs/heads/main').done).toEqual(['merge'])
   })
 
   it('runs every step in order and writes the pack, the protected ref and the merge event', async () => {
@@ -239,9 +249,8 @@ describe('merge step runner', () => {
 
   it('H2: refuses a base that is not a plain existing branch, or a bad head, before any work', async () => {
     for (const d of [
-      deps({ pull: { id: 'P', number: 7, author: 'alice', baseRefName: 'refs/tags/v1', openedBaseRefName: 'refs/tags/v1' } }),
-      deps({ pull: { id: 'P', number: 7, author: 'alice', baseRefName: 'refs/heads/a..b', openedBaseRefName: 'refs/heads/a..b' } }),
-      deps({ pull: { id: 'P', number: 7, author: 'alice', baseRefName: 'refs/heads/next', openedBaseRefName: 'refs/heads/main' } }),
+      deps({ pull: { id: 'P', number: 7, author: 'alice', baseRefName: 'refs/tags/v1' } }),
+      deps({ pull: { id: 'P', number: 7, author: 'alice', baseRefName: 'refs/heads/a..b' } }),
       deps({ input: { ...deps().input, headOid: 'x'.repeat(40) } }),
     ]) {
       calls.length = 0

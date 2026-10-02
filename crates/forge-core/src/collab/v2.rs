@@ -508,6 +508,9 @@ pub struct PatchView {
     /// The review fold ([`fold_pr_review_v2`]) without thread roots, so `resolved_threads` is
     /// empty here; [`PatchView::review_with_threads`] adds them from the PR's comments.
     pub review: PrReviewState,
+    /// The base the PR merges into and is judged against ([`rules::v2::pr_merge_base`]): the
+    /// newest retarget's, else `patch.base_ref_name`. The base fields below are this ref's.
+    pub merge_base: rules::v2::MergeBase,
     /// The base ref's current tip (hex), when it has one.
     pub base_tip: Option<String>,
     /// Whether the head has been a tip of the base ref (a merge naming it would count).
@@ -2153,11 +2156,29 @@ fn counts_by_kind(counts: BTreeMap<Vec<u8>, u64>) -> Result<BTreeMap<u8, u64>> {
         .collect()
 }
 
+/// The base `patch`'s merge is judged against, from its log ([`rules::v2::pr_merge_base`]: the
+/// newest retarget written by the merge, else the base it was opened with).
+#[must_use]
+pub fn merge_base_of(patch: &Patch, log: &TargetLog) -> rules::v2::MergeBase {
+    let merged_at = merge_transition(&log.transitions).map(|t| t.created_at);
+    rules::v2::pr_merge_base(
+        &patch.base_ref_name,
+        patch.created_at,
+        &log.events,
+        merged_at,
+    )
+}
+
 /// A PR's view from its log and its base ref's tips (pure; [`Collab::patch_view`] and
 /// [`Collab::list_patch_views`] read the inputs). "Merged" is the chain fact (a member
 /// recorded a merge, D-9); [`PrState::merge_on_base`] says whether its commit was a tip of the
 /// base, so readers label a merge they cannot find there.
-fn view_of(patch: Patch, log: TargetLog, base: rules::MergeBaseTips) -> PatchView {
+fn view_of(
+    patch: Patch,
+    log: TargetLog,
+    merge_base: rules::v2::MergeBase,
+    base: rules::MergeBaseTips,
+) -> PatchView {
     let merge_oid = merge_transition(&log.transitions).and_then(|t| t.oid.clone());
     let state = pr_state_v2(
         log.state_code(),
@@ -2180,6 +2201,7 @@ fn view_of(patch: Patch, log: TargetLog, base: rules::MergeBaseTips) -> PatchVie
         state,
         head,
         review,
+        merge_base,
         base_tip: base.current,
         head_on_base,
         base_tips: base.historical.into_iter().collect(),
@@ -3341,11 +3363,20 @@ impl<'a> Collab<'a> {
     /// that existed when the PR was opened), its current head (the review fold's) and review
     /// state.
     pub async fn patch_view(&self, repo: &RepoRef, patch: Patch) -> Result<PatchView> {
-        let log = self.target_log(repo, &patch.document_id).await?;
-        let base = self
-            .base_ref_tips(repo, &patch.base_ref_name, patch.created_at)
-            .await?;
-        Ok(view_of(patch, log, base))
+        // The opened base is read beside the log; a retarget (rare) reads its base after.
+        let (log, opened) = futures::join!(
+            Box::pin(self.target_log(repo, &patch.document_id)),
+            Box::pin(self.base_ref_tips(repo, &patch.base_ref_name, patch.created_at))
+        );
+        let log = log?;
+        let merge_base = merge_base_of(&patch, &log);
+        let base = if merge_base.retargeted {
+            self.base_ref_tips(repo, &merge_base.ref_name, merge_base.since)
+                .await?
+        } else {
+            opened?
+        };
+        Ok(view_of(patch, log, merge_base, base))
     }
 
     /// The newest `limit` pull requests (≤ 100) with their state, head and approvals, in a
@@ -3413,17 +3444,17 @@ impl<'a> Collab<'a> {
             .await?;
         let mut reviews = per_target(reviews, "patchId");
         // The base branch of every row folds against one read of the ref history.
-        let base_of: Box<dyn Fn(&Patch) -> rules::MergeBaseTips + Send + Sync> =
+        let base_of: Box<dyn Fn(&rules::v2::MergeBase) -> rules::MergeBaseTips + Send + Sync> =
             if repo.visibility == Visibility::Private {
                 let kr = self.keyring(repo).await?;
                 let updates = crate::refs::private_updates_of(&state, &kr);
-                Box::new(move |p: &Patch| {
-                    crate::refs::private_merge_base(&updates, &kr, &p.base_ref_name, p.created_at)
+                Box::new(move |b: &rules::v2::MergeBase| {
+                    crate::refs::private_merge_base(&updates, &kr, &b.ref_name, b.since)
                 })
             } else {
                 let configs = state.config_history();
-                Box::new(move |p: &Patch| {
-                    crate::refs::merge_base_of(&state, &configs, &p.base_ref_name, p.created_at)
+                Box::new(move |b: &rules::v2::MergeBase| {
+                    crate::refs::merge_base_of(&state, &configs, &b.ref_name, b.since)
                 })
             };
 
@@ -3434,8 +3465,9 @@ impl<'a> Collab<'a> {
             let mut docs = reviews.remove(id).unwrap_or_default();
             docs.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
             let patch_reviews: Vec<Review> = docs.iter().map(review_from_doc).collect();
-            let base = base_of(&patch);
-            let view = view_of(patch, log, base);
+            let merge_base = merge_base_of(&patch, &log);
+            let base = base_of(&merge_base);
+            let view = view_of(patch, log, merge_base, base);
             let approvals = approvals_over(&patch_reviews, &view, &oracle);
             rows.push((view, approvals));
         }

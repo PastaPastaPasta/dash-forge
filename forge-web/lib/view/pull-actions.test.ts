@@ -156,25 +156,25 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
   const protectedMain = { protectedPatterns: [MAIN] }
 
   it('refuses a writer the merge into a protected base, and says why', () => {
-    const a = pullActions({ pull: pull({ baseRefName: MAIN }), viewer: WRITER, holdings: WRITE, ...protectedMain })
+    const a = pullActions({ pull: pull({ mergeBaseRefName: MAIN }), viewer: WRITER, holdings: WRITE, ...protectedMain })
     expect(a.canMerge).toBe(false)
     expect(a.baseProtected).toBe(true)
     expect(a.mergeHint).toMatch(/main is a protected branch: only maintainers/)
   })
 
   it('offers a maintainer the merge into a protected base', () => {
-    const a = pullActions({ pull: pull({ baseRefName: MAIN }), viewer: MAINTAINER, holdings: MAINTAIN, ...protectedMain })
+    const a = pullActions({ pull: pull({ mergeBaseRefName: MAIN }), viewer: MAINTAINER, holdings: MAINTAIN, ...protectedMain })
     expect(a.canMerge).toBe(true)
     expect(a.canBypass).toBe(false)
     expect(a.unmetRules).toEqual([])
   })
 
   it('matches the base with the FORGE_RULES globs, not by name', () => {
-    const release = pull({ baseRefName: 'refs/heads/release/1.x' })
+    const release = pull({ mergeBaseRefName: 'refs/heads/release/1.x' })
     expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/release/*'] }).canMerge).toBe(false)
     expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/*'] }).canMerge).toBe(true)
     // A bare branch name is not a full-ref pattern and protects nothing.
-    expect(pullActions({ pull: pull({ baseRefName: MAIN }), viewer: WRITER, holdings: WRITE, protectedPatterns: ['main'] }).canMerge).toBe(true)
+    expect(pullActions({ pull: pull({ mergeBaseRefName: MAIN }), viewer: WRITER, holdings: WRITE, protectedPatterns: ['main'] }).canMerge).toBe(true)
   })
 
   it('disables a writer on an unmet policy and offers a maintainer the bypass, naming the rules (QW-001)', () => {
@@ -402,20 +402,24 @@ describe('mergeBaseTip — the browser merge builds only on a base it may merge 
   const OLD = 'aa'.repeat(20)
   const NOW = 'bb'.repeat(20)
   it('builds on the branch as it stands now', () => {
-    expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: OLD }, MAIN, NOW)).toBe(NOW)
+    expect(mergeBaseTip({ mergeBaseRefName: MAIN, baseTipOid: OLD }, MAIN, NOW)).toBe(NOW)
   })
   it('refuses a deleted base (a push would re-create it), not falling back to its old tip', () => {
-    expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: OLD }, MAIN, null)).toBe('')
+    expect(mergeBaseTip({ mergeBaseRefName: MAIN, baseTipOid: OLD }, MAIN, null)).toBe('')
     expect(mergeRefProblem(MAIN, '', HEAD)).toMatch(/does not exist/)
   })
   it('refuses a base that was no branch when the PR was opened, though it exists now', () => {
-    expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: '' }, MAIN, NOW)).toBe('')
+    expect(mergeBaseTip({ mergeBaseRefName: MAIN, baseTipOid: '' }, MAIN, NOW)).toBe('')
   })
-  it('refuses a retargeted PR: a merge into the new base would move it and never count', () => {
-    expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: OLD }, 'refs/heads/next', NOW)).toBe('')
-    expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: '' }, 'refs/heads/next', NOW)).toBe('')
-    expect(mergeRefProblem('refs/heads/next', NOW, HEAD, MAIN)).toMatch(/retargeted.*open a new PR against the new base/)
-    expect(mergeRefProblem(MAIN, NOW, HEAD, MAIN)).toBeNull()
+  it('builds only on the base the PR merges into now: a retargeted PR merges into its new base', () => {
+    const NEXT = 'refs/heads/next'
+    // The PR was retargeted to next: its base tips are next's, and a merge into next counts.
+    expect(mergeBaseTip({ mergeBaseRefName: NEXT, baseTipOid: OLD }, NEXT, NOW)).toBe(NOW)
+    expect(mergeRefProblem(NEXT, NOW, HEAD)).toBeNull()
+    // Never into a base other than the one the fold judges the merge against.
+    expect(mergeBaseTip({ mergeBaseRefName: MAIN, baseTipOid: OLD }, NEXT, NOW)).toBe('')
+    // next was no branch when the PR was retargeted to it: no merge into it would count.
+    expect(mergeBaseTip({ mergeBaseRefName: NEXT, baseTipOid: '' }, NEXT, NOW)).toBe('')
   })
 })
 

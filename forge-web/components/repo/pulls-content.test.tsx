@@ -103,6 +103,7 @@ function row(number: number, extra: Partial<PullRow> = {}): PullRow {
     updatedAt: number,
     revision: 1,
     baseRefName: 'refs/heads/main',
+    mergeBaseRefName: 'refs/heads/main',
     baseTipOid: '',
     baseOidAtOpen: '',
     headOid: '',

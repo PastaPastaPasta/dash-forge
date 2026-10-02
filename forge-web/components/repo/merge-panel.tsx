@@ -168,9 +168,9 @@ export function MergePanel({
   const [sized, setSized] = useState<{ readonly estimate: PackEstimate | null; readonly method: Method } | null>(null)
   // "Allow storing on Platform": until the merger touches it, its default follows the policy.
   const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
-  const baseRefName = pull.state.baseRef ?? pull.baseRefName
+  const baseRefName = pull.mergeBaseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
-  const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid, pull.baseRefName)
+  const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid)
   // Merge reads prefer the head's repo and fall back to the base repo's own reader; they never
   // run until that base reader exists, so nothing about the base is taken from the fork.
   const readers = useMemo(() => mergeReaders(baseOnly, sides?.head ?? null), [sides, baseOnly])
@@ -295,7 +295,7 @@ export function MergePanel({
   const [details, setDetails] = useState<Partial<Record<MergeStepId, string>>>({})
   // Kept across retries of the same base tip and head only (`runFor` drops a stale one).
   const [savedRun, setRun] = useState<MergeRun | null>(null)
-  const run = runFor(savedRun, input)
+  const run = runFor(savedRun, input, baseRefName)
   const [failure, setFailure] = useState<{ step: MergeStepId; message: string } | null>(null)
   const [stopped, setStopped] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -378,7 +378,7 @@ export function MergePanel({
             sdk,
             auth,
             repo,
-            pull: { id: pull.id, number: pull.number, author: pull.author, baseRefName, openedBaseRefName: pull.baseRefName },
+            pull: { id: pull.id, number: pull.number, author: pull.author, baseRefName },
             input,
             merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
             upload,
