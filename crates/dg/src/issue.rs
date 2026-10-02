@@ -196,6 +196,11 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         (Flag::Lock, true) => "; then only members can comment",
         _ => "",
     };
+    // Who may make the change: a pin is a writer's, a lock triage's too (QW4-032).
+    let who = match flag {
+        Flag::Pin => "maintainers and writers",
+        Flag::Lock => "maintainers, writers and triage members",
+    };
     let collab = s.collab();
     // Already locked (or unlocked): nothing to write, as `dg pr lock` says.
     if flag == Flag::Lock
@@ -208,7 +213,7 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         return Ok(());
     }
     ctx.confirm_or_cancel(&format!(
-        "{verb} issue #{number}? (one small document; members only{note})"
+        "{verb} issue #{number}? (one small document; {who}{note})"
     ))?;
     // A pin is an event; a lock or unlock is a transition (RC1 kinds 3 / 4).
     let (key, id) = match flag {

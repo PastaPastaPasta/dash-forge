@@ -1897,7 +1897,7 @@ pub fn role_refusal(
                     format!("{limits}; this needs a maintainer")
                 }
                 Some(limits) => limits,
-                None => format!("you are a {r} of {}; this needs a {need}", repo.display()),
+                None => format!("{}; this needs {}", members::you_are(r, repo), needs.noun()),
             },
             None => format!("you are not a member of {}", repo.display()),
         },
@@ -7168,6 +7168,45 @@ mod tests {
         assert_eq!(
             kind_route(r, "tri", &mine, EventKind::ThreadResolve),
             Some(StateRoute::Author)
+        );
+    }
+
+    /// QW4-052, end to end: every refusal of a member for their role reaches E601 with the
+    /// role to ask for, and a stranger's with the way in (accept first). Ties the refusal text
+    /// to the fix's member test, so a rewording can't silently send members to `collab accept`.
+    #[test]
+    fn a_member_refused_for_their_role_is_never_sent_to_accept() {
+        let repo = repo_ref(Visibility::Private);
+        let ctx = crate::user_error::ErrorContext {
+            repo: Some("alice/project"),
+            ..Default::default()
+        };
+        let fix_for = |role: Option<Role>, needs: Role| {
+            let e = role_refusal(role, needs, &repo, "hide issue #1").expect("refused");
+            crate::user_error::classify([&e as &(dyn std::error::Error + 'static)], &ctx).fix
+        };
+        for (role, needs) in [
+            (Role::Writer, Role::Maintainer),
+            (Role::Triage, Role::Maintainer),
+            (Role::Triage, Role::Writer),
+            (Role::Reader, Role::Maintainer),
+            (Role::Reader, Role::Writer),
+            (Role::Reader, Role::Triage),
+        ] {
+            let fix = fix_for(Some(role), needs);
+            assert_eq!(
+                fix,
+                vec![format!(
+                    "ask the owner to make you {}: `dg collab add alice/project <your identity id> --role {needs}`",
+                    needs.noun()
+                )],
+                "{role} → {needs}"
+            );
+        }
+        let stranger = fix_for(None, Role::Maintainer);
+        assert!(
+            stranger[0].starts_with("not a member yet? run `dg collab accept"),
+            "{stranger:?}"
         );
     }
 

@@ -769,18 +769,12 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
     } else if needs == "owner" {
         // An edit: consensus admits a document replace from its owner only, members included.
         u.fix("only the author can edit it; comment instead, or ask them to make the change")
-    } else if matches!(needs, "writer" | "triage" | "maintainer")
-        && reason.starts_with("you are a ")
+    } else if let Some(need) =
+        crate::rules::v2::Role::parse(needs).filter(|_| crate::members::refused_member(reason))
     {
-        // A member already ("you are a writer of …"; RC2 member roles): no acceptance to run,
+        // A member already ("you are a writer of …", `role_refusal`): no acceptance to run,
         // only a role the owner grants (QW4-052: a writer was sent to `dg collab accept`).
-        let noun = if needs == "triage" {
-            "a triage member"
-        } else if needs == "maintainer" {
-            "a maintainer"
-        } else {
-            "a writer"
-        };
+        let noun = need.noun();
         u.fix(format!(
             "ask the owner to make you {noun}: `dg collab add {repo} <your identity id> --role {needs}`"
         ))
