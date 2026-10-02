@@ -548,19 +548,27 @@ function runs(lines: readonly ResultLine[]): ResultLine[][] {
   return out
 }
 
+/** The lines up to the {@link COLLAPSED_MATCHES}th matching line, and the context line right after it. */
+export function collapsed(lines: readonly ResultLine[]): ResultLine[] {
+  const out: ResultLine[] = []
+  let matched = 0
+  for (const l of lines) {
+    if (matched >= COLLAPSED_MATCHES) {
+      // One line of context after the last match shown, when it follows it directly.
+      if (l.ranges.length === 0 && l.n === (out[out.length - 1] as ResultLine).n + 1) out.push(l)
+      break
+    }
+    out.push(l)
+    if (l.ranges.length > 0) matched += 1
+  }
+  return out
+}
+
 function FileHit({ file, addr, linkRef }: { file: FileResult; addr: RepoAddress; linkRef: string }): JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const href = (line?: number): string => `${repoHref('/repo/blob', addr, { path: file.path, ...(linkRef ? { ref: linkRef } : {}) })}${line ? `#L${line}` : ''}`
-  // Collapsed: the runs holding the first few matching lines.
-  const all = runs(file.lines)
-  let matched = 0
-  const shown = expanded
-    ? all
-    : all.filter((run) => {
-        if (matched >= COLLAPSED_MATCHES) return false
-        matched += run.filter((l) => l.ranges.length > 0).length
-        return true
-      })
+  // Collapsed: up to the first few matching lines, and the line of context after the last of them.
+  const shown = runs(expanded ? file.lines : collapsed(file.lines))
   const shownMatches = shown.flat().filter((l) => l.ranges.length > 0).length
   const more = file.matchLines - shownMatches
   return (
