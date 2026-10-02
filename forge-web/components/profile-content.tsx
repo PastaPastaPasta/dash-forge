@@ -142,7 +142,10 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
       <div className="flex flex-wrap items-center gap-4 rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900">
         {/* The page's one h1: whose profile this is (QW4-044: its only heading was "Repositories"). */}
         <h1 className="min-w-0 max-w-full font-normal">
-          <IdentityPill identityId={identityId} name={data.name ?? undefined} className="text-prose" />
+          <span className="sr-only">Profile of {data.name ?? identityId}</span>
+          <span aria-hidden>
+            <IdentityPill identityId={identityId} name={data.name ?? undefined} className="text-prose" />
+          </span>
         </h1>
         {/* Your own profile, with no username: how to get one (QW3-035). */}
         {isSelf && data.name === null && ownName === null ? <UsernameHint className="order-last w-full border-t border-anvil-100 pt-3 dark:border-anvil-850" /> : null}

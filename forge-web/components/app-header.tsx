@@ -699,7 +699,7 @@ function AccountMenu({
             className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
           >
             <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            {/* What Lock does (QW-044): the pages then say "Session locked", not "Not signed in". */}
+            {/* What Lock does (QW-044): the pages then say "Session locked", not "Sign in to …". */}
             <span>
               Lock
               <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">

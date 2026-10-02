@@ -52,7 +52,7 @@ import { onEncryptionKeyChange } from '@/lib/auth/vault'
 import { useAsync } from '@/hooks/use-async'
 import type { Visibility } from '@/lib/rules/v2'
 import { errorMessage } from '@/lib/utils'
-import { onRadioGroupKeyDown } from '@/components/ui/radio-group'
+import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
 const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: string }[] = [
   { step: 'repo', label: 'Repository document' },
@@ -270,13 +270,13 @@ export default function NewRepoPage(): JSX.Element {
                   ['public', Globe, 'Public', 'Anyone can read it.'],
                   ['private', Lock, 'Private', 'Encrypted to its members. Set now; it cannot change later.'],
                 ] as const
-              ).map(([v, Icon, label, hint]) => (
+              ).map(([v, Icon, label, hint], i) => (
                 <button
                   key={v}
                   type="button"
                   role="radio"
                   aria-checked={visibility === v}
-                  tabIndex={visibility === v ? 0 : -1}
+                  tabIndex={radioTabIndex(visibility === v, i, true)}
                   data-testid={`visibility-${v}`}
                   onClick={() => setVisibility(v)}
                   className={

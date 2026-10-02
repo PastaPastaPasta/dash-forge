@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { MODE_TREE } from '../browse'
-import { parseIssueTemplate, templateFiles } from './issue-templates'
+import { applyTemplate, parseIssueTemplate, templateFiles } from './issue-templates'
 
 describe('issue templates', () => {
   it('reads GitHub front matter and the body', () => {
@@ -32,5 +32,21 @@ describe('issue templates', () => {
       { name: 'dir.md', mode: MODE_TREE, oid: '5' },
     ]
     expect(templateFiles(entries).map((e) => e.name)).toEqual(['a.markdown', 'b.md'])
+  })
+})
+
+describe('applyTemplate (QW4-037: the arrow keys pick each template they pass)', () => {
+  const bug = { title: '[bug] ', body: '## Steps' }
+  const feature = { title: '[feature] ', body: '## Idea' }
+  it('fills empty fields, then follows the pick while the text is untouched', () => {
+    const first = applyTemplate({ title: '', body: '' }, null, bug)
+    expect(first).toEqual(bug)
+    expect(applyTemplate(first, bug, feature)).toEqual(feature)
+    // Back to "Blank issue": the template's text goes.
+    expect(applyTemplate(feature, feature, null)).toEqual({ title: '', body: '' })
+  })
+  it('keeps whatever the person typed', () => {
+    expect(applyTemplate({ title: 'Crash on start', body: '## Steps' }, bug, feature)).toEqual({ title: 'Crash on start', body: '## Idea' })
+    expect(applyTemplate({ title: 'Mine', body: 'my words' }, null, bug)).toEqual({ title: 'Mine', body: 'my words' })
   })
 })

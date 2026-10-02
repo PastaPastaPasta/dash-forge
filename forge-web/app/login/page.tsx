@@ -36,6 +36,7 @@ export default function LoginPage(): JSX.Element {
         />
       ) : (
         <EmptyState
+          heading="h1"
           icon={KeyRound}
           title="Sign in to Dash Forge"
           body={
