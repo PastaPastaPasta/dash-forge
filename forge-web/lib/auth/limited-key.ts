@@ -355,7 +355,12 @@ export async function verifyLimitedKey(
     if (Number(k.expiresAt) !== request.expiresAt) throw new UnusableLimitedKeyError(`key ${keyId} has a different expiry than requested`)
   }
   if (wif !== undefined && !controlsKey(k, wif, network)) throw new UnusableLimitedKeyError(`the stored private key does not control key ${keyId}`)
-  const remaining = await readRemainingBudget(sdk, identityId, keyId)
+  // Drive writes a new key's remaining budget with the key (v5 book `data-model/key-limits.md`:
+  // "remaining budget = budget"), so a key with a budget always has one: an absent entry is a
+  // node that has not seen the key yet (QW4-020: the session then had no budget, and the funds
+  // pill read "Balance … · expires …"). A key registered just now (`request`) has spent nothing,
+  // so its remaining budget is its total.
+  const remaining = (await readRemainingBudget(sdk, identityId, keyId)) ?? (request ? k.totalBudget : null)
   if (remaining !== null && remaining <= 0n) throw new UnusableLimitedKeyError(`key ${keyId} has no budget left`)
   return { remaining, total: k.totalBudget, expiresAt: Number(k.expiresAt) }
 }
@@ -375,6 +380,17 @@ export class UnusableLimitedKeyError extends Error {
 export async function readRemainingBudget(sdk: EvoSDK, identityId: string, keyId: number): Promise<bigint | null> {
   const map = await authSdk(sdk).identities.keysRemainingBudgets(identityId, [keyId])
   return map.get(keyId) ?? null
+}
+
+/**
+ * `fresh`, a re-read of a key's limits, with `known`'s remaining budget when the re-read has none
+ * for a key that has a budget (QW4-020): Drive keeps one for every such key, so an absent entry
+ * is a node behind, not a key without a budget, and the session keeps what it knew (at most the
+ * total) rather than losing its budget line until the next read.
+ */
+export function withKnownRemaining(fresh: KeyLimits | null, known: KeyLimits | null): KeyLimits | null {
+  if (fresh === null || fresh.remaining !== null || fresh.total === null || known?.remaining == null) return fresh
+  return { ...fresh, remaining: known.remaining < fresh.total ? known.remaining : fresh.total }
 }
 
 /** The limits of a key already on the identity (for a session resumed from the vault). */

@@ -274,16 +274,31 @@ fn fork_opts(slug: String, default_branch: Option<String>, description: &str) ->
 
 /// The pre-sign quote for a fork writing one manifest per entry of `manifest_uris` (each
 /// recording that many URIs) and copying `refs` refs (QW2-020: it priced each manifest and ref
-/// at 20M credits and was exceeded 1.5x): the repository's three documents, each manifest as a
-/// first of its kind with its URIs, and a first update per ref, as `git push` prices them. An
-/// upper bound.
+/// at 20M credits and was exceeded 1.5x): the repository's three documents, its first manifest
+/// and first ref update as firsts of their kind (their subtrees are created), and every later
+/// one as what it is: a manifest into a repository that has one, and the first update of a new
+/// ref name. The web's fork dialog prices the same writes the same way (QW4-047: pricing every
+/// one as the repository's first quoted 17-36 % over the web, and over the charge). An upper
+/// bound.
 fn fork_estimate(manifest_uris: &[u64], refs: u64) -> u64 {
     use forge_core::cost::push_fees;
     let manifests: u64 = manifest_uris
         .iter()
-        .map(|uris| push_fees::MANIFEST_FIRST + uris * push_fees::URIS_PER_TARGET)
+        .enumerate()
+        .map(|(i, uris)| {
+            let base = if i == 0 {
+                push_fees::MANIFEST_FIRST
+            } else {
+                push_fees::MANIFEST_LATER
+            };
+            base + uris * push_fees::URIS_PER_TARGET
+        })
         .sum();
-    REPO_CREATE_ESTIMATE_CREDITS + manifests + push_fees::estimate_ref_updates(refs)
+    let refs = match refs {
+        0 => 0,
+        n => push_fees::REF_FIRST + (n - 1) * push_fees::REF_NEW_NAME,
+    };
+    REPO_CREATE_ESTIMATE_CREDITS + manifests + refs
 }
 
 /// Print (or `--json`-emit) a finished fork; an incomplete one is E503.
@@ -376,24 +391,40 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
     // counts toward Trending by itself, with nothing to opt out of. (Readers leave out private
     // repositories, and an owner's star only where they can tell it is in the window: on a
     // repository created inside it. Elsewhere an owner's star counts too, so the warning stands.)
-    let fused = on && collab.fused_star(handle).await?;
-    if fused && !trending && handle.visibility == Visibility::Public {
+    let fused = collab.fused_star(handle).await?;
+    if on && fused && !trending && handle.visibility == Visibility::Public {
         eprintln!(
             "warning: on this network a star counts toward Trending by itself, so --no-trending \
              (or `trending = false`) has no effect"
         );
     }
     let name = handle.display();
+    let price = ctx.usd_price();
     ctx.confirm_or_cancel(&match (on, trending && !fused) {
-        (true, true) => format!("Star {name}? (two small documents: the star, and one that counts it toward Trending; --no-trending skips it)"),
-        (true, false) => format!("Star {name}? (one small document)"),
-        (false, _) => format!("Unstar {name}? (one small document, refunded; a Trending count stays until its week ends)"),
+        (true, true) => format!(
+            "Star {name}? (two documents: the star, and one that counts it toward Trending, {}; --no-trending skips it)",
+            cost_line(crate::quote::STAR + crate::quote::STAR_BEAT, price)
+        ),
+        (true, false) => format!("Star {name}? (one document, {})", cost_line(crate::quote::STAR, price)),
+        // RC2's fused star has no `starBeat`, so no week count outlives the star.
+        (false, _) if fused => format!("Unstar {name}? (one document, refunded)"),
+        (false, _) => format!("Unstar {name}? (one document, refunded; a Trending count stays until its week ends)"),
     })?;
     let before = collab.star_count(handle).await.ok();
-    let changed = if on {
-        collab.star(handle, trending).await?
+    // A new star pays; an unstar is refunded, so only a star's spend is measured.
+    let (changed, spent) = if on {
+        let before = s.balance().await;
+        let changed = collab.star(handle, trending).await?;
+        // Only a write that landed is measured: an already-starred repo answers at once
+        // (`spent_since` waits for the balance to move).
+        let spent = if changed {
+            Some(s.spent_since(before).await)
+        } else {
+            None
+        };
+        (changed, spent)
     } else {
-        collab.unstar(handle).await?
+        (collab.unstar(handle).await?, None)
     };
     // A read right after the write can hit a node a block behind, which still counts the old
     // star set: re-read a few times until the count has moved the way this write moved it.
@@ -426,10 +457,12 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
             "repo": handle.display(),
             "starred": starred,
             "stars": count,
+            "cost": spent.map(|c| cost_json(c, price)),
         }),
         || {
             let n = count.map(|c| format!(" ({c} star(s))")).unwrap_or_default();
-            println!("✓ {} {what}{n}", handle.display());
+            let paid = spent.map_or(String::new(), |c| format!(" · {}", cost_line(c, price)));
+            println!("✓ {} {what}{n}{paid}", handle.display());
         },
     );
     Ok(())
@@ -440,16 +473,28 @@ async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
     // Not a write to the repo: an archived repo can be watched, as it can be starred.
     let s = Session::open(ctx, repo).await?;
     let verb = if on { "Watch" } else { "Stop watching" };
+    let price = ctx.usd_price();
     ctx.confirm_or_cancel(&format!(
-        "{verb} {}? (one small document{})",
+        "{verb} {}? (one document, {})",
         s.repo.display(),
-        if on { "" } else { ", refunded" }
+        if on {
+            cost_line(crate::quote::WATCH, price)
+        } else {
+            "refunded".to_string()
+        }
     ))?;
     let collab = s.collab();
-    let changed = if on {
-        collab.watch(&s.repo).await?
+    let (changed, spent) = if on {
+        let before = s.balance().await;
+        let changed = collab.watch(&s.repo).await?;
+        let spent = if changed {
+            Some(s.spent_since(before).await)
+        } else {
+            None
+        };
+        (changed, spent)
     } else {
-        collab.unwatch(&s.repo).await?
+        (collab.unwatch(&s.repo).await?, None)
     };
     let watchers = collab.watcher_count(&s.repo).await.ok();
     let status = match (on, changed) {
@@ -459,12 +504,22 @@ async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
         (false, false) => "not_watching",
     };
     ctx.emit(
-        json!({ "status": status, "repo": s.repo.display(), "watchers": watchers }),
+        json!({
+            "status": status,
+            "repo": s.repo.display(),
+            "watchers": watchers,
+            "cost": spent.map(|c| cost_json(c, price)),
+        }),
         || {
             let n = watchers
                 .map(|c| format!(" ({c} watching)"))
                 .unwrap_or_default();
-            println!("✓ {}: {}{n}", s.repo.display(), status.replace('_', " "));
+            let paid = spent.map_or(String::new(), |c| format!(" · {}", cost_line(c, price)));
+            println!(
+                "✓ {}: {}{n}{paid}",
+                s.repo.display(),
+                status.replace('_', " ")
+            );
         },
     );
     Ok(())
@@ -512,25 +567,40 @@ async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Resu
             topics.push(t.clone());
         }
     }
+    // The repo document's list is replaced, and each added topic writes its document (a removed
+    // one's delete is refunded).
+    let price = ctx.usd_price();
+    let list_bytes: usize = topics.iter().map(String::len).sum();
+    let quote = crate::quote::replace(list_bytes as u64) + added.len() as u64 * crate::quote::TOPIC;
     ctx.confirm_or_cancel(&format!(
-        "Change the topics of {}? (+{} / -{}: the repo document's list, and one small topic document each; owner only)",
+        "Change the topics of {}? (+{} / -{}: the repo document's list, and one topic document each, {}; owner only)",
         s.repo.display(),
         added.len(),
-        removed.len()
+        removed.len(),
+        cost_line(quote, price)
     ))?;
     // Also run when the list is unchanged: it repairs topic documents that lag the list.
+    let before = s.balance().await;
     collab.set_topics(&s.repo, &topics).await?;
+    let spent = s.spent_since(before).await;
     ctx.emit(
-        json!({ "repo": s.repo.display(), "added": added, "removed": removed, "topics": topics }),
+        json!({
+            "repo": s.repo.display(),
+            "added": added,
+            "removed": removed,
+            "topics": topics,
+            "cost": cost_json(spent, price),
+        }),
         || {
             println!(
-                "✓ {}: {}",
+                "✓ {}: {} · {}",
                 s.repo.display(),
                 if topics.is_empty() {
                     "no topics".to_string()
                 } else {
                     topics.join(", ")
-                }
+                },
+                cost_line(spent, price)
             );
         },
     );
@@ -795,6 +865,19 @@ mod tests {
         assert!(fork_estimate(&[1, 1], 3) > fork_estimate(&[1, 1], 2));
         // A pack replicated to more stores records more URIs, and costs more.
         assert!(fork_estimate(&[4, 4], 2) > fork_estimate(&[1, 1], 2));
+    }
+
+    /// QW4-047: dg quoted a fork 17-36 % over the web's fork dialog for the same writes. The two
+    /// now agree within a few percent, and still cover the charge.
+    #[test]
+    fn a_fork_quote_agrees_with_the_web_dialog() {
+        let near = |dg: u64, web: u64| dg >= web && dg * 100 <= web * 106;
+        // dips on sakura (2 manifests, 5 branches): the web quoted 0.007687 (dg 0.00902).
+        assert!(near(fork_estimate(&[1, 1], 5), 768_700_000));
+        // dash (1 manifest, 606 refs): the web quoted 0.411803 (dg 0.56073).
+        assert!(near(fork_estimate(&[1], 606), 41_180_300_000));
+        // The web's default-branch-only fork of dips (2 manifests, 1 ref) charged 0.004979.
+        assert!(fork_estimate(&[1, 1], 1) >= 497_900_000);
     }
 
     /// A DAPI failure on any listed read is an error naming that read, never an empty repo

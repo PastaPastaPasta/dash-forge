@@ -12,6 +12,8 @@ import {
   QUORUM_CHECK_MAX_AGE_MS,
   compareQuorumKeys,
   crossCheckQuorumKeys,
+  ROTATION_REASON,
+  ROTATION_RETRIES_MS,
   crossCheckQuorumKeysCached,
   lastQuorumCheck,
   quorumCheckDueInMs,
@@ -155,12 +157,24 @@ describe('crossCheckQuorumKeys', () => {
     })
   })
 
-  it('retries once on a rotation boundary, then gives up', async () => {
+  it('re-reads through a rotation boundary, then gives up', async () => {
     const other = { success: true, data: [{ quorum_hash: 'ff'.repeat(32), key: 'aa'.repeat(48), height: 1 }] }
     const { fetch, calls } = fakeFetch({ [SVC]: () => Response.json(other), [rpc('10.0.0.1')]: dapi() })
-    const r = await crossCheckQuorumKeys(config(['https://10.0.0.1:1443']), { fetch, retryDelayMs: 0 })
-    expect(r).toEqual({ state: 'unavailable', reason: 'the two key sources listed different quorums' })
-    expect(calls.filter((c) => c === SVC)).toHaveLength(2)
+    const r = await crossCheckQuorumKeys(config(['https://10.0.0.1:1443']), { fetch, rotationRetriesMs: [0, 0, 0] })
+    expect(r).toEqual({ state: 'unavailable', reason: ROTATION_REASON })
+    expect(calls.filter((c) => c === SVC)).toHaveLength(4)
+  })
+
+  // QW4-016: the quorum service lags DAPI by about 50 s after a rotation; one retry 2 s later
+  // settled the page on "Partly verified" for the whole lag.
+  it('waits out a lagging source for about a minute, and agrees once it catches up', async () => {
+    expect(ROTATION_RETRIES_MS.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(55_000)
+    const other = { success: true, data: [{ quorum_hash: 'ff'.repeat(32), key: 'aa'.repeat(48), height: 1 }] }
+    let reads = 0
+    const { fetch } = fakeFetch({ [SVC]: () => (++reads < 4 ? Response.json(other) : service()), [rpc('10.0.0.1')]: dapi() })
+    const r = await crossCheckQuorumKeys(config(['https://10.0.0.1:1443']), { fetch, random: () => 0, rotationRetriesMs: [0, 0, 0, 0] })
+    expect(r.state).toBe('agreed')
+    expect(reads).toBe(4)
   })
 
   it('cannot compare when the quorum service is down', async () => {

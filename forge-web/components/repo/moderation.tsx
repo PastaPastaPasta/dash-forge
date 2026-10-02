@@ -18,7 +18,7 @@ import { useAsync } from '@/hooks/use-async'
 import { hiddenRowIds, hiddenThreadIds, type HideableRow } from '@/lib/repo/moderation'
 import { repoKey, type RepoRef } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
-import { previewCredits, type CostPreview, type FirstWrite } from '@/lib/sdk'
+import { previewCredits, withAddressee, type CostPreview, type FirstWrite } from '@/lib/sdk'
 import { estimateBytesCredits } from '@/lib/sdk/cost'
 import { composeCost } from '@/components/repo/private-compose'
 
@@ -364,6 +364,7 @@ export function HiddenThreadsToggle({ count, shown, onToggle, noun }: { count: n
  */
 export function hideCost(repo: RepoRef, input: { readonly item: string | null; readonly reason: HideReason | null; readonly hide: boolean }, first: FirstWrite = {}): CostPreview {
   const event = composeCost(repo, 'event', input.hide && input.reason ? { value: input.reason } : {}, first)
-  const bytes = (input.item === null ? 0 : 32) + 32
-  return previewCredits(event.credits + estimateBytesCredits('event', bytes) - estimateBytesCredits('event', 0))
+  const hide = previewCredits(event.credits + estimateBytesCredits('event', 32) - estimateBytesCredits('event', 0))
+  // The item's `refId` also writes its `addressee` index entry (QW4-039).
+  return input.item === null ? hide : withAddressee(hide)
 }

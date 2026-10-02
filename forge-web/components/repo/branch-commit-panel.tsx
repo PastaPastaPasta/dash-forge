@@ -360,7 +360,7 @@ export function useCommitIdentity(): { name: string; email: string } | null {
  * opens a form right here (kept in this browser, the same setting as Settings → Diffs and merges),
  * so a batch collected on the page is not lost to a trip to Settings.
  */
-export function CommitIdentityPrompt({ what }: { what: string }): JSX.Element {
+export function CommitIdentityPrompt({ what, lead = 'A browser commit is authored with your name and email' }: { what: string; lead?: string }): JSX.Element {
   const [prefs, update] = usePrefs()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState(prefs.mergeName)
@@ -370,7 +370,7 @@ export function CommitIdentityPrompt({ what }: { what: string }): JSX.Element {
   if (!open) {
     return (
       <span className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="commit-identity-prompt">
-        A browser commit is authored with your name and email: set them to {what}.{' '}
+        {lead}: set them to {what}.{' '}
         <button
           type="button"
           className="font-medium underline"

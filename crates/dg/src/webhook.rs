@@ -203,10 +203,13 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     if let Some(p) = &args.secret_file {
         secret_out::write_new_file(p, secret.expose())?;
     }
+    let before = client.get_balance(&identity.id()).await.unwrap_or(0);
     let document_id = svc
         .send(&handle, &prepared)
         .await
         .with_context(|| send_failure(args.secret_file.as_deref()))?;
+    // What it paid, as every paid write reports (QW4-049).
+    let spent = crate::common::spent_since(&client, &identity.id(), before).await;
 
     // A generated secret is shown exactly once, and only on a terminal: on chain it exists
     // only encrypted to the relay (and to this identity's own key). A secret from
@@ -228,11 +231,13 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
             "senderKeyId": prepared.sender_key_id,
             "secretFile": args.secret_file.as_ref().map(|p| p.display().to_string()),
             "estimate": cost_json(credits, price),
+            "cost": cost_json(spent, price),
         }),
         || {
             println!(
-                "✓ webhook {} (document {document_id})",
-                hex::encode(hook_id)
+                "✓ webhook {} (document {document_id}) · {}",
+                hex::encode(hook_id),
+                cost_line(spent, price)
             );
             print_secret(
                 secret_text.as_deref().map(String::as_str),

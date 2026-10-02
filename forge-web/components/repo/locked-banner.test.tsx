@@ -180,15 +180,15 @@ describe('LockedBanner', () => {
   it('a non-member on a locked thread: the banner replaces the composer', () => {
     const { banner, composer } = render(true, 'outsider')
     expect(banner?.textContent).toMatch(/This conversation has been locked and limited to collaborators\./)
-    expect(banner?.textContent).toMatch(/Only maintainers and writers can comment or review/)
+    expect(banner?.textContent).toMatch(/Only this repo's members can comment or review/)
     expect(composer).toBeNull()
     // An issue takes no reviews: the note says so.
-    expect(render(true, 'outsider', 'issue').banner?.textContent).toMatch(/Only maintainers and writers can comment;/)
+    expect(render(true, 'outsider', 'issue').banner?.textContent).toMatch(/Only this repo's members can comment;/)
   })
 
   it('signed out, still checking, or a membership that could not be read: the banner, no composer', () => {
     for (const [viewer, says] of [
-      ['signedOut', /Sign in as a maintainer or writer/],
+      ['signedOut', /Sign in as a member of this repo/],
       ['checking', /Checking whether/],
       ['unknown', /Couldn't check/],
     ] as const) {
@@ -200,7 +200,7 @@ describe('LockedBanner', () => {
 
   it('a member on a locked thread: the banner says they can still comment, and the composer stays', () => {
     const { banner, composer } = render(true, 'member')
-    expect(banner?.textContent).toMatch(/You can still comment because you're a maintainer or writer/)
+    expect(banner?.textContent).toMatch(/You can still comment because you're a member of this repo/)
     expect(composer).not.toBeNull()
   })
 
@@ -234,6 +234,8 @@ describe('LockToggle (the rail button of both pages)', () => {
   it('confirms with the target\'s own words', () => {
     expect(lockConfirm(true, 'PR #5', 'pull')).toMatchObject({ title: 'Lock conversation on PR #5', label: 'Sign & lock' })
     expect(lockConfirm(true, 'PR #5', 'pull').description).toMatch(/refuses comments and reviews from anyone/)
+    // Triage locks and unlocks too (QW4-032): the dialog names every role that can.
+    expect(lockConfirm(true, 'PR #5', 'pull').description).toMatch(/not a member of this repo. Any of its maintainers, writers and triage members can unlock it./)
     expect(lockConfirm(false, 'issue #3', 'issue')).toEqual({ title: 'Unlock conversation on issue #3', description: 'Records an unlock: everyone can comment again.', label: 'Sign & unlock' })
     expect(lockStateText(true)).toBe('Locked to members')
   })

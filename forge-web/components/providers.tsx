@@ -7,6 +7,7 @@ import { InboxPoller } from '@/hooks/use-inbox'
 import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
 import { installDapiFetchGate } from '@/lib/sdk/budget'
 import { stopPrehydrationCatcher } from '@/lib/prehydration'
+import { installHashLinkHistory } from '@/lib/hash-links'
 
 // Before any component runs: every DAPI request of this page, including the Core-over-DAPI
 // calls sign-in makes before the SDK connects, goes through the shared request budget.
@@ -25,6 +26,8 @@ export function Providers({ children }: { children: ReactNode }): JSX.Element {
   useEffect(() => {
     stopPrehydrationCatcher()
   }, [])
+  // In-page `#fragment` links go through the router's history, so Back after one works (QW4-005).
+  useEffect(() => installHashLinkHistory(), [])
   return (
     <ThemeProvider
       attribute="class"

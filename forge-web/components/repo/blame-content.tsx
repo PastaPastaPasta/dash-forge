@@ -10,7 +10,7 @@
  */
 
 import Link from 'next/link'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { FileText, History, X } from 'lucide-react'
 import { PathActions } from '@/components/repo/path-actions'
 import type { BrowseReader } from '@/lib/browse'
@@ -78,7 +78,8 @@ export function BlameContent({
 }
 
 type RunState =
-  | { readonly kind: 'running'; readonly progress: BlameProgress | null }
+  /** `shown`: the table a continued walk goes on from, on screen meanwhile (QW4-015). */
+  | { readonly kind: 'running'; readonly progress: BlameProgress | null; readonly shown: BlameResult | null }
   | { readonly kind: 'done'; readonly result: BlameResult }
   | { readonly kind: 'cancelled'; readonly progress: BlameProgress | null; readonly partial: BlameResult | null }
   | { readonly kind: 'failed'; readonly error: unknown }
@@ -100,23 +101,32 @@ export function BlameBody({
   /** For the storage card when a pack's storage stops answering (tests may leave it out). */
   repo?: RepoRef
 }): JSX.Element {
-  const [run, setRun] = useState<RunState>({ kind: 'running', progress: null })
+  const [run, setRun] = useState<RunState>({ kind: 'running', progress: null, shown: null })
   // Each run: a fresh walk (`from` null), or one continued from where a partial one stopped.
   const [job, setJob] = useState<{ readonly from: BlameCursor | null }>({ from: null })
+  // The table a continued walk goes on from (QW4-015): kept on screen until that walk settles.
+  const shownRef = useRef<BlameResult | null>(null)
   const stopRef = useRef<AbortController | null>(null)
   // `y` pins the address to this commit (as the file view does), keeping the `#L` selection (L-33).
   usePermalinkKey(pinnedHref(addr, 'blame', tipOid, path, privateRepo))
   // A full URL, as the file view copies (null in the instant a private repo's vault locks).
   const pinned = permalinkPath(addr, 'blame', tipOid, path, privateRepo)
   const permalink = pinned === null ? null : `${typeof window === 'undefined' ? '' : window.location.origin}${pinned}`
-  const restart = (): void => setJob({ from: null })
-  const resume = (from: BlameCursor): void => setJob({ from })
+  const restart = (): void => {
+    shownRef.current = null
+    setJob({ from: null })
+  }
+  const resume = (from: BlameCursor, shown: BlameResult): void => {
+    shownRef.current = shown
+    setJob({ from })
+  }
 
   useEffect(() => {
     const stop = new AbortController()
     stopRef.current = stop
     let last: BlameProgress | null = null
-    setRun({ kind: 'running', progress: null })
+    const shown = shownRef.current
+    setRun({ kind: 'running', progress: null, shown })
     // Only the current run reports: a run its effect cleaned up (a new file, StrictMode's replay)
     // settles into nothing, and never shows "Blame stopped" over the run that replaced it.
     const current = (): boolean => stopRef.current === stop
@@ -125,17 +135,24 @@ export function BlameBody({
       ...(job.from !== null ? { resume: job.from } : {}),
       onProgress: (p) => {
         last = p
-        if (current() && !stop.signal.aborted) setRun({ kind: 'running', progress: p })
+        if (current() && !stop.signal.aborted) setRun({ kind: 'running', progress: p, shown })
       },
     }).then(
-      (result) => current() && setRun({ kind: 'done', result }),
-      (error: unknown) =>
-        current() &&
+      (result) => {
+        if (!current()) return
+        shownRef.current = null
+        setRun({ kind: 'done', result })
+      },
+      (error: unknown) => {
+        if (!current()) return
+        // A failed continuation keeps its table for Retry; a cancelled one shows it, stopped.
+        if (stop.signal.aborted) shownRef.current = null
         setRun(
           stop.signal.aborted
-            ? { kind: 'cancelled', progress: last, partial: error instanceof BlameStoppedError ? error.partial : null }
+            ? { kind: 'cancelled', progress: last, partial: (error instanceof BlameStoppedError ? error.partial : null) ?? shown }
             : { kind: 'failed', error },
-        ),
+        )
+      },
     )
     return () => {
       // Unmount or a new run: stop this one without it reporting (Cancel aborts while it is current).
@@ -150,7 +167,8 @@ export function BlameBody({
     return <ReadErrorState cause={run.error} retry={() => setJob((j) => ({ ...j }))} addr={addr} repo={repo} />
   }
   if (run.kind === 'cancelled' && run.partial !== null) {
-    // Cancel keeps what was worked out (L-23): the table, marked stopped, and a way to run again.
+    // Cancel keeps what was worked out (L-23): the table, marked stopped, and a way to run again (a
+    // continued walk stopped before it got further: the table it was continuing).
     return <BlameTable result={run.partial} name={path} addr={addr} permalink={permalink} onRestart={restart} onContinue={resume} />
   }
   if (run.kind === 'cancelled') {
@@ -167,9 +185,32 @@ export function BlameBody({
       />
     )
   }
+  const cancel = (
+    <Button size="sm" onClick={() => stopRef.current?.abort()} data-testid="blame-cancel">
+      <X className="h-3.5 w-3.5" aria-hidden /> Cancel
+    </Button>
+  )
+  if (run.kind === 'running' && run.shown !== null) {
+    // Continue blame: the lines worked out so far stay readable, with the run's progress and
+    // Cancel in the table's header instead of a full-panel progress view (QW4-015).
+    return (
+      <BlameTable
+        result={run.shown}
+        name={path}
+        addr={addr}
+        permalink={permalink}
+        running={
+          <span className="flex flex-wrap items-center gap-2" role="status" data-testid="blame-continuing">
+            <ProgressBar progress={run.progress} className="w-24" />
+            <span>{blameProgressText(run.progress)}</span>
+            {cancel}
+          </span>
+        }
+      />
+    )
+  }
   if (run.kind === 'running') {
     const p = run.progress
-    const done = p === null || p.total === 0 ? 0 : Math.round(((p.total - p.pending) / p.total) * 100)
     return (
       <div className="flex flex-col items-center gap-3 rounded-lg border border-anvil-200 px-4 py-10 text-center text-dense text-anvil-600 dark:border-anvil-800 dark:text-anvil-300" role="status" data-testid="blame-progress">
         <p>{blameProgressText(p)}</p>
@@ -182,16 +223,22 @@ export function BlameBody({
             commit. On a long history that can take a minute.
           </p>
         ) : null}
-        <div className="h-1.5 w-64 max-w-full overflow-hidden rounded-full bg-anvil-100 dark:bg-anvil-800" aria-hidden>
-          <div className="h-full bg-forge-500 transition-[width]" style={{ width: `${done}%` }} />
-        </div>
-        <Button size="sm" onClick={() => stopRef.current?.abort()} data-testid="blame-cancel">
-          <X className="h-3.5 w-3.5" aria-hidden /> Cancel
-        </Button>
+        <ProgressBar progress={p} className="w-64 max-w-full" />
+        {cancel}
       </div>
     )
   }
   return <BlameTable result={run.result} name={path} addr={addr} permalink={permalink} onContinue={resume} />
+}
+
+/** How far the running blame is: a bar of the share of lines attributed. */
+function ProgressBar({ progress: p, className }: { progress: BlameProgress | null; className: string }): JSX.Element {
+  const done = p === null || p.total === 0 ? 0 : Math.round(((p.total - p.pending) / p.total) * 100)
+  return (
+    <span className={cn('block h-1.5 overflow-hidden rounded-full bg-anvil-100 dark:bg-anvil-800', className)} aria-hidden>
+      <span className="block h-full bg-forge-500 transition-[width]" style={{ width: `${done}%` }} />
+    </span>
+  )
 }
 
 /**
@@ -279,6 +326,7 @@ export function BlameTable({
   permalink,
   onRestart,
   onContinue,
+  running,
 }: {
   result: BlameResult
   /** The file's name, for its highlighting (none: highlight.js guesses, or leaves it plain). */
@@ -287,8 +335,10 @@ export function BlameTable({
   permalink: string | null
   /** Run the blame again from the start (offered when it was cancelled). */
   onRestart?: () => void
-  /** Go on from where a partial walk stopped ({@link BlameResult.cursor}). */
-  onContinue?: (from: BlameCursor) => void
+  /** Go on from where a partial walk stopped ({@link BlameResult.cursor}), keeping this table on screen. */
+  onContinue?: (from: BlameCursor, shown: BlameResult) => void
+  /** A continued walk is running: its progress and Cancel, shown in place of Continue. */
+  running?: ReactNode
 }): JSX.Element {
   const { lines, hunks, commits, boundary, cursor } = result
   const stopped = boundary?.reason === 'stopped'
@@ -344,7 +394,7 @@ export function BlameTable({
       >
         <td className="w-20 max-w-[5rem] truncate whitespace-nowrap border-r sm:w-72 sm:max-w-[18rem] border-anvil-100 px-3 py-0 align-top text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
           {first && unresolved ? (
-            <UnresolvedCell oid={hunk.oid} onContinue={cursor !== null && onContinue !== undefined ? () => onContinue(cursor) : undefined} />
+            <UnresolvedCell oid={hunk.oid} onContinue={cursor !== null && onContinue !== undefined ? () => onContinue(cursor, result) : undefined} />
           ) : first && commit ? (
             <span className="flex items-center gap-2">
               {/* On a phone the column is an age gutter linking the commit; the subject shows from sm up (L-34). */}
@@ -420,7 +470,7 @@ export function BlameTable({
             <span className="font-mono">{boundary.oid.slice(0, 7)}</span>
             {oldest ? ` (${formatDate(oldest.author.when)})` : ''} {boundary.reason === 'rename' ? 'or came from a file it renamed; git blame knows which.' : 'or an older commit.'}{' '}
             {cursor !== null && onContinue !== undefined ? (
-              <Button size="sm" onClick={() => onContinue(cursor)} data-testid="blame-continue" title={`Compare up to ${BLAME_MAX_VERSIONS} more versions of the file`}>
+              <Button size="sm" onClick={() => onContinue(cursor, result)} data-testid="blame-continue" title={`Compare up to ${BLAME_MAX_VERSIONS} more versions of the file`}>
                 Continue blame
               </Button>
             ) : null}{' '}
@@ -431,6 +481,7 @@ export function BlameTable({
             ) : null}
           </span>
         ) : null}
+        {running !== undefined ? <div className="w-full text-anvil-600 dark:text-anvil-300">{running}</div> : null}
         {result.approximate ? <span className="text-caution-700 dark:text-caution-400">Some changes were too large to align line by line.</span> : null}
         {result.renames.map((r) => (
           <span key={r.commit}>

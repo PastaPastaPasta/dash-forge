@@ -200,6 +200,7 @@ export {
   addEvent,
   beatAllowed,
   checkRepoInput,
+  CONSENT_LAG_RETRIES,
   ConsentMissingError,
   MemberRoleTakenError,
   changeMemberRole,

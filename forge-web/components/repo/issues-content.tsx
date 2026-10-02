@@ -96,6 +96,7 @@ import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/co
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
 import type { IssueTemplate } from '@/lib/view/issue-templates'
+import { whoCan } from '@/lib/rules/roles'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
 const ISSUE_GRAMMAR: ListGrammar<IssueListQuery> = { text: searchText, parse: parseSearchText, unresolved: unresolvedQualifiers, submitBase: searchSubmitBase }
@@ -200,6 +201,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         ) : null}
       </div>
       <DroppedNote search={search} reason={droppedQualifiersReason(search.dropped, search.notFound)} testId="issue-search-dropped" />
+      {data?.reasonUnapplied ? (
+        <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="reason-unapplied">
+          Not applied: reason:. This repository has more closed issues than the list reads to find their close reasons.
+        </p>
+      ) : null}
       <AuthorLoginNote login={query.authorLogin} notFound={search.notFound} />
 
       <MirrorNote home={home} kind="issue" />
@@ -502,7 +508,7 @@ function ComposeIssueDialog({
         <BodyCounter repo={repo} text={body} field="description" />
         {template !== null && template.labels.length > 0 ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            This template suggests the labels {template.labels.join(', ')}. A maintainer or writer applies labels after the issue is opened.
+            This template suggests the labels {template.labels.join(', ')}. Labels are applied after the issue is opened, by {whoCan('canLabel', 'one')}.
           </p>
         ) : null}
         <CostPreview cost={cost} />

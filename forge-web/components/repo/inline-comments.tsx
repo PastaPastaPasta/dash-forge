@@ -39,7 +39,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { InlineCommentsContext, type InlineComments } from '@/components/repo/diff-view'
-import { MarkdownView } from '@/components/markdown-view'
+import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { MarkdownEditor } from '@/components/repo/issue-bits'
@@ -505,7 +505,8 @@ function CommentBlock({
         </div>
       ) : (
         <div className="mt-1">
-          <SuggestedBody comment={c} suggestions={suggestions} mirrored={origin !== null} />
+          {/* A trusted mirror's comment without the provenance quote and file line the import repeats on each one (QW4-029). */}
+          <SuggestedBody comment={c} suggestions={suggestions} source={origin !== null ? mirroredCommentText(c.body, c.anchor).text : c.body} />
         </div>
       )}
     </div>
@@ -524,20 +525,32 @@ function useSuggestionContext(body: string, anchor: SuggestionAnchor | null, sug
 }
 
 /**
- * A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in". A
- * trusted mirror's comment (`mirrored`) shows without the provenance quote and file line the import
- * repeats on each one (QW4-029): its byline and its thread already say who, when and where.
+ * A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in" —
+ * on Files changed and, as on GitHub, in Conversation (QW4-026). `source` is the text shown (the
+ * body by default), `links` and `imported` as {@link MarkdownView}'s.
  */
-function SuggestedBody({ comment: c, suggestions, mirrored = false }: { comment: CommentView; suggestions?: SuggestionActions | undefined; mirrored?: boolean }): JSX.Element {
-  const ctx = useSuggestionContext(c.body, c.anchor, suggestions)
-  const body = mirrored ? mirroredCommentText(c.body, c.anchor).text : c.body
-  if (ctx === null || !suggestions) return <MarkdownView source={body} suggestion={ctx} />
+export function SuggestedBody({
+  comment: c,
+  suggestions,
+  source = c.body,
+  links = null,
+  imported = null,
+}: {
+  comment: CommentView
+  suggestions?: SuggestionActions | undefined
+  source?: string
+  links?: MarkdownLinks | null
+  imported?: string | null
+}): JSX.Element {
+  const ctx = useSuggestionContext(source, c.anchor, suggestions)
+  const body = <MarkdownView source={source} suggestion={ctx} links={links} imported={imported} />
+  if (ctx === null || !suggestions) return body
   const applied = suggestions.applied.get(c.id)
   const refused = suggestions.unapplicable(c)
   const inBatch = suggestions.batch.has(c.id)
   return (
     <>
-      <MarkdownView source={body} suggestion={ctx} />
+      {body}
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px]" data-testid="suggestion-actions" data-comment={c.id}>
         {applied ? (
           <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400" data-testid="suggestion-applied">

@@ -9,8 +9,9 @@
  * fresh fetch of the same list, and the UI says so.
  *
  * Rules: every quorum present in both lists must carry the identical key (a mismatch is
- * `mismatch`, loud); the sets may differ at a rotation boundary, but they must overlap, else
- * one retry and then `unavailable`. A network with no recorded DAPI list, or none that answers,
+ * `mismatch`, loud); the sets may differ at a rotation boundary, which can take the quorum
+ * service about a minute to catch up with: the lists are read again for up to
+ * {@link ROTATION_RETRIES_MS} (the page meanwhile says it is still comparing), then `unavailable`. A network with no recorded DAPI list, or none that answers,
  * reports `single`: one source is all this app could see.
  */
 
@@ -192,9 +193,16 @@ export interface CrossCheckDeps {
   /** Randomness for the DAPI node order (tests pin it). */
   readonly random?: () => number
   readonly timeoutMs?: number
-  /** Pause before re-reading both lists after they disagreed on which quorums exist. */
-  readonly retryDelayMs?: number
+  /** Pauses before each re-read of both lists after they disagreed on which quorums exist. */
+  readonly rotationRetriesMs?: readonly number[]
 }
+
+/**
+ * The pauses before re-reading both lists while they disagree on which quorums exist (QW4-016):
+ * a rotation reaches the two sources at different times, and the quorum service has been seen to
+ * lag DAPI by about 50 s. About a minute in all, before the comparison is reported as not run.
+ */
+export const ROTATION_RETRIES_MS: readonly number[] = [2_000, 10_000, 20_000, 25_000]
 
 /** How many DAPI nodes are asked, one after another, before giving up on a second source. */
 const DAPI_TRIES = 3
@@ -250,13 +258,14 @@ export async function crossCheckQuorumKeys(config: NetworkConfig, deps: CrossChe
     fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
     random: deps.random ?? Math.random,
     timeoutMs: deps.timeoutMs ?? 6000,
-    retryDelayMs: deps.retryDelayMs ?? 2000,
+    rotationRetriesMs: deps.rotationRetriesMs ?? ROTATION_RETRIES_MS,
   }
   const endpoint = quorumEndpoint(config)
   if (endpoint === '') return { state: 'unavailable', reason: 'no quorum key endpoint is configured' }
   const primary = urlHost(endpoint)
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const started = Date.now()
+  for (let attempt = 0; ; attempt++) {
     let first: QuorumKey[]
     try {
       first = await fetchServiceKeys(endpoint, full)
@@ -271,12 +280,21 @@ export async function crossCheckQuorumKeys(config: NetworkConfig, deps: CrossChe
     if (verdict.kind === 'mismatch') {
       return { state: 'mismatch', primary, secondary: second.host, quorums: verdict.quorums }
     }
-    // A quorum only the primary lists: most likely a rotation between the two reads. Read
-    // both again once, a moment later.
-    if (attempt === 0) await new Promise((r) => setTimeout(r, full.retryDelayMs))
+    // A quorum only the primary lists: most likely a rotation one source has not caught up with.
+    // Read both again, a little later each time.
+    const pause = full.rotationRetriesMs[attempt]
+    // Slow answers count too: never past the schedule's own length, plus a little.
+    if (pause === undefined || Date.now() - started + pause > ROTATION_DEADLINE_MS) break
+    await new Promise((r) => setTimeout(r, pause))
   }
-  return { state: 'unavailable', reason: 'the two key sources listed different quorums' }
+  return { state: 'unavailable', reason: ROTATION_REASON }
 }
+
+/** How long one cross-check may keep re-reading through a rotation, slow answers included. */
+const ROTATION_DEADLINE_MS = 75_000
+
+/** Why a cross-check gave up: the lists never agreed on which quorums exist. */
+export const ROTATION_REASON = 'the two key sources kept listing different quorums (a quorum rotation one of them had not caught up with)'
 
 /** A settled cross-check is re-run once it is this old (quorums rotate; the keys are refetched). */
 export const QUORUM_CHECK_MAX_AGE_MS = 60 * 60_000

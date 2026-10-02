@@ -153,6 +153,36 @@ describe('BlameBody past the version cap', () => {
     expect(calls[1]!.resume).toBe(cursor)
     expect(calls[0]!.resume).toBeUndefined()
   })
+
+  // QW4-015: Continue blame replaced the attributed table with a full-panel progress view.
+  it('keeps the attributed table on screen while Continue runs, with its progress and Cancel inline', async () => {
+    await act(async () => {
+      root.render(<BlameBody reader={{} as never} tipOid={'f'.repeat(40)} path="f" addr={{ owner: 'o', name: 'n' }} />)
+    })
+    await act(async () => {
+      calls[0]!.resolve(capped)
+      await Promise.resolve()
+    })
+    await act(async () => {
+      ;(el.querySelector('[data-testid="blame-continue"]') as HTMLButtonElement).click()
+    })
+    expect(el.querySelector('[data-testid="blame-progress"]')).toBeNull()
+    expect(el.querySelectorAll('[data-testid="blame-table"] tr[id]')).toHaveLength(3)
+    const status = el.querySelector('[data-testid="blame-continuing"]')
+    expect(status?.textContent).toContain('Reading the file')
+    // No second Continue (and no clickable "or older" cell) while one runs.
+    expect(el.querySelector('[data-testid="blame-continue"]')).toBeNull()
+    expect(el.querySelector('button[data-testid="blame-unresolved"]')).toBeNull()
+    // Cancel keeps a table too.
+    await act(async () => {
+      ;(el.querySelector('[data-testid="blame-cancel"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(calls[1]!.signal.aborted).toBe(true)
+    expect(el.querySelector('[data-testid="blame-continuing"]')).toBeNull()
+    expect(el.querySelectorAll('[data-testid="blame-table"] tr[id]')).toHaveLength(3)
+    expect(el.querySelector('[data-testid="blame-continue"]')).not.toBeNull()
+  })
 })
 
 // QW-060: blame names each hunk's author and highlights the code as the file view does.
