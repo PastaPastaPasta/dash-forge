@@ -104,8 +104,8 @@ describe('what readers collapse', () => {
       { id: ISSUE, author: BOB, threadHides: threadHidesOf(events) },
       { id: COMMENT, author: BOB, threadHides: [] },
     ]
-    expect([...(await hiddenThreadIds(sdk, REPO, 'devnet', rows))]).toEqual([ISSUE])
-    expect([...(await hiddenThreadIds(sdk, REPO, 'devnet', [{ id: ISSUE, author: ALICE, threadHides: threadHidesOf(events) }]))]).toEqual([])
+    expect([...(await hiddenThreadIds(sdk, REPO, 'devnet', rows)).keys()]).toEqual([ISSUE])
+    expect([...(await hiddenThreadIds(sdk, REPO, 'devnet', [{ id: ISSUE, author: ALICE, threadHides: threadHidesOf(events) }])).keys()]).toEqual([])
   })
 })
 
@@ -135,7 +135,12 @@ describe('a hide that would change nothing', () => {
 
   it('a list assumes the proof until its read lands', () => {
     const rows = [{ id: ISSUE, author: BOB, threadHides: [hide('e1', 'stranger', null, 1)] }]
-    expect([...hiddenRowIds(rows, ALICE, [], true)]).toEqual([ISSUE])
-    expect([...hiddenRowIds(rows, ALICE, [], false)]).toEqual([])
+    expect([...hiddenRowIds(rows, ALICE, [], true).keys()]).toEqual([ISSUE])
+    expect([...hiddenRowIds(rows, ALICE, [], false).keys()]).toEqual([])
+  })
+
+  it('says who hid a row and why, for its mark once revealed (QW4-038)', () => {
+    const rows = [{ id: ISSUE, author: BOB, threadHides: [hide('e1', ALICE, null, 1, 'hide', 'spam')] }]
+    expect(hiddenRowIds(rows, ALICE, [], false).get(ISSUE)).toMatchObject({ by: ALICE, reason: 'spam' })
   })
 })

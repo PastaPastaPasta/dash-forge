@@ -84,3 +84,48 @@ export function firstPushers(updates: readonly { readonly id: string; readonly n
   }
   return out
 }
+
+/** A PR's source branch deleted or restored, as its timeline shows it (QW4-025). */
+export interface SourceBranchEvent {
+  readonly id: string
+  readonly actor: string
+  readonly at: number
+  readonly kind: 'deleted' | 'restored'
+  readonly branch: string
+}
+
+/**
+ * When the PR's source branch `refName` was deleted from the PR's head and restored at it, from
+ * the branch's ref updates (GitHub's "deleted the feature branch" and "restored"), at or after
+ * `since` (the PR's creation: an earlier branch of the same name is not this PR's). A delete counts
+ * when it removed the PR's head (`prevOid`, which the page's and dg's deletes record); a restore
+ * when it points the deleted branch at the head again. A push of other commits to the name is a
+ * new branch, not a restore, and ends the tracking.
+ */
+export function sourceBranchEvents(
+  updates: readonly { readonly id: string; readonly newOid: string; readonly prevOid?: string | null; readonly author: string; readonly createdAt: number }[],
+  refName: string,
+  headOid: string,
+  since: number,
+): SourceBranchEvent[] {
+  const head = headOid.toLowerCase()
+  const branch = refName.replace(/^refs\/heads\//, '')
+  const sorted = [...updates].filter((u) => u.createdAt >= since).sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  const out: SourceBranchEvent[] = []
+  let deleted = false
+  for (const u of sorted) {
+    const to = u.newOid.toLowerCase()
+    const zero = to === '' || /^0+$/.test(to)
+    if (zero && !deleted) {
+      const from = (u.prevOid ?? '').toLowerCase()
+      if (from === '' || from === head) {
+        out.push({ id: u.id, actor: u.author, at: u.createdAt, kind: 'deleted', branch })
+        deleted = true
+      }
+    } else if (!zero && deleted) {
+      if (to === head) out.push({ id: u.id, actor: u.author, at: u.createdAt, kind: 'restored', branch })
+      deleted = false
+    }
+  }
+  return out
+}

@@ -19,6 +19,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
+import { mirroredCommentText } from '@/lib/view/mirror-review-fold'
 import { shownHunk } from '@/lib/view/diff-hunk'
 import { DiffHunkLines } from '@/components/repo/diff-hunk-view'
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -504,7 +505,7 @@ function CommentBlock({
         </div>
       ) : (
         <div className="mt-1">
-          <SuggestedBody comment={c} suggestions={suggestions} />
+          <SuggestedBody comment={c} suggestions={suggestions} mirrored={origin !== null} />
         </div>
       )}
     </div>
@@ -522,16 +523,21 @@ function useSuggestionContext(body: string, anchor: SuggestionAnchor | null, sug
   return useMemo(() => (has ? { original: key === null ? null : key.split('\n') } : null), [has, key])
 }
 
-/** A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in". */
-function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; suggestions?: SuggestionActions | undefined }): JSX.Element {
+/**
+ * A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in". A
+ * trusted mirror's comment (`mirrored`) shows without the provenance quote and file line the import
+ * repeats on each one (QW4-029): its byline and its thread already say who, when and where.
+ */
+function SuggestedBody({ comment: c, suggestions, mirrored = false }: { comment: CommentView; suggestions?: SuggestionActions | undefined; mirrored?: boolean }): JSX.Element {
   const ctx = useSuggestionContext(c.body, c.anchor, suggestions)
-  if (ctx === null || !suggestions) return <MarkdownView source={c.body} suggestion={ctx} />
+  const body = mirrored ? mirroredCommentText(c.body, c.anchor).text : c.body
+  if (ctx === null || !suggestions) return <MarkdownView source={body} suggestion={ctx} />
   const applied = suggestions.applied.get(c.id)
   const refused = suggestions.unapplicable(c)
   const inBatch = suggestions.batch.has(c.id)
   return (
     <>
-      <MarkdownView source={c.body} suggestion={ctx} />
+      <MarkdownView source={body} suggestion={ctx} />
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px]" data-testid="suggestion-actions" data-comment={c.id}>
         {applied ? (
           <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400" data-testid="suggestion-applied">

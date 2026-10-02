@@ -23,6 +23,7 @@ import { useCallback, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
 import { closedIn } from '@/lib/view/cross-refs'
+import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
@@ -198,6 +199,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // in #3" and "mentioned this issue in #4", QW2-048). The trusted upstream number needs the thread.
   const upstream = data ? trustedUpstreamNumber(data.issue.upstreamNumber, data.issue.author, home.repo.ownerId, new RoleOracle([...data.members])) : null
   const backlinks = useIssueBacklinks(home, number, upstream, data != null)
+  // Issues closed as a duplicate of this one (QW4-024), read once the thread shows.
+  const duplicatesOf = useAsync(() => readDuplicatesOf(sdk!, home.repo, number), [ready, repoKey(home.repo), number, data === null ? 0 : 1], {
+    enabled: ready && sdk !== null && data !== null,
+  })
 
   const repoLinks = useRepoLinks(addr ?? { owner: '', name: '' }, home.description)
   const links: MarkdownLinks | undefined = addr ? repoLinks : undefined
@@ -498,7 +503,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         )}
 
         {/* Timeline */}
-        {!threadCollapsed && (timeline.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0) ? (
+        {!threadCollapsed && (timeline.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 || (duplicatesOf.data?.length ?? 0) > 0) ? (
           <Timeline
             items={timeline}
             links={links}
@@ -520,6 +525,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             closedIn={(t) => closedInRef(t, backlinks, addr)}
             closeWhy={(t) => closeWhyOf(t, issue.number, data.duplicates ?? NO_DUPLICATES, (n) => (addr ? repoHref('/repo/issue', addr, { number: String(n) }) : ''))}
             crossRefs={crossRefsOf(backlinks.linking.data, addr)}
+            imported={origin === null ? null : { origin, signer: issue.author }}
+            duplicateRefs={(duplicatesOf.data ?? []).map((d) => ({ id: d.id, actor: d.actor, at: d.createdAt, number: d.number, title: d.title, href: addr ? repoHref('/repo/issue', addr, { number: String(d.number) }) : '' }))}
             renderComment={(item) => {
               const slots = commentSlots({
                 item,

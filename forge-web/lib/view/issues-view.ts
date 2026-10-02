@@ -29,6 +29,7 @@ import {
   readPull,
   reviewViewOf,
   seedMemberships,
+  sharedRepoCounts,
   toLog,
   updatedAtOf,
   readTargetLog,
@@ -47,13 +48,13 @@ import {
 } from '../repo'
 import { sortTransitions, transitionOf } from '../repo/transitions'
 import { readProvedVerdicts, type ProvedVerdicts } from '../repo/verdicts'
-import { closeReasonOf, currentCloseReason, isLocked, stateCode, type ClosedAs } from '../rules/transition'
+import { ISSUE_CLOSE, closeReasonOf, currentCloseReason, isLocked, stateCode, type ClosedAs } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
 import type { Membership } from '../rules/v2'
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
-import { queryAllDocuments, type PlainDocument } from '../sdk'
+import { IncompleteReadError, queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
 import type { HiddenItems } from '../rules/moderation'
@@ -441,6 +442,53 @@ export async function readDuplicateTargets(
     }),
   )
   return out
+}
+
+/** Pages of the repo's issue closes an issue page reads for its duplicates' back-references. */
+export const DUPLICATE_SCAN_PAGES = 2
+
+/** Another issue closed as a duplicate of this one: the close, and the duplicate's number and title. */
+export interface DuplicateOf {
+  readonly id: string
+  readonly actor: string
+  readonly createdAt: number
+  readonly number: number
+  readonly title: string
+}
+
+/**
+ * The issues closed as a duplicate of issue #`number` (QW4-024): GitHub's "bob marked #2 as a
+ * duplicate of this issue" on the canonical. No index finds a close by the issue it names (only
+ * the duplicate's `transition` records `dupNumber`), so this reads the repo's issue closes
+ * (`perRepoKind`, `kind == 1`), and only when the proved counts (the repo header's, already read)
+ * say they fit in {@link DUPLICATE_SCAN_PAGES} pages; a larger repo shows no back-references
+ * rather than walking every close on each issue page. Null when not read.
+ */
+export async function readDuplicatesOf(sdk: EvoSDK, repo: RepoRef, number: number): Promise<DuplicateOf[] | null> {
+  const counts = await sharedRepoCounts(sdk, repo)
+  if (counts.issuesClosed > DUPLICATE_SCAN_PAGES * 100) return null
+  let docs: PlainDocument[]
+  try {
+    docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.transition, { where: [['kind', '==', ISSUE_CLOSE]], orderBy: [['kind', 'asc']] }), { maxPages: DUPLICATE_SCAN_PAGES })
+  } catch (e) {
+    if (e instanceof IncompleteReadError) return null
+    throw e
+  }
+  const closes = docs
+    .map((d) => ({ t: transitionOf(d), number: num(d, 'targetNumber') }))
+    .filter(({ t, number: n }) => n !== number && closeReasonOf(t, n)?.duplicateOf === number)
+  if (closes.length === 0) return []
+  // One close per duplicate (its newest), and only duplicates that are issues of the repo.
+  const newest = new Map<number, (typeof closes)[number]>()
+  for (const c of closes) {
+    const seen = newest.get(c.number)
+    if (seen === undefined || compareKey(c.t, seen.t) > 0) newest.set(c.number, c)
+  }
+  const issues = await readDuplicateTargets(sdk, repo, [...newest.keys()])
+  return [...newest.values()]
+    .filter((c) => issues.has(c.number))
+    .map((c) => ({ id: c.t.id, actor: c.t.actor, createdAt: c.t.createdAt, number: c.number, title: issues.get(c.number)?.title ?? '' }))
+    .sort((a, b) => a.createdAt - b.createdAt)
 }
 
 /** The counted approvals of a PR, and what each reviewer's role is now. */

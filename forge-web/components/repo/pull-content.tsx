@@ -101,7 +101,7 @@ import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
-import { firstPushers, headUpdatePhrases, type HeadUpdatePhrase } from '@/lib/view/head-updates'
+import { firstPushers, headUpdatePhrases, sourceBranchEvents, type HeadUpdatePhrase } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { anchorOnHead } from '@/lib/view/inline-threads'
@@ -391,22 +391,6 @@ function PullPage({
   // The repo holding the PR's source branch: this one for a same-repo PR, else the fork once read.
   const sourceRefOf = (): RepoRef | null =>
     pull.sourceId === '' || pull.sourceId === repo.repoId ? repo : comparison.source.kind === 'found' ? comparison.source.repo : null
-  // Who pushed each head (QW3-048): the source branch's ref updates (one read, both update
-  // types), on the Conversation tab only, where the timeline words each head update.
-  const wantPhrases = tab === 'conversation' && review.headUpdates.length > 0
-  const pushers = useAsync(
-    async () => firstPushers(await readBranchUpdates(sdk!, sourceRefOf()!, pull.sourceRefName!)),
-    [ready, pull.sourceId, pull.sourceRefName ?? '', review.headUpdates.length, comparison.source.kind],
-    { enabled: ready && sdk !== null && wantPhrases && pull.sourceRefName !== null && sourceRefOf() !== null },
-  )
-  const pushersSettled = pull.sourceRefName === null || sourceRefOf() === null || pushers.settled
-  // Commits the base already had (an "Update branch" merge brings them in) are not counted as pushed.
-  const comparedBase = cmp === null || cmp.fellBack === true ? '' : cmp.comparedBaseOid
-  const phrases = useAsync(
-    () => headUpdatePhrases(headReader!, pull.initialHeadOid, review.headUpdates, pushers.data ?? undefined, comparedBase),
-    [comparison.sidesKey, review.headUpdates.map((u) => u.id).join(','), headReader === null, pushers.data === null ? 0 : pushers.data.size, comparedBase],
-    { enabled: headReader !== null && wantPhrases && pushersSettled && cmp !== null },
-  )
 
   // ---- checks on the head ---------------------------------------------------------------------
   // Trust is by the current approvers (maintainers and role-1 writers; never a triage member or
@@ -456,6 +440,29 @@ function PullPage({
   // Once a read shows the write, the read alone speaks again (later changes by others included).
   if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
   const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
+  // The source branch's ref updates (one read, both update types), on the Conversation tab only:
+  // who pushed each head (QW3-048), and, once the PR is closed, when its branch was deleted or
+  // restored (QW4-025). Read again when the branch's state changes (this page's delete or restore).
+  const wantPhrases = tab === 'conversation' && review.headUpdates.length > 0
+  const wantBranchEvents = tab === 'conversation' && !open
+  const branchUpdates = useAsync(
+    () => readBranchUpdates(sdk!, sourceRefOf()!, pull.sourceRefName!),
+    [ready, pull.sourceId, pull.sourceRefName ?? '', review.headUpdates.length, comparison.source.kind, open, sync?.kind ?? ''],
+    { enabled: ready && sdk !== null && (wantPhrases || wantBranchEvents) && pull.sourceRefName !== null && sourceRefOf() !== null },
+  )
+  const pushers = useMemo(() => (branchUpdates.data === null ? null : firstPushers(branchUpdates.data)), [branchUpdates.data])
+  const branchEvents = useMemo(
+    () => (branchUpdates.data === null || pull.sourceRefName === null ? [] : sourceBranchEvents(branchUpdates.data, pull.sourceRefName, pull.headOid, pull.createdAt)),
+    [branchUpdates.data, pull.sourceRefName, pull.headOid, pull.createdAt],
+  )
+  const pushersSettled = pull.sourceRefName === null || sourceRefOf() === null || branchUpdates.settled
+  // Commits the base already had (an "Update branch" merge brings them in) are not counted as pushed.
+  const comparedBase = cmp === null || cmp.fellBack === true ? '' : cmp.comparedBaseOid
+  const phrases = useAsync(
+    () => headUpdatePhrases(headReader!, pull.initialHeadOid, review.headUpdates, pushers ?? undefined, comparedBase),
+    [comparison.sidesKey, review.headUpdates.map((u) => u.id).join(','), headReader === null, pushers === null ? 0 : pushers.size, comparedBase],
+    { enabled: headReader !== null && wantPhrases && pushersSettled && cmp !== null },
+  )
   // The PR's author or a maintainer/writer: who may move the head (event kind 16: role 1) and mark
   // draft or ready (transition kinds 14/15: role 1).
   const authorOrMember = identity !== null && (isAuthor || caps.canPush)
@@ -1243,6 +1250,8 @@ function PullPage({
                   items={conversation}
                   links={links}
                   trust={trust}
+                  imported={origin === null ? null : { origin, signer: pull.author }}
+                  branchEvents={branchEvents}
                   {...(moderation ? { moderation } : {})}
                   {...(canModerate
                     ? {
@@ -2040,14 +2049,19 @@ function commentSlots({
       <div className="space-y-2 px-4 py-3">
         {context}
         <MarkdownView source={trustedOrigin(c.origin, c.author, trust ?? null) !== null ? mirroredCommentText(c.body, c.anchor).text : c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
-        {replies.map((r) => (
-          <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
-            <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-              <Byline author={r.author} createdAt={r.createdAt} origin={trustedOrigin(r.origin, r.author, trust ?? null)} link={false} />
+        {replies.map((r) => {
+          const origin = trustedOrigin(r.origin, r.author, trust ?? null)
+          return (
+            <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750" data-testid="thread-reply">
+              <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+                <Byline author={r.author} createdAt={r.createdAt} origin={origin} link={false} />
+              </div>
+              {/* A mirrored reply, like its root, without the provenance quote and the file line
+                  the import repeats on every comment (QW4-029): the byline and the thread say both. */}
+              <MarkdownView source={origin !== null ? mirroredCommentText(r.body, r.anchor ?? c.anchor).text : r.body} links={links} imported={importedUrlOf(r.importedRaw)} />
             </div>
-            <MarkdownView source={r.body} links={links} imported={importedUrlOf(r.importedRaw)} />
-          </div>
-        ))}
+          )
+        })}
         <button type="button" onClick={onShowFiles} className="hit-area text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
           View in Files changed
         </button>

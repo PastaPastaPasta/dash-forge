@@ -18,7 +18,7 @@ import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useRef, useState } from 'react'
-import { HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
+import { HiddenRowMark, HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { CheckCircle2, CircleDot, CircleSlash, MessageSquarePlus, Pin, X } from 'lucide-react'
@@ -345,6 +345,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                     <span className="font-mono">#{issue.number}</span>
                     <Byline author={issue.author} createdAt={issue.createdAt} origin={trustedOrigin(issue.origin, issue.author, trust)} verb="opened" link={false} />
+                    <HiddenRowMark hidden={hiddenIds.get(issue.id)} />
                     {!issue.stateComplete ? (
                       <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger-700 dark:text-danger-400" title="This issue's events could not be read completely, so its labels and assignees are unverified. Open or closed is proved.">
                         labels unverified
