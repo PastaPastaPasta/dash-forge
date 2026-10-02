@@ -32,6 +32,8 @@ export interface LogEntry {
    * the list's day headers group by (QW2-044). The history index records author times only.
    */
   readonly committedAt?: number
+  /** The raw commit, when it is signed and was read (not a history-index row): its badge's input. */
+  readonly signed?: Uint8Array
 }
 
 /** A log row's author: a commit's `author` ident, or the history index's name and time. */

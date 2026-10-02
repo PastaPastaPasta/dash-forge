@@ -34,6 +34,7 @@ mod repo;
 mod repo_settings;
 mod repo_sync;
 mod secret_out;
+mod signing;
 mod storage;
 mod storage_wizard;
 mod webhook;
@@ -139,9 +140,23 @@ pub enum Command {
     /// Milestones (put an issue in one with `dg issue milestone`).
     #[command(subcommand)]
     Milestone(MilestoneCommand),
-    /// Your public profile: display name, bio, avatar, links, location and company.
+    /// Your public profile: display name, bio, avatar, links, location, company, signing keys.
     #[command(subcommand)]
     Profile(ProfileCommand),
+    /// Check commits' signatures against the keys a repository's owner and members publish on
+    /// their profiles: the web's Verified / Unverified badges, for a clone's commits.
+    VerifyCommit {
+        /// Commits to check, as git names them (`HEAD`, `main~3`, an oid), like `git verify-commit`.
+        #[arg(required = true, num_args = 1..)]
+        revs: Vec<String>,
+        /// The repository whose owner's and members' keys count (`owner/name`; default: this
+        /// clone's).
+        #[arg(short = 'R', long, value_name = "REPO")]
+        repo: Option<String>,
+        /// Also trust this identity's keys (a pull request's author; id or DPNS name; repeatable).
+        #[arg(long = "author", value_name = "IDENTITY")]
+        author: Vec<String>,
+    },
     /// Repository members (maintainers, writers, triage members and readers).
     #[command(subcommand)]
     Collab(CollabCommand),
@@ -740,6 +755,32 @@ pub enum ProfileCommand {
     Set(profile::SetArgs),
     /// Delete your profile document (part of its storage fee is refunded).
     Delete,
+    /// The keys you sign commits with, published on your profile for Verified badges.
+    #[command(subcommand)]
+    Key(ProfileKeyCommand),
+}
+
+/// `dg profile key` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ProfileKeyCommand {
+    /// List the signing keys on your profile.
+    List,
+    /// Publish a signing key: git's own (`user.signingkey`, `gpg.format`) unless one is named.
+    /// Ed25519 SSH keys and Ed25519 or ECDSA OpenPGP keys (an RSA key does not fit a profile).
+    Add {
+        /// An SSH public key: a `.pub` file, or the `ssh-ed25519 AAAA…` line itself.
+        #[arg(long, value_name = "KEY", conflicts_with = "gpg")]
+        ssh: Option<String>,
+        /// An OpenPGP key id or fingerprint, exported with `gpg --export` (`!` at the end: exactly
+        /// that key, as gpg reads it).
+        #[arg(long, value_name = "KEYID")]
+        gpg: Option<String>,
+    },
+    /// Remove a signing key by the end of its fingerprint (`dg profile key list` shows them).
+    Remove {
+        /// The fingerprint, or its last 8 or more characters.
+        fingerprint: String,
+    },
 }
 
 /// `dg milestone` subcommands.
@@ -1879,6 +1920,9 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Label(cmd) => label::run(ctx, cmd).await,
         Command::Milestone(cmd) => milestone::run(ctx, cmd).await,
         Command::Profile(cmd) => profile::run(ctx, cmd).await,
+        Command::VerifyCommit { repo, revs, author } => {
+            signing::verify_commits(ctx, repo.as_deref(), revs, author).await
+        }
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,

@@ -291,3 +291,29 @@ Both check the same rules before anything is signed: a name, company or location
 - **Initial** (the default): the first letter of your username on a colour derived from your identity id;
 - **Pattern** (`--avatar identicon`, or `identicon:<seed>` for another pattern): a 5×5 pattern every browser draws from the seed, so nothing is fetched;
 - **Image link** (`--avatar https://…`): a picture you host. Visitors see your initial until they choose to load images from its host, as with images in issues and comments, because loading it tells that host their IP address.
+
+### Signed commits and Verified badges
+
+If you sign your commits with git (an SSH key with `gpg.format=ssh`, or an OpenPGP key), publish the key on your profile. Your signed commits then show **Verified** in the web app, on the commits list, the commit page and a pull request's commits, in every repository you own or are a member of:
+
+```sh
+dg profile key add                    # the key git signs with (user.signingkey, gpg.format)
+dg profile key add --ssh ~/.ssh/id_ed25519.pub
+dg profile key add --gpg 0x1234ABCD5678EF90
+dg profile key list
+dg profile key remove <end of fingerprint>
+```
+
+In the web app, paste the public key (an `ssh-ed25519 …` line, or the output of `gpg --armor --export <key id>`) under **Settings → Public profile → Signing keys**.
+
+- **Which keys.** Ed25519 SSH keys, and Ed25519 or ECDSA (P-256/384/521) OpenPGP keys. A profile lists at most four, of at most 300 bytes each, so an RSA key does not fit: add an Ed25519 signing subkey (`gpg --quick-add-key <fingerprint> ed25519 sign`). For an OpenPGP key, the key that signs is published: the newest subkey that may sign, else the primary key, as gpg picks it.
+- **What Verified means.** The signature checks against a key that exactly one of the repository's owner and members lists on their profile. The badge names that identity. As with a key on a GitHub account, nobody proves they hold the private key of a key they list. Forge does not tie it to the commit's author email either, which it doesn't know. A key that two identities list names nobody.
+- **Unverified** says why: the key is on no member's profile, more than one identity lists it, the signature does not match the commit (it was changed after signing), or it is a kind Forge does not check (X.509, RSA, an SSH key that is not Ed25519, SHA-1).
+- **Checked where.** In your browser (and by `dg`): nothing is asked of a server. The web reads the repository's members and their profiles once a page shows a signed commit.
+
+Check commits from a clone with `dg verify-commit`, which gives the same verdict as the badges:
+
+```sh
+dg verify-commit HEAD main~3
+dg verify-commit --author @bob HEAD    # also trust a pull request author's keys
+```

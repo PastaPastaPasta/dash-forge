@@ -1,0 +1,14 @@
+{
+  "name": "ssh_bad_base64",
+  "description": "A key blob that is not base64 is invalid.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "ssh-ed25519 AAAA$$$$"
+  },
+  "expected": {
+    "kind": "invalid",
+    "fingerprint": null,
+    "verifiable": false
+  }
+}

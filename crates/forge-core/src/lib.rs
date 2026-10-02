@@ -71,6 +71,7 @@ pub mod resolve;
 pub mod rules;
 pub mod scope;
 pub mod sealed;
+pub mod signing_keys;
 pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_http;

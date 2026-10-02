@@ -1,0 +1,17 @@
+{
+  "name": "garbage_malformed",
+  "description": "A signature header that is no signature: malformed.",
+  "case": "commit_signature",
+  "rules": "v2",
+  "input": {
+    "commit": "tree ec1cc7289b3750800883e539f2ef7fefc3394774\nparent f48c6942ad5e09be79f2d7811e06346b99194d81\nauthor Sig Test <sig@sig.test> 1790942400 +0000\ncommitter Sig Test <sig@sig.test> 1790942400 +0000\ngpgsig hello\n\ngpg-a commit\n\nBody line for gpg-a.\n",
+    "signers": []
+  },
+  "expected": {
+    "status": "unverified",
+    "reason": "malformed",
+    "format": "unknown",
+    "key": null,
+    "signer": null
+  }
+}

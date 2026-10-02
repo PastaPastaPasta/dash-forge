@@ -19,6 +19,7 @@ pub async fn run(ctx: &Ctx, cmd: &ProfileCommand) -> Result<()> {
         ProfileCommand::Show { who } => show(ctx, who.as_deref()).await,
         ProfileCommand::Set(args) => set(ctx, args).await,
         ProfileCommand::Delete => delete(ctx).await,
+        ProfileCommand::Key(cmd) => crate::signing::run_key(ctx, cmd).await,
     }
 }
 
@@ -92,8 +93,8 @@ async fn show(ctx: &Ctx, who: Option<&str>) -> Result<()> {
                 println!("link       {}", safe(l));
             }
             println!("avatar     {}", avatar_words(f.avatar_config.as_deref(), &id));
-            if !p.pubkeys.is_empty() {
-                println!("keys       {} signing key(s)", p.pubkeys.len());
+            for k in &p.pubkeys {
+                println!("key        {}", crate::signing::describe(k));
             }
             if let Some(bio) = &f.bio {
                 println!();

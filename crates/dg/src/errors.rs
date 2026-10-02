@@ -236,6 +236,11 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         }
         Command::Profile(crate::ProfileCommand::Set(_)) => ("profile not changed", None),
         Command::Profile(crate::ProfileCommand::Delete) => ("profile not deleted", None),
+        Command::Profile(crate::ProfileCommand::Key(crate::ProfileKeyCommand::List)) => {
+            ("could not read your signing keys", None)
+        }
+        Command::Profile(crate::ProfileCommand::Key(_)) => ("signing keys not changed", None),
+        Command::VerifyCommit { repo, .. } => ("could not verify the commits", repo.as_ref()),
         Command::Doctor { .. } => ("doctor found problems", None),
         Command::Completions { .. } => ("could not print completions", None),
     };

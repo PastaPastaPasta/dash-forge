@@ -40,6 +40,8 @@ import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { RefDeletedState, RefSwitcher, unknownRefState } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
 import { CheckDot, useCheckOutcomes } from '@/components/repo/check-dot'
+import { SignatureBadge } from '@/components/repo/signature-badge'
+import { useCommitSignatures } from '@/hooks/use-commit-signatures'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -287,6 +289,8 @@ function LogBody({
   const restoring = state.pages < wanted && state.next !== null && state.error === null
   const oids = useMemo(() => (restoring ? [] : state.entries.map((e) => e.oid)), [restoring, state.entries])
   const outcomes = useCheckOutcomes(repo, oids)
+  // Signed commits' Verified / Unverified badges (P1-7): the signers are read once one shows.
+  const signatures = useCommitSignatures(repo, state.entries)
 
   /** Walk one more page from where the last one stopped (a capped path walk resumes there too). */
   const loadMore = useCallback(
@@ -400,13 +404,15 @@ function LogBody({
                 </Link>
                 <CheckDot counts={outcomes.get(entry.oid)} />
               </div>
-              <div className="mt-0.5 flex items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-                <span>{entry.author.name || 'unknown'}</span>
-                <span>
+              {/* One line on a phone: the name gives way (ellipsis), the age never breaks. */}
+              <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+                <span className="min-w-0 truncate">{entry.author.name || 'unknown'}</span>
+                <span className="shrink-0 whitespace-nowrap">
                   · <Time ms={entry.author.when} prefix="authored " />
                 </span>
               </div>
             </div>
+            <SignatureBadge state={signatures.get(entry.oid)} />
             <Oid value={entry.oid} chars={7} />
           </div>
           )),

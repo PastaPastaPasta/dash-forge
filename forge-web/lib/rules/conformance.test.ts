@@ -34,6 +34,7 @@ import {
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import { avatarSpec, checkProfile, type ProfileInput } from './profile'
+import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
 import { planRefs, syncDecision } from '../repo/fork'
 import type {
   ConfigDoc,
@@ -574,6 +575,20 @@ function stateOf(v: Vector, inp: StateInput): [number, string | null] {
   return [inp.sum as number, inp.mergeOid ?? null]
 }
 
+/** The signature cases (`./signature`): asynchronous, since OpenPGP.js is. */
+const SIGNATURE_CASES: ReadonlySet<string> = new Set(['pubkey_entry', 'commit_signature'])
+
+async function runSignatureVector(v: Vector): Promise<void> {
+  if (v.case === 'pubkey_entry') {
+    onlyKeys(v, ['entry'])
+    expect(await readPubkeyEntry((v.input as { readonly entry: string }).entry)).toEqual(v.expected)
+    return
+  }
+  onlyKeys(v, ['commit', 'signers'], {})
+  const inp = v.input as { readonly commit: string; readonly signers: readonly Signer[] }
+  expect(await verifyCommitSignature(new TextEncoder().encode(inp.commit), inp.signers)).toEqual(v.expected)
+}
+
 describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
   const base = vectors.filter((v) => v.rules === undefined)
@@ -606,8 +621,9 @@ describe('FORGE_RULES conformance vectors', () => {
     })
   }
   for (const v of v2Vectors) {
-    it(`v2 ${v.case} :: ${v.name}`, () => {
-      runVector(v)
+    it(`v2 ${v.case} :: ${v.name}`, async () => {
+      if (SIGNATURE_CASES.has(v.case)) await runSignatureVector(v)
+      else runVector(v)
     })
   }
 })
