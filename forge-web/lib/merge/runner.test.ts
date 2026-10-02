@@ -95,6 +95,16 @@ describe('merge step runner', () => {
     expect(calls).toEqual([])
   })
 
+  it('refuses to resume a run made for another base branch (the PR was retargeted since)', async () => {
+    const d = deps()
+    // A partial run that moved main; the PR now merges into next, whose tip is the same.
+    await expect(runMergeSteps({ ...d, pull: { ...d.pull, baseRefName: 'refs/heads/next' } }, newRun({ baseTip: BASE, headOid: HEAD }, 'refs/heads/main'), () => undefined)).rejects.toThrow(MergeStopped)
+    expect(calls).toEqual([])
+    const main = { ...newRun({ baseTip: BASE, headOid: HEAD }, 'refs/heads/main'), done: ['merge' as const] }
+    expect(runFor(main, { baseTip: BASE, headOid: HEAD }, 'refs/heads/next').done).toEqual([])
+    expect(runFor(main, { baseTip: BASE, headOid: HEAD }, 'refs/heads/main').done).toEqual(['merge'])
+  })
+
   it('runs every step in order and writes the pack, the protected ref and the merge event', async () => {
     const events: StepEvent[] = []
     const run = await runMergeSteps(deps(), newRun({ baseTip: BASE, headOid: HEAD }), (e) => events.push(e))

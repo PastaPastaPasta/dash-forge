@@ -970,7 +970,7 @@ impl RepoState {
             .targets
             .values()
             .filter(|t| t.is_pr && rules::ref_name_hash_matches(&t.base_ref, &t.base_ref_hash))
-            .map(|t| t.base_ref_hash.to_ascii_lowercase())
+            .flat_map(TargetInfo::base_hashes)
             .filter(|h| !self.tips.contains_key(h))
             .collect();
         let repo = decode_identifier(&self.meta.repo_id)?;
@@ -1072,10 +1072,12 @@ impl RepoState {
             .and_then(|id| self.targets.get(&id));
         match (target, d.field_hex("oid")) {
             (Some(t), Some(oid)) => {
-                rules::ref_name_hash_matches(&t.base_ref, &t.base_ref_hash)
+                // The base as of the merge: a retarget written after it does not count.
+                let (base_ref, base_ref_hash) = t.merge_base_at(d.created_at.unwrap_or(u64::MAX));
+                rules::ref_name_hash_matches(&base_ref, &base_ref_hash)
                     && self
                         .tips
-                        .get(&t.base_ref_hash.to_ascii_lowercase())
+                        .get(&base_ref_hash.to_ascii_lowercase())
                         .is_some_and(|tips| tips.contains(&oid))
             }
             _ => false,
@@ -1205,7 +1207,8 @@ async fn poll_repo_rest(
     let mut high = 0;
 
     // The event feeds before the transitions: a retarget read in the same cycle as the merge
-    // after it moves the base the merge is judged against first.
+    // after it is known when the merge is judged (against the base as of the merge,
+    // `TargetInfo::merge_base_at`), and its new base's tips are read first.
     let streams = [
         DOC_RELEASE,
         DOC_ISSUE,
@@ -1557,6 +1560,9 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
         // aside), so `merged` should never legitimately go back to `false` here; `||` is
         // defensive, not load-bearing.
         t.merged = t.merged || merged;
+        if merged {
+            t.settle_merge(d.created_at.unwrap_or(u64::MAX));
+        }
     }
     if open {
         s.closed.remove(&tid);
@@ -1752,7 +1758,8 @@ mod tests {
                         base_ref: String::new(),
                         head_oid: String::new(),
                         head_set_by: None,
-                        base_set_by: None,
+                        retargets: Vec::new(),
+                        opened_base: None,
                         base_ref_hash: String::new(),
                         baseline: Baseline::Beginning,
                         last_activity: 0,
@@ -1832,7 +1839,8 @@ mod tests {
             base_ref: base_ref.into(),
             head_oid: String::new(),
             head_set_by: None,
-            base_set_by: None,
+            retargets: Vec::new(),
+            opened_base: None,
             base_ref_hash: base_ref_hash.into(),
             baseline: Baseline::Beginning,
             last_activity: 0,
@@ -1881,7 +1889,8 @@ mod tests {
             base_ref: "refs/heads/main".into(),
             head_oid: String::new(),
             head_set_by: None,
-            base_set_by: None,
+            retargets: Vec::new(),
+            opened_base: None,
             base_ref_hash: hash("refs/heads/main"),
             baseline: Baseline::Beginning,
             last_activity: 0,
@@ -1942,10 +1951,22 @@ mod tests {
         assert_eq!(follow_base(&mut st, &retarget("r2", 3, "-x")), None);
         assert!(st.merge_on_base(&merge(&"bb".repeat(20))), "a tip of dev");
         assert!(!st.merge_on_base(&merge(&"aa".repeat(20))), "main's");
-        // Once merged, a later retarget leaves the base alone.
-        st.targets.get_mut(&target).unwrap().merged = true;
+        // A retarget written after the merge (at 9) but read before it, in the same poll: the
+        // merge is still judged against the base as of the merge, and the PR stays there.
         assert_eq!(
             follow_base(&mut st, &retarget("r3", 10, "refs/heads/main")),
+            Some("refs/heads/dev".into())
+        );
+        assert!(
+            st.merge_on_base(&merge(&"bb".repeat(20))),
+            "still dev's tip"
+        );
+        st.targets.get_mut(&target).unwrap().merged = true;
+        st.targets.get_mut(&target).unwrap().settle_merge(9);
+        assert_eq!(st.targets[&target].base_ref, "refs/heads/dev");
+        // Once merged, a later retarget leaves the base alone.
+        assert_eq!(
+            follow_base(&mut st, &retarget("r4", 11, "refs/heads/main")),
             None
         );
         assert_eq!(st.targets[&target].base_ref, "refs/heads/dev");

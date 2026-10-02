@@ -295,7 +295,7 @@ export function MergePanel({
   const [details, setDetails] = useState<Partial<Record<MergeStepId, string>>>({})
   // Kept across retries of the same base tip and head only (`runFor` drops a stale one).
   const [savedRun, setRun] = useState<MergeRun | null>(null)
-  const run = runFor(savedRun, input)
+  const run = runFor(savedRun, input, baseRefName)
   const [failure, setFailure] = useState<{ step: MergeStepId; message: string } | null>(null)
   const [stopped, setStopped] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)

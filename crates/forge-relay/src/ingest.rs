@@ -292,9 +292,13 @@ pub struct TargetInfo {
     /// `baseRefNameHash` (PRs only, hex): the ref a merge must land on; after a retarget,
     /// `sha256` of the retarget's base ([`TargetInfo::apply_retarget`]).
     pub base_ref_hash: String,
-    /// The `($createdAt, $id)` of the retarget (event kind 8) that set [`Self::base_ref`], if
-    /// any: the newest applies (forge-core `pr_merge_base`).
-    pub base_set_by: Option<(u64, String)>,
+    /// The retargets (event kind 8) seen, as `($createdAt, $id, base)`, in that order: the
+    /// newest is [`Self::base_ref`]; a merge is judged against the newest written by then
+    /// ([`TargetInfo::merge_base_at`], forge-core `pr_merge_base`).
+    pub retargets: Vec<(u64, String, String)>,
+    /// The base the PR was opened against (`baseRefName`, `baseRefNameHash`), once a retarget
+    /// moved [`Self::base_ref`] off it.
+    pub opened_base: Option<(String, String)>,
     /// Where this target's comment and review streams start.
     pub baseline: Baseline,
     /// The newest `$createdAt` seen on the target or anything about it (ms).
@@ -319,7 +323,8 @@ impl TargetInfo {
             head_oid: String::new(),
             head_set_by: None,
             base_ref_hash: String::new(),
-            base_set_by: None,
+            retargets: Vec::new(),
+            opened_base: None,
             baseline,
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
@@ -338,7 +343,8 @@ impl TargetInfo {
             head_oid: d.field_hex("headOid").unwrap_or_default(),
             head_set_by: None,
             base_ref_hash: d.field_hex("baseRefNameHash").unwrap_or_default(),
-            base_set_by: None,
+            retargets: Vec::new(),
+            opened_base: None,
             baseline,
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
@@ -370,11 +376,11 @@ impl TargetInfo {
         })
     }
 
-    /// Apply a retarget (member `event` kind 8) whose `value` is a legal ref name and which is
-    /// newer by `($createdAt, $id)` than the one that set the current base: the PR now merges
-    /// into `value`, so its merges are judged against that ref (forge-core `pr_merge_base`).
-    /// Returns the base it was retargeted from when it moved. A caller that has seen the PR's
-    /// merge applies no later retarget (a merged PR's base is where it was merged).
+    /// Apply a retarget (member `event` kind 8) whose `value` is a legal ref name: the PR now
+    /// merges into the newest one by `($createdAt, $id)` (forge-core `pr_merge_base`), whatever
+    /// order they are read in. Returns the base it was retargeted from when it moved. A caller
+    /// that has seen the PR's merge applies no later retarget (a merged PR's base is where it
+    /// was merged, [`Self::settle_merge`]).
     pub fn apply_retarget(&mut self, d: &FetchedDocument) -> Option<String> {
         if !self.is_pr || d.field_u64("kind") != Some(8) {
             return None;
@@ -382,16 +388,59 @@ impl TargetInfo {
         let value = d
             .field_str("value")
             .filter(|v| rules::is_legal_ref_name(v))?;
-        let key = (d.created_at.unwrap_or(0), d.id.clone());
-        if self.base_set_by.as_ref().is_some_and(|k| *k >= key) {
+        let entry = (d.created_at.unwrap_or(0), d.id.clone(), value);
+        if self.retargets.contains(&entry) {
             return None;
         }
-        self.base_set_by = Some(key);
-        if value == self.base_ref {
+        if self.opened_base.is_none() {
+            self.opened_base = Some((self.base_ref.clone(), self.base_ref_hash.clone()));
+        }
+        self.retargets.push(entry);
+        self.retargets.sort();
+        let (newest, hash) = self.merge_base_at(u64::MAX);
+        if newest == self.base_ref {
             return None;
         }
-        self.base_ref_hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(value.as_bytes()));
-        Some(std::mem::replace(&mut self.base_ref, value))
+        self.base_ref_hash = hash;
+        Some(std::mem::replace(&mut self.base_ref, newest))
+    }
+
+    /// The base a merge written at `at` is judged against, and its ref-name hash: the newest
+    /// retarget written by then, else the base the PR was opened against.
+    #[must_use]
+    pub fn merge_base_at(&self, at: u64) -> (String, String) {
+        match self.retargets.iter().rev().find(|(t, _, _)| *t <= at) {
+            Some((_, _, base)) => (
+                base.clone(),
+                hex::encode(<sha2::Sha256 as sha2::Digest>::digest(base.as_bytes())),
+            ),
+            None => self
+                .opened_base
+                .clone()
+                .unwrap_or_else(|| (self.base_ref.clone(), self.base_ref_hash.clone())),
+        }
+    }
+
+    /// A merge written at `at` was seen: the PR's base is where it was merged, whatever a
+    /// later retarget read in the same poll said.
+    pub fn settle_merge(&mut self, at: u64) {
+        (self.base_ref, self.base_ref_hash) = self.merge_base_at(at);
+    }
+
+    /// Every base ref hash a merge of this PR may be judged against (its current base and every
+    /// retarget's), for the tips to track.
+    #[must_use]
+    pub fn base_hashes(&self) -> Vec<String> {
+        let mut out = vec![self.base_ref_hash.to_ascii_lowercase()];
+        if let Some((_, h)) = &self.opened_base {
+            out.push(h.to_ascii_lowercase());
+        }
+        out.extend(
+            self.retargets
+                .iter()
+                .map(|(_, _, b)| hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b.as_bytes()))),
+        );
+        out
     }
 
     fn issue_obj(&self, id: &str, open: bool) -> IssueObj {
@@ -816,7 +865,8 @@ mod tests {
             },
             head_oid: if is_pr { "cafe".into() } else { String::new() },
             head_set_by: None,
-            base_set_by: None,
+            retargets: Vec::new(),
+            opened_base: None,
             base_ref_hash: String::new(),
             baseline: Baseline::Beginning,
             last_activity: 0,
