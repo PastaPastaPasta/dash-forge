@@ -48,9 +48,8 @@ const searchUrl = (repo: { owner: string; name: string } | undefined, query: str
 /** Type `query` and wait for its results (the search runs in the worker). */
 async function searchFor(page: Page, query: string): Promise<string> {
   await page.getByTestId('code-search-input').fill(query)
-  // The search runs after a 200 ms pause in typing, in the worker.
-  await page.waitForTimeout(800)
-  const count = page.getByTestId('code-search-count')
+  // The count names the query its results are for: the previous query's never answers this one.
+  const count = page.locator(`[data-testid=code-search-count][data-query="${query.replace(/["\\]/g, '\\$&')}"]`)
   await expect(count).toBeVisible()
   return count.innerText()
 }
@@ -74,10 +73,10 @@ test.describe('code search (P1-3)', () => {
 
     const before = net.dapi().length
     const away = net.elsewhere().length
-    expect(await searchFor(page, 'hello')).toMatch(/\d+ files?/)
-    expect(await searchFor(page, 'path:*.md')).toMatch(/\d+ files?/)
-    expect(await searchFor(page, 'fn language:rust')).toMatch(/1 file/)
-    expect(await searchFor(page, '/print\\w+!/')).toMatch(/1 file/)
+    expect(await searchFor(page, 'hello')).toMatch(/^\d+ files?\b/)
+    expect(await searchFor(page, 'path:*.md')).toMatch(/^\d+ files?\b/)
+    expect(await searchFor(page, 'fn language:rust')).toMatch(/^1 file\b/)
+    expect(await searchFor(page, '/print\\w+!/')).toMatch(/^1 file\b/)
     expect(net.dapi().length - before, 'searching a built index sends no DAPI request').toBe(0)
     expect(net.elsewhere().length - away, 'nor any other request').toBe(0)
 
@@ -121,7 +120,7 @@ test.describe('code search (P1-3)', () => {
       test.info().annotations.push({ type: 'dapi', description: `dash build: ${built} in ${Date.now() - t0} ms` })
       expect(built).toBeLessThanOrEqual(DASH_BUILD)
       const s0 = net.dapi().length
-      expect(await searchFor(page, 'llmq')).toMatch(/\d+ files/)
+      expect(await searchFor(page, 'llmq')).toMatch(/^[\d,]+ files\b/)
       expect(net.dapi().length - s0).toBe(0)
       await shot(page, 'cs-03-dash-results')
     }

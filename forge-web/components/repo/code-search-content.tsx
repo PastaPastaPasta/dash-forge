@@ -484,22 +484,23 @@ function Results({ target, summary, stale, query, addr, refParam }: { target: Co
   const limit = paging.query === query ? paging.limit : PAGE
   const result = useAsync(() => searchCode(target, summary.tip, query, 0, limit), [target.scope, summary.tip, query, limit], { enabled: query !== '' })
   // While a search runs, the previous results stay (no flash of "Searching" per keystroke).
-  const shown = useRef<SearchResult | null>(null)
-  if (result.data !== null) shown.current = result.data
+  // `useAsync` clears `data` when the query changes, so data in hand is this query's.
+  const shown = useRef<{ readonly query: string; readonly data: SearchResult } | null>(null)
+  if (result.data !== null) shown.current = { query, data: result.data }
   if (query === '') {
     return <p className="text-dense text-anvil-600 dark:text-anvil-400">Type to search {plural(summary.files, 'file')} of {summary.ref}.</p>
   }
   if (result.error !== null) return <ErrorState title="The search failed" message={result.error} onRetry={result.reload} />
-  const data = shown.current
-  if (data === null) return <Spinner label="Searching" />
+  if (shown.current === null) return <Spinner label="Searching" />
+  const { data, query: shownQuery } = shown.current
   // Links open the file at the commit searched when the index is an older one.
   const linkRef = stale ? (summary.commit ?? summary.tip) : refParam
   return (
     <section aria-label="Results" className="space-y-3" data-testid="code-search-results">
-      <p role="status" className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="code-search-count">
+      <p role="status" className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="code-search-count" data-query={shownQuery}>
         {data.fileCount === 0 ? 'No files match.' : `${plural(data.fileCount, 'file')}`}
-        {data.stopped ? ' (the search stopped after 5 s; refine it for every match)' : ''}
-        <span className="ml-2 text-[12px] text-anvil-500 dark:text-anvil-400">{Math.max(1, Math.round(data.ms))} ms, in this browser</span>
+        {data.stopped ? ' (the search stopped after 5 s; refine it for every match)' : ''}{' '}
+        <span className="ml-1 text-[12px] text-anvil-500 dark:text-anvil-400">{Math.max(1, Math.round(data.ms))} ms, in this browser</span>
       </p>
       {data.unknownLanguages.length > 0 ? (
         <p className="text-[12px] text-anvil-600 dark:text-anvil-400">Unknown language: {data.unknownLanguages.join(', ')}.</p>
