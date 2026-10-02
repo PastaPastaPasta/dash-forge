@@ -108,6 +108,7 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 | Each extra storage target (a second bucket) | ~0.00014 DASH a push: the two manifests carry its URIs |
 | Issue | ~0.0006 DASH with a short body in a busy repository, ~0.001 DASH for a repository's first; ~0.0017 DASH with a 4 KB body |
 | Comment | ~0.0005 DASH short, ~0.0007 DASH as a thread's first, ~0.0016 DASH at 4 KB |
+| A body, comment or release notes **over 5,120 bytes** (maintainers and writers; [forge-v2.md §6.3](../contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9)) | the document as above, plus the full text as an artifact: quoted at **~0.010 DASH for 20 KB, ~0.021 for 50 KB** on Platform (one manifest and the text's bytes as chunks, permanent), or **~0.0015 DASH** (the manifest alone) on your own storage. Quoted upper bounds, not yet measured |
 | Pull request | ~0.0007–0.0013 DASH |
 | Close, reopen, label, merge event | ~0.0004–0.0006 DASH (a close measured 0.00059 DASH; a merge event 0.00058 DASH on beta.6) |
 | Review | ~0.00035–0.0004 DASH |

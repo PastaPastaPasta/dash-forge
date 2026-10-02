@@ -1,0 +1,224 @@
+//! Long bodies in `dg` (`docs/contracts/forge-v2.md` §6.3): a body, comment, review or set of
+//! release notes longer than its field holds (5,120 bytes, less in a private repository) is
+//! stored as a repository artifact, and the field keeps its first part and a line naming the
+//! artifact. Writers store it on the repository's storage policy (`dash.storage`, as a push
+//! reads it), else on Platform; readers fetch and check it. The rule itself is forge-core's
+//! (`rules::long_body`, `collab::long_body`).
+
+use anyhow::Result;
+use forge_core::collab::long_body::{BodyField, BodyRead, BodyStore};
+use forge_core::collab::v2::Collab;
+use forge_core::collab::Imported;
+use forge_core::rules::v2::Visibility;
+use forge_core::scope::RepoRef;
+use forge_core::storage::policy::git_config_scoped;
+use forge_core::storage::{ExternalTarget, StoragePolicy, StorageProfiles, StorageTarget};
+
+/// Where `dg` stores a long body's full text: the repository's storage policy (`dash.storage`
+/// and `dash.replicas` in the git config, every scope, as a push reads it), else Platform
+/// `chunk` documents, which every reader can fetch.
+pub struct BodyTargets {
+    external: Vec<ExternalTarget>,
+    platform: bool,
+    required: usize,
+}
+
+impl BodyTargets {
+    /// The policy in the git config, opened.
+    pub fn resolve() -> Result<Self> {
+        let list = git_config_scoped("dash.storage").map(|(_, v)| v);
+        let replicas = git_config_scoped("dash.replicas").map(|(_, v)| v);
+        let policy = StoragePolicy::from_git_values(list.as_deref(), replicas.as_deref(), None)?;
+        if policy.is_platform_only() {
+            return Ok(Self {
+                external: Vec::new(),
+                platform: true,
+                required: 1,
+            });
+        }
+        let resolved = policy.resolve(&StorageProfiles::load()?)?;
+        let http = forge_core::storage::http_client();
+        let external = resolved
+            .external
+            .iter()
+            .map(|(name, profile)| ExternalTarget::from_profile(name, profile, &http))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(Self {
+            external,
+            platform: resolved.platform,
+            required: resolved.replicas,
+        })
+    }
+
+    /// As forge-core's writer takes them.
+    pub fn store(&self) -> BodyStore<'_> {
+        BodyStore {
+            external: self
+                .external
+                .iter()
+                .map(|t| t as &dyn StorageTarget)
+                .collect(),
+            platform: self.platform,
+            required: self.required,
+        }
+    }
+
+    /// Where the text goes, for the confirmation ("Platform", "r2 and Platform").
+    pub fn describe(&self) -> String {
+        let mut names: Vec<String> = self.external.iter().map(|t| t.name().to_string()).collect();
+        if self.platform {
+            names.push("Platform".to_string());
+        }
+        match names.len() {
+            0 => "nowhere".to_string(),
+            1 => names.remove(0),
+            _ => {
+                let last = names.pop().unwrap_or_default();
+                format!("{} and {last}", names.join(", "))
+            }
+        }
+    }
+
+    /// An upper bound on the credits of storing `bytes` of text in `repo`.
+    pub fn credits(&self, repo: &RepoRef, bytes: u64) -> u64 {
+        forge_core::cost::push_fees::long_body(
+            bytes,
+            repo.visibility == Visibility::Private,
+            self.external.len() as u64,
+            self.platform,
+        )
+    }
+}
+
+/// A text to write into `field`, and where its full text goes when the field cannot hold it.
+pub struct Planned<'f> {
+    field: BodyField<'f>,
+    full: String,
+    room: usize,
+    /// The storage, when the text is stored as an artifact.
+    targets: Option<BodyTargets>,
+}
+
+impl<'f> Planned<'f> {
+    /// Plan writing `full` into `field` of `repo`: the storage policy is read only when the
+    /// text needs an artifact.
+    pub fn new(
+        repo: &RepoRef,
+        field: BodyField<'f>,
+        imported: Option<&Imported>,
+        full: &str,
+    ) -> Result<Self> {
+        let room = field.room(repo.visibility, imported);
+        let targets = forge_core::rules::long_body::needs_artifact(full, room)
+            .then(BodyTargets::resolve)
+            .transpose()?;
+        Ok(Self {
+            field,
+            full: full.to_string(),
+            room,
+            targets,
+        })
+    }
+
+    /// The bytes the field itself takes (at most its room), for a quote.
+    pub fn field_bytes(&self) -> u64 {
+        self.full.len().min(self.room) as u64
+    }
+
+    /// What storing the full text adds to the write, in credits (0 when it fits the field).
+    pub fn extra_credits(&self, repo: &RepoRef) -> u64 {
+        self.targets
+            .as_ref()
+            .map_or(0, |t| t.credits(repo, self.full.len() as u64))
+    }
+
+    /// A clause for the confirmation, or "" when the text fits: "; the text (23,456 bytes) is
+    /// stored as a repository artifact on Platform".
+    pub fn clause(&self) -> String {
+        self.targets.as_ref().map_or_else(String::new, |t| {
+            format!(
+                "; the text ({} bytes, over the field's {}) is stored as a repository artifact on {}",
+                self.full.len(),
+                self.room,
+                t.describe()
+            )
+        })
+    }
+
+    /// The field text a write will carry, known before anything is stored: the text itself,
+    /// or in a public repository its prefix and trailer (the artifact's hash is the text's own
+    /// SHA-256). `None` for a private repository's long text, whose artifact is sealed afresh.
+    /// What a resumable create keys its journal by.
+    pub fn expected_field_text(&self, repo: &RepoRef) -> Option<String> {
+        if self.targets.is_none() {
+            return Some(self.full.clone());
+        }
+        if repo.visibility == Visibility::Private {
+            return None;
+        }
+        forge_core::rules::long_body::public_stored_text(&self.full, self.room)
+    }
+
+    /// The text to write into the field: the text itself, or (after storing the full text)
+    /// its first part and the line naming the artifact.
+    pub async fn field_text(
+        &self,
+        collab: &Collab<'_>,
+        repo: &RepoRef,
+        imported: Option<&Imported>,
+    ) -> Result<String> {
+        match &self.targets {
+            None => Ok(self.full.clone()),
+            Some(t) => Ok(collab
+                .store_long_body(repo, self.field, imported, &self.full, &t.store())
+                .await?),
+        }
+    }
+}
+
+/// The texts as a reader shows them, in order: each field with no trailer as it is, each
+/// continued one fetched and checked (concurrently).
+pub async fn read_all(collab: &Collab<'_>, repo: &RepoRef, texts: &[&str]) -> Vec<BodyRead> {
+    futures::future::join_all(texts.iter().map(|t| collab.read_long_body(repo, t))).await
+}
+
+/// The line printed under a text of which only the first part could be read.
+pub fn partial_line(why: &str) -> String {
+    format!("[only the first part is shown: {why}]")
+}
+
+/// A text for `--json`: the text, and why only its first part is there (or `None`).
+pub fn json(r: &BodyRead) -> (String, Option<String>) {
+    (r.text().to_string(), r.incomplete().map(str::to_string))
+}
+
+/// Read every text in `texts` ([`read_all`]) and put it in place of its field; a text of which
+/// only the first part could be read ends with a line saying why ([`partial_line`]).
+pub async fn read_in_place(collab: &Collab<'_>, repo: &RepoRef, texts: Vec<&mut String>) {
+    let reads = {
+        let refs: Vec<&str> = texts.iter().map(|t| t.as_str()).collect();
+        read_all(collab, repo, &refs).await
+    };
+    for (t, r) in texts.into_iter().zip(reads) {
+        *t = match r.incomplete() {
+            None => r.text().to_string(),
+            Some(why) => format!("{}\n{}", r.text(), partial_line(why)),
+        };
+    }
+}
+
+/// Put each comment's text as read (`reads`, in the same order) in place of its field, and
+/// return why, by comment id, for those of which only the first part could be read.
+pub fn apply_to_comments(
+    comments: &mut [forge_core::collab::v2::Comment],
+    reads: &[BodyRead],
+) -> std::collections::BTreeMap<String, String> {
+    let mut incomplete = std::collections::BTreeMap::new();
+    for (c, r) in comments.iter_mut().zip(reads) {
+        c.body = r.text().to_string();
+        if let Some(why) = r.incomplete() {
+            incomplete.insert(c.document_id.clone(), why.to_string());
+        }
+    }
+    incomplete
+}

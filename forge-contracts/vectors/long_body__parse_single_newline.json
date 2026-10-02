@@ -1,0 +1,15 @@
+{
+  "name": "parse_single_newline",
+  "description": "A trailer after a single newline still counts; the prefix keeps no trailing newline.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=9000 -->"
+  },
+  "expected": {
+    "kind": "continued",
+    "prefix": "Head",
+    "sha256": "abababababababababababababababababababababababababababababababab",
+    "bytes": 9000
+  }
+}

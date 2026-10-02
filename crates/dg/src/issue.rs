@@ -501,9 +501,19 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
         .issue_view(&s.repo, number_arg(number)?)
         .await?
         .ok_or_else(|| not_found(repo, number))?;
-    let (comments, hidden) = collab
+    let (mut comments, hidden) = collab
         .comments_counted(&s.repo, &view.issue.document_id)
         .await?;
+    // Long bodies (forge-v2.md §6.3): the full text each field's trailer names, fetched and
+    // checked; a text whose rest cannot be read keeps its first part and says why.
+    let reads = {
+        let texts: Vec<&str> = std::iter::once(view.issue.body.as_str())
+            .chain(comments.iter().map(|c| c.body.as_str()))
+            .collect();
+        crate::long_body::read_all(&collab, &s.repo, &texts).await
+    };
+    let incomplete = crate::long_body::apply_to_comments(&mut comments, &reads[1..]);
+    let (body, body_incomplete) = crate::long_body::json(&reads[0]);
     // RC2 MOD: what maintainers hid (collapsed below unless --show-hidden)
     let moderation = collab
         .hidden_items(&s.repo, &view.issue.target(), &view.log, &comments, &[])
@@ -546,7 +556,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
     let locked = view.log.locked();
     let state = view.state;
     let i = view.issue;
-    let (id, title, body, author) = (i.document_id, i.title, i.body, i.author);
+    let (id, title, author) = (i.document_id, i.title, i.author);
     // DPNS names for the human view only, read together; a failed read shows the bare id.
     let names = if ctx.json {
         std::collections::BTreeMap::default()
@@ -573,6 +583,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             "number": number,
             "title": title,
             "body": body,
+            "bodyIncomplete": body_incomplete,
             "author": author,
             "documentId": id,
             "id": id,
@@ -582,7 +593,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             "milestone": meta.milestone,
             "pinned": meta.pinned,
             "locked": locked,
-            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body})).collect::<Vec<_>>(),
+            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id)})).collect::<Vec<_>>(),
             "events": events.iter().map(|e| json!({
                 "id": e.id,
                 "kind": e.kind,
@@ -620,6 +631,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             if !body.is_empty() {
                 println!("\n{}", safe(&body));
             }
+            if let Some(why) = &body_incomplete {
+                println!("{}", crate::long_body::partial_line(why));
+            }
             for item in &timeline {
                 match item {
                     Item::Comment(c) => {
@@ -636,6 +650,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
                                     println!("{}", crate::fmt::hidden_line("comment", h, &who, true));
                                 }
                                 println!("{}", safe(&c.body));
+                                if let Some(why) = incomplete.get(&c.document_id) {
+                                    println!("{}", crate::long_body::partial_line(why));
+                                }
                             }
                         }
                     }
@@ -777,11 +794,22 @@ const COMMENT_IDS: &str =
 async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Result<()> {
     crate::common::document_id_arg(comment_id, "comment id", COMMENT_IDS)?;
     let s = Session::open_for_write(ctx, repo, "comment not edited").await?;
+    // An inline comment's path shares a private comment's room with its body: a body that
+    // fits only without it is refused by the sealer, with the limit.
+    let planned = crate::long_body::Planned::new(
+        &s.repo,
+        forge_core::collab::long_body::BodyField::Comment { path: None },
+        None,
+        body,
+    )?;
     ctx.confirm_or_cancel(&format!(
-        "Edit comment {comment_id}? (one document replace)"
+        "Edit comment {comment_id}? (one document replace{})",
+        planned.clause()
     ))?;
     let before = s.balance().await;
-    let edited = s.collab().update_comment(&s.repo, comment_id, body).await?;
+    let collab = s.collab();
+    let body = planned.field_text(&collab, &s.repo, None).await?;
+    let edited = collab.update_comment(&s.repo, comment_id, &body).await?;
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
     ctx.emit(
@@ -844,18 +872,27 @@ async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
 
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "issue not created").await?;
+    let planned = crate::long_body::Planned::new(
+        &s.repo,
+        forge_core::collab::long_body::BodyField::Issue { title },
+        None,
+        body,
+    )?;
     ctx.confirm_or_cancel(&format!(
-        "Open issue {title:?} in {}? (one document, {})",
+        "Open issue {title:?} in {}? (one document, {}{})",
         s.repo.display(),
         cost_line(
-            crate::quote::target_create((title.len() + body.len()) as u64),
+            crate::quote::target_create(title.len() as u64 + planned.field_bytes())
+                + planned.extra_credits(&s.repo),
             ctx.usd_price()
-        )
+        ),
+        planned.clause()
     ))?;
     let before = s.balance().await;
-    let created = s
-        .collab()
-        .create_issue(&s.repo, title, body, &default_journal_dir()?)
+    let collab = s.collab();
+    let body = planned.field_text(&collab, &s.repo, None).await?;
+    let created = collab
+        .create_issue(&s.repo, title, &body, &default_journal_dir()?)
         .await?;
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
@@ -971,12 +1008,34 @@ async fn edit(
         ));
     }
     let s = Session::open(ctx, repo).await?;
-    let target = target(&s, repo, number).await?;
-    ctx.confirm_or_cancel(&format!("Edit issue #{number}? (one document replace)"))?;
+    let collab = s.collab();
+    let issue = collab
+        .issue(&s.repo, number_arg(number)?)
+        .await?
+        .ok_or_else(|| not_found(repo, number))?;
+    let target = issue.target();
+    let field = forge_core::collab::long_body::BodyField::Issue {
+        title: title.unwrap_or(&issue.title),
+    };
+    let planned = body
+        .map(|b| crate::long_body::Planned::new(&s.repo, field, issue.imported.as_ref(), b))
+        .transpose()?;
+    ctx.confirm_or_cancel(&format!(
+        "Edit issue #{number}? (one document replace{})",
+        planned
+            .as_ref()
+            .map_or_else(String::new, crate::long_body::Planned::clause)
+    ))?;
     let before = s.balance().await;
-    let edited = s
-        .collab()
-        .update_target(&s.repo, &target, title, body)
+    let body = match &planned {
+        Some(p) => Some(
+            p.field_text(&collab, &s.repo, issue.imported.as_ref())
+                .await?,
+        ),
+        None => None,
+    };
+    let edited = collab
+        .update_target(&s.repo, &target, title, body.as_deref())
         .await?;
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
@@ -1004,13 +1063,30 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     let target = target(&s, repo, number).await?;
     refuse_if_locked(&s, number, &target.id).await?;
     let price = ctx.usd_price();
+    let planned = crate::long_body::Planned::new(
+        &s.repo,
+        forge_core::collab::long_body::BodyField::Comment { path: None },
+        None,
+        body,
+    )?;
     ctx.confirm_or_cancel(&format!(
-        "Comment on issue #{number}? (one comment, {})",
-        cost_line(crate::quote::comment(body.len() as u64), price)
+        "Comment on issue #{number}? (one comment, {}{})",
+        cost_line(
+            crate::quote::comment(planned.field_bytes()) + planned.extra_credits(&s.repo),
+            price
+        ),
+        planned.clause()
     ))?;
     let collab = s.collab();
     let (id, spent) = s
-        .metered(|| collab.comment(&s.repo, &target.id, body, None, None))
+        .metered(|| async {
+            let body = planned.field_text(&collab, &s.repo, None).await?;
+            Ok::<_, anyhow::Error>(
+                collab
+                    .comment(&s.repo, &target.id, &body, None, None)
+                    .await?,
+            )
+        })
         .await?;
     ctx.emit(
         json!({ "status": "commented", "issue": number, "commentId": id, "cost": cost_json(spent, price) }),

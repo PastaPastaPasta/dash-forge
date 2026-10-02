@@ -382,9 +382,25 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             .ok_or_else(|| crate::errors::usage("pass --title (the head commit is not local)"))?,
     };
 
-    let input = PatchInput {
+    // A body longer than the field is stored as a repository artifact (forge-v2.md §6.3); the
+    // PR carries its first part and the line naming it.
+    let planned = crate::long_body::Planned::new(
+        handle,
+        forge_core::collab::long_body::BodyField::Patch {
+            title: &title,
+            base_ref_name: &base,
+            source_ref_name: &head_ref,
+        },
+        None,
+        &args.body,
+    )?;
+    let mut input = PatchInput {
         title: title.clone(),
-        body: args.body.clone(),
+        // the field as it will be written (in a private repository, the full text until it is
+        // sealed below): what an interrupted create's journal is keyed by
+        body: planned
+            .expected_field_text(handle)
+            .unwrap_or_else(|| args.body.clone()),
         base_ref_name: base.clone(),
         source_repo_id: source.id().to_string(),
         source_ref_name: Some(head_ref.clone()),
@@ -406,22 +422,28 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         );
     }
     // The PR's title, body and ref names are its text (QW2-020: this was a fixed "~0.0001").
-    let text = input.title.len()
-        + input.body.len()
-        + input.base_ref_name.len()
-        + input.source_ref_name.as_deref().map_or(0, str::len);
-    let pr_quote = crate::quote::target_create(text as u64);
+    let text = input.title.len() as u64
+        + planned.field_bytes()
+        + input.base_ref_name.len() as u64
+        + input.source_ref_name.as_deref().map_or(0, str::len) as u64;
+    let pr_quote = crate::quote::target_create(text) + planned.extra_credits(handle);
     let price = ctx.usd_price();
+    let stored = planned.clause();
     ctx.confirm_or_cancel(&if args.draft {
         format!(
-            "Open it as a draft? (the PR and a draft transition: two documents, {})",
+            "Open it as a draft? (the PR and a draft transition: two documents, {}{stored})",
             cost_line(pr_quote + crate::quote::TRANSITION, price)
         )
     } else {
-        format!("Open it? (one document, {})", cost_line(pr_quote, price))
+        format!(
+            "Open it? (one document, {}{stored})",
+            cost_line(pr_quote, price)
+        )
     })?;
     let before = s.balance().await;
-    let created = s.collab().create_patch(handle, &input, &journal).await?;
+    let collab = s.collab();
+    input.body = planned.field_text(&collab, handle, None).await?;
+    let created = collab.create_patch(handle, &input, &journal).await?;
     let spent = s.spent_since(before).await;
     ctx.emit(
         json!({
@@ -931,12 +953,29 @@ async fn view(
     let s = Reader::open(ctx, repo).await?;
     let (client, handle, collab) = (&s.client, &s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
-    let v = collab.patch_view(handle, p).await?;
+    let mut v = collab.patch_view(handle, p).await?;
     let oracle = collab.member_oracle(handle).await?;
-    let doc_id = &v.patch.document_id;
-    let (reviews, hidden_reviews) = collab.reviews_counted(handle, doc_id).await?;
+    let doc_id = v.patch.document_id.clone();
+    let (mut reviews, hidden_reviews) = collab.reviews_counted(handle, &doc_id).await?;
     let approvals = approvals_over(&reviews, &v, &oracle);
-    let (comments, hidden_comments) = collab.comments_counted(handle, doc_id).await?;
+    let (mut comments, hidden_comments) = collab.comments_counted(handle, &doc_id).await?;
+    // Long bodies (forge-v2.md §6.3): each field's full text, fetched and checked; a text whose
+    // rest cannot be read keeps its first part and says why.
+    let body_incomplete = {
+        let read = collab.read_long_body(handle, &v.patch.body).await;
+        v.patch.body = read.text().to_string();
+        read.incomplete().map(str::to_string)
+    };
+    crate::long_body::read_in_place(
+        &collab,
+        handle,
+        comments
+            .iter_mut()
+            .map(|c| &mut c.body)
+            .chain(reviews.iter_mut().map(|r| &mut r.body))
+            .collect(),
+    )
+    .await;
     let review_state = v.review_with_threads(&comments);
     // RC2 MOD: what maintainers hid. Collapsed in the human view unless --show-hidden; a hidden
     // review's verdict still counts (only a dismissal stops it), so approvals are unchanged.
@@ -1040,6 +1079,7 @@ async fn view(
             "repoId": v.patch.repo_id,
             "title": v.patch.title,
             "body": v.patch.body,
+            "bodyIncomplete": body_incomplete,
             "author": v.patch.author,
             "state": state_field(&v),
             "draft": v.state.draft,
@@ -1205,6 +1245,9 @@ async fn view(
             }
             if !v.patch.body.is_empty() {
                 println!("\n{}", safe(&v.patch.body));
+            }
+            if let Some(why) = &body_incomplete {
+                println!("{}", crate::long_body::partial_line(why));
             }
             for r in &reviews {
                 let tag = if dismissed.contains_key(&r.document_id) {
@@ -1469,7 +1512,14 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "merge").await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
-    let view = collab.patch_view(handle, p).await?;
+    let mut view = collab.patch_view(handle, p).await?;
+    // The description as readers show it (a long body's full text, forge-v2.md §6.3): the
+    // issues it closes and a squash commit's message come from all of it, never its trailer.
+    view.patch.body = collab
+        .read_long_body(handle, &view.patch.body)
+        .await
+        .text()
+        .to_string();
     if view.state.merged {
         ctx.emit(
             json!({ "status": "already_merged", "pr": number, "merged": true }),

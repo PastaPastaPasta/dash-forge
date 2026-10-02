@@ -34,11 +34,13 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use forge_core::collab::long_body::{BodyField, BodyStore, FIELD_MAX};
 use forge_core::collab::v2::{check_tag_name, external_link, sealed_provenance, Collab};
 use forge_core::collab::{
     Imported, ReleaseAsset, ReleaseFile, ReleaseInput, ReleaseList, ReleaseStore, ReleaseWritten,
 };
 use forge_core::private::release::{fit_notes, ManifestAsset, ReleaseFields, ReleaseManifest};
+use forge_core::rules::long_body;
 use forge_core::scope::RepoRef;
 use forge_core::storage::{ExternalTarget, ResolvedPolicy, StorageTarget};
 use forge_core::user_error::codes;
@@ -109,6 +111,10 @@ pub(crate) trait SealedDest {
     ) -> forge_core::Result<ReleaseWritten>;
     /// How many storage targets the files and lists go to (`None`: no storage of your own).
     fn targets(&self) -> Option<u64>;
+    /// The notes field for `notes` longer than it holds (forge-v2.md §6.3): their first part
+    /// and the trailer naming their full text, stored first as a sealed artifact on the same
+    /// storage as the files.
+    async fn long_notes(&self, notes: &str) -> forge_core::Result<String>;
 }
 
 /// The destination through forge-core.
@@ -142,6 +148,77 @@ impl SealedDest for CollabDest<'_, '_> {
 
     fn targets(&self) -> Option<u64> {
         self.store.as_ref().map(|s| s.targets.len() as u64)
+    }
+
+    async fn long_notes(&self, notes: &str) -> forge_core::Result<String> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            forge_core::error::Error::Config(
+                "the storage policy names no storage of your own".into(),
+            )
+        })?;
+        self.collab
+            .store_long_body(
+                self.repo,
+                BodyField::Release,
+                None,
+                notes,
+                &BodyStore {
+                    external: store.targets.clone(),
+                    platform: false,
+                    required: store.required,
+                },
+            )
+            .await
+    }
+}
+
+/// The notes field a sealed revision of `full` carries, as far as is known before anything is
+/// stored, and what storing them costs: `full` when it fits the field, else the field with any
+/// artifact hash (forge-v2.md §6.3: all the asset-list decision reads of it is its length), its
+/// full text stored as a sealed artifact on the `targets` the files go to.
+fn notes_estimate(full: &str, targets: Option<u64>) -> (String, u64) {
+    if !long_body::needs_artifact(full, FIELD_MAX) {
+        return (full.to_string(), 0);
+    }
+    let field =
+        long_body::stored_text(full, FIELD_MAX, &[0; 32]).unwrap_or_else(|| full.to_string());
+    let credits = forge_core::cost::push_fees::long_body(
+        full.len() as u64,
+        true,
+        targets.unwrap_or(1),
+        false,
+    );
+    (field, credits)
+}
+
+/// The notes field `r`'s revision writes for `notes` (forge-v2.md §6.3): the notes, or when
+/// longer than the field, their first part and the trailer naming their full text, stored
+/// first as a sealed artifact (`estimate`, in a dry run). When that cannot be stored, the notes
+/// are cut to the field with a link to the source, and the run says so.
+async fn notes_field(
+    ledger: &mut Ledger<'_>,
+    dest: &impl SealedDest,
+    r: &SrcRelease,
+    notes: &str,
+    estimate: String,
+) -> String {
+    if !long_body::needs_artifact(notes, FIELD_MAX) {
+        return notes.to_string();
+    }
+    if ledger.dry_run() {
+        return estimate;
+    }
+    match dest.long_notes(notes).await {
+        Ok(field) => field,
+        Err(e) => {
+            ledger.warn(format!(
+                "release {}: its notes ({} bytes) could not be stored whole, so they are cut to \
+                 the field's {FIELD_MAX} bytes with a link to the source: {e}",
+                r.tag_name,
+                notes.len()
+            ));
+            crate::model::fit_text(notes, FIELD_MAX, &r.source_url)
+        }
     }
 }
 
@@ -354,7 +431,7 @@ fn sealed_notes(r: &SrcRelease, sealed: bool) -> &str {
 fn same_statement(held: &Held, r: &SrcRelease, notes: &str, imported: Option<&Imported>) -> bool {
     let f = &held.fields;
     (r.name.is_empty() || f.name.as_deref() == Some(r.name.as_str()))
-        && held.notes == notes
+        && long_body::states(&held.notes, notes, FIELD_MAX)
         && imported.is_none_or(|i| {
             sealed_provenance(i)
                 == (
@@ -559,13 +636,14 @@ async fn write_one(
     }
     let what = format!("release {tag}");
     let targets = dest.targets();
+    let (field, long_credits) = notes_estimate(notes, targets);
     let price = |changes| {
         sealed_release_credits(
-            new_list(&p, notes, imported.as_ref(), changes, clear_notes),
+            new_list(&p, &field, imported.as_ref(), changes, clear_notes),
             targets.unwrap_or(0),
-        )
+        ) + long_credits
     };
-    if targets.is_none() && new_list(&p, notes, imported.as_ref(), changes, clear_notes) {
+    if targets.is_none() && new_list(&p, &field, imported.as_ref(), changes, clear_notes) {
         ledger.skip(format!(
             "release {tag} not mirrored: a private release's files and asset list (and notes \
              past its 1507 bytes) are stored on your own storage, and the storage policy names \
@@ -603,10 +681,11 @@ async fn write_one(
         ));
     }
     let credits = price(changes);
+    let notes = notes_field(ledger, dest, r, notes, field).await;
     let input = ReleaseInput {
         tag_name: tag.clone(),
         name: r.name.clone(),
-        notes: notes.to_string(),
+        notes,
         clear_notes,
         assets: new_links.into_iter().map(|(a, _)| a.clone()).collect(),
         files,
@@ -714,6 +793,16 @@ mod tests {
 
     #[allow(clippy::unused_async_trait_impl)] // a test double: nothing to await
     impl SealedDest for Fake {
+        /// Stored "sealed": a hash of its own each time, as a real seal draws a fresh file id.
+        async fn long_notes(&self, notes: &str) -> forge_core::Result<String> {
+            if self.no_storage {
+                return Err(forge_core::Error::Config("no storage".into()));
+            }
+            let n = self.writes.borrow().len();
+            let hash = [u8::try_from(n % 256).unwrap_or(0); 32];
+            Ok(long_body::stored_text(notes, FIELD_MAX, &hash).expect("room for the trailer"))
+        }
+
         async fn current(&self) -> forge_core::Result<ReleaseList> {
             self.reads.set(self.reads.get() + 1);
             Ok(self.list())
@@ -1030,6 +1119,46 @@ mod tests {
 
     /// Notes past the 1507 bytes of `enc` continue in the sealed list, and an empty author
     /// seals none: a re-run compares both as the reader opens them, and writes nothing.
+    /// Notes over the 5,120-byte field keep their full text in a sealed long body (forge-v2.md
+    /// §6.3), and a re-run that seals afresh (another hash) does not write the release again.
+    #[tokio::test]
+    async fn notes_over_the_field_are_stored_whole_and_stable_across_runs() {
+        let (dest, src) = (Fake::default(), source());
+        let notes = "Dash Core notes. ".repeat(1000);
+        run(&dest, &[release(&notes)], &src).await;
+        {
+            let writes = dest.writes.borrow();
+            assert_eq!(writes.len(), 1);
+            let field = &writes[0].notes;
+            assert!(field.len() <= FIELD_MAX, "{}", field.len());
+            assert!(
+                matches!(long_body::parse(field), long_body::LongBody::Continued { bytes, .. } if bytes == notes.len() as u64),
+                "{field}"
+            );
+        }
+        let again = run(&dest, &[release(&notes)], &src).await;
+        assert_eq!(
+            dest.writes.borrow().len(),
+            1,
+            "unchanged: not written again"
+        );
+        assert_eq!(again.budget.spent(), 0);
+        // no storage of your own: cut to the field with a link, and said
+        let (cut, src) = (
+            Fake {
+                no_storage: true,
+                ..Fake::default()
+            },
+            source(),
+        );
+        let mut ledger = Ledger::offline(false);
+        sync(&mut ledger, &cut, &[release(&notes)], &src)
+            .await
+            .unwrap();
+        let writes = cut.writes.borrow();
+        assert!(writes.is_empty() || writes[0].notes.ends_with(&format!("{PAGE})")));
+    }
+
     #[tokio::test]
     async fn long_notes_and_an_anonymous_publisher_are_stable_across_runs() {
         let (dest, src) = (Fake::default(), source());

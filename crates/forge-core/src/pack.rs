@@ -51,7 +51,7 @@ pub use locator::{
 };
 pub use manifest::{
     plan_supersedes, PackManifest, KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_HISTORY_INDEX,
-    KIND_HISTORY_VERSIONS, KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS,
+    KIND_HISTORY_VERSIONS, KIND_LONG_BODY, KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS,
 };
 pub use parse::{git_oid, GitObjType, PackObject, ParsedPack, OID_LEN};
 

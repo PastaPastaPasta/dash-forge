@@ -1494,7 +1494,7 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
 fn artifact_kind(kind: u64) -> &'static str {
     use forge_core::pack::{
         KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_HISTORY_INDEX, KIND_HISTORY_VERSIONS,
-        KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS,
+        KIND_LONG_BODY, KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS,
     };
     match u8::try_from(kind) {
         Ok(KIND_GIT_PACK) => "pack",
@@ -1503,6 +1503,7 @@ fn artifact_kind(kind: u64) -> &'static str {
         Ok(KIND_HISTORY_INDEX) => "history-index",
         Ok(KIND_RELEASE_ASSETS) => "release-assets",
         Ok(KIND_HISTORY_VERSIONS) => "history-versions",
+        Ok(KIND_LONG_BODY) => "long-body",
         _ => "unknown",
     }
 }

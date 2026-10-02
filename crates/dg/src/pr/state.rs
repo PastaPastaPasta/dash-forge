@@ -116,8 +116,31 @@ pub async fn edit(
         return Err(crate::errors::usage("pass --title, --body or --body-file"));
     }
     let pr = open_pr(ctx, repo, number, "pull request not edited").await?;
-    let changed = title.map_or(0, str::len) + body.as_deref().map_or(0, str::len);
-    let est = estimate(Est::Replace, changed);
+    let patch = &pr.view.patch;
+    let planned = body
+        .as_deref()
+        .map(|b| {
+            crate::long_body::Planned::new(
+                &pr.s.repo,
+                forge_core::collab::long_body::BodyField::Patch {
+                    title: title.unwrap_or(&patch.title),
+                    base_ref_name: &patch.base_ref_name,
+                    source_ref_name: patch.source_ref_name.as_deref().unwrap_or_default(),
+                },
+                patch.imported.as_ref(),
+                b,
+            )
+        })
+        .transpose()?;
+    let changed = title.map_or(0, str::len) as u64
+        + planned
+            .as_ref()
+            .map_or(0, crate::long_body::Planned::field_bytes);
+    let est = estimate(Est::Replace, usize::try_from(changed).unwrap_or(usize::MAX))
+        + planned.as_ref().map_or(0, |p| p.extra_credits(&pr.s.repo));
+    let stored = planned
+        .as_ref()
+        .map_or_else(String::new, crate::long_body::Planned::clause);
     // a private PR is re-sealed under the epoch it was opened with (private-repos.md §4.5)
     let old_epoch = match pr
         .s
@@ -131,13 +154,20 @@ pub async fn edit(
         None => String::new(),
     };
     ctx.confirm_or_cancel(&format!(
-        "Edit PR #{number}? (one document replace, {}{old_epoch})",
+        "Edit PR #{number}? (one document replace, {}{stored}{old_epoch})",
         cost_line(est, ctx.usd_price())
     ))?;
-    let landed =
-        pr.s.collab()
-            .update_target(&pr.s.repo, &pr.view.patch.target(), title, body.as_deref())
-            .await?;
+    let collab = pr.s.collab();
+    let body = match &planned {
+        Some(p) => Some(
+            p.field_text(&collab, &pr.s.repo, patch.imported.as_ref())
+                .await?,
+        ),
+        None => None,
+    };
+    let landed = collab
+        .update_target(&pr.s.repo, &patch.target(), title, body.as_deref())
+        .await?;
     ctx.emit(
         json!({
             "status": if landed { "edited" } else { "unchanged" },

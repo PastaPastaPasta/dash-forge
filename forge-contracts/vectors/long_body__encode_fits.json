@@ -1,0 +1,15 @@
+{
+  "name": "encode_fits",
+  "description": "A text within the room is stored as it is.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "full": "A short body.",
+    "room": 200,
+    "sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "needsArtifact": false,
+    "stored": null
+  }
+}

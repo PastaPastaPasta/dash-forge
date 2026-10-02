@@ -1,0 +1,15 @@
+{
+  "name": "encode_closes_fence",
+  "description": "A fence left open by the cut is closed.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "full": "Intro.\n\n```rust\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\n```\n",
+    "room": 260,
+    "sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "needsArtifact": true,
+    "stored": "Intro.\n\n```rust\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\nlet x = 1;\n```\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=350 -->"
+  }
+}

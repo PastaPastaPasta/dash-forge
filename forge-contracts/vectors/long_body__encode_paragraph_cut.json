@@ -1,0 +1,15 @@
+{
+  "name": "encode_paragraph_cut",
+  "description": "The prefix ends at the last paragraph break in the cut's second half.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "full": "First paragraph First paragraph First paragraph First paragraph First paragraph\n\nSecond paragraph Second paragraph Second paragraph Second paragraph Second paragraph\n\nThird paragraph Third paragraph Third paragraph Third paragraph Third paragraph Third paragraph Third paragraph Third paragraph Third paragraph Third paragraph",
+    "room": 300,
+    "sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "needsArtifact": true,
+    "stored": "First paragraph First paragraph First paragraph First paragraph First paragraph\n\nSecond paragraph Second paragraph Second paragraph Second paragraph Second paragraph\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=326 -->"
+  }
+}

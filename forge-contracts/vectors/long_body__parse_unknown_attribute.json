@@ -1,0 +1,13 @@
+{
+  "name": "parse_unknown_attribute",
+  "description": "An attribute this version does not know: unsupported, nothing fetched.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=9000 repo=4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF -->"
+  },
+  "expected": {
+    "kind": "unsupported",
+    "prefix": "Head"
+  }
+}

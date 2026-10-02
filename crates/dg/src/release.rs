@@ -197,15 +197,23 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
             }
         )
     });
+    // Notes longer than the field are stored as a repository artifact (forge-v2.md §6.3).
+    let planned = crate::long_body::Planned::new(
+        &s.repo,
+        forge_core::collab::long_body::BodyField::Release,
+        None,
+        &args.notes,
+    )?;
     let quote = release_quote(
         existing.as_ref(),
         args,
         targets.as_ref().map_or(0, |t| t.0.len()),
-    );
+    ) + planned.extra_credits(&s.repo);
     ctx.confirm_or_cancel(&format!(
-        "Publish release {tag} of {}{with}{kept}? (one document, {})",
+        "Publish release {tag} of {}{with}{kept}? (one document, {}{})",
         s.repo.display(),
-        cost_line(quote, ctx.usd_price())
+        cost_line(quote, ctx.usd_price()),
+        planned.clause()
     ))?;
     let mut uploaded = Vec::new();
     if let Some((targets, required)) = &targets {
@@ -224,7 +232,10 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         }
     }
     let before = s.balance().await;
-    let input = superseding_input(existing.as_ref(), args, uploaded);
+    let mut input = superseding_input(existing.as_ref(), args, uploaded);
+    if !args.notes.is_empty() {
+        input.notes = planned.field_text(&collab, &s.repo, None).await?;
+    }
     let doc_id = collab.create_release(&s.repo, &input).await.map_err(|e| {
         anyhow::Error::from(e).context(if input.assets.is_empty() {
             "nothing was written"
@@ -328,6 +339,7 @@ fn require_tag(
 /// sealed before it leaves the machine and stored under its sealed hash, the asset list is a
 /// sealed kind-4 manifest, and the revision is sealed under the current key epoch. What the
 /// command does not change is carried forward from the tag's newest revision by forge-core.
+#[allow(clippy::too_many_lines)] // one command: plan, quote, confirm, store, write, report
 async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Result<()> {
     let collab = s.collab();
     let tag = &args.tag;
@@ -356,14 +368,21 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
             forge_core::storage::human_bytes(total)
         )
     };
+    let notes_quote = sealed_notes_quote(args, targets.as_ref())?;
+    let long_notes = notes_quote > 0;
     ctx.confirm_or_cancel(&format!(
         "Publish sealed release {tag} of {}{with}? A private release holds 1507 bytes of tag, \
-         name, notes preview and provenance; longer notes continue in its sealed asset list. \
+         name, notes preview and provenance; longer notes continue in its sealed asset list{}. \
          What you do not change is kept from the tag's last revision. (one document, and one \
          for a new asset list: {})",
         s.repo.display(),
+        if long_notes {
+            ", and notes over 5,120 bytes in a sealed artifact on the same storage"
+        } else {
+            ""
+        },
         cost_line(
-            sealed_quote(&files, args, targets.as_ref()),
+            sealed_quote(&files, args, targets.as_ref()) + notes_quote,
             ctx.usd_price()
         )
     ))?;
@@ -371,10 +390,24 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
         targets: t.iter().map(|t| t as &dyn StorageTarget).collect(),
         required: *required,
     });
+    let notes = match &store {
+        Some(st) if long_notes => {
+            let on = forge_core::collab::long_body::BodyStore {
+                external: st.targets.clone(),
+                platform: false,
+                required: st.required,
+            };
+            let field = forge_core::collab::long_body::BodyField::Release;
+            collab
+                .store_long_body(&s.repo, field, None, &args.notes, &on)
+                .await?
+        }
+        _ => args.notes.clone(),
+    };
     let input = ReleaseInput {
         tag_name: tag.clone(),
         name: args.name.clone(),
-        notes: args.notes.clone(),
+        notes,
         yanked: args.yanked,
         files,
         prerelease: args.prerelease,
@@ -431,6 +464,32 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
         },
     );
     Ok(())
+}
+
+/// What a sealed revision's notes longer than the field (5,120 bytes, which the sealed asset
+/// list continues to) add to its quote: their full text, stored as a sealed artifact on the
+/// same storage as the assets (forge-v2.md §6.3). 0 for notes that fit; refused when there is
+/// no such storage (with the asset-storage refusal, which says why).
+fn sealed_notes_quote(
+    args: &ReleaseCreateArgs,
+    targets: Option<&(Vec<ExternalTarget>, usize)>,
+) -> Result<u64> {
+    let field = forge_core::collab::long_body::FIELD_MAX;
+    if !forge_core::rules::long_body::needs_artifact(&args.notes, field) {
+        return Ok(0);
+    }
+    let Some((targets, _)) = targets else {
+        asset_targets(args.storage.as_deref(), NOT_CREATED)?;
+        return Err(crate::errors::usage(
+            "notes over 5,120 bytes need storage of your own",
+        ));
+    };
+    Ok(forge_core::cost::push_fees::long_body(
+        args.notes.len() as u64,
+        true,
+        targets.len() as u64,
+        false,
+    ))
 }
 
 /// What a sealed revision's asset list is, as `dg release create` prints it.
@@ -668,7 +727,12 @@ fn release_quote(existing: Option<&Release>, args: &ReleaseCreateArgs, targets: 
 /// The quote for writing `input` as a public release revision: its text and its asset list as
 /// stored (JSON).
 fn revision_quote(input: &ReleaseInput) -> u64 {
-    let text = input.tag_name.len() + input.name.len() + input.notes.len();
+    // longer notes are stored apart (forge-v2.md §6.3): the field holds at most its cap
+    let notes = input
+        .notes
+        .len()
+        .min(forge_core::collab::long_body::FIELD_MAX);
+    let text = input.tag_name.len() + input.name.len() + notes;
     let assets = serde_json::to_string(&input.assets).map_or(0, |j| j.len());
     crate::quote::release(text as u64, assets as u64)
 }
@@ -950,10 +1014,20 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
         sealed,
     } = read_releases(ctx, repo).await?;
     let row = |r: &Release| {
+        // Notes longer than the field (forge-v2.md §6.3): the list gives their first part and
+        // the full text's length; the artifact holding the rest is not fetched for a list.
+        let (notes, notes_full_bytes) = match forge_core::rules::long_body::parse(&r.notes) {
+            forge_core::rules::long_body::LongBody::Plain => (r.notes.as_str(), None),
+            forge_core::rules::long_body::LongBody::Continued { prefix, bytes, .. } => {
+                (prefix, Some(bytes))
+            }
+            forge_core::rules::long_body::LongBody::Unsupported { prefix } => (prefix, None),
+        };
         json!({
             "tag": r.tag_name,
             "name": r.name,
-            "notes": r.notes,
+            "notes": notes,
+            "notesFullBytes": notes_full_bytes,
             // the notes above are a prefix: the rest is in the sealed manifest (§16.2 flag 0x10)
             "notesContinue": r.sealed.as_ref().is_some_and(|s| s.fields.notes_continue),
             "yanked": r.yanked,

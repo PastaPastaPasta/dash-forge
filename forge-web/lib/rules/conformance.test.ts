@@ -33,6 +33,8 @@ import {
   v2,
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
+import { hexToBytes } from '@noble/hashes/utils.js'
+import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import type {
   ConfigDoc,
   Event,
@@ -500,6 +502,20 @@ function runCaseV2(v: Vector): void {
         approverAt: oracle.approverAt(q.identity, q.at),
       }))
       expect(got).toEqual(v.expected)
+      break
+    }
+    case 'long_body': {
+      onlyKeys(v, ['stored', 'full', 'room', 'sha256', 'blobHex'])
+      const inp = v.input as { readonly stored?: string; readonly full?: string; readonly room?: number; readonly sha256?: string; readonly blobHex?: string }
+      if (inp.full !== undefined) {
+        const needs = needsLongBodyArtifact(inp.full, inp.room as number)
+        expect({ needsArtifact: needs, stored: needs ? longBodyStoredText(inp.full, inp.room as number, inp.sha256 as string) : null }).toEqual(v.expected)
+      } else if (inp.blobHex !== undefined) {
+        const opened = openPublicLongBody(inp.stored as string, hexToBytes(inp.blobHex))
+        expect(opened.ok ? { text: opened.text } : { error: opened.error }).toEqual(v.expected)
+      } else {
+        expect(parseLongBody(inp.stored as string)).toEqual(v.expected)
+      }
       break
     }
     default:

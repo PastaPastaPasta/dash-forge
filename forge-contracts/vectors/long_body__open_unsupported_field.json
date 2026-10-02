@@ -1,0 +1,13 @@
+{
+  "name": "open_unsupported_field",
+  "description": "An unsupported trailer is never opened.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n\n<!-- forge:body sha256=44d87b31ba5c00b123d80a06c0c28e039acccb5bc2d96225e0fdd5de777b032b bytes=9 repo=x -->",
+    "blobHex": "52656c65617365206e6f7465730a0a2d206f6e650a2d2074776f20c3a90a"
+  },
+  "expected": {
+    "error": "notContinued"
+  }
+}

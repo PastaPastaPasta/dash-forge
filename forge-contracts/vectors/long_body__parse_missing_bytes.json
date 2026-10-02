@@ -1,0 +1,13 @@
+{
+  "name": "parse_missing_bytes",
+  "description": "Both attributes are required.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab -->"
+  },
+  "expected": {
+    "kind": "unsupported",
+    "prefix": "Head"
+  }
+}

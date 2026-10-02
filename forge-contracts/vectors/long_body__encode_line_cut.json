@@ -1,0 +1,15 @@
+{
+  "name": "encode_line_cut",
+  "description": "No paragraph break in the second half: the last line break.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "full": "alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\nbeta beta beta beta beta beta beta beta beta beta beta beta\ngamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma gamma",
+    "room": 260,
+    "sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "needsArtifact": true,
+    "stored": "alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\nbeta beta beta beta beta beta beta beta beta beta beta beta\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=311 -->"
+  }
+}

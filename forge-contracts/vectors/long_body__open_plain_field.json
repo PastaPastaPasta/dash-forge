@@ -1,0 +1,13 @@
+{
+  "name": "open_plain_field",
+  "description": "A field without a trailer has nothing to open.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Just text",
+    "blobHex": "4a7573742074657874"
+  },
+  "expected": {
+    "error": "notContinued"
+  }
+}

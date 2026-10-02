@@ -1,0 +1,13 @@
+{
+  "name": "parse_double_space",
+  "description": "Attributes are separated by exactly one space.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab  bytes=9000 -->"
+  },
+  "expected": {
+    "kind": "unsupported",
+    "prefix": "Head"
+  }
+}

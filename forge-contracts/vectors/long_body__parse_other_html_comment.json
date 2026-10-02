@@ -1,0 +1,12 @@
+{
+  "name": "parse_other_html_comment",
+  "description": "An HTML comment that does not start `<!-- forge:body ` (with the space) is text.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Report\n\n<!-- forge:bodyguard -->"
+  },
+  "expected": {
+    "kind": "plain"
+  }
+}

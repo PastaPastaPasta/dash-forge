@@ -2522,6 +2522,74 @@ impl<'a> RepoService<'a> {
         .await
     }
 
+    /// Store the full text `plain` of a long body (forge-v2.md §6.3) as a kind-6 artifact on
+    /// `external` and, when `platform`, Platform `chunk` documents (`required` of them must
+    /// confirm), sealed under the write epoch in a private repository, and record its
+    /// `packManifest` (`objectCount` 0, no `tips`, no `supersedes`). Returns its `packHash`,
+    /// what the field's trailer names. A public text is content-addressed: when the signer has
+    /// already recorded it, nothing is stored or written again.
+    pub async fn store_long_body(
+        &self,
+        repo: &RepoRef,
+        plain: &[u8],
+        external: &[&dyn StorageTarget],
+        platform: bool,
+        required: usize,
+    ) -> Result<[u8; 32]> {
+        if repo.visibility == Visibility::Public {
+            let hash = crate::backends::sha256(plain);
+            let me = self.identity_id()?;
+            let recorded = self
+                .read_pack_copies(repo, hash)
+                .await?
+                .iter()
+                .any(|m| m.owner_id == me && m.kind == u64::from(crate::pack::KIND_LONG_BODY));
+            if recorded {
+                return Ok(hash);
+            }
+        }
+        let chain = platform
+            .then(|| PlatformChunkTarget::new(self, repo, crate::storage::PLATFORM_PROFILE));
+        let mut targets: Vec<&dyn StorageTarget> = external.to_vec();
+        if let Some(c) = &chain {
+            targets.push(c);
+        }
+        let bytes = self.pack_codec(repo).await?.seal(plain.to_vec())?;
+        let meta = PackMeta::for_bytes(&bytes);
+        let pack_hash = meta.pack_hash_bytes()?;
+        let rep = crate::storage::replicate(
+            &targets,
+            &bytes,
+            &meta,
+            required.clamp(1, targets.len().max(1)),
+        )
+        .await
+        .map_err(|e| {
+            Error::from(UserError::storage_policy_not_met(
+                &e,
+                "store the full text",
+                false,
+            ))
+        })?;
+        let stored = StoredArtifact::from_replication(&rep, &bytes)?;
+        self.write_pack_manifest(
+            repo,
+            &PackManifestInput {
+                pack_hash,
+                kind: u64::from(crate::pack::KIND_LONG_BODY),
+                size_bytes: bytes.len() as u64,
+                object_count: 0,
+                chunk_count: stored.chunk_count,
+                storage: stored.storage,
+                uris: stored.uris,
+                supersedes: Vec::new(),
+                tips: Vec::new(),
+            },
+        )
+        .await?;
+        Ok(pack_hash)
+    }
+
     /// What the next history index of `tip` should be (see [`plan_history_index`]), from the
     /// manifests and the repository's current members. Reads no artifact.
     pub async fn plan_history_publish(&self, repo: &RepoRef, tip: [u8; 20]) -> Result<HistoryPlan> {

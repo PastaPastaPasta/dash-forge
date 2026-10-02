@@ -21,6 +21,7 @@ mod infer;
 mod issue;
 mod keys;
 mod label;
+mod long_body;
 mod maint;
 mod milestone;
 mod pin;

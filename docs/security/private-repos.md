@@ -43,7 +43,7 @@ An epoch number identifies a key everywhere the contract needs one (`epoch` on d
 
 ## 3. Sealed artifacts (packs, locators, flat indexes)
 
-Every `packManifest` artifact of a private repo, whatever its `kind` (0 git pack, 1 objectLocator, 2 flatIndex, 3 history index, 4 release assets (§16.5), …), is stored **sealed**. The plaintext is the exact bytes a public repo would store, so `git index-pack`, `ObjectLocator::parse` and the flatIndex reader are unchanged after decryption.
+Every `packManifest` artifact of a private repo, whatever its `kind` (0 git pack, 1 objectLocator, 2 flatIndex, 3 history index, 4 release assets (§16.5), 6 long body (forge-v2.md §6.3), …), is stored **sealed**. The plaintext is the exact bytes a public repo would store, so `git index-pack`, `ObjectLocator::parse` and the flatIndex reader are unchanged after decryption.
 
 ### 3.1 Cipher
 

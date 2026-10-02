@@ -1,0 +1,13 @@
+{
+  "name": "parse_bytes_zero",
+  "description": "A length of 0 is unsupported.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=0 -->"
+  },
+  "expected": {
+    "kind": "unsupported",
+    "prefix": "Head"
+  }
+}

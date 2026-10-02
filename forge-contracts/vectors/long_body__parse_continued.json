@@ -1,0 +1,15 @@
+{
+  "name": "parse_continued",
+  "description": "A prefix, a blank line and a trailer: the prefix loses its trailing newlines.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "The first part.\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=9000 -->"
+  },
+  "expected": {
+    "kind": "continued",
+    "prefix": "The first part.",
+    "sha256": "abababababababababababababababababababababababababababababababab",
+    "bytes": 9000
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "parse_plain",
+  "description": "A field without a trailer is the whole text.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Steps:\n\n1. run it\n2. see the error"
+  },
+  "expected": {
+    "kind": "plain"
+  }
+}

@@ -2078,9 +2078,35 @@ fn is_own_copy(
     plain: &BTreeMap<String, FieldValue>,
 ) -> bool {
     stored.owner_id == signer
-        && CONTENT_FIELDS
-            .iter()
-            .all(|k| same_value(stored.fields.get(*k), plain.get(*k)))
+        && CONTENT_FIELDS.iter().all(|k| match *k {
+            "body" => same_body(stored.fields.get(*k), plain.get(*k)),
+            _ => same_value(stored.fields.get(*k), plain.get(*k)),
+        })
+}
+
+/// [`same_value`] for a body, where two long bodies (forge-v2.md §6.3) with the same prefix and
+/// length are the same: a private repository's full text is sealed afresh by every attempt, so
+/// its artifact hash differs between two attempts at one item.
+fn same_body(a: Option<&FieldValue>, b: Option<&FieldValue>) -> bool {
+    use crate::rules::long_body::{parse, LongBody};
+    if let (Some(FieldValue::Text(x)), Some(FieldValue::Text(y))) = (a, b) {
+        if let (
+            LongBody::Continued {
+                prefix: px,
+                bytes: bx,
+                ..
+            },
+            LongBody::Continued {
+                prefix: py,
+                bytes: by,
+                ..
+            },
+        ) = (parse(x), parse(y))
+        {
+            return px == py && bx == by;
+        }
+    }
+    same_value(a, b)
 }
 
 /// How [`Collab::create_dense`] recognises a copy of its own create that landed without an
@@ -2340,12 +2366,17 @@ impl<'a> Collab<'a> {
         }
     }
 
-    /// Reads only. A private repository needs a signer (its keys are the signer's).
     /// The client this reads and writes through.
     pub(super) fn client(&self) -> &'a PlatformClient {
         self.client
     }
 
+    /// Whether this `Collab` signs (else it only reads public repositories).
+    pub(super) fn has_signer(&self) -> bool {
+        self.signer.is_some()
+    }
+
+    /// Reads only. A private repository needs a signer (its keys are the signer's).
     pub fn reader(client: &'a PlatformClient) -> Self {
         Self {
             client,
@@ -5595,7 +5626,7 @@ impl<'a> Collab<'a> {
     }
 
     /// The pack-manifest service for this signer, sharing this `Collab`'s keyring.
-    fn repo_service(&self) -> Result<crate::repo::RepoService<'a>> {
+    pub(super) fn repo_service(&self) -> Result<crate::repo::RepoService<'a>> {
         let (identity, bridge) = self.signer.ok_or_else(|| {
             Error::from(crate::user_error::private_needs_identity("the repository"))
         })?;

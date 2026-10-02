@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
+use forge_core::collab::long_body::BodyField;
 use forge_core::collab::v2::{ImportedTarget, PatchInput, PrBase, Provenance, Target, TargetKind};
 use forge_core::collab::{CommentAnchor, Imported, ReleaseInput};
 use forge_core::history::Freshness;
@@ -46,6 +47,7 @@ use forge_core::scope::RepoRef;
 use crate::budget::{collab_doc_credits, Budget, CollabDoc};
 use crate::chain::{Chain, Current};
 use crate::gitsync::{ProofRepo, Unfetched};
+use crate::long_body::BodyStorage;
 use crate::model::{
     same_item, same_item_renamed, SrcCloseReason, SrcCollab, SrcComment, SrcLabel, SrcRelease,
     SrcReview, SrcTarget,
@@ -466,6 +468,8 @@ pub struct Sink<'a, C: Chain> {
     /// Where a private destination's sealed release files and asset lists go (`None`: the
     /// storage policy names no storage of your own).
     release_storage: Option<ReleaseStorage>,
+    /// Where long bodies' full texts go (forge-v2.md §6.3; the run's storage policy).
+    body_storage: BodyStorage,
     /// The run's writes, for proving a failed one dead ([`NONCE_WINDOW`]).
     writes: Mutex<WriteLog>,
     /// Items in a row that ended partial on failed writes ([`MAX_FAILED_IN_A_ROW`]).
@@ -708,6 +712,29 @@ fn key_of(t: &SrcTarget) -> (u8, u32) {
 const TRANSITION_BYTES: u64 = 90;
 
 /// Estimated bytes of a comment/review/issue document around `text`.
+/// A release's `notes` field (forge-core `release.notes`: 5,120 bytes).
+const NOTES_FIELD: usize = forge_core::collab::long_body::FIELD_MAX;
+
+/// Whether the live release `held` (its name, notes and asset list as JSON) states what this
+/// run would write for `r`: the same name and list, and the same `notes`, or the same long body
+/// of them (forge-v2.md §6.3), or the notes as an importer before long bodies cut them
+/// (`omitted`: the assets left out, of the total). A release mirrored so keeps its cut notes
+/// rather than being published again for them.
+fn states_release(
+    held: &(String, String, String),
+    r: &SrcRelease,
+    notes: &str,
+    assets: &str,
+    (dropped, total): (usize, usize),
+) -> bool {
+    let (name, held_notes, list) = held;
+    *name == r.name
+        && list == assets
+        && (forge_core::rules::long_body::states(held_notes, notes, NOTES_FIELD)
+            || *held_notes
+                == crate::model::legacy_release_notes(&r.notes, dropped, total, &r.source_url))
+}
+
 fn text_doc(text: &str) -> u64 {
     text.len() as u64 + 160
 }
@@ -729,6 +756,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             measured_at: Mutex::new(None),
             lag_gate: futures::lock::Mutex::new(()),
             release_storage: None,
+            body_storage: BodyStorage::platform(),
             writes: Mutex::new(WriteLog::default()),
             failed_in_a_row: std::sync::atomic::AtomicU32::new(0),
             created_any: std::sync::atomic::AtomicBool::new(false),
@@ -739,6 +767,13 @@ impl<'a, C: Chain> Sink<'a, C> {
     #[must_use]
     pub fn with_release_storage(mut self, storage: Option<ReleaseStorage>) -> Self {
         self.release_storage = storage;
+        self
+    }
+
+    /// Store long bodies' full texts on `storage` (forge-v2.md §6.3; default: Platform).
+    #[must_use]
+    pub fn with_body_storage(mut self, storage: BodyStorage) -> Self {
+        self.body_storage = storage;
         self
     }
 
@@ -783,6 +818,62 @@ impl<'a, C: Chain> Sink<'a, C> {
 
     fn warn(&self, msg: impl Into<String>) {
         self.ledger().warn(msg);
+    }
+
+    /// What a write of `full` into `field` adds to its estimate: the field's own bytes as
+    /// [`text_doc`] counts them (at most what the field holds) and, when the text is longer
+    /// than the field, its long-body artifact on the run's storage (forge-v2.md §6.3).
+    fn body_cost(
+        &self,
+        field: BodyField<'_>,
+        imported: Option<&Imported>,
+        full: &str,
+    ) -> (u64, u64) {
+        let visibility = self
+            .repo
+            .as_ref()
+            .map_or(Visibility::Public, |r| r.visibility);
+        let room = field.room(visibility, imported);
+        if !forge_core::rules::long_body::needs_artifact(full, room) {
+            return (text_doc(full), 0);
+        }
+        let artifact = self
+            .body_storage
+            .credits(full.len() as u64, visibility == Visibility::Private);
+        (room as u64 + 160, artifact)
+    }
+
+    /// The text to write into `field` for the source's `full` text (forge-v2.md §6.3): itself
+    /// when it fits; else its first part and the trailer naming its full text, stored first
+    /// as an artifact on the run's storage. When that cannot be stored, the text is cut to the
+    /// field with a link to the source (`source_url`) instead, and the run warns.
+    async fn field_text(
+        &self,
+        field: BodyField<'_>,
+        imported: Option<&Imported>,
+        full: &str,
+        source_url: &str,
+    ) -> forge_core::Result<String> {
+        let repo = need(self.repo.as_ref())?;
+        let room = field.room(repo.visibility, imported);
+        if !forge_core::rules::long_body::needs_artifact(full, room) {
+            return Ok(full.to_string());
+        }
+        match self
+            .chain
+            .long_body(repo, field, imported, full, &self.body_storage)
+            .await
+        {
+            Ok(text) => Ok(text),
+            Err(e) => {
+                self.warn(format!(
+                    "{source_url}: its full text ({} bytes) could not be stored, so it is cut \
+                     to the field's {room} bytes with a link to the source: {e}",
+                    full.len()
+                ));
+                Ok(crate::model::fit_text(full, room, source_url))
+            }
+        }
     }
 
     /// One write, signed against the `nonces` counter: charged to the budget first (refused
@@ -1445,7 +1536,8 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// ([`crate::model::notes_with_footer`]), which readers show.
     async fn sync_releases(&self, releases: &[SrcRelease]) -> Result<()> {
         let mut known = crate::assets::Known::default();
-        let existing: BTreeMap<String, String> = match &self.repo {
+        // Each live release's name, notes and asset list (JSON), by tag.
+        let existing: BTreeMap<String, (String, String, String)> = match &self.repo {
             Some(repo) => self
                 .chain
                 .releases(repo)
@@ -1455,7 +1547,7 @@ impl<'a, C: Chain> Sink<'a, C> {
                 .map(|r| {
                     known.add(&r.tag_name, &r.assets);
                     let assets = serde_json::to_string(&r.assets).unwrap_or_default();
-                    (r.tag_name, fingerprint(&r.name, &r.notes, &assets))
+                    (r.tag_name, (r.name, r.notes, assets))
                 })
                 .collect(),
             None => BTreeMap::new(),
@@ -1499,7 +1591,10 @@ impl<'a, C: Chain> Sink<'a, C> {
             let dropped = total - assets_in.len();
             let notes = crate::model::notes_with_footer(&r.notes, dropped, total, &r.source_url);
             let assets = serde_json::to_string(&assets_in).unwrap_or_default();
-            if existing.get(&r.tag_name) == Some(&fingerprint(&r.name, &notes, &assets)) {
+            if existing
+                .get(&r.tag_name)
+                .is_some_and(|held| states_release(held, r, &notes, &assets, (dropped, total)))
+            {
                 continue;
             }
             // Counted and warned for the releases this run writes (a re-run that finds them
@@ -1518,10 +1613,6 @@ impl<'a, C: Chain> Sink<'a, C> {
                     r.tag_name
                 ));
             }
-            let credits = collab_doc_credits(
-                CollabDoc::Release,
-                (r.tag_name.len() + r.name.len() + notes.len() + assets.len() + 40) as u64,
-            );
             let input = ReleaseInput {
                 tag_name: r.tag_name.clone(),
                 name: r.name.clone(),
@@ -1530,21 +1621,47 @@ impl<'a, C: Chain> Sink<'a, C> {
                 assets: assets_in,
                 ..ReleaseInput::default()
             };
-            let (chain, repo) = (&self.chain, self.repo.as_ref());
-            let input = &input;
-            let written = self
-                .write(
-                    format!("release {}", r.tag_name),
-                    Some(Nonces::Core),
-                    credits,
-                    |c| c.releases += 1,
-                    || async move { chain.create_release(need(repo)?, input).await },
-                )
-                .await;
-            if let Err(e) = written {
-                let item = item_error(&e);
-                self.ledger().refused_release(&r.tag_name, e, item, false)?;
-            }
+            self.write_release(r, &input, assets.len()).await?;
+        }
+        Ok(())
+    }
+
+    /// Publish `input`, the public revision of `r` (its asset list `assets_len` bytes of
+    /// JSON): notes longer than the field have their full text stored first (forge-v2.md §6.3).
+    /// A refusal concerning the release alone skips it.
+    async fn write_release(
+        &self,
+        r: &SrcRelease,
+        input: &ReleaseInput,
+        assets_len: usize,
+    ) -> Result<()> {
+        let (notes_doc, artifact) = self.body_cost(BodyField::Release, None, &input.notes);
+        let credits = collab_doc_credits(
+            CollabDoc::Release,
+            (r.tag_name.len() + r.name.len() + assets_len + 40) as u64 + notes_doc - 160,
+        ) + artifact;
+        let (chain, repo) = (&self.chain, self.repo.as_ref());
+        let written = self
+            .write(
+                format!("release {}", r.tag_name),
+                Some(Nonces::Core),
+                credits,
+                |c| c.releases += 1,
+                || async move {
+                    let notes = self
+                        .field_text(BodyField::Release, None, &input.notes, &r.source_url)
+                        .await?;
+                    let input = ReleaseInput {
+                        notes,
+                        ..input.clone()
+                    };
+                    chain.create_release(need(repo)?, &input).await
+                },
+            )
+            .await;
+        if let Err(e) = written {
+            let item = item_error(&e);
+            self.ledger().refused_release(&r.tag_name, e, item, false)?;
         }
         Ok(())
     }
@@ -1892,32 +2009,25 @@ impl<'a, C: Chain> Sink<'a, C> {
             number: t.number,
             author: self.signer.clone().unwrap_or_default(),
         };
+        let field = match &t.patch {
+            Some(p) if t.kind == TargetKind::Patch => BodyField::Patch {
+                title: &t.title,
+                base_ref_name: &p.base_ref_name,
+                source_ref_name: p.source_ref_name.as_deref().unwrap_or_default(),
+            },
+            _ => BodyField::Issue { title: &t.title },
+        };
+        // `body_doc` counts the field's bytes as `text_doc` does (with its 160)
+        let (body_doc, artifact) = self.body_cost(field, Some(&t.imported), &t.body);
         let credits = collab_doc_credits(
             CollabDoc::Target,
-            text_doc(&t.title) + t.body.len() as u64 + t.imported.url.len() as u64 + 100,
-        );
+            text_doc(&t.title) + body_doc - 160 + t.imported.url.len() as u64 + 100,
+        ) + artifact;
         let (chain, repo) = (&self.chain, self.repo.as_ref());
         let what = format!("{noun} #{}", t.number);
         let from = Provenance {
             imported: Some(&t.imported),
             upstream_number: Some(t.number),
-        };
-        let input = t.patch.as_ref().map(|p| PatchInput {
-            title: t.title.clone(),
-            body: t.body.clone(),
-            base_ref_name: p.base_ref_name.clone(),
-            source_repo_id: repo.map(|r| r.id().to_string()).unwrap_or_default(),
-            source_ref_name: p.source_ref_name.clone(),
-            head_oid: p.head_oid.clone(),
-            patch_manifest_hash: None,
-            draft: false,
-        });
-        let doc = match (t.kind, &input) {
-            (TargetKind::Patch, Some(input)) => ImportedTarget::Patch(input),
-            _ => ImportedTarget::Issue {
-                title: &t.title,
-                body: &t.body,
-            },
         };
         let count: fn(&mut Counts) = match t.kind {
             TargetKind::Issue => |c| c.issues += 1,
@@ -1925,6 +2035,27 @@ impl<'a, C: Chain> Sink<'a, C> {
         };
         let out = self
             .write(what, None, credits, count, || async move {
+                // the full text stored first when the field cannot hold it (§6.3)
+                let body = self
+                    .field_text(field, Some(&t.imported), &t.body, &t.imported.url)
+                    .await?;
+                let input = t.patch.as_ref().map(|p| PatchInput {
+                    title: t.title.clone(),
+                    body: body.clone(),
+                    base_ref_name: p.base_ref_name.clone(),
+                    source_repo_id: repo.map(|r| r.id().to_string()).unwrap_or_default(),
+                    source_ref_name: p.source_ref_name.clone(),
+                    head_oid: p.head_oid.clone(),
+                    patch_manifest_hash: None,
+                    draft: false,
+                });
+                let doc = match (t.kind, &input) {
+                    (TargetKind::Patch, Some(input)) => ImportedTarget::Patch(input),
+                    _ => ImportedTarget::Issue {
+                        title: &t.title,
+                        body: &body,
+                    },
+                };
                 chain.create_imported(need(repo)?, doc, from, again).await
             })
             .await?;
@@ -2155,18 +2286,25 @@ impl<'a, C: Chain> Sink<'a, C> {
         let ids = anchor.map_or(0, |a| {
             32 * (u64::from(a.reply_to.is_some()) + u64::from(a.review_id.is_some()))
         });
+        let field = BodyField::Comment {
+            path: anchor.and_then(|a| a.path.as_deref()),
+        };
+        let (body_doc, artifact) = self.body_cost(field, Some(&c.imported), &c.body);
         let credits = collab_doc_credits(
             CollabDoc::Comment,
-            text_doc(&c.body) + c.imported.url.len() as u64 + hunk + ids,
-        );
+            body_doc + c.imported.url.len() as u64 + hunk + ids,
+        ) + artifact;
         self.write(
             format!("comment on #{}", t.number),
             Some(Nonces::Collab),
             credits,
             |n| n.comments += 1,
             || async move {
+                let body = self
+                    .field_text(field, Some(&c.imported), &c.body, &c.imported.url)
+                    .await?;
                 chain
-                    .comment(need(repo)?, &target.id, &c.body, anchor, &c.imported)
+                    .comment(need(repo)?, &target.id, &body, anchor, &c.imported)
                     .await
             },
         )
@@ -2183,10 +2321,11 @@ impl<'a, C: Chain> Sink<'a, C> {
         count: u16,
     ) -> Result<Option<String>> {
         let (chain, repo) = (&self.chain, self.repo.as_ref());
+        let (body_doc, artifact) = self.body_cost(BodyField::Review, Some(&r.imported), &r.body);
         let credits = collab_doc_credits(
             CollabDoc::Review,
-            text_doc(&r.body) + r.imported.url.len() as u64 + 40 + if count > 0 { 3 } else { 0 },
-        );
+            body_doc + r.imported.url.len() as u64 + 40 + if count > 0 { 3 } else { 0 },
+        ) + artifact;
         let count = (count > 0).then_some(count);
         self.write(
             format!("review on #{}", t.number),
@@ -2197,12 +2336,20 @@ impl<'a, C: Chain> Sink<'a, C> {
             // and a member's approve / request-changes counts (§6); a source reviewer's
             // verdict must not become one. It is in the body.
             || async move {
+                let body = self
+                    .field_text(
+                        BodyField::Review,
+                        Some(&r.imported),
+                        &r.body,
+                        &r.imported.url,
+                    )
+                    .await?;
                 chain
                     .review(
                         need(repo)?,
                         &target.id,
                         &r.commit_oid,
-                        &r.body,
+                        &body,
                         count,
                         &r.imported,
                     )
@@ -2299,10 +2446,6 @@ fn no_proof_reason(proof: Option<&ProofRepo>, base: &str) -> String {
             ),
         },
     }
-}
-
-fn fingerprint(name: &str, notes: &str, assets: &str) -> String {
-    format!("{name}\0{notes}\0{assets}")
 }
 
 #[cfg(test)]

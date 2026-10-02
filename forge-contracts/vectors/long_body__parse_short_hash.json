@@ -1,0 +1,13 @@
+{
+  "name": "parse_short_hash",
+  "description": "The hash is 64 hex digits.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n\n<!-- forge:body sha256=ababababababababababababababababababababababababababababababab bytes=9000 -->"
+  },
+  "expected": {
+    "kind": "unsupported",
+    "prefix": "Head"
+  }
+}

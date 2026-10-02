@@ -276,15 +276,21 @@ pub fn with_pull_origin(body: &str, base_oid: &str, head_label: &str, full_at: &
         format!("{first}\n>\n{line}\n\n{rest}")
     };
     // The body was fitted before; a line of at most ~260 bytes may push it over again.
-    fit_text(&joined, BODY_MAX, full_at)
+    fit_text(&joined, TEXT_MAX, full_at)
 }
 
-/// The contract's body bound (5120 chars and 5120 bytes).
-pub const BODY_MAX: usize = 5120;
+/// The longest text a mirror keeps whole, in bytes (forge-v2.md §6.3: a text longer than its
+/// field, 5,120 bytes, is stored as a repository artifact, up to 262,144 bytes).
+pub const TEXT_MAX: usize = forge_core::rules::long_body::MAX_LEN;
 
-/// `header` + `text`, cut to the body bound; a cut body says where the full text is.
+/// The contract's `body` and `notes` bound (5120 chars and 5120 bytes): what an importer
+/// before long bodies cut every text to ([`legacy_release_notes`]).
+pub const FIELD_MAX: usize = forge_core::collab::long_body::FIELD_MAX;
+
+/// `header` + `text`, cut to [`TEXT_MAX`]; a cut body says where the full text is. The sink
+/// stores a body longer than its field as a long body (forge-v2.md §6.3).
 pub fn body(header: &str, text: &str, full_at: &str) -> String {
-    fit_text(&headed(header, text), BODY_MAX, full_at)
+    fit_text(&headed(header, text), TEXT_MAX, full_at)
 }
 
 /// `header` then `text`, or just the header (trimmed) when the text is blank.
@@ -298,96 +304,16 @@ fn headed(header: &str, text: &str) -> String {
 
 /// `text` within `max` characters and bytes. A longer one is cut at the last paragraph, line or
 /// word boundary that fits (never mid-word; L-74), an open code fence or code span is closed,
-/// and a note says where the full text is (L-06).
+/// and a note says where the full text is (L-06). The cut is the long-body prefix rule every
+/// client shares ([`forge_core::rules::long_body::fit_prefix`]).
 pub fn fit_text(text: &str, max: usize, full_at: &str) -> String {
     // A string never has more characters than bytes: the byte bound covers both.
     if text.len() <= max {
         return text.to_string();
     }
     let note = format!("\n\n… (truncated; the full text is at {full_at})");
-    // Room for the note; the closer (a fence of any length, a span of N backticks) is measured
-    // after the cut, and the cut shortened by what it overflows until everything fits. Each round
-    // shrinks `room`, so it ends (at worst with an empty cut and no closer).
-    let mut room = max.saturating_sub(note.len());
-    loop {
-        let clipped = clip(text, room, room);
-        let closed = close_code(boundary_cut(&clipped));
-        let len = closed.len() + note.len();
-        if len <= max || room == 0 {
-            return format!("{closed}{note}");
-        }
-        room = room.saturating_sub(len - max);
-    }
-}
-
-/// `s` shortened to its last paragraph break, else line break, else space, when one falls in
-/// its second half (a single overlong word is cut where it is).
-fn boundary_cut(s: &str) -> &str {
-    let half = s.len() / 2;
-    ["\n\n", "\n", " "]
-        .iter()
-        .find_map(|sep| s.rfind(sep).filter(|&i| i >= half))
-        .map_or(s, |i| s[..i].trim_end())
-}
-
-/// `s` with a code fence or inline code span left open at its end closed again, so the cut does
-/// not turn the rest of the rendering (the truncation note) into code.
-fn close_code(s: &str) -> String {
-    // The fence a block opened with (``` or ~~~, any length ≥ 3): it closes only on the same
-    // character, at least as long. Outside blocks, an inline span opened by a run of N
-    // unescaped backticks closes on the next run of exactly N.
-    let mut fence: Option<(char, usize)> = None;
-    let mut span: Option<usize> = None;
-    for line in s.lines() {
-        let t = line.trim_start();
-        let run = |c: char| t.chars().take_while(|&x| x == c).count();
-        if let Some((c, n)) = fence {
-            if run(c) >= n && t.trim_end().chars().all(|x| x == c) {
-                fence = None;
-            }
-            continue;
-        }
-        if span.is_none() {
-            if let Some(c) = ['`', '~'].into_iter().find(|&c| run(c) >= 3) {
-                fence = Some((c, run(c)));
-                continue;
-            }
-        }
-        span = backtick_spans(line, span);
-    }
-    match (fence, span) {
-        (Some((c, n)), _) => format!("{s}\n{}", c.to_string().repeat(n)),
-        (None, Some(n)) => format!("{s}{}", "`".repeat(n)),
-        (None, None) => s.to_string(),
-    }
-}
-
-/// The inline code span still open after `line` (its opening run's length), given the one open
-/// before it; a backslash-escaped backtick outside a span is text.
-fn backtick_spans(line: &str, mut open: Option<usize>) -> Option<usize> {
-    let b = line.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if open.is_none() && b[i] == b'\\' {
-            i += 2;
-            continue;
-        }
-        if b[i] == b'`' {
-            let start = i;
-            while i < b.len() && b[i] == b'`' {
-                i += 1;
-            }
-            let n = i - start;
-            open = match open {
-                None => Some(n),
-                Some(m) if m == n => None,
-                other => other,
-            };
-            continue;
-        }
-        i += 1;
-    }
-    open
+    let cut = forge_core::rules::long_body::fit_prefix(text, max.saturating_sub(note.len()));
+    format!("{cut}{note}")
 }
 
 /// Provenance within the contract (author ≤ 120 chars / 480 bytes, url ≤ 300 bytes).
@@ -474,13 +400,14 @@ pub struct Published {
 }
 
 /// A release's notes: a provenance line (`> Published on github.com by @x on 2026-08-03`),
-/// then the source notes, fitted to the 5120-byte field at a boundary with a link to the full
+/// then the source notes, whole up to [`TEXT_MAX`] (the sink stores notes longer than the
+/// field as a long body, forge-v2.md §6.3), else cut at a boundary with a link to the full
 /// notes (L-06).
 fn release_notes(notes: &str, published: Option<&Published>, source_url: &str) -> String {
     // Room for a later assets footer is made by `notes_with_footer` itself.
     fit_text(
         &headed(&published_line(published), notes),
-        NOTES_MAX,
+        TEXT_MAX,
         source_url,
     )
 }
@@ -504,9 +431,6 @@ pub fn published_line(published: Option<&Published>) -> String {
 
 /// The most bytes a release's `assets` JSON may take (forge-core `release.assets`).
 const ASSETS_MAX: usize = 4096;
-
-/// The most bytes a release's `notes` may take (forge-core `release.notes`).
-const NOTES_MAX: usize = 5120;
 
 /// How much an asset is worth keeping when a release lists more than 4096 bytes of them;
 /// lower is kept first. Checksum lists come first (`SHA256SUMS`, `checksums.txt` and their
@@ -659,14 +583,31 @@ fn assets_footer(omitted: usize, total: usize, source_url: &str) -> String {
     )
 }
 
-/// `notes` with [`assets_footer`] appended, the notes clipped so both fit the 5120-byte
-/// field. No footer when nothing was omitted.
+/// `notes` with [`assets_footer`] appended, the notes clipped so both fit [`TEXT_MAX`]. No
+/// footer when nothing was omitted.
 pub fn notes_with_footer(notes: &str, omitted: usize, total: usize, source_url: &str) -> String {
+    footed(notes, omitted, total, source_url, TEXT_MAX)
+}
+
+/// The notes an importer before long bodies (forge-v2.md §6.3) wrote for the same release:
+/// cut to the 5,120-byte field with a link to the source, the assets footer within it. A
+/// release mirrored so is left as it is: a run does not rewrite it just to store its full notes.
+pub fn legacy_release_notes(notes: &str, omitted: usize, total: usize, source_url: &str) -> String {
+    footed(
+        &fit_text(notes, FIELD_MAX, source_url),
+        omitted,
+        total,
+        source_url,
+        FIELD_MAX,
+    )
+}
+
+fn footed(notes: &str, omitted: usize, total: usize, source_url: &str, max: usize) -> String {
     if omitted == 0 {
         return notes.to_string();
     }
     let footer = assets_footer(omitted, total, source_url);
-    let room = NOTES_MAX.saturating_sub(footer.len());
+    let room = max.saturating_sub(footer.len());
     format!("{}{footer}", fit_text(notes, room, source_url))
 }
 
@@ -701,8 +642,11 @@ mod tests {
 
     #[test]
     fn long_bodies_are_cut_with_a_pointer_to_the_full_text() {
+        // over the field but within TEXT_MAX: whole (the sink stores it as a long body)
         let b = body("> h\n\n", &"é".repeat(6000), "https://x/1");
-        assert!(b.len() <= BODY_MAX && b.chars().count() <= BODY_MAX);
+        assert_eq!(b.len(), 5 + 12_000);
+        let b = body("> h\n\n", &"é".repeat(140_000), "https://x/1");
+        assert!(b.len() <= TEXT_MAX && b.chars().count() <= TEXT_MAX);
         assert!(b.ends_with("the full text is at https://x/1)"));
         assert_eq!(body("> h\n\n", "short", "u"), "> h\n\nshort");
         assert_eq!(body("> h\n\n", "", "u"), "> h");
@@ -713,7 +657,7 @@ mod tests {
     #[test]
     fn a_cut_lands_on_a_boundary_and_closes_code() {
         let words = "word ".repeat(1500);
-        let b = body("> h\n\n", &words, "https://x/1");
+        let b = fit_text(&format!("> h\n\n{words}"), FIELD_MAX, "https://x/1");
         let kept = b.split("\n\n… (truncated").next().unwrap();
         assert!(kept.ends_with("word"), "{:?}", &kept[kept.len() - 20..]);
         // A paragraph break in the second half wins over a later space.
@@ -741,21 +685,6 @@ mod tests {
         );
         // Short text is untouched.
         assert_eq!(fit_text("short `x", 5120, "u"), "short `x");
-    }
-
-    /// Review: fences of `~~~` and of four or more backticks, double-backtick spans and escaped
-    /// backticks are all closed (or left alone) correctly.
-    #[test]
-    fn every_kind_of_open_code_is_closed() {
-        assert_eq!(close_code("a\n~~~ sh\nls"), "a\n~~~ sh\nls\n~~~");
-        assert_eq!(close_code("````md\n```\ninner"), "````md\n```\ninner\n````");
-        assert_eq!(close_code("x ``a ` b"), "x ``a ` b``");
-        assert_eq!(close_code(r"a \` literal"), r"a \` literal");
-        assert_eq!(
-            close_code("```\ncode\n```\nafter `x"),
-            "```\ncode\n```\nafter `x`"
-        );
-        assert_eq!(close_code("done `x` and ``y``"), "done `x` and ``y``");
     }
 
     /// Review (High): a long opening fence or span run made the closer longer than the 5 bytes
@@ -807,7 +736,7 @@ mod tests {
         let r = release(
             "v0.16.0.1",
             None,
-            Some(&"notes ".repeat(3000)),
+            Some(&"notes ".repeat(50_000)),
             Vec::new(),
             url.into(),
             Some(&p),
@@ -818,7 +747,7 @@ mod tests {
             "{}",
             &r.notes[..80]
         );
-        assert!(r.notes.len() <= NOTES_MAX);
+        assert!(r.notes.len() <= TEXT_MAX);
         assert!(r.notes.ends_with(&format!("the full text is at {url})")));
         // A short release is left whole; without a publisher there is no line.
         let r = release("v1", None, Some("Fixes."), Vec::new(), url.into(), None);
@@ -843,8 +772,8 @@ mod tests {
         assert_eq!(with_pull_origin(&b, "", "", "u"), b);
         assert!(with_pull_origin(&b, "nothex", "feature", "u").contains("> head feature"));
         // Still within the bound.
-        let long = body("> h\n\n", &"w ".repeat(3000), "u");
-        assert!(with_pull_origin(&long, &base, "o:b", "u").len() <= BODY_MAX);
+        let long = body("> h\n\n", &"w ".repeat(140_000), "u");
+        assert!(with_pull_origin(&long, &base, "o:b", "u").len() <= TEXT_MAX);
     }
 
     #[test]
@@ -1070,9 +999,14 @@ mod tests {
         assert!(n.contains("5 of 21 assets are not mirrored here"), "{n}");
         assert!(n.contains(&format!("[source release]({url})")), "{n}");
         // Long notes are clipped so the footer always fits the field.
-        let long = notes_with_footer(&"x".repeat(NOTES_MAX), 1, 2, url);
-        assert!(long.len() <= NOTES_MAX, "{}", long.len());
+        let long = notes_with_footer(&"x".repeat(TEXT_MAX), 1, 2, url);
+        assert!(long.len() <= TEXT_MAX, "{}", long.len());
         assert!(long.ends_with(")._"), "{long}");
+        // what an importer before long bodies wrote: within the 5,120-byte field
+        let legacy = legacy_release_notes(&"x".repeat(9000), 1, 2, url);
+        assert!(legacy.len() <= FIELD_MAX, "{}", legacy.len());
+        assert!(legacy.ends_with(")._"), "{legacy}");
+        assert_eq!(legacy_release_notes("short", 0, 2, url), "short");
         // No https source: no link; a URL with parentheses or spaces stays one link.
         assert!(!notes_with_footer("n", 1, 2, "").contains("source release"));
         let odd = notes_with_footer("n", 1, 2, "https://example.org/r/v1 (final)");
