@@ -389,7 +389,7 @@ dg release download <owner>/<repo> v1.0.0 [--asset <name>] [-O/--output <dir | f
 dg release unpublish <owner>/<repo> v1.0.0
 ```
 
-The tag must exist in the repository first (push it, as above): a release cannot be deleted, only unpublished, so `dg release create` refuses a tag the repository does not have ([E102](../errors.md#e102)) before anything is uploaded or signed. A new revision of an existing release (to yank it or change its notes) is allowed even if its tag was deleted since.
+The tag must exist in the repository first (push it, as above, or publish from the web, which can create it): a release cannot be deleted, only unpublished, so `dg release create` refuses a tag the repository does not have ([E102](../errors.md#e102)) before anything is uploaded or signed. A new revision of an existing release (to yank it or change its notes) is allowed even if its tag was deleted since.
 
 `--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)).
 
@@ -446,19 +446,22 @@ On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-
 | You can | Not yet (coming soon) |
 |---|---|
 | Browse code, commits, branches, tags and PR diffs; download a branch as a zip | Web editing of files |
+| Create and delete branches on the **Branches** page (maintainers and writers) | Deleting tags (use `git push <remote> :refs/tags/<tag>`) |
 | File issues, comment, close and reopen; label them and put them in milestones, and manage the repo's labels and milestones (members) | Merging a private repository's PRs, or committing to its branches (use `dg`) |
 | Open a PR from a branch you have already pushed, in the repository or your fork | Merging when both sides changed the same files (use `dg pr merge`) |
 | Review a PR: approve, request changes or comment, with inline comments, suggestions and a pending review | |
 | Merge a PR (see below) | |
 | Create a repository (public or private), or fork one, with a cost preview; sync a fork with its parent (fast-forward) | Syncing a fork whose branch has commits of its own (open the pull request it offers) |
 | Add and remove members (owner) | |
-| Publish a release with assets (maintainers) | |
+| Publish a release with assets, creating its tag when it does not exist (maintainers) | |
 | Star repositories and follow people | |
 | See your repositories, issues, PRs and stars in **Explore**, and new activity in **Notifications** | |
 
 Every write shows its price before you sign, and a toast shows what it actually cost. **Settings → Spend** keeps a local ledger of what this browser spent, by repository and month.
 
-**Releases from the browser.** On a repository's **Releases** tab, a maintainer sees **New release**. It works like `dg release create --asset`: the maintainer role is checked before anything uploads, each file (up to 256 MiB) goes to *your* storage from **Settings → Storage** (never to Platform), is verified by reading it back, and is recorded with its SHA-256. Anyone who downloads an asset from the release page gets it only if it hashes to the recorded value.
+**Releases from the browser.** On a repository's **Releases** tab, a maintainer sees **New release**. It works like `dg release create --asset`: the maintainer role is checked before anything uploads, each file (up to 256 MiB) goes to *your* storage from **Settings → Storage** (never to Platform), is verified by reading it back, and is recorded with its SHA-256. Anyone who downloads an asset from the release page gets it only if it hashes to the recorded value. The tag can be an existing one, or a new one: the form then says the tag is new and asks for the **Target** branch (the default branch first), and publishing first writes the tag as a lightweight tag at that branch's tip (one ref update, about 0.0007 DASH, nothing uploaded), as GitHub's "Create new tag on publish" does. A tag that was pushed meanwhile at another commit stops the publish before anything uploads. To make an annotated or signed tag, push it with git first.
+
+**Branches from the browser.** On the **Branches** page, maintainers and writers see **New branch** (a name and the branch to start from) and a delete button on each branch. Each is one ref update, about 0.0007 DASH, and nothing is uploaded: a new branch points at a commit the repository already stores. A branch matching a protected pattern is a maintainer's to create. The default branch and protected branches cannot be deleted from the web, as on GitHub: the button is disabled and says why (change the default, or a maintainer removes the protection in **Settings → Branches**, first). A branch is deleted only from the commit the page showed, so commits pushed since are never dropped unseen, and a branch deleted from the page can be **Restore**d there until you leave it. Its commits stay stored either way: deleting a branch deletes no pack. Triage members and readers see a line saying their role cannot create or delete branches.
 
 **Merging.** Writers and maintainers get a merge box on a public repository's PR. It checks the merge in the browser first, then offers what it can do: **Merge (fast-forward)**, **Create merge commit and merge** (only when the two sides changed different files; the browser never merges file contents), or **Squash and merge** (authored by the PR's author, committed by you, as on GitHub), limited to the methods the branch policy allows. A merge needs a commit name and email; the merge box asks for them in place when they are not set yet. It builds the pack, uploads it to your storage from **Settings → Storage** (it asks before storing on Platform), moves the branch and posts the `merge` event: the same steps as `dg pr merge`. These cases go to `dg pr merge`: changes both sides made to the same files, a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. On a protected base branch only a maintainer can merge, in the browser or with `dg`; a writer sees **Protected branch — maintainers only**. **Mark as merged (done elsewhere)** only records a merge done some other way, and is offered once the head is on the base branch. While the branch policy is not met the merge is disabled; a maintainer can tick **bypass rules**, confirm the rules named, and merge: an event on the PR records the bypass, and nobody can delete it.
 

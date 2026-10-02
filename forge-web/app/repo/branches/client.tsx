@@ -8,7 +8,7 @@ export function BranchesClient(): JSX.Element {
   const addr = useRepoAddress()
   return (
     <RepoScaffold addr={addr}>
-      {(home) => <RefListContent home={home} addr={addr} kind="branches" />}
+      {(home, reload) => <RefListContent home={home} addr={addr} kind="branches" reload={reload} />}
     </RepoScaffold>
   )
 }
