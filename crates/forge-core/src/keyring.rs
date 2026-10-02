@@ -935,8 +935,8 @@ impl ChainLink {
 
 /// E307 for a private repository whose newest ref updates are sealed under key `epoch`, which
 /// the reader holds no key for ([`crate::refs::newer_unreadable_epoch`], QW4-012): the refs it
-/// can read are out of date, so `git fetch` / `ls-remote` stop here rather than report them as
-/// current. A removed member's existing clone meets this; a fresh clone meets the pack version.
+/// can read are out of date, so every ref read (`git fetch` / `ls-remote`, a push, `dg pr`)
+/// stops here rather than take them as current. A removed member's existing clone meets this.
 #[must_use]
 pub fn refs_sealed_error(epoch: u32) -> Error {
     UserError::new(
@@ -948,7 +948,7 @@ pub fn refs_sealed_error(epoch: u32) -> Error {
     ))
     .fix("`dg repo keys status <owner>/<repo>` says which keys you hold")
     .fix("removed? content from that epoch on is not readable to you; still a member? ask a maintainer to run `dg repo keys repair <owner>/<repo>`")
-    .note("nothing was fetched: the refs you can read are not reported as current")
+    .note("the refs you can read are from before it, so they are not used as the repository's current refs")
     .into()
 }
 

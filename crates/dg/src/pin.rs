@@ -97,7 +97,7 @@ fn moved(
     .fix(format!(
         "{keep}if you trust the change, run `git -c {ALLOW_REPIN_GIT_KEY}=true fetch` once, which re-pins this clone (or drop the pin: `git config --remove-section '{section}'`)"
     ))
-    .note("checked before anything was read from it or signed; nothing was written or paid")
+    .note("checked before anything was signed; nothing was written or paid")
 }
 
 /// The current repository's local value of `key`, `None` when unset. Fails closed: a pin that

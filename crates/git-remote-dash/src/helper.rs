@@ -354,13 +354,21 @@ impl Helper {
         let meter = &fetch_meter(options, &packs);
         let fetched = stream::iter(packs.iter().map(|(h, copies)| async move {
             let got = fetch_one(svc, repo, contract, copies, roles, reader, h).await;
-            meter.advance(copies.first().map_or(0, |m| m.size_bytes));
+            // Only a pack that arrived adds bytes; one set aside counts as done.
+            let arrived = matches!(&got, Ok((_, Got::Bytes(_))));
+            meter.advance(if arrived {
+                copies.first().map_or(0, |m| m.size_bytes)
+            } else {
+                0
+            });
             got
         }))
         .buffered(PACK_DOWNLOAD_WINDOW)
         .try_collect();
-        let fetched: Vec<([u8; 32], Got)> = with_ticks(meter, fetched).await?;
-        meter.finish();
+        let fetched: Result<Vec<([u8; 32], Got)>> = with_ticks(meter, fetched).await;
+        // A failed download ends the line too, so the error starts on its own.
+        meter.finish(fetched.is_ok());
+        let fetched = fetched?;
         // Packs a fallback copy served: say which recorded copy is down, and why, while the
         // others still hold the history (the survivability drill asserts these lines). A
         // warning, so `-q` does not hide it (git keeps warnings under -q too).
@@ -1067,7 +1075,7 @@ fn packs_unreadable(
             Some(p) => {
                 let fork_name = repo.rsplit('/').next().unwrap_or(repo);
                 format!(
-                    "{repo} is a fork, and these packs came from its parent {p}, whose pusher recorded them only at an address other computers do not read from. Ask {p}'s maintainers to record them at a public https address (`dg repack {p} --profile <profile>`); then the fork's owner records the new copy in the fork with `dg repo fork {p} --name {fork_name}`"
+                    "{repo} is a fork, and these packs came from its parent {p}, whose pusher recorded them only at an address other computers do not read from. A fork keeps the copies its parent had when it was made: ask {p}'s maintainers to record them at a public https address (`dg repack {p} --profile <profile>`), then clone {p}, or fork it again (`dg repo fork {p} --name <new name>`; `--name {fork_name}` again records a repack's new pack in this fork)"
                 )
             }
             None => format!(
@@ -3362,7 +3370,7 @@ mod tests {
             u.fix
         );
         assert!(
-            u.fix[0].contains("`dg repo fork OWNER/repo --name repo`"),
+            u.fix[0].contains("`dg repo fork OWNER/repo --name <new name>`"),
             "{:?}",
             u.fix
         );

@@ -143,7 +143,10 @@ impl FetchMeter {
     }
 
     /// The final line, `…, done.`, once every pack is done.
-    pub fn finish(&self) {
+    ///
+    /// Without `ok` (the download failed), just a newline after the last count, so the error
+    /// that follows starts on a line of its own.
+    pub fn finish(&self, ok: bool) {
         if !self.enabled {
             return;
         }
@@ -152,7 +155,7 @@ impl FetchMeter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let line = fetch_line(s.0, self.packs, self.received(s.1), self.bytes);
-        draw(&format!("\r{line}, done.\n"));
+        draw(&format!("\r{line}{}\n", if ok { ", done." } else { "" }));
     }
 }
 
@@ -706,7 +709,7 @@ mod tests {
         // Off: nothing drawn, the counts still kept.
         let m = FetchMeter::new(false, 2, 10);
         m.advance(5);
-        m.finish();
+        m.finish(true);
         assert_eq!(m.state.lock().unwrap().0, 1);
         assert!(!FetchMeter::new(true, 0, 0).enabled);
     }

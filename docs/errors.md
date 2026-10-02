@@ -185,7 +185,7 @@ Fix: for the first, sign in again, replacing the key in use (`dg auth status` sh
 
 Fix: ask a maintainer to add you (`dg collab add <owner>/<repo> <your identity id>`). If you are a member already, ask a maintainer to run `dg repo keys repair <owner>/<repo>`, which wraps the key to every member that has none.
 
-`git fetch`, `git pull` and `git ls-remote` in an existing clone also stop with E307 when the repository's newest ref updates are sealed under a key epoch you hold no key for, typically after you were removed and the key was rotated. The refs you can still read are from before the rotation, so they are not reported as current ("Already up to date" would be wrong). As on GitHub, a removed collaborator's clone stops getting updates; what it already has stays.
+`git fetch`, `git pull`, `git ls-remote` (and any push or `dg` command that reads the refs) also stop with E307 when the repository's newest ref updates are sealed under a key epoch you hold no key for, typically after you were removed and the key was rotated. The refs you can still read are from before the rotation, so they are not reported as current ("Already up to date" would be wrong). As on GitHub, a removed collaborator's clone stops getting updates; what it already has stays.
 
 ## E308
 
@@ -248,7 +248,7 @@ Fix: anyone whose clone still has the objects can restore the copies with `dg re
 
 When every copy a pack's manifest records is one no reader follows (the pusher's storage had a plain-http, loopback or private-network public address, recorded with `allow-private-uri`, or an S3 bucket with no public address), the cause says so for each copy, and neither a gateway nor a retry helps. A member can record the packs again at a public https address: `dg repack <owner>/<repo> --profile <profile>` stores one consolidated pack there and records it on chain (`dg reseed --from-local` only re-uploads to addresses already recorded, so it cannot help here). If that host or bucket is your own, add a storage profile for it and retry.
 
-A fork records its parent's packs where the parent's pusher stored them. When those are copies no reader follows, `dg repo fork` warns before it writes anything, and the fork's E503 says the packs are its parent's: the parent's maintainers record them at a public https address (`dg repack <parent> --profile <profile>`), and the fork's owner then runs `dg repo fork <parent> --name <fork name>` again, which records the new copy in the fork.
+A fork records its parent's packs where the parent's pusher stored them. When those are copies no reader follows, `dg repo fork` warns before it writes anything, and the fork's E503 says the packs are its parent's. A fork keeps the copies its parent had when it was made: the parent's maintainers record the packs at a public https address (`dg repack <parent> --profile <profile>`), and then the parent can be cloned, or forked again. Running `dg repo fork <parent> --name <fork name>` again on the same fork records the repack's new pack in it.
 
 `dg release download` stops with E503 before downloading anything when none of the asset's recorded copies is one this computer reads from. A copy recorded on chain is followed only if it is a public https URL, an IPFS CID with a gateway to ask, or a bucket or host named in one of your own storage profiles. Plain http, loopback and private-network addresses are never followed just because a publisher recorded them. If the host is your own storage, add a profile whose `public_url` is it, and retry.
 

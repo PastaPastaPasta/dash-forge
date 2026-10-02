@@ -101,34 +101,48 @@ pub fn readable_by_anyone(uri: &str) -> bool {
         )
 }
 
-/// The packs among the fork manifests `planned` (one URI list each) that no other computer can
-/// read ([`readable_by_anyone`]), and the places their copies are recorded at (`host[:port]`
-/// or `s3://bucket`, each once): a clone of the fork would fail on them (E503) until the
-/// parent's pusher copies them somewhere public (QW4-062). `(0, [])` when every pack has a
-/// readable copy.
+/// Where `uri` is, for a message: `host[:port]` (never a user name or password in it),
+/// `s3://bucket`, or the scheme alone.
+fn place_of(uri: &str) -> String {
+    if let Some(rest) = uri.strip_prefix("s3://") {
+        return format!("s3://{}", rest.split('/').next().unwrap_or(rest));
+    }
+    reqwest::Url::parse(uri)
+        .ok()
+        .and_then(|u| {
+            u.host_str().map(|h| match u.port() {
+                Some(p) => format!("{h}:{p}"),
+                None => h.to_string(),
+            })
+        })
+        .unwrap_or_else(|| {
+            uri.split_once("://")
+                .map_or("an unparseable address", |(scheme, _)| scheme)
+                .to_string()
+        })
+}
+
+/// The packs among the fork manifests `planned` that no other computer can read: no copy is
+/// [`readable_by_anyone`], and no pack that is supersedes it (a reader sets a superseded pack
+/// aside when its consolidation reads). Returns how many, and the places their copies are
+/// recorded at ([`place_of`], each once): a clone of the fork fails on them (E503) until the
+/// parent records them at a public address (QW4-062). `(0, [])` when every pack is readable.
 #[must_use]
-pub fn unreadable_by_others<'u>(
-    planned: impl IntoIterator<Item = &'u [String]>,
-) -> (usize, Vec<String>) {
+pub fn unreadable_by_others(planned: &[PackManifestInput]) -> (usize, Vec<String>) {
+    let readable = |m: &PackManifestInput| m.uris.iter().any(|u| readable_by_anyone(u));
+    let covered: BTreeSet<[u8; 32]> = planned
+        .iter()
+        .filter(|m| readable(m))
+        .flat_map(|m| m.supersedes.iter().copied())
+        .collect();
     let mut n = 0;
     let mut places: Vec<String> = Vec::new();
-    for uris in planned {
-        if uris.iter().any(|u| readable_by_anyone(u)) {
-            continue;
-        }
+    for m in planned
+        .iter()
+        .filter(|m| !readable(m) && !covered.contains(&m.pack_hash))
+    {
         n += 1;
-        for u in uris {
-            let place = u
-                .split_once("://")
-                .map_or(u.as_str(), |(scheme, rest)| {
-                    let host = rest.split('/').next().unwrap_or(rest);
-                    if scheme == "s3" {
-                        u.get(..scheme.len() + 3 + host.len()).unwrap_or(u)
-                    } else {
-                        host
-                    }
-                })
-                .to_string();
+        for place in m.uris.iter().map(|u| place_of(u)) {
             if !places.contains(&place) {
                 places.push(place);
             }
@@ -417,18 +431,48 @@ mod tests {
         ] {
             assert!(!readable_by_anyone(unreadable), "{unreadable}");
         }
-        let local = vec![
-            "https://127.0.0.1:9000/qa4-cli-dx/ab".to_string(),
-            "s3://qa4-cli-dx/ab".to_string(),
-        ];
-        let public = vec![
-            "https://127.0.0.1:9000/qa4-cli-dx/cd".to_string(),
-            "https://packs.example.org/cd".to_string(),
-        ];
-        let (n, places) = unreadable_by_others([local.as_slice(), public.as_slice()]);
+        let input = |hash: u8, uris: &[&str], supersedes: &[u8]| PackManifestInput {
+            pack_hash: [hash; 32],
+            kind: 0,
+            size_bytes: 1,
+            object_count: 1,
+            chunk_count: 0,
+            storage: 1,
+            uris: uris.iter().map(|u| (*u).to_string()).collect(),
+            supersedes: supersedes.iter().map(|h| [*h; 32]).collect(),
+            tips: Vec::new(),
+        };
+        let local = input(
+            1,
+            &[
+                "https://127.0.0.1:9000/qa4-cli-dx/ab",
+                "s3://qa4-cli-dx/ab",
+                "https://user:secret@packs.example.org/ab",
+            ],
+            &[],
+        );
+        let public = input(
+            2,
+            &[
+                "https://127.0.0.1:9000/qa4-cli-dx/cd",
+                "https://packs.example.org/cd",
+            ],
+            &[],
+        );
+        let (n, places) = unreadable_by_others(&[local.clone(), public.clone()]);
         assert_eq!(n, 1);
-        assert_eq!(places, ["127.0.0.1:9000", "s3://qa4-cli-dx"]);
-        assert_eq!(unreadable_by_others([public.as_slice()]), (0, Vec::new()));
+        // Never the credentials in the URL.
+        assert_eq!(
+            places,
+            ["127.0.0.1:9000", "s3://qa4-cli-dx", "packs.example.org"]
+        );
+        assert_eq!(unreadable_by_others(&[public]), (0, Vec::new()));
+        // A readable consolidation that supersedes it: a clone sets it aside, so no warning.
+        let consolidated = input(3, &["https://packs.example.org/ef"], &[1]);
+        assert_eq!(
+            unreadable_by_others(&[local, consolidated]),
+            (0, Vec::new())
+        );
     }
 
     #[test]
