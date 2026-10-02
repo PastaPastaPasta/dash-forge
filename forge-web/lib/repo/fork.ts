@@ -27,6 +27,12 @@
  * Resumable without a journal: each step checks what the fork already has, and a same-named
  * repo of the signer's that is not a fork of this parent is refused, so the parent's packs and
  * refs are never written into an unrelated repository.
+ *
+ * **Sync fork** (P1-4, parity with forge-core `fork::sync_fork` and `dg repo sync`): one of the
+ * fork's branches is fast-forwarded to its parent's. The parent's packs the fork does not record
+ * yet are recorded the same way, by reference ({@link planSyncManifests}), then one ref update
+ * moves the branch from its tip (named as `prevOid`) to the parent's. Only a fast-forward is
+ * written ({@link syncDecision}): a branch with commits of its own is never moved.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -34,12 +40,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { PACK_KIND } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { orderPackCopies, type Role } from '../rules/v2'
-import { queryAllDocuments, queryDocumentsWithProof, type WriteAuth } from '../sdk'
+import { bytesToBase64, queryAllDocuments, queryDocumentsWithProof, type WriteAuth } from '../sdk'
+import { readConfigBundle } from './config'
 import { DOC, type RepoRef } from './contract'
 import { readRepoPackManifests, type PackManifest } from './packs'
 import { MANIFEST_MAX_URIS, MANIFEST_URI_MAX_LEN } from '../constants'
-import { manifestUrisProblem, writePackManifest, writeRefUpdate, type PackManifestInput } from './push'
-import { readRefs, type ResolvedRef } from './refs'
+import { manifestUrisProblem, refNameHash, writePackManifest, writeRefUpdate, type PackManifestInput } from './push'
+import { readRefs, resolveRefByHash, type ResolvedRef } from './refs'
 import { toRepoDoc, repoRefOf, type RepoDoc } from './resolveRepo'
 import { createRepo, normalizeRepoName } from './writes'
 
@@ -139,8 +146,8 @@ export function forkableRef(refName: string): boolean {
 /**
  * The refs a fork still needs: every parent branch and tag ({@link forkableRef}) with a tip that
  * the fork does not have at all, or only `onlyBranch` (the default branch, GitHub's "Copy the
- * main branch only"; QW3-010). Parity: forge-core `fork::plan_refs` (which copies every branch
- * and tag: `dg repo fork` has no default-branch-only mode).
+ * main branch only"; QW3-010). Parity: forge-core `fork::plan_refs` (`dg repo fork
+ * --default-branch-only`), vectors `fork_refs__*`.
  */
 export function planRefs(
   parent: readonly Pick<ResolvedRef, 'refName' | 'state'>[],
@@ -156,6 +163,108 @@ export function planRefs(
     if (oid !== null) out.push({ refName: r.refName, oid })
   }
   return out
+}
+
+/** What syncing a fork's branch with its parent's does (GitHub's "Sync fork"). */
+export type SyncDecision =
+  /** The parent's branch has no tip: nothing to sync with. */
+  | 'parentEmpty'
+  | 'upToDate'
+  /** The fork's branch is behind (or missing): it moves to the parent's tip. The only write. */
+  | 'fastForward'
+  /** The fork's branch has the parent's tip and commits of its own. */
+  | 'ahead'
+  /** Both moved, or share no history: never moved; a pull request merges the parent's. */
+  | 'diverged'
+
+/**
+ * {@link SyncDecision} from the two tips and their ancestry (`forkInParent`: the fork's tip is
+ * an ancestor of the parent's; `parentInFork` the other way round). Parity: forge-core
+ * `fork::sync_decision`, vectors `fork_sync__*`.
+ */
+export function syncDecision(forkTip: string | null, parentTip: string | null, forkInParent: boolean, parentInFork: boolean): SyncDecision {
+  if (parentTip === null || parentTip === '') return 'parentEmpty'
+  if (forkTip === null || forkTip === '') return 'fastForward'
+  if (forkTip.toLowerCase() === parentTip.toLowerCase()) return 'upToDate'
+  if (forkInParent) return 'fastForward'
+  if (parentInFork) return 'ahead'
+  return 'diverged'
+}
+
+/**
+ * The parent branch a fork's default branch syncs with: the parent's default branch (its newest
+ * config's, else `main`, as `dg repo sync` reads it) and where it points (null: no commits). Two
+ * reads: the parent's config timeline and that one ref.
+ */
+export async function readSyncTarget(sdk: EvoSDK, parent: RepoRef): Promise<{ readonly branch: string; readonly tip: string | null }> {
+  const bundle = await readConfigBundle(sdk, parent)
+  const branch = bundle.config?.defaultBranch || 'main'
+  const ref = await resolveRefByHash(sdk, parent, bytesToBase64(refNameHash(`refs/heads/${branch}`)), bundle.history)
+  return { branch, tip: ref === null ? null : refTip(ref) }
+}
+
+/** The git packs a fork records already, whoever recorded them. Parity: forge-core `fork::recorded_packs`. */
+export function recordedPacks(fork: readonly Pick<PackManifest, 'kind' | 'packHash'>[]): Set<string> {
+  return new Set(fork.filter((m) => m.kind === PACK_KIND.GIT_PACK).map((m) => m.packHash.toLowerCase()))
+}
+
+/** The manifests a sync writes: the parent's packs the fork lacks, by reference, and any no fork could name. */
+export interface SyncManifests {
+  readonly manifests: readonly PackManifestInput[]
+  readonly unreferenceable: readonly string[]
+}
+
+/** {@link SyncManifests} from both repos' manifests. Parity: forge-core `fork::plan_sync_manifests`. */
+export function planSyncManifests(parent: RepoRef, parentManifests: readonly PackManifest[], forkManifests: readonly PackManifest[]): SyncManifests {
+  const manifests: PackManifestInput[] = []
+  const unreferenceable: string[] = []
+  for (const copies of planManifests(parentManifests, recordedPacks(forkManifests))) {
+    const input = forkManifest(parent.forge, parent.repoId, copies)
+    if (input === null) unreferenceable.push((copies[0] as PackManifest).packHash)
+    else manifests.push(input)
+  }
+  return { manifests, unreferenceable }
+}
+
+/** Read both repos' manifests and plan a sync's ({@link planSyncManifests}). */
+export async function readSyncManifests(sdk: EvoSDK, fork: RepoRef, parent: RepoRef): Promise<SyncManifests> {
+  const [p, f] = await Promise.all([readRepoPackManifests(sdk, parent), readRepoPackManifests(sdk, fork)])
+  return planSyncManifests(parent, p, f)
+}
+
+/**
+ * Fast-forward `refName` in `fork` from `forkTip` (null: the branch does not exist) to
+ * `parentTip`: the manifests first, then one ref update naming the old tip. The caller decided
+ * `fastForward` and checked the signer may move the branch. Refused before any write when some
+ * pack has no copy a fork could name. Each write's intent derives from `intent`, so a retry of
+ * the same sync finishes it without signing anything twice.
+ */
+export async function syncFork(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  fork: RepoRef,
+  input: { readonly refName: string; readonly forkTip: string | null; readonly parentTip: string; readonly plan: SyncManifests; readonly intent: string },
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ readonly manifestsWritten: number }> {
+  if (fork.visibility !== 'public') throw new Error('only a public fork syncs')
+  if (input.plan.unreferenceable.length > 0) {
+    throw new Error(`${input.plan.unreferenceable.length} of the parent's packs have no copy a fork can reference: push the branch from a full clone instead`)
+  }
+  const total = input.plan.manifests.length + 1
+  let done = 0
+  for (const m of input.plan.manifests) {
+    await writePackManifest(sdk, auth, fork, m, `${input.intent}:manifest:${m.packHash}`)
+    onProgress?.(++done, total)
+  }
+  await writeRefUpdate(
+    sdk,
+    auth,
+    fork,
+    { refName: input.refName, newOid: input.parentTip, ...(input.forkTip !== null ? { prevOid: input.forkTip } : {}) },
+    { intent: `${input.intent}:ref:${input.parentTip}` },
+  )
+  onProgress?.(++done, total)
+  return { manifestsWritten: input.plan.manifests.length }
 }
 
 /** The signer's repo named `name`, or null. */

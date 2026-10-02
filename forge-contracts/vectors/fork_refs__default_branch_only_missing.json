@@ -1,0 +1,55 @@
+{
+  "name": "default_branch_only_missing",
+  "description": "Only a branch the parent does not have: nothing is copied.",
+  "case": "fork_refs",
+  "rules": "v2",
+  "input": {
+    "parent": [
+      {
+        "refName": "refs/heads/master",
+        "state": {
+          "state": "resolved",
+          "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "author": "A",
+          "createdAt": 1
+        }
+      },
+      {
+        "refName": "refs/heads/dev",
+        "state": {
+          "state": "resolved",
+          "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "author": "A",
+          "createdAt": 1
+        }
+      },
+      {
+        "refName": "refs/tags/v1",
+        "state": {
+          "state": "resolved",
+          "oid": "cccccccccccccccccccccccccccccccccccccccc",
+          "author": "A",
+          "createdAt": 1
+        }
+      },
+      {
+        "refName": "refs/mirror/pull/7/head",
+        "state": {
+          "state": "resolved",
+          "oid": "dddddddddddddddddddddddddddddddddddddddd",
+          "author": "A",
+          "createdAt": 1
+        }
+      },
+      {
+        "refName": "refs/heads/gone",
+        "state": {
+          "state": "unborn"
+        }
+      }
+    ],
+    "fork": [],
+    "onlyBranch": "main"
+  },
+  "expected": []
+}
