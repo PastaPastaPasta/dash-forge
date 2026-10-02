@@ -19,12 +19,14 @@ export function CopyBlock({ text, label }: { text: string; label: string }): JSX
   return (
     // The Copy button sits in a bar above the text, never over it (QW4-045: on a phone it
     // covered the first YAML line, which scrolls sideways under an overlaid button).
-    <div className="overflow-hidden rounded-md border border-anvil-200 bg-white dark:border-anvil-800 dark:bg-anvil-950">
-      <div className="flex justify-end border-b border-anvil-200 px-1 py-0.5 dark:border-anvil-800">
+    // Not overflow-hidden: that would clip the focus rings of the button and the scroll region.
+    <div className="rounded-md border border-anvil-200 bg-white dark:border-anvil-800 dark:bg-anvil-950">
+      <div className="flex justify-end border-b border-anvil-200 px-1 py-1 dark:border-anvil-800">
         <button
           type="button"
           onClick={copy}
-          aria-label={label}
+          // The name follows what it shows ("Copied" once done), as voice control reads it.
+          aria-label={copied ? 'Copied' : label}
           className="inline-flex items-center gap-1 rounded px-2 py-1 text-[12px] text-anvil-600 hover:bg-anvil-100 hover:text-anvil-800 coarse:min-h-11 dark:text-anvil-300 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
         >
           {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}

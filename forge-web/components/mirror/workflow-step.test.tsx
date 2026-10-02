@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
  * The /mirror wizard's workflow step (QW4-045): issues and PRs are off by default, as in the
- * Action and as the step's own hint advises; the cost cap is then the Action's 0.05 and rises
- * to 0.1 with them; and the Copy button sits above the YAML, not over it.
+ * Action and as the step's own hint advises; the cost cap says why it is above the Action's
+ * 0.05; and the Copy button sits above the YAML, not over it.
  */
 
 import { act } from 'react'
@@ -57,16 +57,15 @@ const collabBox = (): HTMLInputElement =>
   [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((c) => /Mirror issues and pull requests too/.test(c.closest('label')?.textContent ?? ''))!
 
 describe('WorkflowStep defaults (QW4-045)', () => {
-  it('syncs code and releases under the Action cap, and adds issues and PRs with a 0.1 cap only when ticked', async () => {
+  it('syncs code and releases unless issues and PRs are ticked, and says why its cap is above the Action default', async () => {
     await render()
     expect(collabBox().checked).toBe(false)
     expect(yaml()).toContain("sync: 'code,releases'")
-    expect(yaml()).toContain("cost-cap: '0.05'")
     expect(yaml()).not.toContain('pull_request_target')
-    expect((host.querySelector('#mirror-cost-cap') as HTMLInputElement).value).toBe('0.05')
+    expect(yaml()).toContain("cost-cap: '0.1'")
+    expect(host.textContent).toMatch(/The Action's default is 0\.05 DASH; the cap suggested here leaves room for the first run/)
     await act(async () => collabBox().click())
     expect(yaml()).toContain("sync: 'code,releases,labels,issues,prs'")
-    expect(yaml()).toContain("cost-cap: '0.1'")
     expect(yaml()).toContain('pull_request_target')
   })
 

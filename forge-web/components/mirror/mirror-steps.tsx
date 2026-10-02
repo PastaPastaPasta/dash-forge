@@ -540,10 +540,7 @@ export function WorkflowStep({
   // Off by default, as in the Action (`sync: code,releases`) and as its own hint advises
   // (QW4-045): anyone who can open an issue or PR could make a run spend.
   const [collab, setCollab] = useState(false)
-  // The cap follows the choice until it is typed: 0.05 DASH (the Action's default), 0.1 with
-  // issues and PRs, more for packs on Platform.
-  const [typedCap, setCostCap] = useState<string | null>(null)
-  const costCap = typedCap ?? defaultCostCap(storage.kind, github.sizeKib, PUSH_COST_DASH.perMib, collab)
+  const [costCap, setCostCap] = useState(() => defaultCostCap(storage.kind, github.sizeKib, PUSH_COST_DASH.perMib))
   // Typed by the person, else the build's commit, else the latest on master.
   const [typed, setCommit] = useState<string | null>(null)
   const master = useAsync(() => latestCommit(DASH_FORGE_REPO, 'master'), [], { enabled: BUILD_COMMIT === '' })
@@ -623,7 +620,8 @@ export function WorkflowStep({
             <Field
               label="Cost cap per run (DASH)"
               htmlFor="mirror-cost-cap"
-              hint={`A run that would spend more stops before writing. The Action's default is ${ACTION_COST_CAP}${costCap === ACTION_COST_CAP ? '' : '; this one is sized for the first run'}.`}
+              // Why it is above the Action's own default (QW4-045).
+              hint={`A run that would spend more stops before writing. The Action's default is ${ACTION_COST_CAP} DASH; the cap suggested here leaves room for the first run, which writes every branch, tag and release (and every issue and PR, if mirrored). Lower it once the mirror is up.`}
             >
               <Input id="mirror-cost-cap" inputMode="decimal" value={costCap} onChange={(e) => setCostCap(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={capError !== null} />
             </Field>
