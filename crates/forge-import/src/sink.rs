@@ -137,17 +137,21 @@ impl<'a> Ledger<'a> {
 
     /// A release write that failed: one that concerns this release only (`item`: the
     /// destination refusing its content, or a rule such as `oneLive` after a concurrent
-    /// publish) skips it, uncounted as written; spend-cap and network errors stop the run.
+    /// publish) skips it, uncounted as written (`counted`: [`Self::write`] counted it before it
+    /// was sent; the sink counts only what landed); spend-cap and network errors stop the run.
     pub(crate) fn refused_release(
         &mut self,
         tag: &str,
         e: anyhow::Error,
         item: bool,
+        counted: bool,
     ) -> Result<()> {
         if !item {
             return Err(e);
         }
-        self.counts.releases = self.counts.releases.saturating_sub(1);
+        if counted {
+            self.counts.releases = self.counts.releases.saturating_sub(1);
+        }
         self.skip(format!("release {tag} not mirrored this run: {e:#}"));
         Ok(())
     }
@@ -260,6 +264,126 @@ const MEASURE_EVERY: Duration = Duration::from_secs(2);
 /// How often the write phase logs its progress.
 const PROGRESS_EVERY: Duration = Duration::from_secs(30);
 
+/// Attempts per item when its writes fail for a reason that is not the item's own content: a
+/// write forge-core could not confirm, a nonce another write kept taking, a network error.
+const ITEM_ATTEMPTS: u32 = 3;
+
+/// The pause before an item's second attempt; doubled before the third.
+const ITEM_RETRY_DELAY: Duration = Duration::from_secs(20);
+
+/// The longest an item waits, after its pause, for the run's other writes to prove that a
+/// write of it that failed unconfirmed can no longer land ([`NONCE_WINDOW`]).
+const SETTLE_MAX: Duration = Duration::from_secs(300);
+
+/// How often that wait looks again.
+const SETTLE_POLL: Duration = Duration::from_secs(5);
+
+/// After the window is reached, how long more before the item reads the chain again: the
+/// failed write may have landed in the same block as the last of those writes, and a proved
+/// read may answer from a block behind.
+const SETTLE_LAG: Duration = Duration::from_secs(10);
+
+/// Writes signed after an unconfirmed one that must land before it is provably dead: Drive
+/// accepts a nonce up to 24 below the highest it has seen on the same identity-contract counter
+/// (`MAX_MISSING_IDENTITY_REVISIONS`), so once 25 writes signed later have landed, every
+/// transition the failed write signed is refused for good, and re-signing it (after reading the
+/// chain again for what landed) cannot write it twice.
+const NONCE_WINDOW: usize = 25;
+
+/// Items in a row whose writes keep failing before the run stops rather than leaving every
+/// later item partial too: the network is down, not one item unlucky.
+const MAX_FAILED_IN_A_ROW: u32 = 5;
+
+/// Which identity-contract nonce counter a write signs against: each contract keeps its own
+/// (issues, PRs, comments, reviews and transitions are forge-collab's; events
+/// forge-community's; labels and releases forge-core's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Nonces {
+    Collab,
+    Community,
+    Core,
+}
+
+/// A write that failed: what it was, the nonce counter it signed against (`None`: an issue or
+/// PR create, [`Sink::write`]), and how many writes of the run had begun when it failed
+/// ([`WriteLog`]). The writes begun after that signed later nonces, so once enough of them land
+/// the failed one is provably dead ([`NONCE_WINDOW`]).
+#[derive(Debug)]
+pub(crate) struct WriteFailed {
+    what: String,
+    nonces: Option<Nonces>,
+    mark: u64,
+    source: forge_core::Error,
+}
+
+impl std::fmt::Display for WriteFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "writing {}", self.what)
+    }
+}
+
+impl std::error::Error for WriteFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// The run's writes: how many have begun, and which landed (by counter and the order they
+/// began in).
+#[derive(Default)]
+struct WriteLog {
+    begun: u64,
+    landed: Vec<(Nonces, u64)>,
+}
+
+impl WriteLog {
+    /// Writes on `nonces` that began after `mark` and landed.
+    fn landed_after(&self, nonces: Nonces, mark: u64) -> usize {
+        self.landed
+            .iter()
+            .filter(|(n, seq)| *n == nonces && *seq > mark)
+            .count()
+    }
+}
+
+/// What a failed item's error asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    /// Stop the run: the spend cap, a stop already under way, a missing membership, a setting.
+    Run,
+    /// The destination refused the item's content (or a number another create took): skipped
+    /// ([`Sink::item_skipped`]).
+    Item,
+    /// A write (or a read) that failed for no reason of the item's: try the item again.
+    /// `pending`: a write that failed unconfirmed and could still land, its counter and mark;
+    /// `None` when nothing of the item can land any more (a read, or a nonce error: every
+    /// transition the write signed lost its nonce to another write and is absent).
+    Write { pending: Option<(Nonces, u64)> },
+}
+
+/// How to handle `e`, an item's failure.
+fn failure(e: &anyhow::Error) -> Failure {
+    use forge_core::Error as E;
+    if item_error(e) {
+        return Failure::Item;
+    }
+    // A `WriteFailed`'s source is in the chain too.
+    let Some(f) = e.chain().find_map(|c| c.downcast_ref::<E>()) else {
+        return Failure::Run;
+    };
+    if !matches!(
+        f,
+        E::Timeout { .. } | E::Nonce | E::Platform(_) | E::IncompleteRead { .. }
+    ) {
+        return Failure::Run;
+    }
+    let pending = e
+        .downcast_ref::<WriteFailed>()
+        .filter(|_| !matches!(f, E::Nonce))
+        .and_then(|w| Some((w.nonces?, w.mark)));
+    Failure::Write { pending }
+}
+
 /// What the sink caches while it runs (read once, or kept from what it wrote).
 #[derive(Default)]
 struct Caches {
@@ -342,6 +466,12 @@ pub struct Sink<'a, C: Chain> {
     /// Where a private destination's sealed release files and asset lists go (`None`: the
     /// storage policy names no storage of your own).
     release_storage: Option<ReleaseStorage>,
+    /// The run's writes, for proving a failed one dead ([`NONCE_WINDOW`]).
+    writes: Mutex<WriteLog>,
+    /// Items in a row that ended partial on failed writes ([`MAX_FAILED_IN_A_ROW`]).
+    failed_in_a_row: std::sync::atomic::AtomicU32,
+    /// Whether this run has asked for an issue or PR create yet.
+    created_any: std::sync::atomic::AtomicBool,
 }
 
 /// Pauses (ms) between re-reads of a base's history that does not show this run's push yet
@@ -599,6 +729,9 @@ impl<'a, C: Chain> Sink<'a, C> {
             measured_at: Mutex::new(None),
             lag_gate: futures::lock::Mutex::new(()),
             release_storage: None,
+            writes: Mutex::new(WriteLog::default()),
+            failed_in_a_row: std::sync::atomic::AtomicU32::new(0),
+            created_any: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -652,13 +785,20 @@ impl<'a, C: Chain> Sink<'a, C> {
         self.ledger().warn(msg);
     }
 
-    /// One write: charged to the budget first (refused past the cap, before anything is
-    /// signed; reserved while other lanes write), counted, executed unless this is a dry run,
-    /// then reconciled with the measured balance so an estimate that ran low stops a later
-    /// write. Refused once the run is stopping ([`Stop`]).
+    /// One write, signed against the `nonces` counter: charged to the budget first (refused
+    /// past the cap, before anything is signed; reserved while other lanes write), executed
+    /// unless this is a dry run, counted once it landed (a dry run counts what it would
+    /// write), then reconciled with the measured balance so an estimate that ran low stops a
+    /// later write. Refused once the run is stopping ([`Stop`]). A failure is a
+    /// [`WriteFailed`], marked with the writes begun so far ([`WriteLog`]).
+    ///
+    /// `nonces` `None`: an issue or PR create, which is left out of the window count
+    /// ([`NONCE_WINDOW`]): it can succeed by adopting an earlier attempt's copy, without a new
+    /// nonce landing.
     async fn write<T, F, Fut>(
         &self,
         what: String,
+        nonces: Option<Nonces>,
         credits: u64,
         count: fn(&mut Counts),
         f: F,
@@ -672,21 +812,148 @@ impl<'a, C: Chain> Sink<'a, C> {
             let mut ledger = self.ledger();
             if self.dry_run {
                 ledger.budget.charge(credits, what.clone())?;
+                count(&mut ledger.counts);
             } else {
                 ledger.budget.reserve(credits, what.clone())?;
             }
-            count(&mut ledger.counts);
         }
         if self.dry_run {
             return Ok(None);
         }
+        let seq = {
+            let mut writes = lock(&self.writes);
+            writes.begun += 1;
+            writes.begun
+        };
         let before = self.traced_balance().await;
         let out = f().await;
         self.ledger().budget.finish(credits);
         self.measure(false).await;
-        let out = out.with_context(|| format!("writing {what}"))?;
+        let out = match out {
+            Ok(out) => {
+                if let Some(n) = nonces {
+                    lock(&self.writes).landed.push((n, seq));
+                }
+                count(&mut self.ledger().counts);
+                out
+            }
+            Err(source) => {
+                // Writes begun from here on sign nonces after every one this write signed.
+                let mark = lock(&self.writes).begun;
+                return Err(WriteFailed {
+                    what,
+                    nonces,
+                    mark,
+                    source,
+                }
+                .into());
+            }
+        };
         trace_cost(&what, credits, before, || self.traced_balance()).await;
         Ok(Some(out))
+    }
+
+    /// Whether a write of an item that failed (`pending`: its counter and mark, `None` when
+    /// nothing of it can land any more) is settled enough to try the item again, after
+    /// `attempt`'s pause: at once for `None`; else once [`NONCE_WINDOW`] writes begun after it
+    /// on the same counter have landed. Other lanes land those while this one waits (at most
+    /// [`SETTLE_MAX`]); with one lane nothing else writes meanwhile, so it does not wait. `false`
+    /// when it is not settled, or the run is stopping.
+    async fn settled(&self, pending: Option<(Nonces, u64)>, attempt: u32) -> bool {
+        let landed = |(nonces, mark): (Nonces, u64)| lock(&self.writes).landed_after(nonces, mark);
+        if let Some(p) = pending {
+            if self.lanes <= 1 && landed(p) < NONCE_WINDOW {
+                return false;
+            }
+        }
+        let pause = ITEM_RETRY_DELAY * 2u32.saturating_pow(attempt.saturating_sub(1));
+        tokio::time::sleep(pause).await;
+        let Some(p) = pending else {
+            return !self.stop.is_stopped();
+        };
+        let deadline = tokio::time::Instant::now() + SETTLE_MAX;
+        loop {
+            if self.stop.is_stopped() {
+                return false;
+            }
+            if landed(p) >= NONCE_WINDOW {
+                tokio::time::sleep(SETTLE_LAG).await;
+                return !self.stop.is_stopped();
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(SETTLE_POLL).await;
+        }
+    }
+
+    /// Run one item's part `part` (its create in the head, or its thread and state in a lane)
+    /// until it succeeds, up to [`ITEM_ATTEMPTS`] times while it fails on writes or reads that
+    /// are not about its content ([`Failure::Write`]), each retry once the failure is settled
+    /// ([`Self::settled`]). `part` gets the attempt number (1 first): a retry reads the chain
+    /// again for what landed. Returns the last error otherwise.
+    ///
+    /// A create needs no settling (its failure carries no counter, [`Sink::write`]): every
+    /// transition an attempt signed carries the dense number it was signed for, so it can land
+    /// only while that number is free, and the retry asks for the item again
+    /// ([`Chain::create_imported`]'s `again`), adopting the earlier copy wherever it landed: at
+    /// the number before the next one, or at the number the retry is refused.
+    async fn retried<T, F, Fut>(&self, t: &SrcTarget, mut part: F) -> Result<T>
+    where
+        F: FnMut(u32) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let mut attempt = 1;
+        loop {
+            let e = match part(attempt).await {
+                Ok(v) => return Ok(v),
+                Err(e) => e,
+            };
+            let Failure::Write { pending } = failure(&e) else {
+                return Err(e);
+            };
+            if attempt >= ITEM_ATTEMPTS || !self.settled(pending, attempt).await {
+                return Err(e);
+            }
+            attempt += 1;
+            tracing::warn!(
+                "{}: trying again (attempt {attempt} of {ITEM_ATTEMPTS}) after: {e:#}",
+                t.imported.url
+            );
+        }
+    }
+
+    /// An item's failure that retrying did not cure ([`Self::retried`]): skipped for its
+    /// content ([`Self::item_skipped`]); left partial this run when its writes kept failing
+    /// (the next run reads the chain and writes what is missing), unless that keeps happening
+    /// item after item ([`MAX_FAILED_IN_A_ROW`]: the network, not the item); else the run's.
+    fn item_failed(&self, t: &SrcTarget, e: anyhow::Error) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        match failure(&e) {
+            Failure::Item => self.item_skipped(t, e),
+            Failure::Run => Err(e),
+            Failure::Write { .. } => {
+                let in_a_row = self.failed_in_a_row.fetch_add(1, Ordering::SeqCst) + 1;
+                if in_a_row >= MAX_FAILED_IN_A_ROW {
+                    return Err(e.context(format!(
+                        "{in_a_row} issues or PRs in a row could not be written; stopping"
+                    )));
+                }
+                self.ledger().skip(format!(
+                    "{} is not fully mirrored this run: its writes kept failing ({e:#}); the \
+                     next run writes what is missing",
+                    t.imported.url
+                ));
+                Ok(())
+            }
+        }
+    }
+
+    /// A lane item that succeeded: the run of failing items is broken (a create succeeding
+    /// says nothing about the lanes' writes).
+    fn item_ok(&self) {
+        self.failed_in_a_row
+            .store(0, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The signer's balance, when the per-write cost trace is on (lanes are 1 then).
@@ -997,7 +1264,7 @@ impl<'a, C: Chain> Sink<'a, C> {
                 self.write_moves(t, &d.target, &d.moves, None, Some(&reason))
                     .await
             };
-            close.await.or_else(|e| self.item_skipped(t, e))?;
+            close.await.or_else(|e| self.item_failed(t, e))?;
             progress.completed(d.index, t.number);
         }
         Ok(())
@@ -1147,6 +1414,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             );
             self.write(
                 format!("label {}", l.name),
+                Some(Nonces::Core),
                 credits,
                 |c| c.labels += 1,
                 || async move {
@@ -1267,6 +1535,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             let written = self
                 .write(
                     format!("release {}", r.tag_name),
+                    Some(Nonces::Core),
                     credits,
                     |c| c.releases += 1,
                     || async move { chain.create_release(need(repo)?, input).await },
@@ -1274,7 +1543,7 @@ impl<'a, C: Chain> Sink<'a, C> {
                 .await;
             if let Err(e) = written {
                 let item = item_error(&e);
-                self.ledger().refused_release(&r.tag_name, e, item)?;
+                self.ledger().refused_release(&r.tag_name, e, item, false)?;
             }
         }
         Ok(())
@@ -1318,22 +1587,65 @@ impl<'a, C: Chain> Sink<'a, C> {
 
     /// The head's part of item `t` (number `index` in the run): find its copy, or create it at
     /// the dense next number. `None` when nothing more is written for it.
+    ///
+    /// A create whose writes keep failing is tried again ([`Self::retried`]), but never left
+    /// out: the items after it would take its number (numbers are dense), and every later
+    /// number would differ from the source's. The run stops instead, and the next one (reading
+    /// the source from its snapshot) creates it.
     async fn open_target<'s>(&self, index: usize, t: &'s SrcTarget) -> Result<Option<Job<'s>>> {
-        self.open_target_inner(index, t)
+        self.retried(t, |attempt| self.open_target_inner(index, t, attempt > 1))
             .await
             .or_else(|e| self.item_skipped(t, e).map(|()| None))
+    }
+
+    /// `t`'s copy read from the chain again, past the run's caches, before its create is tried
+    /// again: a copy an earlier attempt landed (its confirmation lost) is found by the upstream
+    /// number it carries, and the item goes on from it instead of being created twice.
+    async fn recheck(&self, t: &SrcTarget) -> Result<()> {
+        self.caches().known.remove(&key_of(t));
+        let Some(repo) = self.repo.as_ref() else {
+            return Ok(());
+        };
+        for row in self.chain.upstream_targets(repo, t.kind, t.number).await? {
+            if let Some(b) = &row.base {
+                self.caches()
+                    .opened
+                    .insert(row.target.id.clone(), b.clone());
+            }
+            let Some(i) = row.imported.filter(|i| !i.url.is_empty()) else {
+                continue;
+            };
+            if self.is_copy(&i.url, &row.target, t).await? {
+                let mut caches = self.caches();
+                if let Some(idx) = &mut caches.index {
+                    idx.push((i.url, row.target.clone()));
+                }
+                caches.known.insert(key_of(t), Some(row.target));
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     async fn open_target_inner<'s>(
         &self,
         index: usize,
         t: &'s SrcTarget,
+        again: bool,
     ) -> Result<Option<Job<'s>>> {
         let noun = t.kind.noun();
+        if again {
+            self.recheck(t).await?;
+        }
         let (target, fresh) = if let Some(target) = self.existing(t).await? {
             (target, false)
         } else {
-            let target = self.create(t, noun).await?;
+            // A run's first create also looks for a copy an earlier run's last attempt may have
+            // left to land late.
+            let first = !self
+                .created_any
+                .swap(true, std::sync::atomic::Ordering::SeqCst);
+            let target = self.create(t, noun, again || first).await?;
             let mut caches = self.caches();
             if let Some(idx) = &mut caches.index {
                 idx.push((t.imported.url.clone(), target.clone()));
@@ -1361,21 +1673,35 @@ impl<'a, C: Chain> Sink<'a, C> {
         }))
     }
 
-    /// A lane's part of an item: its thread, then its state.
+    /// A lane's part of an item: its thread, then its state. Tried again while its writes fail
+    /// ([`Self::retried`]: each retry reads what is on chain again, so nothing lands twice), then
+    /// left partial for the next run ([`Self::item_failed`]).
     async fn finish_target(&self, job: &Job<'_>) -> Result<()> {
-        self.finish_target_inner(job)
-            .await
-            .or_else(|e| self.item_skipped(job.t, e))
+        let done = self
+            .retried(job.t, |attempt| {
+                if attempt > 1 {
+                    // the attempt before may have held back its close: held once, written once
+                    self.caches().deferred.retain(|d| d.index != job.index);
+                }
+                self.finish_target_inner(job, job.fresh && attempt == 1)
+            })
+            .await;
+        match done {
+            Ok(()) => {
+                self.item_ok();
+                Ok(())
+            }
+            Err(e) => self.item_failed(job.t, e),
+        }
     }
 
-    async fn finish_target_inner(&self, job: &Job<'_>) -> Result<()> {
+    /// `fresh`: the item was created just now, so the chain holds nothing of its thread or
+    /// state yet (not read).
+    async fn finish_target_inner(&self, job: &Job<'_>, fresh: bool) -> Result<()> {
         let Job {
-            index,
-            t,
-            target,
-            fresh,
+            index, t, target, ..
         } = job;
-        let current = if *fresh {
+        let current = if fresh {
             Current::default()
         } else {
             self.current(target).await?
@@ -1385,7 +1711,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         // A comment or review the destination refuses (an item error, which skips this item)
         // still lets the state be written, as it was before this order: a skip must not also
         // leave the item open.
-        let thread = self.sync_thread(t, target, *fresh).await;
+        let thread = self.sync_thread(t, target, fresh).await;
         if state_after(&thread) {
             self.sync_state(*index, t, target, &current).await?;
         }
@@ -1559,7 +1885,7 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// again when another create took the number first), with its provenance and its source
     /// number as `upstreamNumber`. In a dry run the returned target is a placeholder at the
     /// source number (nothing reads it).
-    async fn create(&self, t: &SrcTarget, noun: &str) -> Result<Target> {
+    async fn create(&self, t: &SrcTarget, noun: &str, again: bool) -> Result<Target> {
         let placeholder = Target {
             kind: t.kind,
             id: String::new(),
@@ -1598,8 +1924,8 @@ impl<'a, C: Chain> Sink<'a, C> {
             TargetKind::Patch => |c| c.prs += 1,
         };
         let out = self
-            .write(what, credits, count, || async move {
-                chain.create_imported(need(repo)?, doc, from).await
+            .write(what, None, credits, count, || async move {
+                chain.create_imported(need(repo)?, doc, from, again).await
             })
             .await?;
         let Some(created) = out else {
@@ -1691,6 +2017,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             let value = value.as_str();
             self.write(
                 what,
+                Some(Nonces::Community),
                 credits,
                 |c| c.events += 1,
                 || async move { chain.post_event(need(repo)?, target, kind, value).await },
@@ -1745,6 +2072,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             let what = format!("kind-{} transition on #{}", mv.kind, t.number);
             self.write(
                 what,
+                Some(Nonces::Collab),
                 credits,
                 |c| c.transitions += 1,
                 || async move {
@@ -1833,6 +2161,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         );
         self.write(
             format!("comment on #{}", t.number),
+            Some(Nonces::Collab),
             credits,
             |n| n.comments += 1,
             || async move {
@@ -1861,6 +2190,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         let count = (count > 0).then_some(count);
         self.write(
             format!("review on #{}", t.number),
+            Some(Nonces::Collab),
             credits,
             |n| n.reviews += 1,
             // Always a comment verdict ([`Chain::review`]): the mirror identity is a member,
@@ -2023,6 +2353,53 @@ mod tests {
             comments: Vec::new(),
             reviews: Vec::new(),
         }
+    }
+
+    /// What a failed item's error asks for: a write that may still land is retried once
+    /// settled (its counter and mark), one that cannot (a lost nonce) or a read at once; the
+    /// item's content is skipped; the cap, a stop or a missing membership stop the run.
+    #[test]
+    fn a_failure_says_whether_and_when_the_item_is_tried_again() {
+        use forge_core::Error as E;
+        let failed = |source| {
+            anyhow::Error::from(WriteFailed {
+                what: "comment on #3".into(),
+                nonces: Some(Nonces::Collab),
+                mark: 7,
+                source,
+            })
+        };
+        let unconfirmed = failed(E::Timeout { retryable: true });
+        assert_eq!(
+            failure(&unconfirmed),
+            Failure::Write {
+                pending: Some((Nonces::Collab, 7))
+            }
+        );
+        assert_eq!(
+            format!("{unconfirmed:#}"),
+            "writing comment on #3: operation timed out (retryable: true)",
+            "reads as it did"
+        );
+        assert_eq!(failure(&failed(E::Nonce)), Failure::Write { pending: None });
+        assert_eq!(
+            failure(&failed(E::DuplicateUniqueIndex("number".into()))),
+            Failure::Item
+        );
+        assert_eq!(
+            failure(&failed(E::NotAMember {
+                document_type: "comment".into(),
+                detail: String::new(),
+            })),
+            Failure::Run
+        );
+        let read = anyhow::Error::from(E::Platform("unavailable".into())).context("reading");
+        assert_eq!(failure(&read), Failure::Write { pending: None });
+        assert_eq!(
+            failure(&anyhow::anyhow!("--max-spend reached")),
+            Failure::Run
+        );
+        assert_eq!(failure(&crate::pipeline::Stopped.into()), Failure::Run);
     }
 
     #[test]

@@ -74,7 +74,7 @@ pub(crate) fn check_text(
 /// time, not the original artifact's time — clients render this provenance for migrated
 /// docs and (via the gist-claim flow, PRD 06) can later attribute a placeholder `author`
 /// login to a real Dash identity.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Imported {
     /// Original author handle (e.g. a GitHub login), ≤ 120 chars.
     pub author: String,
@@ -178,7 +178,7 @@ pub(crate) fn u64_to_event_kind(kind: u64) -> Option<EventKind> {
 }
 
 /// Optional review/inline anchor for a [`v2::Collab::comment`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CommentAnchor {
     /// Parent comment `$id` (a threaded reply).
     pub reply_to: Option<String>,

@@ -47,6 +47,7 @@ use dash_sdk::dpp::document::{
     Document, DocumentV0, DocumentV0Getters, DocumentV0Setters, INITIAL_REVISION,
 };
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_nonce::MergeIdentityNonceResult;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -106,6 +107,10 @@ pub(crate) const TOTAL_READING_RULES: [(&str, &str); 13] = [
     ("comment", "lockGate"),
     ("review", "lockGate"),
 ];
+
+/// Waits for a transition whose nonce was too far ahead of the identity's landed writes
+/// ([`WriteFailure::NonceAhead`]): 4, 8, 16 and 32 s, about a minute in all.
+const MAX_AHEAD_RETRIES: u32 = 4;
 
 /// Re-broadcasts of a transition a total-reading rule refused ([`TOTAL_READING_RULES`]): after
 /// about one block, then two (1.5 and 3 times the retry backoff: 3 s and 6 s). A refusal that
@@ -2080,14 +2085,21 @@ impl<'a> WriteEngine<'a> {
         let document_type = prepared.document_type.as_str();
         // One rate-limit wait budget for the whole write, across its re-broadcasts.
         let waits = std::sync::atomic::AtomicU32::new(0);
+        let (st, waits) = (&state_transition, &waits);
         drive_write(
-            || async {
+            move |elsewhere| async move {
                 // A rate-limit refusal is waited out here (the same signed bytes go again after
                 // `ratelimit-reset`), rather than spending one of the loop's re-broadcasts on
                 // a 2 s backoff the gateway will refuse again (D-902).
                 loop {
                     crate::budget::acquire().await;
-                    let Err(e) = state_transition.broadcast(sdk, None).await else {
+                    // `Some(n)`: a node the rotation would not pick, one that does not hold
+                    // these bytes cached (see `drive_write`).
+                    let sent = match elsewhere {
+                        Some(n) => self.broadcast_elsewhere(st, n).await,
+                        None => st.broadcast(sdk, None).await,
+                    };
+                    let Err(e) = sent else {
                         return Ok(());
                     };
                     let used = waits.load(std::sync::atomic::Ordering::Relaxed);
@@ -2111,21 +2123,52 @@ impl<'a> WriteEngine<'a> {
             // delete wait this way for an indexOnly type, but this engine broadcasts and waits
             // itself, and the strict `wait_for_response` still refuses such an outcome.
             || async {
-                state_transition
-                    .wait_for_affected_state::<StateTransitionProofResult>(
-                        sdk,
-                        Some(wait_settings()),
-                    )
+                st.wait_for_affected_state::<StateTransitionProofResult>(sdk, Some(wait_settings()))
                     .await
                     .map(|_proof| ())
                     .map_err(|e| classify_write_error(&e, document_type))
             },
-            || self.nonce_spent(&state_transition, prepared.signed.nonce),
+            || self.nonce_spent(st, prepared.signed.nonce),
             RETRY_BACKOFF_BASE,
             &quorum::QUORUM_WAITS,
             document_type,
         )
         .await
+    }
+
+    /// Send `transition` to the `n`th node away from the SDK's rotation ([`drive_write`]): one
+    /// live DAPI address ([`pick_elsewhere`]), asked once, never banned for its answer. Falls
+    /// back to the rotation when no live address is known.
+    // The error is the SDK's own (large) type, classified by the caller on the next line.
+    #[allow(clippy::result_large_err)]
+    async fn broadcast_elsewhere(
+        &self,
+        transition: &StateTransition,
+        n: usize,
+    ) -> std::result::Result<(), dash_sdk::Error> {
+        use dash_sdk::dapi_client::{DapiClient, DapiRequest};
+        use dash_sdk::platform::transition::broadcast_request::BroadcastRequestForStateTransition;
+        let sdk = self.client.sdk();
+        let request = transition.broadcast_request_for_state_transition()?;
+        let live = sdk.address_list().get_live_addresses();
+        let Some(address) = pick_elsewhere(live, &request.state_transition, n) else {
+            return transition.broadcast(sdk, None).await;
+        };
+        tracing::debug!(node = %address, n, "sending the write to another node");
+        let client = DapiClient::new(
+            std::iter::once(address).collect(),
+            RequestSettings {
+                connect_timeout: Some(DAPI_CONNECT_TIMEOUT),
+                retries: Some(0),
+                ban_failed_address: Some(false),
+                ..RequestSettings::default()
+            },
+        );
+        request
+            .execute(&client, RequestSettings::default())
+            .await
+            .map(|_| ())
+            .map_err(|e| dash_sdk::Error::from(e.inner))
     }
 
     /// Whether Platform's proved identity-contract nonce says `nonce` can no longer be used
@@ -2214,8 +2257,32 @@ impl<'a> WriteEngine<'a> {
         properties: BTreeMap<String, FieldValue>,
         persist: impl FnMut(&PreparedWrite) -> Result<()>,
     ) -> Result<PreparedWrite> {
-        self.create_probed(contract, document_type, properties, persist, NO_PROBE)
+        self.create_journaled_with(contract, document_type, properties, Resign::Never, persist)
             .await
+    }
+
+    /// [`Self::create_journaled`] with the policy for a create that goes unconfirmed: under
+    /// [`Resign::Unique`] (a document consensus admits only once: an issue or PR at its dense
+    /// `number`, a unique index) it is signed again at once with a fresh nonce, every
+    /// replacement handed to `persist` first, so a caller that finds the number taken can tell
+    /// its own landed copy by id.
+    pub async fn create_journaled_with(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        properties: BTreeMap<String, FieldValue>,
+        resign: Resign,
+        persist: impl FnMut(&PreparedWrite) -> Result<()>,
+    ) -> Result<PreparedWrite> {
+        self.create_probed(
+            contract,
+            document_type,
+            properties,
+            persist,
+            NO_PROBE,
+            resign,
+        )
+        .await
     }
 
     /// A create of an `indexOnly` type (forge-v2 `star` / `follow`), whose entry has no stored
@@ -2233,8 +2300,15 @@ impl<'a> WriteEngine<'a> {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<bool>>,
     {
-        self.create_probed(contract, document_type, properties, |_| Ok(()), Some(probe))
-            .await
+        self.create_probed(
+            contract,
+            document_type,
+            properties,
+            |_| Ok(()),
+            Some(probe),
+            Resign::Never,
+        )
+        .await
     }
 
     async fn create_probed<F, Fut>(
@@ -2244,6 +2318,7 @@ impl<'a> WriteEngine<'a> {
         properties: BTreeMap<String, FieldValue>,
         mut persist: impl FnMut(&PreparedWrite) -> Result<()>,
         probe: Option<F>,
+        resign: Resign,
     ) -> Result<PreparedWrite>
     where
         F: Fn() -> Fut,
@@ -2262,7 +2337,14 @@ impl<'a> WriteEngine<'a> {
             None
         };
         let landed = self
-            .create_attempts(contract, document_type, properties, &mut persist, probe)
+            .create_attempts(
+                contract,
+                document_type,
+                properties,
+                &mut persist,
+                probe,
+                resign,
+            )
             .await?;
         if let Some(before) = before {
             let mut after = self.client.get_balance(&owner).await.ok();
@@ -2291,47 +2373,61 @@ impl<'a> WriteEngine<'a> {
         properties: BTreeMap<String, FieldValue>,
         persist: &mut impl FnMut(&PreparedWrite) -> Result<()>,
         probe: Option<F>,
+        resign: Resign,
     ) -> Result<PreparedWrite>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<bool>>,
     {
-        // Two retries: a stale protocol version (nothing landed) and a nonce another write by
-        // this identity took first (ours can then never land). Each re-prepares with a fresh
-        // nonce and entropy, persisting the replacement before it is broadcast.
-        for attempt in 0..3 {
-            let prepared = self
-                .prepare_create(contract, document_type, properties.clone())
-                .await?;
-            persist(&prepared)?;
-            match self.execute(&prepared).await {
-                Ok(BroadcastOutcome::NonceConsumed) => {
-                    let ours = match &probe {
-                        Some(probe) => poll_confirm(probe).await?,
-                        None => {
-                            self.landed(contract, document_type, prepared.document_id(), true)
-                                .await?
-                        }
-                    };
-                    if ours {
-                        return Ok(prepared);
-                    }
-                    // Expected when one identity writes in parallel, and recovered here; a
-                    // write that cannot recover fails with `Error::Nonce` below.
-                    tracing::debug!(
-                        document_type,
-                        "another write by this identity took the nonce; re-preparing"
-                    );
+        let probe = &probe;
+        create_loop(
+            || self.prepare_create(contract, document_type, properties.clone()),
+            persist,
+            |prepared| async move { self.execute(&prepared).await },
+            |signed: Vec<PreparedWrite>| async move {
+                // an indexOnly entry has no id to read back: the owner-scoped probe says whether
+                // an entry like this one is there
+                if let Some(probe) = probe {
+                    return Ok(poll_confirm(probe).await?.then(|| signed.len() - 1));
                 }
-                Ok(_) => return Ok(prepared),
-                Err(Error::StaleProtocolVersion(reason)) if attempt == 0 => {
-                    let version = self.client.refresh_protocol_version().await?;
-                    tracing::debug!(%reason, version, "stale protocol version; re-preparing once");
+                let ids: Vec<&str> = signed.iter().map(PreparedWrite::document_id).collect();
+                self.landed_any(contract, document_type, &ids).await
+            },
+            || self.client.sdk().refresh_identity_nonce(&self.owner_id),
+            || async {
+                let version = self.client.refresh_protocol_version().await?;
+                tracing::debug!(version, "stale protocol version; re-preparing once");
+                Ok(())
+            },
+            resign,
+            document_type,
+        )
+        .await
+    }
+
+    /// Which of `ids` (the transitions one create signed) has landed, polling like
+    /// [`Self::landed`]: the latest first. `None` when none shows within the polls.
+    pub async fn landed_any(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        ids: &[&str],
+    ) -> Result<Option<usize>> {
+        for attempt in 0..CONFIRM_ATTEMPTS {
+            for (i, id) in ids.iter().enumerate().rev() {
+                if self
+                    .client
+                    .document_exists(contract, document_type, id)
+                    .await?
+                {
+                    return Ok(Some(i));
                 }
-                Err(e) => return Err(e),
+            }
+            if attempt + 1 < CONFIRM_ATTEMPTS {
+                tokio::time::sleep(CONFIRM_DELAY).await;
             }
         }
-        Err(Error::Nonce)
+        Ok(None)
     }
 
     /// Whether a document exists (`want = true`) or is gone (`want = false`), polling briefly:
@@ -3411,6 +3507,10 @@ enum WriteFailure {
     AlreadyLanded,
     /// The nonce was already used: this write landed earlier, or another write took it.
     NonceConsumed,
+    /// The nonce is more than 24 above the highest Drive has seen for the identity and
+    /// contract (`NonceTooFarInFuture`): writes signed before it have not landed yet. Refused
+    /// at CheckTx, so nothing landed; the same bytes are valid once the tip catches up.
+    NonceAhead,
     /// A transient failure (stale node, timeout, proof mismatch). Safe to re-broadcast
     /// the same signed bytes — the SDK's authoritative `CanRetry::can_retry()` says so.
     Retryable(String),
@@ -3482,6 +3582,11 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
             // The document is already present, or the baked nonce was already consumed
             // by an earlier (identical) broadcast → the intended write has landed.
             StateError::DocumentAlreadyPresentError(_) => return WriteFailure::AlreadyLanded,
+            StateError::InvalidIdentityNonceError(err)
+                if matches!(err.error, MergeIdentityNonceResult::NonceTooFarInFuture) =>
+            {
+                return WriteFailure::NonceAhead
+            }
             StateError::InvalidIdentityNonceError(_) => return WriteFailure::NonceConsumed,
             // A delete of a document that is not there (an unstar of a repo not starred, or
             // one another process already removed).
@@ -3626,6 +3731,22 @@ fn wait_settings() -> dash_sdk::platform::transition::put_settings::PutSettings 
 ///   wait never answers. A free nonce means the transition is still pending (or was dropped
 ///   for another reason): re-broadcast and wait again.
 /// * Anything else is final.
+///
+/// **Sending elsewhere** (`broadcast(Some(n))`: the `n`th node picked away from the rotation,
+/// [`WriteEngine::broadcast_elsewhere`]). A Tenderdash node keeps a transition's hash in its
+/// mempool cache after the transition stops moving toward a block — dropped on recheck, removed
+/// by a proposer, or stranded in that node's mempool when its gossip was lost — and refuses the
+/// same bytes from then on with "tx already exists in cache" before Drive is asked
+/// (tenderdash `internal/mempool/mempool.go:229-236`; dashmate sets
+/// `keep-invalid-txs-in-cache = true` and no TTL). rs-dapi passes that message on as gRPC
+/// `AlreadyExists` without telling pending, dropped and committed apart
+/// (`rs-dapi/src/services/platform_service/error_mapping.rs:384-388`), and the SDK's rotation
+/// does not move off a node for it (it is not retryable), so every re-send can reach the one
+/// node that will never take it (sakura, collab1 and collab2). So once a re-send is answered
+/// that way and the wait after it hears nothing with the nonce still free, every later send of
+/// this call goes to another node, one not tried yet each time. A send a total-reading rule
+/// refused at CheckTx goes elsewhere too: the refusing node keeps those bytes cached as well.
+#[allow(clippy::too_many_lines)] // one loop, its outcomes side by side
 async fn drive_write<B, BFut, W, WFut, N, NFut>(
     mut broadcast: B,
     mut wait: W,
@@ -3635,7 +3756,7 @@ async fn drive_write<B, BFut, W, WFut, N, NFut>(
     document_type: &str,
 ) -> Result<BroadcastOutcome>
 where
-    B: FnMut() -> BFut,
+    B: FnMut(Option<usize>) -> BFut,
     BFut: std::future::Future<Output = std::result::Result<(), WriteFailure>>,
     W: FnMut() -> WFut,
     WFut: std::future::Future<Output = std::result::Result<(), WriteFailure>>,
@@ -3645,16 +3766,24 @@ where
     let mut attempt: u32 = 0;
     let mut lag_retries: u32 = 0;
     let mut quorum_retries: u32 = 0;
+    let mut ahead_retries: u32 = 0;
     // An earlier send of this call may have reached a node: a later TxKnown is then ours.
     let mut tried = false;
     // Whether a broadcast in THIS call was accepted. A transition the node already knew on
     // our first send was broadcast by an earlier call (a replayed journal): its landing is
     // reported as `AlreadyExists`, not as a fresh `Applied`.
     let mut sent = false;
+    // Once some node holds these bytes cached without moving them toward a block, the next
+    // send goes to the `n`th node away from the rotation (and the one after to the next).
+    let mut elsewhere: Option<usize> = None;
     loop {
         attempt += 1;
         let started = std::time::Instant::now();
-        let sent_now = broadcast().await;
+        let sent_now = broadcast(elsewhere).await;
+        // A send to another node that did not answer: the next one tries yet another.
+        if elsewhere.is_some() && matches!(sent_now, Err(WriteFailure::Retryable(_))) {
+            go_elsewhere(&mut elsewhere);
+        }
         // A refusal the broadcast returned is CheckTx's (nonce unspent: may be sent again); one
         // the wait returns (after a send or TxKnown) came from block execution: final.
         let at_check_tx = matches!(sent_now, Err(ref f) if !matches!(f, WriteFailure::TxKnown));
@@ -3693,6 +3822,18 @@ where
                             );
                             return Ok(BroadcastOutcome::NonceConsumed);
                         }
+                        // The node held these bytes and still nothing came, with the nonce
+                        // free: it will refuse them from its cache from now on. Send elsewhere
+                        // (and once sending elsewhere, a silent node is passed over too).
+                        if matches!(sent_now, Err(WriteFailure::TxKnown)) || elsewhere.is_some() {
+                            go_elsewhere(&mut elsewhere);
+                            tracing::debug!(
+                                document_type,
+                                attempt,
+                                "the node already holds these bytes but they do not land; \
+                                 sending them to another node"
+                            );
+                        }
                         f
                     }
                     Err(f) => f,
@@ -3713,10 +3854,35 @@ where
             QuorumStep::Landed => return Ok(BroadcastOutcome::NonceConsumed),
             QuorumStep::Failure(f) => f,
         };
-        let used = attempt - lag_retries - quorum_retries;
+        let used = attempt - lag_retries - quorum_retries - ahead_retries;
         match failure {
             WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
             WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
+            // Writes signed before this one have not landed yet: wait for the tip to catch up,
+            // then send the same bytes to a node that did not refuse (and cache) them.
+            WriteFailure::NonceAhead if ahead_retries < MAX_AHEAD_RETRIES => {
+                ahead_retries += 1;
+                go_elsewhere(&mut elsewhere);
+                let delay = backoff_delay(backoff * 2, ahead_retries);
+                tracing::debug!(
+                    document_type,
+                    delay_ms = duration_ms(delay),
+                    "nonce too far ahead of the identity's landed writes; waiting for them"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            // Still ahead: nothing of it landed (refused before execution). A nonce error, so
+            // the caller re-signs once it reads the chain again.
+            // A send of this call that a node took is valid again once the tip catches up, so it
+            // may still land: unconfirmed, not a nonce error.
+            WriteFailure::NonceAhead => {
+                tracing::warn!("{document_type}: nonce still too far ahead of the landed writes");
+                return Err(if tried || sent {
+                    Error::Timeout { retryable: true }
+                } else {
+                    Error::Nonce
+                });
+            }
             WriteFailure::Retryable(reason) if used < MAX_BROADCAST_ATTEMPTS => {
                 let delay = backoff_delay(backoff, used);
                 tracing::debug!(
@@ -3749,11 +3915,138 @@ where
                 && lag_retries < MAX_LAG_RETRIES =>
             {
                 lag_retries += 1;
+                // The refusing node keeps these bytes cached (keep-invalid-txs-in-cache): it
+                // would only answer "already exists in cache" to them now.
+                go_elsewhere(&mut elsewhere);
                 wait_out_lag(document_type, &rule, &detail, backoff, lag_retries).await;
             }
             WriteFailure::Fatal(err) => return Err(err),
         }
     }
+}
+
+/// When a create whose transition went unconfirmed ([`Error::Timeout`]: sent, never answered,
+/// its nonce still free, after re-sends to other nodes) may be signed again with a fresh nonce.
+/// The unconfirmed transition may be stranded in a mempool and land later, so a replacement
+/// (another nonce, another id) is a second copy unless consensus refuses one of the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resign {
+    /// Not in this call: the timeout is returned. The caller re-signs once the nonce is
+    /// provably spent and a proved read finds nothing of its own (the importer waits for
+    /// enough later writes to land, then reads the chain again).
+    Never,
+    /// At once (up to [`MAX_UNCONFIRMED_RESIGNS`] times): consensus admits one copy only (the
+    /// same dense `number`, a unique index), so the transition and its replacement cannot both
+    /// land, and a caller that finds the number taken adopts its own copy by id.
+    Unique,
+}
+
+/// Transitions one create may sign in all ([`create_loop`]): the first, a re-sign after a stale
+/// protocol version, after a nonce another write took, and after an unconfirmed send.
+const MAX_CREATE_ATTEMPTS: usize = 6;
+
+/// Re-signs of an unconfirmed create under [`Resign::Unique`].
+const MAX_UNCONFIRMED_RESIGNS: usize = 2;
+
+/// The sign / send / re-sign loop behind [`WriteEngine::create_attempts`], over its steps so the
+/// control flow is testable without a network. Each attempt `prepare`s a transition (a fresh
+/// nonce and entropy), hands it to `persist`, then `execute`s it ([`drive_write`]):
+///
+/// * landed (or already there): done;
+/// * its nonce spent ([`BroadcastOutcome::NonceConsumed`]): ours landed, or another write by
+///   this identity took the nonce. `landed` reads back every transition this call signed (any
+///   of them may be the one that landed); none: re-prepared (none of them can ever land now),
+///   after `refresh_nonce` marks the SDK's cached nonce stale so the next one is the higher of
+///   its cache and Platform's (it never goes back down). Repeated nonce losses end in
+///   [`Error::Nonce`] after [`MAX_CREATE_ATTEMPTS`];
+/// * a stale protocol version (refused before execution): `refresh_version`, re-prepared once;
+/// * unconfirmed ([`Error::Timeout`]): re-prepared at once only under [`Resign::Unique`];
+/// * anything else: returned.
+#[allow(clippy::too_many_arguments)] // each step a closure, so the loop runs without a network
+async fn create_loop<T, P, PF, X, XF, L, LF, R, RF, V, VF>(
+    mut prepare: P,
+    persist: &mut impl FnMut(&T) -> Result<()>,
+    mut execute: X,
+    mut landed: L,
+    mut refresh_nonce: R,
+    mut refresh_version: V,
+    resign: Resign,
+    document_type: &str,
+) -> Result<T>
+where
+    T: Clone,
+    P: FnMut() -> PF,
+    PF: std::future::Future<Output = Result<T>>,
+    X: FnMut(T) -> XF,
+    XF: std::future::Future<Output = Result<BroadcastOutcome>>,
+    L: FnMut(Vec<T>) -> LF,
+    LF: std::future::Future<Output = Result<Option<usize>>>,
+    R: FnMut() -> RF,
+    RF: std::future::Future<Output = ()>,
+    V: FnMut() -> VF,
+    VF: std::future::Future<Output = Result<()>>,
+{
+    let mut signed: Vec<T> = Vec::new();
+    let mut resigns = 0usize;
+    let mut version_refreshed = false;
+    for _ in 0..MAX_CREATE_ATTEMPTS {
+        let prepared = prepare().await?;
+        persist(&prepared)?;
+        signed.push(prepared.clone());
+        match execute(prepared.clone()).await {
+            Ok(BroadcastOutcome::NonceConsumed) => {
+                if let Some(i) = landed(signed.clone()).await? {
+                    return Ok(signed.swap_remove(i));
+                }
+                // Expected when one identity writes in parallel, and recovered here; a write that
+                // cannot recover fails with `Error::Nonce` below.
+                tracing::debug!(
+                    document_type,
+                    "another write by this identity took the nonce; re-preparing"
+                );
+                refresh_nonce().await;
+            }
+            Ok(_) => return Ok(prepared),
+            Err(Error::StaleProtocolVersion(reason)) if !version_refreshed => {
+                version_refreshed = true;
+                tracing::debug!(%reason, "stale protocol version");
+                refresh_version().await?;
+            }
+            Err(Error::Timeout { retryable: true })
+                if resign == Resign::Unique && resigns < MAX_UNCONFIRMED_RESIGNS =>
+            {
+                resigns += 1;
+                tracing::warn!(
+                    document_type,
+                    "write not confirmed (a node holds it but it does not land); signing it \
+                     again with a fresh nonce: consensus admits only one copy"
+                );
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(Error::Nonce)
+}
+
+/// Send the next broadcast of a write to another node than any tried so far ([`drive_write`]).
+fn go_elsewhere(elsewhere: &mut Option<usize>) {
+    *elsewhere = Some(elsewhere.map_or(0, |n| n + 1));
+}
+
+/// The `n`th node away from the rotation for the transition `bytes`: the live addresses in a
+/// fixed order, starting at a point the transition's bytes decide (so writes stuck at once
+/// spread over the nodes), and `n` steps on, so each later send of the same write asks a node
+/// not asked yet. `None` without a live address.
+fn pick_elsewhere(mut live: Vec<Address>, bytes: &[u8], n: usize) -> Option<Address> {
+    if live.is_empty() {
+        return None;
+    }
+    live.sort_by_key(|a| a.uri().to_string());
+    let start = bytes.iter().fold(0usize, |h, b| {
+        h.wrapping_mul(31).wrapping_add(usize::from(*b))
+    });
+    let at = (start % live.len() + n % live.len()) % live.len();
+    Some(live.swap_remove(at))
 }
 
 /// Before lag retry `n` (1-based) of a write a total-reading rule refused at CheckTx: wait about
@@ -4962,13 +5255,31 @@ mod tests {
         waits: Vec<std::result::Result<(), super::WriteFailure>>,
         spent: Vec<bool>,
     ) -> (Result<super::BroadcastOutcome>, usize, usize) {
+        let (out, nb, nw, _) = scripted_write_to(broadcasts, waits, spent).await;
+        (out, nb, nw)
+    }
+
+    /// [`scripted_write`], also returning where each broadcast was sent: `None` the SDK's
+    /// rotation, `Some(n)` the `n`th node away from it.
+    async fn scripted_write_to(
+        broadcasts: Vec<std::result::Result<(), super::WriteFailure>>,
+        waits: Vec<std::result::Result<(), super::WriteFailure>>,
+        spent: Vec<bool>,
+    ) -> (
+        Result<super::BroadcastOutcome>,
+        usize,
+        usize,
+        Vec<Option<usize>>,
+    ) {
         let b = RefCell::new(broadcasts.into_iter());
         let w = RefCell::new(waits.into_iter());
         let n = RefCell::new(spent.into_iter());
         let (nb, nw) = (RefCell::new(0), RefCell::new(0));
+        let to = RefCell::new(Vec::new());
         let out = super::drive_write(
-            || {
+            |elsewhere| {
                 *nb.borrow_mut() += 1;
+                to.borrow_mut().push(elsewhere);
                 std::future::ready(b.borrow_mut().next().expect("no more broadcasts scripted"))
             },
             || {
@@ -4981,7 +5292,7 @@ mod tests {
             "comment",
         )
         .await;
-        (out, nb.into_inner(), nw.into_inner())
+        (out, nb.into_inner(), nw.into_inner(), to.into_inner())
     }
 
     fn timeout() -> super::WriteFailure {
@@ -5368,6 +5679,63 @@ mod tests {
         ));
     }
 
+    /// A nonce Drive refuses as used is a spent nonce (landed, or taken by another write); one
+    /// too far ahead of the landed writes is not: nothing of it landed, and it is waited for.
+    #[test]
+    fn a_nonce_too_far_ahead_is_not_a_spent_one() {
+        use dash_sdk::dpp::consensus::state::identity::invalid_identity_contract_nonce_error::InvalidIdentityNonceError;
+        use dash_sdk::dpp::consensus::state::state_error::StateError;
+        use dash_sdk::dpp::consensus::ConsensusError;
+        let refused = |why| {
+            dash_sdk::Error::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(
+                ConsensusError::StateError(StateError::InvalidIdentityNonceError(
+                    InvalidIdentityNonceError::new([9; 32].into(), Some(10), 40, why),
+                )),
+            )))
+        };
+        assert!(matches!(
+            super::classify_write_error(
+                &refused(super::MergeIdentityNonceResult::NonceTooFarInFuture),
+                "comment"
+            ),
+            super::WriteFailure::NonceAhead
+        ));
+        for used in [
+            super::MergeIdentityNonceResult::NonceAlreadyPresentAtTip,
+            super::MergeIdentityNonceResult::NonceAlreadyPresentInPast(3),
+            super::MergeIdentityNonceResult::NonceTooFarInPast,
+        ] {
+            assert!(matches!(
+                super::classify_write_error(&refused(used), "comment"),
+                super::WriteFailure::NonceConsumed
+            ));
+        }
+    }
+
+    /// Ahead of the landed writes: waited for, then sent to another node (the refusing one keeps
+    /// the bytes cached), and lands; still ahead past the waits, a nonce error (nothing landed).
+    #[tokio::test]
+    async fn a_nonce_too_far_ahead_waits_for_the_writes_before_it() {
+        use super::WriteFailure::NonceAhead;
+        let (out, _, _, to) =
+            scripted_write_to(vec![Err(NonceAhead), Ok(())], vec![Ok(())], vec![]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!(to, [None, Some(0)]);
+        let n = super::MAX_AHEAD_RETRIES as usize + 1;
+        let (out, nb, _, _) =
+            scripted_write_to((0..n).map(|_| Err(NonceAhead)).collect(), vec![], vec![]).await;
+        assert!(matches!(out, Err(Error::Nonce)), "{out:?}");
+        assert_eq!(nb, n);
+        // But a send a node took before may land once the tip catches up: unconfirmed.
+        let mut sends = vec![Ok(())];
+        sends.extend((0..n).map(|_| Err(NonceAhead)));
+        let (out, _, _, _) = scripted_write_to(sends, vec![Err(timeout())], vec![false]).await;
+        assert!(
+            matches!(out, Err(Error::Timeout { retryable: true })),
+            "{out:?}"
+        );
+    }
+
     /// An indexOnly create whose nonce was found spent is settled by its probe: present means
     /// ours landed and nothing is re-signed. (The all-absent case is `landed`'s own loop: ten
     /// polls 1.5 s apart, too slow for a unit test without tokio's paused clock.)
@@ -5418,5 +5786,240 @@ mod tests {
         assert!(s
             .wait_timeout
             .is_some_and(|t| t > super::WAIT_REQUEST_TIMEOUT));
+    }
+
+    /// Sakura, collab1 and collab2: the first send was taken, nothing came, and every re-send of
+    /// the same bytes was answered "tx already exists in cache" by the one node that held them
+    /// without moving them toward a block. The re-sends after that go to other nodes, a new one
+    /// each time, and the bytes land through one of them.
+    #[tokio::test]
+    async fn bytes_a_node_holds_but_does_not_land_are_sent_to_other_nodes() {
+        use super::WriteFailure::TxKnown;
+        // Dropped first send: taken, no result; the re-send is refused from the cache; the next
+        // send goes elsewhere, is taken there, and lands.
+        let (out, nb, nw, to) = scripted_write_to(
+            vec![Ok(()), Err(TxKnown), Ok(())],
+            vec![Err(timeout()), Err(timeout()), Ok(())],
+            vec![false, false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (3, 3));
+        assert_eq!(to, [None, None, Some(0)]);
+
+        // Every node it reaches holds it and nothing lands: each send after the first refusal
+        // asks a node not asked yet, then the write gives up unconfirmed (its nonce still free),
+        // for the caller to re-sign.
+        let (out, nb, _, to) = scripted_write_to(
+            vec![Ok(()), Err(TxKnown), Err(TxKnown), Err(TxKnown)],
+            vec![
+                Err(timeout()),
+                Err(timeout()),
+                Err(timeout()),
+                Err(timeout()),
+            ],
+            vec![false; 4],
+        )
+        .await;
+        assert!(
+            matches!(out, Err(Error::Timeout { retryable: true })),
+            "{out:?}"
+        );
+        assert_eq!(nb, super::MAX_BROADCAST_ATTEMPTS as usize);
+        assert_eq!(to, [None, None, Some(0), Some(1)]);
+
+        // A node elsewhere that does not answer: the next send asks yet another.
+        let (out, _, _, to) = scripted_write_to(
+            vec![Ok(()), Err(TxKnown), Err(timeout()), Ok(())],
+            vec![Err(timeout()), Err(timeout()), Ok(())],
+            vec![false, false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!(to, [None, None, Some(0), Some(1)]);
+
+        // A node elsewhere takes it, then nothing comes: it holds the bytes now, so the next send
+        // asks another one too.
+        let (out, _, _, to) = scripted_write_to(
+            vec![Ok(()), Err(TxKnown), Ok(()), Ok(())],
+            vec![Err(timeout()), Err(timeout()), Err(timeout()), Ok(())],
+            vec![false, false, false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!(to, [None, None, Some(0), Some(1)]);
+
+        // The nonce found spent after the refusal: landed, or taken by another write; the caller
+        // reads back what landed. Nothing is sent again.
+        let (out, nb, _, to) = scripted_write_to(
+            vec![Ok(()), Err(TxKnown)],
+            vec![Err(timeout()), Err(timeout())],
+            vec![false, true],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::NonceConsumed);
+        assert_eq!((nb, to), (2, vec![None, None]));
+
+        // A send the rotation answers without a result but no cached refusal stays on the
+        // rotation (a slow block, not a stuck node).
+        let (_, _, _, to) = scripted_write_to(
+            vec![Ok(()), Ok(())],
+            vec![Err(timeout()), Ok(())],
+            vec![false],
+        )
+        .await;
+        assert_eq!(to, [None, None]);
+    }
+
+    /// A total-reading rule refused the send at CheckTx: the refusing node keeps those bytes
+    /// cached (dashmate's keep-invalid-txs-in-cache), so the lag retry goes to another node.
+    #[tokio::test]
+    async fn a_lag_retry_goes_to_another_node() {
+        let (out, _, _, to) = scripted_write_to(
+            vec![Err(refused("comment", "lockGate")), Ok(())],
+            vec![Ok(())],
+            vec![],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!(to, [None, Some(0)]);
+    }
+
+    #[test]
+    fn another_node_is_a_new_one_each_time_and_spread_by_transition() {
+        let live: Vec<super::Address> = (1..=5)
+            .map(|i| format!("https://10.0.0.{i}:1443").parse().unwrap())
+            .collect();
+        let pick = |bytes: &[u8], n| super::pick_elsewhere(live.clone(), bytes, n).unwrap();
+        let picked: std::collections::BTreeSet<String> =
+            (0..5).map(|n| pick(b"tx", n).to_string()).collect();
+        assert_eq!(picked.len(), 5, "five sends, five nodes");
+        assert_eq!(pick(b"tx", 0), pick(b"tx", 5), "round the list");
+        let starts: std::collections::BTreeSet<String> = [b"a", b"b", b"c", b"d"]
+            .iter()
+            .map(|b| pick(*b, 0).to_string())
+            .collect();
+        assert!(
+            starts.len() > 1,
+            "writes stuck at once spread over the nodes"
+        );
+        assert!(super::pick_elsewhere(Vec::new(), b"tx", 0).is_none());
+    }
+
+    /// What [`super::create_loop`] did: the transitions it prepared (numbered from 0) and how
+    /// often it read the nonce again.
+    #[derive(Default)]
+    struct Loop {
+        prepared: usize,
+        persisted: Vec<usize>,
+        refreshed: usize,
+        landed_asks: Vec<Vec<usize>>,
+    }
+
+    /// Run [`super::create_loop`] with scripted send outcomes (one per transition) and read-backs
+    /// (one per spent nonce: which transition shows on chain).
+    async fn scripted_create(
+        sends: Vec<Result<super::BroadcastOutcome>>,
+        landed: Vec<Option<usize>>,
+        resign: super::Resign,
+    ) -> (Result<usize>, Loop) {
+        let log = RefCell::new(Loop::default());
+        let sends = RefCell::new(sends.into_iter());
+        let landed = RefCell::new(landed.into_iter());
+        let out = super::create_loop(
+            || {
+                let mut l = log.borrow_mut();
+                l.prepared += 1;
+                std::future::ready(Ok(l.prepared - 1))
+            },
+            &mut |p: &usize| {
+                log.borrow_mut().persisted.push(*p);
+                Ok(())
+            },
+            |_| std::future::ready(sends.borrow_mut().next().expect("no more sends scripted")),
+            |signed: Vec<usize>| {
+                log.borrow_mut().landed_asks.push(signed);
+                std::future::ready(Ok(landed
+                    .borrow_mut()
+                    .next()
+                    .expect("no read-back scripted")))
+            },
+            || {
+                log.borrow_mut().refreshed += 1;
+                std::future::ready(())
+            },
+            || std::future::ready(Ok(())),
+            resign,
+            "comment",
+        )
+        .await;
+        (out, log.into_inner())
+    }
+
+    /// An issue or PR (dense `number`) whose send goes unconfirmed is signed again at once with a
+    /// fresh nonce: both copies carry the number, so consensus lands one. A comment is not: a
+    /// stranded first copy could land beside a second, so the timeout goes back to the caller.
+    #[tokio::test]
+    async fn an_unconfirmed_create_is_re_signed_only_where_consensus_admits_one_copy() {
+        use super::{BroadcastOutcome::Applied, Resign};
+        let timeout = || Err(Error::Timeout { retryable: true });
+        let (out, log) =
+            scripted_create(vec![timeout(), Ok(Applied)], vec![], Resign::Unique).await;
+        assert_eq!(out.unwrap(), 1, "the replacement landed");
+        assert_eq!(log.persisted, [0, 1], "each persisted before it was sent");
+
+        let (out, log) = scripted_create(vec![timeout()], vec![], Resign::Never).await;
+        assert!(matches!(out, Err(Error::Timeout { retryable: true })));
+        assert_eq!(log.prepared, 1, "never signed twice");
+
+        // Bounded: past the re-signs the timeout is the caller's.
+        let (out, log) = scripted_create(
+            vec![timeout(), timeout(), timeout()],
+            vec![],
+            Resign::Unique,
+        )
+        .await;
+        assert!(matches!(out, Err(Error::Timeout { retryable: true })));
+        assert_eq!(log.prepared, 1 + super::MAX_UNCONFIRMED_RESIGNS);
+    }
+
+    /// A spent nonce: every transition this create signed is read back (an earlier, unconfirmed
+    /// one may be the copy that landed); none there, the nonce is read again from Platform and a
+    /// new one signed. The dips run's "nonce desynchronized" now takes six losses in a row.
+    #[tokio::test]
+    async fn a_spent_nonce_reads_back_every_copy_and_reads_the_nonce_again() {
+        use super::BroadcastOutcome::{Applied, NonceConsumed};
+        use super::Resign;
+        let timeout = || Err(Error::Timeout { retryable: true });
+        // Unconfirmed, re-signed; the second's nonce is found spent and the FIRST copy landed.
+        let (out, log) = scripted_create(
+            vec![timeout(), Ok(NonceConsumed)],
+            vec![Some(0)],
+            Resign::Unique,
+        )
+        .await;
+        assert_eq!(out.unwrap(), 0, "the first copy is the result: no third");
+        assert_eq!(log.landed_asks, [vec![0, 1]]);
+
+        // Another write took the nonce: read again, signed again, landed.
+        let (out, log) = scripted_create(
+            vec![Ok(NonceConsumed), Ok(Applied)],
+            vec![None],
+            Resign::Never,
+        )
+        .await;
+        assert_eq!(out.unwrap(), 1);
+        assert_eq!(log.refreshed, 1);
+
+        // Losing it every time ends in the desync error, after MAX_CREATE_ATTEMPTS.
+        let n = super::MAX_CREATE_ATTEMPTS;
+        let (out, log) = scripted_create(
+            (0..n).map(|_| Ok(NonceConsumed)).collect(),
+            vec![None; n],
+            Resign::Never,
+        )
+        .await;
+        assert!(matches!(out, Err(Error::Nonce)), "{out:?}");
+        assert_eq!((log.prepared, log.refreshed), (n, n));
     }
 }

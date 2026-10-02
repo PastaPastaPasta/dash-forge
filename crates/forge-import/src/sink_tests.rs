@@ -12,6 +12,7 @@
 //! cap holds with writes in flight together.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -72,6 +73,8 @@ struct State {
     /// each review's `commentCount`.
     links: BTreeMap<String, (Option<String>, Option<String>)>,
     counts: BTreeMap<String, Option<u16>>,
+    /// Creates asked again after an attempt failed unconfirmed, by source URL.
+    created_again: Vec<String>,
 }
 
 /// The recorded chain.
@@ -84,6 +87,34 @@ struct Recorded {
     /// Source URLs whose create loses its number to another create (an item error that is
     /// not final: the next run creates it).
     contend: BTreeSet<String>,
+    /// Writes that fail, by source URL, one fault per attempt in order ([`Fault`]).
+    faults: Mutex<BTreeMap<String, Vec<Fault>>>,
+}
+
+/// How one write of a document fails, as forge-core reports what happened on the network.
+#[derive(Debug, Clone, Copy)]
+enum Fault {
+    /// Unconfirmed, and it did not land: every node refused the bytes from its cache ("tx
+    /// already exists in cache") with the nonce still free (`Error::Timeout`).
+    Dropped,
+    /// Unconfirmed, but it landed: the answer was lost (`Error::Timeout`).
+    LandedUnheard,
+    /// Every attempt lost its nonce to another write ("identity-contract nonce desynchronized",
+    /// `Error::Nonce`): nothing of it can land.
+    NonceLost,
+}
+
+impl Fault {
+    fn lands(self) -> bool {
+        matches!(self, Self::LandedUnheard)
+    }
+
+    fn error(self) -> forge_core::Error {
+        match self {
+            Self::Dropped | Self::LandedUnheard => forge_core::Error::Timeout { retryable: true },
+            Self::NonceLost => forge_core::Error::Nonce,
+        }
+    }
 }
 
 impl Recorded {
@@ -96,6 +127,40 @@ impl Recorded {
             cost_pct: 100,
             refuse: BTreeSet::new(),
             contend: BTreeSet::new(),
+            faults: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Fail the writes of `url`'s document with `faults`, one per attempt.
+    fn fail(&self, url: &str, faults: &[Fault]) {
+        lock(&self.faults).insert(url.to_string(), faults.to_vec());
+    }
+
+    /// The fault this attempt at `url`'s document meets, if any.
+    fn fault(&self, url: &str) -> Option<Fault> {
+        let mut faults = lock(&self.faults);
+        let list = faults.get_mut(url)?;
+        (!list.is_empty()).then(|| list.remove(0))
+    }
+
+    /// Run `write` (`url`'s document) through its fault: one that does not land fails before
+    /// anything is written; one that lands is written, then reported as failed.
+    async fn faulty<T>(
+        &self,
+        url: &str,
+        write: impl Future<Output = forge_core::Result<T>>,
+    ) -> forge_core::Result<T> {
+        match self.fault(url) {
+            None => write.await,
+            Some(f) if f.lands() => {
+                write.await?;
+                Err(f.error())
+            }
+            Some(f) => {
+                // the sends and waits a failed write takes
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Err(f.error())
+            }
         }
     }
 
@@ -290,6 +355,7 @@ impl Chain for &Recorded {
         _: &RepoRef,
         what: ImportedTarget<'_>,
         from: Provenance<'_>,
+        again: bool,
     ) -> forge_core::Result<Created> {
         let kind = match what {
             ImportedTarget::Issue { .. } => TargetKind::Issue,
@@ -307,31 +373,49 @@ impl Chain for &Recorded {
         if self.contend.contains(&url) {
             return Err(forge_core::Error::DuplicateUniqueIndex("number".into()));
         }
-        self.land(None, |st| {
-            // dense: the count of issues and PRs, plus one
-            let number = u32::try_from(st.items.len()).unwrap() + 1;
-            let id = format!("doc-{number}");
-            st.items.push(Item {
-                target: Target {
-                    kind,
-                    id: id.clone(),
+        if again {
+            // forge-core's create_imported_again: the signer's copy of this item just before the
+            // next number is the earlier attempt's, adopted.
+            let mut st = self.st();
+            st.created_again.push(url.clone());
+            if let Some(last) = st.items.last().filter(|i| i.url == url) {
+                return Ok(Created {
+                    number: last.target.number,
+                    document_id: last.target.id.clone(),
+                    resumed: false,
+                    draft_transition: None,
+                });
+            }
+        }
+        let key = url.clone();
+        self.faulty(
+            &key,
+            self.land(None, |st| {
+                // dense: the count of issues and PRs, plus one
+                let number = u32::try_from(st.items.len()).unwrap() + 1;
+                let id = format!("doc-{number}");
+                st.items.push(Item {
+                    target: Target {
+                        kind,
+                        id: id.clone(),
+                        number,
+                        author: SIGNER.into(),
+                    },
+                    url,
+                    upstream,
+                    code: 0,
+                    labels: BTreeSet::new(),
+                    log: Vec::new(),
+                });
+                self.charge(st, price("target"));
+                Ok(Created {
                     number,
-                    author: SIGNER.into(),
-                },
-                url,
-                upstream,
-                code: 0,
-                labels: BTreeSet::new(),
-                log: Vec::new(),
-            });
-            self.charge(st, price("target"));
-            Ok(Created {
-                number,
-                document_id: id,
-                resumed: false,
-                draft_transition: None,
-            })
-        })
+                    document_id: id,
+                    resumed: false,
+                    draft_transition: None,
+                })
+            }),
+        )
         .await
     }
 
@@ -479,12 +563,16 @@ impl Recorded {
         if self.refuse.contains(&entry[2..]) {
             return Err(forge_core::Error::Config("comment body too long".into()));
         }
-        self.land(Some(target_id), |st| {
-            self.charge(st, price("doc"));
-            let item = Recorded::item(st, target_id);
-            item.log.push(entry);
-            Ok(doc_id(target_id, item.log.len() - 1))
-        })
+        let url = entry[2..].to_string();
+        self.faulty(
+            &url,
+            self.land(Some(target_id), |st| {
+                self.charge(st, price("doc"));
+                let item = Recorded::item(st, target_id);
+                item.log.push(entry);
+                Ok(doc_id(target_id, item.log.len() - 1))
+            }),
+        )
         .await
     }
 }
@@ -1275,4 +1363,162 @@ async fn a_duplicate_of_an_issue_skipped_this_run_stays_open_for_the_next_run() 
     let logs = chain.logs();
     assert_eq!(logs[&2].1, [format!("t 1 as duplicate of #{}", logs[&5].0)]);
     assert_eq!(run.counts.transitions, 1);
+}
+
+/// The source URL of item `n`'s `k`th comment in [`source`].
+fn comment_url(src: &SrcCollab, n: u32, k: usize) -> String {
+    src.targets[n as usize - 1].comments[k].imported.url.clone()
+}
+
+/// [`import`] of `src` read incrementally (a later run: the order check must pass).
+async fn import_again(chain: &Recorded, src: &SrcCollab, lanes: usize) -> Run {
+    let again = SrcCollab {
+        incremental: true,
+        ..src.clone()
+    };
+    import(chain, &again, lanes, None).await
+}
+
+/// Sakura's stuck writes, in a lane: a comment unconfirmed but landed (its answer lost), and
+/// one unconfirmed and dropped. The item is tried again once enough later writes have landed to
+/// prove the failed ones dead, reads its thread again, finds the landed comment and writes only
+/// the dropped one: every document once, nothing partial, the run carries on.
+#[tokio::test(start_paused = true)]
+async fn a_lane_write_that_goes_unconfirmed_is_retried_once_settled_and_lands_once() {
+    let src = source(60);
+    let chain = Recorded::new();
+    // #4 has comments 0..4 (4 * 7 % 6 = 4), #5 has 0..5.
+    chain.fail(&comment_url(&src, 4, 1), &[Fault::LandedUnheard]);
+    chain.fail(&comment_url(&src, 5, 2), &[Fault::Dropped]);
+    let run = import(&chain, &src, 8, None).await;
+    run.result.unwrap();
+    assert_eq!(run.counts.skipped, 0, "retried, not left partial");
+    assert_complete(&chain, &src);
+    // The counts are what this run saw land: the comment whose answer was lost is on chain once,
+    // but no write of this run reported it.
+    let landed: u64 = chain.logs().values().map(|(_, l)| l.len() as u64).sum();
+    assert_eq!(
+        run.counts.item_documents(),
+        landed + src.targets.len() as u64 - 1
+    );
+}
+
+/// The head's create goes unconfirmed: once it lands unheard, once it is dropped. Either way
+/// the create is tried again after the later writes settle it, finds its own copy by upstream
+/// number when it landed, and is never created twice; numbers stay dense.
+#[tokio::test(start_paused = true)]
+async fn a_create_that_goes_unconfirmed_is_found_or_created_once() {
+    for fault in [Fault::LandedUnheard, Fault::Dropped] {
+        let src = source(60);
+        let chain = Recorded::new();
+        let url = src.targets[29].imported.url.clone();
+        chain.fail(&url, &[fault]);
+        let run = import(&chain, &src, 8, None).await;
+        run.result.unwrap();
+        assert_eq!(run.counts.skipped, 0, "{fault:?}");
+        assert_complete(&chain, &src);
+        // The run's first create looks back for an earlier run's late copy. Then, landed: found
+        // again by its upstream number, not created. Dropped: created again, asking forge-core
+        // to adopt a late landing of the first attempt.
+        let first = src.targets[0].imported.url.clone();
+        let again = chain.st().created_again.clone();
+        match fault {
+            Fault::LandedUnheard => assert_eq!(again, [first]),
+            _ => assert_eq!(again, [first, url]),
+        }
+    }
+}
+
+/// "identity-contract nonce desynchronized" (dips run 1, at #182): nothing of the write can land
+/// any more, so the item is tried again after its pause without waiting for other writes, even
+/// with one lane, and the run completes.
+#[tokio::test(start_paused = true)]
+async fn a_nonce_desync_is_retried_and_the_run_completes() {
+    let src = source(20);
+    for lanes in [1, 8] {
+        let chain = Recorded::new();
+        chain.fail(&src.targets[7].imported.url, &[Fault::NonceLost]);
+        chain.fail(
+            &comment_url(&src, 10, 0),
+            &[Fault::NonceLost, Fault::NonceLost],
+        );
+        let run = import(&chain, &src, lanes, None).await;
+        run.result.unwrap();
+        assert_eq!(run.counts.skipped, 0, "{lanes} lane(s)");
+        assert_complete(&chain, &src);
+    }
+}
+
+/// A lane item whose write keeps failing is left partial after its attempts (skipped: the run
+/// ends `partial` and its state does not advance), and the run carries on with every other
+/// item. With one lane an unconfirmed write is never settled within the run (nothing else
+/// writes meanwhile), so it is left partial at once. The next run writes just what is missing.
+#[tokio::test(start_paused = true)]
+async fn a_lane_item_that_keeps_failing_is_left_partial_and_the_next_run_finishes_it() {
+    let src = source(30);
+    for (lanes, faults) in [
+        (8, vec![Fault::Dropped; 3]),
+        (8, vec![Fault::NonceLost; 3]),
+        (1, vec![Fault::Dropped]),
+    ] {
+        let chain = Recorded::new();
+        let stuck = comment_url(&src, 4, 1);
+        chain.fail(&stuck, &faults);
+        let run = import(&chain, &src, lanes, None).await;
+        run.result.unwrap();
+        assert_eq!(run.counts.skipped, 1, "{lanes} lane(s), {faults:?}");
+        assert!(run.refused.is_empty(), "not refused for good");
+        let logs = chain.logs();
+        assert_eq!(logs.len(), src.targets.len(), "every item placed");
+        let want = expected(&src);
+        for (n, (_, log)) in &logs {
+            if *n != 4 {
+                assert_eq!(log, &want[n], "#{n}");
+            }
+        }
+        assert!(
+            !logs[&4].1.contains(&format!("c {stuck}")),
+            "the failed comment is not on chain"
+        );
+        lock(&chain.faults).clear();
+        let next = import_again(&chain, &src, lanes).await;
+        next.result.unwrap();
+        assert_eq!(next.counts.skipped, 0);
+        assert_complete(&chain, &src);
+    }
+}
+
+/// A create whose writes keep failing is never left out (the items after it would take its
+/// number): the run stops with its error after the attempts, and the next run creates it.
+#[tokio::test(start_paused = true)]
+async fn a_create_that_keeps_failing_stops_the_run_instead_of_renumbering() {
+    let src = source(20);
+    let chain = Recorded::new();
+    chain.fail(&src.targets[5].imported.url, &[Fault::NonceLost; 3]);
+    let run = import(&chain, &src, 8, None).await;
+    let err = run.result.unwrap_err();
+    assert!(format!("{err:#}").contains("nonce"), "{err:#}");
+    let logs = chain.logs();
+    assert!(
+        !logs.contains_key(&6) && !logs.contains_key(&7),
+        "nothing past #6"
+    );
+    import_again(&chain, &src, 8).await.result.unwrap();
+    assert_complete(&chain, &src);
+}
+
+/// Items in a row whose writes all fail are the network, not the items: the run stops rather
+/// than leave every later item partial.
+#[tokio::test(start_paused = true)]
+async fn items_failing_in_a_row_stop_the_run() {
+    let src = source(30);
+    let chain = Recorded::new();
+    for t in &src.targets {
+        for c in &t.comments {
+            chain.fail(&c.imported.url, &[Fault::NonceLost; 3]);
+        }
+    }
+    let run = import(&chain, &src, 8, None).await;
+    let err = run.result.unwrap_err();
+    assert!(format!("{err:#}").contains("in a row"), "{err:#}");
 }
