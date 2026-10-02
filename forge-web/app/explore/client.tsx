@@ -69,14 +69,16 @@ export function ExploreClient(): JSX.Element {
   const hasShowcase = showcaseFor(ACTIVE_NETWORK.key).length > 0
   const featured = useAsync(() => listShowcaseRepos(sdk!, network, ACTIVE_NETWORK.key), [ready, network], { enabled: on && hasShowcase })
   const [trendWindow, setTrendWindow] = useState<TrendingWindow>('week')
+  const trending = useAsync(() => rankedRepos(sdk!, trendWindow, { network, limit: TOP_N }), [ready, network, trendWindow], { enabled: on })
   // The note follows the deployment's star shape, as Settings → Stars does (QW4-018).
   const starShape = useStarShape(forge)
   // "Today" is the UTC day so far (the index's grid), so the title and the empty line say so
   // (QW4-019). The clock is read after hydration: the static HTML is built without one.
+  // Re-read with each Trending result, so the window named is the one the read selected.
   const [now, setNow] = useState<number | null>(null)
-  useEffect(() => setNow(Date.now()), [trendWindow])
-  const todayStart = now !== null && trendWindow === 'today' ? trendingWindowStart('today', now) : null
-  const trending = useAsync(() => rankedRepos(sdk!, trendWindow, { network, limit: TOP_N }), [ready, network, trendWindow], { enabled: on })
+  useEffect(() => setNow(Date.now()), [trendWindow, trending.data])
+  const todayStart = useMemo(() => (now !== null && trendWindow === 'today' ? trendingWindowStart('today', now) : null), [now, trendWindow])
+  const trendNote = useMemo(() => trendingNote(starShape, trendWindow, now), [starShape, trendWindow, now])
   const starred = useAsync(() => rankedRepos(sdk!, 'most-starred', { network, limit: TOP_N }), [ready, network], { enabled: on })
   const forked = useAsync(() => rankedRepos(sdk!, 'most-forked', { network, limit: TOP_N }), [ready, network], { enabled: on })
   // Pushes rode along with the repos already read; rank those (the section says so).
@@ -166,7 +168,7 @@ export function ExploreClient(): JSX.Element {
           state={trending}
           empty={trendWindow === 'week' ? 'Nobody starred a repo in the last week.' : `Nobody has starred a repo since ${todayStart ?? '00:00 UTC'} yet.`}
           emptyAction={<TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />}
-          note={trendingNote(starShape, trendWindow, now)}
+          note={trendNote}
           partial={missingNote}
         >
           {(d) => (

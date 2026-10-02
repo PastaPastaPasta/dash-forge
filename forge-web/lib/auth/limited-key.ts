@@ -382,6 +382,17 @@ export async function readRemainingBudget(sdk: EvoSDK, identityId: string, keyId
   return map.get(keyId) ?? null
 }
 
+/**
+ * `fresh`, a re-read of a key's limits, with `known`'s remaining budget when the re-read has none
+ * for a key that has a budget (QW4-020): Drive keeps one for every such key, so an absent entry
+ * is a node behind, not a key without a budget, and the session keeps what it knew (at most the
+ * total) rather than losing its budget line until the next read.
+ */
+export function withKnownRemaining(fresh: KeyLimits | null, known: KeyLimits | null): KeyLimits | null {
+  if (fresh === null || fresh.remaining !== null || fresh.total === null || known?.remaining == null) return fresh
+  return { ...fresh, remaining: known.remaining < fresh.total ? known.remaining : fresh.total }
+}
+
 /** The limits of a key already on the identity (for a session resumed from the vault). */
 export async function readKeyLimits(sdk: EvoSDK, identityId: string, keyId: number): Promise<KeyLimits | null> {
   const identity = await authSdk(sdk).identities.fetch(identityId)

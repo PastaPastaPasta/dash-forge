@@ -187,11 +187,14 @@ export function trendingWindowStart(span: TrendingWindow, nowMs: number, timeZon
   const day = (zone: string | undefined): Intl.DateTimeFormatOptions => ({ weekday: 'short', month: 'short', day: 'numeric', timeZone: zone })
   const clock = (zone: string | undefined): Intl.DateTimeFormatOptions => ({ hour: 'numeric', minute: '2-digit', timeZone: zone })
   const utc = span === 'today' ? '00:00 UTC' : `${new Intl.DateTimeFormat('en-US', day('UTC')).format(window.start)}, 00:00 UTC`
-  const stamp = (zone: string | undefined): string =>
-    new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: zone }).format(window.start)
+  const stamp = (zone: string | undefined, at = window.start): string =>
+    new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: zone }).format(at)
   if (stamp(timeZone) === stamp('UTC')) return utc
   const local = new Intl.DateTimeFormat('en-US', span === 'today' ? clock(timeZone) : { ...day(timeZone), ...clock(timeZone) }).format(window.start)
-  return `${utc} (${local} your time)`
+  // West of UTC, today's 00:00 UTC is the evening before here: say so, or 8:00 PM reads as later today.
+  const localDate = (at: number): string => new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'numeric', day: 'numeric', timeZone }).format(at)
+  const yesterday = span === 'today' && localDate(window.start) !== localDate(nowMs)
+  return `${utc} (${local}${yesterday ? ' yesterday' : ''} your time)`
 }
 
 /**

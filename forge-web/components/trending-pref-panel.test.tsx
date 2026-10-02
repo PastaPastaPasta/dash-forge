@@ -46,6 +46,6 @@ describe('TrendingPrefPanel', () => {
     expect(panel.querySelector('[data-testid="trending-pref-toggle"]')).toBeNull()
     expect(panel.textContent).toContain('Your stars count toward Trending')
     expect(panel.textContent).toContain('nothing to turn off')
-    expect(panel.textContent).toContain('leaves out private repos, and your star on a repo of your own while the repo is newer than the window (under a week old for This week)')
+    expect(panel.textContent).toContain('leaves out private repos, and your star on a repo of your own while the repo is new: under a week old for This week on Explore, created today (UTC) for Today')
   })
 })

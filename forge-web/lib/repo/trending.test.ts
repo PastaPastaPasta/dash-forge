@@ -248,7 +248,10 @@ describe('the Trending window in words (QW4-018, QW4-019)', () => {
 
   it('names "today" as the UTC day so far, with the local start when it differs', () => {
     expect(trendingWindowStart('today', NOW, 'UTC')).toBe('00:00 UTC')
+    // 02:16 UTC is 10:16 PM the day before in New York, where today's window began at 8:00 PM.
     expect(trendingWindowStart('today', NOW, 'America/New_York')).toBe('00:00 UTC (8:00 PM your time)')
+    // At 23:30 UTC it is 7:30 PM there, and the window began at 8:00 PM the evening before.
+    expect(trendingWindowStart('today', Date.UTC(2026, 9, 2, 23, 30), 'America/New_York')).toBe('00:00 UTC (8:00 PM yesterday your time)')
     expect(trendingWindowStart('today', NOW, 'Asia/Tokyo')).toBe('00:00 UTC (9:00 AM your time)')
   })
 
