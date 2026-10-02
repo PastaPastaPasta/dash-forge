@@ -107,3 +107,13 @@ describe('HideMenu', () => {
     expect(onUnhide).toHaveBeenCalled()
   })
 })
+
+describe('a revealed hidden row in a list (QW4-038)', () => {
+  it('is marked with who hid it and why', async () => {
+    const { HiddenRowMark } = await import('./moderation')
+    act(() => root.render(<HiddenRowMark hidden={hidden(CAROL, 'e1')} />))
+    expect(host.querySelector('[data-testid="row-hidden"]')?.textContent).toMatch(/^Hidden by .* as spam$/)
+    act(() => root.render(<HiddenRowMark hidden={undefined} />))
+    expect(host.querySelector('[data-testid="row-hidden"]')).toBeNull()
+  })
+})

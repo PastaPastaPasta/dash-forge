@@ -29,6 +29,8 @@ import {
   readPull,
   reviewViewOf,
   seedMemberships,
+  sharedIssueCloses,
+  sharedRepoCounts,
   toLog,
   updatedAtOf,
   readTargetLog,
@@ -441,6 +443,62 @@ export async function readDuplicateTargets(
     }),
   )
   return out
+}
+
+/** Pages of the repo's issue closes an issue page reads for its duplicates' back-references. */
+export const DUPLICATE_SCAN_PAGES = 2
+
+/** How near its duplicate's own creation a mirror's duplicate close counts as the import's (ms). */
+export const IMPORT_WINDOW_MS = 30 * 60_000
+
+/** Another issue closed as a duplicate of this one: the close, and the duplicate's number and title. */
+export interface DuplicateOf {
+  readonly id: string
+  readonly actor: string
+  readonly createdAt: number
+  readonly number: number
+  readonly title: string
+  /**
+   * The close was recorded by an import, not done here: the duplicate is an imported issue its
+   * signer (the close's actor) created within {@link IMPORT_WINDOW_MS} of the close. Shown as the
+   * source's when that signer may mirror (QW4-006).
+   */
+  readonly imported: boolean
+}
+
+/**
+ * The issues whose newest close marks them a duplicate of issue #`number` (QW4-024): GitHub's "bob
+ * marked #2 as a duplicate of this issue" on the canonical. No index finds a close by the issue it
+ * names (only the duplicate's `transition` records `dupNumber`), so this reads the repo's issue
+ * closes once per write generation (`sharedIssueCloses`), and only when the proved counts (the
+ * repo header's, already read) say they can fit in {@link DUPLICATE_SCAN_PAGES} pages; a larger
+ * repo shows no back-references rather than walking every close. Null when not read.
+ */
+export async function readDuplicatesOf(sdk: EvoSDK, repo: RepoRef, number: number): Promise<DuplicateOf[] | null> {
+  // Closes less reopens: a lower bound on the close documents (the page cap catches reopen cycles).
+  const counts = await sharedRepoCounts(sdk, repo)
+  if (counts.issuesClosed >= DUPLICATE_SCAN_PAGES * 100) return null
+  const closes = await sharedIssueCloses(sdk, repo, DUPLICATE_SCAN_PAGES)
+  if (closes === null) return null
+  // Each issue's newest close, then those that name this issue.
+  const newest = new Map<number, (typeof closes)[number]>()
+  for (const c of closes) {
+    const seen = newest.get(c.targetNumber)
+    if (seen === undefined || compareKey(c, seen) > 0) newest.set(c.targetNumber, c)
+  }
+  const marking = [...newest.values()].filter((c) => c.targetNumber !== number && closeReasonOf(c, c.targetNumber)?.duplicateOf === number)
+  if (marking.length === 0) return []
+  const gate = gateFor(repo)
+  const out = await Promise.all(
+    marking.map(async (c): Promise<DuplicateOf | null> => {
+      const [doc] = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.issue, { where: [['number', '==', c.targetNumber]] }))
+      if (doc === undefined) return null
+      const admitted = await gate.admit('issue', doc)
+      const imported = originOf(doc) !== null && str(doc, '$ownerId') === c.actor && Math.abs(c.createdAt - num(doc, '$createdAt')) <= IMPORT_WINDOW_MS
+      return { id: c.id, actor: c.actor, createdAt: c.createdAt, number: c.targetNumber, title: admitted.ok ? titleOf(admitted.doc) : '', imported }
+    }),
+  )
+  return out.filter((d): d is DuplicateOf => d !== null).sort((a, b) => a.createdAt - b.createdAt)
 }
 
 /** The counted approvals of a PR, and what each reviewer's role is now. */

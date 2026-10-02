@@ -19,6 +19,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
+import { mirroredCommentText } from '@/lib/view/mirror-review-fold'
 import { shownHunk } from '@/lib/view/diff-hunk'
 import { DiffHunkLines } from '@/components/repo/diff-hunk-view'
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -504,7 +505,8 @@ function CommentBlock({
         </div>
       ) : (
         <div className="mt-1">
-          <SuggestedBody comment={c} suggestions={suggestions} />
+          {/* A trusted mirror's comment without the provenance quote and file line the import repeats on each one (QW4-029). */}
+          <SuggestedBody comment={c} suggestions={suggestions} source={origin !== null ? mirroredCommentText(c.body, c.anchor).text : c.body} />
         </div>
       )}
     </div>

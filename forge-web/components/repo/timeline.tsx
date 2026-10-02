@@ -8,9 +8,9 @@
  * folds ignore still appears here as the audit trail it is.
  */
 
-import { Byline } from '@/components/repo/byline'
-import { importedVerdictOf, searchableBody, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, EyeOff, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { Byline, Time } from '@/components/repo/byline'
+import { importedVerdictOf, searchableBody, trustedOrigin, type Origin } from '@/lib/repo/provenance'
+import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, EyeOff, GitBranch, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import type { CommentView, TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
@@ -236,6 +236,34 @@ export interface CrossRefItem extends TimelineRef {
   readonly state: 'open' | 'merged' | 'closed' | 'draft'
 }
 
+/**
+ * "bob marked #2 as a duplicate of this issue" (QW4-024): another issue of the repo closed as a
+ * duplicate of this one, the back-reference GitHub adds to the canonical issue.
+ */
+export interface DuplicateRefItem extends TimelineRef {
+  readonly id: string
+  readonly actor: string
+  readonly at: number
+  /** The close was recorded by an import (`readDuplicatesOf`): the source's, when its signer is this thread's mirror. */
+  readonly imported?: boolean
+}
+
+/** "bob deleted the feature branch" / "restored" (QW4-025): the PR's source branch, after the PR. */
+export interface BranchEventItem {
+  readonly id: string
+  readonly actor: string
+  readonly at: number
+  readonly kind: 'deleted' | 'restored'
+  /** The branch's short name. */
+  readonly branch: string
+}
+
+/** A row placed among the items by time: a mention, a duplicate's back-reference, a branch event. */
+type ExtraRow =
+  | { readonly kind: 'ref'; readonly at: number; readonly ref: CrossRefItem }
+  | { readonly kind: 'dup'; readonly at: number; readonly dup: DuplicateRefItem }
+  | { readonly kind: 'branch'; readonly at: number; readonly branch: BranchEventItem }
+
 function crossRefIcon(state: CrossRefItem['state']): JSX.Element {
   switch (state) {
     case 'merged':
@@ -257,6 +285,67 @@ function RefLink({ to }: { to: TimelineRef }): JSX.Element {
       {to.title ? <span className="break-words"> {to.title}</span> : null}
     </Link>
   )
+}
+
+/** An imported thread: its trusted source (`trustedOrigin`), the identity that signed it, and when. */
+export interface ImportedThread {
+  readonly origin: Origin
+  readonly signer: string
+  /** The thread document's chain time (when the import wrote it). */
+  readonly createdAt: number
+}
+
+/** How near one of the thread's imported documents a signer's state change counts as the import's (ms). */
+export const IMPORT_WINDOW_MS = 30 * 60_000
+
+/**
+ * The chain times of what the thread's signer wrote as imported (the thread itself, and its
+ * imported comments and reviews): a state change the same identity made within
+ * {@link IMPORT_WINDOW_MS} of one of them was the import recording the source's state (QW4-006).
+ * The signer is the repo owner or a maintainer, who may also act here: a change of theirs away
+ * from any import is theirs, credited as usual.
+ */
+function importTimes(imported: ImportedThread | null, items: readonly TimelineItem[]): readonly number[] {
+  if (imported === null) return []
+  const out = [imported.createdAt]
+  for (const x of items) {
+    if (x.kind === 'comment' && x.comment.author === imported.signer && x.comment.origin) out.push(x.comment.createdAt)
+    if (x.kind === 'review') {
+      if (x.review.reviewer === imported.signer && x.review.origin) out.push(x.review.createdAt)
+      for (const c of x.comments) if (c.author === imported.signer && c.origin) out.push(c.createdAt)
+    }
+  }
+  return out
+}
+
+/**
+ * Where an imported state change happened, after its phrase: "on github.com" (the source page,
+ * which says who and when: a `transition` has no provenance field, so the import records only the
+ * state) and when it was mirrored. Never the mirror identity, nor the import time as when it happened.
+ */
+function OnSource({ origin, at }: { origin: Origin; at: number }): JSX.Element {
+  const host = origin.host || 'the source'
+  return (
+    <>
+      {' '}on{' '}
+      {origin.url ? (
+        <a href={origin.url} target="_blank" rel="noopener noreferrer" className="font-medium text-anvil-800 hover:text-forge-700 hover:underline dark:text-anvil-100 dark:hover:text-forge-400" title="Who did it, and when, is on the source page">
+          {host}
+        </a>
+      ) : (
+        host
+      )}{' '}
+      <span className="whitespace-nowrap rounded bg-anvil-100 px-1.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="imported-transition">
+        <Time ms={at} prefix="mirrored " />
+      </span>
+    </>
+  )
+}
+
+/** "closed this as not planned" as a sentence with no actor: "Closed as not planned". */
+export function sourcePhrase(phrase: string): string {
+  const s = phrase.replace(/^(\S+) this\b ?/, '$1 ').trim()
+  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 /** A timeline item's stable key. */
@@ -346,6 +435,9 @@ export function Timeline({
   closedIn,
   closeWhy,
   crossRefs = [],
+  duplicateRefs = [],
+  branchEvents = [],
+  imported = null,
   moderation,
   moderate,
 }: {
@@ -372,6 +464,15 @@ export function Timeline({
   closeWhy?: (t: TransitionView) => CloseWhy | null
   /** PRs that mention this issue, placed in time order among the items. */
   crossRefs?: readonly CrossRefItem[]
+  /** Issues closed as a duplicate of this one (QW4-024), in time order among the items. */
+  duplicateRefs?: readonly DuplicateRefItem[]
+  /** The PR's source branch deleted or restored (QW4-025), in time order among the items. */
+  branchEvents?: readonly BranchEventItem[]
+  /**
+   * The thread's own trusted import (`trustedOrigin` of the issue or PR) and who signed it: a state
+   * change the same mirror identity recorded is the source's, shown as such (QW4-006).
+   */
+  imported?: ImportedThread | null
   /** What maintainers hid (RC2 MOD): those comments and reviews show collapsed, with Show. */
   moderation?: HiddenItems
   /** A maintainer's Hide / Unhide for a comment or review (omit: the viewer is no maintainer). */
@@ -391,6 +492,7 @@ export function Timeline({
       else next.delete(id)
       return next
     })
+  const imports = importTimes(imported, items)
   const hiddenOf = (id: string) => (revealed.has(id) ? null : moderation?.items[id] ?? null)
   // What a hide's refId names, for its timeline line ("hid a comment by bob").
   const refs = new Map<string, { kind: 'comment' | 'review'; author: string }>()
@@ -404,17 +506,18 @@ export function Timeline({
   // The merge commits of this thread's merge transitions: a policy-bypass event is the record of
   // one of them only when it names it.
   const mergeOids = new Set(items.flatMap((x) => (x.kind === 'transition' && x.transition.kind === PR_MERGE && x.transition.oid ? [x.transition.oid.toLowerCase()] : [])))
-  // Items and the PRs that mention this issue, in time order.
-  const merged: ({ kind: 'item'; item: TimelineItem; i: number } | { kind: 'ref'; ref: CrossRefItem })[] = items.map((item, i) => ({ kind: 'item', item, i }))
-  for (const ref of [...crossRefs].sort((a, b) => a.at - b.at)) {
+  // Items and the rows placed among them by time (mentions, duplicates, branch events).
+  const extras: ExtraRow[] = [
+    ...crossRefs.map((ref): ExtraRow => ({ kind: 'ref', at: ref.at, ref })),
+    ...duplicateRefs.map((dup): ExtraRow => ({ kind: 'dup', at: dup.at, dup })),
+    ...branchEvents.map((branch): ExtraRow => ({ kind: 'branch', at: branch.at, branch })),
+  ].sort((a, b) => a.at - b.at)
+  const merged: ({ kind: 'item'; item: TimelineItem; i: number; at: number } | ExtraRow)[] = items.map((item, i) => ({ kind: 'item', item, i, at: item.at }))
+  for (const extra of extras) {
     // After every row at or before it (the items are oldest first).
     let at = merged.length
-    while (at > 0) {
-      const prev = merged[at - 1]!
-      if ((prev.kind === 'item' ? prev.item.at : prev.ref.at) <= ref.at) break
-      at--
-    }
-    merged.splice(at, 0, { kind: 'ref', ref })
+    while (at > 0 && merged[at - 1]!.at > extra.at) at--
+    merged.splice(at, 0, extra)
   }
   // A long timeline shows its ends; "Load more" reveals the middle in pages (QW2-010). Rows that
   // arrive after the first render join the shown end; another thread starts folded afresh.
@@ -447,6 +550,30 @@ export function Timeline({
           <p className={EVENT_TEXT}>
             <Author identityId={r.actor} link={false} className="align-middle" /> mentioned this issue in <RefLink to={r} />
             <span className="whitespace-nowrap"> · {timeAgo(r.at)}</span>
+          </p>
+        </div>,
+      )
+    } else if (row.kind === 'dup') {
+      const d = row.dup
+      // A duplicate close an import recorded, by this thread's own mirror, is the source's (QW4-006).
+      const sourced = imported !== null && d.imported === true && d.actor === imported.signer
+      rows.push(
+        <div key={`d-${d.id}`} className={EVENT_ROW} data-testid="timeline-event" data-kind="marked-duplicate">
+          <span className={EVENT_ICON}><CircleSlash className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /></span>
+          <p className={EVENT_TEXT}>
+            {sourced ? 'Marked' : <><Author identityId={d.actor} link={false} className="align-middle" /> marked</>} <RefLink to={d} /> as a duplicate of this issue
+            {sourced ? <> on {imported.origin.host || 'the source'}</> : <span className="whitespace-nowrap"> · {timeAgo(d.at)}</span>}
+          </p>
+        </div>,
+      )
+    } else if (row.kind === 'branch') {
+      const b = row.branch
+      rows.push(
+        <div key={`b-${b.id}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={`branch-${b.kind}`}>
+          <span className={EVENT_ICON}>{b.kind === 'deleted' ? <Trash2 className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> : <GitBranch className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />}</span>
+          <p className={EVENT_TEXT}>
+            <Author identityId={b.actor} link={false} className="align-middle" /> {b.kind} the <span className="break-all font-mono text-[12px]">{b.branch}</span>{' '}
+            <span className="whitespace-nowrap">branch · {timeAgo(b.at)}</span>
           </p>
         </div>,
       )
@@ -581,35 +708,44 @@ export function Timeline({
           // A close that says it was not done (not planned, a duplicate) says so, whatever PR
           // mentioned the issue; a completed one names the PR whose merge closed it.
           const said = closeWhy?.(t) ?? null
-          const cause = said?.skipped ? null : closedIn?.(t) ?? null
+          // Recorded by the import (QW4-006): the source's change, said without an actor.
+          const source = imported !== null && t.actor === imported.signer && imports.some((at) => Math.abs(at - t.createdAt) <= IMPORT_WINDOW_MS) ? imported.origin : null
+          const cause = said?.skipped || source !== null ? null : closedIn?.(t) ?? null
           const why = cause === null ? said : null
+          const words = (text: string): string => (source !== null ? sourcePhrase(text) : text)
+          const age = source !== null ? <OnSource origin={source} at={t.createdAt} /> : <span className="whitespace-nowrap"> · {timeAgo(t.createdAt)}</span>
           return (
-            <div key={`t-${t.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={`transition-${t.kind}`}>
+            <div key={`t-${t.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={`transition-${t.kind}`} {...(source !== null ? { 'data-imported': 'true' } : {})}>
               <span className={EVENT_ICON}>{why?.skipped ? <CircleSlash className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden data-icon="closed-skipped" /> : transitionIcon(t.kind)}</span>
               {/* One sentence that wraps as text (QW-070): the age never breaks onto a line of its own. */}
               <p className={EVENT_TEXT}>
-                <Author identityId={t.actor} link={false} className="align-middle" />{' '}
+                {source === null ? <><Author identityId={t.actor} link={false} className="align-middle" />{' '}</> : null}
                 {cause !== null ? (
                   <>
                     closed this as completed in <RefLink to={cause} />
-                    <span className="whitespace-nowrap"> · {timeAgo(t.createdAt)}</span>
+                    {age}
                   </>
                 ) : why?.duplicate ? (
                   <>
-                    closed this as a duplicate of <RefLink to={why.duplicate} />
-                    <span className="whitespace-nowrap"> · {timeAgo(t.createdAt)}</span>
+                    {words('closed this as a duplicate of')} <RefLink to={why.duplicate} />
+                    {age}
                   </>
-                ) : why !== null ? (
-                  <WithAge text={why.phrase} age={timeAgo(t.createdAt)} />
                 ) : t.kind === PR_MERGE && t.oid ? (
                   <>
-                    {transitionPhrase(t.kind)} at{' '}
+                    {words(transitionPhrase(t.kind))} at{' '}
                     <span className="whitespace-nowrap">
-                      <Oid value={t.oid} chars={9} /> · {timeAgo(t.createdAt)}
+                      <Oid value={t.oid} chars={9} />
+                      {source === null ? ` · ${timeAgo(t.createdAt)}` : null}
                     </span>
+                    {source !== null ? age : null}
+                  </>
+                ) : source !== null ? (
+                  <>
+                    {words(why?.phrase ?? transitionPhrase(t.kind))}
+                    {age}
                   </>
                 ) : (
-                  <WithAge text={transitionPhrase(t.kind)} age={timeAgo(t.createdAt)} />
+                  <WithAge text={why?.phrase ?? transitionPhrase(t.kind)} age={timeAgo(t.createdAt)} />
                 )}
               </p>
             </div>

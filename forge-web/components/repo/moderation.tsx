@@ -308,19 +308,36 @@ export function hideConfirm(
   }
 }
 
-const NO_IDS: ReadonlySet<string> = new Set()
+const NO_IDS: ReadonlyMap<string, Hidden> = new Map()
 
 /**
- * The list page's rows whose thread a maintainer hid (RC2 MOD), read once per distinct set of
- * rows with hides: none read for a page without any.
+ * The list page's rows whose thread a maintainer hid (RC2 MOD), with who hid each and why, read
+ * once per distinct set of rows with hides: none read for a page without any.
  */
-export function useHiddenThreads(sdk: EvoSDK | null, ready: boolean, repo: RepoRef, network: Network, rows: readonly HideableRow[] | undefined): ReadonlySet<string> {
+export function useHiddenThreads(sdk: EvoSDK | null, ready: boolean, repo: RepoRef, network: Network, rows: readonly HideableRow[] | undefined): ReadonlyMap<string, Hidden> {
   const withHides = (rows ?? []).filter((r) => (r.threadHides?.length ?? 0) > 0)
   const key = withHides.map((r) => `${r.id}:${r.threadHides?.length ?? 0}`).join(',')
   const read = useAsync(() => hiddenThreadIds(sdk!, repo, network, withHides), [ready, repoKey(repo), key], { enabled: ready && sdk !== null && key !== '' })
   if (key === '') return NO_IDS
   // Until the read lands: every hide counts (the registration's default), so no hidden row flashes in.
   return read.data ?? hiddenRowIds(withHides, repo.ownerId, [], true)
+}
+
+/**
+ * A revealed hidden row's mark in a list (QW4-038): "Hidden by X as spam", as the issue's page and
+ * `dg issue list --include-hidden` say it. Null for a row nobody hid.
+ */
+export function HiddenRowMark({ hidden }: { hidden: Hidden | undefined }): JSX.Element | null {
+  if (hidden === undefined) return null
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-anvil-300 px-2 py-0.5 text-[11px] text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="row-hidden">
+      <EyeOff className="h-3 w-3 shrink-0" aria-hidden />
+      <span>
+        Hidden by <Author identityId={hidden.by} link={false} className="align-middle" />
+        {reasonWords(hidden.reason)}
+      </span>
+    </span>
+  )
 }
 
 /** "2 hidden by maintainers · Show": the list's toggle for hidden issues or PRs. */

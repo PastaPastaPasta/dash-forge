@@ -22,7 +22,7 @@ import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useState } from 'react'
-import { HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
+import { HiddenRowMark, HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
 import { GitMerge, GitPullRequest, GitPullRequestClosed, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
@@ -261,6 +261,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                       <span className="font-mono">#{p.number}</span>
                       <span>{st.label} · into <span className="font-mono">{branchName(p.baseRefName) || '?'}</span> · opened by</span>
                       <Byline author={p.author} createdAt={p.createdAt} origin={trustedOrigin(p.origin, p.author, trust)} link={false} />
+                      <HiddenRowMark hidden={hiddenIds.get(p.id)} />
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-3 pt-0.5">

@@ -49,7 +49,8 @@ import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents } from './
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
-import { readRepoCounts, readStateCodes, readTransitions, type TransitionView } from './transitions'
+import { readRepoCounts, readStateCodes, readTransitions, transitionOf, type TransitionView } from './transitions'
+import { ISSUE_CLOSE } from '../rules/transition'
 
 /** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
 export function titleOf(doc: PlainDocument): string {
@@ -333,6 +334,9 @@ function ttlCached<T>(cache: Cache<T>, key: string, load: () => Promise<T>): Pro
 const feedCache: Cache<Map<string, TargetLog> | null> = new Map()
 /** {@link sharedRepoCounts}' reads, by `feedKey@write generation`. */
 const countsCache: Cache<Awaited<ReturnType<typeof readRepoCounts>>> = new Map()
+/** An issue close, with the number of the issue it closed. */
+export type IssueClose = TransitionView & { readonly targetNumber: number }
+const closesCache: Cache<readonly IssueClose[] | null> = new Map()
 /** Per repo: bumped by every {@link invalidateRepoFeed}, so a read started before a write can tell. */
 const epochs = new Map<string, number>()
 /** Per repo: bumped when a write that can change an open count drops its caches. */
@@ -397,6 +401,7 @@ export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: 
   for (const drop of invalidationHooks) drop(repo)
   if (!counts) return
   for (const k of [...countsCache.keys()]) if (k.startsWith(`${prefix}@`)) countsCache.delete(k)
+  for (const k of [...closesCache.keys()]) if (k.startsWith(`${prefix}@`)) closesCache.delete(k)
   countWrites.set(feedKey(repo), Date.now())
   changed(repo, [writes])
 }
@@ -435,6 +440,22 @@ export function repoWriteGeneration(repo: RepoRef): number {
  */
 export function sharedRepoCounts(sdk: EvoSDK, repo: RepoRef): Promise<Awaited<ReturnType<typeof readRepoCounts>>> {
   return ttlCached(countsCache, `${feedKey(repo)}@${repoWriteGeneration(repo)}`, () => readRepoCounts(sdk, repo))
+}
+
+/**
+ * Every issue close of the repo (`transition.perRepoKind`, `kind == 1`), read at most `maxPages`
+ * pages, once per write generation for every issue page of the session (null: more than that).
+ */
+export function sharedIssueCloses(sdk: EvoSDK, repo: RepoRef, maxPages: number): Promise<readonly IssueClose[] | null> {
+  return ttlCached(closesCache, `${feedKey(repo)}@${repoWriteGeneration(repo)}:${maxPages}`, async () => {
+    try {
+      const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.transition, { where: [['kind', '==', ISSUE_CLOSE]], orderBy: [['kind', 'asc']] }), { maxPages })
+      return docs.map((d) => ({ ...transitionOf(d), targetNumber: num(d, 'targetNumber') }))
+    } catch (e) {
+      if (e instanceof IncompleteReadError) return null
+      throw e
+    }
+  })
 }
 
 /** Be told whenever any repo's list pages change; returns the unsubscribe. */

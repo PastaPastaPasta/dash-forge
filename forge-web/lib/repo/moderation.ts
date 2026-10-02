@@ -17,6 +17,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { decodeIdentifier } from '../auth/base58'
 import type { Event } from '../rules'
 import type { HideReason, Membership } from '../rules/v2'
+import type { Hidden } from '../rules/moderation'
 import { threadModeration } from './moderation-fold'
 import type { WriteAuth, WriteResult } from '../sdk'
 import { DOC, type RepoRef } from './contract'
@@ -68,12 +69,13 @@ export interface HideableRow {
 }
 
 /**
- * The rows of a list page whose thread a maintainer hid (lists leave them out behind a toggle).
- * Reads the contract's proof and the members only when a row holds a hide (a failed read counts
- * the owner's and current maintainers' hides, and no members: the owner's alone).
+ * The rows of a list page whose thread a maintainer hid (lists leave them out behind a toggle),
+ * with who hid each and why (a revealed row says so, QW4-038). Reads the contract's proof and the
+ * members only when a row holds a hide (a failed read counts the owner's and current maintainers'
+ * hides, and no members: the owner's alone).
  */
-export async function hiddenThreadIds(sdk: EvoSDK, repo: RepoRef, network: Network, rows: readonly HideableRow[]): Promise<ReadonlySet<string>> {
-  if (!rows.some((r) => (r.threadHides?.length ?? 0) > 0)) return new Set()
+export async function hiddenThreadIds(sdk: EvoSDK, repo: RepoRef, network: Network, rows: readonly HideableRow[]): Promise<ReadonlyMap<string, Hidden>> {
+  if (!rows.some((r) => (r.threadHides?.length ?? 0) > 0)) return new Map()
   const [proved, members] = await Promise.all([hidesProved(sdk, repo).catch(() => false), readMembershipsCached(sdk, repo, network).catch((): Membership[] => [])])
   return hiddenRowIds(rows, repo.ownerId, members, proved)
 }
@@ -83,12 +85,12 @@ export async function hiddenThreadIds(sdk: EvoSDK, repo: RepoRef, network: Netwo
  * with `proved` assumed (every hide counts, as on a registration with the proof) until the read of
  * the contract and the members lands, so a hidden spam row never flashes into the list.
  */
-export function hiddenRowIds(rows: readonly HideableRow[], owner: string, members: readonly Membership[], proved: boolean): ReadonlySet<string> {
-  const out = new Set<string>()
+export function hiddenRowIds(rows: readonly HideableRow[], owner: string, members: readonly Membership[], proved: boolean): ReadonlyMap<string, Hidden> {
+  const out = new Map<string, Hidden>()
   for (const r of rows) {
     if ((r.threadHides?.length ?? 0) === 0) continue
     const m = threadModeration({ events: r.threadHides ?? [], thread: { id: r.id, author: r.author }, owner, members, proved, comments: [] })
-    if (m.thread !== null) out.add(r.id)
+    if (m.thread !== null) out.set(r.id, m.thread)
   }
   return out
 }

@@ -84,3 +84,59 @@ export function firstPushers(updates: readonly { readonly id: string; readonly n
   }
   return out
 }
+
+/** A PR's source branch deleted or restored, as its timeline shows it (QW4-025). */
+export interface SourceBranchEvent {
+  readonly id: string
+  readonly actor: string
+  readonly at: number
+  readonly kind: 'deleted' | 'restored'
+  readonly branch: string
+}
+
+/**
+ * When the PR's source branch `refName` was deleted from the PR's head and restored at it, from
+ * the branch's ref updates (GitHub's "deleted the feature branch" and "restored"), at or after
+ * `since` (the PR's creation: an earlier branch of the same name is not this PR's). A delete counts
+ * when it removed the PR's head (`prevOid`, which the page's and dg's deletes record); a restore
+ * when it points the deleted branch at the head again. A push of other commits to the name is a
+ * new branch, not a restore, and ends the tracking.
+ */
+export function sourceBranchEvents(
+  updates: readonly { readonly id: string; readonly newOid: string; readonly prevOid?: string | null; readonly author: string; readonly createdAt: number }[],
+  refName: string,
+  headOid: string,
+  since: number,
+): SourceBranchEvent[] {
+  const head = headOid.toLowerCase()
+  const branch = refName.replace(/^refs\/heads\//, '')
+  const isZero = (oid: string): boolean => oid === '' || /^0+$/.test(oid)
+  const sorted = [...updates].filter((u) => u.createdAt >= since).sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  const out: SourceBranchEvent[] = []
+  let deleted = false
+  // Updates of one block share a `createdAt`; their real order is their `prevOid` chain, not their
+  // ids: within a block, take next the update that follows from the state so far (a delete while
+  // the branch exists, anything else once it is deleted).
+  for (let i = 0; i < sorted.length; ) {
+    let j = i
+    while (j < sorted.length && sorted[j]!.createdAt === sorted[i]!.createdAt) j++
+    const block = sorted.slice(i, j)
+    while (block.length > 0) {
+      const k = Math.max(0, block.findIndex((u) => isZero(u.newOid.toLowerCase()) !== deleted))
+      const u = block.splice(k, 1)[0]!
+      const to = u.newOid.toLowerCase()
+      if (isZero(to) && !deleted) {
+        const from = (u.prevOid ?? '').toLowerCase()
+        if (from === '' || from === head) {
+          out.push({ id: u.id, actor: u.author, at: u.createdAt, kind: 'deleted', branch })
+          deleted = true
+        }
+      } else if (!isZero(to) && deleted) {
+        if (to === head) out.push({ id: u.id, actor: u.author, at: u.createdAt, kind: 'restored', branch })
+        deleted = false
+      }
+    }
+    i = j
+  }
+  return out
+}
