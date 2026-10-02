@@ -88,12 +88,15 @@ pub trait Chain {
     /// `identity`'s balance now, when it can be read.
     async fn balance(&self, identity: &str) -> Option<u64>;
 
-    /// Create an imported issue or PR at the dense next number.
+    /// Create an imported issue or PR at the dense next number. `again`: an earlier attempt
+    /// at the same item failed unconfirmed, so its copy may land late, and is adopted rather
+    /// than created twice (`Collab::create_imported_again`).
     async fn create_imported(
         &self,
         repo: &RepoRef,
         what: ImportedTarget<'_>,
         from: Provenance<'_>,
+        again: bool,
     ) -> Result<Created>;
     /// Comment on `target_id`.
     async fn comment(
@@ -284,8 +287,13 @@ impl Chain for CollabChain<'_> {
         repo: &RepoRef,
         what: ImportedTarget<'_>,
         from: Provenance<'_>,
+        again: bool,
     ) -> Result<Created> {
-        self.collab.create_imported(repo, what, from).await
+        if again {
+            self.collab.create_imported_again(repo, what, from).await
+        } else {
+            self.collab.create_imported(repo, what, from).await
+        }
     }
 
     async fn comment(

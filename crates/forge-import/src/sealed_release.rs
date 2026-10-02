@@ -661,7 +661,7 @@ async fn publish(
         }
         Err(e) => {
             let one = release_error(&e);
-            ledger.refused_release(tag, e, one)
+            ledger.refused_release(tag, e, one, true)
         }
     }
 }
