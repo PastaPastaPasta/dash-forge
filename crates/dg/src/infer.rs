@@ -271,7 +271,9 @@ fn leaf<'c>(root: &'c clap::Command, args: &[OsString]) -> Option<&'c clap::Comm
             break;
         }
         if token.starts_with('-') {
-            i += if takes_separate_value(cmd, token) {
+            // `-R <REPO>` / `--repo <REPO>` is no clap option ([`explicit_repo`] moves it), so
+            // its value is skipped here by name.
+            i += if matches!(token, "-R" | "--repo") || takes_separate_value(cmd, token) {
                 2
             } else {
                 1
@@ -386,6 +388,18 @@ mod tests {
         // Outside a clone the repository is required, as clap's error says.
         let usage = usage_line(&split("dg pr merge 4 --bogus"), false).unwrap();
         assert_eq!(usage, "Usage: dg pr merge [OPTIONS] <REPO> <NUMBER>");
+        // `-R <REPO>` before the subcommand is skipped with its value.
+        for line in [
+            "dg -R a/b pr merge 4 --method x",
+            "dg --repo a/b pr merge 4 --method x",
+        ] {
+            let args = split(line);
+            assert!(
+                usage_line(&args, false).is_some_and(|u| u.starts_with("Usage: dg pr merge")),
+                "{line}"
+            );
+            assert!(flag_tip(&args, "--method").is_some(), "{line}");
+        }
     }
 
     /// QW4-065: `gh release create --title` / `-t` is `--name` here, under either spelling.

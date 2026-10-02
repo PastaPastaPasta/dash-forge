@@ -3167,9 +3167,10 @@ impl<'a> Collab<'a> {
         }
         let collab = self.collab_contract(repo).await?;
         let from = close.created_at.saturating_sub(Self::CLOSED_IN_WINDOW_MS);
+        // The whole window, however busy (a page of 100 could stop short of the merge).
         let docs = self
             .client
-            .query_documents(
+            .query_all_documents(
                 &collab,
                 DOC_TRANSITION,
                 &[
@@ -3177,13 +3178,11 @@ impl<'a> Collab<'a> {
                     QueryFilter::gte("$createdAt", FieldValue::uint64(from)),
                     QueryFilter::lte("$createdAt", FieldValue::uint64(close.created_at)),
                 ],
-                &[QueryOrder::desc("$createdAt")],
-                DEFAULT_PAGE,
-                None,
+                &[QueryOrder::asc("$createdAt")],
             )
             .await?;
         // Newest first: the latest merge before the close is tried first.
-        let merges = docs.iter().filter(|d| {
+        let merges = docs.iter().rev().filter(|d| {
             d.owner_id == close.actor
                 && d.created_at.is_some_and(|at| at >= from)
                 && d.field_u64("kind") == Some(u64::from(PR_MERGE))
