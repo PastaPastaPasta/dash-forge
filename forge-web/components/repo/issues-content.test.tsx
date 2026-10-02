@@ -25,7 +25,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet', status: { phase: 'ready' } }) }))
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: null, signer: null, locked: false }) }))
 vi.mock('@/hooks/use-mirror-trust', () => ({ useMirrorTrust: () => null }))
-vi.mock('@/hooks/use-repo-chrome', () => ({ useRepoWriteGeneration: () => 0 }))
+vi.mock('@/hooks/use-repo-chrome', () => ({ useRepoWriteGeneration: () => 0, useViewerRole: () => ({ role: null, known: true, failed: false, retry: () => undefined }) }))
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, failed: () => '', disabledReason: null }) }))
 vi.mock('@/hooks/use-first-write', () => ({ useFirstWrite: () => ({}) }))
 vi.mock('@/hooks/use-dpns-name', () => ({ useDpnsName: () => null }))

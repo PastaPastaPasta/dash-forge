@@ -40,6 +40,7 @@ import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { InlineCommentsContext, type InlineComments } from '@/components/repo/diff-view'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
+import { LongBodyNote } from '@/components/repo/long-body'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { MarkdownEditor } from '@/components/repo/issue-bits'
@@ -543,7 +544,12 @@ export function SuggestedBody({
   imported?: string | null
 }): JSX.Element {
   const ctx = useSuggestionContext(source, c.anchor, suggestions)
-  const body = <MarkdownView source={source} suggestion={ctx} links={links} imported={imported} />
+  const body = (
+    <>
+      <MarkdownView source={source} suggestion={ctx} links={links} imported={imported} />
+      <LongBodyNote long={c.long} />
+    </>
+  )
   if (ctx === null || !suggestions) return body
   const applied = suggestions.applied.get(c.id)
   const refused = suggestions.unapplicable(c)

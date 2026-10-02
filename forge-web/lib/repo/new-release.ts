@@ -39,6 +39,7 @@ import { requireMaintainer } from './members'
 import { readReleases, type ReleaseAssetView } from './releases'
 import type { ResolvedSealedRelease, SealedReleaseEvent, SealedReleaseWarning } from './sealed-release'
 import { createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
+import { isLongBody, longBodyField } from './long-body'
 import { isRc1TagName } from '../rules'
 
 /** The `release` schema's limits (forge-core `release`: `maxLength` characters, `maxBytes`). */
@@ -388,10 +389,13 @@ export async function publishRelease(
   // its assets, title and notes carry forward unless given (D-504, as `dg release create`).
   const existing = input.stored ? null : ((await readReleases(sdk, repo)).current.find((r) => r.tagName === input.tagName) ?? null)
   const name = input.stored?.name ?? (input.name || existing?.name || '')
-  const notes = input.stored?.notes ?? (input.notes || existing?.notes || '')
+  const typed = input.stored?.notes ?? (input.notes || existing?.notes || '')
+  // New notes longer than the field are stored whole first (forge-v2.md §6.3); carried notes and a
+  // retry's are the field as written before.
+  const longNotes = !input.stored && input.notes !== '' && isLongBody(repo, 'release', input.notes)
   const keep = carriedAssets(existing, input.files)
   const problem =
-    releaseTextProblem({ name, notes }) ?? (input.stored ? null : assetPlanProblem(input.files, storage.policy, storage.profiles, keep))
+    releaseTextProblem({ name, notes: longNotes ? '' : typed }) ?? (input.stored ? null : assetPlanProblem(input.files, storage.policy, storage.profiles, keep))
   if (problem) throw new Error(problem)
 
   // A retry of an unconfirmed write re-signs exactly what it named (kept assets included) and
@@ -409,6 +413,7 @@ export async function publishRelease(
     onEvent?.({ step: 'uploaded', asset: f.name, stored: asset, copies: stored.confirmed.length, failures: stored.failures })
   }
   onEvent?.({ step: 'release' })
+  const notes = longNotes ? await longBodyField(sdk, auth, repo, 'release', typed, {}, input.draft) : typed
   const intent = await releaseIntent(input.draft, { ...input, name, notes }, assets)
   try {
     const release = await createRelease(sdk, auth, repo, {

@@ -116,6 +116,16 @@ export function longBodyStoredText(full: string, room: number, sha256Hex: string
   return prefix === '' ? line : `${prefix}${LONG_BODY_SEPARATOR}${line}`
 }
 
+/** A long body's state, on a view whose `body` (or notes) is the text to show. */
+export interface LongBodyState {
+  /** The full text's length (the trailer's `bytes`), or null for a trailer this version cannot read. */
+  readonly bytes: number | null
+  /** Why only the first part is shown, or null when the whole text is. */
+  readonly incomplete: string | null
+  /** The field as stored (the prefix and the trailer): what an edit of the other fields keeps. */
+  readonly field: string
+}
+
 /** Why a fetched full text is refused (the vectors' names). */
 export type LongBodyError = 'notContinued' | 'hash' | 'size' | 'utf8'
 

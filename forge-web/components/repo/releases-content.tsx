@@ -29,7 +29,8 @@ import {
   type DownloadProgress,
 } from '@/lib/view/release-download'
 import { urlHost } from '@/lib/view/format'
-import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isDraft, isPrereleaseView, isUnpublish, latestRelease, type OmittedAssets, type ReleaseList } from '@/lib/repo/releases'
+import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isDraft, isPrereleaseView, isUnpublish, latestRelease, notesShown, type OmittedAssets, type ReleaseList } from '@/lib/repo/releases'
+import { LongBodyLoading, LongBodyNote, useLongText } from '@/components/repo/long-body'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -367,7 +368,13 @@ function ReleaseCard({
   const sealedAssetsId = useId()
   // A list that holds only the continued notes has no assets to show.
   const noSealedAssets = manifest.data?.manifest.assets.length === 0
-  const notes = full && continued && manifest.data?.manifest.notes !== undefined ? manifest.data.manifest.notes : r.notesBody
+  const continuedNotes = full && continued && manifest.data?.manifest.notes !== undefined ? manifest.data.manifest.notes : null
+  // Notes longer than the field (forge-v2.md §6.3): the release's page reads the rest; a list
+  // card shows the first part and links the page.
+  const longNotes = useLongText(repo, continuedNotes ?? r.notes, full)
+  const shownNotes = longNotes.read?.text ?? continuedNotes
+  const notes = shownNotes === null ? r.notesBody : r.sealed ? shownNotes : notesShown(shownNotes).body
+  const omitted = shownNotes === null || r.sealed ? r.omitted : notesShown(shownNotes).omitted ?? r.omitted
   // The list card links its full notes (L-79); the asset toggle below then keeps clear of that link on touch.
   const notesLink = Boolean(notes) && !full && !previous
   return (
@@ -457,6 +464,12 @@ function ReleaseCard({
         <div className={cn('mt-3 text-prose', !full && 'line-clamp-6')}>
           {/* A mirror's release notes are the source's (its import copied them): their mentions are that forge's. */}
           <MarkdownView source={notes} images="auto" links={links} imported={sourceUrl(links)} />
+          {full ? (
+            <>
+              <LongBodyLoading loading={longNotes.loading} />
+              <LongBodyNote long={longNotes.read?.long ?? null} />
+            </>
+          ) : null}
         </div>
       ) : null}
       {continued && (full || !previous) && notes === r.notesBody ? (
@@ -519,7 +532,7 @@ function ReleaseCard({
       ) : null}
       {/* A list of only continued notes, once opened: no assets, but a late upload is still said. */}
       {sealedList && !full && noSealedAssets ? <SealedAssets repo={repo} state={manifest} className="mt-3" /> : null}
-      {r.omitted ? <OmittedAssetsNote omitted={r.omitted} /> : null}
+      {omitted ? <OmittedAssetsNote omitted={omitted} /> : null}
       {r.badAssets > 0 ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
           {plural(r.badAssets, 'asset entry', 'asset entries')} {r.badAssets === 1 ? 'is' : 'are'} unreadable and not shown.

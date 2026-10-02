@@ -131,6 +131,7 @@ import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
+import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
 import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/view/upstream'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -693,7 +694,15 @@ function PullPage({
     [canResolve, resolvedKey, identity, setPending, thread.moderation],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
-  const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
+  // A text over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
+  const commentLong = useLongCompose(repo, 'comment', comment.trim())
+  const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() }, commentLong)
+  const editLong = useLongCompose(repo, 'patch', editing?.body ?? '', {
+    title: editing?.title ?? '',
+    baseRefName: pull.baseRefName,
+    sourceRefName: pull.sourceRefName ?? '',
+  })
+  const commentEditLong = useLongCompose(repo, 'comment', editingComment?.body ?? '')
   // "Close with comment" (QW2-008): the composer's text goes with a close or reopen when it could be posted.
   const withComment = comment.trim() !== '' && !writeBlocked && !commentTooLong ? comment.trim() : null
   // The repo's milestones, for the picker (QW2-050): read for members only (only they can set one).
@@ -837,7 +846,7 @@ function PullPage({
           ...changes,
           expectedRevision: BigInt(pull.revision),
           seal: {
-            current: { title: pull.title, body: pull.body, baseRefName: pull.baseRefName, sourceRefName: pull.sourceRefName ?? undefined },
+            current: { title: pull.title, body: pull.long?.field ?? pull.body, baseRefName: pull.baseRefName, sourceRefName: pull.sourceRefName ?? undefined },
             bind: { number: pull.number },
             ...(pull.epoch !== null ? { patchEpoch: pull.epoch } : {}),
             imported: pull.importedRaw ?? null,
@@ -1068,7 +1077,7 @@ function PullPage({
               <Button
                 variant="primary"
                 size="sm"
-                disabled={editing.title.trim() === '' || (editing.title.trim() === pull.title && editing.body === pull.body) || utf8Length(editing.body) > BODY_MAX || guard.disabledReason !== null}
+                disabled={editing.title.trim() === '' || (editing.title.trim() === pull.title && editing.body === pull.body) || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX) || guard.disabledReason !== null}
                 onClick={() => setPending({ kind: 'edit-pull', title: editing.title.trim(), body: editing.body })}
               >
                 Save
@@ -1084,7 +1093,7 @@ function PullPage({
               {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400" data-testid="pull-number">{numberLabel(pull.number, shownUpstreamNumber(pull, repo, thread.members))}</span>
             </h1>
             {isAuthor ? (
-              <Button variant="outline" size="sm" onClick={() => setEditing({ title: pull.title, body: pull.body })} disabled={writeBlocked} title={composeBlock ?? undefined}>
+              <Button variant="outline" size="sm" onClick={() => setEditing({ title: pull.title, body: pull.body })} disabled={writeBlocked || longEditBlock(pull.long) !== null} title={composeBlock ?? longEditBlock(pull.long) ?? undefined}>
                 <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
               </Button>
             ) : null}
@@ -1256,9 +1265,15 @@ function PullPage({
                 </div>
                 <div className="px-4 py-3">
                   {editing ? (
-                    <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
+                    <>
+                      <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
+                      <BodyCounter repo={repo} text={editing.body} field="description" long={editLong} />
+                    </>
                   ) : pull.body ? (
-                    <MarkdownView source={pull.body} links={links} imported={pull.importedUrl} />
+                    <>
+                      <MarkdownView source={pull.body} links={links} imported={pull.importedUrl} />
+                      <LongBodyNote long={pull.long} />
+                    </>
                   ) : (
                     <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
                   )}
@@ -1294,6 +1309,8 @@ function PullPage({
                       item,
                       viewer: identity,
                       editing: editingComment,
+                      editLong: commentEditLong,
+                      repo,
                       disabled: writeBlocked || guard.disabledReason !== null,
                       deleteDisabled: archived || guard.disabledReason !== null,
                       onEdit: setEditingComment,
@@ -1491,8 +1508,8 @@ function PullPage({
                   ) : (
                     <>
                       <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
-                      <SealedLimit repo={repo} kind="comment" text={comment.trim()} />
-                      <BodyCounter repo={repo} text={comment.trim()} field="comment" />
+                      <SealedLimit repo={repo} kind="comment" text={comment.trim()} long={commentLong} />
+                      <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} />
                     </>
                   )}
                 </LockedBanner>
@@ -2004,6 +2021,8 @@ function commentSlots({
   item,
   viewer,
   editing,
+  editLong,
+  repo,
   disabled,
   deleteDisabled,
   onEdit,
@@ -2021,6 +2040,9 @@ function commentSlots({
   item: Extract<TimelineItem, { kind: 'comment' }>
   viewer: string | null
   editing: { id: string; body: string } | null
+  /** The edited text over its field (`useLongCompose`). */
+  editLong: LongCompose
+  repo: RepoRef
   disabled: boolean
   /** Delete's own gate: a delete carries no content (see `CommentOwnActions`). */
   deleteDisabled: boolean
@@ -2049,7 +2071,8 @@ function commentSlots({
     ) : null
   const edit =
     viewer !== null && viewer === c.author && editing?.id !== c.id ? (
-      <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled} deleteDisabled={deleteDisabled} />
+      // A long comment whose rest could not be read is not edited here: the edit would drop the rest.
+      <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled || longEditBlock(c.long) !== null} deleteDisabled={deleteDisabled} />
     ) : null
   const header = (
     <>
@@ -2063,8 +2086,9 @@ function commentSlots({
       body: (
         <div className="space-y-2 px-4 py-3">
           <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus />
+          <BodyCounter repo={repo} text={editing.body} field="comment" long={editLong} />
           <div className="flex gap-2">
-            <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || utf8Length(editing.body) > BODY_MAX} onClick={() => onSave(c.id, editing.body)}>
+            <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX)} onClick={() => onSave(c.id, editing.body)}>
               Save
             </Button>
             <Button variant="ghost" size="sm" onClick={() => onEdit(null)}>

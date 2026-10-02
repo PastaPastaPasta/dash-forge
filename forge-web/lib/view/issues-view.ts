@@ -53,6 +53,7 @@ import { closeReasonOf, currentCloseReason, isLocked, stateCode, type ClosedAs }
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
+import { withLongBodies, withLongBody, type LongBodyState } from './long-body'
 import type { Membership } from '../rules/v2'
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
@@ -68,7 +69,10 @@ import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, 
 export interface CommentView {
   readonly id: string
   readonly author: string
+  /** The text to show: a long body's full text once read (`long`, `forge-v2.md` §6.3). */
   readonly body: string
+  /** A body longer than its field: its state (`./long-body`). Absent otherwise. */
+  readonly long?: LongBodyState
   readonly createdAt: number
   /** The parent comment of a threaded reply (`replyTo`), or null. */
   readonly replyTo: string | null
@@ -392,7 +396,12 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
 
   // Private repo: only comments that open with the reader's keys (§8); the rest are counted.
   const tally = new HiddenTally()
-  const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
+  const admittedComments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
+  // Long bodies (forge-v2.md §6.3): each full text read beside the rest; none read nothing.
+  const [issue, comments] = await Promise.all([
+    withLongBody(sdk, repo, issueViewOf(doc, log, stateCode(transitions))),
+    withLongBodies(sdk, repo, admittedComments),
+  ])
   const labels = docs(3).length < 100 ? newestLabels(docs(3)) : await readLabels(sdk, repo)
   const issueNumber = num(doc, 'number')
   // A duplicate's canonical, for its link only: a failed read shows it unlinked, never fails the page.
@@ -411,7 +420,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     duplicates,
     moderation: foldModeration(modInput),
     moderationInput: modInput,
-    issue: issueViewOf(doc, log, stateCode(transitions)),
+    issue,
     timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0, transitions),
     hidden: tally.value,
     eventValues: eventValues(log),
@@ -638,17 +647,24 @@ export async function loadPullThread(
   ]
   // The base ref's history and config from the repo chrome store (no request), afresh after this page's own write.
   const base = baseRefReaders(sdk, repo, fresh ? { maxAgeMs: 0 } : {})
-  const [pull] = await Promise.all([
+  const [pullRead] = await Promise.all([
     readPull(sdk, repo, doc, log, base.configHistory, base.refUpdates, { transitions }),
     prefetchDpnsNames(sdk, shownIds.filter((x) => x !== ''), network).catch(() => undefined),
   ])
   // The proved verdict count needs the folded head: one grouped count, alongside what follows.
   // Display only, so a failed read shows nothing rather than failing the page.
-  const verdictsRead = readProvedVerdicts(sdk, repo, id, pull.headOid).catch(() => null)
+  const verdictsRead = readProvedVerdicts(sdk, repo, id, pullRead.headOid).catch(() => null)
 
   const tally = new HiddenTally()
-  const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
-  const reviews = (await admitAll(gate, 'review', [...reviewDocs].sort(byTime), tally)).docs.map(reviewViewOf)
+  const admittedComments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
+  const admittedReviews = (await admitAll(gate, 'review', [...reviewDocs].sort(byTime), tally)).docs.map(reviewViewOf)
+  // Long bodies (forge-v2.md §6.3): each full text read beside the rest; none read nothing. The
+  // merge box's squash message, the linked issues and a suggestion read the whole text.
+  const [pull, comments, reviews] = await Promise.all([
+    withLongBody(sdk, repo, pullRead),
+    withLongBodies(sdk, repo, admittedComments),
+    withLongBodies(sdk, repo, admittedReviews),
+  ])
   const roots = new Set(comments.filter((c) => c.replyTo === null).map((c) => c.id))
   const review = foldPrReviewV2(log.events, log.authorEvents, pull.author, pull.initialHeadOid, roots)
   const labels = docs(4).length < 100 ? newestLabels(docs(4)) : await readLabels(sdk, repo)

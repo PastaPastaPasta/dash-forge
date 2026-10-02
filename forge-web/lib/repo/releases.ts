@@ -9,6 +9,7 @@
  */
 
 import { releasePublishedOf, type ReleasePublished } from './provenance'
+import { parseLongBody } from '../rules/long-body'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { z } from 'zod'
 
@@ -246,12 +247,24 @@ export function parseReleaseAssets(raw: string): { assets: ReleaseAssetView[]; b
   return { assets, bad }
 }
 
+/**
+ * Stored public release notes as a reader shows them: without forge-import's "Published on" line
+ * (`published`) and assets footer (`omitted`), and, for notes longer than the field (§6.3),
+ * `text` read in full (else the field's first part).
+ */
+export function notesShown(text: string): { body: string; omitted: OmittedAssets | null; published: ReleasePublished | null } {
+  const field = parseLongBody(text)
+  const visible = field.kind === 'plain' ? text : field.prefix
+  const { published, rest } = releasePublishedOf(visible)
+  const { body, omitted } = omittedAssets(rest)
+  return { body, omitted, published }
+}
+
 function toRelease(doc: PlainDocument): ReleaseView {
   const { assets, bad } = parseReleaseAssets(str(doc, 'assets'))
   const created = doc['$createdAt']
   const notes = str(doc, 'notes')
-  const { published, rest } = releasePublishedOf(notes)
-  const { body, omitted } = omittedAssets(rest)
+  const { body, omitted, published } = notesShown(notes)
   return {
     id: str(doc, '$id'),
     tagName: str(doc, 'tagName'),
@@ -390,7 +403,11 @@ function sealedView(doc: PlainDocument, epoch: number, fields: ReleaseFields): R
     tagName: fields.tag,
     name: fields.name ?? '',
     notes,
-    notesBody: notes,
+    // a sealed revision's notes carry their provenance in `enc`, not in a line
+    notesBody: (() => {
+      const field = parseLongBody(notes)
+      return field.kind === 'plain' ? notes : field.prefix
+    })(),
     omitted: null,
     published,
     yanked: fields.yanked === true,

@@ -56,6 +56,7 @@ import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
+import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
@@ -389,7 +390,10 @@ export async function createIssue(
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
   const data: Record<string, unknown> = { title: input.title }
-  if (input.body.length > 0) data['body'] = input.body
+  // A body longer than its field: its full text stored first (forge-v2.md §6.3), once for
+  // every renumbered attempt.
+  const body = await longBodyField(sdk, auth, repo, 'issue', input.body, { title: input.title }, input.intent)
+  if (body.length > 0) data['body'] = body
   return createNumbered(sdk, auth, repo, 'issue', data, input.intent, onRetry)
 }
 
@@ -446,7 +450,10 @@ export async function createPatch(
   input: PatchInput & { intent?: string },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
-  const created = await createNumbered(sdk, auth, repo, 'patch', patchData(input), input.intent, onRetry)
+  // A body longer than its field: its full text stored first (forge-v2.md §6.3).
+  const others = { title: input.title, baseRefName: input.baseRefName, sourceRefName: input.sourceRefName }
+  const body = await longBodyField(sdk, auth, repo, 'patch', input.body, others, input.intent)
+  const created = await createNumbered(sdk, auth, repo, 'patch', patchData({ ...input, body }), input.intent, onRetry)
   if (input.draft !== true) return created
   const target: StateTarget = { id: created.documentId, number: created.number, type: 'patch', author: auth.identityId }
   try {
@@ -596,7 +603,9 @@ export async function createComment(
   input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext },
 ): Promise<WriteResult> {
   if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
-  const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
+  // A body longer than its field: its full text stored first (forge-v2.md §6.3).
+  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, {}, input.intent)
+  const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
   return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, ...commentProof(auth.identityId, input.post) }, input.intent)
 }
@@ -698,7 +707,8 @@ export async function createReview(
     ...reviewVerdictFields(input.verdict, auth.identityId, post),
     commitOid: hexToBytes(input.commitOid),
   }
-  if (input.body && input.body.length > 0) data['body'] = input.body
+  // A body longer than its field: its full text stored first (forge-v2.md §6.3).
+  if (input.body && input.body.length > 0) data['body'] = await longBodyField(sdk, auth, repo, 'review', input.body, {}, input.intent)
   return writeRepoDoc(sdk, auth, repo, DOC.review, data, input.intent)
 }
 

@@ -17,6 +17,7 @@
 
 import { gitOidHex, MODE_TREE, type GitObject } from '../browse'
 import { anchorOf, applySuggestion, parseSuggestions, type AnchorFields } from '../rules/v2'
+import type { LongBodyState } from '../rules/long-body'
 import { checkCommit, checkTree, parseCommit, parseTree, serializeTree, type TreeEntry } from '../view/git-objects'
 import type { ObjectReader } from '../view/tree-nav'
 import { mergeTrees, planMerge, type MergeIdentity } from './engine'
@@ -27,8 +28,11 @@ import { writePack, type BuiltPack } from './pack-writer'
 export interface SuggestionComment {
   readonly id: string
   readonly author: string
+  /** The text, a long body's full text when it was read (forge-v2.md §6.3). */
   readonly body: string
   readonly anchor: AnchorFields
+  /** A long body's state: one whose rest could not be read is never applied (its cut closes the block). */
+  readonly long?: LongBodyState
 }
 
 /** One suggestion to apply. */
@@ -59,6 +63,7 @@ type Refusal =
   | { kind: 'outdated'; at: string }
   | { kind: 'noBlock' }
   | { kind: 'many'; n: number }
+  | { kind: 'cut' }
 
 /** Why a comment's suggestion cannot be applied on `head` (the one check both wordings share), or its plan. */
 function check(c: SuggestionComment, head: string): { refused: Refusal } | { plan: PlannedSuggestion } {
@@ -67,6 +72,7 @@ function check(c: SuggestionComment, head: string): { refused: Refusal } | { pla
   if (a.line === null || a.side === null) return { refused: { kind: 'wholeFile' } }
   if (a.side !== 1) return { refused: { kind: 'oldSide' } }
   if (a.commitOid.toLowerCase() !== head.toLowerCase()) return { refused: { kind: 'outdated', at: a.commitOid } }
+  if (c.long?.incomplete) return { refused: { kind: 'cut' } }
   const s = parseSuggestions(c.body)
   if (s.length === 0) return { refused: { kind: 'noBlock' } }
   if (s.length > 1) return { refused: { kind: 'many', n: s.length } }
@@ -88,6 +94,8 @@ function dgWords(r: Refusal, id: string, head: string): string {
       return `comment ${short(id)} has no \`\`\`suggestion block`
     case 'many':
       return `comment ${short(id)} has ${r.n} suggestion blocks; apply it by hand`
+    case 'cut':
+      return `comment ${short(id)} is longer than its field and its full text could not be read: its suggestion is not applied`
   }
 }
 
@@ -116,6 +124,8 @@ export function unapplicable(c: SuggestionComment, head: string): string | null 
       return "Outdated: this suggestion is not on the current head's lines."
     case 'many':
       return `This comment holds ${r.refused.n} suggestion blocks: apply it by hand.`
+    case 'cut':
+      return "Only this comment's first part could be read, so its suggestion is not applied."
     case 'noBlock':
       return dgWords(r.refused, c.id, head)
   }

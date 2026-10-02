@@ -24,7 +24,7 @@ import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil
 import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
 import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
-import type { LinkingPulls, TransitionView } from '@/lib/repo'
+import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
@@ -84,6 +84,7 @@ import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
+import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
@@ -218,6 +219,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const stateFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, 'transition', issueId, identity!), [issueId, identity ?? ''], firstsReady)
   const eventFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, 'event', issueId, identity!), [issueId, identity ?? ''], firstsReady && viewerMember)
 
+  // A text over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
+  const commentLong = useLongCompose(home.repo, 'comment', comment.trim())
+  const editLong = useLongCompose(home.repo, 'issue', editing?.body ?? '', { title: editing?.title ?? '' })
+  const commentEditLong = useLongCompose(home.repo, 'comment', editingComment?.body ?? '')
+  const commentTooLong = commentLong.long ? commentLong.problem !== null : utf8Length(comment) > BODY_MAX
+
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Folding issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
@@ -260,11 +267,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const stateCost = previewCreate('transition', {}, stateFirst)
   // "Close with comment" (QW2-008): the composer's text goes with a close or reopen, as on GitHub,
   // when this viewer could post it (not locked out, nothing blocking the composer, within the limit).
-  const withComment = comment.trim() !== '' && composeBlock === null && !lockedOutNow && utf8Length(comment) <= BODY_MAX ? comment.trim() : null
+  const withComment = comment.trim() !== '' && composeBlock === null && !lockedOutNow && !commentTooLong ? comment.trim() : null
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
   const postComment = async (): Promise<void> => {
-    if (posting || comment.trim() === '' || utf8Length(comment) > BODY_MAX || !guard.check(commentCost, 'collab', 'comment')) return
+    if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
@@ -343,7 +350,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           id: issue.id,
           ...changes,
           expectedRevision: BigInt(issue.revision),
-          seal: { current: { title: issue.title, body: issue.body }, bind: { number: issue.number }, imported: issue.importedRaw ?? null },
+          seal: { current: { title: issue.title, body: issue.long?.field ?? issue.body }, bind: { number: issue.number }, imported: issue.importedRaw ?? null },
         })
         setEditing(null)
         break
@@ -440,7 +447,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 <Button
                   variant="primary"
                   size="sm"
-                  disabled={editing.title.trim() === '' || (editing.title === issue.title && editing.body === issue.body) || utf8Length(editing.body) > BODY_MAX || guard.disabledReason !== null}
+                  disabled={editing.title.trim() === '' || (editing.title === issue.title && editing.body === issue.body) || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX) || guard.disabledReason !== null}
                   onClick={() => setPending({ kind: 'editIssue', title: editing.title.trim(), body: editing.body })}
                 >
                   Save
@@ -458,8 +465,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   variant="outline"
                   size="sm"
                   onClick={() => setEditing({ title: issue.title, body: issue.body })}
-                  disabled={composeBlock !== null}
-                  title={composeBlock ?? undefined}
+                  disabled={composeBlock !== null || longEditBlock(issue.long) !== null}
+                  title={composeBlock ?? longEditBlock(issue.long) ?? undefined}
                 >
                   <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
                 </Button>
@@ -494,9 +501,15 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           </div>
           <div className="px-4 py-3">
             {editing ? (
-              <MarkdownEditor id="edit-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
+              <>
+                <MarkdownEditor id="edit-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
+                <BodyCounter repo={home.repo} text={editing.body} field="description" long={editLong} />
+              </>
             ) : issue.body ? (
-              <MarkdownView source={issue.body} links={links} imported={importedUrlOf(issue.importedRaw)} />
+              <>
+                <MarkdownView source={issue.body} links={links} imported={importedUrlOf(issue.importedRaw)} />
+                <LongBodyNote long={issue.long} />
+              </>
             ) : (
               <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
             )}
@@ -534,6 +547,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 item,
                 viewer: identity,
                 editing: editingComment,
+                editLong: commentEditLong,
+                repo: home.repo,
                 disabled: composeBlock !== null || guard.disabledReason !== null,
                 deleteDisabled: archived || guard.disabledReason !== null,
                 onEdit: setEditingComment,
@@ -567,7 +582,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
             {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
             <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
-            <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
+            <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} long={commentLong} />
           </LockedBanner>
           {lockedOutNow && !canToggle ? null : (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
@@ -599,7 +614,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   variant="primary"
                   onClick={postComment}
                   loading={posting}
-                  disabled={composeBlock !== null || comment.trim() === '' || utf8Length(comment) > BODY_MAX || guard.disabledReason !== null}
+                  disabled={composeBlock !== null || comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
                   title={guard.disabledReason ?? undefined}
                 >
                   {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
@@ -608,7 +623,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             </div>
           </div>
           )}
-          {lockedOutNow ? null : <BodyCounter repo={home.repo} text={comment} field="comment" />}
+          {lockedOutNow ? null : <BodyCounter repo={home.repo} text={comment} field="comment" long={commentLong} />}
           {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
           {commentError ? (
             <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
@@ -783,6 +798,8 @@ function commentSlots({
   item,
   viewer,
   editing,
+  editLong,
+  repo,
   disabled,
   deleteDisabled,
   onEdit,
@@ -793,6 +810,9 @@ function commentSlots({
   item: Extract<TimelineItem, { kind: 'comment' }>
   viewer: string | null
   editing: { id: string; body: string } | null
+  /** The edited text over its field (`useLongCompose`). */
+  editLong: LongCompose
+  repo: RepoRef
   disabled: boolean
   /** Delete's own gate: a delete carries no content (see `CommentOwnActions`). */
   deleteDisabled: boolean
@@ -806,8 +826,9 @@ function commentSlots({
     return { body: (
       <div className="space-y-2 px-4 py-3">
         <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus />
+        <BodyCounter repo={repo} text={editing.body} field="comment" long={editLong} />
         <div className="flex gap-2">
-          <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || utf8Length(editing.body) > BODY_MAX} onClick={() => onSave(c.id, editing.body)}>
+          <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX)} onClick={() => onSave(c.id, editing.body)}>
             Save
           </Button>
           <Button variant="ghost" size="sm" onClick={() => onEdit(null)}>Cancel</Button>
@@ -816,7 +837,9 @@ function commentSlots({
     ) }
   }
   if (viewer === null || viewer !== c.author) return {}
-  return { header: <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled} deleteDisabled={deleteDisabled} /> }
+  // A long comment whose rest could not be read is not edited here: the edit would drop the rest.
+  const editBlock = longEditBlock(c.long)
+  return { header: <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled || editBlock !== null} deleteDisabled={deleteDisabled} /> }
 }
 
 /**

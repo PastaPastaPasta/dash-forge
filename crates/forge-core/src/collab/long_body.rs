@@ -187,7 +187,7 @@ impl Collab<'_> {
             repo,
             Role::Writer,
             &format!(
-                "store a text of {} bytes (a field holds {room}; a longer text is stored as a \
+                "post a text of {} bytes (a field holds {room}; a longer text is stored as a \
                  repository artifact, which only maintainers and writers may record)",
                 full.len()
             ),

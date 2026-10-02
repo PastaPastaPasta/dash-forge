@@ -93,6 +93,7 @@ import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
 import { TriageNav } from '@/components/repo/triage-nav'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
+import { useLongCompose } from '@/components/repo/long-body'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
 import { applyTemplate, type IssueTemplate } from '@/lib/view/issue-templates'
@@ -429,6 +430,9 @@ function ComposeIssueDialog({
   const first = useFirstWrite(() => issueFirsts(sdk!, repo, identity!), [open, repoKey(repo), identity ?? ''], open && sdk !== null && identity !== null)
   const cost = composeCost(repo, 'issue', { title: title.trim(), body }, first)
   const bodyBytes = utf8Length(body)
+  // A body over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
+  const longBody = useLongCompose(repo, 'issue', body, { title: title.trim() })
+  const bodyTooLong = longBody.long ? longBody.problem !== null : bodyBytes > BODY_MAX
 
   // Untouched template text follows the pick; anything typed stays (QW4-037).
   const pick = (t: IssueTemplate | null): void => {
@@ -439,7 +443,7 @@ function ComposeIssueDialog({
   }
 
   const submit = async (): Promise<void> => {
-    if (pending || bodyBytes > BODY_MAX || !guard.check(cost, 'collab', 'open an issue')) return
+    if (pending || bodyTooLong || !guard.check(cost, 'collab', 'open an issue')) return
     if (!sdk || !signer || title.trim() === '') return
     setPending(true)
     setError(null)
@@ -483,7 +487,7 @@ function ComposeIssueDialog({
             variant="primary"
             onClick={submit}
             loading={pending}
-            disabled={title.trim() === '' || bodyBytes > BODY_MAX || guard.disabledReason !== null}
+            disabled={title.trim() === '' || bodyTooLong || guard.disabledReason !== null}
             title={guard.disabledReason ?? undefined}
           >
             {identity ? 'Submit issue' : locked ? 'Unlock to submit' : 'Sign in to submit'}
@@ -505,8 +509,8 @@ function ComposeIssueDialog({
           placeholder="What happened, and how to reproduce it."
           links={links}
         />
-        <SealedLimit repo={repo} kind="issue" text={title.trim() + body} />
-        <BodyCounter repo={repo} text={body} field="description" />
+        <SealedLimit repo={repo} kind="issue" text={title.trim() + body} long={longBody} />
+        <BodyCounter repo={repo} text={body} field="description" long={longBody} />
         {template !== null && template.labels.length > 0 ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             This template suggests the labels {template.labels.join(', ')}. Labels are applied after the issue is opened, by {whoCan('canLabel', 'one')}.
