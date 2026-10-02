@@ -1198,8 +1198,8 @@ pub struct ReleaseCreateArgs {
     /// Tag name.
     #[arg(long)]
     pub tag: String,
-    /// Display name.
-    #[arg(long, default_value = "")]
+    /// Display name (`--title` / `-t`, as `gh release create` spells it, works too).
+    #[arg(long, visible_alias = "title", short = 't', default_value = "")]
     pub name: String,
     /// Release notes.
     #[arg(long, default_value = "")]
@@ -1741,7 +1741,25 @@ fn exit_on_parse_error(e: &clap::Error) -> ! {
         e.exit();
     }
     let text = e.to_string();
-    let (u, usage) = usage_error(&text);
+    let (mut u, mut usage) = usage_error(&text);
+    // The command's own usage, not clap's error-time one (QW4-066), and a pointer for an option
+    // `gh` spells differently.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if let Some(line) = infer::usage_line(&args, storage::clone_repo().is_some()) {
+        usage = line;
+    }
+    let unknown = (e.kind() == clap::error::ErrorKind::UnknownArgument)
+        .then(|| e.get(clap::error::ContextKind::InvalidArg))
+        .flatten()
+        .map(ToString::to_string);
+    if let Some(unknown) = unknown {
+        let flag = unknown.split('=').next().unwrap_or_default();
+        if let Some(tip) = infer::flag_tip(&args, flag) {
+            u = UserError::new(codes::USAGE, "invalid arguments")
+                .cause(format!("unexpected argument '{flag}'"))
+                .fix(tip);
+        }
+    }
     if std::env::args().any(|a| a == "--json") {
         errors::print_json(&u.to_json());
     } else {

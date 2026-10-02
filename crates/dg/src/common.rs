@@ -239,6 +239,18 @@ pub struct Reader {
 impl Reader {
     /// Parse `repo`, connect and resolve it; load the identity only if it is private.
     pub async fn open(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
+        Self::open_for(ctx, repo, true).await
+    }
+
+    /// [`Self::open`] for a read of what a private repository keeps in the clear (its members:
+    /// `maintainer` and `writer` documents are not sealed): no identity is loaded for it, so
+    /// anyone can read it signed out, as the web shows it (QW4-054: `dg collab list` stopped
+    /// with E301).
+    pub async fn open_unsealed(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
+        Self::open_for(ctx, repo, false).await
+    }
+
+    async fn open_for(ctx: &crate::context::Ctx, repo: &str, sealed: bool) -> Result<Self> {
         let repo_ref = RepoRef::parse(repo)?;
         let client = ctx.connect().await?;
         let hint = ctx.identity_id_hint();
@@ -255,7 +267,7 @@ impl Reader {
         };
         let owner = signer.as_ref().map(|(_, i)| i.id()).or(hint);
         let repo = resolve_for(&client, owner.as_deref(), &repo_ref).await?;
-        if repo.visibility == Visibility::Private && signer.is_none() {
+        if sealed && repo.visibility == Visibility::Private && signer.is_none() {
             if ctx.identity_path.is_none() {
                 return Err(forge_core::user_error::private_needs_identity(&repo.display()).into());
             }
