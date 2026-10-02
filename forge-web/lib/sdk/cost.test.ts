@@ -18,6 +18,7 @@ import {
   sumPreviews,
   type FirstWrite,
   typicalIssueCredits,
+  withAddressee,
 } from './cost'
 
 const S = STEADY
@@ -217,5 +218,28 @@ describe('the sign-in sheet quotes what the New issue form previews (L-73)', () 
     expect(quoted).toBeGreaterThan(1.5 * steady)
     expect(quoted / 1e11).toBeGreaterThan(0.0011)
     expect(quoted / 1e11).toBeLessThan(0.0014)
+  })
+})
+
+describe('events that name an addressee (QW4-039)', () => {
+  const within = (est: number, actual: number): void => {
+    expect(over(est, actual)).toBeGreaterThanOrEqual(0)
+    expect(over(est, actual)).toBeLessThanOrEqual(0.3)
+  }
+  it('cover what sakura charged for a steady event and for each refId event', () => {
+    // A label removed in a thread that had events: 51.7M (dg, QA wave 4).
+    within(estimateCreateCredits('event', { value: 'bug' }, S), 51_668_000)
+    // An assignment (the identity in `value` and `refId`): previewed 46.9M, charged 67.4M.
+    within(withAddressee(previewCreate('event', { value: t(44) }, S)).credits, 67_400_000)
+    // A thread resolve: previewed 45.6M, charged 66.0M.
+    within(withAddressee(previewCreate('event', {}, S)).credits, 66_000_000)
+    // A review request as the PR's first event: previewed 54.4M, charged 74.0M.
+    within(withAddressee(previewCreate('event', {}, { ...S, target: true })).credits, 74_000_000)
+  })
+  it('raises what must be admitted by the same amount', () => {
+    const plain = previewCreate('event', {}, S)
+    const named = withAddressee(plain)
+    expect(named.admit.budget - plain.admit.budget).toBe(named.credits - plain.credits)
+    expect(named.admit.balance - plain.admit.balance).toBe(named.credits - plain.credits)
   })
 })

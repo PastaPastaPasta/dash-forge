@@ -58,6 +58,23 @@ export const ROLE_NOUN: Readonly<Record<Role, string>> = {
   reader: 'a reader',
 }
 
+/** How a title names a holder of a role ("Triage member added"). */
+export const ROLE_HOLDER: Readonly<Record<Role, string>> = {
+  maintainer: 'Maintainer',
+  writer: 'Writer',
+  triage: 'Triage member',
+  reader: 'Reader',
+}
+
+/**
+ * The toast of a membership change, by the role it grants, removes or changes to (QW4-033: a
+ * `writer` document's own title, "Writer added", is wrong for the triage and reader roles).
+ */
+export function membershipTitle(kind: 'grant' | 'revoke' | 'change', role: Role): string {
+  if (kind === 'change') return `Role changed to ${ROLE_LABEL[role]}`
+  return `${ROLE_HOLDER[role]} ${kind === 'grant' ? 'added' : 'removed'}`
+}
+
 /** One line on what a role may do (the Collaborators picker and badges). */
 export const ROLE_SUMMARY: Readonly<Record<Role, string>> = {
   maintainer: 'Everything a writer can, plus protected branches, settings, releases and moderation.',
@@ -153,6 +170,35 @@ export function capabilitiesOf(role: Role | null | undefined): Capabilities {
   }
 }
 
+/** How a sentence names the holders of a role, plural ("triage members can …"). */
+const ROLE_PLURAL: Readonly<Record<Role, string>> = {
+  maintainer: 'maintainers',
+  writer: 'writers',
+  triage: 'triage members',
+  reader: 'readers',
+}
+
+/** "a, b and c" / "a, b or c". */
+function listOf(words: readonly string[], joiner: 'and' | 'or'): string {
+  if (words.length <= 1) return words[0] ?? ''
+  return `${words.slice(0, -1).join(', ')} ${joiner} ${words[words.length - 1]}`
+}
+
+/**
+ * Who may `cap`, named from the role table (QW4-032: copy that said "maintainers and writers"
+ * where triage can act too): `'plural'` "maintainers, writers and triage members", `'one'`
+ * "a maintainer, writer or triage member". Every role note, dialog and hint names its roles
+ * through this, so the words follow {@link capabilitiesOf}.
+ */
+export function whoCan(cap: keyof Capabilities, form: 'plural' | 'one' = 'plural'): string {
+  const roles = (['maintainer', 'writer', 'triage', 'reader'] as const).filter((r) => capabilitiesOf(r)[cap])
+  if (form === 'plural') return listOf(roles.map((r) => ROLE_PLURAL[r]), 'and')
+  const [first, ...rest] = roles
+  if (first === undefined) return ''
+  // One article for the list: "a maintainer, writer or triage member".
+  return listOf([ROLE_NOUN[first], ...rest.map((r) => ROLE_HOLDER[r].toLowerCase())], 'or')
+}
+
 /** The types whose gate admits role 1 only (`r` maximum 1). */
 export const PUSH_GATED_TYPES: ReadonlySet<string> = new Set(['refUpdate', 'packManifest', 'chunk', 'checkRun'])
 /** The types whose gate admits roles 1 and 2 (`r` 1..2). */
@@ -239,11 +285,13 @@ export function claimedRole(documentType: string, data: Readonly<Record<string, 
 
 /**
  * Why a member of `role` cannot `what` (a tooltip or a note beside a hidden or disabled control),
- * or null for a role this does not limit (a maintainer, a writer, or no membership, which other
- * notes cover). Pass the action `capabilitiesOf(role)` denies.
+ * or null for a role this does not limit: one that has `cap`, the capability the control needs
+ * (QW4-009: triage, who define labels, were told they couldn't), or a maintainer, a writer, or no
+ * membership, which other notes cover.
  */
-export function roleLimit(role: Role | null | undefined, what: string): string | null {
+export function roleLimit(role: Role | null | undefined, cap: keyof Capabilities, what: string): string | null {
   if (role !== 'triage' && role !== 'reader') return null
+  if (capabilitiesOf(role)[cap]) return null
   return `Your role here is ${role}: ${ROLE_NOUN[role]} can't ${what}.`
 }
 

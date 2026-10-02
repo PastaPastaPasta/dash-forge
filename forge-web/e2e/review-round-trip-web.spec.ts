@@ -25,8 +25,8 @@ import { answerStorageQuestion, expectPlatformPreAllowed, idFile, idOf, runAxe, 
  *       merge; OWNER is offered the "bypass rules" step) — then a relay-style `checkRun` is written for the
  *       head (seed_check_run) and the checks row reads "1 passed".
  *   r6. OWNER squash-merges with an edited message and deletes the branch: the PR reads Merged;
- *       main's new tip is ONE commit on the old main with the edited message and
- *       `Co-authored-by`; the fork's branch is gone.
+ *       main's new tip is ONE commit on the old main with the edited message, authored by
+ *       CONTRIB and committed by OWNER; the fork's branch is gone.
  *   r7. Cross-check with the CLI: `dg pr view --json` agrees on state, head, reviews, resolved
  *       threads; a `dg pr comment` shows on the web page.
  */
@@ -147,7 +147,8 @@ test('r2. the contributor opens a PR from the fork', async ({ browser }) => {
   await waitForRepoResolved(page)
   const head = page.locator('#pr-head optgroup[label="Your forks"] option', { hasText: FORK }).first()
   await expect(head).toBeAttached({ timeout: 120_000 })
-  await page.getByLabel('Compare (your branch)').selectOption({ label: `${FORK}: feature/greet` })
+  // Labelled owner-first, `<owner>/<fork>:<branch>` (QW4-030).
+  await page.getByLabel('Compare (your branch)').selectOption((await page.locator('#pr-head option', { hasText: `${FORK}:feature/greet` }).first().getAttribute('value')) ?? '')
   await page.getByLabel('Title', { exact: true }).fill(TITLE)
   await page.getByLabel('Description', { exact: true }).fill('Greets the forge.')
   await page.getByRole('button', { name: 'Create pull request' }).click()
@@ -266,8 +267,10 @@ test('r6. squash and merge with an edited message; the branch is deleted', async
   await expect(panel.getByLabel('Merge method')).toHaveValue('squash')
   const msg = panel.getByLabel('Commit message')
   await expect(msg).toHaveValue(new RegExp(`^${TITLE} \\(#${prNumber}\\)`))
-  await expect(msg).toHaveValue(/Co-authored-by: E2E Contrib <contrib@e2e\.forge\.invalid>/)
-  await msg.fill(`${TITLE} (#${prNumber})\n\nSquashed in the browser (${RUN}).\n\nCo-authored-by: E2E Contrib <contrib@e2e.forge.invalid>`)
+  // The contributor wrote every commit: they author the squash (QW4-008), so no co-author line.
+  await expect(panel.getByTestId('squash-author')).toContainText('E2E Contrib <contrib@e2e.forge.invalid>')
+  await expect(msg).not.toHaveValue(/Co-authored-by/)
+  await msg.fill(`${TITLE} (#${prNumber})\n\nSquashed in the browser (${RUN}).`)
   await expect(panel.getByLabel(/Delete .*feature\/greet after merging/)).toBeChecked()
   // Where the pack goes is offered before the merge starts (pre-allowed: the policy is Platform).
   await expectPlatformPreAllowed(panel)
@@ -297,7 +300,10 @@ test('r6. squash and merge with an edited message; the branch is deleted', async
   expect(execFileSync('git', ['log', '-1', '--format=%P'], { cwd: src, encoding: 'utf8' }).trim()).toBe(mainBefore)
   const body = execFileSync('git', ['log', '-1', '--format=%B'], { cwd: src, encoding: 'utf8' })
   expect(body).toContain(`Squashed in the browser (${RUN}).`)
-  expect(body).toContain('Co-authored-by: E2E Contrib <contrib@e2e.forge.invalid>')
+  // Authored by the PR's author, committed by the merger (QW4-008).
+  expect(execFileSync('git', ['log', '-1', '--format=%an <%ae>|%cn <%ce>'], { cwd: src, encoding: 'utf8' }).trim()).toBe(
+    'E2E Contrib <contrib@e2e.forge.invalid>|E2E Owner <owner@e2e.forge.invalid>',
+  )
   expect(readFileSync(join(src, FILE), 'utf8')).toContain('fn helper() -> &\'static str { "forge" }')
   // The fork's branch is gone.
   expect(git('CONTRIB', WORK, ['ls-remote', `dash://${FORK_SLUG}`, 'refs/heads/feature/greet'])).toBe('')

@@ -220,6 +220,22 @@ impl Session {
         spent_since(&self.client, &self.identity.id(), before).await
     }
 
+    /// Run `write` and measure what it paid: its result, and the credits the signer's balance
+    /// dropped by over it ([`Self::spent_since`]). Every paid write reports its cost
+    /// (QW3-070 / QW4-049).
+    /// `write` makes the write's future only once the balance is read, so the two are never held
+    /// together (each is large).
+    pub async fn metered<T, E, F, W>(&self, write: W) -> Result<(T, u64)>
+    where
+        W: FnOnce() -> F,
+        F: std::future::Future<Output = std::result::Result<T, E>>,
+        anyhow::Error: From<E>,
+    {
+        let before = self.balance().await;
+        let out = write().await?;
+        Ok((out, self.spent_since(before).await))
+    }
+
     /// The signer's balance now (0 when unreadable), for [`Self::spent_since`].
     pub async fn balance(&self) -> u64 {
         self.client
