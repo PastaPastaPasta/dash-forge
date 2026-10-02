@@ -22,9 +22,10 @@
 //!   field, so a single query across the whole network finds every one the target created.
 //!   `starBeat` is one of [`crate::layout::OPTIONAL_TYPES`]: RC2's fused star (C1) drops it and
 //!   the star itself carries the trending week, so a contract without it is audited without it
-//!   and its stars are priced at the fused figure ([`FUSED_STAR_CREDITS`]). No type is ever
-//!   queried against a contract that does not declare it (QW4-001: one missing type used to
-//!   abort the whole audit with E101).
+//!   and its stars are priced at the fused figure ([`FUSED_STAR_CREDITS`]). An optional type
+//!   the loaded contract leaves out is skipped, never queried (QW4-001: querying `starBeat` on
+//!   RC2 aborted the whole audit with E101); any other missing type is still an error, since
+//!   skipping it would understate the total without a word.
 //! * **[`REPO_OWNER_FILTERED_TYPES`]** (`refUpdate`, `protectedRefUpdate`, `packManifest`,
 //!   `consent`) index `repoId` and `$ownerId` together, so each repository the target could
 //!   plausibly have written to is queried with both as equality filters. `chunk` is not queried
@@ -181,8 +182,9 @@ const DEFAULT_BASE_CREDITS: u64 = 50_000_000;
 /// A fused star's create cost (RC2 C1: the star carries the trending window itself, so there is
 /// no `starBeat` beside it): devnet sakura's registration fee probe priced one at 45.49M credits
 /// (`forge-contracts/schema/build.py`'s `fused_star` note), against 55.09M there for a star
-/// and its `starBeat`.
-const FUSED_STAR_CREDITS: u64 = 45_000_000;
+/// and its `starBeat`. A probe, not a measured balance change like the figures above, so
+/// rounded up.
+const FUSED_STAR_CREDITS: u64 = 46_000_000;
 
 /// What one `doc_type` document is estimated to have cost: [`base_credits`], except a fused
 /// star ([`FUSED_STAR_CREDITS`]), which pays for the trending window a separate `starBeat` used
@@ -246,7 +248,7 @@ const GLOBAL_TYPES: &[TypeQuery] = &[
     // order by. Ordering by the filtered field itself (rather than an empty order) matches
     // `Collab::patches_from_source`'s convention for this shape of query. All four are
     // forge-community types; `starBeat` only where the contract still has it (not RC2's fused
-    // star — [`Auditor::declares`]).
+    // star — [`skipped`]).
     TypeQuery {
         doc_type: "star",
         contract: ForgeContract::Community,
@@ -268,6 +270,24 @@ const GLOBAL_TYPES: &[TypeQuery] = &[
         order: &["$ownerId"],
     },
 ];
+
+/// The membership types whose `byMember [memberId]` index says which repositories the target
+/// belongs to ([`Auditor::repo_scope`]).
+const MEMBERSHIP_TYPES: [(ForgeContract, &str); 4] = [
+    (ForgeContract::Core, "maintainer"),
+    (ForgeContract::Core, "writer"),
+    (ForgeContract::Community, "runner"),
+    (ForgeContract::Collab, "repoKey"),
+];
+
+/// Whether `doc_type` is left out of the audit on `contract`: one of the types a contract build
+/// may drop ([`crate::layout::OPTIONAL_TYPES`]: `starBeat` under RC2's fused star) that this
+/// one does. Querying it would be a protocol error that aborts the whole audit (QW4-001). Any
+/// other type is always queried: a contract missing one is the wrong contract, which an error
+/// says better than a silently smaller total.
+fn skipped(contract: &platform::LoadedContract, doc_type: &str) -> bool {
+    crate::layout::OPTIONAL_TYPES.contains(&doc_type) && !contract.has_document_type(doc_type)
+}
 
 /// A type reached with `repoId` and `$ownerId` both filtered server-side, once per repository
 /// in [`Auditor::repo_scope`] (see the module doc). All on forge-core.
@@ -522,19 +542,14 @@ struct Auditor<'a> {
     community: platform::LoadedContract,
     target: [u8; 32],
     identity_id: String,
+    /// Whether forge-community is RC2's fused star (no `starBeat`; the star carries the week).
+    fused_star: bool,
 }
 
 impl Auditor<'_> {
-    /// Whether the loaded `sel` contract declares `doc_type`. A type it doesn't declare (RC2's
-    /// fused star drops `starBeat`) is skipped, not queried: querying it is a protocol error
-    /// that would abort the whole audit (QW4-001).
-    fn declares(&self, sel: ForgeContract, doc_type: &str) -> bool {
-        self.contract(sel).has_document_type(doc_type)
-    }
-
-    /// Whether forge-community is RC2's fused star (no `starBeat`; the star carries the week).
-    fn fused_star(&self) -> bool {
-        !self.declares(ForgeContract::Community, "starBeat")
+    /// Whether `doc_type` on the `sel` contract is left out ([`skipped`]).
+    fn skips(&self, sel: ForgeContract, doc_type: &str) -> bool {
+        skipped(self.contract(sel), doc_type)
     }
 
     fn contract(&self, sel: ForgeContract) -> &platform::LoadedContract {
@@ -561,7 +576,7 @@ impl Auditor<'_> {
     async fn global_pass(&self, totals: &mut Totals) -> Result<BTreeSet<[u8; 32]>> {
         let mut discovered_repos = BTreeSet::new();
         for g in GLOBAL_TYPES {
-            if !self.declares(g.contract, g.doc_type) {
+            if self.skips(g.contract, g.doc_type) {
                 continue;
             }
             let docs = self
@@ -581,7 +596,7 @@ impl Auditor<'_> {
             } else if matches!(g.doc_type, "issue" | "patch") {
                 discovered_repos.extend(docs.iter().filter_map(|d| d.field_bytes32("repoId")));
             }
-            let credits = unit_credits(g.doc_type, self.fused_star());
+            let credits = unit_credits(g.doc_type, self.fused_star);
             for d in &docs {
                 totals.record_priced(g.doc_type, 1, credits, d);
             }
@@ -620,16 +635,11 @@ impl Auditor<'_> {
     /// an issue/patch is genuinely unreachable (the module doc says so).
     async fn repo_scope(&self, discovered: BTreeSet<[u8; 32]>) -> Result<BTreeSet<[u8; 32]>> {
         let mut scope = discovered;
-        for (contract, doc_type) in [
-            (&self.core, "maintainer"),
-            (&self.core, "writer"),
-            (&self.community, "runner"),
-            (&self.collab, "repoKey"),
-        ] {
+        for (contract, doc_type) in MEMBERSHIP_TYPES {
             let docs = self
                 .client
                 .query_all_documents(
-                    contract,
+                    self.contract(contract),
                     doc_type,
                     &[self.target_is("memberId")],
                     &[QueryOrder::asc("memberId")],
@@ -645,7 +655,7 @@ impl Auditor<'_> {
     async fn repo_scoped_pass(&self, repo_id: [u8; 32], totals: &mut Totals) -> Result<()> {
         let in_repo = || QueryFilter::eq("repoId", FieldValue::identifier(repo_id));
         for t in REPO_OWNER_FILTERED_TYPES {
-            if !self.declares(ForgeContract::Core, t.doc_type) {
+            if self.skips(ForgeContract::Core, t.doc_type) {
                 continue;
             }
             let docs = self
@@ -673,7 +683,7 @@ impl Auditor<'_> {
             }
         }
         for t in REPO_SCANNED_TYPES {
-            if !self.declares(t.contract, t.doc_type) {
+            if self.skips(t.contract, t.doc_type) {
                 continue;
             }
             let docs = self
@@ -703,11 +713,13 @@ pub async fn audit(
 ) -> Result<AuditReport> {
     let target = platform::decode_identifier(identity)?;
     let forge = client.target().require_v2()?;
+    let community = client.fetch_contract(&forge.community).await?;
     let auditor = Auditor {
         client,
         core: client.fetch_contract(&forge.core).await?,
         collab: client.fetch_contract(&forge.collab).await?,
-        community: client.fetch_contract(&forge.community).await?,
+        fused_star: crate::collab::v2::fused_star(&community),
+        community,
         target,
         identity_id: platform::encode_identifier(target),
     };
@@ -966,9 +978,30 @@ mod tests {
                 "{doc_type} is audited but {} doesn't declare it",
                 contract.name()
             );
+            // What the audit queries on the committed contracts: every type they declare, and
+            // none they don't.
+            assert_eq!(
+                skipped(&loaded(contract), doc_type),
+                !loaded(contract).has_document_type(doc_type),
+                "{doc_type}"
+            );
         }
-        // The committed build is the fused star: `starBeat` is skipped, not queried.
-        assert!(!loaded(ForgeContract::Community).has_document_type("starBeat"));
+    }
+
+    /// Only an optional type is ever skipped: a contract missing any other type is the wrong
+    /// contract, and its query fails rather than quietly lowering the total.
+    #[test]
+    fn only_an_optional_type_a_contract_leaves_out_is_skipped() {
+        use crate::test_support::rc1::loaded;
+        let community = loaded(ForgeContract::Community);
+        assert!(!skipped(&community, "star"));
+        assert_eq!(
+            skipped(&community, "starBeat"),
+            !community.has_document_type("starBeat")
+        );
+        // Not a forge-community type, and not optional: queried (and refused by the node).
+        assert!(!skipped(&community, "maintainer"));
+        assert!(!skipped(&community, "noSuchType"));
     }
 
     /// Every query this audit sends is served by an index of the committed contracts: its
@@ -1014,12 +1047,7 @@ mod tests {
             served(g.contract, g.doc_type, &["$ownerId"], g.order);
         }
         served(ForgeContract::Community, "profile", &["$ownerId"], &[]);
-        for (contract, doc_type) in [
-            (ForgeContract::Core, "maintainer"),
-            (ForgeContract::Core, "writer"),
-            (ForgeContract::Community, "runner"),
-            (ForgeContract::Collab, "repoKey"),
-        ] {
+        for (contract, doc_type) in MEMBERSHIP_TYPES {
             served(contract, doc_type, &["memberId"], &[]);
         }
         for t in REPO_OWNER_FILTERED_TYPES {
