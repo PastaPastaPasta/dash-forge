@@ -65,6 +65,7 @@ pub mod platform;
 pub mod private;
 pub mod refs;
 pub mod repo;
+pub mod repo_pin;
 pub mod resolve;
 pub mod rules;
 pub mod scope;

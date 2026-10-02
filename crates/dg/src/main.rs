@@ -23,6 +23,7 @@ mod keys;
 mod label;
 mod maint;
 mod milestone;
+mod pin;
 mod pr;
 mod prompt;
 mod publish;

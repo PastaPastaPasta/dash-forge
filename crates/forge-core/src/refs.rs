@@ -259,8 +259,14 @@ pub async fn read_private_refs(
     keyring: &crate::keyring::Keyring,
 ) -> Result<Vec<(String, crate::rules::RefState)>> {
     let configs = &keyring.config().history;
-    Ok(read_private_updates(client, contract, scope, keyring)
-        .await?
+    let state = read_git_state(client, contract, scope, Freshness::Now).await?;
+    // QW4-012: ref updates newer than every one this reader opens, under a key it was never
+    // given (a removed member's clone after a rotation), would leave the refs listed here
+    // silently out of date: `git fetch` said "Already up to date". Refused instead (E307).
+    if let Some(epoch) = newer_unreadable_epoch(&state, keyring) {
+        return Err(crate::keyring::refs_sealed_error(epoch));
+    }
+    Ok(private_updates_of(&state, keyring)
         .into_iter()
         .map(|(name, updates)| {
             let hash_hex = hex::encode(crate::backends::sha256(name.as_bytes()));
@@ -352,6 +358,64 @@ pub fn private_updates_of(state: &GitState, keyring: &crate::keyring::Keyring) -
     by_name
 }
 
+/// How a reader sees one private ref update, for [`stale_by_epoch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateSeen {
+    /// It opens.
+    Readable,
+    /// Sealed under this key epoch, which the reader holds no key for.
+    NoKey(u32),
+    /// Anything else no reader is meant to see (malformed, late, an unrecognised epoch).
+    Hidden,
+}
+
+/// The key epoch of the newest ref update the reader holds no key for, when it is newer than
+/// every update the reader opens (`(created_at, seen)` rows): the refs it can read are then
+/// out of date. `None` when the newest readable update is at least as new (an older epoch it
+/// lacks only hides history it already has a newer state for).
+#[must_use]
+pub fn stale_by_epoch(rows: &[(u64, UpdateSeen)]) -> Option<u32> {
+    let newest_readable = rows
+        .iter()
+        .filter(|(_, s)| *s == UpdateSeen::Readable)
+        .map(|(at, _)| *at)
+        .max();
+    rows.iter()
+        .filter_map(|(at, s)| match s {
+            UpdateSeen::NoKey(e) => Some((*at, *e)),
+            _ => None,
+        })
+        .filter(|(at, _)| newest_readable.is_none_or(|r| *at > r))
+        .max()
+        .map(|(_, epoch)| epoch)
+}
+
+/// [`stale_by_epoch`] over a private repository's ref updates as `keyring` opens them.
+pub fn newer_unreadable_epoch(state: &GitState, keyring: &crate::keyring::Keyring) -> Option<u32> {
+    use crate::private::{DocKind, Opened, Unreadable};
+    let mut rows = Vec::new();
+    for (docs, kind) in [
+        (&state.ref_updates, DocKind::RefUpdate),
+        (&state.protected_ref_updates, DocKind::ProtectedRefUpdate),
+    ] {
+        for d in docs {
+            if !is_well_formed(&content_of(ContentKind::RefUpdate, d), Visibility::Private) {
+                continue;
+            }
+            let seen = match keyring.open(kind, d) {
+                Opened::Readable(_) => UpdateSeen::Readable,
+                Opened::Unreadable(Unreadable::NoKey) => d
+                    .field_u64("epoch")
+                    .and_then(|e| u32::try_from(e).ok())
+                    .map_or(UpdateSeen::Hidden, UpdateSeen::NoKey),
+                _ => UpdateSeen::Hidden,
+            };
+            rows.push((d.created_at.unwrap_or(0), seen));
+        }
+    }
+    stale_by_epoch(&rows)
+}
+
 /// Whether some update's non-null `prevOid` is no update's `newOid` in the same ref — a
 /// parent that should have been read and was not. Parity: forge-web `hasMissingParent`.
 pub fn has_missing_parent(updates: &[RefUpdate]) -> bool {
@@ -374,6 +438,33 @@ pub fn ref_update_from_doc(d: &FetchedDocument, hash_hex: &str, protected: bool)
         protected,
         author: d.owner_id.clone(),
         created_at: d.created_at.unwrap_or(0),
+    }
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::{stale_by_epoch, UpdateSeen::*};
+
+    /// QW4-012: a removed member's clone after a rotation: the updates under the new epoch are
+    /// newer than everything it reads, so its refs are stale and say so.
+    #[test]
+    fn updates_under_a_key_you_lack_newer_than_any_you_read_make_the_refs_stale() {
+        assert_eq!(stale_by_epoch(&[(10, Readable), (20, NoKey(1))]), Some(1));
+        assert_eq!(
+            stale_by_epoch(&[(10, Readable), (20, NoKey(1)), (30, NoKey(2))]),
+            Some(2)
+        );
+        // Nothing readable at all, and a newer sealed update: stale too.
+        assert_eq!(stale_by_epoch(&[(5, NoKey(3))]), Some(3));
+    }
+
+    #[test]
+    fn an_older_epoch_you_lack_or_hidden_updates_change_nothing() {
+        // A member's newest update is readable: an older epoch it lacks hides only history.
+        assert_eq!(stale_by_epoch(&[(10, NoKey(0)), (20, Readable)]), None);
+        // Late or malformed updates are no reader's to see.
+        assert_eq!(stale_by_epoch(&[(10, Readable), (20, Hidden)]), None);
+        assert_eq!(stale_by_epoch(&[]), None);
     }
 }
 
