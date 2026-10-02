@@ -2995,11 +2995,7 @@ fn role_denied(
     role: forge_core::rules::v2::Role,
 ) -> Denied {
     let display = repo.display();
-    let who = if role == forge_core::rules::v2::Role::Triage {
-        "a triage member"
-    } else {
-        "a reader"
-    };
+    let who = role.noun();
     Denied {
         error: UserError::new(
             codes::NOT_A_WRITER,

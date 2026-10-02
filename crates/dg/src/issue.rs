@@ -216,6 +216,11 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         (Flag::Lock, true) => "; then only members can comment",
         _ => "",
     };
+    // Who may make the change: a pin is a writer's, a lock triage's too (QW4-032).
+    let who = match flag {
+        Flag::Pin => "maintainers and writers",
+        Flag::Lock => "maintainers, writers and triage members",
+    };
     let collab = s.collab();
     // Already locked (or unlocked): nothing to write, as `dg pr lock` says.
     if flag == Flag::Lock
@@ -234,7 +239,7 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
     };
     let price = ctx.usd_price();
     ctx.confirm_or_cancel(&format!(
-        "{verb} issue #{number}? ({doc}, {}; members only{note})",
+        "{verb} issue #{number}? ({doc}, {}; {who}{note})",
         cost_line(quote, price)
     ))?;
     let ((key, id), spent) = s
@@ -1004,8 +1009,8 @@ async fn refuse_if_locked(s: &Session, number: u64, target_id: &str) -> Result<(
         forge_core::user_error::codes::NOT_A_WRITER,
         format!("comment not posted: issue #{number} is locked to members"),
     )
-    .cause("a maintainer or writer locked the conversation")
-    .fix("ask a maintainer to unlock it")
+    .cause("a member locked the conversation: only the repository's members can comment on it now")
+    .fix("ask a maintainer, writer or triage member of the repository to unlock it")
     .note("checked before anything was signed; nothing was written or paid")
     .into())
 }

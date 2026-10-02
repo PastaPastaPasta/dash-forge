@@ -769,10 +769,14 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
     } else if needs == "owner" {
         // An edit: consensus admits a document replace from its owner only, members included.
         u.fix("only the author can edit it; comment instead, or ask them to make the change")
-    } else if matches!(needs, "writer" | "triage") && reason.starts_with("you are a ") {
-        // A triage member or reader (RC2 member roles) is a member already: a role change.
+    } else if let Some(need) =
+        crate::rules::v2::Role::parse(needs).filter(|_| crate::members::refused_member(reason))
+    {
+        // A member already ("you are a writer of …", `role_refusal`): no acceptance to run,
+        // only a role the owner grants (QW4-052: a writer was sent to `dg collab accept`).
+        let noun = need.noun();
         u.fix(format!(
-            "ask the owner to change your role: `dg collab add {repo} <your identity id> --role {needs}`"
+            "ask the owner to make you {noun}: `dg collab add {repo} <your identity id> --role {needs}`"
         ))
     } else if matches!(needs, "writer" | "triage" | "maintainer") {
         u.fix(join_fix(&repo, "<your identity id>", needs))
@@ -790,7 +794,8 @@ pub const FIX_FULL_KEY_LOGIN: &str = "`dg auth login <identity file> --replace <
 
 /// The E601 way in: the owner's add, and before it, for someone not a member yet, their own
 /// consent (`member_consent`: a `member` document naming the add is refused without it, E604;
-/// QW-039). `who` is the member's id as the reader should type it.
+/// QW-039). `who` is the member's id as the reader should type it. For a signer known to be a
+/// member already, [`not_permitted`] names the role to ask for instead (QW4-052).
 pub fn join_fix(repo: &str, who: &str, role: &str) -> String {
     format!(
         "not a member yet? run `dg collab accept {repo}` first (your consent, as the web's Accept; the add is refused without it), then ask the owner to run `dg collab add {repo} {who} --role {role}`"
@@ -1270,7 +1275,7 @@ const RULE_EXPLANATIONS: &[(&str, &str)] = &[
     ("hasBody", "a comment needs a body (sealed in a private repository)"),
     ("noParentSet", "noParent is reserved and is never set"),
     ("rangeOrder", "a range comment needs a line, and its start line may not follow it"),
-    ("lockGate", "the thread is locked: only maintainers and writers (writing with asMember) can post"),
+    ("lockGate", "the thread is locked: only members of the repository, of any role (writing with asMember), can post"),
     ("memberVerdict", "approve and request changes (verdicts 1 and 2) are a member's and need asMember; a non-member's are verdicts 4 and 5, without asMember"),
     // forge-community
     ("publicOnly", "webhooks are for public repositories only"),
@@ -2286,6 +2291,64 @@ mod tests {
         assert_eq!(u.message, "issue not closed: you cannot close issue #3");
         assert!(u.fix[0].contains("dg collab add alice/project"), "{u:?}");
         assert!(u.note.as_deref().unwrap().contains("nothing was written"));
+    }
+
+    /// QW4-052: a member refused for their role is asked to get the role, never sent to
+    /// `dg collab accept` as if they were not a member yet.
+    #[test]
+    fn a_member_refused_for_their_role_is_told_the_role_to_ask_for() {
+        let ctx = ErrorContext {
+            goal: Some("nothing hidden"),
+            repo: Some("alice/project"),
+            ..ErrorContext::default()
+        };
+        for (reason, needs, fix) in [
+            (
+                "you are a writer of alice/project; this needs a maintainer",
+                "maintainer",
+                "ask the owner to make you a maintainer: `dg collab add alice/project <your identity id> --role maintainer`",
+            ),
+            (
+                "you are a reader of alice/project: readers can read …; this needs a maintainer",
+                "maintainer",
+                "ask the owner to make you a maintainer: `dg collab add alice/project <your identity id> --role maintainer`",
+            ),
+            (
+                "you are a triage member of alice/project: triage can …",
+                "writer",
+                "ask the owner to make you a writer: `dg collab add alice/project <your identity id> --role writer`",
+            ),
+            (
+                "you are a reader of alice/project: readers can …",
+                "triage",
+                "ask the owner to make you a triage member: `dg collab add alice/project <your identity id> --role triage`",
+            ),
+        ] {
+            let u = core_chain(
+                CoreError::NotPermitted {
+                    action: "hide issue #1".into(),
+                    reason: reason.into(),
+                    needs: needs.into(),
+                },
+                &ctx,
+            );
+            assert_eq!(u.code, "E601");
+            assert_eq!(u.fix, vec![fix.to_string()], "{reason}");
+            assert!(!u.fix[0].contains("collab accept"), "{u:?}");
+        }
+        // Someone who is not a member still gets the way in, acceptance first.
+        let u = core_chain(
+            CoreError::NotPermitted {
+                action: "hide issue #1".into(),
+                reason: "you are not a member of alice/project".into(),
+                needs: "maintainer".into(),
+            },
+            &ctx,
+        );
+        assert!(
+            u.fix[0].starts_with("not a member yet? run `dg collab accept alice/project` first"),
+            "{u:?}"
+        );
     }
 
     #[test]

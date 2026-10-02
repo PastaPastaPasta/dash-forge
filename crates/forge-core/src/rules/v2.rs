@@ -136,6 +136,25 @@ impl Role {
             Role::Reader => "reader",
         }
     }
+
+    /// How a sentence names one holder of the role ("a triage member").
+    #[must_use]
+    pub fn noun(self) -> &'static str {
+        match self {
+            Role::Maintainer => "a maintainer",
+            Role::Writer => "a writer",
+            Role::Triage => "a triage member",
+            Role::Reader => "a reader",
+        }
+    }
+
+    /// The role named by [`Self::as_str`], or `None` for any other text.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Role> {
+        [Role::Maintainer, Role::Writer, Role::Triage, Role::Reader]
+            .into_iter()
+            .find(|r| r.as_str() == name)
+    }
 }
 
 impl std::fmt::Display for Role {

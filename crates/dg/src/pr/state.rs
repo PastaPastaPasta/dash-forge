@@ -337,7 +337,7 @@ pub async fn set_locked(ctx: &Ctx, repo: &str, number: u64, lock: bool) -> Resul
         return Ok(());
     }
     ctx.confirm_or_cancel(&format!(
-        "{verb} the conversation of PR #{number}? (one transition, {}; members only)",
+        "{verb} the conversation of PR #{number}? (one transition, {}; maintainers, writers and triage members)",
         cost_line(crate::quote::TRANSITION, ctx.usd_price())
     ))?;
     let collab = pr.s.collab();

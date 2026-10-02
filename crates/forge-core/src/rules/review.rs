@@ -237,7 +237,7 @@ pub fn fold_pr_review_v2(
 pub struct Policy {
     /// Approvals a merge needs (0–10).
     pub required_approvals: u32,
-    /// 0: any member's approval counts; 1: maintainers' only.
+    /// 0: maintainers' and writers' approvals count (never triage's or a reader's); 1: maintainers' only.
     #[serde(default)]
     pub approver_role: u8,
     /// Passing checks required (informational to [`meets_policy`], which judges approvals).

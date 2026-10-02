@@ -147,6 +147,23 @@ pub fn state_action_needs(action: crate::rules::v2::StateAction) -> Role {
     }
 }
 
+/// How a role refusal names the signer's own role ("you are a writer of alice/proj"). Every
+/// refusal of a member for their role starts with it ([`role_limits`], `role_refusal`), so the
+/// E601 fix can tell a member, who needs another role, from a stranger, who must accept first
+/// ([`refused_member`]).
+#[must_use]
+pub fn you_are(role: Role, repo: &RepoRef) -> String {
+    format!("you are {} of {}", role.noun(), repo.display())
+}
+
+/// Whether a refusal `reason` names the signer's own role ([`you_are`]): they are a member.
+#[must_use]
+pub fn refused_member(reason: &str) -> bool {
+    [Role::Maintainer, Role::Writer, Role::Triage, Role::Reader]
+        .iter()
+        .any(|r| reason.starts_with(&format!("you are {} of ", r.noun())))
+}
+
 /// What a triage member or reader of `repo` may and may not do: the reason shown when a
 /// role-gated write is refused before signing. `None` for a maintainer or writer.
 #[must_use]
@@ -154,16 +171,16 @@ pub fn role_limits(role: Role, repo: &RepoRef) -> Option<String> {
     match role {
         Role::Maintainer | Role::Writer => None,
         Role::Triage => Some(format!(
-            "you are a triage member of {}: triage can close, reopen and lock, label, assign, \
-             set milestones, request reviews and resolve threads, but cannot push, merge, mark \
-             draft or ready, retarget, dismiss reviews, update heads, pin or post check runs",
-            repo.display()
+            "{}: triage can close, reopen and lock, label, assign, set milestones, request \
+             reviews and resolve threads, but cannot push, merge, mark draft or ready, \
+             retarget, dismiss reviews, update heads, pin or post check runs",
+            you_are(role, repo)
         )),
         Role::Reader => Some(format!(
-            "you are a reader of {}: readers can read the private repository and comment, \
-             review and open issues and pull requests, but cannot change state (push, label, \
-             assign, close or reopen, set milestones or post check runs)",
-            repo.display()
+            "{}: readers can read the private repository and comment, review and open issues \
+             and pull requests, but cannot change state (push, label, assign, close or reopen, \
+             set milestones or post check runs)",
+            you_are(role, repo)
         )),
     }
 }

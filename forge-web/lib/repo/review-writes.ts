@@ -596,7 +596,7 @@ async function submitWith(
 export function policyData(policy: Policy): Record<string, unknown> {
   if (!Number.isInteger(policy.requiredApprovals) || policy.requiredApprovals < 0 || policy.requiredApprovals > 10) throw new Error('a policy requires 0-10 approvals')
   const role = policy.approverRole ?? 0
-  if (role !== 0 && role !== 1) throw new Error('approverRole is 0 (any member) or 1 (maintainers)')
+  if (role !== 0 && role !== 1) throw new Error('approverRole is 0 (maintainers and writers) or 1 (maintainers)')
   const methods = policy.mergeMethods ?? 0
   if (!Number.isInteger(methods) || methods < 0 || methods > 15) throw new Error('mergeMethods is a 4-bit set (0-15)')
   const checks = policy.requiredChecks ?? []

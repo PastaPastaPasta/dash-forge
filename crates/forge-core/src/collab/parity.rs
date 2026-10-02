@@ -247,7 +247,7 @@ impl Collab<'_> {
         Ok(fold_milestones_v2(&docs, items))
     }
 
-    /// Put `target` in milestone `title` (`None`: take it out). Members only.
+    /// Put `target` in milestone `title` (`None`: take it out). Maintainers, writers and triage members.
     pub async fn set_milestone(
         &self,
         repo: &RepoRef,
@@ -264,7 +264,7 @@ impl Collab<'_> {
 
     // --- pin / lock --------------------------------------------------------------------
 
-    /// Pin or unpin `target` on the repo's lists. Members only.
+    /// Pin or unpin `target` on the repo's lists. Maintainers and writers.
     pub async fn set_pinned(
         &self,
         repo: &RepoRef,
@@ -280,8 +280,9 @@ impl Collab<'_> {
     }
 
     /// Lock or unlock `target`'s conversation: a `transition` (kinds 3/4 on an issue, 18/19 on
-    /// a PR, `delta` ±16). Members only (`g_memberLock`). On a locked conversation consensus
-    /// admits a new comment or review only with `asMember` (`lockGate`), so only members post.
+    /// a PR, `delta` ±16). Maintainers, writers and triage members (`g_memberLock`, `r` 1..2).
+    /// On a locked conversation consensus admits a new comment or review only with `asMember`
+    /// (`lockGate`, any role), so only members post.
     /// Returns the transition's id.
     pub async fn set_locked(
         &self,

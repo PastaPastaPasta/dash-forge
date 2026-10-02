@@ -434,6 +434,17 @@ fn policy_json(p: &Policy) -> Value {
 /// The policy line every surface prints next to it.
 const POLICY_NOTE: &str = "a client rule: Forge clients apply it to their merge controls and a maintainer can override it; nothing at consensus requires approvals";
 
+/// Whose approvals a policy counts, as `policy show` says it: `approver_role` 1 counts
+/// maintainers only, 0 maintainers and writers. A triage member's or reader's approval never
+/// counts (QW4-053: this said "any member").
+fn approvers(approver_role: u8) -> &'static str {
+    if approver_role == 1 {
+        "maintainers only"
+    } else {
+        "maintainers and writers"
+    }
+}
+
 /// `dg repo policy show | set`.
 pub async fn policy(ctx: &Ctx, cmd: &RepoPolicyCommand) -> Result<()> {
     match cmd {
@@ -450,13 +461,9 @@ pub async fn policy(ctx: &Ctx, cmd: &RepoPolicyCommand) -> Result<()> {
                     None => println!("no branch policy: merges need no approvals"),
                     Some(p) => {
                         println!(
-                            "required approvals: {}{}",
+                            "required approvals: {} ({})",
                             p.required_approvals,
-                            if p.approver_role == 1 {
-                                " (maintainers only)"
-                            } else {
-                                " (any member)"
-                            }
+                            approvers(p.approver_role)
                         );
                         println!("require checks:     {}", p.require_checks);
                         println!(
@@ -739,7 +746,17 @@ fn capitalize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{full_pattern, method_names, parse_methods, parse_topics, required_checks};
+    use super::{
+        approvers, full_pattern, method_names, parse_methods, parse_topics, required_checks,
+    };
+
+    /// QW4-053: `policy show` names whose approvals count, as the web and the guide do; a
+    /// triage member's or reader's never does.
+    #[test]
+    fn policy_show_names_the_counted_approvers() {
+        assert_eq!(approvers(0), "maintainers and writers");
+        assert_eq!(approvers(1), "maintainers only");
+    }
 
     /// QW3-066: required checks by name, each pinned to a source or none pinned.
     #[test]

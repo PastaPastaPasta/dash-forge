@@ -137,7 +137,7 @@ pub enum Command {
     /// Milestones (put an issue in one with `dg issue milestone`).
     #[command(subcommand)]
     Milestone(MilestoneCommand),
-    /// Repository members (writers and maintainers).
+    /// Repository members (maintainers, writers, triage members and readers).
     #[command(subcommand)]
     Collab(CollabCommand),
     /// Cost estimates and spend audits.
@@ -463,7 +463,7 @@ pub struct RepoPolicySetArgs {
     /// Approvals a merge needs (0-10).
     #[arg(long = "required-approvals")]
     pub required_approvals: Option<u32>,
-    /// Count only maintainers' approvals (`true`), or every member's (`false`).
+    /// Count only maintainers' approvals (`true`), or maintainers' and writers' (`false`; triage and reader approvals never count).
     #[arg(long = "maintainers-only")]
     pub maintainers_only: Option<bool>,
     /// Require passing checks.
@@ -632,7 +632,7 @@ pub enum IssueCommand {
         #[arg(long)]
         remove: Option<String>,
     },
-    /// Assign identities (ids or DPNS names; `me` for yourself) to an issue. Members only.
+    /// Assign identities (ids or DPNS names; `me` for yourself) to an issue. Maintainers, writers and triage members.
     Assign {
         /// The repository (`owner/name`).
         repo: String,
@@ -642,7 +642,7 @@ pub enum IssueCommand {
         #[arg(required = true)]
         who: Vec<String>,
     },
-    /// Remove assignees from an issue. Members only.
+    /// Remove assignees from an issue. Maintainers, writers and triage members.
     Unassign {
         /// The repository (`owner/name`).
         repo: String,
@@ -652,7 +652,7 @@ pub enum IssueCommand {
         #[arg(required = true)]
         who: Vec<String>,
     },
-    /// Put an issue in a milestone, or take it out with `--clear`. Members only.
+    /// Put an issue in a milestone, or take it out with `--clear`. Maintainers, writers and triage members.
     Milestone {
         /// The repository (`owner/name`).
         repo: String,
@@ -665,7 +665,7 @@ pub enum IssueCommand {
         #[arg(long, conflicts_with = "title")]
         clear: bool,
     },
-    /// Pin an issue to the top of the repository's issue list (unpin with `--off`). Members only.
+    /// Pin an issue to the top of the repository's issue list (unpin with `--off`). Maintainers and writers.
     Pin {
         /// The repository (`owner/name`).
         repo: String,
@@ -675,7 +675,7 @@ pub enum IssueCommand {
         #[arg(long)]
         off: bool,
     },
-    /// Lock an issue's conversation to members (unlock with `--off`). Members only.
+    /// Lock an issue's conversation to members (unlock with `--off`). Maintainers, writers and triage members.
     Lock {
         /// The repository (`owner/name`).
         repo: String,
@@ -713,7 +713,7 @@ pub enum MilestoneCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
-    /// Define (or redefine: the newest per title wins) a milestone. Maintainers and writers.
+    /// Define (or redefine: the newest per title wins) a milestone. Maintainers, writers and triage members.
     Create {
         /// The repository (`owner/name`).
         repo: String,
@@ -864,7 +864,7 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
     },
-    /// Lock a pull request's conversation to members (unlock with `--off`). Members only.
+    /// Lock a pull request's conversation to members (unlock with `--off`). Maintainers, writers and triage members.
     Lock {
         /// The repository (`owner/name`).
         repo: String,

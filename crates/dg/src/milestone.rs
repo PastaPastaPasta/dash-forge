@@ -115,7 +115,7 @@ async fn define(
     let price = ctx.usd_price();
     let quote = crate::quote::milestone_definition((title.len() + description.len()) as u64);
     ctx.confirm_or_cancel(&format!(
-        "Define milestone {title:?} in {}? (one document, {}; maintainers and writers)",
+        "Define milestone {title:?} in {}? (one document, {}; maintainers, writers and triage members)",
         s.repo.display(),
         cost_line(quote, price)
     ))?;

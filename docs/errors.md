@@ -333,6 +333,8 @@ The helper checks this before building or paying for anything and refuses early 
 
 Fix: give your consent first, once: `dg collab accept <owner>/<repo>` (or **Accept** in the web app). Then ask the owner to add you: `dg collab add <owner>/<repo> <your identity id> --role writer`. A membership names the member's own consent, so an add before the accept is refused ([E604](#e604): "has not accepted membership"). Or push to a repository of your own.
 
+Already a member, but your role can't make this write (a writer hiding a comment, a triage member pinning, a reader labelling)? `dg` refuses before signing and says so: *"you are a writer of `<repo>`; this needs a maintainer"*. You have already accepted, so the fix is only to ask the owner for the role the write needs: `dg collab add <owner>/<repo> <your identity id> --role maintainer` (or `writer`, `triage`).
+
 ## E602 (retired)
 
 **Write access suspended.** Retired with forge-v1 (2026-09-26): it reported a frozen WRITE or MAINTAIN token on a per-repository contract. forge-v2 has no suspend; removing a member revokes access at once (E601). The number stays reserved.
