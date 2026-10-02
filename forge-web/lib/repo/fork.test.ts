@@ -5,11 +5,27 @@
  * refs are copied once without moving the fork's own.
  */
 
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ForgeIds } from '../deployments'
 import type { RefState } from '../rules'
-import { forkManifest, forkableRef, planManifests, planRefs, type ForkCopy } from './fork'
+
+/** What the sync wrote, in order: manifests by pack hash, then the ref update. */
+const written: unknown[] = []
+vi.mock('./push', async (orig) => ({
+  ...(await orig<typeof import('./push')>()),
+  writePackManifest: vi.fn(async (_sdk: unknown, _auth: unknown, _repo: unknown, m: { packHash: string }, intent: string) => {
+    written.push({ manifest: m.packHash, intent })
+    return { documentId: 'm' }
+  }),
+  writeRefUpdate: vi.fn(async (_sdk: unknown, _auth: unknown, _repo: unknown, input: unknown, options: unknown) => {
+    written.push({ ref: input, options })
+    return { documentId: 'r', documentType: 'refUpdate' }
+  }),
+}))
+
+const { forkManifest, forkableRef, planManifests, planRefs, planSyncManifests, recordedPacks, syncFork } = await import('./fork')
+type ForkCopy = import('./fork').ForkCopy
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' }
 const PARENT = 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1'
@@ -126,5 +142,54 @@ describe('plan_refs', () => {
       ],
     }
     expect(planRefs([ref('refs/heads/race', diverged)], [])).toEqual([{ refName: 'refs/heads/race', oid: 'ee' }])
+  })
+})
+
+describe('sync fork (P1-4)', () => {
+  beforeEach(() => {
+    written.length = 0
+  })
+  const parentRepo = { forge: FORGE, repoId: PARENT, ownerId: UPLOADER, name: 'proj', visibility: 'public' } as const
+  const forkRepo = { forge: FORGE, repoId: 'FORK', ownerId: 'ME', name: 'proj', visibility: 'public' } as const
+
+  it("records only the parent's packs the fork lacks, whoever recorded the fork's", () => {
+    const parent = [manifest('old', 1, 0, 1, []), manifest('new', 2, 0, 5, []), manifest('ext', 3, 1, 6, [])]
+    // The fork records pack 1 (copied at fork time by a writer, not the syncer), and pack 2 by a
+    // former writer, whose copy is not relied on.
+    const fork = [
+      manifest('f1', 1, 1, 2, ['platform://x'], { uploader: 'SOMEONE', ownerRole: 'writer' }),
+      manifest('f2', 2, 1, 3, ['https://down.example/p2'], { uploader: 'GONE', ownerRole: null }),
+      manifest('loc', 9, 0, 3, [], { kind: 1 }),
+    ]
+    expect([...recordedPacks(fork as never)]).toEqual(['01'.repeat(32)])
+    const plan = planSyncManifests(parentRepo as never, parent as never, fork as never)
+    expect(plan.manifests.map((m) => m.packHash)).toEqual(['02'.repeat(32)])
+    expect(plan.unreferenceable).toEqual(['03'.repeat(32)])
+  })
+
+  it('writes the manifests, then one ref update naming the old tip', async () => {
+    const A = 'a'.repeat(40)
+    const B = 'b'.repeat(40)
+    const plan = planSyncManifests(parentRepo as never, [manifest('new', 2, 0, 5, [])] as never, [])
+    const progress: string[] = []
+    await syncFork({} as never, {} as never, forkRepo as never, { refName: 'refs/heads/main', forkTip: A, parentTip: B, plan, intent: 'i' }, (d, t) => progress.push(`${d}/${t}`))
+    expect(written).toEqual([
+      { manifest: '02'.repeat(32), intent: `i:manifest:${'02'.repeat(32)}` },
+      { ref: { refName: 'refs/heads/main', newOid: B, prevOid: A }, options: { intent: `i:ref:${B}` } },
+    ])
+    expect(progress).toEqual(['1/2', '2/2'])
+  })
+
+  it('creates a missing branch with no previous tip', async () => {
+    const B = 'b'.repeat(40)
+    await syncFork({} as never, {} as never, forkRepo as never, { refName: 'refs/heads/main', forkTip: null, parentTip: B, plan: { manifests: [], unreferenceable: [] }, intent: 'i' })
+    expect(written).toEqual([{ ref: { refName: 'refs/heads/main', newOid: B }, options: { intent: `i:ref:${B}` } }])
+  })
+
+  it('writes nothing when a pack has no copy a fork could name', async () => {
+    await expect(
+      syncFork({} as never, {} as never, forkRepo as never, { refName: 'refs/heads/main', forkTip: null, parentTip: 'b'.repeat(40), plan: { manifests: [], unreferenceable: ['03'] }, intent: 'i' }),
+    ).rejects.toThrow(/no copy a fork can reference/)
+    expect(written).toEqual([])
   })
 })

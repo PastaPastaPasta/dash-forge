@@ -32,6 +32,7 @@ mod quote;
 mod release;
 mod repo;
 mod repo_settings;
+mod repo_sync;
 mod secret_out;
 mod storage;
 mod storage_wizard;
@@ -300,13 +301,30 @@ pub enum RepoCommand {
         dir: Option<std::path::PathBuf>,
     },
     /// Fork a repo: a new repo with `forkOf`, the parent's packs recorded by reference
-    /// (nothing re-uploaded) and its refs copied.
+    /// (nothing re-uploaded) and its branches and tags copied.
     Fork {
         /// The repository (`owner/name`).
         repo: String,
         /// The fork's name (default: the parent's).
         #[arg(long)]
         name: Option<String>,
+        /// Copy the parent's default branch only (GitHub's "Copy the main branch only"), not
+        /// every branch and tag: one ref update instead of one per branch and tag.
+        #[arg(long)]
+        default_branch_only: bool,
+    },
+    /// Sync a fork with the repository it was forked from (GitHub's "Sync fork"): fast-forward
+    /// its default branch to the parent's default branch, or `--branch` to the parent's branch
+    /// of the same name. The parent's new packs are recorded by reference (nothing uploaded),
+    /// then one ref update moves the branch. A branch with commits of its own is never moved
+    /// (E105 names the pull request that merges the parent's instead). Maintainers and writers
+    /// of the fork; a protected branch, maintainers.
+    Sync {
+        /// The fork (`owner/name`).
+        repo: String,
+        /// The fork's branch to sync (default: its default branch).
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// Star a repo. A new star also counts toward Trending (one more small document, up to
     /// 0.00023 DASH) unless `--no-trending` or `trending = false` in config.toml. Where the

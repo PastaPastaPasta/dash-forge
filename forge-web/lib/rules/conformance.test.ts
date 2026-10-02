@@ -34,12 +34,14 @@ import {
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import { avatarSpec, checkProfile, type ProfileInput } from './profile'
+import { planRefs, syncDecision } from '../repo/fork'
 import type {
   ConfigDoc,
   Event,
   FlatIndex,
   IsAncestor,
   MergeBaseTips,
+  RefState,
   RefUpdate,
   TreeDiff,
 } from './types'
@@ -303,6 +305,22 @@ function runCaseV2(v: Vector): void {
         readonly memberships: readonly v2.Membership[]
       }
       expect(v2.trustedUpstreamNumber(inp.upstreamNumber, inp.author, inp.repoOwner, new v2.RoleOracle(inp.memberships))).toEqual(v.expected)
+      break
+    }
+    case 'fork_sync': {
+      onlyKeys(v, ['forkTip', 'parentTip', 'forkInParent', 'parentInFork'])
+      const i = v.input as { forkTip: string | null; parentTip: string | null; forkInParent: boolean; parentInFork: boolean }
+      expect(syncDecision(i.forkTip, i.parentTip, i.forkInParent, i.parentInFork)).toEqual(v.expected)
+      break
+    }
+    case 'fork_refs': {
+      onlyKeys(v, ['parent', 'fork', 'onlyBranch'], { parent: ['refName', 'state'], fork: ['refName', 'state'] })
+      const i = v.input as {
+        parent: readonly { refName: string; state: RefState }[]
+        fork: readonly { refName: string; state: RefState }[]
+        onlyBranch: string | null
+      }
+      expect(planRefs(i.parent, i.fork, i.onlyBranch ?? undefined)).toEqual(v.expected)
       break
     }
     case 'pack_copies': {

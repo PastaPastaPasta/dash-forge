@@ -1569,6 +1569,80 @@ mod tests {
         ref_key: Option<String>,
     }
 
+    /// `fork_sync`: the tips and their ancestry (`crate::fork::sync_decision`).
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ForkSyncInput {
+        fork_tip: Option<String>,
+        parent_tip: Option<String>,
+        fork_in_parent: bool,
+        parent_in_fork: bool,
+    }
+
+    /// One ref of a `fork_refs` side.
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ForkRef {
+        ref_name: String,
+        state: RefState,
+    }
+
+    /// `fork_refs`: the parent's and the fork's refs (`crate::fork::plan_refs`).
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ForkRefsInput {
+        parent: Vec<ForkRef>,
+        fork: Vec<ForkRef>,
+        only_branch: Option<String>,
+    }
+
+    /// A planned fork ref, as `expected` names it.
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PlannedRef {
+        ref_name: String,
+        oid: String,
+    }
+
+    /// The fork cases (`fork_sync__*`, `fork_refs__*`): what a fork copies, and what a sync does.
+    fn run_fork_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "fork_sync" => {
+                let inp: ForkSyncInput = input(v);
+                let got = crate::fork::sync_decision(
+                    inp.fork_tip.as_deref(),
+                    inp.parent_tip.as_deref(),
+                    inp.fork_in_parent,
+                    inp.parent_in_fork,
+                );
+                assert_eq!(
+                    got,
+                    expected::<crate::fork::SyncDecision>(v),
+                    "vector `{ctx}`"
+                );
+            }
+            "fork_refs" => {
+                let inp: ForkRefsInput = input(v);
+                let side = |refs: &[ForkRef]| -> Vec<(String, RefState)> {
+                    refs.iter()
+                        .map(|r| (r.ref_name.clone(), r.state.clone()))
+                        .collect()
+                };
+                let got: Vec<PlannedRef> = crate::fork::plan_refs(
+                    &side(&inp.parent),
+                    &side(&inp.fork),
+                    inp.only_branch.as_deref(),
+                )
+                .into_iter()
+                .map(|(ref_name, oid)| PlannedRef { ref_name, oid })
+                .collect();
+                assert_eq!(got, expected::<Vec<PlannedRef>>(v), "vector `{ctx}`");
+            }
+            other => panic!("vector `{ctx}`: not a fork case `{other}`"),
+        }
+    }
+
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct PackCopiesInput {
@@ -2150,6 +2224,7 @@ mod tests {
                 run_transition_case(v);
             }
             "pack_copies" => run_pack_copies(v),
+            "fork_sync" | "fork_refs" => run_fork_case(v),
             "v2_pack_list" => {
                 let inp: V2PackListInput = input(v);
                 let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());

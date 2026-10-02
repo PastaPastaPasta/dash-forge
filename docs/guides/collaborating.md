@@ -242,7 +242,7 @@ A pull request is a `patch` document in the **base** repository. It points at th
 **1. Have a repository you can push to.** If you are a writer on the base repository, push a branch to it directly and skip to step 3. Otherwise, fork it:
 
 ```sh
-dg repo fork <owner>/project            # or --name <another name>
+dg repo fork <owner>/project            # or --name <another name>; --default-branch-only
 ```
 
 ```text
@@ -254,7 +254,23 @@ dg repo fork <owner>/project            # or --name <another name>
   next:    push a branch to dash://<you>/project, then `dg pr create <owner>/project`
 ```
 
-A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork. In the web, the fork browses through the parent's published browse and history index, so no visitor rebuilds it in the browser; your own pushes to the fork index just the packs they add.
+A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. It copies the parent's branches and tags; `--default-branch-only` copies the default branch alone (GitHub's "Copy the main branch only", also a checkbox in the web's fork dialog), one ref update instead of one per branch and tag. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork. In the web, the fork browses through the parent's published browse and history index, so no visitor rebuilds it in the browser; your own pushes to the fork index just the packs they add.
+
+**Keeping a fork up to date.** When the parent moves on, sync the fork, as GitHub's **Sync fork** does:
+
+```sh
+dg repo sync <you>/project              # the default branch; --branch <name> for another
+```
+
+```text
+Sync <you>/project:main with <owner>/project:main: fast-forward 8f3e2a1c9d0b → 41c07b5e2a9f (3 commit(s))
+  2 pack manifest(s) by reference, nothing re-uploaded, + 1 ref update   ~0.0027 DASH
+✓ synced <you>/project:main with <owner>/project:main: now at 41c07b5e2a9f (3 new commit(s))
+```
+
+The fork's default branch follows the parent's default branch; another branch (`--branch`) follows the parent's branch of the same name. A sync only fast-forwards: it records the parent's new packs by reference (nothing is uploaded) and moves the branch with one ref update. When your branch already has the parent's commits and some of its own, there is nothing to sync. When both moved, nothing is written and `dg` stops with [E105](../errors.md#e105), naming the pull request that merges the parent's branch into your fork (`dg pr create <you>/project --base main --head main --head-repo <owner>/project --title "Merge <owner>/project:main"`), or `git pull` and a push. Your own commits are never dropped. Syncing is for the fork's maintainers and writers; a protected branch, for its maintainers. `dg` compares the histories in the current repository when it already holds both tips, else it fetches the parent's branch (and yours, when it is not in the parent's history) into a scratch repository first.
+
+In the web, a fork's **Code** tab says whether its default branch is up to date with the parent's. **Sync fork** (maintainers and writers; **Compare** for everyone else) compares the histories in the browser, then offers **Update branch** for a fast-forward, or the pull request into the fork when both sides moved.
 
 **2. Push your branch to it.**
 
@@ -434,7 +450,7 @@ On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-
 | Open a PR from a branch you have already pushed, in the repository or your fork | Merging when both sides changed the same files (use `dg pr merge`) |
 | Review a PR: approve, request changes or comment, with inline comments, suggestions and a pending review | |
 | Merge a PR (see below) | |
-| Create a repository (public or private), or fork one, with a cost preview | |
+| Create a repository (public or private), or fork one, with a cost preview; sync a fork with its parent (fast-forward) | Syncing a fork whose branch has commits of its own (open the pull request it offers) |
 | Add and remove members (owner) | |
 | Publish a release with assets (maintainers) | |
 | Star repositories and follow people | |
