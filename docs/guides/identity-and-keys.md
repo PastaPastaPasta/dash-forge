@@ -12,6 +12,7 @@ On Dash Forge, your account is a **Dash Platform identity**. No company holds it
 8. [Encryption key (private repositories)](#encryption-key-private-repositories)
 9. [The browser vault and its limits](#the-browser-vault-and-its-limits)
 10. [Trust roots](#trust-roots)
+11. [Your public profile](#your-public-profile)
 
 ---
 
@@ -262,3 +263,31 @@ What the vault does **not** protect against:
 - **Watching the deposit** goes through DAPI, the Dash network's own evonodes: a bloom-filtered `subscribeToTransactionsWithProofs` feed of the deposit address from the block the creation started at, `broadcastTransaction` for the asset lock and `getTransaction` for its height. The block explorer (Insight, changeable in Settings, `dg auth new --explorer <url>`) is only a fallback, asked when DAPI cannot answer or the feed is idle. Neither is trusted with amounts: each deposit output is read from a raw transaction whose txid is computed locally (an explorer's is fetched and hashed against the txid it named) before the asset lock is signed. A lying node or explorer can delay you or hide funds, but it cannot redirect or burn them. If a broadcast is dropped, the signed bytes are kept and sent again.
 - **The quorum keys** every proof is checked against come from `quorums.<network>.networks.dash.org`, as for every read. The web app compares them with a second source on each repository page ([Verify Forge](verify-forge.md#the-web-app-cross-checks-the-keys-with-a-second-source)).
 - **The code doing the checking**: the web app you loaded, or the `dg` you built. If you do not trust forge.dashhq.org, [serve the app yourself](verify-forge.md#run-your-own-copy-of-the-web-app).
+
+---
+
+## Your public profile
+
+Your profile is the page at `/u/?id=<your identity id>` (or `/u/?name=<username>`): your username and id, your follower counts and your repositories. You can add a **display name**, a **bio**, a **company**, a **location**, up to **four links** (https only) and an **avatar** to it. They are one `profile` document of your identity, which only you can write, change or delete.
+
+**It is public.** Anyone can read your profile, on any page that shows it, and it is never encrypted: a member of one of your private repositories sees the same profile as everybody else. Put in it only what you would post publicly.
+
+Edit it in the web app (**Settings → Public profile**, or **Edit profile** on your own profile page) or with `dg`:
+
+```sh
+dg profile set --name "Alice Example" --bio "Builds wallets." --company "Example Co" \
+  --location Lisbon --link https://alice.example --link https://mastodon.social/@alice \
+  --avatar identicon
+dg profile show            # yours; `dg profile show @bob` or an identity id for someone else's
+dg profile set --company ""    # an empty value clears a field; a field you don't name is kept
+dg profile set --clear-links   # removes every link; --link replaces them all
+dg profile delete              # removes the document (part of its deposit comes back)
+```
+
+Both check the same rules before anything is signed: a name, company or location of at most 60 characters on one line, a bio of at most 500 characters (line breaks are fine), and links that start with `https://` and hold no spaces. Writing a profile costs about 0.0004 DASH the first time and a fraction of that to edit (see [Costs](costs.md#what-each-action-costs)).
+
+**Avatars.** Forge hosts no images. The avatar is one of:
+
+- **Initial** (the default): the first letter of your username on a colour derived from your identity id;
+- **Pattern** (`--avatar identicon`, or `identicon:<seed>` for another pattern): a 5×5 pattern every browser draws from the seed, so nothing is fetched;
+- **Image link** (`--avatar https://…`): a picture you host. Visitors see your initial until they choose to load images from its host, as with images in issues and comments, because loading it tells that host their IP address.

@@ -1,0 +1,27 @@
+{
+  "name": "five_with_a_repeat_is_four",
+  "description": "Repeats are dropped before the count: five entries with one repeat are four links.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "links": [
+      "https://a.dev",
+      "https://b.dev",
+      "https://a.dev",
+      "https://c.dev",
+      "https://d.dev"
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "invalid": [],
+    "normalized": {
+      "links": [
+        "https://a.dev",
+        "https://b.dev",
+        "https://c.dev",
+        "https://d.dev"
+      ]
+    }
+  }
+}

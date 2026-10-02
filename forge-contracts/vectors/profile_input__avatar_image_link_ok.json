@@ -1,0 +1,16 @@
+{
+  "name": "avatar_image_link_ok",
+  "description": "An https image link is an avatar config.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "avatarConfig": "https://alice.dev/me.png"
+  },
+  "expected": {
+    "valid": true,
+    "invalid": [],
+    "normalized": {
+      "avatarConfig": "https://alice.dev/me.png"
+    }
+  }
+}

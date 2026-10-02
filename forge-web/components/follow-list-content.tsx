@@ -1,8 +1,8 @@
 'use client'
 
 /**
- * FollowListContent — who follows an identity (`/u/followers?name=`) or whom it follows
- * (`/u/following?name=`), from forge-collab `follow` (L-36). `follow` is indexOnly: each page
+ * FollowListContent — who follows an identity (`/u/followers?id=`) or whom it follows
+ * (`/u/following?id=`; `?name=` takes a DPNS name), from forge-collab `follow` (L-36). `follow` is indexOnly: each page
  * is one proof-verified keyset read (`readFollowPage`), "Load more" continues after the last
  * id, and the list is in identity-id order (a follow carries no time). Each page's DPNS names
  * are read in one batch before it shows, so the pills render with names.
@@ -13,7 +13,8 @@ import Link from 'next/link'
 import { Users } from 'lucide-react'
 
 import { plural, prefetchDpnsNames, resolveDpnsName } from '@/lib/view'
-import { readFollowCounts, readFollowPage, resolveOwner, type FollowPage, type FollowSide } from '@/lib/repo'
+import { isIdentifier, readFollowCounts, readFollowPage, resolveOwner, type FollowPage, type FollowSide } from '@/lib/repo'
+import { identityHref } from '@/lib/view/profile-links'
 import { NETWORKS } from '@/lib/constants'
 import { cn, errorMessage } from '@/lib/utils'
 import { useSdk } from '@/hooks/use-sdk'
@@ -43,7 +44,7 @@ interface More {
   readonly error: string | null
 }
 
-export function FollowListContent({ address, side }: { address: string; side: FollowSide }): JSX.Element {
+export function FollowListContent({ address, byId = false, side }: { address: string; byId?: boolean; side: FollowSide }): JSX.Element {
   const { sdk, ready, network } = useSdk()
   const forge = NETWORKS[network].v2
   // Each side is its own route, so a side change remounts this: the key needs no side.
@@ -61,8 +62,8 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
 
   const { data, loading, error, reload } = useAsync<FirstPage | null>(
     async () => {
-      // The address may be a DPNS name or an identity id, as on the profile.
-      const identityId = await resolveOwner(sdk!, address)
+      // `?id=` is an identity id exactly; `?name=` a DPNS name or an identity id, as on the profile.
+      const identityId = byId ? (isIdentifier(address) ? address : null) : await resolveOwner(sdk!, address)
       if (identityId === null) return null
       const [name, counts, page] = await Promise.all([
         resolveDpnsName(sdk!, identityId, network),
@@ -71,7 +72,7 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
       ])
       return { identityId, name, counts, ...page }
     },
-    [ready, address, side, network],
+    [ready, address, byId, side, network],
     { enabled: isForgeDeployed() && forge !== null && ready && sdk !== null && address !== '' },
   )
 
@@ -90,12 +91,12 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
   }
 
   const words = SIDE[side]
-  if (!address) return <EmptyState icon={Users} title="No profile addressed" body="Add ?name= (an identity id or DPNS name) to the URL." />
+  if (!address) return <EmptyState icon={Users} title="No profile addressed" body="Add ?id= (an identity id) or ?name= (a DPNS name) to the URL." />
   if (!isForgeDeployed() || forge === null) return <NotDeployedState />
   if (loading && !data) return <LoadingBlock label={`Reading ${words.title.toLowerCase()}`} />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null && ready) {
-    return <EmptyState icon={Users} title="No such identity" body={`"${address}" is not an identity id or a registered DPNS name on this network.`} />
+    return <EmptyState icon={Users} title="No such identity" body={byId ? `"${address}" is not an identity id.` : `"${address}" is not an identity id or a registered DPNS name on this network.`} />
   }
   if (!data) return <LoadingBlock />
 
@@ -104,7 +105,7 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
     const count = data.counts[s]
     return (
       <Link
-        href={`/u/${s}?name=${encodeURIComponent(data.identityId)}`}
+        href={identityHref(data.identityId, s)}
         aria-current={s === side ? 'page' : undefined}
         className={cn(
           'hit-area rounded-md px-3 py-1.5 text-dense',
@@ -119,7 +120,7 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
   return (
     <div className="mx-auto max-w-3xl space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <Link href={`/u?name=${encodeURIComponent(data.identityId)}`} className="hit-area rounded-full">
+        <Link href={identityHref(data.identityId)} className="hit-area rounded-full">
           <IdentityPill identityId={data.identityId} name={data.name ?? undefined} className="text-prose" />
         </Link>
         <h1 className="text-prose">{words.title}</h1>

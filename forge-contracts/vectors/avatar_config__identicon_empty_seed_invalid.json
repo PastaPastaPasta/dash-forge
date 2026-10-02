@@ -1,0 +1,13 @@
+{
+  "name": "identicon_empty_seed_invalid",
+  "description": "`identicon:` with no seed is invalid.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "identicon:",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "invalid"
+  }
+}

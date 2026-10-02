@@ -115,6 +115,7 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 | Add a member / remove one | ~0.0004 DASH / refunds ~0.0002 DASH |
 | Star / unstar | On devnet sakura, where the star carries Trending's window (below): **~0.00046 DASH** (45.5 M credits, measured by the RC2 registration probe; the web app quotes it before you star). On the RC1 contracts: **~0.00018 DASH** (a repo's first star ~0.00036) / refunds ~0.00012 DASH (the repo's last star ~0.00023) |
 | Counting a star toward **Trending** | On devnet sakura (RC2, the fused star): **nothing extra and nothing to turn off**. The star carries Trending's weekly window itself, so its price (the row above) includes it: 45.5 M credits, under the 55.1 M of a star plus a beat. `--no-trending`, `trending = false` and the Settings toggle do nothing there (`dg` says so). On a network with the RC1 contracts: **~0.00015 DASH** more for a new star (~0.00022 for your first), one small `starBeat` document that is not refunded and that unstarring does not remove; starring the same repo again adds nothing; turn it off in **Settings → Stars**, with `dg repo star --no-trending`, or `trending = false` in `config.toml` |
+| Profile (display name, bio, avatar, links) | **~0.00037 DASH** for a first profile with about 120 bytes of text, as the identity's first forge-community write (devnet sakura, 2026-10-02); an edit ~0.00002 DASH. Deleting it refunds part of the deposit |
 | Webhook † | ~0.0008 DASH; removing it refunds all but ~0.00008 DASH |
 | Fork a repository † | **~0.01 DASH** for a small repository (8 packs, 5 branches: 0.0095 DASH), 0.03 DASH for 36 packs: one small manifest per pack and one ref update per branch. The parent's packs are referenced, never re-uploaded |
 | Mirror a GitHub repository, first run † | depends on its size; the Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost **~0.078 DASH**, and a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. A re-run with nothing new costs **0** |
@@ -233,7 +234,7 @@ When a document is deleted, Platform refunds the part of its storage deposit tha
 | Ref updates, config, events | No, never (they are the audit trail) |
 | The `repo` document | No |
 | Membership documents (`writer`, `maintainer`) | Yes, by the owner (that is how a collaborator is removed) |
-| Comments, reviews, releases, labels, webhooks, stars, follows | Yes, by the author |
+| Comments, reviews, releases, labels, webhooks, stars, follows, your profile | Yes, by the author |
 
 There is no `dg repo delete`: a repository cannot be deleted.
 
