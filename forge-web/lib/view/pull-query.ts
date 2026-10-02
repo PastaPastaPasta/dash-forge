@@ -31,6 +31,7 @@ import {
   personValue,
   Q_MAX,
   searchText,
+  searchTokens,
   submitState,
   unresolvedQualifiers,
   type IssueListQuery,
@@ -80,22 +81,11 @@ function pullQualifiers(q: Pick<PullListQuery, 'draft' | 'reviewRequested'>): st
   return parts
 }
 
-/**
- * Every state qualifier (`is:` or `state:`, the key in any case, the value exact): the Issues
- * grammar's `open` / `closed` / `all` too, since several of them intersect (QW4-007), and `is:pr` /
- * `is:draft`.
- */
-const PR_STATE_TOKEN = /(^|\s)((?:[iI][sS]|[sS][tT][aA][tT][eE]):(open|closed|all|merged|unmerged|pr|draft))(?=\s|$)/g
-/** `is:issue` (or `state:`): the Issues grammar's, which lists issues; on this list it is not applied. */
-const ISSUE_TOKEN = /(^|\s)((?:is|state):issue)(?=\s|$)/gi
-/** `mentions:` and `reason:` — Issues filters, not PR ones. */
-const MENTIONS_TOKEN = /(^|\s)(mentions:\S*)/gi
-const REASON_TOKEN = /(^|\s)(reason:(?:"[^"]*"|\S*))/gi
-
 type PrState = 'open' | 'merged' | 'closed'
 /**
- * The PRs each state qualifier admits, with GitHub's meanings so that several intersect as there:
- * `is:closed` is merged or closed (alone it still selects the Closed tab, closed without merging).
+ * The PRs each state qualifier admits, with GitHub's meanings so that several intersect as there
+ * (QW4-007): `is:closed` is merged or closed (alone it still selects the Closed tab, closed
+ * without merging).
  */
 const PR_STATE_SETS: Readonly<Record<PullStateFilter, readonly PrState[]>> = {
   open: ['open'],
@@ -113,8 +103,6 @@ function stateOfSet(set: readonly PrState[]): PullStateFilter {
   // Merged and closed (`is:closed` alone) is the Closed tab, as before; merged alone is Merged.
   return has('closed') ? 'closed' : 'merged'
 }
-/** `draft:` and `review-requested:`, the PR-only qualifiers with a value. */
-const PR_VALUE_TOKEN = /(^|\s)((draft|review-requested):("[^"]*"|\S*))/gi
 
 interface PullOnly {
   readonly rest: string
@@ -122,56 +110,50 @@ interface PullOnly {
   readonly state: PullStateFilter | null
   readonly draft: boolean | null
   readonly reviewRequested: string | null
-  /** PR-only tokens whose value could not be used, and `mentions:` (an Issues filter). */
+  /** PR-only tokens whose value could not be used, a contradicting state, and the Issues filters (`mentions:`, `reason:`). */
   readonly unresolved: readonly string[]
 }
 
-/** Lift the PR-only qualifiers out of `text`; what is left is Issues grammar. */
+/**
+ * Lift the PR-only qualifiers out of `text`, token by token as the Issues grammar reads it (a
+ * `"quoted phrase"` or `label:"two words"` stays whole, so a qualifier inside quotes is text): every
+ * state qualifier (the key in any case; `open` / `closed` / `all` too, since several intersect),
+ * `is:pr`, `is:draft`, `draft:`, `review-requested:`, and the Issues filters it reports. What is
+ * left is Issues grammar.
+ */
 function liftPullOnly(text: string): PullOnly {
   let admitted: readonly PrState[] | null = null
   let draft: boolean | null = null
   let reviewRequested: string | null = null
   const unresolved: string[] = []
-  const rest = text
-    .replace(PR_STATE_TOKEN, (_m, lead: string, token: string, value: string) => {
+  const rest: string[] = []
+  for (const tok of searchTokens(text)) {
+    const at = tok.indexOf(':')
+    const key = at > 0 ? tok.slice(0, at).toLowerCase() : ''
+    const value = at > 0 ? tok.slice(at + 1).replace(/"/g, '') : ''
+    if (key === 'is' || key === 'state') {
       if (value === 'draft') draft = true
-      if (value === 'draft' || value === 'pr') return lead
-      const wanted = PR_STATE_SETS[value as PullStateFilter]
-      const next: readonly PrState[] = admitted === null ? wanted : admitted.filter((s) => wanted.includes(s))
-      // No PR is in both (`is:open is:merged`): said under the box, the first one kept.
-      if (next.length === 0) unresolved.push(token)
-      else admitted = next
-      return lead
-    })
-    .replace(ISSUE_TOKEN, (_m, lead: string, token: string) => {
-      unresolved.push(token)
-      return lead
-    })
-    .replace(MENTIONS_TOKEN, (_m, lead: string, token: string) => {
-      unresolved.push(token)
-      return lead
-    })
-    .replace(REASON_TOKEN, (_m, lead: string, token: string) => {
-      unresolved.push(token)
-      return lead
-    })
-    .replace(PR_VALUE_TOKEN, (_m, lead: string, token: string, key: string, raw: string) => {
-      const value = raw.replace(/"/g, '')
-      if (key.toLowerCase() === 'draft') {
-        const flag = value.toLowerCase()
-        if (flag === 'true' || flag === 'false') draft = flag === 'true'
-        else unresolved.push(token)
-      } else {
-        const who = personValue(value)
-        if (who !== null) reviewRequested = who
-        else unresolved.push(token)
-      }
-      return lead
-    })
-    .replace(/\s+/g, ' ')
-    .trim()
+      else if (value.toLowerCase() === 'issue') unresolved.push(tok)
+      else if (STATES.includes(value as PullStateFilter)) {
+        const wanted = PR_STATE_SETS[value as PullStateFilter]
+        const next: readonly PrState[] = admitted === null ? wanted : admitted.filter((st) => wanted.includes(st))
+        // No PR is in both (`is:open is:merged`): said under the box, the first one kept.
+        if (next.length === 0) unresolved.push(tok)
+        else admitted = next
+      } else if (value !== 'pr') rest.push(tok)
+    } else if (key === 'mentions' || (key === 'reason' && value !== '')) unresolved.push(tok)
+    else if (key === 'draft') {
+      const flag = value.toLowerCase()
+      if (flag === 'true' || flag === 'false') draft = flag === 'true'
+      else unresolved.push(tok)
+    } else if (key === 'review-requested') {
+      const who = personValue(value)
+      if (who !== null) reviewRequested = who
+      else unresolved.push(tok)
+    } else rest.push(tok)
+  }
   const set = admitted as readonly PrState[] | null
-  return { rest, state: set === null ? null : stateOfSet(set), draft, reviewRequested, unresolved }
+  return { rest: rest.join(' '), state: set === null ? null : stateOfSet(set), draft, reviewRequested, unresolved }
 }
 
 /** Lift the search box's qualifiers into `base` (the inverse of {@link pullSearchText}). */

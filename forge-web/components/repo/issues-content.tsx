@@ -200,6 +200,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         ) : null}
       </div>
       <DroppedNote search={search} reason={droppedQualifiersReason(search.dropped, search.notFound)} testId="issue-search-dropped" />
+      {data?.reasonUnapplied ? (
+        <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="reason-unapplied">
+          Not applied: reason:. This repository has more closed issues than the list reads to find their close reasons.
+        </p>
+      ) : null}
       <AuthorLoginNote login={query.authorLogin} notFound={search.notFound} />
 
       <MirrorNote home={home} kind="issue" />

@@ -166,7 +166,7 @@ export function parseIssueQuery(params: { get(name: string): string | null; getA
 function stateValues(text: string): string[] {
   return tokens(text).flatMap((tok) => {
     const key = keyOf(tok)
-    return key === 'is' || key === 'state' ? [tok.slice(tok.indexOf(':') + 1)] : []
+    return key === 'is' || key === 'state' ? [unquote(tok.slice(tok.indexOf(':') + 1))] : []
   })
 }
 
@@ -347,6 +347,9 @@ function tokens(text: string): string[] {
 
 const unquote = (s: string): string => s.replace(/"/g, '')
 
+/** The search box's tokens, as every qualifier parser reads them (quoted phrases whole). */
+export const searchTokens = tokens
+
 /**
  * The qualifiers this parser applies (the rest of GitHub's are known by name below and
  * reported, never searched for as text). `-label` is the one negation it applies.
@@ -495,7 +498,7 @@ export const STATE_CONFLICT = 'No item can be in both of those states, so only t
 /** Whether a dropped `is:`/`state:` token names a valid state: it was dropped as contradicting an earlier one. */
 export function isStateConflict(tok: string, states: readonly string[] = STATES): boolean {
   const key = keyOf(tok)
-  return (key === 'is' || key === 'state') && states.includes(tok.slice(tok.indexOf(':') + 1))
+  return (key === 'is' || key === 'state') && states.includes(unquote(tok.slice(tok.indexOf(':') + 1)))
 }
 
 /** The key of a qualifier token, lowercased, a leading `-` kept (`''` for a token that is not one). */
@@ -650,7 +653,8 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
     if (used) continue
     // A GitHub key with nothing after its colon (`status: broken`, `type: error`) is prose, not a
     // qualifier: it stays free text, as it does on GitHub. An applied key's empty value is reported.
-    if (isQualifierKey(key) && (value !== '' || APPLIED_KEYS.has(key))) unresolved.push(tok)
+    // `reason:` was prose before it was a filter (`reason: timeout`), and stays so with no value.
+    if (isQualifierKey(key) && (value !== '' || (APPLIED_KEYS.has(key) && key !== 'reason'))) unresolved.push(tok)
     else free.push(tok)
   }
   return {

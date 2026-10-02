@@ -50,6 +50,14 @@ describe('PR state qualifiers intersect (QW4-007)', () => {
     expect(pullDroppedReason(['is:MERGED'])).toBe('is: and state: take open, closed, merged, unmerged, draft or all.')
   })
 
+  it('leaves a state qualifier inside quotes as text, and reads a quoted state value', () => {
+    expect(parsePullSearch('"crash is:closed later"')).toMatchObject({ state: 'open', q: '"crash is:closed later"' })
+    expect(parsePullSearch('label:"wont is:open fix"')).toMatchObject({ state: 'open', labels: ['wont is:open fix'] })
+    expect(parsePullSearch('is:"merged"').state).toBe('merged')
+    expect(unresolvedQualifiers('is:open is:"closed"')).toEqual(['is:"closed"'])
+    expect(droppedQualifiersReason(['is:"closed"'])).toBe(STATE_CONFLICT)
+  })
+
   it('intersects issue states too: is:open is:closed reports the second', () => {
     expect(parseSearchText('is:open is:closed').state).toBe('open')
     expect(unresolvedQualifiers('is:open is:closed')).toEqual(['is:closed'])
@@ -118,5 +126,11 @@ describe('reason: (QW4-028)', () => {
     expect(dropped).toEqual(['reason:completed'])
     expect(parsePullSearch('is:closed reason:completed fix')).toMatchObject({ state: 'closed', reason: null, q: 'fix' })
     expect(pullDroppedReason(dropped)).toContain('reason: is an Issues filter')
+  })
+
+  it('a bare `reason:` stays prose, as it was before it was a filter', () => {
+    expect(parseSearchText('reason: timeout')).toMatchObject({ reason: null, q: 'reason: timeout' })
+    expect(unresolvedQualifiers('reason: timeout')).toEqual([])
+    expect(unresolvedPullQualifiers('reason: timeout')).toEqual([])
   })
 })

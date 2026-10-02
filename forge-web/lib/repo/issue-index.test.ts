@@ -155,8 +155,10 @@ describe('issue index', () => {
     expect((await queryIssues(sdk, repo, { ...base, state: 'closed', reason: 'duplicate' }, 1000, 'devnet')).rows.map((r) => r.number)).toEqual([103])
     // A close that gives no reason is a completed one.
     expect((await queryIssues(sdk, repo, { ...base, state: 'closed', reason: 'completed' }, 1000, 'devnet')).rows.map((r) => r.number)).toEqual([3])
-    // On an open tab nothing matches: a reason is a closed issue's.
+    // On an open tab nothing matches (a reason is a closed issue's), and nothing is resolved for it.
+    const before = seen.composites.length + seen.queries.length
     expect((await queryIssues(sdk, repo, { ...base, state: 'open', reason: 'not_planned' }, 1000, 'devnet')).rows).toEqual([])
+    expect(seen.composites.length + seen.queries.length).toBe(before)
     // Budget: the close transitions are read once for every reason and tab, and nothing is walked.
     const closeReads = seen.queries.filter((q) => q.documentTypeName === 'transition')
     expect(closeReads.map((q) => q.where)).toEqual([[['repoId', '==', REPO], ['kind', '==', 1]]])

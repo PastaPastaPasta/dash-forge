@@ -218,6 +218,8 @@ export interface IssueListPage {
   readonly hidden: number
   /** `hidden` by reason (private repos: shown to maintainers). */
   readonly hiddenBy: HiddenCounts
+  /** `reason:` was not applied: the repo has more issue closes than a list reads (QW4-028). */
+  readonly reasonUnapplied?: boolean
 }
 
 /** Whether a row's folded state passes the state tab. */
@@ -374,12 +376,16 @@ export async function queryIssues(
   const needLogs = eventFiltered(q)
   if (needLogs) await feedOf(sdk, index)
   // `reason:` (QW4-028): the issues whose newest close says so, and only while they are closed.
-  const reasoned = q.reason == null ? null : await closedWithReason(sdk, index, q.reason)
-  if (q.reason != null && reasoned === null) throw new Error('This repository has too many closed issues to search them by close reason.')
+  // Null when the repo has too many closes to read: the filter is then not applied, and the page
+  // says so (`reasonUnapplied`).
+  const [reasoned, bound] = await Promise.all([q.reason == null ? null : closedWithReason(sdk, index, q.reason), repoCountsOf(sdk, index)])
   const reasonOk = (r: IssueRow): boolean => reasoned === null || (!r.state.open && reasoned.has(r.id))
-  const bound = await repoCountsOf(sdk, index)
   const walk = pageWalk(q, filtered)
   const tab = tabBound(bound, index, q.state)
+  // Those issues as the page's candidates when resolving them is cheaper than walking (as for the
+  // Closed tab); none on the Open tab, where a closed issue cannot be listed.
+  const reasonCheap = reasoned !== null && candidatesCheaper(index, walk, reasoned.size, bound?.issues ?? null) ? reasoned : null
+  const reasonCandidates = reasoned !== null && q.state === 'open' ? new Set<string>() : reasonCheap
   // A sparse tab through the state scan when the proved counts say that is cheaper than walking
   // (QW3-002; the PR list's Open tab is the usual one).
   const byScan = !filtered && bound !== null && tab !== null && countsSettled(repo) && scanCheaper(index, walk, tab, bound, q.state === 'open')
@@ -399,7 +405,7 @@ export async function queryIssues(
       })
     : await selectRows(sdk, index, {
         ...walk,
-        candidates: await candidatesFor(sdk, index, q, byState, reasoned),
+        candidates: await candidatesFor(sdk, index, q, byState, reasonCandidates),
         matches: (r) => stateMatches(r, q.state) && rowMatches(r, q) && reasonOk(r),
         cmp: compareRows(q.sort),
         // The walk stops at the tab's proved count (never a filter's), once it includes this browser's own writes.
@@ -417,7 +423,7 @@ export async function queryIssues(
     closedCount = exact?.closed ?? null
   } else {
     // Both tabs' counts need every candidate in either state: an index names them, or every issue is loaded.
-    const all = await rowsInAnyState(sdk, index, await candidatesFor(sdk, index, { ...q, state: 'all' }, false, reasoned), (r) => rowMatches(r, q) && reasonOk(r), needLogs)
+    const all = await rowsInAnyState(sdk, index, await candidatesFor(sdk, index, { ...q, state: 'all' }, false, reasonCheap), (r) => rowMatches(r, q) && reasonOk(r), needLogs)
     if (all !== null) {
       openCount = all.filter((r) => r.state.open).length
       closedCount = all.length - openCount
@@ -441,6 +447,7 @@ export async function queryIssues(
     labels: index.labels,
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
+    ...(q.reason != null && reasoned === null ? { reasonUnapplied: true } : {}),
   }
 }
 
