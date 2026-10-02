@@ -215,45 +215,93 @@ impl Collab<'_> {
     /// from any copy by the pack reader rule and checked (hash, length, UTF-8; opened and the
     /// late-content rule applied in a private repository). When that fails, the prefix and why.
     pub async fn read_long_body(&self, repo: &RepoRef, stored: &str) -> BodyRead {
-        match long_body::parse(stored) {
-            LongBody::Plain => BodyRead::Whole(stored.to_string()),
-            LongBody::Unsupported { prefix } => BodyRead::Partial {
-                prefix: prefix.to_string(),
-                reason: "the rest is stored in a form this version cannot read".to_string(),
-            },
-            LongBody::Continued {
-                prefix,
-                sha256,
-                bytes,
-            } => match self.fetch_long_body(repo, sha256, bytes).await {
-                Ok(text) => BodyRead::Whole(text),
-                Err(e) => BodyRead::Partial {
-                    prefix: prefix.to_string(),
-                    reason: format!("the full text ({bytes} bytes) could not be read: {e}"),
-                },
-            },
-        }
+        self.read_long_bodies(repo, &[stored])
+            .await
+            .pop()
+            .unwrap_or_else(|| BodyRead::Whole(stored.to_string()))
+    }
+
+    /// [`Self::read_long_body`] of every field in `stored`, in order. The repository's
+    /// manifests and members (what finds and orders the copies) are read once, and only when a
+    /// field continues; the artifacts are fetched side by side.
+    pub async fn read_long_bodies(&self, repo: &RepoRef, stored: &[&str]) -> Vec<BodyRead> {
+        let parsed: Vec<LongBody<'_>> = stored.iter().map(|s| long_body::parse(s)).collect();
+        let continued = parsed
+            .iter()
+            .any(|p| matches!(p, LongBody::Continued { .. }));
+        let shared = if continued {
+            Some(self.copy_view(repo).await)
+        } else {
+            None
+        };
+        let reads = parsed.iter().zip(stored).map(|(p, s)| {
+            let shared = shared.as_ref();
+            async move {
+                match *p {
+                    LongBody::Plain => BodyRead::Whole((*s).to_string()),
+                    LongBody::Unsupported { prefix } => BodyRead::Partial {
+                        prefix: prefix.to_string(),
+                        reason: "the rest is stored in a form this version cannot read".into(),
+                    },
+                    LongBody::Continued {
+                        prefix,
+                        sha256,
+                        bytes,
+                    } => {
+                        let text = match shared {
+                            Some(Ok(view)) => self.fetch_long_body(repo, view, sha256, bytes).await,
+                            Some(Err(e)) => Err(Error::Config(e.clone())),
+                            None => Err(Error::Config("not read".into())),
+                        };
+                        match text {
+                            Ok(text) => BodyRead::Whole(text),
+                            Err(e) => BodyRead::Partial {
+                                prefix: prefix.to_string(),
+                                reason: format!(
+                                    "the full text ({bytes} bytes) could not be read: {e}"
+                                ),
+                            },
+                        }
+                    }
+                }
+            }
+        });
+        futures::future::join_all(reads).await
+    }
+
+    /// What finding and ordering a long body's copies reads, once per page: the service, the
+    /// repository's manifests and its members' current roles.
+    async fn copy_view(&self, repo: &RepoRef) -> std::result::Result<CopyView<'_>, String> {
+        let svc = if self.has_signer() {
+            self.repo_service().map_err(|e| e.to_string())?
+        } else {
+            RepoService::reader(self.client())
+        };
+        let (manifests, roles) =
+            futures::try_join!(svc.read_pack_manifests(repo), svc.copy_roles(repo))
+                .map_err(|e| e.to_string())?;
+        Ok(CopyView {
+            svc,
+            manifests,
+            roles,
+        })
     }
 
     async fn fetch_long_body(
         &self,
         repo: &RepoRef,
+        view: &CopyView<'_>,
         sha256: [u8; 32],
         bytes: u64,
     ) -> Result<String> {
         let private = repo.visibility == Visibility::Private;
-        let svc = if self.has_signer() {
-            self.repo_service()?
-        } else {
-            RepoService::reader(self.client())
-        };
         let cap = if private { sealed_cap(bytes) } else { bytes };
-        let copies: Vec<PackManifestInfo> = svc
-            .read_pack_copies(repo, sha256)
-            .await?
-            .into_iter()
+        let copies: Vec<&PackManifestInfo> = view
+            .manifests
+            .iter()
             .filter(|m| {
-                m.kind == u64::from(crate::pack::KIND_LONG_BODY)
+                m.pack_hash == sha256
+                    && m.kind == u64::from(crate::pack::KIND_LONG_BODY)
                     && if private {
                         m.size_bytes <= cap
                     } else {
@@ -264,11 +312,10 @@ impl Collab<'_> {
         if copies.is_empty() {
             return Err(Error::Config("no copy of it is recorded".into()));
         }
-        let roles = svc.copy_roles(repo).await?;
-        let refs: Vec<&PackManifestInfo> = copies.iter().collect();
+        let svc = &view.svc;
         let reader = PackReader::from_user_config();
         let mut last = Error::Config("no copy could be read".into());
-        for copy in order_copies(&refs, &roles) {
+        for copy in order_copies(&copies, &view.roles) {
             let stored = match svc.fetch_artifact(repo, copy, &reader).await {
                 Ok(b) => b,
                 Err(e) => {
@@ -293,6 +340,13 @@ impl Collab<'_> {
         }
         Err(last)
     }
+}
+
+/// A repository's manifests and members' roles, read once for every long body a page shows.
+struct CopyView<'a> {
+    svc: RepoService<'a>,
+    manifests: Vec<PackManifestInfo>,
+    roles: crate::repo::RoleMap,
 }
 
 #[cfg(test)]

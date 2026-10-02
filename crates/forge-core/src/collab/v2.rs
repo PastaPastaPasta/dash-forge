@@ -1179,7 +1179,8 @@ fn patch_fingerprint(input: &PatchInput) -> String {
     format!(
         "{}\0{}\0{}\0{}\0{}",
         input.title,
-        input.body,
+        // a long body by its prefix and length (§6.3: a private one's hash changes per seal)
+        crate::rules::long_body::journal_key(&input.body),
         input.base_ref_name,
         input.source_repo_id,
         hex::encode(&input.head_oid)
@@ -3836,7 +3837,9 @@ impl<'a> Collab<'a> {
         journal_dir: &Path,
     ) -> Result<Created> {
         issue_props(1, title, body, Provenance::default())?;
-        let fingerprint = [title, "\0", body].concat();
+        // a long body by its prefix and length (§6.3: a private one's artifact hash changes
+        // with every seal)
+        let fingerprint = [title, "\0", &crate::rules::long_body::journal_key(body)].concat();
         self.create_dense(
             repo,
             TargetKind::Issue,
@@ -4366,6 +4369,33 @@ impl<'a> Collab<'a> {
             .await
     }
 
+    /// One of the signer's comments, read for an edit before anything is written (opened in a
+    /// private repository): refused as [`Self::update_comment`] would refuse it (another's
+    /// comment, or another repository's), so a caller storing a long body's artifact first
+    /// (forge-v2.md §6.3) pays for nothing that edit cannot use. Its inline `path` and its
+    /// `imported` provenance share a private comment's room with the body.
+    pub async fn comment_for_edit(&self, repo: &RepoRef, comment_id: &str) -> Result<Comment> {
+        let collab = self.collab_contract(repo).await?;
+        let stored = self
+            .client
+            .fetch_document(&collab, DOC_COMMENT, comment_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        edit_check(repo, DOC_COMMENT, &stored, &self.signer_id()?)?;
+        if repo.visibility == Visibility::Private {
+            let kr = self.keyring(repo).await?;
+            let opened =
+                private::open_doc(kr.open(DocKind::Comment, &stored), stored).ok_or_else(|| {
+                    Error::from(UserError::new(
+                        codes::NOT_A_KEY_HOLDER,
+                        "this comment cannot be read with your keys, so it cannot be edited",
+                    ))
+                })?;
+            return Ok(comment_from_doc(&opened));
+        }
+        Ok(comment_from_doc(&stored))
+    }
+
     /// Delete one of the signer's comments (on an issue or a PR; QW-016). A `comment` is
     /// deletable by its author only at consensus; the stored document is read first
     /// ([`owner_check`]: it is `repo`'s and the signer's), so another's comment, or one of
@@ -4545,7 +4575,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Refuse, before anything is signed, an edit of a document the signer does not own.
-    fn require_author(&self, author: &str, action: &str) -> Result<()> {
+    pub fn require_author(&self, author: &str, action: &str) -> Result<()> {
         if self.signer_id()? == author {
             return Ok(());
         }

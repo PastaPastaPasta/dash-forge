@@ -193,31 +193,43 @@ fn notes_estimate(full: &str, targets: Option<u64>) -> (String, u64) {
 
 /// The notes field `r`'s revision writes for `notes` (forge-v2.md §6.3): the notes, or when
 /// longer than the field, their first part and the trailer naming their full text, stored
-/// first as a sealed artifact (`estimate`, in a dry run). When that cannot be stored, the notes
-/// are cut to the field with a link to the source, and the run says so.
+/// first as a sealed artifact (`estimate`, in a dry run). When that is refused for good (no
+/// storage of your own, the signer may not record it), the notes are cut to the field with a
+/// link to the source, and the run says so; when it fails otherwise (the network, storage that
+/// did not confirm), `None`: the release is left for the next run, which keeps them whole.
 async fn notes_field(
     ledger: &mut Ledger<'_>,
     dest: &impl SealedDest,
     r: &SrcRelease,
     notes: &str,
     estimate: String,
-) -> String {
+) -> Option<String> {
     if !long_body::needs_artifact(notes, FIELD_MAX) {
-        return notes.to_string();
+        return Some(notes.to_string());
     }
     if ledger.dry_run() {
-        return estimate;
+        return Some(estimate);
     }
     match dest.long_notes(notes).await {
-        Ok(field) => field,
-        Err(e) => {
+        Ok(field) => Some(field),
+        Err(e) if dest.targets().is_none() || crate::sink::refused_for_good(&e) => {
             ledger.warn(format!(
                 "release {}: its notes ({} bytes) could not be stored whole, so they are cut to \
                  the field's {FIELD_MAX} bytes with a link to the source: {e}",
                 r.tag_name,
                 notes.len()
             ));
-            crate::model::fit_text(notes, FIELD_MAX, &r.source_url)
+            Some(crate::model::fit_text(notes, FIELD_MAX, &r.source_url))
+        }
+        Err(e) => {
+            ledger.skip(format!(
+                "release {} not mirrored this run: its notes ({} bytes) could not be stored \
+                 whole ({e}); the next run tries again",
+                r.tag_name,
+                notes.len()
+            ));
+            ledger.incomplete = true;
+            None
         }
     }
 }
@@ -414,15 +426,20 @@ fn provenance(r: &SrcRelease) -> Option<Imported> {
 /// `r`'s notes as a sealed revision states them: without the "Published on …" line that
 /// opens a public release's, when the provenance it repeats is `sealed` ([`provenance`]).
 fn sealed_notes(r: &SrcRelease, sealed: bool) -> &str {
+    without_published(&r.notes, r, sealed)
+}
+
+/// `notes` (`r`'s, whole or cut) without the "Published on …" line, as [`sealed_notes`].
+fn without_published<'n>(notes: &'n str, r: &SrcRelease, sealed: bool) -> &'n str {
     let head = crate::model::published_line(r.published.as_ref());
     if !sealed || head.is_empty() {
-        return &r.notes;
+        return notes;
     }
-    r.notes
+    notes
         .strip_prefix(head.as_str())
         // a release with no notes of its own has only the line, trimmed
-        .or_else(|| (r.notes == head.trim_end()).then_some(""))
-        .unwrap_or(&r.notes)
+        .or_else(|| (notes == head.trim_end()).then_some(""))
+        .unwrap_or(notes)
 }
 
 /// Whether `held` states what `r` would: its name, `notes` and its provenance. An empty name
@@ -431,7 +448,15 @@ fn sealed_notes(r: &SrcRelease, sealed: bool) -> &str {
 fn same_statement(held: &Held, r: &SrcRelease, notes: &str, imported: Option<&Imported>) -> bool {
     let f = &held.fields;
     (r.name.is_empty() || f.name.as_deref() == Some(r.name.as_str()))
-        && long_body::states(&held.notes, notes, FIELD_MAX)
+        && (long_body::states(&held.notes, notes, FIELD_MAX)
+            // as an importer before long bodies cut them (forge-v2.md §6.3): a release mirrored
+            // so keeps its cut notes rather than being published again for them
+            || held.notes
+                == without_published(
+                    &crate::model::legacy_cut(&r.notes, &r.source_url),
+                    r,
+                    imported.is_some(),
+                ))
         && imported.is_none_or(|i| {
             sealed_provenance(i)
                 == (
@@ -681,7 +706,9 @@ async fn write_one(
         ));
     }
     let credits = price(changes);
-    let notes = notes_field(ledger, dest, r, notes, field).await;
+    let Some(notes) = notes_field(ledger, dest, r, notes, field).await else {
+        return Ok(());
+    };
     let input = ReleaseInput {
         tag_name: tag.clone(),
         name: r.name.clone(),
@@ -1119,6 +1146,24 @@ mod tests {
 
     /// Notes past the 1507 bytes of `enc` continue in the sealed list, and an empty author
     /// seals none: a re-run compares both as the reader opens them, and writes nothing.
+    /// A release an importer before long bodies sealed with its notes cut is left as it is.
+    #[tokio::test]
+    async fn a_sealed_release_mirrored_with_cut_notes_is_left_as_it_is() {
+        let (dest, src) = (Fake::default(), source());
+        let whole = release(&"Dash Core notes. ".repeat(1000));
+        let mut cut = whole.clone();
+        cut.notes = crate::model::legacy_cut(&whole.notes, &whole.source_url);
+        run(&dest, std::slice::from_ref(&cut), &src).await;
+        assert_eq!(dest.writes.borrow().len(), 1);
+        let again = run(&dest, &[whole], &src).await;
+        assert_eq!(
+            dest.writes.borrow().len(),
+            1,
+            "not published again for its full notes"
+        );
+        assert_eq!(again.budget.spent(), 0);
+    }
+
     /// Notes over the 5,120-byte field keep their full text in a sealed long body (forge-v2.md
     /// §6.3), and a re-run that seals afresh (another hash) does not write the release again.
     #[tokio::test]

@@ -560,8 +560,17 @@ impl Chain for &Recorded {
         _: &crate::long_body::BodyStorage,
     ) -> forge_core::Result<String> {
         let url = imported.map_or("", |i| i.url.as_str());
+        // `long:` refuses for good (the signer may not record artifacts), `long-down:` fails as
+        // storage that did not answer
         if self.refuse.contains(&format!("long:{url}")) {
-            return Err(forge_core::Error::Config("storage refused".into()));
+            return Err(forge_core::Error::NotPermitted {
+                action: "store a long text".into(),
+                reason: "a triage member".into(),
+                needs: "writer".into(),
+            });
+        }
+        if self.refuse.contains(&format!("long-down:{url}")) {
+            return Err(forge_core::Error::Io("storage did not answer".into()));
         }
         let room = field.room(repo.visibility, imported);
         if !forge_core::rules::long_body::needs_artifact(full, room) {
@@ -1608,6 +1617,60 @@ async fn texts_longer_than_their_field_are_stored_whole() {
         "{:?}",
         ledger.warnings
     );
+    assert_eq!(refusing.logs().len(), 1, "written, cut");
+
+    // storage that did not answer: not written cut; the next run keeps the whole text
+    let mut down = Recorded::new();
+    down.refuse = [format!("long-down:{}", src.targets[0].imported.url)].into();
+    let run = import(&down, &source_with_body(&long), 1, None).await;
+    assert!(run.result.is_err(), "the create fails, and the run says so");
+    assert!(down.logs().is_empty(), "nothing written cut");
+    down.refuse.clear();
+    import(&down, &source_with_body(&long), 1, None)
+        .await
+        .result
+        .unwrap();
+    assert_eq!(down.st().long_bodies, 1, "stored whole on the next run");
+}
+
+/// A release an importer before long bodies mirrored, its notes cut with a link, is left as
+/// it is: a run does not publish it again only to store its full notes.
+#[tokio::test(start_paused = true)]
+async fn a_release_mirrored_with_cut_notes_is_left_as_it_is() {
+    let long = "Dash Core 23.1.0 release notes. ".repeat(600);
+    let url = "https://github.com/dashpay/dash/releases/tag/v23.1.0";
+    let chain = Recorded::new();
+    let cut = crate::model::legacy_release_notes(&long, 0, 0, url);
+    assert!(cut.len() <= 5120 && cut.ends_with(&format!("{url})")));
+    (&chain)
+        .create_release(
+            &repo(),
+            &ReleaseInput {
+                tag_name: "v23.1.0".into(),
+                name: "v23.1.0".into(),
+                notes: cut,
+                yanked: Some(false),
+                ..ReleaseInput::default()
+            },
+        )
+        .await
+        .unwrap();
+    let src = SrcCollab {
+        releases: Some(vec![crate::model::SrcRelease {
+            tag_name: "v23.1.0".into(),
+            name: "v23.1.0".into(),
+            notes: long,
+            assets: Vec::new(),
+            omitted: Vec::new(),
+            source_url: url.into(),
+            published: None,
+        }]),
+        ..SrcCollab::default()
+    };
+    let run = import(&chain, &src, 1, None).await;
+    run.result.unwrap();
+    assert_eq!(run.counts.releases, 0, "not published again");
+    assert_eq!(chain.st().long_bodies, 0);
 }
 
 /// [`source`] of one item whose body is `body`.

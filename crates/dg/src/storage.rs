@@ -1493,8 +1493,8 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
 /// A `packManifest.kind` by name: what the artifact is (`forge_core::pack` `KIND_*`).
 fn artifact_kind(kind: u64) -> &'static str {
     use forge_core::pack::{
-        KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_HISTORY_INDEX, KIND_HISTORY_VERSIONS,
-        KIND_LONG_BODY, KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS,
+        KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_HISTORY_INDEX, KIND_HISTORY_VERSIONS, KIND_LONG_BODY,
+        KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS,
     };
     match u8::try_from(kind) {
         Ok(KIND_GIT_PACK) => "pack",

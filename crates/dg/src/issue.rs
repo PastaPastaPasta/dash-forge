@@ -794,12 +794,16 @@ const COMMENT_IDS: &str =
 async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Result<()> {
     crate::common::document_id_arg(comment_id, "comment id", COMMENT_IDS)?;
     let s = Session::open_for_write(ctx, repo, "comment not edited").await?;
-    // An inline comment's path shares a private comment's room with its body: a body that
-    // fits only without it is refused by the sealer, with the limit.
+    let collab = s.collab();
+    // Read first (another's comment is refused here): an inline comment's path and an import's
+    // provenance share a private comment's room with its body.
+    let stored = collab.comment_for_edit(&s.repo, comment_id).await?;
     let planned = crate::long_body::Planned::new(
         &s.repo,
-        forge_core::collab::long_body::BodyField::Comment { path: None },
-        None,
+        forge_core::collab::long_body::BodyField::Comment {
+            path: stored.anchor.path.as_deref(),
+        },
+        stored.imported.as_ref(),
         body,
     )?;
     ctx.confirm_or_cancel(&format!(
@@ -807,8 +811,9 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
         planned.clause()
     ))?;
     let before = s.balance().await;
-    let collab = s.collab();
-    let body = planned.field_text(&collab, &s.repo, None).await?;
+    let body = planned
+        .field_text(&collab, &s.repo, stored.imported.as_ref())
+        .await?;
     let edited = collab.update_comment(&s.repo, comment_id, &body).await?;
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
@@ -1014,6 +1019,8 @@ async fn edit(
         .await?
         .ok_or_else(|| not_found(repo, number))?;
     let target = issue.target();
+    // only the author may edit: refused before a long body's artifact is paid for
+    collab.require_author(&issue.author, &format!("edit issue #{number}"))?;
     let field = forge_core::collab::long_body::BodyField::Issue {
         title: title.unwrap_or(&issue.title),
     };

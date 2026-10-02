@@ -712,6 +712,17 @@ fn key_of(t: &SrcTarget) -> (u8, u32) {
 const TRANSITION_BYTES: u64 = 90;
 
 /// Estimated bytes of a comment/review/issue document around `text`.
+/// Whether storing a long body's artifact (forge-v2.md §6.3) was refused for a reason no later
+/// run changes: the signer may not record artifacts here, or the text cannot be one.
+pub(crate) fn refused_for_good(e: &forge_core::Error) -> bool {
+    matches!(
+        e,
+        forge_core::Error::NotPermitted { .. }
+            | forge_core::Error::NotAMember { .. }
+            | forge_core::Error::InvalidInput(_)
+    ) || matches!(e, forge_core::Error::User(u) if u.code == forge_core::user_error::codes::USAGE)
+}
+
 /// A release's `notes` field (forge-core `release.notes`: 5,120 bytes).
 const NOTES_FIELD: usize = forge_core::collab::long_body::FIELD_MAX;
 
@@ -865,7 +876,11 @@ impl<'a, C: Chain> Sink<'a, C> {
             .await
         {
             Ok(text) => Ok(text),
-            Err(e) => {
+            // Refused for good (the signer may not record artifacts, or the text cannot be one):
+            // cut, as before long bodies. Anything else (the network, storage that did not
+            // confirm) fails this write, and the next run tries again with the whole text: an
+            // item once written cut is never written again.
+            Err(e) if refused_for_good(&e) => {
                 self.warn(format!(
                     "{source_url}: its full text ({} bytes) could not be stored, so it is cut \
                      to the field's {room} bytes with a link to the source: {e}",
@@ -873,6 +888,7 @@ impl<'a, C: Chain> Sink<'a, C> {
                 ));
                 Ok(crate::model::fit_text(full, room, source_url))
             }
+            Err(e) => Err(e),
         }
     }
 

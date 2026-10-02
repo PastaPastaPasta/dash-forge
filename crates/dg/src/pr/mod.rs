@@ -396,11 +396,9 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     )?;
     let mut input = PatchInput {
         title: title.clone(),
-        // the field as it will be written (in a private repository, the full text until it is
-        // sealed below): what an interrupted create's journal is keyed by
-        body: planned
-            .expected_field_text(handle)
-            .unwrap_or_else(|| args.body.clone()),
+        // the field as an interrupted create's journal keys it (replaced by the stored field
+        // below, which keys alike)
+        body: planned.journal_text(),
         base_ref_name: base.clone(),
         source_repo_id: source.id().to_string(),
         source_ref_name: Some(head_ref.clone()),
@@ -960,22 +958,30 @@ async fn view(
     let approvals = approvals_over(&reviews, &v, &oracle);
     let (mut comments, hidden_comments) = collab.comments_counted(handle, &doc_id).await?;
     // Long bodies (forge-v2.md §6.3): each field's full text, fetched and checked; a text whose
-    // rest cannot be read keeps its first part and says why.
-    let body_incomplete = {
-        let read = collab.read_long_body(handle, &v.patch.body).await;
-        v.patch.body = read.text().to_string();
-        read.incomplete().map(str::to_string)
-    };
-    crate::long_body::read_in_place(
+    // rest cannot be read keeps its first part and says why (a comment's or review's in a line
+    // under it, the description's in `bodyIncomplete` too).
+    let mut why = crate::long_body::read_in_place(
         &collab,
         handle,
-        comments
-            .iter_mut()
-            .map(|c| &mut c.body)
+        std::iter::once(&mut v.patch.body)
+            .chain(comments.iter_mut().map(|c| &mut c.body))
             .chain(reviews.iter_mut().map(|r| &mut r.body))
             .collect(),
     )
-    .await;
+    .await
+    .into_iter();
+    let body_incomplete = why.next().flatten();
+    for (text, why) in comments
+        .iter_mut()
+        .map(|c| &mut c.body)
+        .chain(reviews.iter_mut().map(|r| &mut r.body))
+        .zip(why)
+    {
+        if let Some(why) = why {
+            text.push('\n');
+            text.push_str(&crate::long_body::partial_line(&why));
+        }
+    }
     let review_state = v.review_with_threads(&comments);
     // RC2 MOD: what maintainers hid. Collapsed in the human view unless --show-hidden; a hidden
     // review's verdict still counts (only a dismissal stops it), so approvals are unchanged.

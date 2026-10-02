@@ -162,6 +162,20 @@ pub fn public_stored_text(full: &str, room: usize) -> Option<String> {
     stored_text(full, room, &hash)
 }
 
+/// What a resumable create keys its journal by for the field `stored`: the field itself, or
+/// for a long body its prefix and length. The artifact's hash is left out: a private
+/// repository's is of bytes sealed afresh by every attempt, and a re-run must still find the
+/// create it interrupted rather than open a second issue or PR.
+#[must_use]
+pub fn journal_key(stored: &str) -> std::borrow::Cow<'_, str> {
+    match parse(stored) {
+        LongBody::Continued { prefix, bytes, .. } => {
+            std::borrow::Cow::Owned(format!("{prefix}\0{OPEN}bytes={bytes}"))
+        }
+        _ => std::borrow::Cow::Borrowed(stored),
+    }
+}
+
 /// Whether the field `stored` states `full` as a writer with `room` bytes would store it:
 /// `full` itself, or a trailer naming an artifact of `full`'s length after the very prefix
 /// [`stored_text`] cuts from it. The artifact's hash is not compared: a private repository's
@@ -433,6 +447,25 @@ mod tests {
         assert_eq!(open_public("plain", b"x"), Err(OpenError::NotContinued));
         assert_eq!(open_text(3, b"ab"), Err(OpenError::Size));
         assert_eq!(open_text(1, &[0xff]), Err(OpenError::Utf8));
+    }
+
+    /// An importer re-running over a sealed item, and a create resumed after a fresh seal, see
+    /// the same text whatever the artifact's hash.
+    #[test]
+    fn states_and_journal_keys_ignore_the_hash() {
+        let full = "line\n".repeat(2000);
+        let a = stored_text(&full, 5120, &[1; 32]).unwrap();
+        let b = stored_text(&full, 5120, &[2; 32]).unwrap();
+        assert_ne!(a, b);
+        assert!(states(&a, &full, 5120) && states(&b, &full, 5120));
+        assert_eq!(journal_key(&a), journal_key(&b));
+        // another text of the same length, or another length, is a change
+        let other = "word\n".repeat(2000);
+        assert!(!states(&a, &other, 5120));
+        assert!(!states(&a, &full[..9000], 5120));
+        // a text that fits states itself, and keys itself
+        assert!(states("short", "short", 5120) && !states("short", "shorter", 5120));
+        assert_eq!(journal_key("short"), "short");
     }
 
     #[test]

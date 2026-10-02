@@ -117,6 +117,9 @@ pub async fn edit(
     }
     let pr = open_pr(ctx, repo, number, "pull request not edited").await?;
     let patch = &pr.view.patch;
+    // only the author may edit: refused before a long body's artifact is paid for
+    pr.s.collab()
+        .require_author(&patch.author, &format!("edit PR #{number}"))?;
     let planned = body
         .as_deref()
         .map(|b| {

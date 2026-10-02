@@ -37,6 +37,14 @@ impl BodyTargets {
             });
         }
         let resolved = policy.resolve(&StorageProfiles::load()?)?;
+        // every reader fetches the full text: storage only its owner can read is refused, as
+        // for release assets
+        crate::storage::check_publishable(
+            resolved.external.iter().map(|(n, p)| (n.as_str(), p)),
+            None,
+            crate::storage::dash_remote_name().as_deref(),
+            "the text was not written",
+        )?;
         let http = forge_core::storage::http_client();
         let external = resolved
             .external
@@ -145,18 +153,15 @@ impl<'f> Planned<'f> {
         })
     }
 
-    /// The field text a write will carry, known before anything is stored: the text itself,
-    /// or in a public repository its prefix and trailer (the artifact's hash is the text's own
-    /// SHA-256). `None` for a private repository's long text, whose artifact is sealed afresh.
-    /// What a resumable create keys its journal by.
-    pub fn expected_field_text(&self, repo: &RepoRef) -> Option<String> {
+    /// The field a write will carry as a resumable create's journal keys it, known before
+    /// anything is stored: the text itself, or its prefix and trailer with any artifact hash
+    /// (the journal key leaves the hash out, `rules::long_body::journal_key`).
+    pub fn journal_text(&self) -> String {
         if self.targets.is_none() {
-            return Some(self.full.clone());
+            return self.full.clone();
         }
-        if repo.visibility == Visibility::Private {
-            return None;
-        }
-        forge_core::rules::long_body::public_stored_text(&self.full, self.room)
+        forge_core::rules::long_body::stored_text(&self.full, self.room, &[0; 32])
+            .unwrap_or_else(|| self.full.clone())
     }
 
     /// The text to write into the field: the text itself, or (after storing the full text)
@@ -177,9 +182,9 @@ impl<'f> Planned<'f> {
 }
 
 /// The texts as a reader shows them, in order: each field with no trailer as it is, each
-/// continued one fetched and checked (concurrently).
+/// continued one fetched and checked (the repository's manifests and members read once).
 pub async fn read_all(collab: &Collab<'_>, repo: &RepoRef, texts: &[&str]) -> Vec<BodyRead> {
-    futures::future::join_all(texts.iter().map(|t| collab.read_long_body(repo, t))).await
+    collab.read_long_bodies(repo, texts).await
 }
 
 /// The line printed under a text of which only the first part could be read.
@@ -192,19 +197,25 @@ pub fn json(r: &BodyRead) -> (String, Option<String>) {
     (r.text().to_string(), r.incomplete().map(str::to_string))
 }
 
-/// Read every text in `texts` ([`read_all`]) and put it in place of its field; a text of which
-/// only the first part could be read ends with a line saying why ([`partial_line`]).
-pub async fn read_in_place(collab: &Collab<'_>, repo: &RepoRef, texts: Vec<&mut String>) {
+/// Read every text in `texts` ([`read_all`]) and put it in place of its field; returns, in
+/// order, why only the first part of a text could be read (`None` for a whole one).
+pub async fn read_in_place(
+    collab: &Collab<'_>,
+    repo: &RepoRef,
+    texts: Vec<&mut String>,
+) -> Vec<Option<String>> {
     let reads = {
         let refs: Vec<&str> = texts.iter().map(|t| t.as_str()).collect();
         read_all(collab, repo, &refs).await
     };
-    for (t, r) in texts.into_iter().zip(reads) {
-        *t = match r.incomplete() {
-            None => r.text().to_string(),
-            Some(why) => format!("{}\n{}", r.text(), partial_line(why)),
-        };
-    }
+    texts
+        .into_iter()
+        .zip(reads)
+        .map(|(t, r)| {
+            *t = r.text().to_string();
+            r.incomplete().map(str::to_string)
+        })
+        .collect()
 }
 
 /// Put each comment's text as read (`reads`, in the same order) in place of its field, and

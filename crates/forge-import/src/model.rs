@@ -316,6 +316,104 @@ pub fn fit_text(text: &str, max: usize, full_at: &str) -> String {
     format!("{cut}{note}")
 }
 
+/// The cut an importer before long bodies made (forge-v2.md §6.3), kept exactly as it was
+/// (Unicode trims, `str::lines`) so [`legacy_release_notes`] recognises what it wrote byte for
+/// byte. New cuts use the shared rule ([`fit_text`]).
+mod legacy {
+    use super::clip;
+
+    pub fn fit_text(text: &str, max: usize, full_at: &str) -> String {
+        // A string never has more characters than bytes: the byte bound covers both.
+        if text.len() <= max {
+            return text.to_string();
+        }
+        let note = format!("\n\n… (truncated; the full text is at {full_at})");
+        // Room for the note; the closer (a fence of any length, a span of N backticks) is measured
+        // after the cut, and the cut shortened by what it overflows until everything fits. Each round
+        // shrinks `room`, so it ends (at worst with an empty cut and no closer).
+        let mut room = max.saturating_sub(note.len());
+        loop {
+            let clipped = clip(text, room, room);
+            let closed = close_code(boundary_cut(&clipped));
+            let len = closed.len() + note.len();
+            if len <= max || room == 0 {
+                return format!("{closed}{note}");
+            }
+            room = room.saturating_sub(len - max);
+        }
+    }
+
+    /// `s` shortened to its last paragraph break, else line break, else space, when one falls in
+    /// its second half (a single overlong word is cut where it is).
+    fn boundary_cut(s: &str) -> &str {
+        let half = s.len() / 2;
+        ["\n\n", "\n", " "]
+            .iter()
+            .find_map(|sep| s.rfind(sep).filter(|&i| i >= half))
+            .map_or(s, |i| s[..i].trim_end())
+    }
+
+    /// `s` with a code fence or inline code span left open at its end closed again, so the cut does
+    /// not turn the rest of the rendering (the truncation note) into code.
+    fn close_code(s: &str) -> String {
+        // The fence a block opened with (``` or ~~~, any length ≥ 3): it closes only on the same
+        // character, at least as long. Outside blocks, an inline span opened by a run of N
+        // unescaped backticks closes on the next run of exactly N.
+        let mut fence: Option<(char, usize)> = None;
+        let mut span: Option<usize> = None;
+        for line in s.lines() {
+            let t = line.trim_start();
+            let run = |c: char| t.chars().take_while(|&x| x == c).count();
+            if let Some((c, n)) = fence {
+                if run(c) >= n && t.trim_end().chars().all(|x| x == c) {
+                    fence = None;
+                }
+                continue;
+            }
+            if span.is_none() {
+                if let Some(c) = ['`', '~'].into_iter().find(|&c| run(c) >= 3) {
+                    fence = Some((c, run(c)));
+                    continue;
+                }
+            }
+            span = backtick_spans(line, span);
+        }
+        match (fence, span) {
+            (Some((c, n)), _) => format!("{s}\n{}", c.to_string().repeat(n)),
+            (None, Some(n)) => format!("{s}{}", "`".repeat(n)),
+            (None, None) => s.to_string(),
+        }
+    }
+
+    /// The inline code span still open after `line` (its opening run's length), given the one open
+    /// before it; a backslash-escaped backtick outside a span is text.
+    fn backtick_spans(line: &str, mut open: Option<usize>) -> Option<usize> {
+        let b = line.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if open.is_none() && b[i] == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b[i] == b'`' {
+                let start = i;
+                while i < b.len() && b[i] == b'`' {
+                    i += 1;
+                }
+                let n = i - start;
+                open = match open {
+                    None => Some(n),
+                    Some(m) if m == n => None,
+                    other => other,
+                };
+                continue;
+            }
+            i += 1;
+        }
+        open
+    }
+}
+
 /// Provenance within the contract (author ≤ 120 chars / 480 bytes, url ≤ 300 bytes).
 pub fn imported(author: &str, created_at: u64, url: &str) -> Imported {
     Imported {
@@ -593,13 +691,19 @@ pub fn notes_with_footer(notes: &str, omitted: usize, total: usize, source_url: 
 /// cut to the 5,120-byte field with a link to the source, the assets footer within it. A
 /// release mirrored so is left as it is: a run does not rewrite it just to store its full notes.
 pub fn legacy_release_notes(notes: &str, omitted: usize, total: usize, source_url: &str) -> String {
-    footed(
-        &fit_text(notes, FIELD_MAX, source_url),
-        omitted,
-        total,
-        source_url,
-        FIELD_MAX,
-    )
+    let notes = legacy_cut(notes, source_url);
+    if omitted == 0 {
+        return notes;
+    }
+    let footer = assets_footer(omitted, total, source_url);
+    let room = FIELD_MAX.saturating_sub(footer.len());
+    format!("{}{footer}", legacy::fit_text(&notes, room, source_url))
+}
+
+/// `notes` as an importer before long bodies (forge-v2.md §6.3) cut them to the 5,120-byte
+/// field with a link to the source, exactly ([`legacy_release_notes`] without the footer).
+pub fn legacy_cut(notes: &str, source_url: &str) -> String {
+    legacy::fit_text(notes, FIELD_MAX, source_url)
 }
 
 fn footed(notes: &str, omitted: usize, total: usize, source_url: &str, max: usize) -> String {

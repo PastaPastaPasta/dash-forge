@@ -148,7 +148,8 @@ export function openPublicLongBody(stored: string, blob: Uint8Array): LongBodyOp
 export function fitPrefix(text: string, max: number): string {
   const bytes = encoder.encode(text)
   if (bytes.length <= max) return text
-  const decoder = new TextDecoder()
+  // A leading U+FEFF is text, as Rust keeps it (the default decoder would drop it).
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true })
   let room = max
   for (;;) {
     const closed = closeCode(decoder.decode(boundaryCut(clipBytes(bytes, room))))
