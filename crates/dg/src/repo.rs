@@ -665,6 +665,9 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         members,
     } = view_listing(default_branch, refs, manifests, members.map(|m| m.len()))?;
 
+    // Sorted by name (QW4-063: in the order they were read).
+    let mut refs = refs;
+    refs.sort_by(|a, b| a.0.cmp(&b.0));
     let refs_json: Vec<_> = refs
         .iter()
         .map(|(name, state)| {
@@ -706,9 +709,8 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
                 "  default branch: {}",
                 default_branch.clone().unwrap_or_else(|| "(none)".into())
             );
-            println!("  refs:           {}", refs.len());
-            for (name, state) in &refs {
-                println!("    {name}  {}", ref_state_short(state));
+            for line in ref_summary(&refs, default_branch.as_deref()) {
+                println!("{line}");
             }
             println!(
                 "  packs:          {} ({total_bytes} bytes)",
@@ -719,6 +721,84 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// How many branches and tags `repo view` lists by name before it counts the rest.
+const VIEW_REFS_SHOWN: usize = 10;
+
+/// `repo view`'s refs (QW4-063: every ref, unsorted, 606 lines for dashpay/dash): the
+/// branches, the default one first and the rest by name (digit runs as numbers), and the tags
+/// in release order (`forge_core::collab::v2::tag_order`, as `dg release list` and the web
+/// order them), each up to [`VIEW_REFS_SHOWN`] with the rest counted; other refs (a mirror's
+/// PR heads) only counted. A diverged ref is always listed, wherever it falls: it is the one
+/// that needs action. `--json` lists every ref.
+fn ref_summary(
+    refs: &[(String, forge_core::rules::RefState)],
+    default_branch: Option<&str>,
+) -> Vec<String> {
+    use forge_core::collab::v2::{natural_order, tag_order};
+    use forge_core::rules::RefState;
+    type Ref = (String, RefState);
+    let diverged = |r: &&Ref| matches!(r.1, RefState::Diverged { .. });
+    let short = |n: &str, prefix: &str| n.strip_prefix(prefix).unwrap_or(n).to_string();
+    let default_ref = default_branch.map(crate::git::full_ref);
+    let mut branches: Vec<&Ref> = refs
+        .iter()
+        .filter(|(n, _)| n.starts_with("refs/heads/"))
+        .collect();
+    branches.sort_by(|a, b| {
+        (Some(&a.0) != default_ref.as_ref())
+            .cmp(&(Some(&b.0) != default_ref.as_ref()))
+            .then_with(|| natural_order(&a.0, &b.0))
+    });
+    let mut tags: Vec<&Ref> = refs
+        .iter()
+        .filter(|(n, _)| n.starts_with("refs/tags/"))
+        .collect();
+    tags.sort_by(|a, b| tag_order(&short(&a.0, "refs/tags/"), &short(&b.0, "refs/tags/")));
+    let others: Vec<&Ref> = refs
+        .iter()
+        .filter(|(n, _)| !n.starts_with("refs/heads/") && !n.starts_with("refs/tags/"))
+        .collect();
+    let mut out = Vec::new();
+    let mut truncated = false;
+    for (label, prefix, list) in [
+        ("branches", "refs/heads/", &branches),
+        ("tags", "refs/tags/", &tags),
+    ] {
+        out.push(format!(
+            "  {label}:{}{}",
+            " ".repeat(15 - label.len()),
+            list.len()
+        ));
+        let shown: Vec<&&Ref> = list
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| *i < VIEW_REFS_SHOWN || diverged(r))
+            .map(|(_, r)| r)
+            .collect();
+        for (name, state) in shown.iter().map(|r| (&r.0, &r.1)) {
+            out.push(format!(
+                "    {}  {}",
+                short(name, prefix),
+                ref_state_short(state)
+            ));
+        }
+        if list.len() > shown.len() {
+            truncated = true;
+            out.push(format!("    … and {} more", list.len() - shown.len()));
+        }
+    }
+    if !others.is_empty() {
+        out.push(format!("  other refs:     {}", others.len()));
+        for (name, state) in others.iter().filter(|r| diverged(r)).map(|r| (&r.0, &r.1)) {
+            out.push(format!("    {name}  {}", ref_state_short(state)));
+        }
+    }
+    if truncated || !others.is_empty() {
+        out.push("  (`--json` lists every ref; `git ls-remote` in a clone too)".to_string());
+    }
+    out
 }
 
 /// What `repo view` lists: the default branch, live refs, pack manifests and member count.
@@ -959,6 +1039,95 @@ mod tests {
             Some("could not create work tree dir 'p': Permission denied")
         );
         assert_eq!(last_fatal_line("Cloning into 'p'...\n"), None);
+    }
+
+    /// QW4-063: `repo view` summarises the refs: branches (the default first) and tags, each
+    /// bounded, other refs counted, not 606 lines in read order.
+    #[test]
+    fn repo_view_summarises_the_refs() {
+        use forge_core::rules::RefState;
+        let at = |n: &str| {
+            (
+                n.to_string(),
+                RefState::Resolved {
+                    oid: "a".repeat(40),
+                    author: "who".into(),
+                    created_at: 1,
+                },
+            )
+        };
+        let mut refs = vec![
+            at("refs/tags/v0.1"),
+            at("refs/heads/zeta"),
+            at("refs/heads/master"),
+        ];
+        refs.extend((0..15).map(|i| at(&format!("refs/tags/v1.{i:02}"))));
+        refs.extend((0..30).map(|i| at(&format!("refs/mirror/pull/{i}/head"))));
+        let lines = ref_summary(&refs, Some("master"));
+        assert_eq!(lines[0], "  branches:       2");
+        assert_eq!(lines[1], "    master  aaaaaaaaaaaa");
+        assert_eq!(lines[2], "    zeta  aaaaaaaaaaaa");
+        assert_eq!(lines[3], "  tags:           16");
+        assert_eq!(lines[4], "    v1.14  aaaaaaaaaaaa");
+        assert_eq!(lines[14], "    … and 6 more");
+        assert_eq!(lines[15], "  other refs:     30");
+        assert!(lines[16].contains("`--json` lists every ref"));
+        assert_eq!(lines.len(), 17);
+
+        // Release order: a release above its pre-releases, `v0.10` above `v0.9`, a hyphen
+        // before the version (`jq-1.7.1`) read as the name, not a pre-release.
+        let names = [
+            "v24.0.0-rc.2",
+            "v0.9",
+            "v24.0.0",
+            "v24.0.0-rc.10",
+            "v0.10",
+            "jq-1.7.1-rc1",
+            "jq-1.7.1",
+        ];
+        let refs: Vec<_> = names
+            .iter()
+            .map(|n| at(&format!("refs/tags/{n}")))
+            .collect();
+        let lines = ref_summary(&refs, None);
+        let shown: Vec<&str> = lines[2..9]
+            .iter()
+            .map(|l| l.trim().split("  ").next().unwrap())
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "v24.0.0",
+                "v24.0.0-rc.10",
+                "v24.0.0-rc.2",
+                "jq-1.7.1",
+                "jq-1.7.1-rc1",
+                "v0.10",
+                "v0.9"
+            ]
+        );
+
+        // A diverged ref is listed even past the first ten, and among the other refs.
+        let mut refs: Vec<_> = (0..12)
+            .map(|i| at(&format!("refs/heads/b{i:02}")))
+            .collect();
+        let fork = RefState::Diverged { heads: vec![] };
+        refs.push(("refs/heads/zz-split".to_string(), fork.clone()));
+        refs.push(("refs/mirror/pull/1/head".to_string(), fork));
+        let lines = ref_summary(&refs, None);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("    zz-split  (diverged")),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"    … and 2 more".to_string()), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("    refs/mirror/pull/1/head  (diverged")),
+            "{lines:?}"
+        );
     }
 
     /// D-6: a deleted branch (folds to `Unborn`) is neither listed nor counted — parity with

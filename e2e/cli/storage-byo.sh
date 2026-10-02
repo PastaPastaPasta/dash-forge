@@ -126,7 +126,7 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 run = sys.argv[2]
 for p in d["packs"]:
-    if p.get("kind") == 0 and any(f"/e2e/{run}/packs/" in m["uri"] for m in p["mirrors"]):
+    if p.get("kindCode") == 0 and any(f"/e2e/{run}/packs/" in m["uri"] for m in p["mirrors"]):
         print(p["packHash"]); break
 PY
 )"

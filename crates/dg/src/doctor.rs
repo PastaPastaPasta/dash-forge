@@ -1116,10 +1116,37 @@ fn gateway_checks(
     out.push(if dead.is_empty() {
         Check::ok("gateways", format!("{live} of {} up ({source})", list.len()))
     } else if live > 0 {
+        // QW4-057: with the built-in list there is no `[read]` section to drop one from: the
+        // fix writes the list that answered here (a gateway can also be blocked by this
+        // network's DNS, not down for everyone).
+        let fix = if custom {
+            "drop the ones that do not answer from [read] ipfs_gateways in storage.toml (reads skip them, at the cost of a timeout)".to_string()
+        } else {
+            let answered: Vec<String> = list
+                .iter()
+                .filter(|g| up(g))
+                .map(|g| format!("\"{g}\""))
+                .collect();
+            // storage.toml may hold a `[read]` table already (an empty list keeps the defaults):
+            // then the line goes in it, never a second table.
+            let place = if profiles.read.ipfs_gateways.is_some() {
+                "set it in storage.toml's `[read]` table"
+            } else {
+                "add to storage.toml (beside config.toml) a `[read]` table with"
+            };
+            format!(
+                "reads skip them, at the cost of a timeout; if one stays unreachable from this network, {place} `ipfs_gateways = [{}]` (it replaces the built-in list, so later changes to it no longer reach you)",
+                answered.join(", ")
+            )
+        };
         Check::warn(
             "gateways",
-            format!("{live} of {} up ({source}); down: {}", list.len(), dead.join(", ")),
-            "drop the dead ones from [read] ipfs_gateways in storage.toml (reads skip them, at the cost of a timeout)",
+            format!(
+                "{live} of {} answer from here ({source}); not answering: {}",
+                list.len(),
+                dead.join(", ")
+            ),
+            fix,
         )
     } else {
         // A warning, not a failure: repos on Platform or S3 storage need no gateway.
@@ -1200,32 +1227,10 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
         Err(e) => git_network_unresolved(&e),
     });
 
-    out.push(match get("dash.costWarnThreshold") {
-        Some(v)
-            if v.trim()
-                .parse::<f64>()
-                .is_ok_and(|x| x.is_finite() && x >= 0.0) =>
-        {
-            Check::ok("cost guard", format!("pushes above {v} DASH ask first"))
-        }
-        Some(v) => Check::fail(
-            "cost guard",
-            format!("dash.costWarnThreshold = {v:?} is not a DASH amount: every push fails"),
-            format!("git config dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
-        ),
-        None => Check::warn(
-            "cost guard",
-            "dash.costWarnThreshold is unset: pushes never ask before spending",
-            format!("git config --global dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
-        )
-        .auto(AutoFix::GitConfigGlobal(
-            "dash.costWarnThreshold",
-            DEFAULT_COST_WARN_THRESHOLD.into(),
-        )),
-    });
-    if let Some(c) = get("dash.confirm").as_deref().and_then(confirm_check) {
-        out.push(c);
-    }
+    out.push(cost_guard_check(
+        get("dash.costWarnThreshold").as_deref(),
+        get("dash.confirm").as_deref(),
+    ));
 
     // This repository's storage policy (only meaningful inside a git repository).
     if !in_git_repo() {
@@ -1257,6 +1262,71 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
         },
     });
     out
+}
+
+/// The `cost guard` row: what a push does before it spends, from `dash.costWarnThreshold` and
+/// `dash.confirm` together, as git-remote-dash's guard decides it (QW4-055: the row read the
+/// threshold alone, "pushes above 0.05 DASH ask first", whatever dash.confirm said).
+fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>) -> Check {
+    // A mode the helper rejects fails every push, whatever the threshold says.
+    if let Some(c) = confirm.and_then(confirm_check) {
+        return c;
+    }
+    let mode = confirm.map(|c| c.trim().to_ascii_lowercase());
+    // `auto` when unset or empty (`confirm_check` passed the rest).
+    let mode = match mode.as_deref() {
+        Some("always" | "true" | "yes") => "always",
+        Some("never" | "false" | "no") => "never",
+        Some("refuse") => "refuse",
+        _ => "auto",
+    };
+    let threshold = match threshold {
+        Some(v)
+            if v.trim()
+                .parse::<f64>()
+                .is_ok_and(|x| x.is_finite() && x >= 0.0) =>
+        {
+            Some(v.trim())
+        }
+        Some(v) => {
+            return Check::fail(
+                "cost guard",
+                format!("dash.costWarnThreshold = {v:?} is not a DASH amount: every push fails"),
+                format!("git config dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
+            )
+        }
+        None => None,
+    };
+    match (mode, threshold) {
+        ("never", Some(t)) => Check::ok(
+            "cost guard",
+            format!("pushes never ask (dash.confirm=never), whatever they cost; dash.costWarnThreshold {t} is not used"),
+        ),
+        ("never", None) => Check::ok("cost guard", "pushes never ask (dash.confirm=never)"),
+        ("always", _) => Check::ok(
+            "cost guard",
+            "every paid push asks first (dash.confirm=always); without a terminal it is refused",
+        ),
+        ("refuse", Some(t)) => Check::ok(
+            "cost guard",
+            format!("pushes above {t} DASH fail without asking (dash.confirm=refuse)"),
+        ),
+        ("refuse", None) => Check::warn(
+            "cost guard",
+            "dash.confirm=refuse caps nothing: dash.costWarnThreshold is unset, so no push is refused",
+            format!("git config --global dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
+        ),
+        (_, Some(t)) => Check::ok("cost guard", format!("pushes above {t} DASH ask first")),
+        (_, None) => Check::warn(
+            "cost guard",
+            "dash.costWarnThreshold is unset: pushes never ask before spending",
+            format!("git config --global dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
+        )
+        .auto(AutoFix::GitConfigGlobal(
+            "dash.costWarnThreshold",
+            DEFAULT_COST_WARN_THRESHOLD.into(),
+        )),
+    }
 }
 
 /// The `dash.confirm` row, only for a value the remote helper rejects. Keep in step with
@@ -1442,6 +1512,33 @@ mod tests {
         );
     }
 
+    /// QW4-055: the cost guard row follows dash.confirm, not the threshold alone.
+    #[test]
+    fn the_cost_guard_row_follows_dash_confirm() {
+        let detail = |t: Option<&str>, c: Option<&str>| cost_guard_check(t, c).detail;
+        assert_eq!(
+            detail(Some("0.05"), None),
+            "pushes above 0.05 DASH ask first"
+        );
+        assert_eq!(
+            detail(Some("0.05"), Some("auto")),
+            "pushes above 0.05 DASH ask first"
+        );
+        assert!(detail(Some("0.05"), Some("never"))
+            .starts_with("pushes never ask (dash.confirm=never)"));
+        assert!(detail(Some("0.05"), Some("always")).starts_with("every paid push asks first"));
+        assert_eq!(
+            detail(Some("0.05"), Some("refuse")),
+            "pushes above 0.05 DASH fail without asking (dash.confirm=refuse)"
+        );
+        assert!(detail(None, Some("refuse")).contains("caps nothing"));
+        assert!(detail(Some("x"), Some("never")).contains("is not a DASH amount"));
+        // An invalid mode fails every push: the row says so, not "ask first".
+        let bad = cost_guard_check(Some("0.05"), Some("maybe"));
+        assert_eq!(bad.status, Status::Fail);
+        assert!(bad.detail.contains("every push fails"), "{}", bad.detail);
+    }
+
     /// Every `dash.confirm` value the remote helper accepts passes, `refuse` included (the
     /// mode forge-import and the Mirror Action set, and `costs.md` documents).
     #[test]
@@ -1577,7 +1674,23 @@ mod tests {
             &gw_health(&[("https://a.example", true), ("https://b.example", false)]),
         );
         assert_eq!(rows[0].status, Status::Warn);
-        assert!(rows[0].detail.contains("1 of 2 up"), "{}", rows[0].detail);
+        assert!(
+            rows[0].detail.contains("1 of 2 answer from here"),
+            "{}",
+            rows[0].detail
+        );
+        // QW4-057: with the built-in list, the fix writes the section that replaces it, naming
+        // the gateway that answered.
+        let fix = rows[0].fix.as_deref().unwrap();
+        assert!(
+            fix.contains("ipfs_gateways = [\"https://a.example\"]"),
+            "{fix}"
+        );
+        assert!(fix.contains("replaces the built-in list"), "{fix}");
+        assert!(
+            fix.contains("add to storage.toml (beside config.toml) a `[read]` table"),
+            "{fix}"
+        );
         assert!(
             rows[1].detail.contains("no public_gateway"),
             "{}",

@@ -47,7 +47,7 @@ history_tips() { # history_tips <repo> <tag>
   python3 -c '
 import json, sys
 p = json.load(open(sys.argv[1]))["packs"]
-print(sum(1 for x in p if x["kind"] == 3))' "$LOG-$2.json"
+print(sum(1 for x in p if x["kindCode"] == 3))' "$LOG-$2.json"
 }
 commit_in() { # commit_in <dir> <file> <text> <msg>
   printf '%s\n' "$3" >"$1/$2"

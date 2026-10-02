@@ -6091,9 +6091,19 @@ pub fn is_prerelease(tag: &str) -> bool {
 /// in one run, so `$createdAt` says when a release was mirrored, not published. Parity:
 /// forge-web `releaseOrder`.
 pub fn release_order(a: &Release, b: &Release) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
     let newest = || newest_first(a, b);
-    match (tag_version(&a.tag_name), tag_version(&b.tag_name)) {
+    if tag_version(&a.tag_name).is_none() && tag_version(&b.tag_name).is_none() {
+        return newest();
+    }
+    tag_order(&a.tag_name, &b.tag_name).then_with(newest)
+}
+
+/// Two tag names in [`release_order`]: with a version, highest first (a release above its
+/// pre-releases), before those without; those by name ([`natural`]). `dg repo view` lists
+/// tags in this order.
+pub fn tag_order(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (tag_version(a), tag_version(b)) {
         (Some((pa, ra)), Some((pb, rb))) => {
             let len = pa.len().max(pb.len());
             let at = |p: &[u64], i: usize| p.get(i).copied().unwrap_or(0);
@@ -6107,12 +6117,16 @@ pub fn release_order(a: &Release, b: &Release) -> std::cmp::Ordering {
                     (false, true) => Ordering::Greater,
                     (false, false) => natural(&rb, &ra),
                 })
-                .then_with(newest)
         }
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
-        (None, None) => newest(),
+        (None, None) => natural(a, b),
     }
+}
+
+/// `a` vs `b` by name, digit runs as numbers (`v0.9` before `v0.10`, `rc.9` before `rc.10`).
+pub fn natural_order(a: &str, b: &str) -> std::cmp::Ordering {
+    natural(a, b)
 }
 
 /// One run of a pre-release suffix: a number, or lower-cased text (separators dropped).

@@ -213,6 +213,13 @@ impl Storer {
             // `….key.pending` until the chain confirms it (QW3-070).
             let shown =
                 slot_file(network, identity_id, Slot::Main).unwrap_or_else(|_| path.clone());
+            // Say why before asking (QW4-058: a bare "Passphrase for the key file …" came with
+            // no reason, which only a failure printed).
+            if sealed::passphrase_env_in_use(&[sealed::PASSPHRASE_ENV]).is_none()
+                && sealed::passphrase_available()
+            {
+                eprintln!("{}", passphrase_reason(why));
+            }
             let pass = sealed::passphrase(&format!("the key file {}", shown.display()), true)
                 .map_err(|e| {
                     UserError::new(codes::USAGE, "the key could not be stored")
@@ -227,6 +234,15 @@ impl Storer {
         keystore::write_private_file(&path, sealed_text.as_bytes())?;
         Ok(Stored::Sealed(path))
     }
+}
+
+/// The line printed before the key file's passphrase is asked for: why there is one, and when
+/// it is asked again.
+fn passphrase_reason(why: &str) -> String {
+    let why = crate::repo_settings::capitalize(why);
+    format!(
+        "{why}: choose a passphrase to seal it. dg asks for it when a command needs the key (DASH_FORGE_PASSPHRASE gives it to scripts)."
+    )
 }
 
 /// Store a limited key in the main slot (one-off).
@@ -323,6 +339,19 @@ pub fn set_default(ctx: &Ctx, identity_id: &str, source: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW4-058: the passphrase prompt is introduced by why it is asked.
+    #[test]
+    fn the_passphrase_prompt_says_why() {
+        let line = passphrase_reason(
+            "there is no OS keychain here, so the key goes to a passphrase-encrypted file",
+        );
+        assert!(
+            line.starts_with("There is no OS keychain here, so the key goes to a passphrase-encrypted file: choose a passphrase"),
+            "{line}"
+        );
+        assert!(line.contains("DASH_FORGE_PASSPHRASE"), "{line}");
+    }
 
     #[test]
     fn stored_sources_and_descriptions() {

@@ -939,7 +939,16 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         (stored, Some(id), Some((spec, checked)))
     };
     store::set_default(ctx, &master.identity_id, &stored.source())?;
-    let balance = on_chain.balance();
+    // After the key's registration was charged (QW4-058: it printed the balance read before),
+    // and what it paid, as every paid write reports it.
+    let before = on_chain.balance();
+    let spent = if key_id.is_some() {
+        crate::common::spent_since(&client, &master.identity_id, before).await
+    } else {
+        0
+    };
+    let balance = before.saturating_sub(spent);
+    let price = ctx.usd_price();
     ctx.emit(
         group::with_group_fields(
             json!({
@@ -956,6 +965,7 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 "source": stored.source(),
                 "balanceCredits": balance,
                 "balanceDash": credits_to_dash(balance),
+                "cost": key_id.map(|_| crate::fmt::cost_json(spent, price)),
             }),
             spec.as_ref().map(|(_, c)| c),
         ),
@@ -976,6 +986,9 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 print_kept_encryption(&kept_ids);
             }
             println!("  stored in {}", stored.describe());
+            if key_id.is_some() && spent > 0 {
+                println!("  cost {}", crate::fmt::cost_line(spent, price));
+            }
             println!("  balance {} DASH", dash_amount(credits_to_dash(balance)));
             if key_id.is_some() {
                 println!(

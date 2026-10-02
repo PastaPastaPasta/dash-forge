@@ -1022,8 +1022,11 @@ async fn view(
     let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed);
     let unresolved = conv.threads.iter().filter(|t| !t.resolved).count();
     let standing = json!({
-        "requiredChecks": checks.as_ref().ok().cloned().flatten(),
-        "requiredChecksError": checks.as_ref().err(),
+        // Each required check's run on the head (the names are `policy.requiredChecks`).
+        "requiredCheckRuns": checks.as_ref().ok().cloned().flatten(),
+        "requiredCheckRunsError": checks.as_ref().err(),
+        // The whole policy (approvals and checks), judged on an open PR only; `approvals` is
+        // the count alone (QW4-060: `policyStatus.met` and `policyMet` said different things).
         "policyMet": policy.as_ref().filter(|_| judged).map(|_| unmet.is_empty()),
         "unmetRules": unmet,
         "policyBypasses": bypasses.iter().map(|b| json!({
@@ -1062,8 +1065,9 @@ async fn view(
             "requestedReviewers": review_state.requested_reviewers,
             "dismissedReviews": review_state.dismissed_reviews,
             "sinceYourReview": since,
-            "policy": policy,
-            "policyStatus": policy_status,
+            // The shape `dg repo policy show --json` prints (QW4-060: raw integers here).
+            "policy": policy.as_ref().map(crate::repo_settings::policy_json),
+            "approvals": policy_status.as_ref().map(|s| json!({ "have": s.have, "need": s.need })),
             "reviews": reviews_json,
             "threads": conv.threads,
             "generalComments": conv.general,

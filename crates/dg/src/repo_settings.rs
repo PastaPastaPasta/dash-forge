@@ -420,7 +420,7 @@ fn method_names(mask: u8) -> Vec<&'static str> {
         .collect()
 }
 
-fn policy_json(p: &Policy) -> Value {
+pub(crate) fn policy_json(p: &Policy) -> Value {
     json!({
         "requiredApprovals": p.required_approvals,
         "maintainersOnly": p.approver_role == 1,
@@ -737,7 +737,7 @@ pub async fn archive(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
     Ok(())
 }
 
-fn capitalize(s: &str) -> String {
+pub(crate) fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     c.next()
         .map(|f| f.to_uppercase().collect::<String>() + c.as_str())

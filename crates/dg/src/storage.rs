@@ -1211,7 +1211,7 @@ async fn use_profiles(
     // QW3-072: the repository's public config still names the storage it was created with
     // (the web's badge); say so when this policy differs.
     let advertised = if global {
-        None
+        Advertised::NoClone
     } else {
         advertised_elsewhere(ctx, &resolved).await
     };
@@ -1222,7 +1222,10 @@ async fn use_profiles(
             "platformFallback": resolved.platform_fallback,
             "scope": if global { "global" } else { "repo" },
             "warnings": url_warnings,
-            "advertisedMode": advertised.as_ref().map(|(_, mode)| mode),
+            "advertisedMode": match &advertised {
+                Advertised::Elsewhere(_, mode) => Some(*mode),
+                _ => None,
+            },
             "existingPacks": match &existing {
                 Ok(e) => e.as_ref().map(|e| json!({
                     "repo": e.repo,
@@ -1267,15 +1270,20 @@ async fn use_profiles(
                     );
                 }
             }
-            if let Some((repo, mode)) = &advertised {
-                println!(
+            // QW4-064: the hint names the clone's repository, and is left out when its config
+            // already says where the packs are.
+            match &advertised {
+                Advertised::Elsewhere(repo, mode) => println!(
                     "note: {repo} still tells readers its packs are on {} (its public config); `dg storage advertise {repo}` records this policy  (one small on-chain config write)",
                     mode_name(*mode)
-                );
-            } else if !resolved.external.is_empty() {
-                println!(
+                ),
+                Advertised::Unread(repo) if !resolved.external.is_empty() => println!(
+                    "Tell readers where to look: dg storage advertise {repo}  (one small on-chain config write)"
+                ),
+                Advertised::NoClone if !resolved.external.is_empty() => println!(
                     "Tell readers where to look: dg storage advertise <owner>/<repo>  (one small on-chain config write)"
-                );
+                ),
+                Advertised::Matches | Advertised::Unread(_) | Advertised::NoClone => {}
             }
         },
     );
@@ -1292,12 +1300,19 @@ fn mode_name(mode: u8) -> &'static str {
     }
 }
 
-/// The clone's repository and the storage mode its public config advertises, when that is not
-/// what `policy` would advertise. `None` outside a clone, when they agree, or when it cannot
-/// be read quickly (a read only: no identity).
-async fn advertised_elsewhere(ctx: &Ctx, policy: &ResolvedPolicy) -> Option<(String, u8)> {
-    let (_, url) = dash_remote_url()?;
-    let (owner, name) = crate::publish::parse_dash_url(&url)?;
+/// What the clone's repository's public config advertises against `policy` ([`Advertised`]).
+/// A read only, with no identity, given 15 s.
+async fn advertised_elsewhere(ctx: &Ctx, policy: &ResolvedPolicy) -> Advertised {
+    let Some((_, url)) = dash_remote_url() else {
+        return Advertised::NoClone;
+    };
+    let Some((owner, name)) = crate::publish::parse_dash_url(&url) else {
+        return Advertised::NoClone;
+    };
+    // The repository as the remote names it, for a hint when its config cannot be read.
+    let named = name
+        .as_ref()
+        .map_or_else(|| owner.clone(), |n| format!("{owner}/{n}"));
     let read = async {
         let client = ctx.connect().await?;
         let handle = match &name {
@@ -1307,13 +1322,40 @@ async fn advertised_elsewhere(ctx: &Ctx, policy: &ResolvedPolicy) -> Option<(Str
         let config = forge_core::repo::RepoService::reader(&client)
             .current_config(&handle)
             .await?;
-        anyhow::Ok((handle.display(), config.backend_mode))
+        anyhow::Ok((handle.display(), config.backend_mode, config.backend_uris))
     };
-    let (repo, mode) = tokio::time::timeout(std::time::Duration::from_secs(15), read)
-        .await
-        .ok()?
-        .ok()?;
-    (mode != policy.advertised_mode()).then_some((repo, mode))
+    match tokio::time::timeout(std::time::Duration::from_secs(15), read).await {
+        Ok(Ok((repo, mode, _))) if mode != policy.advertised_mode() => {
+            Advertised::Elsewhere(repo, mode)
+        }
+        // The same mode at other read URLs (another bucket) still wants an advertise.
+        Ok(Ok((repo, _, uris))) if !same_uris(&uris, &policy.advertised_uris()) => {
+            Advertised::Unread(repo)
+        }
+        Ok(Ok(_)) => Advertised::Matches,
+        _ => Advertised::Unread(named),
+    }
+}
+
+/// Whether two read-URL lists name the same URLs, in any order.
+fn same_uris(a: &[String], b: &[String]) -> bool {
+    let a: std::collections::BTreeSet<&str> = a.iter().map(String::as_str).collect();
+    let b: std::collections::BTreeSet<&str> = b.iter().map(String::as_str).collect();
+    a == b
+}
+
+/// What the clone's repository tells readers about its storage, against a new policy.
+enum Advertised {
+    /// Not inside a clone of a Forge repository (or `--global`).
+    NoClone,
+    /// Its public config names another storage mode: (the repository, that mode).
+    Elsewhere(String, u8),
+    /// Its public config already says what this policy does.
+    Matches,
+    /// It could not be read (the repository as the remote names it), or it advertises other
+    /// read URLs than this policy's (another bucket in the same mode): advertising is advised
+    /// either way.
+    Unread(String),
 }
 
 async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
@@ -1401,7 +1443,9 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
         packs.push(json!({
             "packHash": hex::encode(m.pack_hash),
             "uploader": m.owner_id,
-            "kind": m.kind,
+            // Named, as the manifest kinds read (QW4-060: it was the raw integer).
+            "kind": artifact_kind(m.kind),
+            "kindCode": m.kind,
             "sizeBytes": m.size_bytes,
             "chunkCount": m.chunk_count,
             "storageTier": if m.storage == 0 { "platform" } else { "external" },
@@ -1424,7 +1468,8 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
             for p in &packs {
                 let hash = p["packHash"].as_str().unwrap_or("");
                 println!(
-                    "  pack {}  ({} bytes, {})",
+                    "  {} {}  ({} bytes, {})",
+                    p["kind"].as_str().unwrap_or("pack"),
                     &hash[..hash.len().min(12)],
                     p["sizeBytes"],
                     p["storageTier"].as_str().unwrap_or("")
@@ -1443,6 +1488,23 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// A `packManifest.kind` by name: what the artifact is (`forge_core::pack` `KIND_*`).
+fn artifact_kind(kind: u64) -> &'static str {
+    use forge_core::pack::{
+        KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_HISTORY_INDEX, KIND_HISTORY_VERSIONS,
+        KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS,
+    };
+    match u8::try_from(kind) {
+        Ok(KIND_GIT_PACK) => "pack",
+        Ok(KIND_OBJECT_LOCATOR) => "browse-index",
+        Ok(KIND_FLAT_INDEX) => "flat-index",
+        Ok(KIND_HISTORY_INDEX) => "history-index",
+        Ok(KIND_RELEASE_ASSETS) => "release-assets",
+        Ok(KIND_HISTORY_VERSIONS) => "history-versions",
+        _ => "unknown",
+    }
 }
 
 /// The availability rows for one pack: its on-chain copy, every http(s) URL, every

@@ -58,7 +58,7 @@ ok "identity ${OWNER_ID:0:10}…"
 # The repo's pack manifests, by kind: "<git packs> <live locators>".
 kinds() { # kinds <repo>
   dg_read_retry "$ID" "$LOG-kinds.json" "$LOG-kinds.err" --json storage status "$1" || return 1
-  python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["packs"]; print(sum(1 for x in p if x["kind"]==0), sum(1 for x in p if x["kind"]==1))' "$LOG-kinds.json"
+  python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["packs"]; print(sum(1 for x in p if x["kindCode"]==0), sum(1 for x in p if x["kindCode"]==1))' "$LOG-kinds.json"
 }
 reindex() { # reindex <log> <repo>: dg repo reindex --yes --json, stdout -> <log>.json
   dg_as "$ID" --yes --json repo reindex "$2" >"$1.json" 2>"$1.err"
