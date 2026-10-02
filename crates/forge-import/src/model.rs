@@ -13,7 +13,7 @@ use forge_core::collab::{CommentAnchor, Imported, ReleaseAsset, Verdict};
 use forge_core::rules::v2::CloseReason;
 
 /// An issue or pull request to mirror.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SrcTarget {
     /// Issue or pull request.
     pub kind: TargetKind,
@@ -49,7 +49,7 @@ pub struct SrcTarget {
 }
 
 /// Why an issue was closed at the source.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SrcCloseReason {
     /// Completed, not planned, or duplicate.
     pub reason: CloseReason,
@@ -60,7 +60,7 @@ pub struct SrcCloseReason {
 }
 
 /// What a pull request points at.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SrcPatch {
     /// Base ref, `refs/heads/<branch>`.
     pub base_ref_name: String,
@@ -71,7 +71,7 @@ pub struct SrcPatch {
 }
 
 /// A comment to mirror.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SrcComment {
     /// Body, including the provenance header.
     pub body: String,
@@ -89,7 +89,7 @@ pub struct SrcComment {
 }
 
 /// A review to mirror.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SrcReview {
     /// The source verdict: recorded in the body header only. The mirror writes every
     /// review as a comment, so no source reviewer's approval counts as a member's.
@@ -103,7 +103,7 @@ pub struct SrcReview {
 }
 
 /// A label definition.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SrcLabel {
     /// Name (≤ 30 chars).
     pub name: String,
@@ -114,7 +114,7 @@ pub struct SrcLabel {
 }
 
 /// A release.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SrcRelease {
     /// Tag.
     pub tag_name: String,
@@ -137,7 +137,7 @@ pub struct SrcRelease {
 }
 
 /// Everything one run mirrors (beyond git data).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SrcCollab {
     /// Issues and pull requests.
     pub targets: Vec<SrcTarget>,
@@ -458,7 +458,7 @@ pub fn release(
 /// Who published a source release, and when (`release` has no field for it on the current
 /// contracts: its notes open with this, as issue and PR bodies do; `release.imported` is
 /// proposed for the fresh registration, docs/design/release-asset-manifest.md §4).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Published {
     /// `github.com`, `gitlab.com`, … (the source host).
     pub host: String,

@@ -11,6 +11,7 @@
 //! * [`chain`] — what the sink reads from and writes to the destination.
 //! * [`gitsync`] — git data through the ordinary `git-remote-dash` push.
 //! * [`summary`] — the run summary (table and `--summary-json`).
+//! * [`snapshot`] — the source read, kept beside `--state` so a restarted run resumes writing.
 
 pub mod assets;
 pub mod budget;
@@ -26,6 +27,7 @@ pub mod model;
 pub mod pipeline;
 pub mod sealed_release;
 pub mod sink;
+pub mod snapshot;
 pub mod source;
 pub mod source_github;
 pub mod source_gitlab;

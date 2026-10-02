@@ -51,7 +51,9 @@ struct RunArgs {
     gitlab: source::GitlabOptions,
 
     /// Incremental state file: only items updated at the source since the last successful
-    /// run are read. Optional; what is already mirrored is always decided on chain.
+    /// run are read. Optional; what is already mirrored is always decided on chain. The
+    /// source read is also kept beside it (`<state>.source.json`, up to a day) until a run
+    /// completes, so a restarted run reads only what changed since instead of everything.
     #[arg(long)]
     state: Option<PathBuf>,
 

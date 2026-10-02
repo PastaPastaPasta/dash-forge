@@ -525,7 +525,7 @@ pub fn ref_name_hash_matches(ref_name: &str, ref_name_hash: &str) -> bool {
 /// `--verdict` flag. An unrecognized code reads as [`Verdict::Unknown`] rather than being
 /// dropped, so a document written by a newer client is still shown rather than silently
 /// omitted from a PR's history.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Verdict {
     /// Approve (1).
     Approve,

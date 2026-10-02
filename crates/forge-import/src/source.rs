@@ -153,4 +153,11 @@ pub trait Source {
 
     /// Where [`Self::sync_mirror`] keeps a PR/MR head: `<prefix><n>/head`.
     fn pull_head_prefix(&self) -> &'static str;
+
+    /// Put `targets` in the order [`Self::collect`] returns them (the order Forge numbers them
+    /// in): by number, GitHub's one sequence for issues and PRs. A source whose issues and
+    /// PRs are numbered apart overrides it.
+    fn sort_targets(&self, targets: &mut [crate::model::SrcTarget]) {
+        targets.sort_by_key(|t| t.number);
+    }
 }

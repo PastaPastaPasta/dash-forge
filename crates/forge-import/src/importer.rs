@@ -25,6 +25,7 @@ use crate::dest::{self, Outcome, Signer, REPO_CREATE_CREDITS};
 use crate::gitsync::{GitPusher, PackStorage, ProofRepo, PushReport, Refs};
 use crate::model::SrcCollab;
 use crate::sink::Ledger;
+use crate::snapshot::Snapshot;
 use crate::source::{Classes, Source};
 use crate::state::{self, SyncState};
 use crate::summary::{Status, Summary};
@@ -122,11 +123,21 @@ async fn run_inner<'a>(
         &state::destination(existing_id.as_deref().unwrap_or_default(), &collab_contract),
     );
     let since = sync_state.since();
-    let mut collab_src = src.collect(
+    // The read is kept beside `--state` (a full run's, not a `--limit` trial's), so a run that
+    // dies part-way through its writes resumes them without reading the source again.
+    let snapshot = cfg
+        .state_path
+        .as_deref()
+        .filter(|_| cfg.limit == 0)
+        .map(|p| Snapshot::new(p, &scope, since.as_deref(), sync_state.pending_revisits()));
+    let mut collab_src = read_collab(
+        src,
         cfg.classes,
         since.as_deref(),
         sync_state.pending_revisits(),
         cfg.limit,
+        snapshot.as_ref(),
+        started,
     )?;
     // An incremental run cannot place an earlier item it finds missing (dense numbers), except
     // one the destination already refused (its content, not its order, is the problem).
@@ -404,7 +415,54 @@ async fn run_inner<'a>(
     sync_state.set_refused(&collab_src.refused.union(&refused).copied().collect());
     // Nothing to revisit: a merge is recorded as soon as the source says merged (D-9), with
     // the base tip that proves it when there is one, else the source's merge commit.
-    sync_state.save(started, Vec::new())
+    sync_state.save(started, Vec::new())?;
+    // The pass it was kept for is complete; the next run reads from the new cursor.
+    if let Some(s) = &snapshot {
+        s.remove();
+    }
+    Ok(())
+}
+
+/// The source's collaboration data for this run. With a `snapshot` of an earlier read of the
+/// same run (same scope, `since` and revisits) younger than a day, only what changed since that
+/// read started is asked for and merged in ([`crate::snapshot`]); otherwise everything is read.
+/// Either way the result is saved back to the snapshot, stamped `started` (the snapshot is a
+/// cache: a failure to save it is a warning).
+fn read_collab(
+    src: &dyn Source,
+    classes: crate::source::Classes,
+    since: Option<&str>,
+    revisit: &[u32],
+    limit: usize,
+    snapshot: Option<&Snapshot>,
+    started: u64,
+) -> Result<SrcCollab> {
+    let cached = snapshot.and_then(|s| s.load(started, crate::snapshot::MAX_AGE_SECS));
+    let collab = match (cached, snapshot) {
+        (Some(cached), Some(s)) => {
+            let refresh = cached.refresh_since();
+            let age = started.saturating_sub(cached.fetched_at);
+            eprintln!(
+                "forge-import: reusing the source read saved in {} ({}m old); reading only what \
+                 changed at the source since {refresh}",
+                s.path().display(),
+                age / 60
+            );
+            let fresh = src.collect(classes, Some(&refresh), revisit, limit)?;
+            crate::snapshot::merge(cached.collab, fresh, |t| src.sort_targets(t))
+        }
+        _ => src.collect(classes, since, revisit, limit)?,
+    };
+    if let Some(s) = snapshot {
+        match s.save(started, &collab) {
+            Ok(()) => tracing::info!(path = %s.path().display(), "saved the source read"),
+            Err(e) => tracing::warn!(
+                error = %format!("{e:#}"),
+                "could not save the source read; a restarted run reads the source again"
+            ),
+        }
+    }
+    Ok(collab)
 }
 
 /// Whether a run's incremental state may advance: every item was read (no `--limit` cut, no
@@ -653,6 +711,103 @@ mod tests {
             ..SrcCollab::default()
         };
         assert!(!state_advances(&cut, 0, &none, false));
+    }
+
+    /// A source that answers `collect` with `items` numbered as given (the first ask) or `fresh`
+    /// (any later ask), recording the `since` of every ask.
+    struct Counted {
+        first: Vec<u32>,
+        fresh: Vec<u32>,
+        asked: std::cell::RefCell<Vec<Option<String>>>,
+    }
+
+    impl Source for Counted {
+        fn display(&self) -> String {
+            "github.com/o/r".into()
+        }
+        fn default_name(&self) -> String {
+            "r".into()
+        }
+        fn meta(&self) -> Result<crate::source::SourceMeta> {
+            unreachable!()
+        }
+        fn collect(
+            &self,
+            _: Classes,
+            since: Option<&str>,
+            _: &[u32],
+            _: usize,
+        ) -> Result<crate::model::SrcCollab> {
+            let first = self.asked.borrow().is_empty();
+            self.asked.borrow_mut().push(since.map(str::to_string));
+            let numbers = if first { &self.first } else { &self.fresh };
+            Ok(SrcCollab {
+                targets: numbers.iter().map(|&n| issue(n)).collect(),
+                ..SrcCollab::default()
+            })
+        }
+        fn sync_mirror(&self, _: &Path) -> Result<()> {
+            unreachable!()
+        }
+        fn fetch_bases(
+            &self,
+            _: &Path,
+            _: &[String],
+            _: bool,
+        ) -> Result<BTreeMap<String, crate::gitsync::Unfetched>> {
+            unreachable!()
+        }
+        fn pull_head_prefix(&self) -> &'static str {
+            "refs/pull/"
+        }
+    }
+
+    fn issue(n: u32) -> crate::model::SrcTarget {
+        crate::model::SrcTarget {
+            kind: forge_core::collab::v2::TargetKind::Issue,
+            number: n,
+            patch: None,
+            merged_oid: None,
+            imported: forge_core::collab::Imported {
+                url: format!("https://github.com/o/r/issues/{n}"),
+                ..forge_core::collab::Imported::default()
+            },
+            ..merged_pr("refs/heads/main")
+        }
+    }
+
+    /// A restarted run reads only what changed since the saved read (its `since` is the saved
+    /// read's start, less the overlap) and merges it in; a run with no snapshot reads in full;
+    /// a completed run removes it, so the next one reads from its own cursor.
+    #[test]
+    fn a_restarted_run_reads_the_source_from_its_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("collab.sync.json");
+        let src = Counted {
+            first: vec![1, 2, 3],
+            fresh: vec![3, 4],
+            asked: std::cell::RefCell::new(Vec::new()),
+        };
+        let classes = Classes::parse("issues,prs").unwrap();
+        let snap = Snapshot::new(&state, "scope", None, &[]);
+        let read = read_collab(&src, classes, None, &[], 0, Some(&snap), 10_000).unwrap();
+        assert_eq!(read.targets.len(), 3);
+        assert_eq!(*src.asked.borrow(), [None], "a full read first");
+        assert!(snap.path().exists(), "kept beside --state");
+
+        // The restart, an hour later: only what changed since, merged in source order.
+        let read = read_collab(&src, classes, None, &[], 0, Some(&snap), 13_600).unwrap();
+        let numbers: Vec<u32> = read.targets.iter().map(|t| t.number).collect();
+        assert_eq!(numbers, [1, 2, 3, 4]);
+        let since = crate::github::unix_to_iso8601(10_000 - 600);
+        assert_eq!(*src.asked.borrow(), [None, Some(since)]);
+
+        // Without a snapshot (removed when a run completes, or never kept): in full.
+        snap.remove();
+        read_collab(&src, classes, None, &[], 0, Some(&snap), 14_000).unwrap();
+        assert_eq!(src.asked.borrow().last().unwrap(), &None);
+        read_collab(&src, classes, None, &[], 0, None, 14_000).unwrap();
+        assert_eq!(src.asked.borrow().len(), 4);
     }
 
     /// A source served from a local repository (`file://`), for the proof fetch.

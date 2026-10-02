@@ -107,6 +107,12 @@ impl Source for GitlabSource {
     fn pull_head_prefix(&self) -> &'static str {
         "refs/merge-requests/"
     }
+
+    /// Issues and merge requests are numbered apart, so they interleave by creation time, the
+    /// order `collect` returns them in.
+    fn sort_targets(&self, targets: &mut [crate::model::SrcTarget]) {
+        targets.sort_by_key(|t| t.imported.created_at);
+    }
 }
 
 /// An issue or a merge request, as listed.
