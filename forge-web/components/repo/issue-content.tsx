@@ -643,7 +643,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 {caps.canLock ? <LockToggle locked={meta.locked} onToggle={(on) => setPending({ kind: 'flag', flag: 'lock', on })} /> : null}
               </div>
             ) : null}
-            {!archived ? <RoleLimitNote role={holdings.data?.role} what={caps.canLock ? 'pin conversations' : 'pin, lock, label, assign or set milestones as a member'} className="mt-2" /> : null}
+            {!archived ? <RoleLimitNote role={holdings.data?.role} cap="canPin" what={caps.canLock ? 'pin conversations' : 'pin, lock, label, assign or set milestones as a member'} className="mt-2" /> : null}
             {canModerate ? (
               <div className="mt-2">
                 <HideThreadControl

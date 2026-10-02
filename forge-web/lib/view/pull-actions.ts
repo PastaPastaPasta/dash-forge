@@ -417,7 +417,7 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
     } else if (pull.headOid === '') {
       mergeHint = 'This PR records no head commit to mark as merged.'
     } else if (!holder) {
-      mergeHint = roleLimit(holdings.role, 'merge pull requests') ?? "Only this repo's maintainers and writers can mark a PR as merged."
+      mergeHint = roleLimit(holdings.role, 'canMerge', 'merge pull requests') ?? "Only this repo's maintainers and writers can mark a PR as merged."
     } else if (baseProtected) {
       mergeHint = `${branchName(base)} is a protected branch: only maintainers can merge into it.`
     } else if (policyUnknown) {

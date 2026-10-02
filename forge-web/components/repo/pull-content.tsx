@@ -1763,6 +1763,7 @@ function PullPage({
                 {!archived ? (
                   <RoleLimitNote
                     role={viewerRole}
+                    cap="canMerge"
                     what={caps.canLock ? 'merge, mark drafts ready, update heads or dismiss reviews' : 'lock, label, assign or set milestones as a member'}
                     className="mt-2"
                   />
