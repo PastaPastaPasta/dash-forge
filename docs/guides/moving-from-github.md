@@ -262,7 +262,8 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 | **Git LFS** | Not supported | Keep large binaries out of git; attach them to releases, which go to your storage |
 | **`https://` clone URLs, shallow clones** | `dash://` only (needs `git-remote-dash`); no `--depth` ([E205](../errors.md#e205)) | `git clone --filter=blob:none` for a light clone; the web app offers a zip of any branch |
 | **Email notifications** | None: there is no server to send them | The web app's **Notifications**, or a webhook to your own notifier |
-| **Secret scanning, Dependabot, code search** | None | Run those tools locally or in your own CI |
+| **Code search** | Within one repository, in the web app: built in your browser from the repository's files, the default branch only for a large repository ([Search the code](quick-start.md#search-the-code)). No search across repositories: that needs an indexer, and Forge runs none | `git grep` in a clone |
+| **Secret scanning, Dependabot** | None | Run those tools locally or in your own CI |
 | **Private repositories in the web app** | The web app reads private repositories and writes their issues, PRs and reviews, but can't merge PRs or commit to branches in them yet | Use `dg` for those |
 
 The [FAQ](../FAQ.md) has more on what Forge is and isn't.

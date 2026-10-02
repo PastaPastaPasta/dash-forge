@@ -34,6 +34,7 @@ const REPO_TITLES: Readonly<Record<string, (q: Query, repo: string) => string>> 
   '/repo/tree': (q, repo) => `${q.get('path') || '/'}${at(q)} · ${repo}`,
   '/repo/blob': (q, repo) => `${q.get('path') || 'File'}${at(q)} · ${repo}`,
   '/repo/blame': (q, repo) => `Blame ${q.get('path') ?? ''} · ${repo}`,
+  '/repo/search': (q, repo) => (q.get('query') ? `${q.get('query')} · Code search · ${repo}` : `Code search · ${repo}`),
   '/repo/commits': (q, repo) => (q.get('path') ? `History for ${q.get('path')} · ${repo}` : `Commits · ${repo}`),
   '/repo/commit': (q, repo) => `Commit ${(q.get('oid') ?? '').slice(0, 7)} · ${repo}`,
   '/repo/compare': (q, repo) => (q.get('head') ? `Comparing ${q.get('base') ?? ''}...${q.get('head')} · ${repo}` : `Compare · ${repo}`),
@@ -84,7 +85,7 @@ export function pageTitle(pathname: string, query: Query, ownerName?: string | n
   if (route !== undefined && owner !== '' && name !== '') {
     // A private repo's path, ref and oid travel as `~…` tokens: its title is the repo name
     // alone, with no view, path, ref or owner (a tab title ends up in history and screen shares).
-    const sealed = ['path', 'ref', 'oid'].some((k) => query.get(k)?.startsWith('~'))
+    const sealed = ['path', 'ref', 'oid', 'query'].some((k) => query.get(k)?.startsWith('~'))
     return withSite(sealed ? name : route(query, `${ownerLabel(owner, ownerName)}/${name}`))
   }
   const profile = PROFILE_TITLES[path]

@@ -238,7 +238,7 @@ Newest `release` per tag. Assets are URLs into the owner's storage with `sha256`
 
 ### 5.11 Search
 - Jump box: `owner/name`, `@name`, `#n` in repo context.
-- In-repo: filenames from `flatIndex` (fetched on first use, size shown); content search materializes ≤ 100 MB in a worker after *"Index 38 MiB for search? Stays in this browser."*; above that: *"Content search is only available for repos under 100 MB; clone and grep."*
+- In-repo: filenames from `flatIndex` (fetched on first use, size shown); content search (`/repo/search`, `/` in a repo) reads the ref's text files through the browse reader into a worker, kept per repo in IndexedDB (memory for a private repo) and re-read only where blobs changed. A small repo (≤ 4 MiB to read) is indexed at once; a larger one asks first (*"Code search reads each text file of develop once — 4,398 files, about 25 MB…"*) and shows progress. Above 100 MiB of text: *"Too large to search in a browser … clone the repo and use git grep."* A large repo (> 2,000 files or 16 MiB stored) is indexed on its default branch only.
 - Issues/PRs: MiniSearch over the fetched list.
 - `/explore`: Recent repos, Recently released; signed in: My repos, My issues, My PRs, Starred. No trending: *"Trending needs an indexer. Forge doesn't run one; you can (docs)."*
 
