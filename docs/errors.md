@@ -57,6 +57,8 @@ Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Als
 
 **Checks failed.** `dg doctor` found at least one failing check. Each `✗` row carries its own fix, and `dg doctor --fix` applies the safe ones.
 
+`dg pr checks` reports E104 (exit 1, as `gh pr checks` does) when a counted check run on the pull request's head failed, or a check the branch policy requires failed. The runs are listed above the error; each run's details link (`dg ci status`) says why it failed. A new run your CI reports replaces the one shown.
+
 ## E105
 
 **Merge has conflicts.** `dg pr merge` tried a three-way merge of the pull request's head into its base locally and the two change the same lines. Nothing was pushed and no merge event was posted.
@@ -349,7 +351,7 @@ Fix: pick another name. Issue and PR numbers are retried automatically, so Platf
 
 ## E604
 
-**Rejected by Platform.** Consensus refused the state transition for a reason not listed above, or would refuse it: `dg` and the helper check the contract's rules they can read before signing, and report a write consensus is certain to refuse with the same code, with the note "checked before anything was signed; nothing was written or paid". This includes 40120 on any path other than `$ownerId`: a document, contract or identity the write refers to does not exist (the headline names the path). It also covers 40128, an edit of a field that can't change: the headline names the field and says "can't change once set", or, for a check run's summary, links, log and artifacts, "can't change once the run completed" (report a re-run with a new `--external-id`). The `cause:` line carries Platform's message, or the rule, when it has one.
+**Rejected by Platform.** Consensus refused the state transition for a reason not listed above, or would refuse it: `dg` and the helper check the contract's rules they can read before signing, and report a write consensus is certain to refuse with the same code, with the note "checked before anything was signed; nothing was written or paid". This includes 40120 on any path other than `$ownerId`: a document, contract or identity the write refers to does not exist (the headline names the path). It also covers 40128, an edit of a field that can't change: the headline names the field and says "can't change once set". `dg ci report` refuses before signing a report that names a run by `--external-id` but would change it once it completed ("a completed run can't change") or re-queue it once it started ("a started run can't go back to queued"): report a re-run with a new `--external-id`. The `cause:` line carries Platform's message, or the rule, when it has one.
 
 Two common ones:
 
@@ -424,6 +426,8 @@ Fix: pass `--yes` once you have checked what the command will do. The `cause:` l
 
 ## E804
 
-**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, or the policy could not be read. The policy is a client rule every Forge client applies, not a consensus rule. Nothing was pushed and no merge event was posted.
+**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, or the policy could not be read. The cause names every unmet rule (`required approvals: 0 of 1; required check `build`: missing`). The policy is a client rule every Forge client applies, not a consensus rule. Nothing was pushed and no merge event was posted.
+
+`dg pr checks` reports E804 (exit 8, as `gh pr checks` does for a pending check) while a check the branch policy requires is missing or still running. A run from a source the policy does not pin for that check is listed but not counted.
 
 Fix: get the missing approvals (`dg pr review --approve` by a member other than the PR author, whose own approval never counts), get the failing checks to pass (`dg pr checks <owner>/<repo> <n>` shows the runs), or use an allowed method. A maintainer can bypass the approvals and checks with `--override-policy`; the merge then records the bypassed rules on the PR as a policy-bypass event, which nobody can delete. The allowed merge methods still apply.

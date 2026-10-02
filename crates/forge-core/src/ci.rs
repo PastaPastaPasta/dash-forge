@@ -59,6 +59,7 @@ use crate::rules::v2::{
     PASSING_CONCLUSIONS,
 };
 use crate::scope::RepoRef;
+use crate::user_error::{codes, UserError};
 
 /// forge-community: a CI runner's membership of a repo.
 pub const DOC_RUNNER: &str = "runner";
@@ -608,6 +609,57 @@ fn newest_run<'d>(
         .max_by(|a, b| (a.created_at.unwrap_or(0), &a.id).cmp(&(b.created_at.unwrap_or(0), &b.id)))
 }
 
+/// A run's state in words: its conclusion once completed (`success`), else its status
+/// (`in_progress`).
+fn state_words(d: &FetchedDocument) -> String {
+    let status = d.field_str("status").unwrap_or_default();
+    match d.field_str("conclusion") {
+        Some(c) if status == "completed" => format!("completed, {c}"),
+        _ => status,
+    }
+}
+
+/// E604 for a report that names one of the reporter's runs by its `externalId` but can't update
+/// it: the run completed and the report would change it (another conclusion, or a status that
+/// starts it over), or it started and the report would re-queue it. A run's id names one run, so
+/// such a report is refused before anything is signed rather than recorded as a second run under
+/// the same id that silently becomes the one shown (QW4-011). The same completion again is not
+/// refused: it continues the run and changes nothing ([`run_to_update`]).
+#[must_use]
+pub fn unchangeable_run(report: &CheckReport, stored: &FetchedDocument) -> UserError {
+    let id = report.external_id.as_deref().unwrap_or_default();
+    let reported = report
+        .conclusion
+        .as_deref()
+        .map_or_else(|| report.status.clone(), |c| format!("completed, {c}"));
+    let completed = stored.field_str("status").as_deref() == Some("completed");
+    let message = if completed {
+        format!(
+            "check run `{}` with external id `{id}` already completed ({}), and a completed run can't change",
+            report.name,
+            stored.field_str("conclusion").unwrap_or_default()
+        )
+    } else {
+        format!(
+            "check run `{}` with external id `{id}` has started ({}), and a started run can't go back to queued",
+            report.name,
+            stored.field_str("status").unwrap_or_default()
+        )
+    };
+    let u = UserError::new(codes::REJECTED, message).cause(format!(
+        "this report ({reported}) would change run {}: forge-community keeps a run's start, \
+         completion and conclusion once set, and a completed run's summary, links, log and \
+         artifacts, so the same id can't carry a second result",
+        stored.id
+    ));
+    let u = if completed {
+        u.fix("report a re-run with a new --external-id (GitHub Actions gives each attempt its own): the newest run is the one shown")
+    } else {
+        u.fix("report this run's progress (`--status in_progress` or `--status completed`), or a re-run with a new --external-id")
+    };
+    u.note("checked before anything was signed; nothing was written or paid")
+}
+
 /// What [`CheckRuns::report`] did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -644,7 +696,9 @@ impl<'a> CheckRuns<'a> {
     /// `head (repoId, headOid, $createdAt)`. A report with an `externalId` that matches no run
     /// at all reads once more after a short pause: a run created a moment ago may not be on the
     /// node this read reached yet, and a second create would split the run in two. A match that
-    /// may not be updated (completed, or a re-queue of a started run) is a new run at once.
+    /// may not be updated (completed, or a re-queue of a started run) is refused with E604
+    /// ([`unchangeable_run`]) when the report names it by external id, and is otherwise a new
+    /// run at once, which [`ReportPlan::supersedes`] names.
     ///
     /// On a private repository the report's text is dropped first
     /// ([`CheckReport::for_visibility`]; [`ReportPlan::dropped`] names it), so its run is
@@ -665,6 +719,16 @@ impl<'a> CheckRuns<'a> {
             docs = check_run_docs(self.client, &community, repo, oid.clone()).await?;
         }
         let target = run_to_update(&docs, &me, report).cloned();
+        // The reporter's newest run of this name that the report can't update: a report that
+        // names it by id is refused (QW4-011); one that names no run records a re-run, which the
+        // caller says will be the run shown from now on.
+        let superseded = match target {
+            Some(_) => None,
+            None => newest_run(&docs, &me, report).cloned(),
+        };
+        if let (Some(_), Some(run)) = (&report.external_id, &superseded) {
+            return Err(unchangeable_run(report, run).into());
+        }
         let write = report
             .write(target.as_ref(), crate::cache::now_ms())
             .ok_or_else(|| Error::Config("the report breaks the check run rules".into()))?;
@@ -672,6 +736,7 @@ impl<'a> CheckRuns<'a> {
             community,
             oid,
             target,
+            superseded,
             write,
             dropped,
         })
@@ -759,6 +824,9 @@ pub struct ReportPlan {
     oid: Vec<u8>,
     /// The run it replaces; `None`: it creates one.
     target: Option<FetchedDocument>,
+    /// When it creates one: the reporter's newest run of that name it can't update (completed,
+    /// or started and the report re-queues it), which the new run supersedes as the one shown.
+    superseded: Option<FetchedDocument>,
     /// What it writes ([`check_run_write`]).
     write: RunWrite,
     /// The fields a private repository's run cannot carry that the report gave
@@ -785,6 +853,14 @@ impl ReportPlan {
     /// named in [`PRIVATE_TEXT_FIELDS`]; empty on a public repository.
     pub fn dropped(&self) -> &[&'static str] {
         &self.dropped
+    }
+
+    /// When the report records a re-run: the id and state (`completed, success`) of the
+    /// reporter's run of that name it supersedes as the run shown (one it can't update).
+    pub fn supersedes(&self) -> Option<(String, String)> {
+        self.superseded
+            .as_ref()
+            .map(|d| (d.id.clone(), state_words(d)))
     }
 }
 
@@ -955,6 +1031,55 @@ mod tests {
         assert_eq!(run_to_update(&docs, me, &r), None);
         r.external_id = Some("gh-3".into());
         assert_eq!(run_to_update(&docs, me, &r), None);
+    }
+
+    /// QW4-011: a report that names a run by its external id but can't update it is refused
+    /// (E604) with what to do, never recorded as a second run under the same id.
+    #[test]
+    fn a_report_that_would_change_a_named_final_run_is_refused() {
+        let done = doc(
+            "a",
+            "runner",
+            1,
+            &[
+                ("name", "build"),
+                ("status", "completed"),
+                ("conclusion", "success"),
+                ("externalId", "run-1"),
+            ],
+        );
+        let mut r = report("completed", Some("failure"));
+        r.external_id = Some("run-1".into());
+        assert_eq!(
+            run_to_update(std::slice::from_ref(&done), "runner", &r),
+            None
+        );
+        let u = unchangeable_run(&r, &done);
+        assert_eq!((u.code, u.exit_code()), ("E604", 6));
+        assert!(
+            u.message.contains("already completed (success)"),
+            "{}",
+            u.message
+        );
+        assert!(u.cause.as_deref().unwrap().contains("(completed, failure)"));
+        assert!(u.fix.iter().any(|f| f.contains("new --external-id")));
+        assert!(u.note.as_deref().unwrap().contains("nothing was written"));
+
+        let started = doc(
+            "b",
+            "runner",
+            1,
+            &[("name", "build"), ("status", "in_progress")],
+        );
+        let mut q = report("queued", None);
+        q.external_id = Some("run-2".into());
+        let u = unchangeable_run(&q, &started);
+        assert!(
+            u.message.contains("can't go back to queued"),
+            "{}",
+            u.message
+        );
+        assert!(u.fix.iter().any(|f| f.contains("--status in_progress")));
     }
 
     fn stored(fields: &[(&str, FieldValue)]) -> FetchedDocument {

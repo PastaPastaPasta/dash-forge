@@ -4,8 +4,10 @@
 //!
 //! Every report goes through `dg ci report` (the CLI's own path: validation, the replace-or-create
 //! choice, the log upload and its SHA-256, the checkRun-only key in DASH_FORGE_KEY). A job's
-//! reports share one run id (`--external-id`, a hash of the repo, ref, commit, workflow file and
-//! job), so its queued, in-progress and completed reports update one check run.
+//! reports share one run id (`--external-id`, a hash of the repo, ref, commit, workflow file, job
+//! and the run's start), so its queued, in-progress and completed reports update one check run,
+//! and a re-run of the same commit (`forge-runner run`, a PR reopened) is a check run of its own:
+//! `dg ci report` refuses a report that would change a completed run under its id.
 //!
 //! A pull request runs its head commit, fetched from the branch the PR names (in this
 //! repository or a fork) and checked against the head `dg` reports. Its checks are posted on the
@@ -195,12 +197,21 @@ pub fn report_args(cfg: &Config, r: &Report<'_>) -> Vec<String> {
 }
 
 /// The run id a job's reports share: `forge-runner:` and a SHA-256 over what identifies the run
-/// (repo, ref, commit, workflow file, job), cut to 40 hex digits. Fixed length, and two runs
-/// never share one because a ref name or a file name was cut.
-pub fn external_id(repo: &str, push: &Push, file: &Path, job: &str) -> String {
+/// (repo, ref, commit, workflow file, job, and `attempt`: the run's start, so each re-run of a
+/// commit is its own check run, as a GitHub re-run attempt is), cut to 40 hex digits. Fixed
+/// length, and two runs never share one because a ref name or a file name was cut.
+pub fn external_id(repo: &str, push: &Push, file: &Path, job: &str, attempt: u64) -> String {
     use sha2::{Digest as _, Sha256};
     let mut h = Sha256::new();
-    for part in [repo, &push.refname, &push.oid, &file.to_string_lossy(), job] {
+    let attempt = attempt.to_string();
+    for part in [
+        repo,
+        &push.refname,
+        &push.oid,
+        &file.to_string_lossy(),
+        job,
+        &attempt,
+    ] {
         h.update(part.as_bytes());
         h.update([0]);
     }
@@ -566,6 +577,8 @@ struct RunCtx<'a> {
     logs: &'a Path,
     run_dir: &'a Path,
     deadline: Instant,
+    /// When this run started (ms since 1970): part of every job's run id ([`external_id`]).
+    attempt: u64,
 }
 
 impl RunCtx<'_> {
@@ -576,7 +589,7 @@ impl RunCtx<'_> {
             repo: &self.repo.repo,
             oid: &self.key.oid,
             name: self.trig.check_name(name),
-            external_id: external_id(&self.repo.repo, self.key, file, id),
+            external_id: external_id(&self.repo.repo, self.key, file, id, self.attempt),
             status,
             conclusion: None,
             summary: None,
@@ -729,6 +742,9 @@ pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> R
         logs: &logs,
         run_dir,
         deadline,
+        attempt: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
     };
     for b in &plan.broken {
         let name = format!("{} (invalid workflow)", b.file.display());
@@ -1178,26 +1194,34 @@ mod tests {
     #[test]
     fn run_ids_are_fixed_length_and_never_collide_on_long_names() {
         let f = Path::new(".forge/workflows/ci.yml");
-        let id = external_id("a/b", &push(), f, "build");
+        let id = external_id("a/b", &push(), f, "build", 1);
         assert!(id.starts_with("forge-runner:") && id.len() == 13 + 40);
-        assert_eq!(id, external_id("a/b", &push(), f, "build"), "stable");
+        assert_eq!(id, external_id("a/b", &push(), f, "build", 1), "stable");
         assert_ne!(
             id,
             external_id(
                 "a/b",
                 &push(),
                 Path::new(".forge/workflows/other.yml"),
-                "build"
+                "build",
+                1
             ),
             "the file is part of it"
+        );
+        // QW4-011: a re-run of the same commit is a check run of its own, never a report that
+        // would change the completed one under its id.
+        assert_ne!(
+            id,
+            external_id("a/b", &push(), f, "build", 2),
+            "the attempt"
         );
         let long = |s: &str| Push {
             refname: format!("refs/heads/{}{s}", "x".repeat(200)),
             ..push()
         };
         assert_ne!(
-            external_id("a/b", &long("1"), f, "b"),
-            external_id("a/b", &long("2"), f, "b")
+            external_id("a/b", &long("1"), f, "b", 1),
+            external_id("a/b", &long("2"), f, "b", 1)
         );
     }
 
@@ -1381,8 +1405,8 @@ mod tests {
             ..k.clone()
         };
         assert_ne!(
-            external_id("a/b", &k, f, "build"),
-            external_id("a/b", &as_push, f, "build"),
+            external_id("a/b", &k, f, "build", 1),
+            external_id("a/b", &as_push, f, "build", 1),
             "a PR run and the branch's push run are separate check runs"
         );
         let p = Trigger::Push(push());

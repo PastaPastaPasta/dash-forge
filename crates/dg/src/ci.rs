@@ -10,7 +10,10 @@
 //!   document, and consensus refuses the runner's next report (40120).
 //! * `report` creates a `checkRun`, or replaces the reporter's open run of that name on that
 //!   commit (queued → in_progress → completed), optionally uploading a log to a storage profile
-//!   and recording its URL (https or `ipfs://`) and SHA-256. On a private repository the run
+//!   and recording its URL (https or `ipfs://`) and SHA-256. A report naming a run by
+//!   `--external-id` that it can't update (completed, or started and re-queued) is refused
+//!   (E604); one naming no run that can't update the reporter's last run of that name records a
+//!   re-run and says it is now the run shown (QW4-011). On a private repository the run
 //!   records only its name, status, conclusion and times: the summary, details link, external
 //!   id and log are left out with a warning (forge-community `privateNoText`), and no log is
 //!   uploaded.
@@ -189,9 +192,10 @@ pub struct ReportArgs {
     /// Read the summary from a file.
     #[arg(long, value_name = "FILE")]
     pub summary_file: Option<PathBuf>,
-    /// The CI's own run id: reporting it again updates that run until it completes (a completed
-    /// run is final on forge-community; a report after that is a new run). Left out on a
-    /// private repository, where your open run of that name is the one updated.
+    /// The CI's own run id: reporting it again updates that run while it is open. Once it
+    /// completed, the same result again changes nothing, and a report that would change it is
+    /// refused (E604): report a re-run with a new id. Left out on a private repository, where
+    /// your open run of that name is the one updated.
     #[arg(long)]
     pub external_id: Option<String>,
     /// Upload this log file to your storage (content-addressed) and record its URL and SHA-256.
@@ -763,16 +767,13 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     // A check the branch policy pins to another source still records, but never counts toward
     // the policy (QW2-086): say so before anything is paid.
     let not_counted = pinned_elsewhere(&s, &r.name).await;
-    if let Some(note) = &not_counted {
-        // stderr, JSON mode too (as `warn_private`): before the prompt and the payment.
-        eprintln!("warning: {note}");
-    }
     let runs = CheckRuns::new(&s.client, &s.identity, &s.bridge);
     // Decided before the prompt, so it prices the write that happens. The plan gets the
     // report as given: an external id, even one a private repository drops, tells it the
     // run may have been created a moment ago.
     let plan = runs.plan(&s.repo, &r).await?;
     r = kept;
+    let supersedes = warn_rerun(&r, &plan, a.external_id.is_none() && !private);
     // The same completion of a run that already completed: its summary, links, log and
     // artifacts are final (RC2 S1) and stay as stored, so nothing is uploaded for them.
     let frozen = plan.evidence_frozen();
@@ -816,9 +817,35 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
             left_out: &left_out,
             artifacts_left_out: &artifacts_left_out,
             not_counted: not_counted.as_deref(),
+            supersedes: supersedes.as_deref(),
         },
     );
     Ok(())
+}
+
+/// A report naming no run that can't update your last one of this name is a re-run: it becomes
+/// the run shown (and the one a merge counts). Says so before the prompt and the payment, on
+/// stderr in JSON mode too (as [`warn_private`]), and returns the superseded run's id.
+/// `hint_id`: the report gave no external id where one would be kept (a public repository).
+fn warn_rerun(r: &CheckReport, plan: &forge_core::ci::ReportPlan, hint_id: bool) -> Option<String> {
+    let (id, was) = plan.supersedes()?;
+    eprintln!("{}", rerun_note(r, &was, hint_id));
+    Some(id)
+}
+
+/// The note for a report that records a re-run over `was` (the state of your last run of that
+/// name, which the report can't change); with `hint_id`, how to tie reports to one run.
+fn rerun_note(r: &CheckReport, was: &str, hint_id: bool) -> String {
+    format!(
+        "note: your last `{}` run on {} is {was}, and this report can't change it, so it records a new run, which becomes the one shown{}",
+        crate::fmt::safe(&r.name),
+        &r.head_oid[..7.min(r.head_oid.len())],
+        if hint_id {
+            " (pass --external-id to tie a CI run's reports to one check run)"
+        } else {
+            ""
+        }
+    )
 }
 
 /// The evidence `r` gives (with `a`'s log and artifacts, which a private repository drops) for
@@ -849,11 +876,14 @@ fn keep_frozen_evidence(r: &mut CheckReport, a: &ReportArgs, private: bool) -> V
 
 /// Why a run of check `name` reported by this signer will not count toward the branch policy:
 /// the policy pins `name` to other sources (`requiredCheckSources`). `None` when it counts, or
-/// the policy cannot be read (a warning is never a reason to fail the report).
+/// the policy cannot be read (a warning is never a reason to fail the report). Warns on stderr,
+/// JSON mode too (as [`warn_private`]): before the prompt and the payment.
 async fn pinned_elsewhere(s: &Session, name: &str) -> Option<String> {
     let policy = s.collab().policy(&s.repo).await.ok()??;
     let me = s.identity.id();
-    pinned_note(&policy, name, &me)
+    let note = pinned_note(&policy, name, &me)?;
+    eprintln!("warning: {note}");
+    Some(note)
 }
 
 /// [`pinned_elsewhere`]'s rule on a read policy.
@@ -879,6 +909,8 @@ struct Outcome<'a> {
     artifacts_left_out: &'a [String],
     /// [`pinned_elsewhere`]: the run will not count toward the branch policy.
     not_counted: Option<&'a str>,
+    /// The id of your earlier run of this name the new run supersedes as the one shown.
+    supersedes: Option<&'a str>,
 }
 
 /// Print what `dg ci report` did: the write, and what the run carries.
@@ -889,6 +921,7 @@ fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
         left_out,
         artifacts_left_out,
         not_counted,
+        supersedes,
     } = *o;
     // The `artifacts` JSON this report recorded, read back for the output.
     let artifacts: Vec<ReleaseAsset> = r
@@ -917,6 +950,9 @@ fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
             // Set when the policy pins this check to another source: the run never counts
             // toward it. `null` says only that no pin excludes it.
             "policyNote": not_counted,
+            // Set when this report recorded a re-run: the earlier run it replaces as the one
+            // shown, which it could not update (completed, or started and re-queued).
+            "supersedes": supersedes,
         }),
         || {
             println!(
@@ -1069,9 +1105,11 @@ fn here() -> PathBuf {
 
 /// The commit of `repo` that `given` names, as a full lower-case id (QW3-026); `None` is
 /// `HEAD`. A full id is taken as it is. Anything else (`HEAD`, a branch, an abbreviated id)
-/// is resolved by `git rev-parse` in the current directory, as `gh` and git do, but only when
-/// that is a clone of `repo`: another repository's `HEAD` is not a commit of `repo`. Otherwise
-/// an E201 says what to pass.
+/// is resolved by `git rev-parse` in the current directory, as `gh` and git do. A revision
+/// given explicitly resolves in any git checkout that has it (QW4-061: a runner for a fork's
+/// pull request reports on the parent from a clone of the fork, and a GitHub Actions job from
+/// a plain checkout), with a note on stderr when that is not a clone of `repo`; the implicit
+/// `HEAD` only in a clone of `repo`. Otherwise an E201 says what to pass.
 fn resolve_commit(repo: &str, given: Option<&str>) -> Result<String> {
     resolve_commit_in(
         &here(),
@@ -1092,32 +1130,52 @@ fn resolve_commit_in(
     if crate::git::is_oid(rev) {
         return Ok(rev.to_ascii_lowercase());
     }
-    if !here.is_some_and(|h| is_this_clone(repo, h)) {
-        let what = match given {
-            None => format!("which commit of {repo}? none was given"),
-            Some(_) => format!(
-                "{rev:?} is not a full commit id, and this directory is not a clone of {repo}"
-            ),
-        };
-        return Err(UserError::new(codes::USAGE, what)
+    let in_clone = here.is_some_and(|h| is_this_clone(repo, h));
+    let not_here = |what: String| -> anyhow::Error {
+        UserError::new(codes::USAGE, what)
             .fix(format!(
-                "pass the commit's full id (40 hex digits), or run it inside a clone of {repo}: `HEAD`, a branch or an abbreviated id work there"
+                "pass the commit's full id (40 hex digits), or run it inside a checkout that has it (a clone of {repo} or of a fork): `HEAD`, a branch or an abbreviated id work there"
             ))
-            .into());
+            .into()
+    };
+    if given.is_none() && !in_clone {
+        return Err(not_here(format!("which commit of {repo}? none was given")));
     }
     let spec = format!("{rev}^{{commit}}");
-    crate::git::git(dir, &["rev-parse", "--verify", "--quiet", &spec], &[])
+    let resolved = crate::git::git(dir, &["rev-parse", "--verify", "--quiet", &spec], &[])
         .ok()
         .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| crate::git::is_oid(s))
-        .ok_or_else(|| {
-            UserError::new(
-                codes::USAGE,
-                format!("{rev:?} is not a commit this clone has"),
-            )
-            .fix("pass the commit's full id (40 hex digits), or fetch it into this clone first")
-            .into()
-        })
+        .filter(|s| crate::git::is_oid(s));
+    match resolved {
+        Some(oid) => {
+            if !in_clone {
+                eprintln!("{}", resolved_elsewhere_note(rev, &oid, here, repo));
+            }
+            Ok(oid)
+        }
+        None if in_clone => Err(UserError::new(
+            codes::USAGE,
+            format!("{rev:?} is not a commit this clone has"),
+        )
+        .fix("pass the commit's full id (40 hex digits), or fetch it into this clone first")
+        .into()),
+        None => Err(not_here(format!(
+            "{rev:?} is not a full commit id, and this directory is not a git checkout that has it"
+        ))),
+    }
+}
+
+/// The note for a revision resolved in a checkout that is not a clone of `repo` (QW4-061): the
+/// commit it named, and where, so a wrong directory shows before anything is paid.
+fn resolved_elsewhere_note(rev: &str, oid: &str, here: Option<&str>, repo: &str) -> String {
+    let checkout = here.map_or_else(
+        || "this git checkout".to_string(),
+        |h| format!("this clone of {h}"),
+    );
+    format!(
+        "note: {rev} is {} in {checkout}, which is not a clone of {repo}; using that commit",
+        &oid[..12.min(oid.len())]
+    )
 }
 
 async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
@@ -1273,21 +1331,67 @@ mod tests {
                 "{u:?}"
             );
         }
-        // another repository, or no clone: only a full id
-        for (here, given) in [
-            (Some(HERE), Some("HEAD")),
-            (None, None),
-            (None, Some("main")),
-        ] {
-            let e = resolve_commit_in(d, here, "alice/other", given).unwrap_err();
+        // QW4-061: a revision given explicitly resolves in a clone of another repository (a
+        // fork) or a plain git checkout; the implicit HEAD needs a clone of the repository.
+        assert_eq!(
+            resolve_commit_in(d, Some(HERE), "alice/parent", Some("HEAD")).unwrap(),
+            head
+        );
+        assert_eq!(
+            resolve_commit_in(d, None, "alice/parent", Some("main")).unwrap(),
+            head
+        );
+        let e = resolve_commit_in(d, Some(HERE), "alice/parent", None).unwrap_err();
+        let u = e.downcast_ref::<UserError>().unwrap();
+        assert_eq!(u.code, "E201", "{u:?}");
+        assert!(
+            u.message.starts_with("which commit of alice/parent?"),
+            "{u:?}"
+        );
+        // outside any git checkout: only a full id
+        let bare = tempfile::tempdir().unwrap();
+        for given in [None, Some("HEAD"), Some("main")] {
+            let e = resolve_commit_in(bare.path(), None, "alice/other", given).unwrap_err();
             let u = e.downcast_ref::<UserError>().unwrap();
             assert_eq!(u.code, "E201", "{u:?}");
             assert!(u.fix[0].contains("full id"), "{u:?}");
         }
         assert_eq!(
-            resolve_commit_in(d, None, "alice/other", Some(full)).unwrap(),
+            resolve_commit_in(bare.path(), None, "alice/other", Some(full)).unwrap(),
             full.to_ascii_lowercase()
         );
+    }
+
+    /// QW4-011: a report that can't update your last run of its name says it records a re-run
+    /// that becomes the run shown; the --external-id hint only where the flag would help.
+    #[test]
+    fn a_rerun_says_it_becomes_the_run_shown() {
+        let r = CheckReport {
+            head_oid: "5deae9d109eca7c07057dafd53b3c633d5ef867b".into(),
+            name: "build".into(),
+            ..CheckReport::default()
+        };
+        let n = rerun_note(&r, "completed, success", true);
+        assert!(
+            n.contains("your last `build` run on 5deae9d is completed, success"),
+            "{n}"
+        );
+        assert!(n.contains("becomes the one shown"), "{n}");
+        assert!(n.contains("pass --external-id"), "{n}");
+        assert!(!rerun_note(&r, "in_progress", false).contains("--external-id"));
+    }
+
+    #[test]
+    fn a_commit_resolved_outside_the_repositorys_clone_is_named() {
+        let oid = "61a02cb35170f0fafcf5ee60c8e2606848eb85e2";
+        let n = resolved_elsewhere_note("HEAD", oid, Some("bob/project"), "alice/project");
+        assert!(
+            n.contains("HEAD is 61a02cb35170 in this clone of bob/project"),
+            "{n}"
+        );
+        assert!(n.contains("not a clone of alice/project"), "{n}");
+        let n = resolved_elsewhere_note("main", oid, None, "alice/project");
+        assert!(n.contains("in this git checkout"), "{n}");
     }
 
     /// QW2-077:`--log` on a Platform-only repository names the flag and the fix, not the

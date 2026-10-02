@@ -559,7 +559,7 @@ fn empty_as_null<S: serde::Serializer>(value: &str, s: S) -> std::result::Result
 }
 
 /// A `checkRun` on a head: the newest by `($createdAt, $id)` per `name` ([`Collab::check_runs`]).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckRun {
     /// Document `$id`.
@@ -645,6 +645,21 @@ pub fn newest_check_runs(
                 .field_str("artifacts")
                 .and_then(|a| serde_json::from_str(&a).ok())
                 .unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// `docs` (a head's `checkRun` documents) as [`checks_state`] reads them.
+fn check_run_rows(docs: &[FetchedDocument], head_oid: &str) -> Vec<CheckRunRow> {
+    docs.iter()
+        .map(|d| CheckRunRow {
+            id: d.id.clone(),
+            head_oid: head_oid.to_ascii_lowercase(),
+            name: d.field_str("name").unwrap_or_default(),
+            status: d.field_str("status").unwrap_or_default(),
+            conclusion: d.field_str("conclusion"),
+            reporter: d.owner_id.clone(),
+            created_at: d.created_at.unwrap_or_default(),
         })
         .collect()
 }
@@ -3567,15 +3582,7 @@ impl<'a> Collab<'a> {
     /// newest per `name`, each marked trusted when its reporter is a current maintainer,
     /// role-1 writer or runner ([`newest_check_runs`]; never a triage member or reader).
     pub async fn check_runs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<CheckRun>> {
-        let docs = self.check_run_docs(repo, head_oid).await?;
-        if docs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let oracle = self.member_oracle(repo).await?;
-        let runners = self.runner_ids(repo).await?;
-        Ok(newest_check_runs(&docs, |who| {
-            oracle.current_approver(who) || runners.contains(who)
-        }))
+        Ok(self.head_check_report(repo, head_oid, None).await?.0)
     }
 
     /// Whether the check runs on `head_oid` meet `policy`'s check rules ([`checks_state`], the
@@ -3588,24 +3595,41 @@ impl<'a> Collab<'a> {
         policy: &ChecksPolicy,
     ) -> Result<ChecksState> {
         let docs = self.check_run_docs(repo, head_oid).await?;
-        let rows: Vec<CheckRunRow> = docs
-            .iter()
-            .map(|d| CheckRunRow {
-                id: d.id.clone(),
-                head_oid: head_oid.to_ascii_lowercase(),
-                name: d.field_str("name").unwrap_or_default(),
-                status: d.field_str("status").unwrap_or_default(),
-                conclusion: d.field_str("conclusion"),
-                reporter: d.owner_id.clone(),
-                created_at: d.created_at.unwrap_or_default(),
-            })
-            .collect();
+        let rows = check_run_rows(&docs, head_oid);
         let runners = if rows.is_empty() {
             BTreeSet::new()
         } else {
             self.runner_ids(repo).await?
         };
         Ok(checks_state(&rows, head_oid, oracle, &runners, policy))
+    }
+
+    /// [`Self::check_runs`] and, given `policy`, [`Self::head_checks`] together, from one read
+    /// of the runs, the members and the runners: the runs shown, and where the policy's
+    /// required checks stand (`dg pr checks`, QW4-010: a run the policy pins to another source
+    /// was counted as the required check's pass). The members and runners are read only when a
+    /// run was reported.
+    pub async fn head_check_report(
+        &self,
+        repo: &RepoRef,
+        head_oid: &str,
+        policy: Option<&ChecksPolicy>,
+    ) -> Result<(Vec<CheckRun>, Option<ChecksState>)> {
+        let docs = self.check_run_docs(repo, head_oid).await?;
+        let (oracle, runners) = if docs.is_empty() {
+            (RoleOracle::default(), BTreeSet::new())
+        } else {
+            (
+                self.member_oracle(repo).await?,
+                self.runner_ids(repo).await?,
+            )
+        };
+        let runs = newest_check_runs(&docs, |who| {
+            oracle.current_approver(who) || runners.contains(who)
+        });
+        let rows = check_run_rows(&docs, head_oid);
+        let state = policy.map(|p| checks_state(&rows, head_oid, &oracle, &runners, p));
+        Ok((runs, state))
     }
 
     async fn check_run_docs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<FetchedDocument>> {
