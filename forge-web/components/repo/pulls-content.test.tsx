@@ -344,9 +344,30 @@ describe('PullsContent (L-44)', () => {
     expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
   })
 
+  it('intersects state qualifiers: is:closed is:unmerged is the closed-without-merging PRs (QW4-007)', async () => {
+    await render()
+    await submit('is:pr is:closed is:unmerged')
+    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&state=closed')
+    expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
+    // Two states no PR can be in together: said, the first kept.
+    await submit('is:open is:merged')
+    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n')
+    expect(el.querySelector('[data-testid="pull-search-dropped"]')?.textContent).toContain('is:merged')
+  })
+
+  it('a search with no state, typed or linked, lists every state (QW4-023)', async () => {
+    await render()
+    await submit('is:pr fix')
+    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&state=all&q=fix')
+    search = 'owner=o&name=n&q=is%3Apr'
+    asked.length = 0
+    await render()
+    expect(asked.at(-1)).toMatchObject({ state: 'all' })
+  })
+
   it('says which qualifiers it could not apply, and why', async () => {
     await render()
-    await submit('author:bobby.dash mentions:@me fix')
+    await submit('is:open author:bobby.dash mentions:@me fix')
     const note = el.querySelector('[data-testid="pull-search-dropped"]')?.textContent ?? ''
     expect(note).toContain('author:bobby.dash')
     expect(note).toContain('No DPNS name `bobby.dash` was found.')
@@ -361,7 +382,7 @@ describe('PullsContent (L-44)', () => {
 
   it('matches a name DPNS does not know as a mirrored author login, and says so (QW-062)', async () => {
     await render()
-    await submit('author:thephez fix')
+    await submit('is:open author:thephez fix')
     expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&q=author%3Athephez+fix')
     expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
     search = 'owner=o&name=n&q=author%3Athephez+fix'
@@ -378,7 +399,7 @@ describe('PullsContent (L-44)', () => {
 
   it('reports review: and a bad draft: value instead of searching for them as text (QW-020)', async () => {
     await render()
-    await submit('review:approved draft:maybe in:comments fix')
+    await submit('is:open review:approved draft:maybe in:comments fix')
     const note = el.querySelector('[data-testid="pull-search-dropped"]')?.textContent ?? ''
     expect(note).toContain('review:approved')
     expect(note).toContain('draft: takes true or false.')

@@ -34,7 +34,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import type { RepoRef } from './contract'
 import { PIN_FEED_PAGES, countsSettled, issueViewOf, readShortRepoFeed, type IssueView } from './issues'
-import { ISSUE_CLOSE, statusOfCode } from '../rules/transition'
+import { ISSUE_CLOSE, statusOfCode, type CloseReason } from '../rules/transition'
 import type { LabelDef } from './labels'
 import { foldThreadMetaV2, pinnedTargets } from '../rules/parity'
 import type { Event } from '../rules'
@@ -45,6 +45,7 @@ import type { HiddenCounts } from './private-content'
 import {
   authorCandidates,
   candidatesCheaper,
+  closedWithReason,
   feedOf,
   hydrate,
   indexCache,
@@ -124,6 +125,8 @@ export interface RowFilters {
   /** Where `text` is looked for (default: titles and bodies). */
   readonly scope?: TextScope
   readonly comments?: CountRange | null
+  /** `reason:` (QW4-028): closed issues whose current close gives this reason (an issue filter). */
+  readonly reason?: CloseReason | null
 }
 
 /** A list query's {@link ExtraFilters} as the {@link RowFilters} a selection carries. */
@@ -137,6 +140,7 @@ export function rowFiltersOf(q: ExtraFilters, mirrorTrust: ReadonlySet<string> |
     mirrorTrust,
     scope: q.scope,
     comments: commentRange(q.comments),
+    reason: q.reason,
   }
 }
 
@@ -169,7 +173,8 @@ export function selectionFiltered(q: Omit<IssueSelection, 'mentions' | 'state' |
     (q.milestone ?? null) !== null ||
     q.noMilestone === true ||
     (q.authorLogin ?? null) !== null ||
-    (q.comments ?? null) !== null
+    (q.comments ?? null) !== null ||
+    (q.reason ?? null) !== null
   )
 }
 
@@ -213,6 +218,8 @@ export interface IssueListPage {
   readonly hidden: number
   /** `hidden` by reason (private repos: shown to maintainers). */
   readonly hiddenBy: HiddenCounts
+  /** `reason:` was not applied: the repo has more issue closes than a list reads (QW4-028). */
+  readonly reasonUnapplied?: boolean
 }
 
 /** Whether a row's folded state passes the state tab. */
@@ -368,9 +375,17 @@ export async function queryIssues(
   const filtered = selectionFiltered(q)
   const needLogs = eventFiltered(q)
   if (needLogs) await feedOf(sdk, index)
-  const bound = await repoCountsOf(sdk, index)
+  // `reason:` (QW4-028): the issues whose newest close says so, and only while they are closed.
+  // Null when the repo has too many closes to read: the filter is then not applied, and the page
+  // says so (`reasonUnapplied`).
+  const [reasoned, bound] = await Promise.all([q.reason == null ? null : closedWithReason(sdk, index, q.reason), repoCountsOf(sdk, index)])
+  const reasonOk = (r: IssueRow): boolean => reasoned === null || (!r.state.open && reasoned.has(r.id))
   const walk = pageWalk(q, filtered)
   const tab = tabBound(bound, index, q.state)
+  // Those issues as the page's candidates when resolving them is cheaper than walking (as for the
+  // Closed tab); none on the Open tab, where a closed issue cannot be listed.
+  const reasonCheap = reasoned !== null && candidatesCheaper(index, walk, reasoned.size, bound?.issues ?? null) ? reasoned : null
+  const reasonCandidates = reasoned !== null && q.state === 'open' ? new Set<string>() : reasonCheap
   // A sparse tab through the state scan when the proved counts say that is cheaper than walking
   // (QW3-002; the PR list's Open tab is the usual one).
   const byScan = !filtered && bound !== null && tab !== null && countsSettled(repo) && scanCheaper(index, walk, tab, bound, q.state === 'open')
@@ -390,8 +405,8 @@ export async function queryIssues(
       })
     : await selectRows(sdk, index, {
         ...walk,
-        candidates: await candidatesFor(sdk, index, q, byState),
-        matches: (r) => stateMatches(r, q.state) && rowMatches(r, q),
+        candidates: await candidatesFor(sdk, index, q, byState, reasonCandidates),
+        matches: (r) => stateMatches(r, q.state) && rowMatches(r, q) && reasonOk(r),
         cmp: compareRows(q.sort),
         // The walk stops at the tab's proved count (never a filter's), once it includes this browser's own writes.
         known: () => (filtered || !countsSettled(repo) ? null : tabBound(bound, index, q.state)),
@@ -408,7 +423,7 @@ export async function queryIssues(
     closedCount = exact?.closed ?? null
   } else {
     // Both tabs' counts need every candidate in either state: an index names them, or every issue is loaded.
-    const all = await rowsInAnyState(sdk, index, await candidatesFor(sdk, index, { ...q, state: 'all' }), (r) => rowMatches(r, q), needLogs)
+    const all = await rowsInAnyState(sdk, index, await candidatesFor(sdk, index, { ...q, state: 'all' }, false, reasonCheap), (r) => rowMatches(r, q) && reasonOk(r), needLogs)
     if (all !== null) {
       openCount = all.filter((r) => r.state.open).length
       closedCount = all.length - openCount
@@ -432,18 +447,26 @@ export async function queryIssues(
     labels: index.labels,
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
+    ...(q.reason != null && reasoned === null ? { reasonUnapplied: true } : {}),
   }
 }
 
 /**
- * Every issue that can match `q`, when an index names them: the feed (labels, assignee) and the
- * `author` index, intersected; else, for the Closed tab when that is cheaper than walking
+ * Every issue that can match `q`, when an index names them: the feed (labels, assignee), the
+ * `author` index and the closes giving a `reason:` (`reasoned`), intersected; else, for the Closed tab when that is cheaper than walking
  * (`byState`), the issue-close transitions. Null when none applies (the list walks chunks).
  */
-async function candidatesFor(sdk: EvoSDK, index: IssueIndex, q: IssueSelection, byState = q.state === 'closed'): Promise<Set<string> | null> {
+async function candidatesFor(
+  sdk: EvoSDK,
+  index: IssueIndex,
+  q: IssueSelection,
+  byState = q.state === 'closed',
+  reasoned: Set<string> | null = null,
+): Promise<Set<string> | null> {
   const named = intersect([
     metaCandidates(index, q, (row) => rowMatches(row, { ...q, author: null, mentions: null, text: '' })),
     q.author === null ? null : await authorCandidates(sdk, index, q.author),
+    reasoned,
   ])
   // Else every issue ever closed (the targets of issue-close transitions); its row says whether it still is.
   return named ?? (byState ? transitionTargets(sdk, index, [ISSUE_CLOSE]) : null)
