@@ -156,6 +156,29 @@ afterEach(() => {
   host.remove()
 })
 
+describe('the sheet on a phone (QA wave 4)', () => {
+  it('QW4-041: the muted wallet tile is dashed, not faded, so its helper text keeps its contrast', async () => {
+    auth.vaults = []
+    walletSupported = false
+    act(() => useUiStore.getState().openLogin())
+    // The wallet tile shows once Platform could not be asked (offline in tests): muted on a devnet.
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(q('[data-testid="tile-wallet"]')!.dataset.muted).toBe('true')
+    const tiles = [...host.ownerDocument.querySelectorAll<HTMLElement>('[data-testid^="tile-"]')]
+    expect(tiles.length).toBeGreaterThan(1)
+    // Only a disabled tile (writes paused) fades; an enabled one, muted or not, never does.
+    for (const tile of tiles) expect(tile.className).not.toMatch(/(^|\s)opacity-/)
+    for (const tile of tiles.filter((t) => t.dataset.muted === 'true')) expect(tile.className).toMatch(/border-dashed/)
+  })
+
+  it('QW4-042: "All options" has a 44 px hit area on touch screens', async () => {
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin('import'))
+    await flush()
+    expect(byText('All options')!.className).toMatch(/\bhit-area\b/)
+  })
+})
+
 describe('QW-010: the words find a key this browser already holds', () => {
   it('stays on Import, fills in the identity and offers Replace; the second click replaces', async () => {
     auth.importIdentity.mockRejectedValueOnce(new AlreadyStoredError(ID)).mockResolvedValueOnce({})
@@ -376,28 +399,5 @@ describe('QA wave 3 (bonsia): the import form', () => {
     expect(q('[data-testid="import-unfinished"]')!.textContent).toMatch(/did not finish/)
     expect(host.ownerDocument.body.textContent).not.toMatch(/old key is disabled in the same update/)
     expect(byText("Create this browser's key")).not.toBeNull()
-  })
-})
-
-describe('the sheet on a phone (QA wave 4)', () => {
-  it('QW4-041: the muted wallet tile is dashed, not faded, so its helper text keeps its contrast', async () => {
-    auth.vaults = []
-    walletSupported = false
-    act(() => useUiStore.getState().openLogin())
-    // The wallet tile shows once Platform could not be asked (offline in tests): muted on a devnet.
-    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
-    expect(q('[data-testid="tile-wallet"]')!.dataset.muted).toBe('true')
-    const tiles = [...host.ownerDocument.querySelectorAll<HTMLElement>('[data-testid^="tile-"]')]
-    expect(tiles.length).toBeGreaterThan(1)
-    // Only a disabled tile (writes paused) fades; an enabled one, muted or not, never does.
-    for (const tile of tiles) expect(tile.className).not.toMatch(/(^|\s)opacity-/)
-    for (const tile of tiles.filter((t) => t.dataset.muted === 'true')) expect(tile.className).toMatch(/border-dashed/)
-  })
-
-  it('QW4-042: "All options" has a 44 px hit area on touch screens', async () => {
-    auth.vaults = []
-    act(() => useUiStore.getState().openLogin('import'))
-    await flush()
-    expect(byText('All options')!.className).toMatch(/\bhit-area\b/)
   })
 })
