@@ -119,3 +119,20 @@ export async function readIssueTemplates(reader: BrowseReader, tipOid: string): 
   }
   return []
 }
+
+/**
+ * The composer's title and body after picking `next` in place of `prev` (QW4-037: the picker's
+ * arrow keys pick each template they pass): a field still empty, or still holding `prev`'s text
+ * untouched, takes `next`'s (blank for "Blank issue"); anything the person typed stays.
+ */
+export function applyTemplate(
+  fields: { readonly title: string; readonly body: string },
+  prev: Pick<IssueTemplate, 'title' | 'body'> | null,
+  next: Pick<IssueTemplate, 'title' | 'body'> | null,
+): { title: string; body: string } {
+  const untouched = (value: string, filled: string | undefined): boolean => value.trim() === '' || (filled !== undefined && value === filled)
+  return {
+    title: untouched(fields.title, prev?.title) ? (next?.title ?? '') : fields.title,
+    body: untouched(fields.body, prev?.body) ? (next?.body ?? '') : fields.body,
+  }
+}

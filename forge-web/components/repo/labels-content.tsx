@@ -34,6 +34,7 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { LabelChip } from '@/components/repo/issue-bits'
 import { TriageNav } from '@/components/repo/triage-nav'
 import { cn, inputProblem } from '@/lib/utils'
+import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
 const HEX = /^#[0-9a-fA-F]{6}$/
 
@@ -75,6 +76,8 @@ function LabelForm({
   const [name, setName] = useState(initial.name)
   const [color, setColor] = useState(initial.color)
   const [description, setDescription] = useState(initial.description)
+  // Whether a swatch is the colour: else the first swatch is the colour group's Tab stop (QW4-037).
+  const presetPicked = LABEL_COLORS.includes(color.toLowerCase())
   const trimmed = name.trim()
   const clash = editing ? undefined : taken.get(trimmed.toLowerCase())
   // The schema's own bounds (characters and bytes) first, as `defineLabel` checks them. A name
@@ -133,13 +136,14 @@ function LabelForm({
           </span>
         </Field>
       </div>
-      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Colour">
-        {LABEL_COLORS.map((c) => (
+      <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Colour" onKeyDown={onRadioGroupKeyDown}>
+        {LABEL_COLORS.map((c, i) => (
           <button
             key={c}
             type="button"
             role="radio"
             aria-checked={color.toLowerCase() === c}
+            tabIndex={radioTabIndex(color.toLowerCase() === c, i, presetPicked)}
             aria-label={c}
             onClick={() => setColor(c)}
             className={cn('h-6 w-6 rounded-full border coarse:h-9 coarse:w-9', color.toLowerCase() === c ? 'border-anvil-900 ring-2 ring-forge-500 dark:border-white' : 'border-transparent')}

@@ -86,3 +86,18 @@ for (const theme of ['dark', 'light'] as const) {
     })
   })
 }
+
+// QW4-044: one h1 per page, naming it (axe's wcag tags leave out page-has-heading-one).
+test('a11y: the profile and the signed-out /new and /settings gates have one h1', async ({ page }) => {
+  const pages: [href: string, h1: RegExp][] = [
+    [`/u/?name=${DEMO.owner}`, new RegExp(`^Profile of `)],
+    ['/new/', /^Sign in to forge a repo$/],
+    ['/settings/', /^Sign in to see your settings$/],
+  ]
+  for (const [href, h1] of pages) {
+    await page.goto(href, { waitUntil: 'domcontentloaded' })
+    const heading = page.locator('h1')
+    await expect(heading).toHaveCount(1, { timeout: 60_000 })
+    await expect(heading).toHaveText(h1)
+  }
+})

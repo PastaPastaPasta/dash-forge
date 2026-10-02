@@ -52,6 +52,7 @@ import { onEncryptionKeyChange } from '@/lib/auth/vault'
 import { useAsync } from '@/hooks/use-async'
 import type { Visibility } from '@/lib/rules/v2'
 import { errorMessage } from '@/lib/utils'
+import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
 const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: string }[] = [
   { step: 'repo', label: 'Repository document' },
@@ -199,6 +200,7 @@ export default function NewRepoPage(): JSX.Element {
     return (
       <AppShell>
         <EmptyState
+          heading="h1"
           icon={Lock}
           title="Sign in to forge a repo"
           body="Creating a repo writes three small documents signed by your identity."
@@ -262,18 +264,19 @@ export default function NewRepoPage(): JSX.Element {
 
           <fieldset>
             <legend className="mb-1 text-dense font-medium">Visibility</legend>
-            <div role="radiogroup" aria-label="Visibility" className="grid gap-2 sm:grid-cols-2">
+            <div role="radiogroup" aria-label="Visibility" onKeyDown={onRadioGroupKeyDown} className="grid gap-2 sm:grid-cols-2">
               {(
                 [
                   ['public', Globe, 'Public', 'Anyone can read it.'],
                   ['private', Lock, 'Private', 'Encrypted to its members. Set now; it cannot change later.'],
                 ] as const
-              ).map(([v, Icon, label, hint]) => (
+              ).map(([v, Icon, label, hint], i) => (
                 <button
                   key={v}
                   type="button"
                   role="radio"
                   aria-checked={visibility === v}
+                  tabIndex={radioTabIndex(visibility === v, i, true)}
                   data-testid={`visibility-${v}`}
                   onClick={() => setVisibility(v)}
                   className={

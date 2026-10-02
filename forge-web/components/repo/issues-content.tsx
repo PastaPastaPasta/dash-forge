@@ -95,7 +95,7 @@ import { TriageNav } from '@/components/repo/triage-nav'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
-import type { IssueTemplate } from '@/lib/view/issue-templates'
+import { applyTemplate, type IssueTemplate } from '@/lib/view/issue-templates'
 import { whoCan } from '@/lib/rules/roles'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
@@ -430,11 +430,12 @@ function ComposeIssueDialog({
   const cost = composeCost(repo, 'issue', { title: title.trim(), body }, first)
   const bodyBytes = utf8Length(body)
 
+  // Untouched template text follows the pick; anything typed stays (QW4-037).
   const pick = (t: IssueTemplate | null): void => {
+    const next = applyTemplate({ title, body }, template, t)
+    setTitle(next.title)
+    setBody(next.body)
     setTemplate(t)
-    if (t === null) return
-    if (title.trim() === '') setTitle(t.title)
-    if (body.trim() === '') setBody(t.body)
   }
 
   const submit = async (): Promise<void> => {

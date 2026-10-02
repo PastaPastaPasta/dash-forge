@@ -45,12 +45,13 @@ export default function SettingsPage(): JSX.Element {
       <AppShell>
         <div className="mx-auto max-w-xl space-y-6">
           <EmptyState
+            heading="h1"
             icon={locked ? Lock : Wallet}
-            title={locked ? 'Session locked' : 'Not signed in'}
+            title={locked ? 'Session locked' : 'Sign in to see your settings'}
             body={
               locked
                 ? 'Your key is still in this browser. Unlock it to see your balance, spend and account settings.'
-                : 'Sign in to see your balance and account settings.'
+                : 'Your balance, spend history and account settings show here once you sign in.'
             }
             action={<SignInButton />}
           />
