@@ -67,6 +67,116 @@ impl Progress {
     }
 }
 
+/// Fetch progress on a terminal (QW4-014: a 270 MB clone showed nothing for 146 s). Git asks a
+/// remote helper for progress (`option progress true`) when its stderr is a terminal, as its
+/// own "Receiving objects: 37% …" line; a `\r`-rewritten line counts the packs and bytes
+/// received, at most every [`FETCH_REDRAW`], then ends with `, done.` as git's does. Off
+/// without git's progress request, under `-q` and in JSON mode.
+///
+/// Bytes received are the larger of the finished packs' sizes and the Platform chunk bytes
+/// read since the meter started ([`forge_core::platform::large_read_bytes`]), so one large
+/// pack read from Platform moves the line while it is in flight ([`Self::tick`]).
+#[derive(Debug)]
+pub struct FetchMeter {
+    enabled: bool,
+    packs: usize,
+    bytes: u64,
+    /// [`forge_core::platform::large_read_bytes`] when the meter started.
+    platform_start: u64,
+    /// Packs and bytes done, and when the line was last drawn.
+    state: std::sync::Mutex<(usize, u64, Option<std::time::Instant>)>,
+}
+
+/// The least time between two redraws of the fetch line.
+pub const FETCH_REDRAW: Duration = Duration::from_millis(200);
+
+impl FetchMeter {
+    /// A meter for `packs` packs of `bytes` bytes in all (the manifests' `sizeBytes`), drawn
+    /// when `enabled`.
+    pub fn new(enabled: bool, packs: usize, bytes: u64) -> Self {
+        Self {
+            enabled: enabled && packs > 0,
+            packs,
+            bytes,
+            platform_start: forge_core::platform::large_read_bytes(),
+            state: std::sync::Mutex::new((0, 0, None)),
+        }
+    }
+
+    /// Whether the line is drawn at all ([`Self::tick`] need not run when it is not).
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// One more pack of `bytes` bytes is done (downloaded, or set aside as unreadable).
+    pub fn advance(&self, bytes: u64) {
+        self.update(1, bytes);
+    }
+
+    /// Redraw with the bytes received so far, while a pack is in flight.
+    pub fn tick(&self) {
+        self.update(0, 0);
+    }
+
+    fn update(&self, packs: usize, bytes: u64) {
+        let mut s = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        s.0 += packs;
+        s.1 += bytes;
+        if !self.enabled {
+            return;
+        }
+        if s.2.is_none_or(|t| t.elapsed() >= FETCH_REDRAW) {
+            s.2 = Some(std::time::Instant::now());
+            let line = fetch_line(s.0, self.packs, self.received(s.1), self.bytes);
+            draw(&format!("\r{line}"));
+        }
+    }
+
+    /// The bytes received: the finished packs' `done`, or the Platform bytes read since the
+    /// meter started when that is more, never past the total.
+    fn received(&self, done: u64) -> u64 {
+        let platform = forge_core::platform::large_read_bytes().saturating_sub(self.platform_start);
+        done.max(platform.min(self.bytes))
+    }
+
+    /// The final line, `…, done.`, once every pack is done.
+    pub fn finish(&self) {
+        if !self.enabled {
+            return;
+        }
+        let s = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let line = fetch_line(s.0, self.packs, self.received(s.1), self.bytes);
+        draw(&format!("\r{line}, done.\n"));
+    }
+}
+
+/// Write `text` to stderr as it is (no newline added), flushed.
+fn draw(text: &str) {
+    use std::io::Write as _;
+    let mut err = std::io::stderr().lock();
+    let _ = err.write_all(text.as_bytes());
+    let _ = err.flush();
+}
+
+/// `dash: receiving packs  37% (21/56), 98.4 MiB of 270.0 MiB`: the share by bytes when the
+/// manifests record sizes, else by packs.
+pub fn fetch_line(done_packs: usize, packs: usize, done_bytes: u64, bytes: u64) -> String {
+    let pct = (done_bytes.min(bytes) * 100)
+        .checked_div(bytes)
+        .unwrap_or((done_packs.min(packs) * 100 / packs.max(1)) as u64);
+    format!(
+        "dash: receiving packs {pct:>3}% ({done_packs}/{packs}), {} of {}",
+        human_bytes(done_bytes),
+        human_bytes(bytes)
+    )
+}
+
 /// Environment variable naming a file the helper appends its `done` and `error` events to
 /// (one JSON object per line, whatever the progress mode), so a caller that leaves the
 /// helper's stderr on the terminal (`dg init`) still learns the push's charge and error code.
@@ -579,5 +689,25 @@ mod tests {
         let (t, ev) = ref_update_line("refs/heads/gone", None);
         assert_eq!(t, "dash: deleted gone");
         assert!(ev["newOid"].is_null());
+    }
+
+    /// QW4-014: a clone says how far it has got, by bytes when the manifests record sizes.
+    #[test]
+    fn the_fetch_line_counts_packs_and_bytes() {
+        assert_eq!(
+            fetch_line(21, 56, 98 * 1024 * 1024, 270 * 1024 * 1024),
+            "dash: receiving packs  36% (21/56), 98.0 MiB of 270.0 MiB"
+        );
+        assert_eq!(
+            fetch_line(1, 4, 0, 0),
+            "dash: receiving packs  25% (1/4), 0 B of 0 B"
+        );
+        assert!(fetch_line(56, 56, 300, 270).contains("100% (56/56)"));
+        // Off: nothing drawn, the counts still kept.
+        let m = FetchMeter::new(false, 2, 10);
+        m.advance(5);
+        m.finish();
+        assert_eq!(m.state.lock().unwrap().0, 1);
+        assert!(!FetchMeter::new(true, 0, 0).enabled);
     }
 }

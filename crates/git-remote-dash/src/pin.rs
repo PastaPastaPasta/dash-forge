@@ -20,8 +20,9 @@
 //! another network is another namespace with its own pin. An id-addressed URL
 //! (`dash://<repo id>`) needs no pin: the id is the repository.
 //!
-//! This guards git's transport (fetch, push, clone). `dg` commands run in a clone resolve
-//! the remote's name themselves and do not consult the pin.
+//! This guards git's transport (fetch, push, clone). `dg` commands run in a clone check the
+//! same pin before they read or write the repository a pinned name names (QW4-013); the
+//! section and the comparison are shared ([`forge_core::repo_pin`]), and only git re-pins.
 
 use std::path::Path;
 use std::process::Command;
@@ -31,8 +32,8 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::url::DashUrl;
 
-/// The git config key that lets one fetch or push accept a re-pointed URL (and re-pin it).
-pub const ALLOW_REPIN_GIT_KEY: &str = "dash.allowRepin";
+use forge_core::repo_pin::shown;
+pub use forge_core::repo_pin::{Recorded, ALLOW_REPIN_GIT_KEY};
 
 /// What a named URL resolves to now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,15 +44,6 @@ pub struct Pin {
     pub owner_id: String,
     /// The network key it was resolved on (`testnet`, `devnet-sakura`, …).
     pub network: String,
-}
-
-/// A pin as recorded: either key may be missing (a hand-edited or partly written pin).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Recorded {
-    /// `repoId`.
-    pub repo_id: Option<String>,
-    /// `ownerId`.
-    pub owner_id: Option<String>,
 }
 
 /// What [`guard`] found.
@@ -72,24 +64,13 @@ pub enum Outcome {
 }
 
 /// The git config section of `url`'s pin on `network`
-/// (`dash.devnet-sakura:dash://alice/project`), `None` for an id-addressed URL. A DPNS owner
-/// is keyed as DPNS compares it (case-insensitive, without `@` or `.dash`), and the repo name
-/// as the resolver does (lowercase), so the spellings that resolve alike share one pin.
+/// (`dash.devnet-sakura:dash://alice/project`, [`forge_core::repo_pin::section`]), `None` for
+/// an id-addressed URL.
 pub fn section(url: &DashUrl, network: &str) -> Option<String> {
     let DashUrl::Named { owner, repo } = url else {
         return None;
     };
-    let owner = owner.strip_prefix('@').unwrap_or(owner);
-    let owner = match forge_core::resolve::dpns_label(owner) {
-        Some(label) if !forge_core::resolve::looks_like_identity_id(owner) => {
-            label.to_ascii_lowercase()
-        }
-        _ => owner.to_string(),
-    };
-    Some(format!(
-        "dash.{network}:dash://{owner}/{}",
-        repo.to_ascii_lowercase()
-    ))
+    Some(forge_core::repo_pin::section(owner, repo, network))
 }
 
 /// Check (and record) the pin of `url` in the repository at `git_dir`. `allow_repin` reads
@@ -112,12 +93,11 @@ pub fn guard(
         repo_id: config_get(git_dir, &format!("{section}.repoId"))?,
         owner_id: config_get(git_dir, &format!("{section}.ownerId"))?,
     };
-    if recorded.repo_id.is_none() && recorded.owner_id.is_none() {
+    if recorded.is_empty() {
         record(git_dir, &section, now);
         return Ok(Outcome::Pinned);
     }
-    let same = |v: &Option<String>, now: &str| v.as_deref().is_none_or(|v| v == now);
-    if same(&recorded.repo_id, &now.repo_id) && same(&recorded.owner_id, &now.owner_id) {
+    if recorded.matches(&now.repo_id, &now.owner_id) {
         // Complete a pin that lacks a key.
         if recorded.repo_id.is_none() || recorded.owner_id.is_none() {
             record(git_dir, &section, now);
@@ -177,11 +157,6 @@ fn moved(
          `git -c {ALLOW_REPIN_GIT_KEY}=true …`, which re-pins it (or drop the pin: \
          `git config --remove-section '{section}'`)"
     ))
-}
-
-/// A recorded value for messages.
-fn shown(v: Option<&str>) -> &str {
-    v.unwrap_or("(not recorded)")
 }
 
 /// `dash://owner/repo`, for messages.

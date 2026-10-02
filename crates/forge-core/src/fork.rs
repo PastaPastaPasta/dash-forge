@@ -84,6 +84,59 @@ pub fn fork_manifest(
     }))
 }
 
+/// Whether any computer can read a pack from `uri` with no setup of its own: Platform chunks,
+/// IPFS, or an https address on a public host. Not a loopback or private-network address,
+/// plain http, a URL with credentials, or an `s3://` bucket (read only through a storage
+/// profile for it), which a manifest records but no other reader follows (QW4-062).
+#[must_use]
+pub fn readable_by_anyone(uri: &str) -> bool {
+    use crate::storage::publish::{publish_problem, PublishProblem};
+    if uri.starts_with("platform://") || uri.starts_with("ipfs://") {
+        return true;
+    }
+    uri.starts_with("https://")
+        && matches!(
+            publish_problem(uri),
+            None | Some(PublishProblem::DevOnly | PublishProblem::TemporaryTunnel)
+        )
+}
+
+/// The packs among the fork manifests `planned` (one URI list each) that no other computer can
+/// read ([`readable_by_anyone`]), and the places their copies are recorded at (`host[:port]`
+/// or `s3://bucket`, each once): a clone of the fork would fail on them (E503) until the
+/// parent's pusher copies them somewhere public (QW4-062). `(0, [])` when every pack has a
+/// readable copy.
+#[must_use]
+pub fn unreadable_by_others<'u>(
+    planned: impl IntoIterator<Item = &'u [String]>,
+) -> (usize, Vec<String>) {
+    let mut n = 0;
+    let mut places: Vec<String> = Vec::new();
+    for uris in planned {
+        if uris.iter().any(|u| readable_by_anyone(u)) {
+            continue;
+        }
+        n += 1;
+        for u in uris {
+            let place = u
+                .split_once("://")
+                .map_or(u.as_str(), |(scheme, rest)| {
+                    let host = rest.split('/').next().unwrap_or(rest);
+                    if scheme == "s3" {
+                        u.get(..scheme.len() + 3 + host.len()).unwrap_or(u)
+                    } else {
+                        host
+                    }
+                })
+                .to_string();
+            if !places.contains(&place) {
+                places.push(place);
+            }
+        }
+    }
+    (n, places)
+}
+
 /// The parent's git packs (kind 0) a fork records, each with all of its copies in the
 /// `FORGE_RULES_V2` reader order (uploaders who are currently maintainers, then writers, then
 /// anyone else; each by `($createdAt, $id)`), so the fork's manifest lists the trustworthy
@@ -343,6 +396,39 @@ mod tests {
             tips: Vec::new(),
             created_at_block_height: 0,
         }
+    }
+
+    /// QW4-062: a pack recorded only at a loopback / private address, plain http or an s3
+    /// bucket is one no other computer reads, so a fork of it can't be cloned.
+    #[test]
+    fn a_pack_only_this_machine_reads_is_named_before_forking() {
+        for readable in [
+            "platform://CORE/R/O/ab",
+            "ipfs://bafyabc",
+            "https://packs.example.org/ab",
+        ] {
+            assert!(readable_by_anyone(readable), "{readable}");
+        }
+        for unreadable in [
+            "https://127.0.0.1:9000/qa/ab",
+            "http://packs.example.org/ab",
+            "s3://qa4-cli-dx/packs/ab",
+            "https://user:pw@packs.example.org/ab",
+        ] {
+            assert!(!readable_by_anyone(unreadable), "{unreadable}");
+        }
+        let local = vec![
+            "https://127.0.0.1:9000/qa4-cli-dx/ab".to_string(),
+            "s3://qa4-cli-dx/ab".to_string(),
+        ];
+        let public = vec![
+            "https://127.0.0.1:9000/qa4-cli-dx/cd".to_string(),
+            "https://packs.example.org/cd".to_string(),
+        ];
+        let (n, places) = unreadable_by_others([local.as_slice(), public.as_slice()]);
+        assert_eq!(n, 1);
+        assert_eq!(places, ["127.0.0.1:9000", "s3://qa4-cli-dx"]);
+        assert_eq!(unreadable_by_others([public.as_slice()]), (0, Vec::new()));
     }
 
     #[test]

@@ -933,6 +933,25 @@ impl ChainLink {
     }
 }
 
+/// E307 for a private repository whose newest ref updates are sealed under key `epoch`, which
+/// the reader holds no key for ([`crate::refs::newer_unreadable_epoch`], QW4-012): the refs it
+/// can read are out of date, so `git fetch` / `ls-remote` stop here rather than report them as
+/// current. A removed member's existing clone meets this; a fresh clone meets the pack version.
+#[must_use]
+pub fn refs_sealed_error(epoch: u32) -> Error {
+    UserError::new(
+        codes::NOT_A_KEY_HOLDER,
+        format!("the repository's newest ref updates are sealed under key epoch {epoch}, which you hold no key for"),
+    )
+    .cause(format!(
+        "key epoch {epoch} was not given to you: you were removed from the repository before it, or a maintainer has not wrapped it to your key yet; the refs you can read are from before it"
+    ))
+    .fix("`dg repo keys status <owner>/<repo>` says which keys you hold")
+    .fix("removed? content from that epoch on is not readable to you; still a member? ask a maintainer to run `dg repo keys repair <owner>/<repo>`")
+    .note("nothing was fetched: the refs you can read are not reported as current")
+    .into()
+}
+
 /// A sealed-artifact failure as the user-facing class: a copy whose hash verified but whose
 /// contents do not open is E508 (every copy of that hash is the same bytes).
 pub fn sealed_error(e: &PrivateError) -> Error {

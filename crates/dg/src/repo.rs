@@ -208,7 +208,7 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
     );
     let parent_packs = parent_packs.context("reading the parent's packs")?;
     // The manifests the fork will write, with the URIs each records (each adds to its price).
-    let manifest_uris: Vec<u64> =
+    let planned: Vec<Vec<String>> =
         forge_core::fork::plan_manifests(&parent_packs, &BTreeMap::new(), &BTreeSet::new())
             .iter()
             .filter_map(|copies| {
@@ -216,9 +216,11 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
                     .ok()
                     .flatten()
             })
-            .map(|m| m.uris.len() as u64)
+            .map(|m| m.uris)
             .collect();
+    let manifest_uris: Vec<u64> = planned.iter().map(|u| u.len() as u64).collect();
     let packs = manifest_uris.len();
+    warn_unreadable_packs(&parent, &planned);
     // Its branches and tags: a mirror's PR heads stay the parent's (QW3-009).
     let refs = svc
         .read_refs(&parent)
@@ -256,6 +258,26 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
     .await
     .context("forking the repository")?;
     report_fork(ctx, &parent, &result, price)
+}
+
+/// QW4-062: warn, before the prompt (on stderr, JSON mode too), when some of the parent's packs
+/// are recorded only where no other computer reads them: the fork records the same copies, so
+/// a clone of it fails (E503) until the parent's pusher copies them to public storage.
+fn warn_unreadable_packs(parent: &forge_core::scope::RepoRef, planned: &[Vec<String>]) {
+    let (n, places) = forge_core::fork::unreadable_by_others(planned.iter().map(Vec::as_slice));
+    if n == 0 {
+        return;
+    }
+    eprintln!(
+        "warning: {n} of {p}'s {} pack(s) are recorded only at {}, which other computers don't read: the fork records the same copies, so cloning it fails (E503) until {p}'s maintainers record them at a public https address (`dg repack {p} --profile <profile>`) and you run this fork again to record the new copy",
+        planned.len(),
+        if places.is_empty() {
+            "no address".to_string()
+        } else {
+            places.join(", ")
+        },
+        p = parent.display()
+    );
 }
 
 /// A fork's create options: the parent's default branch (`main` when it has none) and its
