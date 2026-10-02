@@ -17,8 +17,8 @@
 #      outdated; OWNER resolves them (`dg pr resolve`), requests COLLAB's review and removes
 #      it, dismisses nothing, comments once more (`dg pr comment --reply-to`), approves,
 #      `dg pr checks` reads a seeded run, `dg pr commits` lists 3 commits, and
-#      `dg pr merge --squash` merges: the base tip is one commit whose parent is the old base
-#      and whose message carries `Co-authored-by`.
+#      `dg pr merge --squash` merges: the base tip is one commit whose parent is the old base,
+#      authored by the contributor (the PR's oldest commit's author) and committed by OWNER.
 #   6. CONTRIB `dg pr edit`s the title (a replace; a re-run writes nothing).
 #   7. Request budget: `dg pr view` of the merged PR stays under E2E_PR_VIEW_BUDGET DAPI
 #      requests (counted from the SDK's dispatch trace).
@@ -206,7 +206,8 @@ git_dash_retry "$S_OWNER" "$LOG-vclone" clone -q -b "$BASE" "dash://${REPO}" "$V
 check "the base tip is the squash commit" assert_eq "$SQUASH" "$(git -C "$VER" rev-parse HEAD)"
 check "one parent: the old base" assert_eq "$BASE1" "$(git -C "$VER" rev-list --parents -n1 HEAD | cut -d' ' -f2-)"
 check "the squash tree is the PR head's" assert_eq "$(git -C "$WORK" rev-parse "${HEAD3}^{tree}")" "$(git -C "$VER" rev-parse 'HEAD^{tree}')"
-check "Co-authored-by the contributor" assert_contains "$(git -C "$VER" log -1 --format=%B)" "Co-authored-by: E2E Contrib <contrib@e2e.test>"
+check "authored by the contributor (QW4-008)" assert_eq "E2E Contrib <contrib@e2e.test>" "$(git -C "$VER" log -1 --format='%an <%ae>')"
+check "committed by the merger, not the contributor" test "$(git -C "$VER" log -1 --format='%ce')" != "contrib@e2e.test"
 
 step "request budget: dg pr view (TODO(P-5): tighten once the contract memo lands)"
 DASH_FORGE_KEY="$S_OWNER" RUST_LOG="dapi_client::dispatch=trace" NO_COLOR=1 _tmo "$DG" --json pr view "$REPO" "$N" --comments >"$LOG-budget.json" 2>"$LOG-budget.err"
