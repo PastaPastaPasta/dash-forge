@@ -10,6 +10,11 @@
  * document's 4096 bytes, sized from the entries the uploads will produce (their URLs are
  * deterministic: a content-addressed key per SHA-256, a fixed-length CID).
  *
+ * The tag need not exist yet (GitHub's "Create new tag on publish", P1-4): with `createTag` the
+ * publish first writes `refs/tags/<tag>` as a lightweight tag at the chosen commit (one ref update
+ * from the browser's push writer, no pack: the commit is already stored), after the role check
+ * and before anything uploads. A retry finds the tag at that commit and writes nothing.
+ *
  * A private repo's release is a sealed revision (`private-repos.md` §16, `sealed-release.ts`):
  * its files are sealed before they leave the browser and stored under their sealed hash, the
  * asset list is a sealed kind-4 manifest, and the document holds only `enc`.
@@ -38,6 +43,7 @@ import type { RepoRef } from './contract'
 import { requireMaintainer } from './members'
 import { readReleases, type ReleaseAssetView } from './releases'
 import type { ResolvedSealedRelease, SealedReleaseEvent, SealedReleaseWarning } from './sealed-release'
+import { ensureTag } from './ref-admin'
 import { createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
 import { isRc1TagName } from '../rules'
 
@@ -219,6 +225,8 @@ export function carriedAssets(
 /** Progress of a publish. */
 export type PublishEvent =
   | { readonly step: 'role' }
+  /** The tag is being created (`createTag`). */
+  | { readonly step: 'tag' }
   | { readonly step: 'upload'; readonly asset: string; readonly event: UploadEvent }
   | { readonly step: 'uploaded'; readonly asset: string; readonly stored: ReleaseAsset; readonly copies: number; readonly failures: readonly TargetFailure[] }
   | { readonly step: 'release' }
@@ -297,6 +305,19 @@ interface PublishInput {
   readonly yanked?: boolean
   /** A private repo's sealed-only flags. */
   readonly sealed?: SealedFlags
+  /**
+   * Create the tag at this commit (hex) first, when it does not exist (a lightweight tag). A tag
+   * that exists at another commit refuses the publish before anything uploads.
+   */
+  readonly createTag?: { readonly target: string }
+}
+
+/** Create the tag a publish names, when asked to: once the role is known, before any upload. */
+async function createTagFirst(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: PublishInput, onEvent?: (e: PublishEvent) => void): Promise<void> {
+  if (input.createTag === undefined) return
+  onEvent?.({ step: 'tag' })
+  // The intent is the draft's: a retry of this publish finishes the same tag write.
+  await ensureTag(sdk, auth, repo, { tag: input.tagName, target: input.createTag.target, intent: `${input.draft}:tag:${input.createTag.target}` })
 }
 
 /** Where {@link publishRelease} stores the files: the repo's browser-push policy and the user's profiles. */
@@ -330,6 +351,12 @@ async function publishSealedRelease(
     (retry ? null : (releaseTextProblem(input) ?? assetFilesProblem(files))) ??
     (files.length > 0 && externalTargets(storage.policy, storage.profiles).length === 0 ? NO_EXTERNAL_STORAGE : null)
   if (problem) throw new Error(problem)
+  if (input.createTag !== undefined) {
+    // The sealed writer checks the role itself, after this: a non-maintainer's tag is refused here.
+    onEvent?.({ step: 'role' })
+    await requireMaintainer(sdk, repo, auth.identityId, auth.network)
+    await createTagFirst(sdk, auth, repo, input, onEvent)
+  }
   let resolved: ResolvedSealedRelease | null = null
   let uploaded = 0
   const onSealed = (e: SealedReleaseEvent): void => {
@@ -393,6 +420,7 @@ export async function publishRelease(
   const problem =
     releaseTextProblem({ name, notes }) ?? (input.stored ? null : assetPlanProblem(input.files, storage.policy, storage.profiles, keep))
   if (problem) throw new Error(problem)
+  await createTagFirst(sdk, auth, repo, input, onEvent)
 
   // A retry of an unconfirmed write re-signs exactly what it named (kept assets included) and
   // uploads nothing; otherwise the kept assets come first, then this attempt's uploads.

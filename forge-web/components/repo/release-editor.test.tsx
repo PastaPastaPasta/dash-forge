@@ -32,6 +32,9 @@ import { EditReleaseButton, useReleaseEditor } from './new-release'
 const home = {
   repo: { forge: { core: 'C', collab: 'L', community: 'M', group: 'G' }, repoId: 'R', ownerId: 'O', name: 'r', visibility: 'private' },
   config: null,
+  defaultBranch: 'main',
+  branches: [],
+  tags: [],
 } as unknown as RepoHome
 const revision = (id: string): ReleaseView => ({
   id, tagName: 'v1', name: 'One', notes: '', notesBody: '', omitted: null, published: null, yanked: false, delta: 0, assets: [], badAssets: 0, publisher: 'M', createdAt: 1,
