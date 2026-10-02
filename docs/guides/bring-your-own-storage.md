@@ -81,7 +81,7 @@ Testing r2-main …
   [ OK ] put            wrote probe/… (signed PUT)
   [ OK ] get            read back identical bytes (signed GET)
   [ OK ] public read    anonymous GET https://files.example.org/probe/… OK
-  [FAIL] browser CORS   the CORS preflight for a Range request was refused (status 403 Forbidden)
+  [FAIL] browser CORS   the CORS preflight from https://forge.dashhq.org answered 403 Forbidden — allow the `Range` request header for the web app's origin
   [ OK ] delete         probe removed
   → Cloudflare dashboard → R2 → forge → Settings → CORS Policy → Add CORS policy, paste: …
     then run `dg storage test r2-main`

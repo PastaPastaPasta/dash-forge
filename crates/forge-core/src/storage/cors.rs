@@ -145,23 +145,12 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
                 && header_list_contains(h, "access-control-allow-headers", "range");
             if !r.preflight_allows_range {
                 // QW3-072: "refused (status 200 OK)" read as a contradiction; say what the
-                // answer lacked.
-                let why = if !resp.status().is_success() {
-                    format!("answered {}", resp.status())
-                } else if !allows_probe_origin(h).0 {
-                    format!(
-                        "answered {} with no Access-Control-Allow-Origin for {PROBE_ORIGIN}",
-                        resp.status()
-                    )
-                } else {
-                    format!(
-                        "answered {} without `Range` in Access-Control-Allow-Headers",
-                        resp.status()
-                    )
-                };
+                // answer lacked, in the words `dg doctor` uses too.
+                let why = preflight_verdict(resp.status(), h)
+                    .err()
+                    .unwrap_or_default();
                 r.problems.push(format!(
-                    "the CORS preflight for a Range request {why} — allow the `Range` request \
-                     header for the web app's origin"
+                    "{why} — allow the `Range` request header for the web app's origin"
                 ));
             }
         }
@@ -183,21 +172,33 @@ pub async fn probe_preflight(client: &Client, url: &str) -> Result<(), String> {
         .send()
         .await
         .map_err(|e| format!("OPTIONS {url} failed: {e}"))?;
-    let h = resp.headers();
+    preflight_verdict(resp.status(), resp.headers())
+}
+
+/// What a preflight's answer lacked, in `dg storage test`'s words (QW3-072 / QW4-056: doctor's
+/// row said "was refused (status 200 OK, …)", which reads as a contradiction).
+fn preflight_verdict(status: StatusCode, h: &HeaderMap) -> Result<(), String> {
     let (allowed, origin) = allows_probe_origin(h);
-    if !resp.status().is_success() || !allowed {
+    if !status.is_success() {
         return Err(format!(
-            "the CORS preflight from {PROBE_ORIGIN} was refused (status {}{})",
-            resp.status(),
-            if origin.is_empty() {
-                ", no Access-Control-Allow-Origin".to_string()
-            } else {
-                format!(", Access-Control-Allow-Origin {origin:?}")
-            }
+            "the CORS preflight from {PROBE_ORIGIN} answered {status}"
         ));
     }
+    if !allowed {
+        return Err(if origin.is_empty() {
+            format!(
+                "the CORS preflight from {PROBE_ORIGIN} answered {status} with no Access-Control-Allow-Origin"
+            )
+        } else {
+            format!(
+                "the CORS preflight from {PROBE_ORIGIN} answered {status} with Access-Control-Allow-Origin {origin:?}, which excludes it"
+            )
+        });
+    }
     if !header_list_contains(h, "access-control-allow-headers", "range") {
-        return Err("the CORS preflight does not allow the `Range` request header".into());
+        return Err(format!(
+            "the CORS preflight from {PROBE_ORIGIN} answered {status} without `Range` in Access-Control-Allow-Headers"
+        ));
     }
     Ok(())
 }
@@ -366,6 +367,29 @@ then restart the daemon."
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW4-056: doctor's preflight row says what the answer lacked, as `dg storage test` does,
+    /// never "refused (status 200 OK, …)".
+    #[test]
+    fn a_preflight_verdict_names_what_the_answer_lacked() {
+        let mut h = HeaderMap::new();
+        let e = preflight_verdict(StatusCode::OK, &h).unwrap_err();
+        assert_eq!(
+            e,
+            format!("the CORS preflight from {PROBE_ORIGIN} answered 200 OK with no Access-Control-Allow-Origin")
+        );
+        assert!(!e.contains("refused"), "{e}");
+        let e = preflight_verdict(StatusCode::FORBIDDEN, &h).unwrap_err();
+        assert!(e.ends_with("answered 403 Forbidden"), "{e}");
+        h.insert("access-control-allow-origin", "*".parse().unwrap());
+        let e = preflight_verdict(StatusCode::OK, &h).unwrap_err();
+        assert!(
+            e.ends_with("without `Range` in Access-Control-Allow-Headers"),
+            "{e}"
+        );
+        h.insert("access-control-allow-headers", "range".parse().unwrap());
+        assert_eq!(preflight_verdict(StatusCode::OK, &h), Ok(()));
+    }
 
     #[test]
     fn classifies_providers() {
