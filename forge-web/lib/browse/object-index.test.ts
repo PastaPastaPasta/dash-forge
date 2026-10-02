@@ -119,6 +119,29 @@ describe('RangedLocator', () => {
     expect(index.wholeLocator).not.toBeNull()
   })
 
+  // QW4-003: once the whole is on its way (a walk preloaded it, or the reads escalated), a lookup
+  // waits for it: each granule read meanwhile was another query for rows about to arrive anyway.
+  it('waits for a whole read on its way instead of reading granules', async () => {
+    let land: (b: Uint8Array) => void = () => undefined
+    const src = { ...source(bytes, GRANULE), loadWhole: () => new Promise<Uint8Array>((resolve) => (land = resolve)) }
+    const index = RangedLocator.open(bytes.slice(0, FANOUT_LEN), src) as RangedLocator
+    const loading = index.loadWhole()
+    const asked = Promise.all([1, 2, 3].map((n) => index.lookup(hexToBytes(oidOf(n * 7_919)))))
+    land(bytes.slice())
+    await loading
+    expect(await asked).toEqual([1, 2, 3].map((n) => whole.lookup(hexToBytes(oidOf(n * 7_919)))))
+    expect(src.reads).toHaveLength(0)
+  })
+
+  it('reads granules again when the whole read on its way fails', async () => {
+    const src = { ...source(bytes, GRANULE), loadWhole: () => Promise.reject(new Error('a chunk is missing')) }
+    const index = RangedLocator.open(bytes.slice(0, FANOUT_LEN), src) as RangedLocator
+    const loading = index.loadWhole().catch(() => undefined)
+    expect(await index.lookup(hexToBytes(oidOf(42)))).toEqual(whole.lookup(hexToBytes(oidOf(42))))
+    await loading
+    expect(src.reads.length).toBeGreaterThan(0)
+  })
+
   it('answers from the whole, verified fragment when the rows read are malformed', async () => {
     const bad = bytes.slice()
     // Swap the row of the object looked up with the next: still whole rows, but out of order.
@@ -285,6 +308,23 @@ describe('BrowseReader over a ranged index', () => {
     // No read reaches into the pack's trailer, and none spans more than the base plus its bound.
     for (const [, end] of src.ranges) expect(end).toBeLessThanOrEqual(pack.length - 20)
     expect(await reader.objectType(oids[2] as string)).toBe('blob')
+  })
+
+  // QW4-002: the language bar's tree walk read a 256 KiB block for each tree.
+  it('a tree walker reads each object’s own bytes, and passes its verdicts on in a batch', async () => {
+    const { pack, index, oids, texts } = chain()
+    const src = counting(pack)
+    const verdicts: [string, number | undefined][] = []
+    const walker = new BrowseReader(ObjectLocator.parse(index), src, { onObject: (v, n) => verdicts.push([v, n]) }).forTreeWalk()
+    for (const [i, oid] of oids.entries()) expect(Array.from((await walker.readObject(oid)).bytes)).toEqual(Array.from(texts[i] as Uint8Array))
+    // Each entry's own range, never the block around it that a history walker reads.
+    expect(src.ranges.some(([start, end]) => start === 0 && end === pack.length)).toBe(false)
+    const history = counting(pack)
+    await new BrowseReader(ObjectLocator.parse(index), history).forHistoryWalk().readObject(oids[0] as string)
+    expect(history.ranges).toEqual([[0, pack.length]])
+    expect(verdicts).toEqual([])
+    walker.flush()
+    expect(verdicts).toEqual([['verified', 3]])
   })
 
   it('reports a memoized object’s pack without reading the index again', async () => {

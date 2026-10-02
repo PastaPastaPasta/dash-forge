@@ -297,7 +297,7 @@ function LogBody({
       setState((s) => ({ ...s, loading: true, error: null }))
       const page: Promise<LogPageOf> =
         firstParent && typeof from === 'string'
-          ? pathVersions(reader, from, path, { walker, signal: stop.signal })
+          ? pathVersions(reader, from, path, { walker, signal: stop.signal, withEntries: false })
           : path !== ''
             ? pathDateOrderedPage(reader, from, path, { walker, signal: stop.signal }).then((p) => ({ ...p, indexed: 0 }))
             : dateOrderedPage(reader, from, { walker, signal: stop.signal }).then((p) => ({ ...p, capped: false, indexed: 0 }))

@@ -63,12 +63,32 @@ interface ListedAt {
   readonly at: number
 }
 
-/** A path's version list as served: log entries with their `mode:oid` where it resolved. */
+/**
+ * A path's version list as served: log entries, whose `mode:oid` ({@link PathVersion.entry}) is
+ * resolved only when a caller asks for it ({@link entryOf}).
+ */
 interface ServedList {
   readonly versions: readonly PathVersion[]
   /** Each version's mode and blob oid prefix as the index gives them: what a start is checked against. */
   readonly claims: readonly VersionClaim[]
   readonly complete: boolean
+  /** Each version's `mode:oid`, once asked for: the newest is the trees' own, the rest from their prefixes. */
+  readonly entries: (Promise<string | undefined> | undefined)[]
+}
+
+/**
+ * Version `at`'s `mode:oid` in `list`. A prefix is resolved through the object index, which on a
+ * large repo is read a chunk at a time: History shows a page of versions and reads none of them,
+ * where resolving a list's 256 up front read dashpay/dash's whole 9.65 MB index (QW4-017).
+ */
+function entryOf(reader: PrefixReader, list: ServedList, at: number): Promise<string | undefined> {
+  let entry = list.entries[at]
+  if (entry === undefined) {
+    const claim = list.claims[at] as VersionClaim
+    entry = resolveEntry(reader, claim.mode, claim.oidPrefix)
+    list.entries[at] = entry
+  }
+  return entry
 }
 
 /** What the index says a path's entry is after a commit (no oid for a directory or a gitlink). */
@@ -276,7 +296,13 @@ export async function pathVersions(
     walker = historyWalker(reader),
     signal,
     onExamined,
+    withEntries = true,
   }: WalkOptions & {
+    /**
+     * Whether listed versions carry their `mode:oid` ({@link PathVersion.entry}): what Blame reads
+     * each version's blob by. History shows none and passes false (each is an index lookup).
+     */
+    readonly withEntries?: boolean
     readonly limit?: number
     /**
      * How many entries a page the index answers may hold (default `limit`). The list is already
@@ -305,7 +331,13 @@ export async function pathVersions(
     const listed: ListedAt | null = distrusted ? null : await listedAt(reader, walker, next, key)
     if (listed !== null) {
       const { list, at }: ListedAt = listed
-      const taken: readonly PathVersion[] = list.versions.slice(at, at + most - entries.length)
+      const listedVersions = list.versions.slice(at, at + most - entries.length)
+      const taken: readonly PathVersion[] = withEntries
+        ? await Promise.all(listedVersions.map(async (v, k) => {
+            const entry = await entryOf(reader, list, at + k)
+            return entry !== undefined ? { ...v, entry } : v
+          }))
+        : listedVersions
       const end: number = at + taken.length
       let after: string | null
       try {
@@ -383,13 +415,8 @@ async function listedAt(reader: PrefixReader, walker: ObjectReader, start: strin
   // The list must describe this commit's tree: its newest version is the path's entry here.
   const here = await entryHere()
   if (here === null || !matches(here, newest)) return null
-  const versions = await Promise.all(
-    got.versions.map(async (v, i): Promise<PathVersion> => {
-      const entry = i === 0 ? here : await resolveEntry(reader, v.mode, v.oidPrefix)
-      return { oid: v.commit.oid, subject: v.commit.subject, author: { name: v.commit.author, when: v.commit.when }, ...(entry !== undefined ? { entry } : {}) }
-    }),
-  )
-  const list: ServedList = { versions, claims: got.versions, complete: got.complete }
+  const versions = got.versions.map((v): PathVersion => ({ oid: v.commit.oid, subject: v.commit.subject, author: { name: v.commit.author, when: v.commit.when } }))
+  const list: ServedList = { versions, claims: got.versions, complete: got.complete, entries: [Promise.resolve(here)] }
   versions.forEach((v, at) => {
     memo.listed.set(`${v.oid}\0${path}`, { list, at })
   })

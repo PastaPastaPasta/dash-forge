@@ -293,6 +293,17 @@ export class RangedLocator {
   /** The rows that hold every key in `[low, high]` of slice `b`, read as needed. */
   private async rowsFor(b: number, low: Uint8Array, high: Uint8Array): Promise<Uint8Array> {
     if (this.whole !== null) return this.whole.bucketRows(b)
+    if (this.wholeLoad !== null) {
+      // The whole is on its way (escalated, or preloaded for a walk): its rows, not more queries,
+      // unless the granules already held answer now.
+      const held = this.heldRowsFor(b, low, high)
+      if (held !== undefined) return held
+      try {
+        return (await this.wholeLoad).bucketRows(b)
+      } catch {
+        // It failed: the slice a granule at a time, as before.
+      }
+    }
     try {
       const read = async (from: number, to: number): Promise<Uint8Array> =>
         this.assemble(b, from, to, await Promise.all(this.granulesOf(...this.span(b, from, to)).map((g) => this.readGranule(g))))

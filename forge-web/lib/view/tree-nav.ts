@@ -34,6 +34,8 @@ export interface ObjectReader {
    * ({@link BrowseReader.forHistoryWalk}); `flush` passes on its batched hash-check verdicts.
    */
   forHistoryWalk?(): ObjectReader & { flush(): void }
+  /** A new reader of the same objects for one walk over many trees ({@link BrowseReader.forTreeWalk}). */
+  forTreeWalk?(): ObjectReader & { flush(): void }
   /** Shared by readers of the same objects and memos ({@link BrowseReader.memoScope}). */
   readonly memoScope?: object
 }
@@ -56,7 +58,8 @@ export class ObjectTypeError extends Error {
 
 /** Read a commit object, failing clearly when the oid names something else. */
 export async function readCommit(reader: ObjectReader, commitOid: string): Promise<CommitObject> {
-  const obj = await reader.readObject(commitOid)
+  // A history walk may then wait for the commit run it is reading rather than ask the index.
+  const obj = await reader.readObject(commitOid, { commit: true })
   if (obj.type !== 'commit') throw new ObjectTypeError(commitOid, obj.type, 'commit')
   return parseCommit(obj.bytes)
 }

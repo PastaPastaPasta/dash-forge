@@ -61,6 +61,25 @@ describe('loadRepoFacts', () => {
     expect(s.reads.length).toBe(reads)
   })
 
+  // QW4-002: a read-ahead block per tree read 1,141 chunk documents (16.8 MB) of dashpay/dash's pack
+  // for the language bar's 600 trees; a pack keeps its commits together, not its trees.
+  it('walks the trees through the reader’s tree walker, not its read-ahead history walker, and flushes it', async () => {
+    const { s, tip, root } = repo()
+    const base = s.reader(undefined, locateBy(s))
+    const used: string[] = []
+    let flushed = 0
+    const walkerOf = (kind: string) => () => ({
+      readObject: (oid: string) => (used.push(kind), base.readObject(oid)),
+      locate: base.locate,
+      flush: () => void flushed++,
+    })
+    const reader = { ...base, forHistoryWalk: walkerOf('history'), forTreeWalk: walkerOf('tree') }
+    const walk = await repoFilesWalk('r', tip, reader, root)
+    expect(walk.files.map((f) => f.path)).toEqual(['LICENSE', 'README.md', 'build.sh', 'src/main.rs'])
+    expect(new Set(used)).toEqual(new Set(['tree']))
+    expect(flushed).toBe(1)
+  })
+
   it('a directory named license is not a license file', async () => {
     const s = new Store()
     const root = s.files({ 'license/README.md': 'the licenses we use\n', 'a.go': 'package a\n' })

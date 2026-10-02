@@ -22,7 +22,7 @@ import { isUnreachableError } from '../sdk/unreachable'
 
 import { FlatIndex } from './flatindex'
 import { type LocatorEntry, ObjectLocator, SPAN_SENTINEL, offsetKey, singleReadAdvised } from './locator'
-import { WalkIndex, scanCommitRun } from './commit-run'
+import { WalkIndex, scanCommits } from './commit-run'
 import { indexOf, type ObjectIndex } from './object-index'
 import {
   type GitObject,
@@ -85,15 +85,21 @@ export interface HeldBlock {
  * a few hundred commits each. Ranges that span blocks, packs of unknown size, and blocks that
  * fail to load go straight to `inner`, so nothing it could read before becomes unreadable.
  * Every object read through it is still hash-checked by the reader. `heldBlock` hands a walk the
- * block it read an object from, to find the commits after it ({@link scanCommitRun}).
+ * block it read an object from, to find the commits after it ({@link scanCommits}).
  */
 export function readAheadSource(
   inner: PackSource,
   block = READ_AHEAD_BLOCK,
   maxBlocks = READ_AHEAD_BLOCKS,
   ahead = 0,
-): PackSource & { heldBlock(packRef: number, offset: number, copy: number | undefined): Promise<HeldBlock> | undefined } {
+): PackSource & {
+  heldBlock(packRef: number, offset: number, copy: number | undefined): Promise<HeldBlock> | undefined
+  readBlock(packRef: number, offset: number, copy: number | undefined): Promise<HeldBlock> | undefined
+  arrivedBlock(packRef: number, offset: number, copy: number | undefined): HeldBlock | undefined
+} {
   const blocks = new Map<string, Promise<Uint8Array>>()
+  /** The bytes of blocks that have arrived, while they are kept ({@link blocks}). */
+  const arrived = new WeakMap<Promise<Uint8Array>, Uint8Array>()
   /** Per pack copy, the block the last read asked for (a read of the next one is a sequential run). */
   const lastBlock = new Map<string, number>()
   // A single-copy pack reads the same bytes whether or not a copy is named: one key, so the
@@ -121,9 +127,12 @@ export function readAheadSource(
     }
     const start = index * block
     const promise = inner.fetchRange(packRef, start, Math.min(size, start + block), copy)
-    promise.catch(() => {
-      if (blocks.get(key) === promise) blocks.delete(key)
-    })
+    promise.then(
+      (bytes) => arrived.set(promise, bytes),
+      () => {
+        if (blocks.get(key) === promise) blocks.delete(key)
+      },
+    )
     blocks.set(key, promise)
     for (const k of blocks.keys()) {
       if (blocks.size <= maxBlocks) break
@@ -155,8 +164,92 @@ export function readAheadSource(
       const index = Math.floor(offset / block)
       return blocks.get(`${copyKeyOf(packRef, copy)}:${index}`)?.then((bytes) => ({ start: index * block, bytes }))
     },
+    /**
+     * The block holding pack offset `offset`, read now if it is not held (not as a demand: it does
+     * not start the sequential read-ahead): for a commit run that goes on into it. Undefined where
+     * the pack's size is unknown or the offset is past it.
+     */
+    readBlock(packRef, offset, copy) {
+      const size = inner.sizeOf?.(packRef)
+      if (size === undefined || offset < 0 || offset >= size) return undefined
+      const index = Math.floor(offset / block)
+      return blockOf(packRef, index, size, copy, false).then((bytes) => ({ start: index * block, bytes }))
+    },
+    /** {@link heldBlock}, only once it has arrived: what a scan can decode a delta's base from now. */
+    arrivedBlock(packRef, offset, copy) {
+      const index = Math.floor(offset / block)
+      const promise = blocks.get(`${copyKeyOf(packRef, copy)}:${index}`)
+      const bytes = promise === undefined ? undefined : arrived.get(promise)
+      return bytes === undefined ? undefined : { start: index * block, bytes }
+    },
     ...(inner.copyCount ? { copyCount: (packRef: number) => inner.copyCount?.(packRef) ?? 1 } : {}),
     ...(inner.sizeOf ? { sizeOf: (packRef: number) => inner.sizeOf?.(packRef) } : {}),
+  }
+}
+
+/**
+ * How near its window's end a scan's stop must be to read as an entry the window cuts short (the
+ * run goes on in the next block), not one that does not parse: a commit entry is far smaller.
+ */
+const EDGE_CUT_BYTES = 64 * 1024
+
+/**
+ * What a history walk does after each commit it reads fresh ({@link BrowseReader.forHistoryWalk}):
+ * learn the commits stored after it into `walkIndex` from the block it was read from
+ * ({@link scanCommits}). Where the run reaches the block's end, it goes on in the next block, read
+ * for it (the walk reads it next anyway), at most {@link READ_AHEAD_SEQUENTIAL} blocks on, and the
+ * walk's commit lookups wait for that rather than ask the index for each commit past a block edge
+ * (QW4-003). A block that fails to read is not asked for again by this walk.
+ */
+function learnRunsInto(
+  walkIndex: WalkIndex,
+  source: ReturnType<typeof readAheadSource>,
+  copyOf: (packRef: number) => number | undefined,
+): (entry: LocatorEntry) => Promise<void> {
+  // Read before the copy was pinned (the first object of a pack) or after: either key.
+  const heldAt = (packRef: number, offset: number): Promise<HeldBlock> | undefined =>
+    source.heldBlock(packRef, offset, copyOf(packRef)) ?? source.heldBlock(packRef, offset, undefined)
+  const arrivedAt = (packRef: number) => (offset: number): HeldBlock | undefined =>
+    source.arrivedBlock(packRef, offset, copyOf(packRef)) ?? source.arrivedBlock(packRef, offset, undefined)
+  const refused = new Set<string>()
+  /** The block at `offset`, held or read now; undefined once a read of it failed. */
+  const blockAt = (packRef: number, offset: number): Promise<HeldBlock> | undefined => {
+    const key = `${packRef}:${Math.floor(offset / READ_AHEAD_BLOCK)}`
+    if (refused.has(key)) return undefined
+    const block = heldAt(packRef, offset) ?? source.readBlock(packRef, offset, copyOf(packRef))
+    block?.catch(() => refused.add(key))
+    return block
+  }
+  const goOn = (packRef: number, from: number, hops: number, learn: (next: HeldBlock) => void): void => {
+    if (hops > READ_AHEAD_SEQUENTIAL) return
+    const following = blockAt(packRef, from)
+    if (following !== undefined) walkIndex.learning(following.then(learn))
+  }
+  const learnRun = (packRef: number, window: HeldBlock, from: number, hops: number): void => {
+    const { found, cutAt } = scanCommits(window.bytes, window.start, from, packRef, arrivedAt(packRef))
+    walkIndex.learn(found)
+    const end = window.start + window.bytes.length
+    if (cutAt === null || end - cutAt > EDGE_CUT_BYTES || walkIndex.knows(packRef, cutAt)) return
+    goOn(packRef, end, hops + 1, (next) => {
+      if (next.start !== end) return
+      const tail = window.bytes.subarray(cutAt - window.start)
+      const joined = new Uint8Array(tail.length + next.bytes.length)
+      joined.set(tail)
+      joined.set(next.bytes, tail.length)
+      learnRun(packRef, { start: cutAt, bytes: joined }, cutAt, hops + 1)
+    })
+  }
+  return async (entry) => {
+    const next = entry.offset + entry.length
+    if (walkIndex.knows(entry.packRef, next)) return
+    const block = await heldAt(entry.packRef, entry.offset)?.catch(() => undefined)
+    // Its block was not read (a range read on its own) or failed: no run to go on from.
+    if (block === undefined) return
+    const blockEnd = block.start + block.bytes.length
+    if (next < blockEnd) return learnRun(entry.packRef, block, next, 0)
+    // The commit ends at its block's end, or was read as a range across the edge: the run goes on
+    // in the block after it.
+    if (next < blockEnd + READ_AHEAD_BLOCK) goOn(entry.packRef, next, 1, (b) => learnRun(entry.packRef, b, next, 1))
   }
 }
 
@@ -284,6 +377,11 @@ interface ReaderCaches {
 export interface ReadObjectOptions {
   /** Refuse ({@link ObjectTooLargeError}) an object, or any base it is built from, larger than this. */
   readonly maxBytes?: number
+  /**
+   * The caller expects a commit: a history walk may wait for the commit run it is reading on into
+   * rather than ask the index ({@link WalkIndex.lookupCommit}).
+   */
+  readonly commit?: boolean
 }
 
 /** A memoized object, unless it is over the caller's limit. */
@@ -448,37 +546,37 @@ export class BrowseReader {
    * listener tens of thousands of times in a long walk.
    */
   forHistoryWalk(): BrowseReader & { flush(): void } {
-    const verdicts = this.opts.onObject ? new BatchedVerdicts(this.opts.onObject) : null
     const source = readAheadSource(this.packs, READ_AHEAD_BLOCK, READ_AHEAD_BLOCKS, READ_AHEAD_SEQUENTIAL)
     // An index read a slice at a time would cost the walk a query per commit: it learns the
     // commits after each one it reads from the block it read it from instead (QW3-001).
     const walkIndex = this.index.inMemory ? null : new WalkIndex(this.index)
-    const walker = new BrowseReader(
-      walkIndex ?? this.index,
-      source,
-      { ...this.opts, ...(verdicts ? { onObject: (v: ObjectVerdict) => verdicts.note(v) } : {}) },
-      this.view,
-      // The same object memos: what the walk verified, the page does not read again.
-      this.caches,
-    )
-    if (walkIndex !== null) {
-      walker.afterCommit = async (entry) => {
-        const next = entry.offset + entry.length
-        // Only the block the commit was just read from, which is in memory: the next one may still
-        // be on its way, and the walk is not held up for it (its next lookup asks the index).
-        if (Math.floor(next / READ_AHEAD_BLOCK) !== Math.floor(entry.offset / READ_AHEAD_BLOCK)) return
-        if (walkIndex.knows(entry.packRef, next)) return
-        // Read before the copy was pinned (the first object of a pack) or after: either key.
-        const held = source.heldBlock(entry.packRef, entry.offset, walker.copyOf.get(entry.packRef)) ?? source.heldBlock(entry.packRef, entry.offset, undefined)
-        const block = await held?.catch(() => undefined)
-        if (block !== undefined) walkIndex.learn(scanCommitRun(block.bytes, block.start, next, entry.packRef))
-      }
-    }
+    const walker = this.batchedWalker(walkIndex ?? this.index, source)
+    if (walkIndex !== null) walker.afterCommit = learnRunsInto(walkIndex, source, (packRef) => walker.copyOf.get(packRef))
+    return walker
+  }
+
+  /**
+   * A new reader over the same index, packs and memos for one walk over many trees (Go to file, the
+   * language bar): each object is read as its own range, as this reader reads it, and only its
+   * verdicts are batched ({@link BatchedVerdicts}). A pack keeps its commits together but not its
+   * trees, so {@link forHistoryWalk}'s blocks would cost a block per tree (QW4-002).
+   */
+  forTreeWalk(): BrowseReader & { flush(): void } {
+    return this.batchedWalker(this.index, this.packs)
+  }
+
+  /**
+   * A reader over `index` and `packs` sharing this reader's memos (what a walk verified, the page
+   * does not read again), whose verdicts reach `onObject` in batches ({@link BatchedVerdicts}).
+   */
+  private batchedWalker(index: ObjectIndex, packs: PackSource): BrowseReader & { flush(): void } {
+    const verdicts = this.opts.onObject ? new BatchedVerdicts(this.opts.onObject) : null
+    const walker = new BrowseReader(index, packs, { ...this.opts, ...(verdicts ? { onObject: (v: ObjectVerdict) => verdicts.note(v) } : {}) }, this.view, this.caches)
     return Object.assign(walker, { flush: () => verdicts?.flush() })
   }
 
   /** Told of every commit this reader reads fresh, at its entry: a history walk learns from it. */
-  private afterCommit: ((entry: LocatorEntry) => Promise<void>) | undefined
+  afterCommit: ((entry: LocatorEntry) => Promise<void>) | undefined
 
   /** How many objects the locator indexes (git's automatic abbreviation length grows with it). */
   get objectCount(): number {
@@ -587,9 +685,10 @@ export class BrowseReader {
   }
 
   /** Look up a raw locator entry by OID hex (or null if absent). */
-  async locate(oidHex: string): Promise<LocatorEntry | null> {
+  async locate(oidHex: string, commit = false): Promise<LocatorEntry | null> {
     try {
-      return await this.index.lookup(hexToBytes(oidHex))
+      const oid = hexToBytes(oidHex)
+      return await (commit && this.index instanceof WalkIndex ? this.index.lookupCommit(oid) : this.index.lookup(oid))
     } catch (e) {
       throw this.indexFailure(e)
     }
@@ -628,12 +727,12 @@ export class BrowseReader {
    * a stored entry's length says nothing about what it inflates to, so a few KiB of pack can
    * otherwise expand to gigabytes in the viewer's tab.
    */
-  async readObject(oidHex: string, { maxBytes = Infinity }: ReadObjectOptions = {}): Promise<GitObject> {
-    return this.readBounded(oidHex, limitsFor(maxBytes))
+  async readObject(oidHex: string, { maxBytes = Infinity, commit = false }: ReadObjectOptions = {}): Promise<GitObject> {
+    return this.readBounded(oidHex, limitsFor(maxBytes), commit)
   }
 
   /** {@link readObject} under limits fixed by the read that started it (a REF base's read keeps them). */
-  private async readBounded(oidHex: string, limits: Limits): Promise<GitObject> {
+  private async readBounded(oidHex: string, limits: Limits, commit = false): Promise<GitObject> {
     const oidKey = oidHex.toLowerCase()
     const cached = this.objectsByOid.get(oidKey)
     if (cached !== undefined) {
@@ -642,7 +741,7 @@ export class BrowseReader {
       return obj
     }
 
-    const entry = await this.locate(oidHex)
+    const entry = await this.locate(oidHex, commit)
     if (entry === null) {
       const fresher = await this.opts.onMiss?.(oidHex)
       // The retry keeps this read's limits (a README image stays capped on the fresher reader).
