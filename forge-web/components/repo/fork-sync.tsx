@@ -23,9 +23,10 @@ import type { BrowseReader } from '@/lib/browse'
 import { readSyncManifests, readSyncTarget, repoKey, syncDecision, syncFork, type RepoRef, type SyncManifests } from '@/lib/repo'
 import { matchesProtected } from '@/lib/rules'
 import { capabilitiesOf } from '@/lib/rules/roles'
+import type { Role } from '@/lib/rules/v2'
 import { EXISTING, newIntent, previewCreate, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { spendAction } from '@/lib/spend-toast'
-import { formatBytes, plural, type RepoHome } from '@/lib/view'
+import { ARCHIVED_REASON, formatBytes, plural, type RepoHome } from '@/lib/view'
 import { historyWalker } from '@/lib/view/pull-diff'
 import { syncAncestry, SYNC_COUNT_CAP } from '@/lib/view/fork-sync'
 import { abbreviate } from '@/lib/utils'
@@ -36,7 +37,6 @@ import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useAuth } from '@/contexts/auth-context'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
-import { ARCHIVED_REASON } from '@/lib/view'
 import { contributeHref, useForkParent } from '@/components/repo/fork-contribute'
 import { Button } from '@/components/ui/button'
 import { CostPreview } from '@/components/ui/cost-preview'
@@ -61,7 +61,7 @@ export function syncCost(plan: SyncManifests): Cost {
  * Why the viewer cannot sync this fork's default branch, or null: an archived fork, a role that
  * cannot push, or a protected branch for a writer.
  */
-export function syncBlock(home: RepoHome, role: ReturnType<typeof useViewerRole>['role']): string | null {
+export function syncBlock(home: RepoHome, role: Role | null): string | null {
   if (home.config?.archived === true) return ARCHIVED_REASON
   if (!capabilitiesOf(role).canPush) return null
   if (role !== 'maintainer' && matchesProtected(`refs/heads/${home.defaultBranch}`, home.config?.protectedPatterns ?? [])) {

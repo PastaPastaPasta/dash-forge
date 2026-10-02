@@ -341,16 +341,11 @@ export interface ForkResult {
 export async function planFork(
   sdk: EvoSDK,
   parent: RepoRef,
-): Promise<{ manifests: PackManifestInput[]; unreferenceable: string[]; refs: { refName: string; oid: string }[] }> {
+): Promise<SyncManifests & { refs: { refName: string; oid: string }[] }> {
   const [manifests, refs] = await Promise.all([readRepoPackManifests(sdk, parent), readRefs(sdk, parent)])
-  const inputs: PackManifestInput[] = []
-  const unreferenceable: string[] = []
-  for (const copies of planManifests(manifests, new Set())) {
-    const input = forkManifest(parent.forge, parent.repoId, copies)
-    if (input === null) unreferenceable.push((copies[0] as PackManifest).packHash)
-    else inputs.push(input)
-  }
-  return { manifests: inputs, unreferenceable, refs: unreferenceable.length > 0 ? [] : planRefs(refs, []) }
+  // A new fork records nothing yet: every parent pack, as a sync of an empty fork would.
+  const plan = planSyncManifests(parent, manifests, [])
+  return { ...plan, refs: plan.unreferenceable.length > 0 ? [] : planRefs(refs, []) }
 }
 
 /**

@@ -118,11 +118,11 @@ fn holds_history(dir: &Path, tips: &[&str]) -> bool {
 /// The two ancestry answers a decision needs, in `dir` (holding both tips, or as many of them
 /// as it fetched): whether the fork's tip is in the parent's history, and the other way.
 fn ancestry(dir: &Path, fork_tip: &str, parent_tip: &str) -> (bool, bool) {
-    let fork_in_parent =
-        git::has_object(dir, fork_tip) && git::is_ancestor(dir, fork_tip, parent_tip);
-    let parent_in_fork = !fork_in_parent
-        && git::has_object(dir, fork_tip)
-        && git::is_ancestor(dir, parent_tip, fork_tip);
+    if !git::has_object(dir, fork_tip) {
+        return (false, false);
+    }
+    let fork_in_parent = git::is_ancestor(dir, fork_tip, parent_tip);
+    let parent_in_fork = !fork_in_parent && git::is_ancestor(dir, parent_tip, fork_tip);
     (fork_in_parent, parent_in_fork)
 }
 
@@ -168,12 +168,15 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     // Who may move the branch, before anything is read from storage or paid for. Unreadable
     // patterns stop here: a writer's sync of a branch they protect would pay for the manifests
     // and then be refused its ref update.
-    let role = s.collab().signer_role(fork).await?;
+    let collab = s.collab();
+    let (role, patterns) = tokio::join!(
+        Box::pin(collab.signer_role(fork)),
+        Box::pin(svc.protected_patterns(fork))
+    );
+    let role = role?;
     let protected = forge_core::rules::matches_protected(
         &fork_ref,
-        &svc.protected_patterns(fork)
-            .await
-            .context("reading the fork's protected branches")?,
+        &patterns.context("reading the fork's protected branches")?,
     );
     let may = match role {
         Some(Role::Maintainer) => true,
