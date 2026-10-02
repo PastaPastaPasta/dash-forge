@@ -26,6 +26,8 @@ import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { GoToFileHotkey } from '@/components/repo/go-to-file'
 import { DiffView } from '@/components/repo/diff-view'
 import { ChecksTab } from '@/components/repo/pull-tabs'
+import { SignatureBadge } from '@/components/repo/signature-badge'
+import { useCommitSignatures } from '@/hooks/use-commit-signatures'
 import { ReadErrorState } from '@/components/repo/resolved-tip'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, LoadingBlock } from '@/components/ui/states'
@@ -77,6 +79,9 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
   const links = useRepoLinks(addr, description)
   const { data, loading, error, cause } = useAsync(() => loadCommitChanges(reader, oid), [oid])
   const sides = useMemo<DiffSides>(() => ({ base: reader, head: reader }), [reader])
+  // The commit's Verified / Unverified badge (P1-7), when it is signed.
+  const signable = useMemo(() => (data ? [{ oid: data.oid, ...(data.commit.signed ? { signed: data.commit.signed } : {}) }] : []), [data])
+  const signatures = useCommitSignatures(repo, signable)
   if (loading) return <LoadingBlock label="Reconstructing commit" />
   if (error) {
     const state = <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />
@@ -103,6 +108,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] coarse:gap-y-3 text-anvil-500 dark:text-anvil-400">
           <CommitByline commit={commit} />
           <span className="flex items-center gap-1">commit <Oid value={full} chars={9} /></span>
+          <SignatureBadge state={signatures.get(full)} />
           {tagNames.length > 0 ? (
             <span className="flex items-center gap-1" data-testid="commit-via-tag">
               <Tag className="h-3 w-3" aria-hidden /> tagged {tagNames.join(' → ')}

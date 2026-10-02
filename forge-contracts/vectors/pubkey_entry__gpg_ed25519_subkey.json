@@ -1,0 +1,14 @@
+{
+  "name": "gpg_ed25519_subkey",
+  "description": "A signing subkey's packet (tag 14) with the subkey's fingerprint: verifiable.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "gpg:4F8E2782CDD362119DEF6FFE0BC64069BAF14469 zjMEar9q4xYJKwYBBAHaRw8BAQdAUzQ66cMiGFMnNaP1cpZJ4wyLzQ2iAkrPrHed5u8CSP4="
+  },
+  "expected": {
+    "kind": "openpgp",
+    "fingerprint": "4F8E2782CDD362119DEF6FFE0BC64069BAF14469",
+    "verifiable": true
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "ssh_type_mismatch",
+  "description": "The type before the key must be the one its blob names.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIKlxwBdl5BMou7QztNy8uRfENRcuLEe0EvX22UgM0jQI"
+  },
+  "expected": {
+    "kind": "invalid",
+    "fingerprint": null,
+    "verifiable": false
+  }
+}

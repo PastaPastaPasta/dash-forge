@@ -1,0 +1,14 @@
+{
+  "name": "gpg_fingerprint_only",
+  "description": "A fingerprint alone names a key it does not publish: never verifies.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "gpg:059E65EABA27E46FF4FCC211C209DB5A73261B84"
+  },
+  "expected": {
+    "kind": "openpgp",
+    "fingerprint": "059E65EABA27E46FF4FCC211C209DB5A73261B84",
+    "verifiable": false
+  }
+}

@@ -29,6 +29,7 @@ import { Button } from '@/components/ui/button'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { ProfileAvatar } from '@/components/ui/profile-avatar'
+import { SigningKeysSection } from '@/components/signing-keys-section'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 
@@ -140,8 +141,9 @@ export function ProfileSettings(): JSX.Element {
   if (!stored.settled) return <LoadingBlock label="Reading your profile" />
   return (
     <ProfileForm
-      // A fresh form for each stored revision: what was saved is what the form starts from.
-      key={`${stored.data?.id ?? 'none'}:${stored.data?.revision ?? 0}`}
+      // A fresh form when the stored fields change (a save): what was saved is what it starts from.
+      // Not on a signing-key write, which leaves the fields alone: unsaved edits survive it.
+      key={`${stored.data?.id ?? 'none'}:${JSON.stringify(stored.data?.fields ?? {})}`}
       identity={identity}
       name={name ?? null}
       stored={stored.data}
@@ -331,13 +333,15 @@ function ProfileForm({
         </div>
       </div>
 
+      <SigningKeysSection identity={identity} stored={stored} onSaved={onSaved} />
+
       {stored !== null ? (
         <section aria-labelledby="profile-delete-title" className="rounded-lg border border-danger/30 p-4">
           <h2 id="profile-delete-title" className="text-dense font-medium text-anvil-800 dark:text-anvil-100">
             Delete profile
           </h2>
           <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
-            Removes the profile document (name, bio, avatar, links and any signing keys) and refunds part of its storage fee. Your identity, username and repos stay.
+            Removes the profile document (name, bio, avatar, links and signing keys) and refunds part of its storage fee. Your identity, username and repos stay.
           </p>
           <Button className="mt-3" size="sm" variant="danger" disabled={!ready} onClick={() => guard.check(0, 'community', 'delete your profile') && setConfirm('delete')}>
             Delete profile

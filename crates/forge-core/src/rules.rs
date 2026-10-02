@@ -50,6 +50,7 @@ pub mod moderation;
 pub mod parity;
 pub mod profile;
 pub mod review;
+pub mod signature;
 pub mod transition;
 pub mod v2;
 
@@ -2190,6 +2191,34 @@ mod tests {
         }
     }
 
+    /// `pubkey_entry` and `commit_signature`: the signed-commit rules ([`super::signature`]).
+    fn run_signature_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct EntryInput {
+            entry: String,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct CommitInput {
+            commit: String,
+            signers: Vec<super::signature::Signer>,
+        }
+        let ctx = &v.name;
+        let got = if v.case == "pubkey_entry" {
+            let inp: EntryInput = input(v);
+            serde_json::to_value(super::signature::read_pubkey_entry(&inp.entry))
+        } else {
+            let inp: CommitInput = input(v);
+            serde_json::to_value(super::signature::verify_commit_signature(
+                inp.commit.as_bytes(),
+                &inp.signers,
+                false,
+            ))
+        };
+        assert_eq!(got.expect("serialize"), v.expected, "vector `{ctx}`");
+    }
+
     /// `profile_input` and `avatar_config`: the profile rules ([`super::profile`]).
     fn run_profile_case(v: &Vector) {
         #[derive(Deserialize, Serialize)]
@@ -2268,6 +2297,7 @@ mod tests {
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "profile_input" | "avatar_config" => run_profile_case(v),
+            "pubkey_entry" | "commit_signature" => run_signature_case(v),
             "repo_name" => {
                 let inp: RepoNameInput = input(v);
                 let got = serde_json::json!({

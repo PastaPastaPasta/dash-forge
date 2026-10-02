@@ -1,0 +1,14 @@
+{
+  "name": "gpg_wrong_fingerprint",
+  "description": "A packet whose fingerprint is not the one named is invalid.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "gpg:A418340A0669BE2611293CCF29662153852F6819 xjMEar9q4xYJKwYBBAHaRw8BAQdAmGsyG5QnBNlTV9rdWGDWvO8EL4giPvjVi5+0qE02qtg="
+  },
+  "expected": {
+    "kind": "invalid",
+    "fingerprint": null,
+    "verifiable": false
+  }
+}

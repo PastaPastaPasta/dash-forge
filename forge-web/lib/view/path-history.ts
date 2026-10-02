@@ -190,6 +190,7 @@ export const logEntryOf = (oid: string, commit: CommitObject): LogEntry => ({
   subject: commitSubject(commit.message),
   author: commit.author,
   committedAt: commit.committer.when,
+  ...(commit.signed ? { signed: commit.signed } : {}),
 })
 
 /**
