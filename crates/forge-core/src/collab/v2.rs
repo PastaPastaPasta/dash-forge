@@ -1581,7 +1581,7 @@ fn no_move(target: &Target, code: i64, action: StateAction, actor: Actor) -> Err
 pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
     if policy.required_approvals > 10 || policy.approver_role > 1 {
         return Err(Error::Config(
-            "a policy takes 0-10 required approvals and approver role 0 (any member) or 1 \
+            "a policy takes 0-10 required approvals and approver role 0 (maintainers and writers) or 1 \
              (maintainers)"
                 .into(),
         ));

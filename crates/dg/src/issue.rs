@@ -964,8 +964,8 @@ async fn refuse_if_locked(s: &Session, number: u64, target_id: &str) -> Result<(
         forge_core::user_error::codes::NOT_A_WRITER,
         format!("comment not posted: issue #{number} is locked to members"),
     )
-    .cause("a maintainer or writer locked the conversation")
-    .fix("ask a maintainer to unlock it")
+    .cause("a member locked the conversation: only the repository's members can comment on it now")
+    .fix("ask a maintainer, writer or triage member of the repository to unlock it")
     .note("checked before anything was signed; nothing was written or paid")
     .into())
 }

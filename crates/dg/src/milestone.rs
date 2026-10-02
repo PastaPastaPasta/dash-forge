@@ -112,7 +112,7 @@ async fn define(
 ) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "milestone not changed").await?;
     ctx.confirm_or_cancel(&format!(
-        "Define milestone {title:?} in {}? (one small document; maintainers and writers)",
+        "Define milestone {title:?} in {}? (one small document; maintainers, writers and triage members)",
         s.repo.display()
     ))?;
     let id = s

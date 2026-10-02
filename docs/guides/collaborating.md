@@ -179,7 +179,7 @@ dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS n
 
 A label the issue already has, or an assignee already assigned, is left alone: `dg` says so and writes (and charges) nothing for it, so the timeline never shows the same change twice. Removing one the issue does not have is skipped the same way.
 
-**Who can change state.** The issue's author can close and reopen it (an `authorEvent`). Writers and maintainers can close, reopen, label and assign any issue (an `event`). `dg` picks the right one for you. Consensus refuses both from anyone else, and `dg` says so before anything is signed ([`E601`](../errors.md#e601)).
+**Who can change state.** The issue's author can close and reopen it (an `authorEvent`). Maintainers, writers and triage members can close, reopen, label and assign any issue (an `event`). `dg` picks the right one for you. Consensus refuses both from anyone else, and `dg` says so before anything is signed ([`E601`](../errors.md#e601)).
 
 **Edits.** Only the author can edit an issue's title or body, or a comment's body (`dg issue edit-comment` takes the comment's id from `dg issue view --json` or `dg pr view --comments --json`, and works for PR comments too): an edit replaces their document, so consensus admits it from them alone, members included. The earlier text stays readable on Platform to anyone who could read it, and the web shows "edited". Re-running an edit that already landed writes nothing. In a private repository the whole text is re-sealed (a PR's under the key epoch it was opened with, the others under the current one) and nothing is written in plaintext. An edit made against text someone else replaced in the meantime is refused before signing ([`E607`](../errors.md#e607)).
 
@@ -193,14 +193,14 @@ A mirrored item's own number still follows this repo's dense sequence; mirroring
 
 **No deletes.** Issues, PRs and their state events cannot be deleted, so nobody can rewrite a thread's history. Comments can be deleted by their author: the comment's **Delete** on the web, or `dg issue delete-comment` (for PR comments too). Consensus lets nobody else delete it, maintainers included, so a comment posted by mistake is for its author to remove. Replies to it stay, and read as replies to a deleted comment. A delete removes the comment from Platform state, but the write that posted it stays in the chain's block history: treat a secret posted in a comment as leaked and rotate it.
 
-**Locking.** A writer or maintainer locks a conversation to stop non-members from posting to it:
+**Locking.** A maintainer, writer or triage member locks a conversation to stop non-members from posting to it:
 
 ```sh
 dg issue lock   <owner>/<repo> 12          # or: dg pr lock <owner>/<repo> 7
 dg issue lock   <owner>/<repo> 12 --off    # unlock
 ```
 
-Locking and unlocking are transitions members write, folded the same way for issues and PRs. `dg issue view --json` shows the fold as `"locked": true|false`; `dg pr view` does not print it today. On the web, an issue's sidebar shows "Locked to members" or "Open to everyone" and has a **Lock** / **Unlock** button for members; a PR enforces the same lock (a non-member sees the compose box disabled, "This conversation is locked: only maintainers and writers can comment") but shows no status label and no button yet — it locks and unlocks from `dg pr lock` only. Once locked, a non-member's comment or review is refused at the CLI before anything is signed (*"comment not posted: issue #12 is locked to members"*); a member's still goes through. Locking does not require re-running a close or reopen — it is independent of the issue or PR's open/closed state.
+Locking and unlocking are transitions members write, folded the same way for issues and PRs. `dg issue view --json` shows the fold as `"locked": true|false`; `dg pr view` does not print it today. On the web, an issue's sidebar shows "Locked to members" or "Open to everyone" and has a **Lock** / **Unlock** button for members; a PR enforces the same lock (a non-member sees the compose box disabled, "This conversation is locked: only the repo's members can comment") but shows no status label and no button yet — it locks and unlocks from `dg pr lock` only. Once locked, a non-member's comment or review is refused at the CLI before anything is signed (*"comment not posted: issue #12 is locked to members"*); a member's still goes through. Locking does not require re-running a close or reopen — it is independent of the issue or PR's open/closed state.
 
 ### Moderation: lock and hide
 
@@ -208,7 +208,7 @@ A repository's maintainers moderate its conversations with two tools. Neither de
 
 | | Lock | Hide |
 |---|---|---|
-| Who | writers and maintainers | **maintainers** only |
+| Who | maintainers, writers and triage members | **maintainers** only |
 | What it does | from then on only members can comment or review | readers see a comment, a review or a whole issue or PR collapsed, and can expand it |
 | Enforced by | the network (consensus refuses a non-member's post) | every Forge client; the network checks that the hider is a maintainer |
 | Use it for | a thread under attack, or a finished discussion | spam, abuse, off-topic or outdated posts that are already there |
@@ -403,7 +403,7 @@ On the web, **Issues → Labels** lists them and lets members create one, change
 
 ### Milestones
 
-Members (maintainers and writers) define milestones and put issues in them:
+Maintainers, writers and triage members define milestones and put issues in them:
 
 ```sh
 dg milestone create <owner>/<repo> v1.0 --description "First release" --due 2026-12-01
