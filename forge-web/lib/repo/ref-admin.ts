@@ -21,8 +21,9 @@ import { isPlainBranchRef, isRc1RefName, isRc1TagName, matchesProtected, type Re
 import { capabilitiesOf, roleLimit, whoCan } from '../rules/roles'
 import type { Role } from '../rules/v2'
 import { bytesToBase64, type WriteAuth } from '../sdk'
-import { readConfigHistory } from './config'
+import { readConfigBundle } from './config'
 import type { RepoRef } from './contract'
+import { refTip } from './fork'
 import { refNameHash, writeRefUpdate } from './push'
 import { resolveRefByHash } from './refs'
 
@@ -99,30 +100,56 @@ export function deleteBranchBlock(i: {
   return refWriteBlock(i.role, i.refName, [], 'delete branches')
 }
 
-/**
- * The ref's state as the chain holds it now (null: never written). Read fresh before every write
- * here: the page's list may be minutes old. A private repo reads through its member session.
- */
-export async function readRefNow(sdk: EvoSDK, repo: RepoRef, refName: string): Promise<RefState | null> {
-  const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(refName)), await readConfigHistory(sdk, repo))
-  return ref?.state ?? null
+/** A ref as the chain holds it now, with the protected patterns in force. */
+export interface RefNow {
+  /** null: never written. */
+  readonly state: RefState | null
+  readonly patterns: readonly string[]
 }
 
-const tipOf = (s: RefState | null): string | null => (s?.state === 'resolved' ? s.oid : s?.state === 'diverged' ? (s.heads[0]?.oid ?? null) : null)
+/**
+ * The ref's state as the chain holds it now (null: never written), and the repo's protected
+ * patterns now: read fresh before every write here, as the page's list and config may be minutes
+ * old (a private repo's refs too, past its session's copy). One config read serves both.
+ */
+export async function readRefNow(sdk: EvoSDK, repo: RepoRef, refName: string): Promise<RefNow> {
+  const bundle = await readConfigBundle(sdk, repo)
+  const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(refName)), bundle.history, undefined, { fresh: true })
+  return { state: ref?.state ?? null, patterns: bundle.config?.protectedPatterns ?? [] }
+}
 
-/** Create `refs/heads/<name>` at `target` (a commit the repo stores). Refused when it exists now. */
+const tipOf = (s: RefState | null): string | null => (s === null ? null : refTip({ state: s }))
+
+/**
+ * The write options for a ref update routed by `patterns` just read: a public repo's are passed
+ * on (no second config read); a private repo's writer routes by its own sealed config.
+ */
+function routed(repo: RepoRef, patterns: readonly string[], intent: string | undefined): { intent?: string; protectedPatterns?: readonly string[] } {
+  return { ...(intent !== undefined ? { intent } : {}), ...(repo.visibility === 'private' ? {} : { protectedPatterns: patterns }) }
+}
+
+/**
+ * Create `refs/heads/<name>` at `target` (a commit the repo stores), as a signer of `role`, refused
+ * (before signing) when the role cannot write it under the patterns in force now, or when the
+ * branch exists now. `restoring`: a branch this page deleted from that tip: a node a block behind
+ * may still show it there, which is no refusal (writing the same tip again is harmless).
+ */
 export async function createBranch(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { readonly name: string; readonly target: string; readonly intent?: string },
+  input: { readonly name: string; readonly target: string; readonly role: Role | null; readonly intent?: string; readonly restoring?: boolean },
 ): Promise<void> {
   const problem = branchNameProblem(input.name)
   if (problem !== null) throw new Error(problem)
   const refName = `${BRANCH_PREFIX}${input.name}`
-  const now = tipOf(await readRefNow(sdk, repo, refName))
-  if (now !== null) throw new Error(`a branch named ${input.name} already exists (at ${now.slice(0, 7)})`)
-  await writeRefUpdate(sdk, auth, repo, { refName, newOid: input.target }, input.intent !== undefined ? { intent: input.intent } : {})
+  const now = await readRefNow(sdk, repo, refName)
+  const block = refWriteBlock(input.role, refName, now.patterns, 'create this branch')
+  if (block !== null) throw new Error(block)
+  const tip = tipOf(now.state)
+  const sameTip = input.restoring === true && tip !== null && tip.toLowerCase() === input.target.toLowerCase()
+  if (tip !== null && !sameTip) throw new Error(`a branch named ${input.name} already exists (at ${tip.slice(0, 7)})`)
+  await writeRefUpdate(sdk, auth, repo, { refName, newOid: input.target }, routed(repo, now.patterns, input.intent))
 }
 
 /**
@@ -134,20 +161,17 @@ export async function deleteBranch(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { readonly refName: string; readonly tip: string; readonly intent?: string },
+  input: { readonly refName: string; readonly tip: string; readonly defaultBranch: string; readonly role: Role | null; readonly intent?: string },
 ): Promise<void> {
-  const now = await readRefNow(sdk, repo, input.refName)
+  const { state, patterns } = await readRefNow(sdk, repo, input.refName)
   const name = shortRef(input.refName)
-  if (now === null || now.state === 'unborn') throw new Error(`${name} is already deleted`)
-  if (now.state === 'diverged') throw new Error(`${name} has diverged heads: delete it with git`)
-  if (now.oid.toLowerCase() !== input.tip.toLowerCase()) throw new Error(`${name} moved to ${now.oid.slice(0, 7)} since this page read it; reload and check before deleting it`)
-  await writeRefUpdate(
-    sdk,
-    auth,
-    repo,
-    { refName: input.refName, newOid: '0'.repeat(input.tip.length), prevOid: input.tip },
-    input.intent !== undefined ? { intent: input.intent } : {},
-  )
+  if (state === null || state.state === 'unborn') throw new Error(`${name} is already deleted`)
+  // The rules again, against the patterns in force now (a protection added since the page loaded).
+  const block = deleteBranchBlock({ refName: input.refName, defaultBranch: input.defaultBranch, patterns, role: input.role, state: state.state })
+  if (block !== null) throw new Error(block)
+  if (state.state !== 'resolved') throw new Error(`${name} has diverged heads: delete it with git`)
+  if (state.oid.toLowerCase() !== input.tip.toLowerCase()) throw new Error(`${name} moved to ${state.oid.slice(0, 7)} since this page read it; reload and check before deleting it`)
+  await writeRefUpdate(sdk, auth, repo, { refName: input.refName, newOid: '0'.repeat(input.tip.length), prevOid: input.tip }, routed(repo, patterns, input.intent))
 }
 
 /**
@@ -164,11 +188,12 @@ export async function ensureTag(
   const problem = newTagNameProblem(input.tag)
   if (problem !== null) throw new Error(problem)
   const refName = `${TAG_PREFIX}${input.tag}`
-  const now = tipOf(await readRefNow(sdk, repo, refName))
+  const { state, patterns } = await readRefNow(sdk, repo, refName)
+  const now = tipOf(state)
   if (now !== null) {
     if (now.toLowerCase() === input.target.toLowerCase()) return false
     throw new Error(`the tag ${input.tag} already exists at ${now.slice(0, 7)}: pick it as an existing tag, or choose another name`)
   }
-  await writeRefUpdate(sdk, auth, repo, { refName, newOid: input.target }, input.intent !== undefined ? { intent: input.intent } : {})
+  await writeRefUpdate(sdk, auth, repo, { refName, newOid: input.target }, routed(repo, patterns, input.intent))
   return true
 }

@@ -28,8 +28,9 @@ import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Lock, Pencil, Plus, RotateCcw, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, formatBytes, isLive, plural, tipOidOf } from '@/lib/view'
-import { compareRefNames, repoKey, type ReleaseList } from '@/lib/repo'
+import { repoKey, type ReleaseList } from '@/lib/repo'
 import { BRANCH_PREFIX, TAG_PREFIX, shortRef } from '@/lib/repo/ref-admin'
+import { sourceBranches } from '@/components/repo/branch-admin'
 import { Author } from '@/components/author'
 import { Time } from '@/components/repo/byline'
 import { privateComposeBlock } from '@/components/repo/private-compose'
@@ -259,20 +260,17 @@ function NewReleaseDialog({
   // Whether the tag exists now: a release names a tag, and one that does not exist is created on
   // publish at the chosen branch (an edit's tag is fixed: never created from here).
   const tagExists = home.tags.some((t) => t.refName === `${TAG_PREFIX}${trimmedTag}` && isLive(t))
-  const tagTargets = useMemo(() => {
-    const def = `${BRANCH_PREFIX}${home.defaultBranch}`
-    return home.branches
-      .filter(isLive)
-      .sort((a, b) => (a.refName === def ? -1 : b.refName === def ? 1 : compareRefNames(shortRef(a.refName), shortRef(b.refName))))
-  }, [home.branches, home.defaultBranch])
-  const newTag = fixedTag === undefined && trimmedTag !== '' && tagProblem(trimmedTag) === null && !tagExists
-  const targetRef = tagTargets.find((b) => b.refName === tagTarget) ?? tagTargets[0] ?? null
-  const targetOid = targetRef === null ? null : tipOidOf(targetRef)
   // A new revision of an existing tag supersedes it (newest per tag wins): what the form leaves
   // blank is kept, so a yank or a notes edit never drops the files (D-504). A sealed tag's newest
   // revision may be an unpublish: publishing again restores it.
   const existing = (releases && (sealedRepo ? newestRevision(releases, trimmedTag) : releases.current.find((r) => r.tagName === trimmedTag))) ?? null
   const sealedExisting = existing?.sealed?.fields
+  const tagTargets = useMemo(() => sourceBranches(home), [home])
+  // A tag with a release already (its tag deleted since) is a new revision, never a new tag: the
+  // release names the commit it was published for.
+  const newTag = fixedTag === undefined && trimmedTag !== '' && tagProblem(trimmedTag) === null && !tagExists && existing === null
+  const targetRef = tagTargets.find((b) => b.refName === tagTarget) ?? tagTargets[0] ?? null
+  const targetOid = targetRef === null ? null : tipOidOf(targetRef)
   const liveTag = existing !== null && sealedExisting?.unpublished !== true
   // Only a live tag can be unpublished: the switch left on for another tag says nothing.
   const unpublishing = unpublish && liveTag

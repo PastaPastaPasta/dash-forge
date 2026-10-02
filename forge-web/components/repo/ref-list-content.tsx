@@ -16,13 +16,13 @@ import Link from 'next/link'
 import { GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
-import { compareRefNames, compareTagNames, type ResolvedRef } from '@/lib/repo'
+import { compareRefNames, compareTagNames, repoKey, type ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
 import { RefDate, TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
 import { Input } from '@/components/ui/input'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
-import { DeleteBranchButton, NewBranchButton, RestoreBranchButton, useBranchAdmin } from '@/components/repo/branch-admin'
+import { DeleteBranchButton, NewBranchButton, RestoreBranchButton, useBranchAdmin, useDeletedHere } from '@/components/repo/branch-admin'
 
 const KIND = {
   branches: { prefix: 'refs/heads/', icon: GitBranch, empty: 'No branches yet', noun: 'a branch', single: 'branch' },
@@ -55,7 +55,7 @@ export function RefListContent({
   const admin = useBranchAdmin(home)
   const branchAdmin = kind === 'branches'
   // Branches deleted from this page, with the tip each had: "Restore" puts one back there.
-  const [deletedHere, setDeletedHere] = useState<ReadonlyMap<string, string>>(new Map())
+  const [deletedHere, setDeletedHere] = useDeletedHere(repoKey(home.repo))
   const changed = (): void => reload?.()
   // Tags are peeled for their commit chips, and every row's tip is read for its date (QW2-023):
   // both through the published browse index, a row at a time as it scrolls into view.
@@ -184,7 +184,7 @@ export function RefListContent({
                     admin={admin}
                     branch={ref}
                     onDeleted={(at) => {
-                      setDeletedHere((m) => new Map(m).set(ref.refName, at))
+                      setDeletedHere((m) => void m.set(ref.refName, at))
                       changed()
                     }}
                   />
@@ -234,11 +234,7 @@ export function RefListContent({
                     refName={ref.refName}
                     tip={deletedHere.get(ref.refName) as string}
                     onRestored={() => {
-                      setDeletedHere((m) => {
-                        const next = new Map(m)
-                        next.delete(ref.refName)
-                        return next
-                      })
+                      setDeletedHere((m) => void m.delete(ref.refName))
                       changed()
                     }}
                   />

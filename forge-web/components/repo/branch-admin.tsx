@@ -10,7 +10,7 @@
  * protected branches have a disabled delete button whose label says why, as GitHub's does.
  */
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { GitBranchPlus, RotateCcw, Trash2 } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
@@ -46,14 +46,36 @@ export interface BranchAdmin {
   readonly patterns: readonly string[]
 }
 
+/**
+ * Branches deleted from the branches page in this tab, by repo, with the tip each had: "Restore"
+ * puts one back there. Kept outside the page so a re-read that remounts it (a private repo's
+ * home re-checks its keys) keeps the offer.
+ */
+const deletedHere = new Map<string, ReadonlyMap<string, string>>()
+
+/** {@link deletedHere} for `repoKey`, and a setter. */
+export function useDeletedHere(key: string): readonly [ReadonlyMap<string, string>, (update: (m: Map<string, string>) => void) => void] {
+  const [map, setMap] = useState<ReadonlyMap<string, string>>(() => deletedHere.get(key) ?? new Map())
+  const update = useCallback(
+    (change: (m: Map<string, string>) => void) => {
+      const next = new Map(deletedHere.get(key) ?? [])
+      change(next)
+      deletedHere.set(key, next)
+      setMap(next)
+    },
+    [key],
+  )
+  return [map, update]
+}
+
 export function useBranchAdmin(home: RepoHome): BranchAdmin {
   const { role } = useViewerRole(home.repo)
   const blocked = home.config?.archived === true ? ARCHIVED_REASON : privateComposeBlock(home)
   return { role, canPush: capabilitiesOf(role).canPush, blocked, patterns: home.config?.protectedPatterns ?? [] }
 }
 
-/** The live branches, the default first, then by name: the source choices. */
-function sourceBranches(home: RepoHome): ResolvedRef[] {
+/** The live branches, the default first, then by name: a new branch's (or tag's) source choices. */
+export function sourceBranches(home: Pick<RepoHome, 'branches' | 'defaultBranch'>): ResolvedRef[] {
   const def = `${BRANCH_PREFIX}${home.defaultBranch}`
   return home.branches
     .filter(isLive)
@@ -131,7 +153,7 @@ function NewBranchDialog({
     try {
       // The toast names the action: a ref update's own title is "Branch updated".
       await spendAction({ running: `Creating ${trimmed}…`, ...namedAction(`Branch ${trimmed} created`) }, (tag) =>
-        createBranch(sdk, tag(signer), home.repo, { name: trimmed, target, intent: `branch-create:${home.repo.repoId}:${intent}:${trimmed}:${target}` }),
+        createBranch(sdk, tag(signer), home.repo, { name: trimmed, target, role: admin.role, intent: `branch-create:${home.repo.repoId}:${intent}:${trimmed}:${target}` }),
       )
       onCreated()
       onClose()
@@ -264,7 +286,7 @@ export function DeleteBranchButton({
           toast={{ running: `Deleting ${name}…`, ...namedAction(`Branch ${name} deleted`) }}
           onConfirm={async (intent) => {
             if (!sdk || !signer) throw new Error('sign in to continue')
-            await deleteBranch(sdk, signer, home.repo, { refName: branch.refName, tip, intent: `branch-delete:${home.repo.repoId}:${intent}:${branch.refName}:${tip}` })
+            await deleteBranch(sdk, signer, home.repo, { refName: branch.refName, tip, defaultBranch: home.defaultBranch, role: admin.role, intent: `branch-delete:${home.repo.repoId}:${intent}:${branch.refName}:${tip}` })
             onDeleted(tip)
           }}
         />
@@ -290,7 +312,7 @@ export function RestoreBranchButton({ home, admin, refName, tip, onRestored }: {
     setError(null)
     try {
       await spendAction({ running: `Restoring ${name}…`, ...namedAction(`Branch ${name} restored`) }, (tag) =>
-        createBranch(sdk, tag(signer), home.repo, { name, target: tip, intent: `branch-restore:${home.repo.repoId}:${intent}:${refName}:${tip}` }),
+        createBranch(sdk, tag(signer), home.repo, { name, target: tip, role: admin.role, restoring: true, intent: `branch-restore:${home.repo.repoId}:${intent}:${refName}:${tip}` }),
       )
       onRestored()
     } catch (e) {
