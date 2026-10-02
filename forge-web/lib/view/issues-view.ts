@@ -29,6 +29,7 @@ import {
   readPull,
   reviewViewOf,
   seedMemberships,
+  sharedIssueCloses,
   sharedRepoCounts,
   toLog,
   updatedAtOf,
@@ -48,13 +49,13 @@ import {
 } from '../repo'
 import { sortTransitions, transitionOf } from '../repo/transitions'
 import { readProvedVerdicts, type ProvedVerdicts } from '../repo/verdicts'
-import { ISSUE_CLOSE, closeReasonOf, currentCloseReason, isLocked, stateCode, type ClosedAs } from '../rules/transition'
+import { closeReasonOf, currentCloseReason, isLocked, stateCode, type ClosedAs } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
 import type { Membership } from '../rules/v2'
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
-import { IncompleteReadError, queryAllDocuments, type PlainDocument } from '../sdk'
+import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
 import type { HiddenItems } from '../rules/moderation'
@@ -447,6 +448,9 @@ export async function readDuplicateTargets(
 /** Pages of the repo's issue closes an issue page reads for its duplicates' back-references. */
 export const DUPLICATE_SCAN_PAGES = 2
 
+/** How near its duplicate's own creation a mirror's duplicate close counts as the import's (ms). */
+export const IMPORT_WINDOW_MS = 30 * 60_000
+
 /** Another issue closed as a duplicate of this one: the close, and the duplicate's number and title. */
 export interface DuplicateOf {
   readonly id: string
@@ -454,41 +458,47 @@ export interface DuplicateOf {
   readonly createdAt: number
   readonly number: number
   readonly title: string
+  /**
+   * The close was recorded by an import, not done here: the duplicate is an imported issue its
+   * signer (the close's actor) created within {@link IMPORT_WINDOW_MS} of the close. Shown as the
+   * source's when that signer may mirror (QW4-006).
+   */
+  readonly imported: boolean
 }
 
 /**
- * The issues closed as a duplicate of issue #`number` (QW4-024): GitHub's "bob marked #2 as a
- * duplicate of this issue" on the canonical. No index finds a close by the issue it names (only
- * the duplicate's `transition` records `dupNumber`), so this reads the repo's issue closes
- * (`perRepoKind`, `kind == 1`), and only when the proved counts (the repo header's, already read)
- * say they fit in {@link DUPLICATE_SCAN_PAGES} pages; a larger repo shows no back-references
- * rather than walking every close on each issue page. Null when not read.
+ * The issues whose newest close marks them a duplicate of issue #`number` (QW4-024): GitHub's "bob
+ * marked #2 as a duplicate of this issue" on the canonical. No index finds a close by the issue it
+ * names (only the duplicate's `transition` records `dupNumber`), so this reads the repo's issue
+ * closes once per write generation (`sharedIssueCloses`), and only when the proved counts (the
+ * repo header's, already read) say they can fit in {@link DUPLICATE_SCAN_PAGES} pages; a larger
+ * repo shows no back-references rather than walking every close. Null when not read.
  */
 export async function readDuplicatesOf(sdk: EvoSDK, repo: RepoRef, number: number): Promise<DuplicateOf[] | null> {
+  // Closes less reopens: a lower bound on the close documents (the page cap catches reopen cycles).
   const counts = await sharedRepoCounts(sdk, repo)
-  if (counts.issuesClosed > DUPLICATE_SCAN_PAGES * 100) return null
-  let docs: PlainDocument[]
-  try {
-    docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.transition, { where: [['kind', '==', ISSUE_CLOSE]], orderBy: [['kind', 'asc']] }), { maxPages: DUPLICATE_SCAN_PAGES })
-  } catch (e) {
-    if (e instanceof IncompleteReadError) return null
-    throw e
-  }
-  const closes = docs
-    .map((d) => ({ t: transitionOf(d), number: num(d, 'targetNumber') }))
-    .filter(({ t, number: n }) => n !== number && closeReasonOf(t, n)?.duplicateOf === number)
-  if (closes.length === 0) return []
-  // One close per duplicate (its newest), and only duplicates that are issues of the repo.
+  if (counts.issuesClosed >= DUPLICATE_SCAN_PAGES * 100) return null
+  const closes = await sharedIssueCloses(sdk, repo, DUPLICATE_SCAN_PAGES)
+  if (closes === null) return null
+  // Each issue's newest close, then those that name this issue.
   const newest = new Map<number, (typeof closes)[number]>()
   for (const c of closes) {
-    const seen = newest.get(c.number)
-    if (seen === undefined || compareKey(c.t, seen.t) > 0) newest.set(c.number, c)
+    const seen = newest.get(c.targetNumber)
+    if (seen === undefined || compareKey(c, seen) > 0) newest.set(c.targetNumber, c)
   }
-  const issues = await readDuplicateTargets(sdk, repo, [...newest.keys()])
-  return [...newest.values()]
-    .filter((c) => issues.has(c.number))
-    .map((c) => ({ id: c.t.id, actor: c.t.actor, createdAt: c.t.createdAt, number: c.number, title: issues.get(c.number)?.title ?? '' }))
-    .sort((a, b) => a.createdAt - b.createdAt)
+  const marking = [...newest.values()].filter((c) => c.targetNumber !== number && closeReasonOf(c, c.targetNumber)?.duplicateOf === number)
+  if (marking.length === 0) return []
+  const gate = gateFor(repo)
+  const out = await Promise.all(
+    marking.map(async (c): Promise<DuplicateOf | null> => {
+      const [doc] = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.issue, { where: [['number', '==', c.targetNumber]] }))
+      if (doc === undefined) return null
+      const admitted = await gate.admit('issue', doc)
+      const imported = originOf(doc) !== null && str(doc, '$ownerId') === c.actor && Math.abs(c.createdAt - num(doc, '$createdAt')) <= IMPORT_WINDOW_MS
+      return { id: c.id, actor: c.actor, createdAt: c.createdAt, number: c.targetNumber, title: admitted.ok ? titleOf(admitted.doc) : '', imported }
+    }),
+  )
+  return out.filter((d): d is DuplicateOf => d !== null).sort((a, b) => a.createdAt - b.createdAt)
 }
 
 /** The counted approvals of a PR, and what each reviewer's role is now. */

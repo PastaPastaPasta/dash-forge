@@ -22,6 +22,8 @@ const MAINT = 'NnnnNnnnNnnnNnnnNnnnNnnnNnnnNnnnNnnnNnnnNnnn'
 const ORIGIN = { author: 'thephez', createdAt: 1_600_000_000_000, url: 'https://github.com/dashpay/dips/issues/155', host: 'github.com' }
 const OID = 'a4d46dd2d'.padEnd(40, '0')
 
+/** When the import wrote the thread: a minute before it recorded the state. */
+const IMPORTED_AT = Date.now() - 5 * 3600_000 - 60_000
 const transition = (id: string, kind: number, actor: string, extra: Record<string, unknown> = {}): TimelineItem =>
   ({ kind: 'transition', at: 10, transition: { id, kind, actor, targetId: 't', asAuthor: 0, createdAt: Date.now() - 5 * 3600_000, ...extra } }) as never
 
@@ -43,7 +45,7 @@ const rows = (): Element[] => [...host.querySelectorAll('[data-testid="timeline-
 describe('imported state changes (QW4-006)', () => {
   it('credits the source forge, not the mirror identity, for the mirror\'s own close of an imported issue', () => {
     const completed: CloseWhy = { phrase: 'closed this as completed', duplicate: null, skipped: false }
-    act(() => root.render(<Timeline items={[transition('t1', 1, MIRROR, { reason: 1 })]} imported={{ origin: ORIGIN, signer: MIRROR }} closeWhy={() => completed} closedIn={() => ({ number: 3, title: 'x', href: '/p/3' })} />))
+    act(() => root.render(<Timeline items={[transition('t1', 1, MIRROR, { reason: 1 })]} imported={{ origin: ORIGIN, signer: MIRROR, createdAt: IMPORTED_AT }} closeWhy={() => completed} closedIn={() => ({ number: 3, title: 'x', href: '/p/3' })} />))
     const [row] = rows()
     expect(row?.getAttribute('data-imported')).toBe('true')
     expect(row?.textContent).toMatch(/^Closed as completed on github\.com mirrored 5 ?h(ours)? ago/)
@@ -54,21 +56,30 @@ describe('imported state changes (QW4-006)', () => {
   })
 
   it('says a merge happened at its commit on the source', () => {
-    act(() => root.render(<Timeline items={[transition('t2', 13, MIRROR, { oid: OID })]} imported={{ origin: ORIGIN, signer: MIRROR }} />))
+    act(() => root.render(<Timeline items={[transition('t2', 13, MIRROR, { oid: OID })]} imported={{ origin: ORIGIN, signer: MIRROR, createdAt: IMPORTED_AT }} />))
     expect(rows()[0]?.textContent).toMatch(/^Merged at a4d46dd2d.* on github\.com/)
   })
 
   it('names a duplicate\'s canonical, and keeps the grey icon', () => {
     const dup: CloseWhy = { phrase: 'closed this as a duplicate of #1', duplicate: { number: 1, title: 'First', href: '/i/1' }, skipped: true }
-    act(() => root.render(<Timeline items={[transition('t3', 1, MIRROR, { reason: 3, dupNumber: 1 })]} imported={{ origin: ORIGIN, signer: MIRROR }} closeWhy={() => dup} />))
+    act(() => root.render(<Timeline items={[transition('t3', 1, MIRROR, { reason: 3, dupNumber: 1 })]} imported={{ origin: ORIGIN, signer: MIRROR, createdAt: IMPORTED_AT }} closeWhy={() => dup} />))
     expect(rows()[0]?.textContent).toMatch(/^Closed as a duplicate of #1 First on github\.com/)
     expect(rows()[0]?.querySelector('[data-icon="closed-skipped"]')).not.toBeNull()
   })
 
   it('keeps a member\'s own state change on an imported thread credited to them', () => {
-    act(() => root.render(<Timeline items={[transition('t4', 2, MAINT)]} imported={{ origin: ORIGIN, signer: MIRROR }} />))
+    act(() => root.render(<Timeline items={[transition('t4', 2, MAINT)]} imported={{ origin: ORIGIN, signer: MIRROR, createdAt: IMPORTED_AT }} />))
     expect(rows()[0]?.getAttribute('data-imported')).toBeNull()
     expect(rows()[0]?.textContent).toContain('reopened this')
+  })
+
+  it('credits the signer for a change away from any import: the owner acting here, hours later', () => {
+    act(() => root.render(<Timeline items={[transition('t5', 1, MIRROR, { createdAt: Date.now() - 60_000 })]} imported={{ origin: ORIGIN, signer: MIRROR, createdAt: IMPORTED_AT }} closedIn={() => ({ number: 3, title: 'x', href: '/p/3' })} />))
+    expect(rows()[0]?.getAttribute('data-imported')).toBeNull()
+    expect(rows()[0]?.textContent).toMatch(/closed this as completed in #3/)
+    // A duplicate close done here (not by an import) names its actor too.
+    act(() => root.render(<Timeline items={[]} imported={{ origin: ORIGIN, signer: MIRROR, createdAt: IMPORTED_AT }} duplicateRefs={[{ id: 'd2', actor: MIRROR, at: 20, imported: false, number: 7, title: 'Again', href: '/i/7' }]} />))
+    expect(host.querySelector('[data-kind="marked-duplicate"]')?.textContent).toMatch(/marked #7 Again as a duplicate of this issue · /)
   })
 
   it('places a duplicate\'s back-reference and branch events among the items by time (QW4-024, QW4-025)', () => {
@@ -89,7 +100,7 @@ describe('imported state changes (QW4-006)', () => {
   })
 
   it('words a mirror\'s duplicate close of an imported issue as the source\'s', () => {
-    act(() => root.render(<Timeline items={[]} imported={{ origin: ORIGIN, signer: MIRROR }} duplicateRefs={[{ id: 'd1', actor: MIRROR, at: 20, number: 2, title: 'Same bug', href: '/i/2' }]} />))
+    act(() => root.render(<Timeline items={[]} imported={{ origin: ORIGIN, signer: MIRROR, createdAt: IMPORTED_AT }} duplicateRefs={[{ id: 'd1', actor: MIRROR, at: 20, imported: true, number: 2, title: 'Same bug', href: '/i/2' }]} />))
     expect(host.querySelector('[data-kind="marked-duplicate"]')?.textContent).toBe('Marked #2 Same bug as a duplicate of this issue on github.com')
   })
 

@@ -40,6 +40,14 @@ describe('duplicates of an issue (QW4-024)', () => {
     expect(seen.queries.filter((q) => q.documentTypeName === 'transition')).toHaveLength(1)
     expect(seen.queries.filter((q) => q.documentTypeName === 'issue')).toHaveLength(1)
     expect(await readDuplicatesOf(sdk, repo, 3)).toEqual([])
+    // The closes are read once per write generation, for every issue page.
+    expect(seen.queries.filter((q) => q.documentTypeName === 'transition')).toHaveLength(1)
+  })
+
+  it('goes by each duplicate\'s newest close: one re-closed for another reason is not a duplicate any more', async () => {
+    invalidateRepoFeed(repo)
+    const sdk = mockSdk(store([close(2, { reason: 3, dupNumber: 1 }), close(2, { reason: 1 }), close(3, { reason: 3, dupNumber: 1 })]), newSeen())
+    expect((await readDuplicatesOf(sdk, repo, 1))?.map((d) => d.number)).toEqual([3])
   })
 
   it('reads nothing past the counts when the repo has more closes than it scans', async () => {
@@ -65,6 +73,12 @@ describe('source branch events (QW4-025)', () => {
       ['res', 'restored', 'feature-ff'],
       ['del2', 'deleted', 'feature-ff'],
     ])
+  })
+
+  it('orders a delete and a restore in one block by their chain, not their ids', () => {
+    // Same block; the restore's id sorts first.
+    const ev = sourceBranchEvents([u('a-restore', 20, HEAD), u('z-delete', 20, ZERO, HEAD)], 'refs/heads/f', HEAD, 0)
+    expect(ev.map((e) => e.kind)).toEqual(['deleted', 'restored'])
   })
 
   it('ignores a delete of other commits and a new branch pushed under the name', () => {

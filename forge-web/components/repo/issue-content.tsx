@@ -525,8 +525,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             closedIn={(t) => closedInRef(t, backlinks, addr)}
             closeWhy={(t) => closeWhyOf(t, issue.number, data.duplicates ?? NO_DUPLICATES, (n) => (addr ? repoHref('/repo/issue', addr, { number: String(n) }) : ''))}
             crossRefs={crossRefsOf(backlinks.linking.data, addr)}
-            imported={origin === null ? null : { origin, signer: issue.author }}
-            duplicateRefs={(duplicatesOf.data ?? []).map((d) => ({ id: d.id, actor: d.actor, at: d.createdAt, number: d.number, title: d.title, href: addr ? repoHref('/repo/issue', addr, { number: String(d.number) }) : '' }))}
+            imported={origin === null ? null : { origin, signer: issue.author, createdAt: issue.createdAt }}
+            duplicateRefs={(duplicatesOf.data ?? []).map((d) => ({ id: d.id, actor: d.actor, at: d.createdAt, imported: d.imported, number: d.number, title: d.title, href: addr ? repoHref('/repo/issue', addr, { number: String(d.number) }) : '' }))}
             renderComment={(item) => {
               const slots = commentSlots({
                 item,

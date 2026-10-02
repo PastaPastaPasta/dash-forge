@@ -110,22 +110,33 @@ export function sourceBranchEvents(
 ): SourceBranchEvent[] {
   const head = headOid.toLowerCase()
   const branch = refName.replace(/^refs\/heads\//, '')
+  const isZero = (oid: string): boolean => oid === '' || /^0+$/.test(oid)
   const sorted = [...updates].filter((u) => u.createdAt >= since).sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   const out: SourceBranchEvent[] = []
   let deleted = false
-  for (const u of sorted) {
-    const to = u.newOid.toLowerCase()
-    const zero = to === '' || /^0+$/.test(to)
-    if (zero && !deleted) {
-      const from = (u.prevOid ?? '').toLowerCase()
-      if (from === '' || from === head) {
-        out.push({ id: u.id, actor: u.author, at: u.createdAt, kind: 'deleted', branch })
-        deleted = true
+  // Updates of one block share a `createdAt`; their real order is their `prevOid` chain, not their
+  // ids: within a block, take next the update that follows from the state so far (a delete while
+  // the branch exists, anything else once it is deleted).
+  for (let i = 0; i < sorted.length; ) {
+    let j = i
+    while (j < sorted.length && sorted[j]!.createdAt === sorted[i]!.createdAt) j++
+    const block = sorted.slice(i, j)
+    while (block.length > 0) {
+      const k = Math.max(0, block.findIndex((u) => isZero(u.newOid.toLowerCase()) !== deleted))
+      const u = block.splice(k, 1)[0]!
+      const to = u.newOid.toLowerCase()
+      if (isZero(to) && !deleted) {
+        const from = (u.prevOid ?? '').toLowerCase()
+        if (from === '' || from === head) {
+          out.push({ id: u.id, actor: u.author, at: u.createdAt, kind: 'deleted', branch })
+          deleted = true
+        }
+      } else if (!isZero(to) && deleted) {
+        if (to === head) out.push({ id: u.id, actor: u.author, at: u.createdAt, kind: 'restored', branch })
+        deleted = false
       }
-    } else if (!zero && deleted) {
-      if (to === head) out.push({ id: u.id, actor: u.author, at: u.createdAt, kind: 'restored', branch })
-      deleted = false
     }
+    i = j
   }
   return out
 }

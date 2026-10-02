@@ -442,18 +442,19 @@ function PullPage({
   const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
   // The source branch's ref updates (one read, both update types), on the Conversation tab only:
   // who pushed each head (QW3-048), and, once the PR is closed, when its branch was deleted or
-  // restored (QW4-025). Read again when the branch's state changes (this page's delete or restore).
+  // restored (QW4-025). Read once the branch's state is read, and again when a read of it shows
+  // a change (this page's delete or restore, once the node has it).
   const wantPhrases = tab === 'conversation' && review.headUpdates.length > 0
   const wantBranchEvents = tab === 'conversation' && !open
   const branchUpdates = useAsync(
     () => readBranchUpdates(sdk!, sourceRefOf()!, pull.sourceRefName!),
-    [ready, pull.sourceId, pull.sourceRefName ?? '', review.headUpdates.length, comparison.source.kind, open, sync?.kind ?? ''],
-    { enabled: ready && sdk !== null && (wantPhrases || wantBranchEvents) && pull.sourceRefName !== null && sourceRefOf() !== null },
+    [ready, pull.sourceId, pull.sourceRefName ?? '', review.headUpdates.length, comparison.source.kind, open, readSync?.kind ?? ''],
+    { enabled: ready && sdk !== null && (wantPhrases || wantBranchEvents) && pull.sourceRefName !== null && sourceRefOf() !== null && sourceState.settled },
   )
   const pushers = useMemo(() => (branchUpdates.data === null ? null : firstPushers(branchUpdates.data)), [branchUpdates.data])
   const branchEvents = useMemo(
-    () => (branchUpdates.data === null || pull.sourceRefName === null ? [] : sourceBranchEvents(branchUpdates.data, pull.sourceRefName, pull.headOid, pull.createdAt)),
-    [branchUpdates.data, pull.sourceRefName, pull.headOid, pull.createdAt],
+    () => (!wantBranchEvents || branchUpdates.data === null || pull.sourceRefName === null ? [] : sourceBranchEvents(branchUpdates.data, pull.sourceRefName, pull.headOid, pull.createdAt)),
+    [wantBranchEvents, branchUpdates.data, pull.sourceRefName, pull.headOid, pull.createdAt],
   )
   const pushersSettled = pull.sourceRefName === null || sourceRefOf() === null || branchUpdates.settled
   // Commits the base already had (an "Update branch" merge brings them in) are not counted as pushed.
@@ -1250,7 +1251,7 @@ function PullPage({
                   items={conversation}
                   links={links}
                   trust={trust}
-                  imported={origin === null ? null : { origin, signer: pull.author }}
+                  imported={origin === null ? null : { origin, signer: pull.author, createdAt: pull.createdAt }}
                   branchEvents={branchEvents}
                   {...(moderation ? { moderation } : {})}
                   {...(canModerate
