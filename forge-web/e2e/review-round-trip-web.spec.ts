@@ -147,7 +147,8 @@ test('r2. the contributor opens a PR from the fork', async ({ browser }) => {
   await waitForRepoResolved(page)
   const head = page.locator('#pr-head optgroup[label="Your forks"] option', { hasText: FORK }).first()
   await expect(head).toBeAttached({ timeout: 120_000 })
-  await page.getByLabel('Compare (your branch)').selectOption({ label: `${FORK}: feature/greet` })
+  // Labelled owner-first, `<owner>/<fork>:<branch>` (QW4-030).
+  await page.getByLabel('Compare (your branch)').selectOption((await page.locator('#pr-head option', { hasText: `${FORK}:feature/greet` }).first().getAttribute('value')) ?? '')
   await page.getByLabel('Title', { exact: true }).fill(TITLE)
   await page.getByLabel('Description', { exact: true }).fill('Greets the forge.')
   await page.getByRole('button', { name: 'Create pull request' }).click()

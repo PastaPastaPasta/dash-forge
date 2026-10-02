@@ -17,7 +17,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
 import { DraftMarkError, createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
-import { ARCHIVED_REASON, branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
+import { ARCHIVED_REASON, branchName, forkSourcePrefix, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { shortIdentity } from '@/lib/view/format'
 import { preferring, type PullComparison } from '@/lib/view/pull-diff'
 import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/refs'
@@ -37,7 +37,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { PushBranchHint } from '@/components/repo/push-branch-hint'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
-import { cn } from '@/lib/utils'
+import { abbreviate, cn } from '@/lib/utils'
 import { spendAction } from '@/lib/spend-toast'
 
 /** A branch a PR can come from: this repo's, or one of the viewer's forks'. */
@@ -121,7 +121,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       return oid === null ? null : { key: `${r.repoId}:${b.refName}`, repo: r, refName: b.refName, oid, label }
     }
     const own = branches.map((b) => opt(repo, b, short(b.refName)))
-    const fromForks = (forks.data ?? []).flatMap(({ fork, refs }) => refs.map((b) => opt(fork, b, `${fork.name}: ${short(b.refName)}`)))
+    const fromForks = (forks.data ?? []).flatMap(({ fork, refs }) => refs.map((b) => opt(fork, b, `${forkSourcePrefix({ ownerId: fork.ownerId, ownerLabel: abbreviate(fork.ownerId), name: fork.name }, repo)}${short(b.refName)}`)))
     return [...own, ...fromForks].filter((o): o is HeadOption => o !== null)
   }, [branches, forks.data, repo])
 
