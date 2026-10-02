@@ -57,7 +57,7 @@ import {
 import type { Holdings } from '@/lib/rules'
 import { capabilitiesOf } from '@/lib/rules/roles'
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
-import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewDelete, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
@@ -388,8 +388,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'state':
         return pending.comment === undefined ? stateCost : sumPreviews([composeCost(home.repo, 'comment', { body: pending.comment }, commentFirst), stateCost])
       case 'labels':
-      case 'assignees':
         return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => composeCost(home.repo, 'event', { value }, eventFirst)))
+      case 'assignees':
+        // An assignee is also the event's `refId` (QW4-039).
+        return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => withAddressee(composeCost(home.repo, 'event', { value }, eventFirst))))
       case 'flag':
         // A lock is a transition; a pin an event.
         return pending.flag === 'lock' ? stateCost : composeCost(home.repo, 'event', {}, eventFirst)

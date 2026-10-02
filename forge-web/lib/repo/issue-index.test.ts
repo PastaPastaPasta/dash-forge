@@ -136,6 +136,35 @@ describe('issue index', () => {
     expect(seen.composites.some((c) => (c.where ?? []).some(([f]) => f === '$createdAt'))).toBe(false)
   })
 
+  it('filters by close reason from the one read of the close transitions (QW4-028)', async () => {
+    const { sdk, seen, repo, store } = fresh(1000)
+    // #33 closed as not planned, #103 as a duplicate of #3, #3 with no reason (completed); #40 was
+    // closed as not planned and reopened, so it is not a not-planned issue now.
+    const closes = store['COLLAB']!['transition']!
+    const reason = (n: number, r: number, extra: Doc = {}): void => {
+      const t = closes.find((d) => d['targetNumber'] === n && d['kind'] === 1)!
+      Object.assign(t, { reason: r, ...extra })
+    }
+    reason(33, 2)
+    reason(103, 3, { dupNumber: 3 })
+    reason(40, 2)
+    const notPlanned = await queryIssues(sdk, repo, { ...base, state: 'all', reason: 'not_planned' }, 1000, 'devnet')
+    expect(notPlanned.rows.map((r) => r.number)).toEqual([33])
+    expect(notPlanned.openCount).toBe(0)
+    expect(notPlanned.closedCount).toBe(1)
+    expect((await queryIssues(sdk, repo, { ...base, state: 'closed', reason: 'duplicate' }, 1000, 'devnet')).rows.map((r) => r.number)).toEqual([103])
+    // A close that gives no reason is a completed one.
+    expect((await queryIssues(sdk, repo, { ...base, state: 'closed', reason: 'completed' }, 1000, 'devnet')).rows.map((r) => r.number)).toEqual([3])
+    // On an open tab nothing matches (a reason is a closed issue's), and nothing is resolved for it.
+    const before = seen.composites.length + seen.queries.length
+    expect((await queryIssues(sdk, repo, { ...base, state: 'open', reason: 'not_planned' }, 1000, 'devnet')).rows).toEqual([])
+    expect(seen.composites.length + seen.queries.length).toBe(before)
+    // Budget: the close transitions are read once for every reason and tab, and nothing is walked.
+    const closeReads = seen.queries.filter((q) => q.documentTypeName === 'transition')
+    expect(closeReads.map((q) => q.where)).toEqual([[['repoId', '==', REPO], ['kind', '==', 1]]])
+    expect(seen.composites.some((c) => (c.where ?? []).some(([f]) => f === '$createdAt'))).toBe(false)
+  })
+
   it('walks a Closed tab when that is cheaper than its transitions, and stops once the proved count is reached', async () => {
     // 3 closed among 112: the second chunk holds them all, and the count says there are no more.
     const { sdk, seen, repo } = fresh(112)

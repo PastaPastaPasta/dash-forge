@@ -146,3 +146,42 @@ describe('IssuesContent search with no match in its tab (QW3-051)', () => {
     expect(replaced.at(-1)).toBe('/repo/issues/?owner=o&name=n&state=all&label=bug')
   })
 })
+
+describe('IssuesContent search parity (QW4-023, QW4-028)', () => {
+  const submit = async (text: string): Promise<void> => {
+    const input = el.querySelector('#issue-search') as HTMLInputElement
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    act(() => {
+      setValue.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => (el.querySelector('form[role="search"]') as HTMLFormElement).requestSubmit())
+    await settle()
+  }
+
+  it('a GitHub link with is:issue and no state lists every state', async () => {
+    params = 'q=is%3Aissue+in%3Atitle+DIP'
+    act(() => root.render(<IssuesContent home={HOME} addr={{ owner: 'o', name: 'n' }} />))
+    await settle()
+    expect(asked[0]?.q).toMatchObject({ state: 'all', scope: 'title', text: 'DIP' })
+    expect(el.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim()).toBe('All')
+  })
+
+  it('a typed search with its state qualifier taken out searches every state; one with it stays on the tab', async () => {
+    act(() => root.render(<IssuesContent home={HOME} addr={{ owner: 'o', name: 'n' }} />))
+    await settle()
+    await submit('is:issue in:title DIP')
+    expect(replaced.at(-1)).toBe('/repo/issues/?owner=o&name=n&state=all&q=in%3Atitle+DIP')
+    await submit('is:open in:title DIP')
+    expect(replaced.at(-1)).toBe('/repo/issues/?owner=o&name=n&q=in%3Atitle+DIP')
+  })
+
+  it('filters by reason: and keeps it in the URL', async () => {
+    params = 'state=closed&q=reason%3A%22not+planned%22'
+    act(() => root.render(<IssuesContent home={HOME} addr={{ owner: 'o', name: 'n' }} />))
+    await settle()
+    expect(asked[0]?.q).toMatchObject({ state: 'closed', reason: 'not_planned', text: '' })
+    expect(el.querySelector('[data-testid="issue-search-dropped"]')).toBeNull()
+    expect((el.querySelector('#issue-search') as HTMLInputElement).value).toBe('is:closed reason:"not planned"')
+  })
+})

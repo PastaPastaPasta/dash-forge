@@ -22,7 +22,7 @@
 import { NETWORKS, QUORUM_KEY_ENDPOINT, type Network } from '../constants'
 import type { RefHead, RefState } from '../rules'
 import { viewSources, type ContentChecks } from './content-checks'
-import type { QuorumCrossCheck } from './quorum-check'
+import { ROTATION_REASON, type QuorumCrossCheck } from './quorum-check'
 import { plural, shortOid, timeAgo, urlHost } from './format'
 import { readGateways } from './storage-status'
 
@@ -207,7 +207,7 @@ function deriveChain(
       return {
         state: 'partial',
         detail: `${proven} The keys could not be compared with a second source.`,
-        note: `Proofs are checked against quorum keys fetched from ${host}. The comparison couldn't run: ${quorum.reason}.`,
+        note: `Proofs are checked against quorum keys fetched from ${host}. The comparison couldn't run: ${quorum.reason}.${quorum.reason === ROTATION_REASON ? ' It is tried again in a minute or two while this page is open.' : ''}`,
       }
   }
 }

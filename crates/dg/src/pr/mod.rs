@@ -1370,13 +1370,20 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     let verb = if close { "Close" } else { "Reopen" };
-    ctx.confirm_or_cancel(&format!("{verb} PR #{number}? (one small document)"))?;
+    let price = ctx.usd_price();
+    ctx.confirm_or_cancel(&format!(
+        "{verb} PR #{number}? (one transition, {})",
+        cost_line(crate::quote::TRANSITION, price)
+    ))?;
     let action = if close {
         StateAction::Close
     } else {
         StateAction::Reopen
     };
-    let change = collab.set_state(&s.repo, &p.target(), action, None).await?;
+    let target = p.target();
+    let (change, spent) = s
+        .metered(|| collab.set_state(&s.repo, &target, action, None))
+        .await?;
     ctx.emit(
         json!({
             "status": if close { "closed" } else { "reopened" },
@@ -1386,12 +1393,14 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
             "kind": change.kind,
             // a closed draft stays a draft (kind 16/17)
             "draft": forge_core::rules::v2::status_of_code(change.after).draft,
+            "cost": cost_json(spent, price),
         }),
         || {
             println!(
-                "✓ {} PR #{number} {}",
+                "✓ {} PR #{number} {} · {}",
                 if close { "closed" } else { "reopened" },
-                transition_route_text(change.route)
+                transition_route_text(change.route),
+                cost_line(spent, price)
             );
         },
     );
@@ -1505,8 +1514,10 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         Some(crate::quote::MergePush {
             history_index: default.is_none_or(|d| git::full_ref(&d) == view.patch.base_ref_name),
             platform_bytes: merge_stores_on_platform(),
-            // A pull request from a fork: its commits go into the base as a new pack.
-            uploads_head: view.patch.source_repo_id != handle.id(),
+            // A pull request from a fork: its commits go into the base as a new pack. A squash
+            // writes a new commit, uploaded the same way (QW4-046: it was left out). A merge
+            // commit is known only once planned: the prompt says new objects come on top.
+            uploads_pack: view.patch.source_repo_id != handle.id() || method == Method::Squash,
         })
     };
     // QW3-021: the open issues the description closes ("Fixes #12"), closed after the merge as
@@ -1530,13 +1541,16 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             "note: this PR was imported: its `Fixes #n` are the source forge's numbers, so no issue here is closed by the merge (the web's merge box maps them)"
         );
     }
+    // A bypass is recorded as one more event naming the rules it bypassed (QW4-046: the quote
+    // left it out, and a squash with `--override-policy` charged 13 % over it).
+    let bypass_quote = if bypassed.is_empty() {
+        0
+    } else {
+        crate::quote::event(bypass_value(&bypassed).len() as u64, false)
+    };
     let merge_quote = crate::quote::merge(push, delete.is_some())
         + crate::quote::TRANSITION * linked.len() as u64
-        + if bypassed.is_empty() {
-            0
-        } else {
-            estimate(Est::Event, bypass_value(&bypassed).len())
-        };
+        + bypass_quote;
     let mut steps = Steps::new(ctx.json);
     if !ctx.json && !not_passing.is_empty() {
         eprintln!(

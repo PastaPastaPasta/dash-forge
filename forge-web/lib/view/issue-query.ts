@@ -13,7 +13,8 @@
  *                               number and `"a phrase"` matches as a whole. It also carries the
  *                               qualifiers that have no parameter of their own, as GitHub's
  *                               `?q=` does: `-label:`, `no:label`, `milestone:`,
- *                               `no:milestone`, a mirrored `author:` login, `in:`, `comments:`)
+ *                               `no:milestone`, a mirrored `author:` login, `in:`, `comments:`,
+ *                               `reason:`)
  *   page=<n>                    (1-based, default 1)
  *
  * The search box also takes GitHub's qualifiers (`is:closed label:bug -label:wontfix
@@ -23,6 +24,7 @@
  * under the box ({@link unresolvedQualifiers}), never searched for as text (QW-020).
  */
 
+import type { CloseReason } from '../rules/transition'
 import { displayDpnsName, looksLikeDpnsName } from './dpns'
 import { plural } from './format'
 import { isIdentityId } from '../utils'
@@ -54,6 +56,11 @@ export interface ExtraFilters {
   readonly scope: TextScope
   /** `comments:>2` and the like, as typed (a value {@link commentRange} reads). */
   readonly comments: string | null
+  /**
+   * `reason:completed`, `reason:"not planned"`, `reason:duplicate` (QW4-028): closed issues whose
+   * current close says so. An Issues filter: the PR list reports it as not applied.
+   */
+  readonly reason: CloseReason | null
 }
 
 /** The structured list query. `author` / `assignee` hold an identity id, `me`, or (assignee) `none`. */
@@ -76,6 +83,7 @@ export const NO_EXTRA_FILTERS: ExtraFilters = {
   authorLogin: null,
   scope: 'any',
   comments: null,
+  reason: null,
 }
 
 export const DEFAULT_ISSUE_QUERY: IssueListQuery = {
@@ -147,7 +155,32 @@ export function parseIssueQuery(params: { get(name: string): string | null; getA
   // A GitHub link carries its qualifiers inside `q` (`/issues?q=is:closed+label:bug`): lift
   // them out. The app writes to `q` only free text and the qualifiers with no parameter of
   // their own ({@link extraQualifiers}), which read back to the same query.
-  return parsed.q.includes(':') ? { ...parseSearchText(parsed.q, parsed), page: parsed.page } : parsed
+  if (!parsed.q.includes(':')) return parsed
+  // `?q=is:issue` with no state lists every state, as GitHub does (QW4-023). The app never writes
+  // `is:issue` into `q`, so its own URLs (which omit `state=open`) still read back as Open.
+  const base = params.get('state') === null && linkedAllStates(parsed.q, 'issue', STATES) ? { ...parsed, state: 'all' as const } : parsed
+  return { ...parseSearchText(parsed.q, base), page: parsed.page }
+}
+
+/** The `is:`/`state:` values in `text` (the key in any case, the value as typed). */
+function stateValues(text: string): string[] {
+  return tokens(text).flatMap((tok) => {
+    const key = keyOf(tok)
+    return key === 'is' || key === 'state' ? [unquote(tok.slice(tok.indexOf(':') + 1))] : []
+  })
+}
+
+/** Whether `text` holds a state qualifier with one of `states` (the box's text names a state tab). */
+export function namesState(text: string, states: readonly string[] = STATES): boolean {
+  return stateValues(text).some((v) => states.includes(v))
+}
+
+/**
+ * Whether a linked `?q=` (no `state=` beside it) asks for every state: GitHub's `is:issue` /
+ * `is:pr` with no state qualifier (QW4-023).
+ */
+export function linkedAllStates(q: string, type: 'issue' | 'pr', states: readonly string[]): boolean {
+  return stateValues(q).includes(type) && !namesState(q, states)
 }
 
 /** The URL params of a query, defaults omitted, in a stable order (so equal queries share a URL). */
@@ -173,7 +206,7 @@ export function withQuery<Q extends { readonly page: number }>(q: Q, change: Par
 
 /**
  * The `base` for a plain search-box submit (typed text + Enter, or a fresh submit of the box's
- * current text): only the state tab survives from the current query — every other filter
+ * current text): at most the state tab survives from the current query — every other filter
  * (label/author/assignee/mentions/sort) is exactly what the submitted text's qualifiers say,
  * because {@link searchText} always writes the *whole* current query back into the box as text
  * when it is not being actively edited. So if the viewer deletes `label:bug` from the box before
@@ -182,8 +215,18 @@ export function withQuery<Q extends { readonly page: number }>(q: Q, change: Par
  * URL carries only its own free text, never the other params' filters), which correctly uses the
  * full `query` as `base` to keep `label=`/`sort=`/etc that its own separate URL params set.
  */
-export function searchSubmitBase(q: IssueListQuery): IssueListQuery {
-  return { ...DEFAULT_ISSUE_QUERY, state: q.state }
+export function searchSubmitBase(q: IssueListQuery, text = ''): IssueListQuery {
+  return { ...DEFAULT_ISSUE_QUERY, state: submitState(q.state, text, STATES) }
+}
+
+/**
+ * The state a submit starts from (QW4-023). The box always shows the current state as `is:<state>`
+ * ({@link searchText}), so submitted text without any state qualifier had it taken out: as on
+ * GitHub, that searches every state rather than staying on the tab and hiding the other state's
+ * matches. An empty box keeps the tab (it clears the filters, not the tab).
+ */
+export function submitState<S extends string>(tab: S, text: string, states: readonly string[]): S | 'all' {
+  return text.trim() === '' || namesState(text, states) ? tab : 'all'
 }
 
 /** Whether any filter narrows the list beyond the state tab. */
@@ -193,7 +236,7 @@ export function hasFilters(q: IssueListQuery): boolean {
 
 /** Whether any {@link ExtraFilters} narrows the list (`in:` alone does not: it only scopes free text). */
 export function hasExtraFilters(q: ExtraFilters): boolean {
-  return q.notLabels.length > 0 || q.noLabel || q.milestone !== null || q.noMilestone || q.authorLogin !== null || q.comments !== null
+  return q.notLabels.length > 0 || q.noLabel || q.milestone !== null || q.noMilestone || q.authorLogin !== null || q.comments !== null || q.reason !== null
 }
 
 /** The {@link ExtraFilters} as search-box qualifiers (what `q` carries for them in the URL). */
@@ -206,7 +249,20 @@ export function extraQualifiers(q: ExtraFilters): string[] {
   if (q.authorLogin !== null) parts.push(`author:${q.authorLogin}`)
   if (q.scope !== 'any') parts.push(`in:${q.scope}`)
   if (q.comments !== null) parts.push(`comments:${q.comments}`)
+  if (q.reason !== null) parts.push(`reason:${quoted(REASON_WORDS[q.reason])}`)
   return parts
+}
+
+/** A close reason as `reason:` spells it (GitHub's `reason:"not planned"`). */
+const REASON_WORDS: Readonly<Record<CloseReason, string>> = { completed: 'completed', not_planned: 'not planned', duplicate: 'duplicate' }
+
+/** A `reason:` value (quotes already stripped), in GitHub's spellings and the stored one; null for anything else. */
+export function closeReasonValue(v: string): CloseReason | null {
+  const low = v.trim().toLowerCase().replace(/[\s_-]+/g, ' ')
+  if (low === 'completed') return 'completed'
+  if (low === 'not planned') return 'not_planned'
+  if (low === 'duplicate') return 'duplicate'
+  return null
 }
 
 /** A qualifier value, quoted when it holds whitespace. */
@@ -291,11 +347,14 @@ function tokens(text: string): string[] {
 
 const unquote = (s: string): string => s.replace(/"/g, '')
 
+/** The search box's tokens, as every qualifier parser reads them (quoted phrases whole). */
+export const searchTokens = tokens
+
 /**
  * The qualifiers this parser applies (the rest of GitHub's are known by name below and
  * reported, never searched for as text). `-label` is the one negation it applies.
  */
-const APPLIED_KEYS = new Set(['is', 'state', 'label', '-label', 'author', 'assignee', 'no', 'mentions', 'sort', 'milestone', 'in', 'comments'])
+const APPLIED_KEYS = new Set(['is', 'state', 'label', '-label', 'author', 'assignee', 'no', 'mentions', 'sort', 'milestone', 'in', 'comments', 'reason'])
 
 /**
  * GitHub's issue and PR search qualifiers this list does not apply (QW-020): a token with one of
@@ -304,7 +363,7 @@ const APPLIED_KEYS = new Set(['is', 'state', 'label', '-label', 'author', 'assig
  */
 const OTHER_GITHUB_KEYS = new Set([
   'archived', 'base', 'closed', 'commenter', 'created', 'draft', 'head', 'interactions', 'involves', 'language', 'linked', 'merged',
-  'org', 'project', 'reactions', 'reason', 'repo', 'review', 'review-requested', 'reviewed-by', 'status', 'team',
+  'org', 'project', 'reactions', 'repo', 'review', 'review-requested', 'reviewed-by', 'status', 'team',
   'team-review-requested', 'type', 'updated', 'user', 'user-review-requested',
 ])
 
@@ -426,10 +485,20 @@ const QUALIFIER_REASON: Readonly<Record<string, string>> = {
   milestone: `milestone: takes a milestone title (1-${MILESTONE_MAX} characters; quote one with spaces).`,
   in: 'in: takes title or body (comment text is not searched from the list).',
   comments: 'comments: takes a count: 3, >2, >=2, <5, <=5 or 1..3.',
+  reason: 'reason: takes completed, "not planned" or duplicate.',
   review: "review: is not a list filter: a PR's reviews are read on its page.",
   'reviewed-by': "reviewed-by: is not a list filter: a PR's reviews are read on its page.",
   'review-requested': 'review-requested: and draft: are pull request filters.',
   draft: 'review-requested: and draft: are pull request filters.',
+}
+
+/** Why a second state qualifier no item can match together with the first was not applied (QW4-007). */
+export const STATE_CONFLICT = 'No item can be in both of those states, so only the first state qualifier is applied.'
+
+/** Whether a dropped `is:`/`state:` token names a valid state: it was dropped as contradicting an earlier one. */
+export function isStateConflict(tok: string, states: readonly string[] = STATES): boolean {
+  const key = keyOf(tok)
+  return (key === 'is' || key === 'state') && states.includes(unquote(tok.slice(tok.indexOf(':') + 1)))
 }
 
 /** The key of a qualifier token, lowercased, a leading `-` kept (`''` for a token that is not one). */
@@ -458,6 +527,10 @@ export function droppedQualifiersReason(dropped: readonly string[], notFound: re
       reasons.add('is:pr is not a filter here — open the Pull requests tab to search pull requests.')
       continue
     }
+    if (isStateConflict(tok)) {
+      reasons.add(STATE_CONFLICT)
+      continue
+    }
     const person = personQualifier(tok)
     if (person && notFoundLower.has(person.value.toLowerCase())) {
       reasons.add(`No DPNS name \`${displayDpnsName(person.value)}\` was found.`)
@@ -473,11 +546,17 @@ export function droppedQualifiersReason(dropped: readonly string[], notFound: re
   return [...reasons].join(' ')
 }
 
+/** The states an issue state qualifier admits, to intersect several of them (GitHub ANDs qualifiers, QW4-007). */
+const ISSUE_STATE_SETS: Readonly<Record<IssueStateFilter, readonly ('open' | 'closed')[]>> = { open: ['open'], closed: ['closed'], all: ['open', 'closed'] }
+
 function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQuery; unresolved: string[] } {
   let state = base.state
+  // The states every state qualifier so far admits (null: none seen yet): a later one narrows them,
+  // and one that admits none of them (`is:open is:closed`) is reported rather than silently winning.
+  let admitted: readonly ('open' | 'closed')[] | null = null
   const labels = [...base.labels]
   const notLabels = [...base.notLabels]
-  let { author, assignee, mentions, sort, noLabel, milestone, noMilestone, authorLogin, scope, comments } = base
+  let { author, assignee, mentions, sort, noLabel, milestone, noMilestone, authorLogin, scope, comments, reason } = base
   const free: string[] = []
   const unresolved: string[] = []
   // identityParam already matches 'me'/'none' case-insensitively, so stripping a leading `@`
@@ -492,8 +571,14 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
     switch (key) {
       case 'is':
       case 'state':
-        if (value === 'open' || value === 'closed' || value === 'all') state = value
-        else if (value !== 'issue') used = false
+        if (value === 'open' || value === 'closed' || value === 'all') {
+          const next: readonly ('open' | 'closed')[] = admitted === null ? ISSUE_STATE_SETS[value] : admitted.filter((s) => ISSUE_STATE_SETS[value].includes(s))
+          if (next.length === 0) used = false
+          else {
+            admitted = next
+            state = next.length === 2 ? 'all' : next[0]!
+          }
+        } else if (value !== 'issue') used = false
         break
       case 'label':
         if (labelOk(value)) {
@@ -550,6 +635,12 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
         if (commentRange(value) !== null) comments = value
         else used = false
         break
+      case 'reason': {
+        const r = closeReasonValue(value)
+        if (r !== null) reason = r
+        else used = false
+        break
+      }
       case 'sort':
         if (value === 'created-desc') sort = 'newest'
         else if (value === 'created-asc') sort = 'oldest'
@@ -562,11 +653,12 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
     if (used) continue
     // A GitHub key with nothing after its colon (`status: broken`, `type: error`) is prose, not a
     // qualifier: it stays free text, as it does on GitHub. An applied key's empty value is reported.
-    if (isQualifierKey(key) && (value !== '' || APPLIED_KEYS.has(key))) unresolved.push(tok)
+    // `reason:` was prose before it was a filter (`reason: timeout`), and stays so with no value.
+    if (isQualifierKey(key) && (value !== '' || (APPLIED_KEYS.has(key) && key !== 'reason'))) unresolved.push(tok)
     else free.push(tok)
   }
   return {
-    query: { ...base, state, labels, notLabels, author, assignee, mentions, sort, noLabel, milestone, noMilestone, authorLogin, scope, comments, q: free.join(' '), page: 1 },
+    query: { ...base, state, labels, notLabels, author, assignee, mentions, sort, noLabel, milestone, noMilestone, authorLogin, scope, comments, reason, q: free.join(' '), page: 1 },
     unresolved,
   }
 }

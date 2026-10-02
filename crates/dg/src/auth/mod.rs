@@ -1079,11 +1079,15 @@ pub(crate) async fn key_report(
             .signing_key_standing(bridge, ctx.network())
             .and_then(|(id, disabled)| disabled.then_some(id)),
     };
+    // A disabled key keeps its bounds and limits on the identity: they are reported as what
+    // the key was (QW4-049: a disabled limited key read as `"limited": false`).
+    let shown = key_id.or(disabled_id);
+    let limits = limits.or_else(|| disabled_id.and_then(|id| identity.key_limits(id)));
     KeyReport {
         key_id,
         disabled_id,
         limited: key_id.is_some_and(|id| identity.is_limited_key(id)),
-        doc_type: key_id
+        doc_type: shown
             .and_then(|id| identity.key_doc_type(id))
             .map(|(_, doc_type)| doc_type),
         total: limits.and_then(|l| l.total_budget),
@@ -1144,9 +1148,10 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "names": names,
             "keyId": report.as_ref().and_then(|r| r.key_id.or(r.disabled_id)),
             "keyDisabled": report.as_ref().map(|r| r.disabled_id.is_some()),
-            "limited": report.as_ref().map(|r| r.limited),
-            // Spend-capped: a Forge limited key, or a runner key with its own budget (QW3-070:
-            // a 0.05-capped runner key read as `"limited": false` and nothing else).
+            // Spend-capped: a Forge limited key, or a runner key with its own budget, live or
+            // disabled. `limited` says the same (QW4-049: a 0.05-capped runner key and a disabled
+            // limited key read as `"limited": false`); `capped` is kept for scripts reading it.
+            "limited": report.as_ref().map(KeyReport::is_capped),
             "capped": report.as_ref().map(KeyReport::is_capped),
             "boundDocumentType": report.as_ref().and_then(|r| r.doc_type.clone()),
             "encryptionKeyIds": access.as_ref().map(|a| a.held.clone()),
@@ -1836,6 +1841,10 @@ mod tests {
             line.starts_with("#7 DISABLED: it can no longer sign"),
             "{line}"
         );
+        // QW4-049: a disabled limited key is still reported as the capped key it was: its
+        // budget is read from the disabled key (`limited` is for live keys only).
+        gone.limited = false;
+        assert!(gone.is_capped());
         gone.disabled_id = None;
         let line = key_line(Some(&gone), None, true);
         assert!(line.starts_with("not a key of this identity"), "{line}");

@@ -118,9 +118,15 @@ pub mod push_fees {
     /// A `packManifest`, the first of a push into a repository or ref that has none of its
     /// kind yet (its index subtrees are created). Measured 109.3-110.2M.
     pub const MANIFEST_FIRST: u64 = 112_000_000;
+    /// A `packManifest` into a repository that already has one: 85.5-87.4M on bonsia
+    /// (drive 4.2.0-beta.7, QA wave 3). What a fork's later manifests pay.
+    pub const MANIFEST_LATER: u64 = 90_000_000;
     /// A `refUpdate` or `protectedRefUpdate` creating a ref's history, public or private.
     /// Measured 88.3-90.0M (a later one 56.8-67.3M).
     pub const REF_FIRST: u64 = 92_000_000;
+    /// The first update of a new ref name in a repository that already has refs (its `refState`
+    /// subtree only): 66.0-66.4M on bonsia (QA wave 3). What a fork's later refs pay.
+    pub const REF_NEW_NAME: u64 = 70_000_000;
     /// What each external target's URIs add to a manifest: a second target's 239 bytes
     /// measured +6.4-7.1M; a URI is at most 300 bytes (`MANIFEST_URIS_V2`).
     pub const URIS_PER_TARGET: u64 = 9_000_000;
