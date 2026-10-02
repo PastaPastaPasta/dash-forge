@@ -98,7 +98,7 @@ import { ROLE_NOUN, capabilitiesOf, memberMayWriteEvent } from '@/lib/rules/role
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
-import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { firstPushers, headUpdatePhrases, type HeadUpdatePhrase } from '@/lib/view/head-updates'
@@ -666,8 +666,9 @@ function PullPage({
   const canResolve = identity !== null && (isAuthor || caps.canResolve) && !writeBlocked && guard.disabledReason === null
   // Stable across renders (the diff's lines re-render only when these change): the handler
   // reads the latest confirm (cost and guard) through a ref.
-  const confirmResolve = useRef(confirmEvent)
-  confirmResolve.current = confirmEvent
+  // A resolve names the thread's root in `refId` (QW4-039).
+  const confirmResolve = useRef((p: Pending): void => confirmEvent(p, withAddressee(eventCost)))
+  confirmResolve.current = (p: Pending): void => confirmEvent(p, withAddressee(eventCost))
   const resolvedKey = review.resolvedThreads.join(',')
   const threadActions = useMemo<ThreadActions>(
     () => ({
@@ -897,15 +898,20 @@ function PullPage({
         return previewCredits(hide.credits + extra * transitionCost.credits)
       }
       case 'labels':
-      case 'assignees':
         return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => previewCreate('event', { value })))
+      // These name an identity, a review or a thread in `refId` (QW4-039: previewed without it).
+      case 'assignees':
+        return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => withAddressee(previewCreate('event', { value }))))
+      case 'request':
+      case 'resolve':
+        return withAddressee(eventCost)
       case 'milestone':
         return previewCreate('event', pending.title === null ? {} : { value: pending.title })
       case 'delete-branch':
       case 'restore-branch':
         return previewCreate('refUpdate')
       case 'dismiss':
-        return previewCreate('event', { value: pending.reason })
+        return withAddressee(previewCreate('event', { value: pending.reason }, eventFirst))
       case 'define-label':
         return previewCredits(
           previewCreate('label', { name: pending.name, color: pending.color, description: pending.description }).credits + previewCreate('event', { value: pending.name }).credits,
@@ -1665,10 +1671,10 @@ function PullPage({
                 canRequest={canRequestReview && open && guard.disabledReason === null}
                 canDismiss={canMember && caps.canDismiss && open}
                 onRequest={(who, remove) => {
-                  confirmEvent({ kind: 'request', who, remove })
+                  confirmEvent({ kind: 'request', who, remove }, withAddressee(eventCost))
                 }}
                 onDismiss={(row, reason) => {
-                  confirmEvent({ kind: 'dismiss', row, reason }, previewCreate('event', { value: reason }, eventFirst))
+                  confirmEvent({ kind: 'dismiss', row, reason }, withAddressee(previewCreate('event', { value: reason }, eventFirst)))
                 }}
               />
             </SidebarSection>

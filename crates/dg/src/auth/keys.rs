@@ -122,7 +122,9 @@ async fn list(ctx: &Ctx) -> Result<()> {
             "budgetCredits": limits.and_then(|l| l.total_budget),
             "budgetRemainingCredits": remaining,
             "expiresAt": limits.and_then(|l| l.expires_at),
-            "limited": identity.is_limited_key(k.id),
+            // Spend-capped (a budget or an expiry), live or disabled: what `dg auth status
+            // --json` says of the key it signs with (QW4-049).
+            "limited": limits.is_some_and(|l| l.total_budget.is_some() || l.expires_at.is_some()),
             "thisComputer": mine == Some(k.id),
         }));
     }

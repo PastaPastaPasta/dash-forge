@@ -229,7 +229,7 @@ Reasons are GitHub's: `spam`, `abuse`, `off-topic`, `outdated`, `resolved`, `dup
 
 **A hidden review still counts.** Hiding is display only: an approval or a request for changes still counts toward the merge until a member dismisses it (`dg pr dismiss-review`, or **Dismiss** on the Reviewers card). Hiding an issue or PR does not close it either; the web's **Hide issue…** offers "Also close and lock it", which writes the close and the lock after the hide.
 
-**Limits.** A hidden post is still on Platform: anyone can read it with **Show**, `--show-hidden`, `--include-hidden`, or any client that predates hiding. In a private repository the reason is encrypted like other event values; which item was hidden is not. Each hide costs about as much as a label (one small event). To stop a flood, lock the thread first, then hide what was already posted.
+**Limits.** A hidden post is still on Platform: anyone can read it with **Show**, `--show-hidden`, `--include-hidden`, or any client that predates hiding. In a private repository the reason is encrypted like other event values; which item was hidden is not. Each hide is one event: a whole thread costs about as much as a label, and hiding one comment or review costs about 0.0002 DASH more, because the event also names it. To stop a flood, lock the thread first, then hide what was already posted.
 
 ---
 
