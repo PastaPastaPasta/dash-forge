@@ -331,8 +331,15 @@ test.describe('list budgets on the dash mirror (QW2-002)', () => {
  *   files (git's own count, renames paired) counted in ~14 s and 42 requests, complete (was 176 s,
  *   1,287 requests and still partial).
  *
+ * Since the index is read a chunk at a time (QW3-001), re-measured on sakura (2026-10-02, QW4):
+ * the language bar 24 requests and 753 chunk documents (was 31-33 and 1,811-1,846: a 256 KiB block
+ * per tree, QW4-002); compare listed in 18-20 s and 92-97 requests (was 180-184: a query per commit
+ * past each block edge and per delta of an earlier commit, QW4-003), counted in 14 s and 43-44.
+ *
  * Run where the dash mirror is: `E2E_DEVNET=moutai`, or elsewhere with its owner in
- * `E2E_SHOWCASE_DASHPAY` (on bonsia it was 7A1MEuLjzcHZq8bLBzGYSUkpb2VM9dv7gtNuNYrPxKt3).
+ * `E2E_SHOWCASE_DASHPAY` (on bonsia it was 7A1MEuLjzcHZq8bLBzGYSUkpb2VM9dv7gtNuNYrPxKt3; on sakura,
+ * where the mirror has no DPNS name, CI sets H3xi5biFj6wbxmpbdhHx1D2D3ofKJJ7anDG58ixhqvry:
+ * `.github/workflows/web-e2e.yml`).
  */
 /** `CHROME_KEYSET_SPLITS` (lib/repo/refs.ts): the key ranges the chrome reads a long ref timeline as. */
 const DASH_HOME_REF_READS_MAX = 8 + DAPI_RESEND_SLACK
@@ -343,10 +350,20 @@ const GOTO_WALK_MS = 10_000
 const GOTO_WALK_REQUESTS = 40
 const LANGUAGES_MS = 10_000
 const LANGUAGES_REQUESTS = 40
+/**
+ * The language bar's chunk documents: the whole index (657, which sizes every file) and the trees
+ * read a range each (~100). A block per tree read 1,811-1,846 (QW4-002).
+ */
+const LANGUAGES_CHUNK_DOCS = 900
 const COMPARE_LISTED_MS = 40_000
 const COMPARE_LISTED_REQUESTS = 150
 const COMPARE_COUNT_MS = 40_000
 const COMPARE_COUNT_REQUESTS = 90
+/** What a page that shows history may read past S-1 on a large repo (cb-3, QW4-017). */
+const HISTORY_PAGE_ALLOWANCE = 10
+const HISTORY_PAGE_BUDGET = COLD_BUDGET + HISTORY_PAGE_ALLOWANCE
+/** Each page a `?pages=` restore reads past the first: its commits' check states, and an index or pack block now and then. */
+const RESTORED_PAGE_REQUESTS = 3
 
 test.describe('code browsing budgets on the dash mirror (QW-027, QW-028, QW-087)', () => {
   test.skip(E2E_DEVNET !== 'moutai' && !process.env['E2E_SHOWCASE_DASHPAY'], 'the dash mirror is imported on moutai (elsewhere, set E2E_SHOWCASE_DASHPAY)')
@@ -398,12 +415,14 @@ test.describe('code browsing budgets on the dash mirror (QW-027, QW-028, QW-087)
     const fresh = await browser.newContext()
     const lang = await fresh.newPage()
     const langDapi = recordDapi(lang)
+    const langDocs = recordChunkDocs(lang)
     await lang.goto(repoUrl('', '', dash), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(lang)
     await expect(fileRows(lang).first()).toBeVisible({ timeout: 60_000 })
     await expect(lang.getByTestId('commit-count')).toContainText(/\d/, { timeout: 60_000 })
     await settle(lang)
     const beforeLang = langDapi.all().length
+    const beforeLangDocs = langDocs()
     const scrolled = Date.now()
     const bar = lang.getByTestId('language-bar')
     for (let y = 0; y < 4_000 && !(await bar.isVisible()); y += 400) {
@@ -414,8 +433,10 @@ test.describe('code browsing budgets on the dash mirror (QW-027, QW-028, QW-087)
     const langMs = Date.now() - scrolled
     await settle(lang)
     const langReads = langDapi.all().length - beforeLang
-    test.info().annotations.push({ type: 'dapi', description: `language bar: ${langMs} ms, ${langReads} requests` })
+    const langChunkDocs = langDocs() - beforeLangDocs
+    test.info().annotations.push({ type: 'dapi', description: `language bar: ${langMs} ms, ${langReads} requests, ${langChunkDocs} chunk documents` })
     expect(langReads).toBeLessThanOrEqual(LANGUAGES_REQUESTS)
+    expect(langChunkDocs).toBeLessThanOrEqual(LANGUAGES_CHUNK_DOCS)
     await shot(lang, 'cb-02-language-bar')
     await fresh.close()
   })
@@ -441,6 +462,65 @@ test.describe('code browsing budgets on the dash mirror (QW-027, QW-028, QW-087)
     await expect(page.getByTestId('diff-totals-partial')).toHaveCount(0)
     expect(counted).toBeLessThanOrEqual(COMPARE_COUNT_REQUESTS)
     await shot(page, 'cb-03-compare-counted')
+    await context.close()
+  })
+
+  /**
+   * QW4-017: the pages that show history, cold. Each object they show costs an index query besides
+   * its pack query on a repo whose index is read a chunk at a time, and dash's long ref timeline
+   * is 8 key ranges where a small repo's is 1: S-1 plus {@link HISTORY_PAGE_ALLOWANCE}, the budget
+   * the History page has had since the history index (`history-index.spec.ts` hi-3).
+   * Measured on sakura (2026-10-02): the commits list 26-27, src/validation.cpp's History 23-24
+   * (was 33-34: every version's blob resolved through the index, 256 of them), commit c41035f
+   * 29-30, and the list restored 20 pages deep 59-65 (was 126: a query per commit past a block edge).
+   */
+  test('cb-3. the commits list, a file’s History and a commit, cold, within S-1 plus the history allowance', async ({ browser }) => {
+    const dash = await showcaseRepo('DASHPAY', 'dash')
+    const pages = [
+      ['commits list', repoUrl('commits', '', dash), HISTORY_PAGE_BUDGET],
+      ['History of src/validation.cpp', repoUrl('commits', '&path=src/validation.cpp', dash), HISTORY_PAGE_BUDGET],
+      ['commit c41035f', repoUrl('commit', '&oid=c41035f7d801a45b337efa24e3052f069ff6ef56', dash), HISTORY_PAGE_BUDGET],
+      ['commits list, 20 pages', repoUrl('commits', '&pages=20', dash), HISTORY_PAGE_BUDGET + 19 * RESTORED_PAGE_REQUESTS],
+    ] as const
+    for (const [label, url, budget] of pages) {
+      const context = await browser.newContext()
+      const page = await context.newPage()
+      const { errors } = collectPageErrors(page)
+      const dapi = recordDapi(page)
+      await page.goto(url, { waitUntil: 'domcontentloaded' })
+      await waitForRepoResolved(page)
+      await expect(page.locator('main a[href*="/repo/commit/"], main [data-testid=commit-subject]').first()).toBeVisible({ timeout: 90_000 })
+      await settle(page)
+      const all = dapi.all()
+      test.info().annotations.push({ type: 'dapi', description: `dash ${label}, cold: ${all.length} ${summary(all)}` })
+      expect(errors, errors.join('\n')).toEqual([])
+      expect(all.length, `${label}: ${summary(all)}`).toBeLessThanOrEqual(budget)
+      await context.close()
+    }
+  })
+
+  /**
+   * QW4-004: a home at a ref no history index covers walks the column 400 commits back. Measured on
+   * sakura (2026-10-02): v22.1.3 49-54 requests (was 180: each commit's trees read one after the
+   * other, each an index query and a pack query). Held to S-1 plus the column walk's allowance
+   * (pb-2's {@link COLUMN_WALK_MAX}).
+   */
+  test('cb-4. a home at a release tag, cold, within S-1 plus the column walk', async ({ browser }) => {
+    const dash = await showcaseRepo('DASHPAY', 'dash')
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    const { errors } = collectPageErrors(page)
+    const dapi = recordDapi(page)
+    await page.goto(repoUrl('', '&ref=v22.1.3', dash), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    await expect(fileRows(page).first()).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId('commit-cell-pending').filter({ hasText: '…' })).toHaveCount(0, { timeout: 120_000 })
+    await settle(page)
+    const all = dapi.all()
+    test.info().annotations.push({ type: 'dapi', description: `dash home at v22.1.3, cold: ${all.length} ${summary(all)}` })
+    expect(errors, errors.join('\n')).toEqual([])
+    expect(all.length, summary(all)).toBeLessThanOrEqual(COLD_BUDGET + COLUMN_WALK_MAX)
+    await shot(page, 'cb-04-dash-home-tag')
     await context.close()
   })
 })

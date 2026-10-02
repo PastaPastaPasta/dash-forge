@@ -71,6 +71,16 @@ jobs:
         env:
           E2E_SKIP_BUILD: '1'
         run: pnpm exec playwright test --grep-invert "showcase repos"
+      # The browse budgets on the dash mirror (page-budget.spec.ts bi-1, cb-1..cb-4): the requests
+      # and bytes a large repo's code pages cost, which the read fixture is too small to show
+      # (QW4-003 regressed with nothing in CI to catch it). The mirror on sakura has no DPNS name,
+      # so its owner is named here; the specs skip without it.
+      - name: Playwright (dash mirror budgets)
+        if: success() || failure()
+        env:
+          E2E_SKIP_BUILD: '1'
+          E2E_SHOWCASE_DASHPAY: H3xi5biFj6wbxmpbdhHx1D2D3ofKJJ7anDG58ixhqvry
+        run: pnpm exec playwright test page-budget.spec.ts --project chromium --grep "bi-1|cb-"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
