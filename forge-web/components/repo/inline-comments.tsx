@@ -38,7 +38,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { InlineCommentsContext, type InlineComments } from '@/components/repo/diff-view'
-import { MarkdownView } from '@/components/markdown-view'
+import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { MarkdownEditor } from '@/components/repo/issue-bits'
@@ -522,16 +522,33 @@ function useSuggestionContext(body: string, anchor: SuggestionAnchor | null, sug
   return useMemo(() => (has ? { original: key === null ? null : key.split('\n') } : null), [has, key])
 }
 
-/** A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in". */
-function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; suggestions?: SuggestionActions | undefined }): JSX.Element {
-  const ctx = useSuggestionContext(c.body, c.anchor, suggestions)
-  if (ctx === null || !suggestions) return <MarkdownView source={c.body} suggestion={ctx} />
+/**
+ * A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in" —
+ * on Files changed and, as on GitHub, in Conversation (QW4-026). `source` is the text shown (the
+ * body by default), `links` and `imported` as {@link MarkdownView}'s.
+ */
+export function SuggestedBody({
+  comment: c,
+  suggestions,
+  source = c.body,
+  links = null,
+  imported = null,
+}: {
+  comment: CommentView
+  suggestions?: SuggestionActions | undefined
+  source?: string
+  links?: MarkdownLinks | null
+  imported?: string | null
+}): JSX.Element {
+  const ctx = useSuggestionContext(source, c.anchor, suggestions)
+  const body = <MarkdownView source={source} suggestion={ctx} links={links} imported={imported} />
+  if (ctx === null || !suggestions) return body
   const applied = suggestions.applied.get(c.id)
   const refused = suggestions.unapplicable(c)
   const inBatch = suggestions.batch.has(c.id)
   return (
     <>
-      <MarkdownView source={c.body} suggestion={ctx} />
+      {body}
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px]" data-testid="suggestion-actions" data-comment={c.id}>
         {applied ? (
           <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400" data-testid="suggestion-applied">

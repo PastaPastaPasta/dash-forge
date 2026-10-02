@@ -121,9 +121,12 @@ async fn define(
     } else {
         ""
     };
+    let quote =
+        crate::quote::label_definition((name.len() + color.len() + description.len()) as u64);
     ctx.confirm_or_cancel(&format!(
-        "{verb} label {name:?} in {}? (one small document; members only{plaintext})",
-        s.repo.display()
+        "{verb} label {name:?} in {}? (one document, {}; members only{plaintext})",
+        s.repo.display(),
+        cost_line(quote, ctx.usd_price())
     ))?;
     let before = s.balance().await;
     let id = s

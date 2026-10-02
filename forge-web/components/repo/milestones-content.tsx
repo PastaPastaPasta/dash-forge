@@ -3,7 +3,7 @@
 /**
  * MilestonesContent — `/repo/milestones` (QW-019): the repo's milestones as GitHub lists them,
  * Open / Closed, each with its due date, description and progress (its issues' and PRs' open
- * and closed counts), and for maintainers and writers New milestone, Edit, Close / Reopen and
+ * and closed counts), and for maintainers, writers and triage members New milestone, Edit, Close / Reopen and
  * Delete.
  *
  * Milestones are forge-community `milestone` definitions: member-gated, immutable, newest
@@ -29,7 +29,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
-import { capabilitiesOf } from '@/lib/rules/roles'
+import { capabilitiesOf, whoCan } from '@/lib/rules/roles'
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
@@ -231,7 +231,7 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
                   : pending.verb === 'reopen'
                     ? `Reopen milestone "${pending.title}"`
                     : `Edit milestone "${pending.title}"`,
-            description: 'One milestone definition (maintainers and writers). The newest definition of a title is the one shown.',
+            description: `One milestone definition (${whoCan('canMilestone')} define them). The newest definition of a title is the one shown.`,
             label: pending.verb === 'create' ? 'Sign & create' : pending.verb === 'close' ? 'Sign & close' : pending.verb === 'reopen' ? 'Sign & reopen' : 'Sign & save',
           }
 
@@ -245,7 +245,7 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
           </Button>
         ) : null}
       </div>
-      {!privateRepo && home.config?.archived !== true ? <RoleLimitNote role={role} what="create or edit milestones" /> : null}
+      {!privateRepo && home.config?.archived !== true ? <RoleLimitNote role={role} cap="canMilestone" what="create or edit milestones" /> : null}
       {privateRepo && role !== null ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="milestones-private-note">
           Milestones aren&apos;t available in private repos yet: they would be sealed like the rest of the repo&apos;s content, which neither this

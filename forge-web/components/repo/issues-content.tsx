@@ -96,6 +96,7 @@ import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/co
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
 import { applyTemplate, type IssueTemplate } from '@/lib/view/issue-templates'
+import { whoCan } from '@/lib/rules/roles'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
 const ISSUE_GRAMMAR: ListGrammar<IssueListQuery> = { text: searchText, parse: parseSearchText, unresolved: unresolvedQualifiers, submitBase: searchSubmitBase }
@@ -502,7 +503,7 @@ function ComposeIssueDialog({
         <BodyCounter repo={repo} text={body} field="description" />
         {template !== null && template.labels.length > 0 ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            This template suggests the labels {template.labels.join(', ')}. A maintainer or writer applies labels after the issue is opened.
+            This template suggests the labels {template.labels.join(', ')}. Labels are applied after the issue is opened, by {whoCan('canLabel', 'one')}.
           </p>
         ) : null}
         <CostPreview cost={cost} />

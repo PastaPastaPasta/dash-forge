@@ -401,3 +401,16 @@ describe('QA wave 3 (bonsia): the import form', () => {
     expect(byText("Create this browser's key")).not.toBeNull()
   })
 })
+
+describe('QW4-022: creating an identity is titled as sign-up', () => {
+  it('names the create sheet "Create your identity", not "Sign in to Dash Forge"', async () => {
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin('create'))
+    await flush()
+    expect(q('[role="dialog"] h2')?.textContent).toBe('Create your identity')
+    // Import is a sign-in, and keeps its title.
+    await click(byText('All options'))
+    await click(q('[data-testid="tile-import"]'))
+    expect(q('[role="dialog"] h2')?.textContent).toBe('Sign in to Dash Forge')
+  })
+})

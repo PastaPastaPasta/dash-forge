@@ -22,6 +22,7 @@ import { CheckMark, LabelChip } from '@/components/repo/issue-bits'
 import { cn } from '@/lib/utils'
 import type { Milestone } from '@/lib/rules/parity'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
+import { whoCan } from '@/lib/rules/roles'
 
 export function SidebarSection({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }): JSX.Element {
   return (
@@ -454,7 +455,7 @@ export function labelsConfirm(change: SetChange): { title: string; description: 
   ].filter((x) => x !== null)
   return {
     title: n === 1 ? `${change.add.length === 1 ? 'Add' : 'Remove'} label "${change.add[0] ?? change.remove[0]}"` : `Change ${n} labels`,
-    description: `${n === 1 ? 'One label event' : `${n} label events, signed together,`} ${parts.join(' and ')}. Only maintainers and writers can label.`,
+    description: `${n === 1 ? 'One label event' : `${n} label events, signed together,`} ${parts.join(' and ')}. Only ${whoCan('canLabel')} can label.`,
     label: n === 1 ? 'Sign & label' : `Sign ${n} changes`,
   }
 }

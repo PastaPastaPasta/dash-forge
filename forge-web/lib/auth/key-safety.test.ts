@@ -25,6 +25,7 @@ const chain = vi.hoisted(() => ({
   /** Fail this many updates with this error first (then they go through). */
   failFirst: { times: 0, error: null as Error | null },
   nonceReads: 0,
+  budgetsLag: false,
 }))
 
 vi.mock('@dashevo/evo-sdk', () => {
@@ -88,7 +89,8 @@ let keys: Key[] = []
 const sdk = {
   identities: {
     fetch: async () => ({ balance: 10n ** 11n, publicKeys: keys, getPublicKeyById: () => ({}) }),
-    keysRemainingBudgets: async (_id: string, ids: number[]) => new Map(ids.map((i) => [i, 5_000_000_000n])),
+    // `budgetsLag`: a node that has not seen the new key's remaining budget yet answers with no entry.
+    keysRemainingBudgets: async (_id: string, ids: number[]) => (chain.budgetsLag ? new Map() : new Map(ids.map((i) => [i, 5_000_000_000n]))),
     nonce: async () => {
       chain.nonceReads += 1
       return 7n
@@ -121,6 +123,7 @@ beforeEach(() => {
   chain.failUpdate = null
   chain.failFirst = { times: 0, error: null }
   chain.nonceReads = 0
+  chain.budgetsLag = false
   keys = [keyFor(0, decodeWif(wifOf(1)).privateKey, 0), browserKey(5, decodeWif(wifOf(5)).privateKey)]
 })
 
@@ -146,6 +149,15 @@ describe('registerLimitedKey stores before it changes the chain (D-016)', () => 
     expect(order).toEqual(['store 6', 'registered 6'])
     expect(stored).toEqual({ keyId: key.keyId, wif: key.wif })
     expect(chain.updates).toEqual([{ add: [6], disable: [5] }])
+  })
+
+  it("a node that has not seen the new key's budget yet does not leave the session without one (QW4-020)", async () => {
+    chain.budgetsLag = true
+    const key = await register(async () => undefined)
+    const added = keys.find((k) => k.keyId === key.keyId)
+    // Nothing was spent with a key registered just now: what is left is its whole budget.
+    expect(key.limits.remaining).toBe(added?.totalBudget)
+    expect(key.limits.total).toBe(added?.totalBudget)
   })
 })
 

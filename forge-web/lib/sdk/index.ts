@@ -65,6 +65,7 @@ export {
   previewDelete,
   previewReplace,
   sumPreviews,
+  withAddressee,
   type CostPreview,
 } from './cost'
 export {

@@ -33,8 +33,12 @@ use crate::{RepoEditArgs, RepoPolicyCommand, RepoPolicySetArgs, RepoProtectComma
 /// Estimate of one `config` write, in credits: the measured base of a config document plus
 /// the storage of its text (forge-web `BASE_CREDITS.config` + `CREDITS_PER_TEXT_BYTE`).
 const CONFIG_BASE_CREDITS: u64 = 34_000_000;
-/// Estimate of one `policy` write (measured on moutai, 2026-09-27: 33.9M).
-const POLICY_CREDITS: u64 = 34_000_000;
+/// Estimate of a repository's first `policy` (its subtree is created): 33.9M on moutai
+/// (2026-09-27), 42.8M on sakura (QW4-046: it was quoted 34M).
+const POLICY_FIRST_CREDITS: u64 = 46_000_000;
+/// Estimate of a later `policy` (one already exists): 35.5M on sakura with one required check
+/// and its source (QW4-046).
+const POLICY_LATER_CREDITS: u64 = 38_000_000;
 /// Estimate of a document replace: the fixed part plus every changed byte (forge-web
 /// `previewReplace`, measured on moutai 2026-09-27).
 const REPLACE_BASE_CREDITS: u64 = 17_000_000;
@@ -47,6 +51,23 @@ fn config_estimate(c: &CurrentConfig) -> u64 {
         + c.protected_patterns.iter().map(String::len).sum::<usize>()
         + c.backend_uris.iter().map(String::len).sum::<usize>();
     CONFIG_BASE_CREDITS + CREDITS_PER_TEXT_BYTE * text as u64
+}
+
+/// The estimate of appending `policy`, the repository's first when `first`: its required check
+/// names and the ids of their sources are what grow the document.
+fn policy_estimate(policy: &Policy, first: bool) -> u64 {
+    let base = if first {
+        POLICY_FIRST_CREDITS
+    } else {
+        POLICY_LATER_CREDITS
+    };
+    let bytes = policy
+        .required_checks
+        .iter()
+        .map(String::len)
+        .sum::<usize>()
+        + 32 * policy.required_check_sources.len();
+    base + CREDITS_PER_TEXT_BYTE * bytes as u64
 }
 
 /// `main` → `refs/heads/main`; a pattern already naming `refs/…` is kept as it is. What
@@ -200,7 +221,7 @@ fn edit_plan(
         if let Some(t) = &edit.topics {
             println!("  topics:         {}", t.join(", "));
         }
-        println!("  cost:           {}", cost_line(estimate, price));
+        println!("  estimate:       {}", cost_line(estimate, price));
     }
     estimate
 }
@@ -319,7 +340,7 @@ async fn change_protection(ctx: &Ctx, repo: &str, pattern: &str, add: bool) -> R
                 next.protected_patterns.join(", ")
             }
         );
-        println!("  cost:     {}", cost_line(estimate, price));
+        println!("  estimate: {}", cost_line(estimate, price));
     }
     if estimate > 0 {
         ctx.confirm_or_cancel(&format!(
@@ -614,7 +635,10 @@ async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
             serde_json::to_string(&policy_json(&next)).unwrap_or_default()
         );
         println!("  note: {POLICY_NOTE}");
-        println!("  cost: {}", cost_line(POLICY_CREDITS, price));
+        println!(
+            "  estimate: {}",
+            cost_line(policy_estimate(&next, current.is_none()), price)
+        );
     }
     ctx.confirm_or_cancel(&format!(
         "Write a policy for {}? (maintainers only)",
@@ -684,7 +708,7 @@ pub async fn archive(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
             println!("  Forge clients will refuse pushes, issues and PRs; reads keep working.");
             println!("  A client rule: consensus still admits a member's writes.");
         }
-        println!("  cost: {}", cost_line(estimate, price));
+        println!("  estimate: {}", cost_line(estimate, price));
     }
     ctx.confirm_or_cancel(&format!("{} {}?", capitalize(verb), s.repo.display()))?;
     let before = s.balance().await;

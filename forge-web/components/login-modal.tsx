@@ -105,7 +105,9 @@ export function LoginModal(): JSX.Element {
   // likelier view for someone opening the sheet on a device that holds a key.
   const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys)
   // A write asked for the sheet: say which, and what it costs once signed in (L-62).
-  const title = view === 'grant' ? grantTitle : view === 'renew' ? "Renew this browser's key" : intent ? `Sign in to ${intent.action}` : 'Sign in to Dash Forge'
+  // Creating an identity is sign-up, and says so on every step (QW4-022), as GitHub's "Create your account" does.
+  const title =
+    view === 'grant' ? grantTitle : view === 'renew' ? "Renew this browser's key" : view === 'create' ? 'Create your identity' : intent ? `Sign in to ${intent.action}` : 'Sign in to Dash Forge'
 
   return (
     <Dialog open={open} onClose={close} title={title} description={description} className="max-w-lg">

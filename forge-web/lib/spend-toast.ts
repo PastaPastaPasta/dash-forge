@@ -81,6 +81,12 @@ export interface SpendActionLabels {
   readonly done: string
   /** When it failed after some of its writes landed; "Stopped part-way" when absent. */
   readonly failed?: string
+  /**
+   * What the action is, in place of `done` and of every write's own title, one write's
+   * included: for a write whose document type alone does not say what it did (QW4-033: a
+   * `writer` document granting the triage role is "Triage member added", not "Writer added").
+   */
+  readonly title?: string
 }
 
 interface ActionState {
@@ -101,10 +107,16 @@ const STRAGGLER_MS = 60_000
 /** Make a signer's writes belong to an action: `tag(signer)` is the signer to write with. */
 export type TagSigner = <A extends WriteAuth>(auth: A) => A
 
+/** The labels of an action that one `title` names throughout ({@link SpendActionLabels.title}). */
+export function namedAction(title: string): SpendActionLabels {
+  return { done: title, title }
+}
+
 /** An action's title for now. */
 function actionTitle(s: ActionState): string {
-  if (s.ended === null) return s.labels.running ?? s.last ?? s.labels.done
+  if (s.ended === null) return s.labels.running ?? s.labels.title ?? s.last ?? s.labels.done
   if (s.ended === 'failed') return s.labels.failed ?? 'Stopped part-way'
+  if (s.labels.title !== undefined) return s.labels.title
   return s.writes === 1 ? (s.last ?? s.labels.done) : s.labels.done
 }
 

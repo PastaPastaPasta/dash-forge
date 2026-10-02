@@ -2,7 +2,7 @@
 
 /**
  * LabelsContent — `/repo/labels` (QW-019): the repo's labels as GitHub's Labels page lists them,
- * with New label, Edit (colour and description) and Delete for maintainers and writers.
+ * with New label, Edit (colour and description) and Delete for maintainers, writers and triage members.
  *
  * Labels are forge-core `label` definitions: member-gated, immutable, newest definition per name
  * wins (`lib/repo/labels`). So an edit writes a new definition of the same name; a rename would
@@ -24,7 +24,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
-import { capabilitiesOf } from '@/lib/rules/roles'
+import { capabilitiesOf, whoCan } from '@/lib/rules/roles'
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
@@ -260,7 +260,7 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           }
         : {
             title: pending.verb === 'create' ? `Create label "${pending.name}"` : pending.verb === 'restore' ? `Restore label "${pending.name}"` : `Edit label "${pending.name}"`,
-            description: 'One label definition for the whole repo (maintainers and writers). The newest definition of a name is the one shown.',
+            description: `One label definition for the whole repo (${whoCan('canLabel')} define them). The newest definition of a name is the one shown.`,
             label: pending.verb === 'create' ? 'Sign & create' : pending.verb === 'restore' ? 'Sign & restore' : 'Sign & save',
           }
 
@@ -276,7 +276,7 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           </Button>
         ) : null}
       </div>
-      {home.config?.archived !== true ? <RoleLimitNote role={role} what="create or edit labels" /> : null}
+      {home.config?.archived !== true ? <RoleLimitNote role={role} cap="canLabel" what="create or edit labels" /> : null}
 
       {creating ? (
         <LabelForm
