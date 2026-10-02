@@ -23,6 +23,7 @@ vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () =>
 vi.mock('@/hooks/use-private-write', () => ({ usePrivateWrite: () => ({ context: {}, done: () => undefined }) }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>{identityId}</span> }))
 vi.mock('@/components/repo/invite-banner', () => ({
+  mayAdd: (c: { accepted: boolean | null; error: string | null }) => c.accepted === true || (c.accepted === null && c.error !== null),
   useInviteAccepted: (_repo: unknown, id: string | null) => ({ accepted: id === null ? null : accepted.value, checking: false, error: null, recheck: () => undefined }),
   ConsentCheck: ({ identity, check }: { identity: string | null; check: { accepted: boolean | null } }) =>
     identity !== null && check.accepted === false ? <p data-testid="consent-missing">not accepted</p> : null,
@@ -79,11 +80,21 @@ describe('private repo: Add as … on an accepted invitation', () => {
     expect(host.querySelector<HTMLInputElement>('#member-id')!.value).toBe(INVITEE)
   })
 
-  it("opens nothing for an identity that hasn't accepted (QW4-036), and the form says why", async () => {
+  it("keeps Add off for a typed identity that hasn't accepted (QW4-036), and the form says why", async () => {
     keyOk.value = true
     accepted.value = false
-    await pick()
-    expect(host.querySelector('[data-testid="confirm"]')).toBeNull()
+    await act(async () => {
+      root.render(<PrivateMembers home={home} session={session} />)
+    })
+    const input = host.querySelector<HTMLInputElement>('#member-id')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setValue?.call(input, INVITEE)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const add = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Add')!
+    expect(add.disabled).toBe(true)
     expect(host.querySelector('[data-testid="consent-missing"]')).not.toBeNull()
     accepted.value = true
   })

@@ -351,15 +351,27 @@ describe('useInviteAccepted: Add knows before it prices anything (QW4-036)', () 
   const accepted = (): string | null | undefined => q('probe')?.getAttribute('data-accepted')
 
   it("says an identity hasn't accepted, and Check again finds an accept made since", async () => {
-    consentReads = [null, 'consent1']
+    consentReads = [null, null, null, 'consent1']
     act(() => root.render(<Probe id={INVITEE} />))
     await flush()
+    // Still re-reading a "none" (a node behind a fresh accept): nothing known yet.
+    expect(accepted()).toBe('null')
+    expect(q('consent-checking')).not.toBeNull()
+    await flush(3000)
+    expect(consentCalls).toBe(3)
     expect(accepted()).toBe('false')
     expect(q('consent-missing')?.textContent).toMatch(/hasn.t accepted your invitation yet/)
     await act(async () => (q('consent-missing')!.querySelector('button') as HTMLButtonElement).click())
     await flush()
     expect(accepted()).toBe('true')
     expect(q('consent-missing')).toBeNull()
+  })
+
+  it('finds an accept a lagging node missed on its first read', async () => {
+    consentReads = [null, 'consent1']
+    act(() => root.render(<Probe id={INVITEE} />))
+    await flush(1500)
+    expect(accepted()).toBe('true')
   })
 
   it('needs no acceptance from the owner, and reads nothing for no identity', async () => {

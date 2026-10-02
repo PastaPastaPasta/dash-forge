@@ -20,7 +20,7 @@ import { KeyRound } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
 import { ConsentMissingError, repoContractIds } from '@/lib/repo'
-import { ConsentCheck, Invitations, useInviteAccepted } from '@/components/repo/invite-banner'
+import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
 import { ROLE_NOUN, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { decodeIdentifier } from '@/lib/auth'
@@ -127,8 +127,9 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
   // Whether they accepted, read before Add prices anything (QW4-036), as their key is.
   const consent = useInviteAccepted(repo, isOwner && trimmed !== '' && idError === null ? trimmed : null)
   // "Add as …" on an accepted invitation (QW-075): as on a public repo, it opens the confirm, once
-  // the form has checked the identity's encryption key (the add hands them the repo key) and
-  // their acceptance. If either is missing, the form says so and nothing opens.
+  // the form has checked the identity's encryption key (the add hands them the repo key). If they
+  // have none, the form says so and nothing opens. Their acceptance is not read again: the
+  // invitation is listed from it (and the add checks it before signing).
   const [pickedAdd, setPickedAdd] = useState<string | null>(null)
   useEffect(() => {
     if (pickedAdd === null) return
@@ -137,10 +138,10 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
       setPickedAdd(null)
       return
     }
-    if (!keyCheck.settled || (consent.accepted === null && consent.error === null)) return
+    if (!keyCheck.settled) return
     setPickedAdd(null)
-    if (keyCheck.data === true && consent.accepted === true && guard.check(addMemberCost(role))) setAdding(true)
-  }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, consent.accepted, consent.error, guard, role])
+    if (keyCheck.data === true && guard.check(addMemberCost(role))) setAdding(true)
+  }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, guard, role])
 
   const removalPlan = useMemo((): { plan: RotationPlan | null; error: string | null } => {
     if (removing === null || identity === null || write.context === null) return { plan: null, error: null }
@@ -218,7 +219,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
             <RolePicker value={role} onChange={setRole} visibility="private" />
             <Button
               variant="primary"
-              disabled={trimmed === '' || idError !== null || keyCheck.data !== true || consent.accepted !== true || guard.disabledReason !== null || locked || cannotRead}
+              disabled={trimmed === '' || idError !== null || keyCheck.data !== true || !mayAdd(consent) || guard.disabledReason !== null || locked || cannotRead}
               onClick={() => {
                 if (guard.check(addMemberCost(role))) setAdding(true)
               }}

@@ -45,8 +45,10 @@ export function settingsReadOnlyText(viewer: SettingsViewer): string | null {
 }
 
 export function SettingsReadOnly({ ownerId, role }: { ownerId: string; role: Role | null }): JSX.Element | null {
-  const { identity, locked, lockedIdentity } = useAuth()
+  const { identity, locked, lockedIdentity, resuming } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
+  // A session still resuming is neither signed out nor locked yet: no Sign in to flash.
+  if (resuming) return null
   const viewer: SettingsViewer =
     identity !== null ? { kind: 'signedIn', role } : locked ? { kind: 'locked', owner: lockedIdentity === ownerId } : { kind: 'signedOut' }
   const text = settingsReadOnlyText(viewer)

@@ -71,7 +71,7 @@ export const ROLE_HOLDER: Readonly<Record<Role, string>> = {
  * `writer` document's own title, "Writer added", is wrong for the triage and reader roles).
  */
 export function membershipTitle(kind: 'grant' | 'revoke' | 'change', role: Role): string {
-  if (kind === 'change') return `Role changed to ${role}`
+  if (kind === 'change') return `Role changed to ${ROLE_LABEL[role]}`
   return `${ROLE_HOLDER[role]} ${kind === 'grant' ? 'added' : 'removed'}`
 }
 
@@ -285,11 +285,13 @@ export function claimedRole(documentType: string, data: Readonly<Record<string, 
 
 /**
  * Why a member of `role` cannot `what` (a tooltip or a note beside a hidden or disabled control),
- * or null for a role this does not limit (a maintainer, a writer, or no membership, which other
- * notes cover). Pass the action `capabilitiesOf(role)` denies.
+ * or null for a role this does not limit: one that has `cap`, the capability the control needs
+ * (QW4-009: triage, who define labels, were told they couldn't), or a maintainer, a writer, or no
+ * membership, which other notes cover.
  */
-export function roleLimit(role: Role | null | undefined, what: string): string | null {
+export function roleLimit(role: Role | null | undefined, cap: keyof Capabilities, what: string): string | null {
   if (role !== 'triage' && role !== 'reader') return null
+  if (capabilitiesOf(role)[cap]) return null
   return `Your role here is ${role}: ${ROLE_NOUN[role]} can't ${what}.`
 }
 

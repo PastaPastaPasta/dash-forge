@@ -16,7 +16,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { UserPlus } from 'lucide-react'
-import { acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
+import { CONSENT_LAG_RETRIES, acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
 import type { Role } from '@/lib/rules/v2'
 import { ROLE_LABEL, ROLE_SUMMARY, grantableRoles } from '@/lib/rules/roles'
 import { repoHref } from '@/hooks/use-query-param'
@@ -24,7 +24,7 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
-import { readUntil } from '@/lib/view/retry'
+import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -352,17 +352,31 @@ function PendingInvite({
 /**
  * Whether `identity` has accepted an invitation to `repo` (their `consent`), read as soon as the
  * owner has typed a whole identity id (QW4-036: Add used to price and confirm the write before it
- * found out, then signed nothing). True for the owner, who needs no consent; null while unknown.
+ * found out, then signed nothing). A "none" is re-read as the add itself does
+ * (`CONSENT_LAG_RETRIES`: a node behind a fresh accept), and while a read runs, a re-read
+ * included, nothing is known (null). True for the owner, who needs no consent.
  */
 export function useInviteAccepted(repo: RepoRef, identity: string | null): { readonly accepted: boolean | null; readonly checking: boolean; readonly error: string | null; readonly recheck: () => void } {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const own = identity === repo.ownerId
-  const state = useAsync<boolean>(async () => (await findConsent(sdk!, repo, identity!)) !== null, [ready, repo.repoId, identity ?? '', network], {
-    enabled: ready && sdk !== null && identity !== null && !own,
-  })
+  const state = useAsync<boolean>(
+    async (signal) => (await retryWhileMissing(() => findConsent(sdk!, repo, identity!), CONSENT_LAG_RETRIES, undefined, signal)) !== null,
+    [ready, repo.repoId, identity ?? '', network],
+    { enabled: ready && sdk !== null && identity !== null && !own },
+  )
   if (identity === null) return { accepted: null, checking: false, error: null, recheck: state.reload }
   if (own) return { accepted: true, checking: false, error: null, recheck: state.reload }
-  return { accepted: state.settled && state.error === null ? state.data : null, checking: !state.settled || state.loading, error: state.error, recheck: state.reload }
+  const checking = !state.settled || state.loading
+  return { accepted: !checking && state.error === null ? state.data : null, checking, error: checking ? null : state.error, recheck: state.reload }
+}
+
+/**
+ * Whether Add may open its confirm for a typed identity: not while the acceptance is being read,
+ * nor once it is known to be missing. A read that failed leaves it to the add, which checks the
+ * acceptance itself before signing.
+ */
+export function mayAdd(check: { readonly accepted: boolean | null; readonly error: string | null }): boolean {
+  return check.accepted === true || (check.accepted === null && check.error !== null)
 }
 
 /** What the add form knows of the typed identity's acceptance: checking, not accepted (with Check again), or a failed read. */

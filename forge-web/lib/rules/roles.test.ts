@@ -119,10 +119,12 @@ describe('grantableRoles and roleLimit', () => {
   })
 
   it('explains a limit to triage and readers only', () => {
-    expect(roleLimit('triage', 'merge pull requests')).toBe("Your role here is triage: a triage member can't merge pull requests.")
-    expect(roleLimit('reader', 'label issues')).toBe("Your role here is reader: a reader can't label issues.")
-    expect(roleLimit('writer', 'x')).toBeNull()
-    expect(roleLimit(null, 'x')).toBeNull()
+    expect(roleLimit('triage', 'canMerge', 'merge pull requests')).toBe("Your role here is triage: a triage member can't merge pull requests.")
+    expect(roleLimit('reader', 'canLabel', 'label issues')).toBe("Your role here is reader: a reader can't label issues.")
+    expect(roleLimit('writer', 'canMerge', 'x')).toBeNull()
+    expect(roleLimit(null, 'canMerge', 'x')).toBeNull()
+    // QW4-009: no limit for a role that has the capability.
+    expect(roleLimit('triage', 'canLabel', 'create or edit labels')).toBeNull()
   })
 })
 
@@ -144,6 +146,6 @@ describe('membershipTitle: a membership toast names the role (QW4-033)', () => {
     expect(membershipTitle('grant', 'writer')).toBe('Writer added')
     expect(membershipTitle('grant', 'maintainer')).toBe('Maintainer added')
     expect(membershipTitle('revoke', 'reader')).toBe('Reader removed')
-    expect(membershipTitle('change', 'triage')).toBe('Role changed to triage')
+    expect(membershipTitle('change', 'triage')).toBe('Role changed to Triage')
   })
 })

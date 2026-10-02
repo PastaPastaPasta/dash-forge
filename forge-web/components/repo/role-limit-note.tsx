@@ -5,7 +5,7 @@
  * who define labels, that they couldn't), and nothing for anyone but triage and readers.
  */
 
-import { capabilitiesOf, roleLimit, type Capabilities } from '@/lib/rules/roles'
+import { roleLimit, type Capabilities } from '@/lib/rules/roles'
 import type { Role } from '@/lib/rules/v2'
 
 export function RoleLimitNote({
@@ -20,7 +20,7 @@ export function RoleLimitNote({
   what: string
   className?: string
 }): JSX.Element | null {
-  const text = capabilitiesOf(role)[cap] ? null : roleLimit(role, what)
+  const text = roleLimit(role, cap, what)
   if (text === null) return null
   return (
     <p role="note" data-testid="role-limit" className={`text-[12px] text-anvil-500 dark:text-anvil-400 ${className}`}>

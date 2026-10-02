@@ -43,10 +43,11 @@ vi.mock('@/components/storage/repo-storage-policy', () => ({
   RepoStoragePolicy: ({ unlockAbove }: { unlockAbove?: boolean }) => <div data-testid="storage-policy" data-unlock-above={String(unlockAbove === true)} />,
 }))
 /** Whether the identity typed into Add a member accepted (null: still checking). */
-const consent: { accepted: boolean | null } = { accepted: true }
+const consent: { accepted: boolean | null; error: string | null } = { accepted: true, error: null }
 vi.mock('@/components/repo/invite-banner', () => ({
+  mayAdd: (c: { accepted: boolean | null; error: string | null }) => c.accepted === true || (c.accepted === null && c.error !== null),
   Invitations: () => null,
-  useInviteAccepted: (_repo: unknown, id: string | null) => ({ accepted: id === null ? null : consent.accepted, checking: false, error: null, recheck: () => undefined }),
+  useInviteAccepted: (_repo: unknown, id: string | null) => ({ accepted: id === null ? null : consent.accepted, checking: false, error: id === null ? null : consent.error, recheck: () => undefined }),
   ConsentCheck: ({ identity, check }: { identity: string | null; check: { accepted: boolean | null } }) =>
     identity !== null && check.accepted === false ? <p data-testid="consent-missing">not accepted</p> : null,
 }))
@@ -77,6 +78,7 @@ beforeEach(() => {
   viewer.locked = null
   role.value = 'maintainer'
   consent.accepted = true
+  consent.error = null
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -251,5 +253,13 @@ describe('Add a member checks the acceptance before pricing the add (QW4-036)', 
     await render(repoHome('public'))
     await type(ID)
     expect(add().disabled).toBe(true)
+  })
+
+  it('leaves it to the add when the check could not be read (the add checks before signing)', async () => {
+    consent.accepted = null
+    consent.error = 'network down'
+    await render(repoHome('public'))
+    await type(ID)
+    expect(add().disabled).toBe(false)
   })
 })

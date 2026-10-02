@@ -14,7 +14,7 @@ import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 import { ConsentMissingError, changeMemberRole, grantDescription, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
 import { roleChangeCost } from '@/lib/repo/private-members'
-import { ConsentCheck, Invitations, useInviteAccepted } from '@/components/repo/invite-banner'
+import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
@@ -238,7 +238,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               <RolePicker value={role} onChange={setRole} visibility={repo.visibility} />
               <Button
                 variant="primary"
-                disabled={typed === null || consent.accepted !== true || guard.disabledReason !== null}
+                disabled={typed === null || !mayAdd(consent) || guard.disabledReason !== null}
                 onClick={() => {
                   if (typed !== null && guard.check(previewCreate(memberDocOf(role)))) setAction({ kind: 'grant', member: typed, role })
                 }}
