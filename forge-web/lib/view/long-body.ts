@@ -30,8 +30,10 @@ function sizeCap(repo: RepoRef, bytes: number): number {
   return repo.visibility === 'private' ? 36 + bytes + 16 * Math.max(1, Math.ceil(bytes / 1024)) : bytes
 }
 
-/** Full texts read this session, by repo (and private session) and artifact hash. */
+/** Full texts read this session, by repo (and private session) and artifact hash: the newest few. */
 const texts = new Map<string, Promise<string>>()
+/** How many full texts are kept (each at most 256 KiB). */
+const KEPT_TEXTS = 32
 
 async function fetchText(sdk: EvoSDK, repo: RepoRef, sha256: string, bytes: number): Promise<string> {
   const pack = await readPackCopies(sdk, repo, sha256, PACK_KIND.LONG_BODY, true)
@@ -56,6 +58,11 @@ function cachedText(sdk: EvoSDK, repo: RepoRef, sha256: string, bytes: number): 
     p = fetchText(sdk, repo, sha256, bytes)
     texts.set(key, p)
     p.catch(() => texts.delete(key))
+    // the oldest first out (a Map iterates in insertion order)
+    for (const old of texts.keys()) {
+      if (texts.size <= KEPT_TEXTS) break
+      texts.delete(old)
+    }
   }
   return p
 }

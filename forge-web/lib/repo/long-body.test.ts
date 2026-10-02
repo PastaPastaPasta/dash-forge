@@ -4,15 +4,29 @@ import type { RepoRef } from './contract'
 import { parseLongBody } from '../rules/long-body'
 
 const role = vi.hoisted(() => ({ value: null as string | null }))
-const stored = vi.hoisted(() => ({ calls: [] as { bytes: Uint8Array; meta: unknown; opts: { policy: unknown; intent?: string } }[] }))
+const stored = vi.hoisted(() => ({
+  calls: [] as { bytes: Uint8Array; policy: unknown }[],
+  manifests: [] as { input: Record<string, unknown>; intent?: string }[],
+}))
 
 vi.mock('./members', () => ({
   readRoleOracle: async () => ({ currentRole: () => role.value }),
 }))
-vi.mock('../storage', () => ({
-  storeAndRecordPack: async (_sdk: unknown, _auth: unknown, _repo: unknown, bytes: Uint8Array, meta: unknown, opts: { policy: unknown; intent?: string }) => {
-    stored.calls.push({ bytes, meta, opts })
-    return { stored: { packHash: 'ab'.repeat(32), sizeBytes: bytes.length }, manifest: { documentId: 'm' } }
+vi.mock('./private-writes', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./private-writes')>()),
+  // public repos only here: the bytes as they are
+  sealArtifact: async (_sdk: unknown, _auth: unknown, _repo: unknown, plain: Uint8Array) => plain,
+}))
+vi.mock('../storage/upload', () => ({
+  storeArtifact: async (_sdk: unknown, _auth: unknown, _repo: unknown, bytes: Uint8Array, opts: { policy: unknown }) => {
+    stored.calls.push({ bytes, policy: opts.policy })
+    return { packHash: 'ab'.repeat(32), sizeBytes: bytes.length, storage: 0, chunkCount: 1, uris: ['platform://x'], confirmed: ['platform'], failures: [] }
+  },
+}))
+vi.mock('./push', () => ({
+  writePackManifest: async (_sdk: unknown, _auth: unknown, _repo: unknown, input: Record<string, unknown>, intent?: string) => {
+    stored.manifests.push({ input, intent })
+    return { documentId: 'm', confirmed: true }
   },
 }))
 
@@ -27,6 +41,7 @@ describe('long bodies, written (forge-v2.md §6.3)', () => {
   beforeEach(() => {
     role.value = null
     stored.calls = []
+    stored.manifests = []
   })
 
   it('a field holds 5,120 bytes in public, what the sealed limit leaves beside the other text in private', () => {
@@ -70,10 +85,19 @@ describe('long bodies, written (forge-v2.md §6.3)', () => {
       expect(new TextEncoder().encode(field).length).toBeLessThanOrEqual(5120)
       const call = stored.calls.at(-1)
       expect(new TextDecoder().decode(call?.bytes)).toBe(full)
-      expect(call?.meta).toEqual({ kind: 6, objectCount: 0 })
-      expect(call?.opts.policy).toBeNull()
-      expect(call?.opts.intent).toBe('draft-1:long-body')
+      expect(call?.policy).toBeNull()
+      const manifest = stored.manifests.at(-1)
+      expect(manifest?.input).toMatchObject({ kind: 6, objectCount: 0, packHash: 'ab'.repeat(32), storage: 0 })
+      expect(manifest?.intent).toBe(`draft-1:long-body:${'ab'.repeat(32)}`)
     }
+  })
+
+  it('refuses before storing when the rest of a private document leaves no room for the trailer', async () => {
+    role.value = 'maintainer'
+    const title = 't'.repeat(1000)
+    const refs = { title, baseRefName: `refs/heads/${'b'.repeat(2000)}`, sourceRefName: `refs/heads/${'s'.repeat(2000)}` }
+    await expect(longBodyField(sdk, auth, priv, 'patch', 'x'.repeat(6000), refs)).rejects.toThrow(/too few for the line naming the full text/)
+    expect(stored.calls).toHaveLength(0)
   })
 
   it('refuses a text over 256 KiB, whoever writes it', async () => {

@@ -247,15 +247,19 @@ export function parseReleaseAssets(raw: string): { assets: ReleaseAssetView[]; b
   return { assets, bad }
 }
 
+/** A field's text before its long-body trailer (the whole field when it has none). */
+function visiblePart(text: string): string {
+  const field = parseLongBody(text)
+  return field.kind === 'plain' ? text : field.prefix
+}
+
 /**
  * Stored public release notes as a reader shows them: without forge-import's "Published on" line
  * (`published`) and assets footer (`omitted`), and, for notes longer than the field (§6.3),
  * `text` read in full (else the field's first part).
  */
 export function notesShown(text: string): { body: string; omitted: OmittedAssets | null; published: ReleasePublished | null } {
-  const field = parseLongBody(text)
-  const visible = field.kind === 'plain' ? text : field.prefix
-  const { published, rest } = releasePublishedOf(visible)
+  const { published, rest } = releasePublishedOf(visiblePart(text))
   const { body, omitted } = omittedAssets(rest)
   return { body, omitted, published }
 }
@@ -404,10 +408,7 @@ function sealedView(doc: PlainDocument, epoch: number, fields: ReleaseFields): R
     name: fields.name ?? '',
     notes,
     // a sealed revision's notes carry their provenance in `enc`, not in a line
-    notesBody: (() => {
-      const field = parseLongBody(notes)
-      return field.kind === 'plain' ? notes : field.prefix
-    })(),
+    notesBody: visiblePart(notes),
     omitted: null,
     published,
     yanked: fields.yanked === true,

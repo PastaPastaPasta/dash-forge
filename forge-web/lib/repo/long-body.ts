@@ -14,9 +14,10 @@ import { sealedLength } from '../private/pack'
 import { LONG_BODY_MAX_BYTES, longBodyStoredText, needsLongBodyArtifact, utf8Bytes } from '../rules/long-body'
 import type { WriteAuth } from '../sdk'
 import { estimateChunkCredits } from '../sdk/cost'
-import { storeAndRecordPack } from '../storage'
+import { storeArtifact } from '../storage/upload'
+import { writePackManifest } from './push'
 import type { RepoRef } from './contract'
-import { SEALED_TEXT_LIMIT, sealedTextUse, type SealedKind } from './private-writes'
+import { SEALED_TEXT_LIMIT, sealArtifact, sealedTextUse, type SealedKind } from './private-writes'
 import { readRoleOracle } from './members'
 import { capabilitiesOf } from '../rules/roles'
 import type { Role } from '../rules/v2'
@@ -117,16 +118,27 @@ export async function longBodyField(
   if (!mayStoreLongBodies((await readRoleOracle(sdk, repo, auth.network)).currentRole(auth.identityId))) {
     throw new LongBodyRefusedError(`${tooLongFor(repo, kind, full, others)}. A longer text is stored as a repository artifact, which only the repo's maintainers and writers may record: shorten it, or split it into comments`)
   }
-  const { stored } = await storeAndRecordPack(
+  // The field must hold the trailer (its length does not depend on the hash): checked before
+  // anything is paid for.
+  if (longBodyStoredText(full, room, '0'.repeat(64)) === null) {
+    throw new LongBodyRefusedError(`the rest of this ${kind}'s text leaves ${room} bytes, too few for the line naming the full text: shorten the title or the text`)
+  }
+  // A private repo's text is sealed under the write key. Its sealed bytes stay kept in this
+  // browser (`sealArtifact`, pruned after a week) rather than being forgotten once recorded, as a
+  // pack's are: a retry of a document write that failed after this then names the same artifact
+  // instead of sealing, storing and paying for another.
+  const sealed = await sealArtifact(sdk, auth, repo, new TextEncoder().encode(full))
+  // Platform: every reader can fetch it; the composer quoted its cost with the write's.
+  const stored = await storeArtifact(sdk, auth, repo, sealed, { policy: null, profiles: [], confirmPlatform: async () => true })
+  const { packHash, sizeBytes, chunkCount, storage, uris } = stored
+  await writePackManifest(
     sdk,
     auth,
     repo,
-    new TextEncoder().encode(full),
-    { kind: PACK_KIND.LONG_BODY, objectCount: 0 },
-    // Platform: every reader can fetch it; the composer quoted its cost with the write's.
-    { policy: null, profiles: [], confirmPlatform: async () => true, ...(intent ? { intent: `${intent}:long-body` } : {}) },
+    { kind: PACK_KIND.LONG_BODY, objectCount: 0, packHash, sizeBytes, chunkCount, storage, uris },
+    intent ? `${intent}:long-body:${packHash}` : undefined,
   )
-  const field = longBodyStoredText(full, room, stored.packHash)
+  const field = longBodyStoredText(full, room, packHash)
   if (field === null) throw new LongBodyRefusedError(`a field of ${room} bytes cannot hold the line naming the full text`)
   return field
 }

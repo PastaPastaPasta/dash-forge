@@ -373,8 +373,9 @@ function ReleaseCard({
   // card shows the first part and links the page.
   const longNotes = useLongText(repo, continuedNotes ?? r.notes, full)
   const shownNotes = longNotes.read?.text ?? continuedNotes
-  const notes = shownNotes === null ? r.notesBody : r.sealed ? shownNotes : notesShown(shownNotes).body
-  const omitted = shownNotes === null || r.sealed ? r.omitted : notesShown(shownNotes).omitted ?? r.omitted
+  const shown = shownNotes === null || r.sealed ? null : notesShown(shownNotes)
+  const notes = shownNotes === null ? r.notesBody : (shown?.body ?? shownNotes)
+  const omitted = shown?.omitted ?? r.omitted
   // The list card links its full notes (L-79); the asset toggle below then keeps clear of that link on touch.
   const notesLink = Boolean(notes) && !full && !previous
   return (

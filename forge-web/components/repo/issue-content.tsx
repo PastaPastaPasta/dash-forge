@@ -351,6 +351,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           ...changes,
           expectedRevision: BigInt(issue.revision),
           seal: { current: { title: issue.title, body: issue.long?.field ?? issue.body }, bind: { number: issue.number }, imported: issue.importedRaw ?? null },
+          intent,
         })
         setEditing(null)
         break
@@ -362,6 +363,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           ...commentEditDropsOf(timeline, pending.id, { isMember, allReadable: totalHidden(hidden) === 0 }),
           ...(timelineComment(timeline, pending.id)?.revision !== undefined ? { expectedRevision: BigInt(timelineComment(timeline, pending.id)?.revision as number) } : {}),
           seal: { current: { body: timelineComment(timeline, pending.id)?.body ?? '' }, bind: { targetId: issue.id }, imported: timelineComment(timeline, pending.id)?.importedRaw ?? null },
+          intent,
         })
         setEditingComment(null)
         break

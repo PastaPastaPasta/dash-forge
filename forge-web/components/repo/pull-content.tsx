@@ -702,7 +702,9 @@ function PullPage({
     baseRefName: pull.baseRefName,
     sourceRefName: pull.sourceRefName ?? '',
   })
-  const commentEditLong = useLongCompose(repo, 'comment', editingComment?.body ?? '')
+  // an inline comment's path shares a private comment's room (as `updateComment` reads it)
+  const editedPath = thread.comments.find((x) => x.id === editingComment?.id)?.anchor?.path
+  const commentEditLong = useLongCompose(repo, 'comment', editingComment?.body ?? '', editedPath === undefined ? {} : { path: editedPath })
   // "Close with comment" (QW2-008): the composer's text goes with a close or reopen when it could be posted.
   const withComment = comment.trim() !== '' && !writeBlocked && !commentTooLong ? comment.trim() : null
   // The repo's milestones, for the picker (QW2-050): read for members only (only they can set one).
@@ -851,6 +853,7 @@ function PullPage({
             ...(pull.epoch !== null ? { patchEpoch: pull.epoch } : {}),
             imported: pull.importedRaw ?? null,
           },
+          intent,
         })
         setEditing(null)
         refresh((t) => t.pull.title === p.title && t.pull.body === p.body)
@@ -887,6 +890,7 @@ function PullPage({
           ...(c ? commentEditDrops(c, thread.comments, { isMember, allReadable: totalHidden(thread.hidden) === 0 }) : {}),
           ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
           seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id }, imported: c?.importedRaw ?? null },
+          intent,
         })
         setEditingComment(null)
         refresh((t) => t.comments.some((x) => x.id === p.id && x.body === p.body))

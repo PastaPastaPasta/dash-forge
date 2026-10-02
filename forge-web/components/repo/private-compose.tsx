@@ -82,8 +82,9 @@ function composeDocCost(
  * characters). A composer disables its submit on it, so nothing over-long is signed.
  */
 export function composeTooLong(repo: RepoRef, kind: SealedKind, data: Readonly<Record<string, unknown>>, long?: LongCompose): boolean {
-  // a body over the field that this viewer may store whole (`useLongCompose`) is written so
-  if (long?.long) return long.problem !== null
+  // a body over the field that this viewer may store whole (`useLongCompose`) is written so; the
+  // title still has its own limit
+  if (long?.long) return long.problem !== null || (repo.visibility !== 'private' && typeof data['title'] === 'string' && textUse(data['title'], TITLE_LIMIT).over)
   if (repo.visibility === 'private') {
     const { used, limit } = sealedTextUse(kind, data)
     return limit !== null && used > limit
