@@ -948,7 +948,9 @@ pub enum PrCommand {
         #[arg(long, default_value = "")]
         reason: String,
     },
-    /// The check runs reported on the PR's current head.
+    /// The check runs reported on the PR's current head, and the branch policy's required
+    /// checks. Exits 1 when a counted or required check fails, and 8 while a required check is
+    /// missing or pending (as `gh pr checks` does).
     Checks {
         /// The repository (`owner/name`).
         repo: String,

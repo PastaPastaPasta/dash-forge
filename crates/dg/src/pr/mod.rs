@@ -1531,7 +1531,12 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         );
     }
     let merge_quote = crate::quote::merge(push, delete.is_some())
-        + crate::quote::TRANSITION * linked.len() as u64;
+        + crate::quote::TRANSITION * linked.len() as u64
+        + if bypassed.is_empty() {
+            0
+        } else {
+            estimate(Est::Event, bypass_value(&bypassed).len())
+        };
     let mut steps = Steps::new(ctx.json);
     if !ctx.json && !not_passing.is_empty() {
         eprintln!(
@@ -1552,7 +1557,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!(
-        "Merge PR #{number}{}? ({}{}{}; {}, plus Platform storage for any new objects)",
+        "Merge PR #{number}{}? ({}{}{}{}; {}, plus Platform storage for any new objects)",
         if not_passing.is_empty() {
             String::new()
         } else {
@@ -1563,6 +1568,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         } else {
             "pushes to the base branch, then records the merge"
         },
+        bypass_clause(&bypassed),
         if delete.is_some() {
             ", then deletes the source branch"
         } else {
@@ -2322,7 +2328,15 @@ fn judge_policy(
         Ok(Some((_, Err(e)))) => Err(unread(&e, "'s approvals or checks")),
         Ok(Some((policy, Ok((status, checks))))) => {
             if let Some(u) = policy_refusal(&policy, &status, method, repo, number) {
-                return Err(u.into());
+                return Err(name_every_unmet_rule(
+                    u,
+                    &policy,
+                    &status,
+                    checks.as_ref(),
+                    repo,
+                    number,
+                )
+                .into());
             }
             if let Some(u) = checks
                 .as_ref()
@@ -2345,6 +2359,38 @@ fn judge_policy(
         }),
         Err(e) => Err(unread(&e, "")),
     }
+}
+
+/// QW4-048: an approvals refusal (E804) whose required checks are unmet too names every unmet
+/// rule in its cause, as the bypass record and `dg pr view` do, not the approvals alone, and
+/// points at the runs.
+fn name_every_unmet_rule(
+    u: UserError,
+    policy: &forge_core::rules::review::Policy,
+    status: &forge_core::rules::review::PolicyStatus,
+    checks: Option<&forge_core::rules::v2::ChecksState>,
+    repo: &str,
+    number: u64,
+) -> UserError {
+    if status.met || checks.is_none_or(|c| c.met) {
+        return u;
+    }
+    u.cause(unmet_rules(policy, status, checks).join("; "))
+        .fix(format!(
+            "`dg pr checks {repo} {number}` shows the required checks"
+        ))
+}
+
+/// The confirmation's clause for a merge that bypasses the branch policy (QW4-048): the bypass
+/// is recorded on the PR as an event nobody can delete, and names what it bypasses.
+fn bypass_clause(bypassed: &[String]) -> String {
+    if bypassed.is_empty() {
+        return String::new();
+    }
+    format!(
+        ", then records a policy bypass on the PR that nobody can delete ({})",
+        bypassed.join("; ")
+    )
 }
 
 /// The bypass record's line for a policy read whose approvals or checks could not be.
@@ -3892,6 +3938,67 @@ mod tests {
             "Add x (#7)\n\nBody\n\nCo-authored-by: A <a@x>\nCo-authored-by: B <b@x>"
         );
         assert_eq!(squash_message("T", "", 1, &[], "Me <m>"), "T (#1)");
+    }
+
+    #[test]
+    fn a_bypass_is_named_in_the_merge_confirmation() {
+        assert_eq!(bypass_clause(&[]), "");
+        let c = bypass_clause(&[
+            "required approvals: 0 of 1".to_string(),
+            "required check `build`: missing".to_string(),
+        ]);
+        assert!(
+            c.contains("records a policy bypass on the PR that nobody can delete"),
+            "{c}"
+        );
+        assert!(
+            c.contains("(required approvals: 0 of 1; required check `build`: missing)"),
+            "{c}"
+        );
+    }
+
+    /// QW4-048: E804 for missing approvals names the unmet required checks too.
+    #[test]
+    fn an_approvals_refusal_names_the_unmet_checks_too() {
+        use forge_core::rules::v2::{CheckState, ChecksState, RequiredCheck};
+        let policy = forge_core::rules::review::Policy {
+            required_approvals: 1,
+            require_checks: true,
+            required_checks: vec!["build".into()],
+            ..Default::default()
+        };
+        let status = forge_core::rules::review::PolicyStatus {
+            met: false,
+            have: 0,
+            need: 1,
+        };
+        let checks = ChecksState {
+            required: vec![RequiredCheck {
+                name: "build".into(),
+                state: CheckState::Missing,
+                run_id: None,
+            }],
+            met: false,
+            untrusted: 0,
+        };
+        let u = policy_refusal(&policy, &status, None, "o/r", 4).unwrap();
+        let u = name_every_unmet_rule(u, &policy, &status, Some(&checks), "o/r", 4);
+        assert_eq!(
+            u.cause.as_deref(),
+            Some("required approvals: 0 of 1; required check `build`: missing")
+        );
+        assert!(
+            u.fix.iter().any(|f| f.contains("dg pr checks o/r 4")),
+            "{u:?}"
+        );
+        // Checks met: the approvals alone, as before.
+        let met = ChecksState {
+            met: true,
+            ..checks
+        };
+        let u = policy_refusal(&policy, &status, None, "o/r", 4).unwrap();
+        let u = name_every_unmet_rule(u, &policy, &status, Some(&met), "o/r", 4);
+        assert_eq!(u.cause.as_deref(), Some("0 of 1 required approval(s)"));
     }
 
     #[test]

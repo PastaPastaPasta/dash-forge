@@ -25,7 +25,7 @@ On every poll (every `interval_secs`, default 120 s, and within seconds of a pus
    - Every job is reported as `queued`, then `in_progress`, then `completed`, with `success`, `failure`, `skipped` or `timed_out`.
    - A job act never finished counts as `failure`.
    - The check is named `<workflow name> / <job name>`.
-   - A job's reports share one run id, a hash of the repository, ref, commit, workflow file and job, so they update a single check run.
+   - A job's reports share one run id, a hash of the repository, ref, commit, workflow file, job and the run's start time, so they update a single check run, and re-running a commit (`forge-runner run`) records a new check run, as a GitHub re-run attempt does.
 5. **Uploads each job's log** (capped at 16 MiB) to your storage profile, with secret values redacted, and, with `artifacts = true`, [its artifacts](#artifacts). The check run records the log's URL and SHA-256, and the web app shows the log only if the bytes match.
 
 6. **Lists the pull requests** (`dg pr list`, the newest 100, and up to 10 older members' open PRs it keeps following) and runs each one that was opened, reopened or marked ready for review, or whose head moved, as [Pull requests](#pull-requests) says. The first poll only records them.
