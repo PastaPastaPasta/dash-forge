@@ -88,6 +88,7 @@ const pullOf = (merged: boolean): PullView =>
     author: 'someone',
     headOid: HEAD,
     baseRefName: 'refs/heads/main',
+    mergeBaseRefName: 'refs/heads/main',
     baseTipOid: BASE,
     sourceId: 'FORK',
     sourceRefName: 'refs/heads/feature',

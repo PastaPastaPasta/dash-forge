@@ -30,6 +30,9 @@ pub struct Current {
     pub code: i64,
     /// The labels, as every reader folds the target's events.
     pub labels: BTreeSet<String>,
+    /// A PR's base after a retarget (event kind 8; forge-core `pr_merge_base`): the base its
+    /// merge is judged against, from the retarget's `$createdAt`. `None` when not retargeted.
+    pub retargeted: Option<forge_core::collab::v2::PrBase>,
 }
 
 /// A comment or review already on a target: who wrote it and which source item it copies.
@@ -201,7 +204,20 @@ impl Chain for CollabChain<'_> {
             TargetKind::Issue => issue_state_v2(code, &log.events).labels,
             TargetKind::Patch => pr_state_v2(code, None, &log.events, None, |_, _| false).labels,
         };
-        Ok(Current { code, labels })
+        let merged_at =
+            forge_core::rules::v2::merge_transition(&log.transitions).map(|t| t.created_at);
+        let base = forge_core::rules::v2::pr_merge_base("", 0, &log.events, merged_at);
+        let retargeted = (target.kind == TargetKind::Patch && base.retargeted).then_some(
+            forge_core::collab::v2::PrBase {
+                ref_name: base.ref_name,
+                opened_at: base.since,
+            },
+        );
+        Ok(Current {
+            code,
+            labels,
+            retargeted,
+        })
     }
 
     async fn comments(&self, repo: &RepoRef, target_id: &str) -> Result<Vec<Written>> {

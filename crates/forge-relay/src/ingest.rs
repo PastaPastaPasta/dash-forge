@@ -289,8 +289,12 @@ pub struct TargetInfo {
     /// update applies only when newer, so the order the event and authorEvent streams are read
     /// in cannot move the head back (forge-core `fold_pr_review_v2` orders both as one log).
     pub head_set_by: Option<(u64, String)>,
-    /// `baseRefNameHash` (PRs only, hex): the ref a merge must land on.
+    /// `baseRefNameHash` (PRs only, hex): the ref a merge must land on; after a retarget,
+    /// `sha256` of the retarget's base ([`TargetInfo::apply_retarget`]).
     pub base_ref_hash: String,
+    /// The `($createdAt, $id)` of the retarget (event kind 8) that set [`Self::base_ref`], if
+    /// any: the newest applies (forge-core `pr_merge_base`).
+    pub base_set_by: Option<(u64, String)>,
     /// Where this target's comment and review streams start.
     pub baseline: Baseline,
     /// The newest `$createdAt` seen on the target or anything about it (ms).
@@ -315,6 +319,7 @@ impl TargetInfo {
             head_oid: String::new(),
             head_set_by: None,
             base_ref_hash: String::new(),
+            base_set_by: None,
             baseline,
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
@@ -333,6 +338,7 @@ impl TargetInfo {
             head_oid: d.field_hex("headOid").unwrap_or_default(),
             head_set_by: None,
             base_ref_hash: d.field_hex("baseRefNameHash").unwrap_or_default(),
+            base_set_by: None,
             baseline,
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
@@ -362,6 +368,30 @@ impl TargetInfo {
             self.head_oid.clone_from(&oid);
             oid
         })
+    }
+
+    /// Apply a retarget (member `event` kind 8) whose `value` is a legal ref name and which is
+    /// newer by `($createdAt, $id)` than the one that set the current base: the PR now merges
+    /// into `value`, so its merges are judged against that ref (forge-core `pr_merge_base`).
+    /// Returns the base it was retargeted from when it moved. A caller that has seen the PR's
+    /// merge applies no later retarget (a merged PR's base is where it was merged).
+    pub fn apply_retarget(&mut self, d: &FetchedDocument) -> Option<String> {
+        if !self.is_pr || d.field_u64("kind") != Some(8) {
+            return None;
+        }
+        let value = d
+            .field_str("value")
+            .filter(|v| rules::is_legal_ref_name(v))?;
+        let key = (d.created_at.unwrap_or(0), d.id.clone());
+        if self.base_set_by.as_ref().is_some_and(|k| *k >= key) {
+            return None;
+        }
+        self.base_set_by = Some(key);
+        if value == self.base_ref {
+            return None;
+        }
+        self.base_ref_hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(value.as_bytes()));
+        Some(std::mem::replace(&mut self.base_ref, value))
     }
 
     fn issue_obj(&self, id: &str, open: bool) -> IssueObj {
@@ -786,6 +816,7 @@ mod tests {
             },
             head_oid: if is_pr { "cafe".into() } else { String::new() },
             head_set_by: None,
+            base_set_by: None,
             base_ref_hash: String::new(),
             baseline: Baseline::Beginning,
             last_activity: 0,

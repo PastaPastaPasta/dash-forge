@@ -781,6 +781,9 @@ async fn fold_head_updates(
             if t.apply_head_update(&d, author_path).is_some() {
                 t.last_activity = t.last_activity.max(d.created_at.unwrap_or(0));
             }
+            if !author_path {
+                t.apply_retarget(&d);
+            }
         }
     }
     // Watch the current head (not every intermediate one) of each recently active PR.
@@ -1201,13 +1204,15 @@ async fn poll_repo_rest(
     let base = st.baseline;
     let mut high = 0;
 
+    // The event feeds before the transitions: a retarget read in the same cycle as the merge
+    // after it moves the base the merge is judged against first.
     let streams = [
         DOC_RELEASE,
         DOC_ISSUE,
         DOC_PATCH,
-        DOC_TRANSITION,
         DOC_EVENT,
         DOC_AUTHOR_EVENT,
+        DOC_TRANSITION,
     ];
     for doc_type in streams {
         let contract = shared.contracts.of(doc_type);
@@ -1269,10 +1274,24 @@ async fn poll_repo_rest(
                     // A head update that did not move the head (older, stranger's, malformed)
                     // is not a `synchronize`.
                     let moved = follow_head(st, d, doc_type == DOC_AUTHOR_EVENT);
+                    let retargeted_from = if doc_type == DOC_EVENT {
+                        follow_base(st, d)
+                    } else {
+                        None
+                    };
                     if d.field_u64("kind") == Some(16) && !moved {
                         None
                     } else {
-                        ingest::translate_event(&st.meta, d, &st.targets, &st.closed)
+                        ingest::translate_event(&st.meta, d, &st.targets, &st.closed).map(
+                            |mut e| {
+                                // GitHub's `edited` names the base the PR left.
+                                if let Some(from) = retargeted_from {
+                                    e.payload["changes"] =
+                                        serde_json::json!({ "base": { "ref": { "from": from } } });
+                                }
+                                e
+                            },
+                        )
                     }
                 }
             };
@@ -1582,6 +1601,17 @@ fn follow_head(s: &mut RepoState, d: &FetchedDocument, author_path: bool) -> boo
     true
 }
 
+/// Apply a retarget (event kind 8) to its PR, unless the PR's merge was already seen; returns
+/// the base it left. The new base's tips are read before the next merge is judged
+/// (`backfill_tips`, called before the transitions).
+fn follow_base(s: &mut RepoState, d: &FetchedDocument) -> Option<String> {
+    let tid = d
+        .field_bytes32("targetId")
+        .map(forge_core::platform::encode_identifier)?;
+    let t = s.targets.get_mut(&tid).filter(|t| !t.merged)?;
+    t.apply_retarget(d)
+}
+
 /// Every head, starting after `last` (the one read last) and wrapping around, so a poll the
 /// deadline cuts short resumes with the heads it did not reach.
 fn heads_after(heads: &BTreeMap<String, Head>, last: &String) -> Vec<(String, Head)> {
@@ -1722,6 +1752,7 @@ mod tests {
                         base_ref: String::new(),
                         head_oid: String::new(),
                         head_set_by: None,
+                        base_set_by: None,
                         base_ref_hash: String::new(),
                         baseline: Baseline::Beginning,
                         last_activity: 0,
@@ -1801,6 +1832,7 @@ mod tests {
             base_ref: base_ref.into(),
             head_oid: String::new(),
             head_set_by: None,
+            base_set_by: None,
             base_ref_hash: base_ref_hash.into(),
             baseline: Baseline::Beginning,
             last_activity: 0,
@@ -1831,6 +1863,92 @@ mod tests {
         // A baseRefName that does not hash to baseRefNameHash: not found on the base.
         st.targets.insert(target, pr("refs/heads/other", &hash));
         assert!(!st.merge_on_base(&merge(&"ab".repeat(20))));
+    }
+
+    /// A retarget (event kind 8) moves the base a merge is judged against (forge-core
+    /// `pr_merge_base`): the newest legal one counts, and none once the merge was seen.
+    #[test]
+    fn a_retarget_moves_the_base_a_merge_is_judged_against() {
+        use sha2::Digest;
+        let mut st = state_with_threads(0);
+        let hash = |r: &str| hex::encode(sha2::Sha256::digest(r.as_bytes()));
+        let target = forge_core::platform::encode_identifier([4; 32]);
+        let pr = TargetInfo {
+            is_pr: true,
+            number: 1,
+            author: String::new(),
+            title: String::new(),
+            base_ref: "refs/heads/main".into(),
+            head_oid: String::new(),
+            head_set_by: None,
+            base_set_by: None,
+            base_ref_hash: hash("refs/heads/main"),
+            baseline: Baseline::Beginning,
+            last_activity: 0,
+            draft: false,
+            merged: false,
+        };
+        st.targets.insert(target.clone(), pr);
+        st.tips
+            .entry(hash("refs/heads/main"))
+            .or_default()
+            .insert("aa".repeat(20));
+        st.tips
+            .entry(hash("refs/heads/dev"))
+            .or_default()
+            .insert("bb".repeat(20));
+        let doc = |id: &str, at: u64, fields: Vec<(&str, FieldValue)>| FetchedDocument {
+            id: id.into(),
+            owner_id: "M".into(),
+            created_at: Some(at),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: fields
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .chain([("targetId".to_string(), FieldValue::identifier([4; 32]))])
+                .collect(),
+        };
+        let retarget = |id: &str, at: u64, value: &str| {
+            doc(
+                id,
+                at,
+                vec![
+                    ("kind", FieldValue::integer(8)),
+                    ("value", FieldValue::text(value)),
+                ],
+            )
+        };
+        let merge = |oid: &str| {
+            doc(
+                "m",
+                9,
+                vec![
+                    ("kind", FieldValue::integer(13)),
+                    ("oid", FieldValue::bytes(hex::decode(oid).unwrap())),
+                ],
+            )
+        };
+        assert_eq!(
+            follow_base(&mut st, &retarget("r1", 2, "refs/heads/dev")),
+            Some("refs/heads/main".into())
+        );
+        // An older retarget and an illegal one do not move it back.
+        assert_eq!(
+            follow_base(&mut st, &retarget("r0", 1, "refs/heads/main")),
+            None
+        );
+        assert_eq!(follow_base(&mut st, &retarget("r2", 3, "-x")), None);
+        assert!(st.merge_on_base(&merge(&"bb".repeat(20))), "a tip of dev");
+        assert!(!st.merge_on_base(&merge(&"aa".repeat(20))), "main's");
+        // Once merged, a later retarget leaves the base alone.
+        st.targets.get_mut(&target).unwrap().merged = true;
+        assert_eq!(
+            follow_base(&mut st, &retarget("r3", 10, "refs/heads/main")),
+            None
+        );
+        assert_eq!(st.targets[&target].base_ref, "refs/heads/dev");
     }
 
     /// Open / closed follows the transitions (which threads are read first): a close, a merge

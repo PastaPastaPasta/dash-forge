@@ -1349,6 +1349,17 @@ mod tests {
         opened_at: Option<u64>,
     }
 
+    /// [`v2::pr_merge_base`]'s inputs.
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PrMergeBaseInput {
+        base_ref_name: String,
+        opened_at: u64,
+        events: Vec<Event>,
+        #[serde(default)]
+        merged_at: Option<u64>,
+    }
+
     impl BaseHistory {
         fn tips(&self) -> MergeBaseTips {
             match self.opened_at {
@@ -2155,6 +2166,16 @@ mod tests {
                     "vector `{ctx}`: openedAt is given exactly for pr_base_tips"
                 );
                 assert_eq!(inp.tips(), expected::<MergeBaseTips>(v), "vector `{ctx}`");
+            }
+            "pr_merge_base" => {
+                let inp: PrMergeBaseInput = input(v);
+                let got = v2::pr_merge_base(
+                    &inp.base_ref_name,
+                    inp.opened_at,
+                    &inp.events,
+                    inp.merged_at,
+                );
+                assert_eq!(got, expected::<v2::MergeBase>(v), "vector `{ctx}`");
             }
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);

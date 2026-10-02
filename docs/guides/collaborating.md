@@ -168,6 +168,8 @@ dg issue list   <owner>/<repo> [--state open|closed|all] [--label bug]... [--aut
 dg issue view   <owner>/<repo> 12
 dg issue create <owner>/<repo> --title "Crash on empty input" --body "Steps: …"
 dg issue edit   <owner>/<repo> 12 --title "Crash on empty config" [--body … | --body-file notes.md]
+dg issue edit   <owner>/<repo> 12 --add-label bug,docs --remove-label triage \
+                --add-assignee @me --remove-assignee alice --milestone v1   # or --remove-milestone
 dg issue comment <owner>/<repo> 12 --body "Fixed in 8f3e2a1"
 dg issue edit-comment <owner>/<repo> <comment id> --body "Fixed in 8f3e2a1 (and 91c0d4e)"
 dg issue delete-comment <owner>/<repo> <comment id>
@@ -176,6 +178,8 @@ dg issue reopen <owner>/<repo> 12
 dg issue label  <owner>/<repo> 12 add bug docs     # or: remove bug (the older --add/--remove still work)
 dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS names
 ```
+
+`dg issue edit` takes gh's flags: every change is confirmed once and written as one event each, and labels, assignees and milestone can go with a title or body change in the same run. A label must be one the repository defines and a milestone an open one; both are checked, with your role, before anything is signed.
 
 A label the issue already has, or an assignee already assigned, is left alone: `dg` says so and writes (and charges) nothing for it, so the timeline never shows the same change twice. Removing one the issue does not have is skipped the same way.
 
@@ -313,7 +317,9 @@ dg pr comment  <owner>/project 7 --reply-to <comment id> --body "Done"
 
 **Suggestions.** The PR's author (anyone who can push to its branch) runs `dg pr suggestion apply <owner>/project 7 --all`, or names comment ids. This commits the suggestions to the PR branch as one commit, with a `Forge-Suggestion:` trailer per comment, and moves the PR head to it. Overlapping suggestions, or ones made on an older head, are refused with [`E107`](../errors.md#e107).
 
-**Drafts and edits.** `dg pr create --draft` opens a draft. `dg pr ready` and `dg pr draft` switch between the two. The author can change the title and description with `dg pr edit <owner>/project 7 --title … --body …`.
+**Drafts and edits.** `dg pr create --draft` opens a draft. `dg pr ready` and `dg pr draft` switch between the two. The author can change the title and description with `dg pr edit <owner>/project 7 --title … --body …`. Maintainers, writers and triage members change a PR's labels, assignees and milestone with the same flags as `dg issue edit` (`--add-label`, `--remove-label`, `--add-assignee`, `--remove-assignee`, `--milestone`, `--remove-milestone`), confirmed once.
+
+**Changing the base (retarget).** `dg pr edit <owner>/project 7 --base release/1.x` moves an open PR to another branch of the repository, as GitHub's "Edit" does: one event (kind 8, about 0.0007 DASH) that maintainers and writers may write (triage members may not; consensus refuses theirs). The new base must be a branch now, and is refused before signing when it is not, when it is the PR's own source branch, or when the PR is closed or merged. From then on the PR merges into the new base: its diff, `dg pr merge`, `dg pr update-branch` and the web's merge box all use it, and a merge counts when it lands there (the base had to be a branch when the PR was retargeted to it). `dg pr view` shows "retargeted from …", and `--json` keeps `baseRef` (the base it was opened against) beside `baseRefName` (the one it merges into now) and `retargetedTo`. The timeline shows who retargeted it and when; a PR merged into its base stays merged there, whatever is written later.
 
 A review records the commit it was made on, which is the PR's head at the time. **Which approvals count:**
 

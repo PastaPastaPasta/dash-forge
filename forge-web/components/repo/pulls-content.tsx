@@ -259,7 +259,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                     </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                       <span className="font-mono">#{p.number}</span>
-                      <span>{st.label} · into <span className="font-mono">{branchName(p.baseRefName) || '?'}</span> · opened by</span>
+                      <span>{st.label} · into <span className="font-mono">{branchName(p.mergeBaseRefName) || '?'}</span> · opened by</span>
                       <Byline author={p.author} createdAt={p.createdAt} origin={trustedOrigin(p.origin, p.author, trust)} link={false} />
                       <HiddenRowMark hidden={hiddenIds.get(p.id)} />
                     </div>
