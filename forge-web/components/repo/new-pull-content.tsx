@@ -114,6 +114,15 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   )
   const ownForks = useMemo(() => (forks.data ?? []).filter((f) => f.fork.ownerId === identity), [forks.data, identity])
   const forkParent = useForkParent(home)
+  // A fork's form whose link names the parent's branch as the head (the fork bar's "merge the
+  // parent's branch into this fork" when a sync cannot fast-forward, P1-4): the parent's
+  // branches are heads too, read only then.
+  const parentNamed = forkParent !== null && namedFork === forkParent.repoId
+  const parentBranches = useAsync(
+    async () => (await readRefs(sdk!, forkParent!)).filter((r) => r.refName.startsWith('refs/heads/')),
+    [ready, forkParent?.repoId ?? ''],
+    { enabled: ready && sdk !== null && parentNamed },
+  )
 
   const options = useMemo<HeadOption[]>(() => {
     const opt = (r: RepoRef, b: ResolvedRef, label: string): HeadOption | null => {
@@ -122,8 +131,12 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     }
     const own = branches.map((b) => opt(repo, b, short(b.refName)))
     const fromForks = (forks.data ?? []).flatMap(({ fork, refs }) => refs.map((b) => opt(fork, b, `${forkSourcePrefix({ ownerId: fork.ownerId, ownerLabel: abbreviate(fork.ownerId), name: fork.name }, repo)}${short(b.refName)}`)))
-    return [...own, ...fromForks].filter((o): o is HeadOption => o !== null)
-  }, [branches, forks.data, repo])
+    const fromParent =
+      forkParent === null
+        ? []
+        : (parentBranches.data ?? []).map((b) => opt(forkParent, b, `${forkSourcePrefix({ ownerId: forkParent.ownerId, ownerLabel: abbreviate(forkParent.ownerId), name: forkParent.name }, repo)}${short(b.refName)}`))
+    return [...own, ...fromForks, ...fromParent].filter((o): o is HeadOption => o !== null)
+  }, [branches, forks.data, repo, forkParent, parentBranches.data])
 
   // No head until one is picked (L-47): guessing one started a merge-base walk over a branch
   // nobody asked about, and prefilled its title.
@@ -305,7 +318,18 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             {(forks.data ?? []).length > 0 ? (
               <optgroup label={ownForks.length === (forks.data ?? []).length ? 'Your forks' : 'Forks'}>
                 {options
-                  .filter((o) => o.repo.repoId !== repo.repoId)
+                  .filter((o) => o.repo.repoId !== repo.repoId && o.repo.repoId !== forkParent?.repoId)
+                  .map((o) => (
+                    <option key={o.key} value={o.key}>
+                      {o.label}
+                    </option>
+                  ))}
+              </optgroup>
+            ) : null}
+            {forkParent !== null && (parentBranches.data ?? []).length > 0 ? (
+              <optgroup label={`${forkParent.name} (forked from)`}>
+                {options
+                  .filter((o) => o.repo.repoId === forkParent.repoId)
                   .map((o) => (
                     <option key={o.key} value={o.key}>
                       {o.label}

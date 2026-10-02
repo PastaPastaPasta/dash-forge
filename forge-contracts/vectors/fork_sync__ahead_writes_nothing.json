@@ -1,0 +1,13 @@
+{
+  "name": "ahead_writes_nothing",
+  "description": "The fork's branch already contains the parent's tip and has commits of its own: nothing to take.",
+  "case": "fork_sync",
+  "rules": "v2",
+  "input": {
+    "forkTip": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parentTip": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "forkInParent": false,
+    "parentInFork": true
+  },
+  "expected": "ahead"
+}
