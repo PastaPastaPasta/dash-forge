@@ -3315,6 +3315,29 @@ fn is_deadline(e: &dash_sdk::Error) -> bool {
 /// Said once per process, the first time a large read has to slow down.
 static SLOW_READ_SAID: AtomicBool = AtomicBool::new(false);
 
+/// The byte-array payload of every new row [`page_adaptively`] has read in this process (a
+/// pack's chunks, mostly): what a progress display counts while one large read is in flight
+/// (QW4-014: a 270 MB clone read its one pack's chunks for minutes with nothing shown).
+static LARGE_READ_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The bytes large reads ([`PlatformClient::query_all_large_documents`]) have received in
+/// this process so far: a running total a progress display samples, never reset.
+pub fn large_read_bytes() -> u64 {
+    LARGE_READ_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The byte-array payload `d` carries (a chunk's `data`, its hashes).
+fn payload_bytes(d: &FetchedDocument) -> u64 {
+    d.fields
+        .values()
+        .map(|v| match v {
+            FieldValue::Bytes(b) => b.len() as u64,
+            FieldValue::Bytes32(_) | FieldValue::Identifier(_) => 32,
+            _ => 0,
+        })
+        .sum()
+}
+
 /// Page a `$id`-cursored, all-ascending read to exhaustion with an [`AdaptivePager`]: the
 /// transport-free loop behind [`PlatformClient::query_all_large_documents`]. `fetch` gets the
 /// cursor, the page size and the per-request deadline. As in [`page_to_exhaustion`], only a
@@ -3373,6 +3396,7 @@ where
         let before = out.len();
         for d in page {
             if held.insert(d.id.clone()) {
+                LARGE_READ_BYTES.fetch_add(payload_bytes(&d), std::sync::atomic::Ordering::Relaxed);
                 out.push(d);
             }
         }
@@ -4914,6 +4938,40 @@ mod tests {
         // A slow page resets the streak.
         p.on_page(16, Duration::from_secs(19));
         assert_eq!((p.limit, p.quick), (16, 0));
+    }
+
+    /// QW4-014: a large read counts the byte payload of each new row it reads, once, so a
+    /// progress display can show a single large pack coming in.
+    #[tokio::test]
+    async fn a_large_read_counts_the_bytes_it_receives() {
+        use super::{large_read_bytes, page_adaptively, AdaptivePager, LARGE_PAGE_MAX};
+        let chunk = |i: usize| {
+            let mut d = doc(i);
+            d.fields
+                .insert("data".into(), FieldValue::Bytes(vec![0; 1000]));
+            d.fields
+                .insert("packHash".into(), FieldValue::Bytes32([0; 32]));
+            d.fields.insert("seq".into(), FieldValue::Integer(i as u64));
+            d
+        };
+        let before = large_read_bytes();
+        let got = page_adaptively(
+            "chunk",
+            AdaptivePager::new(4, LARGE_PAGE_MAX),
+            |after: Option<String>, limit: u32, _| {
+                let from = after.map_or(0, |id| {
+                    id.trim_start_matches("d-").parse::<usize>().unwrap() + 1
+                });
+                std::future::ready(Ok((from..(from + limit as usize).min(10))
+                    .map(chunk)
+                    .collect()))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.len(), 10);
+        // Other tests read concurrently: at least this read's 10 × (1000 + 32) bytes.
+        assert!(large_read_bytes() - before >= 10 * 1032);
     }
 
     /// A full page that adds nothing new (a cursor that does not advance) fails the read

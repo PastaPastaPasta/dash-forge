@@ -141,9 +141,18 @@ pub async fn resolve_for(
         .to_string();
     // `with_context`, not a flattened message: the typed forge-core error must survive for
     // the error renderer (NotFound → E102, a network failure → E701).
-    forge_core::resolve::resolve_named(client, &owner, &repo_ref.name)
+    let repo = forge_core::resolve::resolve_named(client, &owner, &repo_ref.name)
         .await
-        .with_context(|| format!("resolving {owner}/{}", repo_ref.name))
+        .with_context(|| format!("resolving {owner}/{}", repo_ref.name))?;
+    // QW4-013: a name this clone pinned to another repository is refused before anything is
+    // read from or written to it, as `git fetch` refuses it (E504).
+    crate::pin::check(
+        &owner,
+        &repo_ref.name,
+        &client.target().network.key(),
+        &repo,
+    )?;
+    Ok(repo)
 }
 
 /// A connected signer and the repository a command acts on.

@@ -350,66 +350,25 @@ impl Helper {
         });
         let reader = &svc.repo_reader(repo, &git_packs, roles).await;
         let packs = group_by_hash(&git_packs);
-        let fetched: Vec<([u8; 32], Got)> = stream::iter(packs.iter().map(|(h, copies)| async move {
-            let hash = hex::encode(h);
-            let got = match svc.fetch_best_copy(repo, contract, copies, roles, reader).await {
-                // A private repository's copy verified by its (ciphertext) hash; open it.
-                // A key error is not a dead mirror: the bytes are here and verified, and no
-                // other copy of the same hash would open differently. It fails the fetch with
-                // its own code (E307/E309/E509). Only content hidden by the late-content rule
-                // (E510, a removed member's upload) is skipped like an unreachable pack.
-                Ok((sealed, m)) => {
-                    let got = PackMeta::for_bytes(&sealed).pack_hash;
-                    if !got.eq_ignore_ascii_case(&hash) {
-                        bail!("pack integrity check failed: expected {}…, got {}…", progress::abbrev(&hash, 16), progress::abbrev(&got, 16));
-                    }
-                    match svc.open_artifact_of(repo, copies, m.size_bytes, sealed).await {
-                        Ok(b) => Ok((b, m)),
-                        Err(forge_core::Error::User(u)) if u.code == codes::LATE_CONTENT => {
-                            tracing::info!(pack = %hash, "{u}; continuing without it");
-                            return Ok((*h, Got::Hidden(*u)));
-                        }
-                        Err(e) => {
-                            return Err(anyhow::Error::from(e)
-                                .context(format!("opening pack {}…", progress::abbrev(&hash, 12))));
-                        }
-                    }
-                }
-                Err(e) => Err(e),
-            };
-            // A pack is required when a CURRENT MEMBER recorded it on Platform: on forge-v2
-            // anyone who was a writer can post a manifest, so a stranger's chunkless
-            // `storage = 0` copy must not turn an unreadable pack into a failed clone (it is
-            // set aside below, and fails the fetch with E503 only if the history needs it).
-            let on_chain = copies.iter().any(|m| {
-                m.storage == 0 && roles.contains_key(&m.owner_id)
+        // QW4-014: a terminal sees the packs and bytes come in, as git's own progress does.
+        let meter = &fetch_meter(options, &packs);
+        let fetched = stream::iter(packs.iter().map(|(h, copies)| async move {
+            let got = fetch_one(svc, repo, contract, copies, roles, reader, h).await;
+            // Only a pack that arrived adds bytes; one set aside counts as done.
+            let arrived = matches!(&got, Ok((_, Got::Bytes(_))));
+            meter.advance(if arrived {
+                copies.first().map_or(0, |m| m.size_bytes)
+            } else {
+                0
             });
-            let bytes = match got {
-                Ok((bytes, _)) => bytes,
-                Err(e) if on_chain => {
-                    return Err(anyhow::Error::from(e).context(format!("downloading pack {}…", progress::abbrev(&hash, 12))));
-                }
-                // An external-only pack whose copies are down, rate-limited or absent is set
-                // aside rather than failing the fetch at once: it may not be needed (it only
-                // holds a deleted branch, or a repack superseded it and the consolidated
-                // pack arrived, forge-v2 §4). Once the rest is indexed the wanted history is
-                // checked, and a gap fails the fetch with E503 naming these packs
-                // ([`packs_unreadable`]) instead of git's "did not send all necessary
-                // objects". Every candidate is bounded (size-scaled deadline + idle
-                // timeout), so this cannot hang.
-                Err(e) => {
-                    tracing::info!(pack = %hash, copies = copies.len(), error = %e, "external pack unobtainable; continuing without it");
-                    return Ok((*h, Got::Unreadable(Unreadable {
-                        hash,
-                        error: e.to_string(),
-                    })));
-                }
-            };
-            Ok((*h, Got::Bytes(bytes)))
+            got
         }))
         .buffered(PACK_DOWNLOAD_WINDOW)
-        .try_collect()
-        .await?;
+        .try_collect();
+        let fetched: Result<Vec<([u8; 32], Got)>> = with_ticks(meter, fetched).await;
+        // A failed download ends the line too, so the error starts on its own.
+        meter.finish(fetched.is_ok());
+        let fetched = fetched?;
         // Packs a fallback copy served: say which recorded copy is down, and why, while the
         // others still hold the history (the survivability drill asserts these lines). A
         // warning, so `-q` does not hide it (git keeps warnings under -q too).
@@ -428,23 +387,23 @@ impl Helper {
             .filter(|(_, g)| matches!(g, Got::Bytes(_)))
             .map(|(h, _)| *h)
             .collect();
+        let parent = parent_holding(&conn.client, svc, repo, &fetched).await;
         index_fetched(
             fetched.into_iter().map(|(_, g)| g).collect(),
             &want_oids,
             options,
             &repo.display(),
             packs.len(),
+            parent.as_deref(),
         )?;
         // Record the packs indexed whole (not a partial clone's filtered subset), so the next
         // fetch downloads only what is new.
-        if options.filter.is_none() {
-            if let Some(d) = git_dir.as_deref() {
-                let mut have = have;
-                for h in indexed {
-                    have.insert(h);
-                }
-                have.save(d, conn.repo.id());
+        if let (None, Some(d)) = (&options.filter, git_dir.as_deref()) {
+            let mut have = have;
+            for h in indexed {
+                have.insert(h);
             }
+            have.save(d, conn.repo.id());
         }
         Ok(())
     }
@@ -763,6 +722,162 @@ fn moved_branches(
         .collect()
 }
 
+/// One pack of a fetch ([`Helper::fetch_packs`]): the bytes of the first of its `copies` that
+/// verifies (opened, for a private repository), or why it was set aside.
+async fn fetch_one(
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    contract: &forge_core::platform::LoadedContract,
+    copies: &[&forge_core::repo::PackManifestInfo],
+    roles: &forge_core::repo::RoleMap,
+    reader: &forge_core::storage::read::PackReader,
+    h: &[u8; 32],
+) -> Result<([u8; 32], Got)> {
+    let hash = hex::encode(h);
+    let got = match svc
+        .fetch_best_copy(repo, contract, copies, roles, reader)
+        .await
+    {
+        // A private repository's copy verified by its (ciphertext) hash; open it.
+        // A key error is not a dead mirror: the bytes are here and verified, and no
+        // other copy of the same hash would open differently. It fails the fetch with
+        // its own code (E307/E309/E509). Only content hidden by the late-content rule
+        // (E510, a removed member's upload) is skipped like an unreachable pack.
+        Ok((sealed, m)) => {
+            let got = PackMeta::for_bytes(&sealed).pack_hash;
+            if !got.eq_ignore_ascii_case(&hash) {
+                bail!(
+                    "pack integrity check failed: expected {}…, got {}…",
+                    progress::abbrev(&hash, 16),
+                    progress::abbrev(&got, 16)
+                );
+            }
+            match svc
+                .open_artifact_of(repo, copies, m.size_bytes, sealed)
+                .await
+            {
+                Ok(b) => Ok((b, m)),
+                Err(forge_core::Error::User(u)) if u.code == codes::LATE_CONTENT => {
+                    tracing::info!(pack = %hash, "{u}; continuing without it");
+                    return Ok((*h, Got::Hidden(*u)));
+                }
+                Err(e) => {
+                    return Err(anyhow::Error::from(e)
+                        .context(format!("opening pack {}…", progress::abbrev(&hash, 12))));
+                }
+            }
+        }
+        Err(e) => Err(e),
+    };
+    // A pack is required when a CURRENT MEMBER recorded it on Platform: on forge-v2
+    // anyone who was a writer can post a manifest, so a stranger's chunkless
+    // `storage = 0` copy must not turn an unreadable pack into a failed clone (it is
+    // set aside below, and fails the fetch with E503 only if the history needs it).
+    let on_chain = copies
+        .iter()
+        .any(|m| m.storage == 0 && roles.contains_key(&m.owner_id));
+    let bytes = match got {
+        Ok((bytes, _)) => bytes,
+        Err(e) if on_chain => {
+            return Err(anyhow::Error::from(e)
+                .context(format!("downloading pack {}…", progress::abbrev(&hash, 12))));
+        }
+        // An external-only pack whose copies are down, rate-limited or absent is set
+        // aside rather than failing the fetch at once: it may not be needed (it only
+        // holds a deleted branch, or a repack superseded it and the consolidated
+        // pack arrived, forge-v2 §4). Once the rest is indexed the wanted history is
+        // checked, and a gap fails the fetch with E503 naming these packs
+        // ([`packs_unreadable`]) instead of git's "did not send all necessary
+        // objects". Every candidate is bounded (size-scaled deadline + idle
+        // timeout), so this cannot hang.
+        Err(e) => {
+            tracing::info!(pack = %hash, copies = copies.len(), error = %e, "external pack unobtainable; continuing without it");
+            return Ok((
+                *h,
+                Got::Unreadable(Unreadable {
+                    hash,
+                    error: e.to_string(),
+                }),
+            ));
+        }
+    };
+    Ok((*h, Got::Bytes(bytes)))
+}
+
+/// `work`, redrawing `meter` every [`progress::FETCH_REDRAW`] while it runs (a single large
+/// pack read from Platform finishes no pack for minutes).
+async fn with_ticks<T>(
+    meter: &progress::FetchMeter,
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    if !meter.enabled() {
+        return work.await;
+    }
+    let ticks = async {
+        loop {
+            tokio::time::sleep(progress::FETCH_REDRAW).await;
+            meter.tick();
+        }
+    };
+    tokio::select! {
+        out = work => out,
+        () = ticks => unreachable!("the ticker never ends"),
+    }
+}
+
+/// The fetch's progress meter ([`progress::FetchMeter`]) over `packs`: drawn when git asked for
+/// progress (a terminal), not under `-q` or in JSON mode.
+fn fetch_meter(
+    options: &OptionState,
+    packs: &[([u8; 32], Vec<&forge_core::repo::PackManifestInfo>)],
+) -> progress::FetchMeter {
+    let shown = Progress::new(options.verbosity);
+    progress::FetchMeter::new(
+        options.progress && shown.enabled && !shown.json,
+        packs.len(),
+        packs
+            .iter()
+            .map(|(_, c)| c.first().map_or(0, |m| m.size_bytes))
+            .sum(),
+    )
+}
+
+/// When some of `fetched` were unreadable, `repo` is a fork, and every unreadable pack is one of
+/// its parent's too: the parent, as `owner/name` (its maintainers are the ones who can restore
+/// them, QW4-062). `None` otherwise, or on any read failure: the plain E503 advice stands.
+async fn parent_holding(
+    client: &PlatformClient,
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    fetched: &[([u8; 32], Got)],
+) -> Option<String> {
+    let hashes: Vec<[u8; 32]> = fetched
+        .iter()
+        .filter(|(_, g)| matches!(g, Got::Unreadable(_)))
+        .map(|(h, _)| *h)
+        .collect();
+    if hashes.is_empty() {
+        return None;
+    }
+    let parent_id = forge_core::resolve::fork_parent(client, repo)
+        .await
+        .ok()??;
+    let parent = forge_core::resolve::resolve_id(client, &parent_id)
+        .await
+        .ok()?;
+    let theirs: std::collections::BTreeSet<[u8; 32]> = svc
+        .read_pack_manifests(&parent)
+        .await
+        .ok()?
+        .iter()
+        .map(|m| m.pack_hash)
+        .collect();
+    hashes
+        .iter()
+        .all(|h| theirs.contains(h))
+        .then(|| parent.display())
+}
+
 /// One pack's outcome in a fetch.
 enum Got {
     /// Downloaded, verified and (for a private repo) opened.
@@ -792,6 +907,7 @@ fn index_fetched(
     options: &OptionState,
     repo: &str,
     total: usize,
+    parent: Option<&str>,
 ) -> Result<()> {
     let mut downloaded = Vec::new();
     let mut unreadable = Vec::new();
@@ -810,7 +926,7 @@ fn index_fetched(
         if unreadable.is_empty() {
             return hidden_packs_needed(repo, options.cloning, &hidden).into();
         }
-        let e503 = packs_unreadable(repo, options.cloning, &unreadable, total);
+        let e503 = packs_unreadable(repo, options.cloning, &unreadable, total, parent);
         match hidden.len() {
             0 => e503.into(),
             n => e503
@@ -907,11 +1023,16 @@ fn hidden_packs_needed(repo: &str, cloning: bool, hidden: &[UserError]) -> UserE
 
 /// E503: the wanted history needs objects from `unreadable` packs (of `total`), which a clone
 /// or fetch could not read from any copy.
+///
+/// `parent`: the repository is a fork and these are its parent's packs (`owner/name`): its
+/// maintainers restore them, from a clone of the parent, rather than "the pusher" of the fork
+/// (QW4-062).
 fn packs_unreadable(
     repo: &str,
     cloning: bool,
     unreadable: &[Unreadable],
     total: usize,
+    parent: Option<&str>,
 ) -> UserError {
     const SHOWN: usize = 3;
     let what = if cloning { "clone" } else { "fetch" };
@@ -948,14 +1069,25 @@ fn packs_unreadable(
         } else {
             format!("they are recorded only at {}", places.join("; "))
         };
+        // `dg reseed --from-local` re-uploads only to addresses already recorded, so it cannot
+        // help here: a repack records a new copy (docs/errors.md#e503).
+        let fix = match parent {
+            Some(p) => {
+                let fork_name = repo.rsplit('/').next().unwrap_or(repo);
+                format!(
+                    "{repo} is a fork, and these packs came from its parent {p}, whose pusher recorded them only at an address other computers do not read from. A fork keeps the copies its parent had when it was made: ask {p}'s maintainers to record them at a public https address (`dg repack {p} --profile <profile>`), then clone {p}, or fork it again (`dg repo fork {p} --name <new name>`; `--name {fork_name}` again records a repack's new pack in this fork)"
+                )
+            }
+            None => format!(
+                "the pusher recorded their packs only at an address other computers do not read from: a member whose computer reads them can record them again at a public https address, `dg repack {repo} --profile <profile>` (`dg storage add <name> … --public-url https://…` adds one)"
+            ),
+        };
         return err
             .cause(format!(
                 "{n} of the repository's {total} packs: {}: {recorded}",
                 forge_core::storage::read::NO_FOLLOWED_COPY
             ))
-            .fix(format!(
-                "the pusher recorded their packs only at an address other computers do not read from: from their clone they can copy them to storage with a public https address, `dg reseed {repo} --from-local --profile <profile>` (`dg storage add <name> … --public-url https://…` adds one)"
-            ))
+            .fix(fix)
             .fix("if that host or bucket is your own storage, add a storage profile for it (`dg storage add`, with its public_url) and run it again");
     }
     err.cause(format!(
@@ -3199,7 +3331,7 @@ mod tests {
                 forge_core::storage::read::NO_FOLLOWED_COPY
             ),
         };
-        let u = packs_unreadable("OWNER/repo", true, &[private("a"), private("b")], 3);
+        let u = packs_unreadable("OWNER/repo", true, &[private("a"), private("b")], 3, None);
         assert_eq!(u.code, "E503");
         assert_eq!(u.message, "clone incomplete: 2 packs unreadable");
         let cause = u.cause.clone().unwrap();
@@ -3214,7 +3346,7 @@ mod tests {
             )
         );
         assert!(
-            u.fix[0].contains("dg reseed OWNER/repo --from-local --profile"),
+            u.fix[0].contains("dg repack OWNER/repo --profile"),
             "{:?}",
             u.fix
         );
@@ -3224,6 +3356,25 @@ mod tests {
             "{:?}",
             u.fix
         );
+        // QW4-062: a fork's parent's packs: the parent's maintainers reseed the parent.
+        let u = packs_unreadable("FORKER/repo", true, &[private("a")], 2, Some("OWNER/repo"));
+        assert!(
+            u.fix[0]
+                .contains("FORKER/repo is a fork, and these packs came from its parent OWNER/repo"),
+            "{:?}",
+            u.fix
+        );
+        assert!(
+            u.fix[0].contains("`dg repack OWNER/repo --profile <profile>`"),
+            "{:?}",
+            u.fix
+        );
+        assert!(
+            u.fix[0].contains("`dg repo fork OWNER/repo --name <new name>`"),
+            "{:?}",
+            u.fix
+        );
+        assert!(!u.fix[0].contains("FORKER/repo --"), "{:?}", u.fix);
     }
 
     #[test]
@@ -3236,7 +3387,7 @@ mod tests {
                     could not connect: Connection refused — every candidate was an IPFS gateway: …"
                     .into(),
         };
-        let u = packs_unreadable("OWNER/repo", true, &[gone("a"), gone("b")], 6);
+        let u = packs_unreadable("OWNER/repo", true, &[gone("a"), gone("b")], 6, None);
         assert_eq!(u.code, "E503");
         assert_eq!(u.exit_code(), 5);
         // The catalogue's wording (ux-dx-spec §7.3 example 6).
@@ -3267,10 +3418,10 @@ mod tests {
         );
         assert!(u.fix[1].contains("[read] ipfs_gateways"), "{:?}", u.fix);
         let many: Vec<_> = ["a", "b", "c", "d", "e"].iter().map(|h| gone(h)).collect();
-        let u = packs_unreadable("OWNER/repo", false, &many, 5);
+        let u = packs_unreadable("OWNER/repo", false, &many, 5, None);
         assert_eq!(u.message, "fetch incomplete: 5 packs unreadable");
         assert!(u.cause.unwrap().ends_with("; and 2 more"));
-        let u = packs_unreadable("OWNER/repo", true, &many[..1], 5);
+        let u = packs_unreadable("OWNER/repo", true, &many[..1], 5, None);
         assert_eq!(u.message, "clone incomplete: 1 pack unreadable");
     }
 
