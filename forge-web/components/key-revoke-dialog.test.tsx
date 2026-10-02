@@ -147,6 +147,14 @@ describe('KeyRevokeDialog', () => {
     resetMemoryStores()
   })
 
+  it('QW4-021: says the forget after it deletes the spend history and notifications here', () => {
+    auth.scope = 'full'
+    render()
+    const note = host.querySelector('[data-testid="revoke-forget-deletes"]')!.textContent ?? ''
+    expect(note).toMatch(/spend history \(Settings → Spend\)/)
+    expect(note).toMatch(/notifications/)
+  })
+
   it('QW3-030: prices the update before it is signed', () => {
     auth.scope = 'full'
     render()

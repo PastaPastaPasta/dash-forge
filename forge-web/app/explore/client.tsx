@@ -37,7 +37,8 @@ import { listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
 import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
 import { rankedRepos, recentReposPage, recentlyUpdated, reposWithTopic, searchPrefix, searchRepos, PUSH_WINDOW_MS, TOPIC_PAGE, type RankedRepos } from '@/lib/view/discovery'
 import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '@/lib/repo/settings'
-import type { TrendingWindow } from '@/lib/repo/trending'
+import { trendingNote, trendingWindowStart, type TrendingWindow } from '@/lib/repo/trending'
+import { useStarShape } from '@/hooks/use-star-shape'
 import {
   latestReleases,
   listMyTargets,
@@ -69,6 +70,15 @@ export function ExploreClient(): JSX.Element {
   const featured = useAsync(() => listShowcaseRepos(sdk!, network, ACTIVE_NETWORK.key), [ready, network], { enabled: on && hasShowcase })
   const [trendWindow, setTrendWindow] = useState<TrendingWindow>('week')
   const trending = useAsync(() => rankedRepos(sdk!, trendWindow, { network, limit: TOP_N }), [ready, network, trendWindow], { enabled: on })
+  // The note follows the deployment's star shape, as Settings → Stars does (QW4-018).
+  const starShape = useStarShape(forge)
+  // "Today" is the UTC day so far (the index's grid), so the title and the empty line say so
+  // (QW4-019). The clock is read after hydration: the static HTML is built without one.
+  // Re-read with each Trending result, so the window named is the one the read selected.
+  const [now, setNow] = useState<number | null>(null)
+  useEffect(() => setNow(Date.now()), [trendWindow, trending.data])
+  const todayStart = useMemo(() => (now !== null && trendWindow === 'today' ? trendingWindowStart('today', now) : null), [now, trendWindow])
+  const trendNote = useMemo(() => trendingNote(starShape, trendWindow, now), [starShape, trendWindow, now])
   const starred = useAsync(() => rankedRepos(sdk!, 'most-starred', { network, limit: TOP_N }), [ready, network], { enabled: on })
   const forked = useAsync(() => rankedRepos(sdk!, 'most-forked', { network, limit: TOP_N }), [ready, network], { enabled: on })
   // Pushes rode along with the repos already read; rank those (the section says so).
@@ -152,13 +162,13 @@ export function ExploreClient(): JSX.Element {
         ) : null}
 
         <Section
-          title={trendWindow === 'week' ? 'Trending this week' : 'Trending today'}
+          title={trendWindow === 'week' ? 'Trending this week' : 'Trending today (UTC)'}
           testId="explore-trending"
           icon={Flame}
           state={trending}
-          empty={trendWindow === 'week' ? 'Nobody starred a repo in the last week.' : 'Nobody has starred a repo today yet.'}
+          empty={trendWindow === 'week' ? 'Nobody starred a repo in the last week.' : `Nobody has starred a repo since ${todayStart ?? '00:00 UTC'} yet.`}
           emptyAction={<TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />}
-          note="Ranked by new stargazers in the window, proved by the network. A star counts toward Trending unless the starrer turned that off, and an owner's star on their own repo never counts (so Trending can show fewer than Most starred). An unstar does not take a count back before its week ends."
+          note={trendNote}
           partial={missingNote}
         >
           {(d) => (
@@ -506,7 +516,7 @@ function TrendWindowToggle({ value, onChange }: { value: TrendingWindow; onChang
           className={`px-3 py-1 coarse:min-h-11 ${value === w ? 'bg-anvil-100 font-medium dark:bg-anvil-800' : 'text-anvil-600 dark:text-anvil-300'}`}
           data-testid={`trending-${w}`}
         >
-          {w === 'week' ? 'This week' : 'Today'}
+          {w === 'week' ? 'This week' : 'Today (UTC)'}
         </button>
       ))}
     </div>

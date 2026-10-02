@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { CREDITS_PER_DASH } from '../sdk/cost'
-import { TOP_UP_MAX_DASH, TOP_UP_MAX_DAYS, assertTopUp, isForgeBrowserKey, parseDashAmount, topUpExpiry } from './limited-key'
+import { TOP_UP_MAX_DASH, TOP_UP_MAX_DAYS, assertTopUp, isForgeBrowserKey, parseDashAmount, topUpExpiry, withKnownRemaining } from './limited-key'
 
 const DASH = BigInt(CREDITS_PER_DASH)
 
@@ -74,5 +74,21 @@ describe('isForgeBrowserKey', () => {
     expect(isForgeBrowserKey({ ...key, contractBounds: undefined })).toBe(false)
     expect(isForgeBrowserKey({ ...key, contractBounds: bound('singleContract') })).toBe(false)
     expect(isForgeBrowserKey({ ...key, totalBudget: undefined })).toBe(false)
+  })
+})
+
+describe('withKnownRemaining (QW4-020)', () => {
+  const total = 5_000_000_000n
+  const fresh = { remaining: null, total, expiresAt: 1 }
+  it("keeps the known remaining budget when a node behind shows the key's budget but no entry for it", () => {
+    expect(withKnownRemaining(fresh, { remaining: 4_000_000_000n, total, expiresAt: 1 })).toEqual({ remaining: 4_000_000_000n, total, expiresAt: 1 })
+    // Never more than the total the node shows.
+    expect(withKnownRemaining({ ...fresh, total: 1n }, { remaining: 4n, total: 4n, expiresAt: 1 })?.remaining).toBe(1n)
+  })
+  it('changes nothing else: a read with an entry, a key without a budget, nothing known', () => {
+    expect(withKnownRemaining({ ...fresh, remaining: 3n }, { remaining: 4n, total, expiresAt: 1 })?.remaining).toBe(3n)
+    expect(withKnownRemaining({ remaining: null, total: null, expiresAt: 1 }, { remaining: 4n, total, expiresAt: 1 })?.remaining).toBeNull()
+    expect(withKnownRemaining(fresh, null)).toEqual(fresh)
+    expect(withKnownRemaining(null, { remaining: 4n, total, expiresAt: 1 })).toBeNull()
   })
 })

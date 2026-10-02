@@ -15,7 +15,7 @@ import { keyBudgetWords } from '@/lib/view/funds'
 import { creditsAsDash } from '@/lib/view/format'
 import { dashPaymentUri } from './ui/payment-address'
 import { FORGET_CONFIRM, forgetConfirm } from './keys-panel'
-import { topUpRecordsStay } from './top-up-stays'
+import { FORGET_DELETES, topUpRecordsStay } from './top-up-stays'
 
 const ID = 'DhRR5hsXcwGikNuwSs43AF3VpRAdbRRLCiMK4FfDD6by'
 const DASH = 100_000_000_000n
@@ -58,5 +58,10 @@ describe('forgetConfirm (QW3-034)', () => {
     // A top-up still running: its own record stays, and says so.
     await idbPut('journal', `top-up:${ACTIVE_NETWORK.network}:${ID}`, { index: 1, depositAddress: 'y' })
     expect((await forgetConfirm(ID)).body).toMatch(/unfinished top-up of this identity stays/)
+  })
+
+  it('QW4-021: says the spend history and notifications here are deleted with the key', async () => {
+    expect(FORGET_CONFIRM.body).toContain(FORGET_DELETES)
+    expect(FORGET_DELETES).toMatch(/spend history \(Settings → Spend\).*notifications/)
   })
 })

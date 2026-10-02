@@ -24,7 +24,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { ErrorBox } from '@/components/auth/protection-fields'
 import { useMasterKeyInput } from '@/components/auth/master-key-input'
 import { UnlockMore } from '@/components/auth/unlock-more'
-import { topUpStays } from '@/components/top-up-stays'
+import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { UnlockNeededError } from '@/lib/auth/controller'
 import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
 import { KEY_DISABLE_CREDITS, previewCredits } from '@/lib/sdk'
@@ -73,6 +73,10 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
           Your master key signs one identity update that disables {noun}
           {keyId !== null ? ` (key #${keyId})` : ''} on Platform, so it can sign nothing anywhere, even where it was copied. This browser then
           forgets it, and signs nothing until you sign in again. The master key is used once and is not stored.
+        </p>
+        {/* The revoke forgets too, so it deletes what a forget does (QW4-021): said here, not under the alternative. */}
+        <p className="text-anvil-600 dark:text-anvil-300" data-testid="revoke-forget-deletes">
+          {FORGET_DELETES}
         </p>
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
           Only need this browser to stop signing? Sign out &amp; forget key instead: nothing is sent, and the key stays valid on chain until it
