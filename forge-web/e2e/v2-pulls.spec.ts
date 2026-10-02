@@ -96,7 +96,8 @@ test('c3. contributor opens a PR from the fork, diff shown before submit', async
   await page.waitForURL(/\/repo\/pulls\/new/)
   const head = page.getByLabel('Compare (your branch)')
   await eventually(page, () => expect(page.locator('#pr-head optgroup[label="Your forks"] option', { hasText: FORK }).first()).toBeAttached({ timeout: 45_000 }))
-  await head.selectOption({ label: `${FORK}: feature/greeting` })
+  // Labelled owner-first, `<owner>/<fork>:<branch>` (QW4-030).
+  await head.selectOption((await page.locator('#pr-head option', { hasText: `${FORK}:feature/greeting` }).first().getAttribute('value')) ?? '')
   await expect(page.getByLabel('Base')).toHaveValue('refs/heads/main')
   // The diff renders before anything is signed, and the title is the head commit's subject.
   await expect(page.getByText('src/main.rs').first()).toBeVisible({ timeout: 90_000 })

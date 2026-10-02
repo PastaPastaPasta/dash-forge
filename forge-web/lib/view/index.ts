@@ -18,6 +18,7 @@ export {
   modeKind,
   plural,
   priceLabel,
+  forkSourcePrefix,
   shortIdentity,
   shortOid,
   timeAgo,

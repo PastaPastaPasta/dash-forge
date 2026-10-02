@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { branchName, plural, timeAgo } from './format'
+import { branchName, forkSourcePrefix, plural, timeAgo } from './format'
 
 describe('plural (L-36)', () => {
   it('is singular for exactly one and plural otherwise', () => {
@@ -61,5 +61,17 @@ describe('branchName (L-37, D-104)', () => {
     expect(branchName('refs/heads/feature/greeting')).toBe('feature/greeting')
     expect(branchName('refs/tags/v1')).toBe('refs/tags/v1')
     expect(branchName('')).toBe('')
+  })
+})
+
+describe('forkSourcePrefix (QW4-030)', () => {
+  const base = { ownerId: 'BASEOWNER', name: 'qa4-proj' }
+  it("names a fork's owner, as GitHub's user:branch, and its name only when it differs", () => {
+    expect(forkSourcePrefix({ ownerId: '2f4fqq3xyz', ownerLabel: '2f4fqq3', name: 'qa4-proj' }, base)).toBe('2f4fqq3:')
+    expect(forkSourcePrefix({ ownerId: '2f4fqq3xyz', ownerLabel: 'alice.dash', name: 'my-copy' }, base)).toBe('alice.dash/my-copy:')
+  })
+  it("names only the repo for the owner's own fork, and nothing for a same-repo PR", () => {
+    expect(forkSourcePrefix({ ownerId: 'BASEOWNER', ownerLabel: 'owner', name: 'other' }, base)).toBe('other:')
+    expect(forkSourcePrefix(null, base)).toBe('')
   })
 })

@@ -10,14 +10,14 @@
  */
 
 import Link from 'next/link'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { GitCommit, Tag } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import { readCheckRuns, summarizeChecks } from '@/lib/repo/checks'
 import { isApprover } from '@/lib/rules/v2'
 import type { DiffSides, RepoHome } from '@/lib/view'
-import { commitSubject, loadCommitChanges, type CommitObject } from '@/lib/view'
+import { commitSubject, loadCommitChanges, PackUnavailableError, type CommitObject } from '@/lib/view'
 import { commitPeople } from '@/lib/view/commit-people'
 import { Time } from '@/components/repo/byline'
 import { useAsync } from '@/hooks/use-async'
@@ -37,9 +37,39 @@ import { cn } from '@/lib/utils'
 export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoAddress; oid: string }): JSX.Element {
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
   return (
-    <BrowseBoundary repo={home.repo} addr={addr}>
+    <BrowseBoundary repo={home.repo} addr={addr} unreachable={(card) => <CodeUnreadable oid={oid} repo={home.repo} notice={card} />}>
       {(reader, retry) => <Body reader={reader} retry={retry} oid={oid} addr={addr} repo={home.repo} description={home.description} />}
     </BrowseBoundary>
+  )
+}
+
+/** A full commit id (SHA-1 or SHA-256 hex): what check runs are recorded under. */
+const FULL_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i
+
+/**
+ * The commit page when its code can't be read (QW4-031): the packs are at addresses a browser
+ * can't fetch, or the commit could not be read. The message and changes are in those packs, but
+ * the check runs are Platform data, so they still show — what `dg ci report`'s link is for —
+ * with `notice` (why the code isn't here) in place of the diff.
+ */
+function CodeUnreadable({ oid, repo, notice }: { oid: string; repo: RepoRef; notice: ReactNode }): JSX.Element {
+  return (
+    <div className="space-y-4" data-testid="commit-unreadable">
+      <div className="rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">
+        <h1 className="flex flex-wrap items-center gap-2 text-prose font-semibold">
+          <GitCommit className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Commit <Oid value={oid} chars={9} />
+        </h1>
+        <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">Its message and changes are in the repo&apos;s stored files, which this page can&apos;t read (below). Its check runs are on Platform.</p>
+      </div>
+      {FULL_OID.test(oid) ? (
+        <CommitChecks repo={repo} oid={oid.toLowerCase()} />
+      ) : (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="commit-checks-need-full-id">
+          Check runs are recorded under the full commit id: open the commit by its full id to see them.
+        </p>
+      )}
+      {notice}
+    </div>
   )
 }
 
@@ -48,7 +78,12 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
   const { data, loading, error, cause } = useAsync(() => loadCommitChanges(reader, oid), [oid])
   const sides = useMemo<DiffSides>(() => ({ base: reader, head: reader }), [reader])
   if (loading) return <LoadingBlock label="Reconstructing commit" />
-  if (error) return <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />
+  if (error) {
+    const state = <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />
+    // A pack that can't be fetched hides the commit, not its check runs; an id this repo does not
+    // hold (or a tree, a blob, an ambiguous prefix) is no commit to show checks for.
+    return cause instanceof PackUnavailableError ? <CodeUnreadable oid={oid} repo={repo} notice={state} /> : state
+  }
   if (!data) return <LoadingBlock />
 
   const { commit, changes, truncated, tags } = data

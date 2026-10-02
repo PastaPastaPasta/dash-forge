@@ -98,10 +98,17 @@ function useReadRecovery(key: string): { epoch: number; stalled: boolean; resume
 export function BrowseBoundary({
   repo,
   addr,
+  unreachable,
   children,
 }: {
   repo: RepoRef
   addr?: RepoAddress
+  /**
+   * What the page shows around the "Code not reachable from a browser" card, when the repo's
+   * packs are all at addresses a browser can't fetch: Platform data the page has besides the code
+   * (a commit's check runs, QW4-031). Absent: the card alone.
+   */
+  unreachable?: (card: JSX.Element) => JSX.Element
   /**
    * The view over a ready reader. `retry` is its "Try again": it drops the repo's browse context,
    * so the view is rebuilt on a freshly resolved reader. Re-running on the same reader fails the
@@ -123,7 +130,8 @@ export function BrowseBoundary({
       return <BrowseLoading repoKey={key} label={state.label} />
     case 'error':
       if (state.cause instanceof StorageUnreachableError) {
-        return <StorageUnreachableCard repo={repo} addr={addr} packs={state.cause.packs} retry={state.retry} />
+        const card = <StorageUnreachableCard repo={repo} addr={addr} packs={state.cause.packs} retry={state.retry} />
+        return unreachable?.(card) ?? card
       }
       return <ErrorState title={state.title} message={state.message} cause={state.cause} onRetry={state.retry} />
     case 'no-packs':

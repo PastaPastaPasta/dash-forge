@@ -135,7 +135,8 @@ test('i1. the contributor opens a draft PR from the fork; tabs, counts and the r
   const page = await signedIn(browser, 'CONTRIB', `/repo/pulls/new/?owner=${ids.owner}&name=${REPO}`)
   await waitForRepoResolved(page)
   await eventually(page, () => expect(page.locator('#pr-head optgroup[label="Your forks"] option', { hasText: FORK }).first()).toBeAttached({ timeout: 45_000 }))
-  await page.getByLabel('Compare (your branch)').selectOption({ label: `${FORK}: feature/greet` })
+  // Labelled owner-first, `<owner>/<fork>:<branch>` (QW4-030).
+  await page.getByLabel('Compare (your branch)').selectOption((await page.locator('#pr-head option', { hasText: `${FORK}:feature/greet` }).first().getAttribute('value')) ?? '')
   // The diff renders before anything is signed (the fork's head read through its packs).
   await expect(page.getByText('src/greet.rs').first()).toBeVisible({ timeout: 180_000 })
   await page.getByLabel('Title', { exact: true }).fill(TITLE)

@@ -53,7 +53,7 @@ import {
 } from 'lucide-react'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
@@ -156,7 +156,8 @@ import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
 import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
-import { cn } from '@/lib/utils'
+import { abbreviate, cn } from '@/lib/utils'
+import { useDpnsName } from '@/hooks/use-dpns-name'
 
 /** No pending review comments (a stable empty list). */
 const NO_DRAFTS: readonly DraftComment[] = []
@@ -440,6 +441,13 @@ function PullPage({
   // The source repo as the suggestions' own write check picks it (a same-repo PR's is this repo).
   const closedSource = open ? null : sourceRef ?? (pull.sourceId === repo.repoId ? repo : null)
   const closedWrite = useSourceWrite(closedSource, pull.sourceRefName)
+  // A fork's head is named by its owner, as GitHub's `user:branch` (QW4-030): "from qa4-proj:feature"
+  // reads as this repo when the fork kept the parent's name.
+  const forkRef = crossRepo ? sourceRef : null
+  const forkOwnerName = useDpnsName(forkRef?.ownerId ?? '')
+  // The owner as the page's identity pills show one: the DPNS name, else the id's first characters.
+  const forkOwnerLabel = forkRef === null ? '' : forkOwnerName ?? abbreviate(forkRef.ownerId)
+  const sourcePrefix = forkSourcePrefix(forkRef === null ? null : { ownerId: forkRef.ownerId, ownerLabel: forkOwnerLabel, name: forkRef.name }, repo)
   const sourceState = useAsync<RefState | null>(
     () =>
       crossRepo
@@ -996,7 +1004,7 @@ function PullPage({
   const closedBranch = ((): { label: string; restore: boolean; run: () => Promise<void> } | null => {
     const name = pull.sourceRefName
     if (open || closedSource === null || name === null || (sync?.kind !== 'in-sync' && sync?.kind !== 'deleted')) return null
-    const label = `${crossRepo ? `${closedSource.name}:` : ''}${shortBranch(name)}`
+    const label = `${sourcePrefix}${shortBranch(name)}`
     if (sync.kind === 'deleted') {
       // Who could delete it may restore it: the head is still stored there (only the ref moved).
       const restorable = closedWrite.known && closedWrite.can && closedSource.visibility === 'public' && pull.headOid !== '' && !(closedSource.repoId === repo.repoId && name === pull.baseRefName)
@@ -1094,7 +1102,11 @@ function PullPage({
             ) : pull.sourceRefName ? (
               <>
                 {' '}
-                from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortBranch(pull.sourceRefName)}</span>
+                from{' '}
+                <span className="break-all font-mono" data-testid="pr-source">
+                  {sourcePrefix}
+                  {shortBranch(pull.sourceRefName)}
+                </span>
               </>
             ) : null}{' '}
             · <Time ms={origin?.createdAt || pull.createdAt} prefix={merged || !open ? 'opened ' : ''} />
@@ -1438,7 +1450,7 @@ function PullPage({
                       headOid: pull.headOid,
                     })
                     if (offer.kind === 'hide' || src === null || name === null) return null
-                    const label = `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`
+                    const label = `${sourcePrefix}${name.replace(/^refs\/heads\//, '')}`
                     if (offer.kind === 'explain') return { label, disabled: offer.reason }
                     const head = pull.headOid
                     return { label, run: () => deleteSourceBranch(src, name, head) }
@@ -1725,8 +1737,8 @@ function PullPage({
                 ) : sourceRef && sourceAddr ? (
                   <>
                     Objects live in{' '}
-                    <Link href={repoHref('/repo', sourceAddr)} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
-                      {sourceRef.name}
+                    <Link href={repoHref('/repo', sourceAddr)} className="break-all text-forge-700 underline underline-offset-2 dark:text-forge-400" data-testid="pr-source-repo">
+                      {forkOwnerLabel}/{sourceRef.name}
                     </Link>
                   </>
                 ) : (
