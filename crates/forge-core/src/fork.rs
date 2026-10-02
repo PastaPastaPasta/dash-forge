@@ -20,6 +20,12 @@
 //! the fork's own gates. The session is resumable without a journal: each step checks what
 //! the fork already has (the repo by name, a manifest per pack hash, the refs' current tips)
 //! before writing, so re-running an interrupted fork finishes it and pays for nothing twice.
+//!
+//! **Syncing** a fork (GitHub's "Sync fork", `dg repo sync`, P1-4) fast-forwards one of its
+//! branches to its parent's: the parent's packs the fork does not record yet are recorded the
+//! same way (by reference), then one ref update moves the branch from its tip to the parent's,
+//! naming the old tip as `prevOid`. Only a fast-forward is written ([`sync_decision`]): a fork
+//! branch with commits of its own is never moved, and the user is offered a pull request instead.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -234,13 +240,19 @@ pub fn without_mirror_marker(description: &str) -> String {
 /// resolves to a tip (a diverged ref at its provisional tip) and that the fork does not have
 /// at all. A ref the fork already has is the fork owner's own from then on and is never
 /// moved, so re-running an interrupted fork finishes it without undoing the owner's pushes.
+/// `only_branch` (a short name, `main`): that branch alone, GitHub's "Copy the default branch
+/// only" (`dg repo fork --default-branch-only`; the web's fork dialog offers the same). Parity:
+/// forge-web `planRefs`, vectors `fork_refs__*`.
 pub fn plan_refs(
     parent: &[(String, RefState)],
     fork: &[(String, RefState)],
+    only_branch: Option<&str>,
 ) -> Vec<(String, String)> {
+    let only = only_branch.map(|b| format!("refs/heads/{b}"));
     parent
         .iter()
         .filter(|(name, _)| forkable_ref(name))
+        .filter(|(name, _)| only.as_ref().is_none_or(|o| o == name))
         .filter(|(name, _)| {
             !fork
                 .iter()
@@ -248,6 +260,149 @@ pub fn plan_refs(
         })
         .filter_map(|(name, state)| Some((name.clone(), crate::rules::tip_of(state)?)))
         .collect()
+}
+
+/// What syncing a fork's branch with its parent's branch does (GitHub's "Sync fork").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncDecision {
+    /// The parent's branch has no tip (never pushed, or deleted): nothing to sync with.
+    ParentEmpty,
+    /// Both point at the same commit.
+    UpToDate,
+    /// The fork's branch is behind (its tip is an ancestor of the parent's), or it does not
+    /// exist: it moves to the parent's tip. The only case that writes.
+    FastForward,
+    /// The fork's branch has the parent's tip and commits of its own: nothing to take.
+    Ahead,
+    /// Both moved (or share no history): no fast-forward. The fork's commits are never dropped;
+    /// a pull request into the fork merges the parent's.
+    Diverged,
+}
+
+/// [`SyncDecision`] from the two tips and their ancestry: `fork_in_parent`, the fork's tip is an
+/// ancestor of the parent's (`git merge-base --is-ancestor <fork> <parent>`), `parent_in_fork`
+/// the other way round. Tips compare without regard to case. Parity: forge-web `syncDecision`,
+/// vectors `fork_sync__*`.
+#[must_use]
+pub fn sync_decision(
+    fork_tip: Option<&str>,
+    parent_tip: Option<&str>,
+    fork_in_parent: bool,
+    parent_in_fork: bool,
+) -> SyncDecision {
+    let Some(parent) = parent_tip.filter(|t| !t.is_empty()) else {
+        return SyncDecision::ParentEmpty;
+    };
+    let Some(fork) = fork_tip.filter(|t| !t.is_empty()) else {
+        return SyncDecision::FastForward;
+    };
+    if fork.eq_ignore_ascii_case(parent) {
+        SyncDecision::UpToDate
+    } else if fork_in_parent {
+        SyncDecision::FastForward
+    } else if parent_in_fork {
+        SyncDecision::Ahead
+    } else {
+        SyncDecision::Diverged
+    }
+}
+
+/// The git packs a fork records already: by any of its current maintainers or writers (a sync
+/// may be run by any of them, and a pack is recorded once). A copy recorded by someone who is
+/// no longer one (`roles`: the fork's current members) does not count: its uploader may have
+/// taken that storage down, so the parent's copy is recorded again rather than relied on.
+#[must_use]
+pub fn recorded_packs(fork: &[PackManifestInfo], roles: &RoleMap) -> BTreeSet<[u8; 32]> {
+    use crate::rules::v2::Role;
+    fork.iter()
+        .filter(|m| m.kind == u64::from(crate::pack::KIND_GIT_PACK))
+        .filter(|m| {
+            matches!(
+                roles.get(&m.owner_id),
+                Some(Role::Maintainer | Role::Writer)
+            )
+        })
+        .map(|m| m.pack_hash)
+        .collect()
+}
+
+/// The manifests a sync writes into the fork: one per parent git pack the fork does not record
+/// yet ([`plan_manifests`], [`fork_manifest`]), and the packs no fork could name. When there are
+/// any of those, the branch is not moved: it could name commits the fork cannot serve.
+#[derive(Debug, Clone, Default)]
+pub struct SyncManifests {
+    /// What to write, in the parent's upload order.
+    pub manifests: Vec<PackManifestInput>,
+    /// Packs with no copy a fork could reference.
+    pub unreferenceable: Vec<[u8; 32]>,
+}
+
+/// Plan [`SyncManifests`] from the parent's manifests (with its uploaders' `roles`, reader
+/// order) and the fork's (with the fork's current members, `fork_roles`). Parity: forge-web
+/// `planSyncManifests`.
+pub fn plan_sync_manifests(
+    parent: &RepoRef,
+    parent_manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+    fork_manifests: &[PackManifestInfo],
+    fork_roles: &RoleMap,
+) -> Result<SyncManifests> {
+    let mut out = SyncManifests::default();
+    let has = recorded_packs(fork_manifests, fork_roles);
+    for copies in plan_manifests(parent_manifests, roles, &has) {
+        match fork_manifest(parent, &copies)? {
+            Some(m) => out.manifests.push(m),
+            None => out.unreferenceable.push(copies[0].pack_hash),
+        }
+    }
+    Ok(out)
+}
+
+/// What [`sync_fork`] wrote.
+#[derive(Debug, Clone)]
+pub struct SyncResult {
+    /// Manifests written (the parent's new packs, by reference).
+    pub manifests_written: usize,
+    /// The ref update's document id.
+    pub ref_update: String,
+}
+
+/// Fast-forward `ref_name` in `fork` from `fork_tip` (None: the branch does not exist) to
+/// `parent_tip`: record `plan`'s manifests, then one ref update naming the old tip. The caller
+/// has decided [`SyncDecision::FastForward`] and checked the signer may push the branch.
+/// Refused before any write when some pack has no copy a fork could name. Re-running after an
+/// interruption re-plans from what the fork then records, so nothing is paid for twice.
+pub async fn sync_fork(
+    svc: &RepoService<'_>,
+    fork: &RepoRef,
+    ref_name: &str,
+    fork_tip: Option<&str>,
+    parent_tip: &str,
+    plan: &SyncManifests,
+) -> Result<SyncResult> {
+    fork.require_public("syncing a fork")?;
+    if !plan.unreferenceable.is_empty() {
+        return Err(Error::Config(format!(
+            "{} of the parent's packs have no copy a fork can reference; push the branch from a full clone instead",
+            plan.unreferenceable.len()
+        )));
+    }
+    let new = hex::decode(parent_tip).map_err(|e| Error::Config(format!("parent tip: {e}")))?;
+    let prev = fork_tip
+        .map(hex::decode)
+        .transpose()
+        .map_err(|e| Error::Config(format!("fork tip: {e}")))?;
+    for m in &plan.manifests {
+        svc.write_pack_manifest(fork, m).await?;
+    }
+    let ref_update = svc
+        .write_ref_update(fork, ref_name, &new, prev.as_deref(), false)
+        .await?;
+    Ok(SyncResult {
+        manifests_written: plan.manifests.len(),
+        ref_update,
+    })
 }
 
 /// What [`fork_repo`] did.
@@ -271,6 +426,8 @@ pub struct ForkResult {
 }
 
 /// Fork `parent` as `opts.name` (with `opts.fork_of` set to the parent) under the signer.
+/// `default_branch_only`: copy `opts.default_branch` alone, not every branch and tag
+/// ([`plan_refs`]).
 pub async fn fork_repo(
     client: &PlatformClient,
     identity: &LoadedIdentity,
@@ -278,6 +435,7 @@ pub async fn fork_repo(
     parent: &RepoRef,
     opts: &CreateRepoOpts,
     journal_dir: &std::path::Path,
+    default_branch_only: bool,
 ) -> Result<ForkResult> {
     // RC1 `repo_shape`: a fork is public (`forkIsPublic`) and so is its parent (the `forkOf`
     // reference requires the same visibility). Both are refused here, before anything is signed.
@@ -353,7 +511,11 @@ pub async fn fork_repo(
 
     let mut refs_written = Vec::new();
     let refs_plan = if unreferenceable.is_empty() {
-        plan_refs(&svc.read_refs(parent).await?, &svc.read_refs(&fork).await?)
+        plan_refs(
+            &svc.read_refs(parent).await?,
+            &svc.read_refs(&fork).await?,
+            default_branch_only.then_some(opts.default_branch.as_str()),
+        )
     } else {
         Vec::new()
     };
@@ -571,10 +733,10 @@ mod tests {
             ("refs/heads/dev".to_string(), r("dd")),
         ];
         assert_eq!(
-            plan_refs(&parent, &fork),
+            plan_refs(&parent, &fork, None),
             vec![("refs/heads/new".to_string(), "cc".to_string())]
         );
-        assert_eq!(plan_refs(&parent, &[]).len(), 3);
+        assert_eq!(plan_refs(&parent, &[], None).len(), 3);
     }
 
     #[test]
@@ -616,10 +778,77 @@ mod tests {
             ("refs/mirror/pull/12/head".to_string(), r("cc")),
             ("refs/notes/commits".to_string(), r("dd")),
         ];
-        let names: Vec<String> = plan_refs(&parent, &[])
+        let names: Vec<String> = plan_refs(&parent, &[], None)
             .into_iter()
             .map(|(n, _)| n)
             .collect();
         assert_eq!(names, vec!["refs/heads/master", "refs/tags/v1"]);
+        // GitHub's "Copy the default branch only": that branch, never its tags.
+        assert_eq!(
+            plan_refs(&parent, &[], Some("master")),
+            vec![("refs/heads/master".to_string(), "aa".to_string())]
+        );
+        assert!(plan_refs(&parent, &[], Some("main")).is_empty());
+    }
+
+    #[test]
+    fn a_sync_fast_forwards_only() {
+        use SyncDecision::{Ahead, Diverged, FastForward, ParentEmpty, UpToDate};
+        assert_eq!(sync_decision(Some("aa"), None, false, false), ParentEmpty);
+        assert_eq!(sync_decision(None, Some("bb"), false, false), FastForward);
+        assert_eq!(
+            sync_decision(Some("AA"), Some("aa"), false, false),
+            UpToDate
+        );
+        assert_eq!(
+            sync_decision(Some("aa"), Some("bb"), true, false),
+            FastForward
+        );
+        assert_eq!(sync_decision(Some("aa"), Some("bb"), false, true), Ahead);
+        assert_eq!(
+            sync_decision(Some("aa"), Some("bb"), false, false),
+            Diverged
+        );
+    }
+
+    #[test]
+    fn a_sync_records_only_the_parents_new_packs() {
+        let parent_packs = [
+            manifest("old", 1, 0, 1, &[]),
+            manifest("new", 2, 0, 5, &[]),
+            manifest("ext", 3, 1, 6, &[]),
+        ];
+        // The fork records pack 1 (copied at fork time by a writer, not the syncer), and pack 2
+        // by a former writer, whose copy is not relied on.
+        let writer = "7Ej2YTftCL23mVwvhviak8ZJMmpqcsVj7CU5KPxzyy4h";
+        let fork_packs = [
+            PackManifestInfo {
+                owner_id: writer.into(),
+                ..manifest("f1", 1, 1, 2, &["platform://x"])
+            },
+            PackManifestInfo {
+                owner_id: "gone".into(),
+                ..manifest("f2", 2, 1, 3, &["https://down.example/p2"])
+            },
+        ];
+        let fork_roles: RoleMap = [(writer.to_string(), crate::rules::v2::Role::Writer)].into();
+        assert!(recorded_packs(&fork_packs, &RoleMap::new()).is_empty());
+        let plan = plan_sync_manifests(
+            &parent(),
+            &parent_packs,
+            &RoleMap::new(),
+            &fork_packs,
+            &fork_roles,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.manifests
+                .iter()
+                .map(|m| m.pack_hash)
+                .collect::<Vec<_>>(),
+            vec![[2; 32]]
+        );
+        // Pack 3 has no copy a fork could name.
+        assert_eq!(plan.unreferenceable, vec![[3; 32]]);
     }
 }

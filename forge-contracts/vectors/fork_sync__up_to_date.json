@@ -1,0 +1,13 @@
+{
+  "name": "up_to_date",
+  "description": "Both branches point at the same commit, whatever the case of the hex: nothing to sync.",
+  "case": "fork_sync",
+  "rules": "v2",
+  "input": {
+    "forkTip": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "parentTip": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "forkInParent": false,
+    "parentInFork": false
+  },
+  "expected": "upToDate"
+}

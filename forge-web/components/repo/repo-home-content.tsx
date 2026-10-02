@@ -53,6 +53,7 @@ import { GoToFile } from '@/components/repo/go-to-file'
 import { Oid } from '@/components/ui/oid'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
+import { ForkSyncBar } from '@/components/repo/fork-sync'
 
 /** The ref bar counts at most this many commits (one read each), then shows `100+`. */
 const HOME_COMMIT_COUNT_CAP = 100
@@ -84,10 +85,13 @@ export function RepoHomeContent({
   home,
   addr,
   refParam = '',
+  reload,
 }: {
   home: RepoHome
   addr: RepoAddress
   refParam?: string
+  /** Re-read the repo home (after this page moved a branch: a fork's sync). */
+  reload?: () => void
 }): JSX.Element {
 
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
@@ -109,7 +113,7 @@ export function RepoHomeContent({
         // An annotated tag (a release) is peeled to its commit first (L-01): the listing, the
         // commit count and the commit column all key on the commit.
         <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="commit" label="Reading root tree">
-          {(tip) => <RootBody reader={reader} retry={retry} tipOid={tip.oid} home={home} addr={addr} selected={selected} refParam={refParam} />}
+          {(tip) => <RootBody reader={reader} retry={retry} tipOid={tip.oid} home={home} addr={addr} selected={selected} refParam={refParam} reloadHome={reload} />}
         </ResolvedTip>
       )}
     </BrowseBoundary>
@@ -124,6 +128,7 @@ function RootBody({
   addr,
   selected,
   refParam,
+  reloadHome,
 }: {
   reader: BrowseReader
   /** Re-resolve the browse context ({@link BrowseBoundary}): a tip newer than the reader (L-09). */
@@ -133,6 +138,7 @@ function RootBody({
   addr: RepoAddress
   selected: SelectedRef
   refParam: string
+  reloadHome?: () => void
 }): JSX.Element {
   const { data, loading, error, cause, reload } = useAsync(() => loadRoot(reader, tipOid), [tipOid])
   // `y` pins the home to this commit (README and all), as GitHub's `/tree/<oid>` does.
@@ -190,6 +196,12 @@ function RootBody({
         <Oid value={tipOid} />
         <GoToFile reader={reader} repoKey={key} tipOid={tipOid} rootTree={rootTreeOf} addr={addr} refParam={refParam} className="ml-auto" />
       </div>
+
+      {/* A fork's default branch against its parent's (GitHub's "Sync fork" bar). The fork's
+          own tip: the selected ref's, never a pinned commit's. */}
+      {home.v2.forkOf !== null && selected.pinned === undefined && !selected.isTag && selected.name === home.defaultBranch ? (
+        <ForkSyncBar home={home} addr={addr} forkReader={reader} forkTip={tipOid} reload={reloadHome} />
+      ) : null}
 
       <FileList
         entries={data.entries}

@@ -1,0 +1,13 @@
+{
+  "name": "missing_branch_is_created",
+  "description": "The fork has no such branch: syncing creates it at the parent's tip.",
+  "case": "fork_sync",
+  "rules": "v2",
+  "input": {
+    "forkTip": null,
+    "parentTip": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "forkInParent": false,
+    "parentInFork": false
+  },
+  "expected": "fastForward"
+}
