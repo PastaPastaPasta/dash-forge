@@ -16,7 +16,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { UserPlus } from 'lucide-react'
-import { acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
+import { CONSENT_LAG_RETRIES, acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
 import type { Role } from '@/lib/rules/v2'
 import { ROLE_LABEL, ROLE_SUMMARY, grantableRoles } from '@/lib/rules/roles'
 import { repoHref } from '@/hooks/use-query-param'
@@ -24,7 +24,7 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
-import { readUntil } from '@/lib/view/retry'
+import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -203,7 +203,10 @@ export function Invitations({
   /** The identity an add was refused for because they had not accepted, or null. */
   awaiting: string | null
   disabled: boolean
-  /** The role picked on the page: the invite link names it, and a pending invitation is added as it. */
+  /**
+   * The role picked on the page: the invite link suggests it. A pending invitation is added with
+   * the role its own row picks (QW4-034): the link's role is not on chain, so it can't be known.
+   */
   role: Role
   onPick: (identity: string, role: Role) => void
 }): JSX.Element {
@@ -284,18 +287,127 @@ export function Invitations({
       {pending.length > 0 ? (
         <div className="mt-3" data-testid="pending-invites">
           <h5 className="mb-1 text-[12px] font-medium text-anvil-600 dark:text-anvil-300">Pending invitations (accepted, not added yet)</h5>
-          {pending.map((id) => (
-            <div key={id} className="flex items-center gap-2 py-1">
-              <Author identityId={id} link={false} />
-              <Button size="sm" variant="outline" className="ml-auto" disabled={disabled} onClick={() => onPick(id, role)}>
-                Add as {ROLE_LABEL[role].toLowerCase()}
-              </Button>
-            </div>
-          ))}
+          <ul aria-label="Pending invitations">
+            {pending.map((id) => (
+              <PendingInvite key={id} id={id} visibility={repo.visibility} disabled={disabled} onPick={onPick} />
+            ))}
+          </ul>
         </div>
       ) : null}
       {consents.error ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">Couldn&apos;t read the invitations: {consents.error}</p> : null}
     </>
+  )
+}
+
+/**
+ * One pending invitation: who accepted, a role picker of its own and Add (QW4-034). An accept
+ * records consent only, never the role the invite link suggested, so no role is preselected: a
+ * click can't grant a broader role than the owner meant.
+ */
+function PendingInvite({
+  id,
+  visibility,
+  disabled,
+  onPick,
+}: {
+  id: string
+  visibility: 'public' | 'private'
+  disabled: boolean
+  onPick: (identity: string, role: Role) => void
+}): JSX.Element {
+  const [role, setRole] = useState<Role | null>(null)
+  const selectId = `pending-role-${id}`
+  return (
+    <li className="flex flex-wrap items-center gap-2 py-1" data-testid="pending-invite" data-identity={id}>
+      <Author identityId={id} link={false} />
+      <div className="ml-auto flex items-center gap-2">
+        <label htmlFor={selectId} className="sr-only">
+          Role for {id.slice(0, 8)}…
+        </label>
+        <select
+          id={selectId}
+          data-testid="pending-role"
+          className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-950"
+          value={role ?? ''}
+          disabled={disabled}
+          onChange={(e) => setRole(grantableRoles(visibility).find((r) => r === e.target.value) ?? null)}
+        >
+          <option value="" disabled>
+            Choose a role
+          </option>
+          {grantableRoles(visibility).map((r) => (
+            <option key={r} value={r}>
+              {ROLE_LABEL[r]}
+            </option>
+          ))}
+        </select>
+        <Button size="sm" variant="outline" disabled={disabled || role === null} onClick={() => role !== null && onPick(id, role)}>
+          {role === null ? 'Add' : `Add as ${ROLE_LABEL[role].toLowerCase()}`}
+        </Button>
+      </div>
+    </li>
+  )
+}
+
+/**
+ * Whether `identity` has accepted an invitation to `repo` (their `consent`), read as soon as the
+ * owner has typed a whole identity id (QW4-036: Add used to price and confirm the write before it
+ * found out, then signed nothing). A "none" is re-read as the add itself does
+ * (`CONSENT_LAG_RETRIES`: a node behind a fresh accept), and while a read runs, a re-read
+ * included, nothing is known (null). True for the owner, who needs no consent.
+ */
+export function useInviteAccepted(repo: RepoRef, identity: string | null): { readonly accepted: boolean | null; readonly checking: boolean; readonly error: string | null; readonly recheck: () => void } {
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const own = identity === repo.ownerId
+  const state = useAsync<boolean>(
+    async (signal) => (await retryWhileMissing(() => findConsent(sdk!, repo, identity!), CONSENT_LAG_RETRIES, undefined, signal)) !== null,
+    [ready, repo.repoId, identity ?? '', network],
+    { enabled: ready && sdk !== null && identity !== null && !own },
+  )
+  if (identity === null) return { accepted: null, checking: false, error: null, recheck: state.reload }
+  if (own) return { accepted: true, checking: false, error: null, recheck: state.reload }
+  const checking = !state.settled || state.loading
+  return { accepted: !checking && state.error === null ? state.data : null, checking, error: checking ? null : state.error, recheck: state.reload }
+}
+
+/**
+ * Whether Add may open its confirm for a typed identity: not while the acceptance is being read,
+ * nor once it is known to be missing. A read that failed leaves it to the add, which checks the
+ * acceptance itself before signing.
+ */
+export function mayAdd(check: { readonly accepted: boolean | null; readonly error: string | null }): boolean {
+  return check.accepted === true || (check.accepted === null && check.error !== null)
+}
+
+/** What the add form knows of the typed identity's acceptance: checking, not accepted (with Check again), or a failed read. */
+export function ConsentCheck({ identity, check }: { identity: string | null; check: ReturnType<typeof useInviteAccepted> }): JSX.Element | null {
+  if (identity === null) return null
+  if (check.error !== null) {
+    return (
+      <p role="alert" className="mt-1 text-[12px] text-danger-700 dark:text-danger-400" data-testid="consent-check-error">
+        Couldn&apos;t check whether they accepted: {check.error}{' '}
+        <button type="button" className="underline" onClick={check.recheck}>
+          Try again
+        </button>
+      </p>
+    )
+  }
+  if (check.accepted === null) {
+    return (
+      <p role="status" className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="consent-checking">
+        Checking whether they accepted your invitation…
+      </p>
+    )
+  }
+  if (check.accepted) return null
+  return (
+    <p role="status" className="mt-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="consent-missing">
+      <Author identityId={identity} link={false} /> hasn&apos;t accepted your invitation yet, so they can&apos;t be added. Send them the invite link
+      below; once they accept, they show under Pending invitations.{' '}
+      <button type="button" className="underline" disabled={check.checking} onClick={check.recheck}>
+        Check again
+      </button>
+    </p>
   )
 }
 

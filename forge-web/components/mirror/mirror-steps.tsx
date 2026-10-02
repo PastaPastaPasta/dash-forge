@@ -36,6 +36,7 @@ import {
   RUNNER_KEY_DEFAULTS,
   checkGithubRepo,
   costCapProblem,
+  ACTION_COST_CAP,
   defaultCostCap,
   dfk1,
   latestCommit,
@@ -536,7 +537,9 @@ export function WorkflowStep({
   runnerKey: RunnerKeyRecord | null
   onDone: () => void
 }): JSX.Element {
-  const [collab, setCollab] = useState(true)
+  // Off by default, as in the Action (`sync: code,releases`) and as its own hint advises
+  // (QW4-045): anyone who can open an issue or PR could make a run spend.
+  const [collab, setCollab] = useState(false)
   const [costCap, setCostCap] = useState(() => defaultCostCap(storage.kind, github.sizeKib, PUSH_COST_DASH.perMib))
   // Typed by the person, else the build's commit, else the latest on master.
   const [typed, setCommit] = useState<string | null>(null)
@@ -614,7 +617,12 @@ export function WorkflowStep({
         </h3>
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
-            <Field label="Cost cap per run (DASH)" htmlFor="mirror-cost-cap" hint="A run that would spend more stops before writing.">
+            <Field
+              label="Cost cap per run (DASH)"
+              htmlFor="mirror-cost-cap"
+              // Why it is above the Action's own default (QW4-045).
+              hint={`A run that would spend more stops before writing. The Action's default is ${ACTION_COST_CAP} DASH; the cap suggested here leaves room for the first run, which writes every branch, tag and release (and every issue and PR, if mirrored). Lower it once the mirror is up.`}
+            >
               <Input id="mirror-cost-cap" inputMode="decimal" value={costCap} onChange={(e) => setCostCap(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={capError !== null} />
             </Field>
             {capError ? <Hint tone="danger">{capError}</Hint> : null}

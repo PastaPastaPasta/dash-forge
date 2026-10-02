@@ -2,7 +2,7 @@
 
 /**
  * A Dash deposit address the way wallet and exchange deposit screens show one (QW3-008): a QR
- * code carrying the payment URI, the address with a Copy button, and a link that opens a Dash
+ * code carrying the payment URI, the address (once) with a Copy button, and a link that opens a Dash
  * wallet on the same device with the address and amount filled in. On a phone the QR is no use
  * (the camera is the screen showing it), so Copy and the link are the way to pay.
  *
@@ -27,7 +27,9 @@ export function PaymentAddress({ address, amountDash, label }: { address: string
   return (
     <div className="space-y-2" data-testid="payment-address">
       <div className="flex justify-center">
-        <Qr value={uri} caption={address} label={`${label} ${address}`} />
+        {/* The address is printed once, in the copy field below (QW4-022: twice pushed the
+            faucet link and the deposit status below the fold on a phone). */}
+        <Qr value={uri} caption={null} label={`${label} ${address}`} />
       </div>
       <CopyRow text={address} label={`Copy the ${label.toLowerCase()}`} />
       <a

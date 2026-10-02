@@ -163,13 +163,33 @@ async fn milestone(ctx: &Ctx, repo: &str, number: u64, title: Option<&str>) -> R
         || format!("Take issue #{number} out of its milestone"),
         |t| format!("Put issue #{number} in milestone {t:?}"),
     );
-    ctx.confirm_or_cancel(&format!("{what}? (one small document; members only)"))?;
-    let id = s.collab().set_milestone(&s.repo, &target, title).await?;
+    let price = ctx.usd_price();
+    let quote = crate::quote::event(title.map_or(0, str::len) as u64, false);
+    ctx.confirm_or_cancel(&format!(
+        "{what}? (one event, {}; members only)",
+        cost_line(quote, price)
+    ))?;
+    let collab = s.collab();
+    let (id, spent) = s
+        .metered(|| collab.set_milestone(&s.repo, &target, title))
+        .await?;
     ctx.emit(
-        json!({ "status": if title.is_some() { "set" } else { "cleared" }, "issue": number, "milestone": title, "eventId": id }),
+        json!({
+            "status": if title.is_some() { "set" } else { "cleared" },
+            "issue": number,
+            "milestone": title,
+            "eventId": id,
+            "cost": cost_json(spent, price),
+        }),
         || match title {
-            Some(t) => println!("✓ issue #{number} is in milestone {t}"),
-            None => println!("✓ issue #{number} has no milestone"),
+            Some(t) => println!(
+                "✓ issue #{number} is in milestone {t} · {}",
+                cost_line(spent, price)
+            ),
+            None => println!(
+                "✓ issue #{number} has no milestone · {}",
+                cost_line(spent, price)
+            ),
         },
     );
     Ok(())
@@ -212,20 +232,31 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         );
         return Ok(());
     }
-    ctx.confirm_or_cancel(&format!(
-        "{verb} issue #{number}? (one small document; {who}{note})"
-    ))?;
     // A pin is an event; a lock or unlock is a transition (RC1 kinds 3 / 4).
-    let (key, id) = match flag {
-        Flag::Pin => ("eventId", collab.set_pinned(&s.repo, &target, on).await?),
-        Flag::Lock => (
-            "transitionId",
-            collab.set_locked(&s.repo, &target, on).await?,
-        ),
+    let (doc, quote) = match flag {
+        Flag::Pin => ("one event", crate::quote::event(0, false)),
+        Flag::Lock => ("one transition", crate::quote::TRANSITION),
     };
-    ctx.emit(json!({ "status": done, "issue": number, key: id }), || {
-        println!("✓ {done} issue #{number}");
-    });
+    let price = ctx.usd_price();
+    ctx.confirm_or_cancel(&format!(
+        "{verb} issue #{number}? ({doc}, {}; {who}{note})",
+        cost_line(quote, price)
+    ))?;
+    let ((key, id), spent) = s
+        .metered(|| async {
+            Ok::<_, forge_core::Error>(match flag {
+                Flag::Pin => ("eventId", collab.set_pinned(&s.repo, &target, on).await?),
+                Flag::Lock => (
+                    "transitionId",
+                    collab.set_locked(&s.repo, &target, on).await?,
+                ),
+            })
+        })
+        .await?;
+    ctx.emit(
+        json!({ "status": done, "issue": number, key: id, "cost": cost_json(spent, price) }),
+        || println!("✓ {done} issue #{number} · {}", cost_line(spent, price)),
+    );
     Ok(())
 }
 
@@ -856,12 +887,16 @@ async fn hide(
     } else {
         ("Unhide", "unhid")
     };
+    // The hidden comment is the event's `refId`; the 32-byte `asMaintainer` proof rides along.
+    let price = ctx.usd_price();
+    let quote = crate::quote::event(reason.map_or(0, str::len) as u64 + 32, comment.is_some());
     ctx.confirm_or_cancel(&format!(
-        "{verb} {what}? (one small event; maintainers only; nothing is deleted, and readers can still expand it)"
+        "{verb} {what}? (one event, {}; maintainers only; nothing is deleted, and readers can still expand it)",
+        cost_line(quote, price)
     ))?;
-    let id = s
-        .collab()
-        .set_hidden(&s.repo, &target, comment, reason, on)
+    let collab = s.collab();
+    let (id, spent) = s
+        .metered(|| collab.set_hidden(&s.repo, &target, comment, reason, on))
         .await?;
     ctx.emit(
         json!({
@@ -870,8 +905,9 @@ async fn hide(
             "comment": comment,
             "reason": reason,
             "eventId": id,
+            "cost": cost_json(spent, price),
         }),
-        || println!("✓ {done} {what}"),
+        || println!("✓ {done} {what} · {}", cost_line(spent, price)),
     );
     Ok(())
 }
@@ -942,14 +978,18 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "comment not posted").await?;
     let target = target(&s, repo, number).await?;
     refuse_if_locked(&s, number, &target.id).await?;
-    ctx.confirm_or_cancel(&format!("Comment on issue #{number}? (one small document)"))?;
-    let id = s
-        .collab()
-        .comment(&s.repo, &target.id, body, None, None)
+    let price = ctx.usd_price();
+    ctx.confirm_or_cancel(&format!(
+        "Comment on issue #{number}? (one comment, {})",
+        cost_line(crate::quote::comment(body.len() as u64), price)
+    ))?;
+    let collab = s.collab();
+    let (id, spent) = s
+        .metered(|| collab.comment(&s.repo, &target.id, body, None, None))
         .await?;
     ctx.emit(
-        json!({ "status": "commented", "issue": number, "commentId": id }),
-        || println!("✓ commented on issue #{number}"),
+        json!({ "status": "commented", "issue": number, "commentId": id, "cost": cost_json(spent, price) }),
+        || println!("✓ commented on issue #{number} · {}", cost_line(spent, price)),
     );
     Ok(())
 }
@@ -1087,17 +1127,23 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, closed: Option<ClosedAs>) 
         return Ok(());
     }
     let why = closed.map_or(String::new(), |c| format!(" as {}", closed_words(&c)));
+    let price = ctx.usd_price();
     ctx.confirm_or_cancel(&format!(
-        "{prompt} issue #{number}{why}? (one small document)"
+        "{prompt} issue #{number}{why}? (one transition, {})",
+        cost_line(crate::quote::TRANSITION, price)
     ))?;
-    let change = match &closed {
-        Some(c) => collab.close_as(&s.repo, &target, c).await?,
-        None => {
-            collab
-                .set_state(&s.repo, &target, StateAction::Reopen, None)
-                .await?
-        }
-    };
+    let (change, spent) = s
+        .metered(|| async {
+            match &closed {
+                Some(c) => collab.close_as(&s.repo, &target, c).await,
+                None => {
+                    collab
+                        .set_state(&s.repo, &target, StateAction::Reopen, None)
+                        .await
+                }
+            }
+        })
+        .await?;
     let (state_reason, duplicate_of) = close_reason_json(change.closed_as.as_ref());
     let open_now = collab
         .issue_view(&s.repo, target.number)
@@ -1114,14 +1160,16 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, closed: Option<ClosedAs>) 
             "state": open_now.map(state_word),
             "stateReason": state_reason,
             "duplicateOf": duplicate_of,
+            "cost": cost_json(spent, price),
         }),
         || {
             let why = change
                 .closed_as
                 .map_or(String::new(), |c| format!(" as {}", closed_words(&c)));
             println!(
-                "✓ {done} issue #{number}{why} {}",
-                transition_route_text(change.route)
+                "✓ {done} issue #{number}{why} {} · {}",
+                transition_route_text(change.route),
+                cost_line(spent, price)
             );
             if closed.is_some() && change.closed_as.is_none() {
                 println!(
@@ -1192,10 +1240,15 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
         );
     }
     // a private repo seals the label name into the event's `enc` (private-repos.md §7)
+    let quote: u64 = names
+        .iter()
+        .map(|n| crate::quote::event(n.len() as u64, false))
+        .sum();
     ctx.confirm_or_cancel(&format!(
-        "{} label(s) {} on issue #{number}? (one small document each; members only)",
+        "{} label(s) {} on issue #{number}? (one event each, {}; members only)",
         if add { "Add" } else { "Remove" },
-        names.join(", ")
+        names.join(", "),
+        cost_line(quote, ctx.usd_price())
     ))?;
     let before = s.balance().await;
     let mut ids = Vec::new();
@@ -1385,10 +1438,13 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
             unchanged.join(", ")
         );
     }
+    // An assignee is the event's `value` and its `refId` (the `addressee` index).
+    let quote = ids.len() as u64 * crate::quote::event(44, true);
     ctx.confirm_or_cancel(&format!(
-        "{} {} on issue #{number}? (one small document each; members only)",
+        "{} {} on issue #{number}? (one event each, {}; members only)",
         if add { "Assign" } else { "Unassign" },
-        ids.join(", ")
+        ids.join(", "),
+        cost_line(quote, ctx.usd_price())
     ))?;
     let collab = s.collab();
     let before = s.balance().await;

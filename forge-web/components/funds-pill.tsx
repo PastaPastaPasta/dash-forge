@@ -29,10 +29,13 @@ export function FundsPill(): JSX.Element | null {
       : null
   // The key's budget as Settings and the account menu word it, the balance cap included (QW3-033).
   const keyBudget = keyBudgetWords(keyLimits, balance, creditsAsDash)
+  // The expiry is the key's: without a budget line before it, it says so (QW4-020: "Balance … ·
+  // expires …" read as if the balance expired).
+  const expiry = keyLimits?.expiresAt != null ? `${keyBudget !== null ? 'expires' : "This browser's key expires"} ${formatDate(keyLimits.expiresAt)}` : null
   const tooltip = [
     `Balance ${balanceToDash(balance)} DASH`,
     keyBudget !== null ? `This browser's key: ${keyBudget.left} left${keyBudget.cap !== null ? ` (${keyBudget.cap})` : ''}` : null,
-    keyLimits?.expiresAt != null ? `expires ${formatDate(keyLimits.expiresAt)}` : null,
+    expiry,
   ]
     .filter(Boolean)
     .join(' · ')

@@ -53,7 +53,7 @@ import {
 } from 'lucide-react'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
@@ -98,7 +98,7 @@ import { ROLE_NOUN, capabilitiesOf, memberMayWriteEvent } from '@/lib/rules/role
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
-import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { firstPushers, headUpdatePhrases, type HeadUpdatePhrase } from '@/lib/view/head-updates'
@@ -142,7 +142,7 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
+import { InlineCommentsProvider, SuggestedBody, type SuggestionActions, type ThreadActions } from '@/components/repo/inline-comments'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
 import { BranchCommitCost, BranchRunContext, CommitIdentityPrompt, buildUpdateBranch, useSourceWrite, useSuggestions } from '@/components/repo/branch-commit-panel'
@@ -156,7 +156,8 @@ import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
 import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
-import { cn } from '@/lib/utils'
+import { abbreviate, cn } from '@/lib/utils'
+import { useDpnsName } from '@/hooks/use-dpns-name'
 
 /** No pending review comments (a stable empty list). */
 const NO_DRAFTS: readonly DraftComment[] = []
@@ -440,6 +441,13 @@ function PullPage({
   // The source repo as the suggestions' own write check picks it (a same-repo PR's is this repo).
   const closedSource = open ? null : sourceRef ?? (pull.sourceId === repo.repoId ? repo : null)
   const closedWrite = useSourceWrite(closedSource, pull.sourceRefName)
+  // A fork's head is named by its owner, as GitHub's `user:branch` (QW4-030): "from qa4-proj:feature"
+  // reads as this repo when the fork kept the parent's name.
+  const forkRef = crossRepo ? sourceRef : null
+  const forkOwnerName = useDpnsName(forkRef?.ownerId ?? '')
+  // The owner as the page's identity pills show one: the DPNS name, else the id's first characters.
+  const forkOwnerLabel = forkRef === null ? '' : forkOwnerName ?? abbreviate(forkRef.ownerId)
+  const sourcePrefix = forkSourcePrefix(forkRef === null ? null : { ownerId: forkRef.ownerId, ownerLabel: forkOwnerLabel, name: forkRef.name }, repo)
   const sourceState = useAsync<RefState | null>(
     () =>
       crossRepo
@@ -658,8 +666,9 @@ function PullPage({
   const canResolve = identity !== null && (isAuthor || caps.canResolve) && !writeBlocked && guard.disabledReason === null
   // Stable across renders (the diff's lines re-render only when these change): the handler
   // reads the latest confirm (cost and guard) through a ref.
-  const confirmResolve = useRef(confirmEvent)
-  confirmResolve.current = confirmEvent
+  // A resolve names the thread's root in `refId` (QW4-039).
+  const confirmResolve = useRef((p: Pending): void => confirmEvent(p, withAddressee(eventCost)))
+  confirmResolve.current = (p: Pending): void => confirmEvent(p, withAddressee(eventCost))
   const resolvedKey = review.resolvedThreads.join(',')
   const threadActions = useMemo<ThreadActions>(
     () => ({
@@ -889,15 +898,20 @@ function PullPage({
         return previewCredits(hide.credits + extra * transitionCost.credits)
       }
       case 'labels':
-      case 'assignees':
         return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => previewCreate('event', { value })))
+      // These name an identity, a review or a thread in `refId` (QW4-039: previewed without it).
+      case 'assignees':
+        return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => withAddressee(previewCreate('event', { value }))))
+      case 'request':
+      case 'resolve':
+        return withAddressee(eventCost)
       case 'milestone':
         return previewCreate('event', pending.title === null ? {} : { value: pending.title })
       case 'delete-branch':
       case 'restore-branch':
         return previewCreate('refUpdate')
       case 'dismiss':
-        return previewCreate('event', { value: pending.reason })
+        return withAddressee(previewCreate('event', { value: pending.reason }, eventFirst))
       case 'define-label':
         return previewCredits(
           previewCreate('label', { name: pending.name, color: pending.color, description: pending.description }).credits + previewCreate('event', { value: pending.name }).credits,
@@ -996,7 +1010,7 @@ function PullPage({
   const closedBranch = ((): { label: string; restore: boolean; run: () => Promise<void> } | null => {
     const name = pull.sourceRefName
     if (open || closedSource === null || name === null || (sync?.kind !== 'in-sync' && sync?.kind !== 'deleted')) return null
-    const label = `${crossRepo ? `${closedSource.name}:` : ''}${shortBranch(name)}`
+    const label = `${sourcePrefix}${shortBranch(name)}`
     if (sync.kind === 'deleted') {
       // Who could delete it may restore it: the head is still stored there (only the ref moved).
       const restorable = closedWrite.known && closedWrite.can && closedSource.visibility === 'public' && pull.headOid !== '' && !(closedSource.repoId === repo.repoId && name === pull.baseRefName)
@@ -1094,7 +1108,11 @@ function PullPage({
             ) : pull.sourceRefName ? (
               <>
                 {' '}
-                from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortBranch(pull.sourceRefName)}</span>
+                from{' '}
+                <span className="break-all font-mono" data-testid="pr-source">
+                  {sourcePrefix}
+                  {shortBranch(pull.sourceRefName)}
+                </span>
               </>
             ) : null}{' '}
             · <Time ms={origin?.createdAt || pull.createdAt} prefix={merged || !open ? 'opened ' : ''} />
@@ -1214,8 +1232,9 @@ function PullPage({
       <div className={cn('grid gap-6', tab !== 'files' && 'lg:grid-cols-[minmax(0,1fr)_16rem]')}>
         <div role="tabpanel" aria-label={tab} className="min-w-0 space-y-4">
           {/* A commit to the PR branch that is running (it may be waiting for a storage choice)
-              stays on screen on every tab, not only where it was started. */}
-          {suggest.runner.busy && !(tab === 'files' || (tab === 'conversation' && !(open && pull.state.draft))) ? suggest.runner.view : null}
+              stays on screen on every tab, not only where it was started. On Conversation a batch's
+              shows in the batch bar (QW4-026) and any other above the merge box. */}
+          {suggest.runner.busy && !(tab === 'files' || (tab === 'conversation' && (suggest.runner.at === 'batch' || !(open && pull.state.draft)))) ? suggest.runner.view : null}
           {tab === 'conversation' ? (
             <>
               {threadHidden !== null ? <HiddenBanner hidden={threadHidden} noun="pull request" revealed={threadRevealed} onReveal={() => setThreadRevealed(true)} /> : null}
@@ -1277,6 +1296,8 @@ function PullPage({
                       // The header already says where it points ("commented on …").
                       context: anchorContext(item.comment, false),
                       onShowFiles: () => setTab('files'),
+                      suggestions: suggest.actions,
+                      carry: withCarried,
                     })
                   }
                 />
@@ -1379,7 +1400,10 @@ function PullPage({
                       )}
                     </section>
                   ) : null}
-                  {tab === 'conversation' ? suggest.runner.view : null}
+                  {/* Every run but the batch's (the batch bar shows that one): Conversation does not
+                      render every comment (hidden, collapsed, being edited), so a suggestion's run
+                      shows here rather than under its comment. */}
+                  {tab === 'conversation' && suggest.runner.at !== 'batch' ? suggest.runner.view : null}
                 </>
               )}
             </>
@@ -1432,7 +1456,7 @@ function PullPage({
                       headOid: pull.headOid,
                     })
                     if (offer.kind === 'hide' || src === null || name === null) return null
-                    const label = `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`
+                    const label = `${sourcePrefix}${name.replace(/^refs\/heads\//, '')}`
                     if (offer.kind === 'explain') return { label, disabled: offer.reason }
                     const head = pull.headOid
                     return { label, run: () => deleteSourceBranch(src, name, head) }
@@ -1551,6 +1575,7 @@ function PullPage({
                   </div>
                 ) : null}
               </div>
+              {suggest.bar}
             </>
           ) : tab === 'commits' ? (
             <CommitsTab
@@ -1646,10 +1671,10 @@ function PullPage({
                 canRequest={canRequestReview && open && guard.disabledReason === null}
                 canDismiss={canMember && caps.canDismiss && open}
                 onRequest={(who, remove) => {
-                  confirmEvent({ kind: 'request', who, remove })
+                  confirmEvent({ kind: 'request', who, remove }, withAddressee(eventCost))
                 }}
                 onDismiss={(row, reason) => {
-                  confirmEvent({ kind: 'dismiss', row, reason }, previewCreate('event', { value: reason }, eventFirst))
+                  confirmEvent({ kind: 'dismiss', row, reason }, withAddressee(previewCreate('event', { value: reason }, eventFirst)))
                 }}
               />
             </SidebarSection>
@@ -1718,8 +1743,8 @@ function PullPage({
                 ) : sourceRef && sourceAddr ? (
                   <>
                     Objects live in{' '}
-                    <Link href={repoHref('/repo', sourceAddr)} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
-                      {sourceRef.name}
+                    <Link href={repoHref('/repo', sourceAddr)} className="break-all text-forge-700 underline underline-offset-2 dark:text-forge-400" data-testid="pr-source-repo">
+                      {forkOwnerLabel}/{sourceRef.name}
                     </Link>
                   </>
                 ) : (
@@ -1763,6 +1788,7 @@ function PullPage({
                 {!archived ? (
                   <RoleLimitNote
                     role={viewerRole}
+                    cap="canMerge"
                     what={caps.canLock ? 'merge, mark drafts ready, update heads or dismiss reviews' : 'lock, label, assign or set milestones as a member'}
                     className="mt-2"
                   />
@@ -1979,6 +2005,8 @@ function commentSlots({
   resolved,
   context,
   onShowFiles,
+  suggestions,
+  carry,
 }: {
   item: Extract<TimelineItem, { kind: 'comment' }>
   viewer: string | null
@@ -1997,6 +2025,10 @@ function commentSlots({
   /** An inline comment's heading: its place, markers and code (`AnchorContext`). */
   context: ReactNode
   onShowFiles: () => void
+  /** Apply / Add to batch on a comment's suggestions, as in Files changed (QW4-026). */
+  suggestions: SuggestionActions
+  /** The comment where it is on the head now (carried past an unchanged-lines head move). */
+  carry: (c: CommentView) => CommentView
 }): CommentSlots {
   const c = item.comment
   const tags =
@@ -2039,13 +2071,19 @@ function commentSlots({
     body: (
       <div className="space-y-2 px-4 py-3">
         {context}
-        <MarkdownView source={trustedOrigin(c.origin, c.author, trust ?? null) !== null ? mirroredCommentText(c.body, c.anchor).text : c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
+        <SuggestedBody
+          comment={carry(c)}
+          suggestions={suggestions}
+          source={trustedOrigin(c.origin, c.author, trust ?? null) !== null ? mirroredCommentText(c.body, c.anchor).text : c.body}
+          links={links}
+          imported={importedUrlOf(c.importedRaw)}
+        />
         {replies.map((r) => (
           <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
             <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
               <Byline author={r.author} createdAt={r.createdAt} origin={trustedOrigin(r.origin, r.author, trust ?? null)} link={false} />
             </div>
-            <MarkdownView source={r.body} links={links} imported={importedUrlOf(r.importedRaw)} />
+            <SuggestedBody comment={carry(r)} suggestions={suggestions} links={links} imported={importedUrlOf(r.importedRaw)} />
           </div>
         ))}
         <button type="button" onClick={onShowFiles} className="hit-area text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">

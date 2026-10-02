@@ -1370,13 +1370,20 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     let verb = if close { "Close" } else { "Reopen" };
-    ctx.confirm_or_cancel(&format!("{verb} PR #{number}? (one small document)"))?;
+    let price = ctx.usd_price();
+    ctx.confirm_or_cancel(&format!(
+        "{verb} PR #{number}? (one transition, {})",
+        cost_line(crate::quote::TRANSITION, price)
+    ))?;
     let action = if close {
         StateAction::Close
     } else {
         StateAction::Reopen
     };
-    let change = collab.set_state(&s.repo, &p.target(), action, None).await?;
+    let target = p.target();
+    let (change, spent) = s
+        .metered(|| collab.set_state(&s.repo, &target, action, None))
+        .await?;
     ctx.emit(
         json!({
             "status": if close { "closed" } else { "reopened" },
@@ -1386,12 +1393,14 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
             "kind": change.kind,
             // a closed draft stays a draft (kind 16/17)
             "draft": forge_core::rules::v2::status_of_code(change.after).draft,
+            "cost": cost_json(spent, price),
         }),
         || {
             println!(
-                "✓ {} PR #{number} {}",
+                "✓ {} PR #{number} {} · {}",
                 if close { "closed" } else { "reopened" },
-                transition_route_text(change.route)
+                transition_route_text(change.route),
+                cost_line(spent, price)
             );
         },
     );
@@ -1505,8 +1514,10 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         Some(crate::quote::MergePush {
             history_index: default.is_none_or(|d| git::full_ref(&d) == view.patch.base_ref_name),
             platform_bytes: merge_stores_on_platform(),
-            // A pull request from a fork: its commits go into the base as a new pack.
-            uploads_head: view.patch.source_repo_id != handle.id(),
+            // A pull request from a fork: its commits go into the base as a new pack. A squash
+            // writes a new commit, uploaded the same way (QW4-046: it was left out). A merge
+            // commit is known only once planned: the prompt says new objects come on top.
+            uploads_pack: view.patch.source_repo_id != handle.id() || method == Method::Squash,
         })
     };
     // QW3-021: the open issues the description closes ("Fixes #12"), closed after the merge as
@@ -1530,8 +1541,16 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             "note: this PR was imported: its `Fixes #n` are the source forge's numbers, so no issue here is closed by the merge (the web's merge box maps them)"
         );
     }
+    // A bypass is recorded as one more event naming the rules it bypassed (QW4-046: the quote
+    // left it out, and a squash with `--override-policy` charged 13 % over it).
+    let bypass_quote = if bypassed.is_empty() {
+        0
+    } else {
+        crate::quote::event(bypass_value(&bypassed).len() as u64, false)
+    };
     let merge_quote = crate::quote::merge(push, delete.is_some())
-        + crate::quote::TRANSITION * linked.len() as u64;
+        + crate::quote::TRANSITION * linked.len() as u64
+        + bypass_quote;
     let mut steps = Steps::new(ctx.json);
     if !ctx.json && !not_passing.is_empty() {
         eprintln!(
@@ -2718,14 +2737,17 @@ fn build_merge(
                 }
                 _ => git::git(dir, &["rev-parse", &format!("{head}^{{tree}}")], &[])?,
             };
-            let author = author();
+            // The PR's author (its oldest commit's) authors the squash, the merger commits it,
+            // as GitHub credits a squash (QW4-008); the browser merge does the same.
+            let authors = git::authors(dir, base_tip, head).unwrap_or_default();
+            let author = squash_identity(&authors, author());
             let message = match how.message {
                 Some(m) => m.to_string(),
                 None => squash_message(
                     &view.patch.title,
                     &view.patch.body,
                     view.patch.number,
-                    &git::authors(dir, base_tip, head).unwrap_or_default(),
+                    &authors,
                     &author_line(&author),
                 ),
             };
@@ -2767,21 +2789,72 @@ fn author_line(env: &[(String, String)]) -> String {
     format!("{} <{}>", get("GIT_AUTHOR_NAME"), get("GIT_AUTHOR_EMAIL"))
 }
 
+/// The squash commit's identity environment (QW4-008): the first of `authors` (`Name <email>`,
+/// oldest first: the PR's author) as `GIT_AUTHOR_*`, the merger (`merger`, a
+/// [`git::merge_author`] environment) as `GIT_COMMITTER_*`; the merger as both when there is no
+/// author or it is not an ident git accepts. Parity: forge-web `squashAuthor`.
+pub(crate) fn squash_identity(
+    authors: &[String],
+    merger: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let Some((name, email)) = authors.first().and_then(|a| parse_ident(a)) else {
+        return merger;
+    };
+    merger
+        .into_iter()
+        .map(|(k, v)| match k.as_str() {
+            "GIT_AUTHOR_NAME" => (k, name.clone()),
+            "GIT_AUTHOR_EMAIL" => (k, email.clone()),
+            _ => (k, v),
+        })
+        .collect()
+}
+
+/// git's `crud()` (ident.c; `.` is not one): what `strbuf_addstr_without_crud` strips from both
+/// ends of an ident's name and email.
+fn crud(c: char) -> bool {
+    c <= ' ' || matches!(c, ',' | ':' | ';' | '<' | '>' | '"' | '\\' | '\'')
+}
+
+/// `Name <email>` as git writes it into a commit (crud stripped from both ends of each part), or
+/// `None` when git would refuse it: a stray `<`, `>` or newline, or a part left empty. Parity:
+/// forge-web `parseIdent`, so the CLI and the browser write the same author.
+fn parse_ident(line: &str) -> Option<(String, String)> {
+    let (name, rest) = line.split_once(" <")?;
+    let email = rest.strip_suffix('>')?;
+    if [name, email].iter().any(|v| v.contains(['<', '>', '\n'])) {
+        return None;
+    }
+    let (name, email) = (name.trim_matches(crud), email.trim_matches(crud));
+    (!name.is_empty() && !email.is_empty()).then(|| (name.to_string(), email.to_string()))
+}
+
+/// An author line in the form git writes it, for comparing two of them (the raw line when
+/// unparsable).
+fn canonical_ident(line: &str) -> String {
+    parse_ident(line).map_or_else(|| line.to_string(), |(n, e)| format!("{n} <{e}>"))
+}
+
 /// A squash commit's message (review-parity M1): the PR title with its number, the body, and
-/// a `Co-authored-by` trailer for each commit author other than the committer.
+/// a `Co-authored-by` trailer for each commit author other than the squash commit's own author
+/// (`author`: [`squash_identity`]'s, compared as git writes both).
 pub(crate) fn squash_message(
     title: &str,
     body: &str,
     number: u32,
     authors: &[String],
-    committer: &str,
+    author: &str,
 ) -> String {
     let mut m = format!("{title} (#{number})");
     if !body.trim().is_empty() {
         m.push_str("\n\n");
         m.push_str(body.trim_end());
     }
-    let co: Vec<&String> = authors.iter().filter(|a| *a != committer).collect();
+    let own = canonical_ident(author);
+    let co: Vec<&String> = authors
+        .iter()
+        .filter(|a| canonical_ident(a) != own)
+        .collect();
     if !co.is_empty() {
         m.push_str("\n\n");
         for a in co {
@@ -3892,6 +3965,49 @@ mod tests {
             "Add x (#7)\n\nBody\n\nCo-authored-by: A <a@x>\nCo-authored-by: B <b@x>"
         );
         assert_eq!(squash_message("T", "", 1, &[], "Me <m>"), "T (#1)");
+    }
+
+    #[test]
+    fn a_squash_is_authored_by_the_pr_author_and_committed_by_the_merger() {
+        let merger = || {
+            [
+                ("GIT_AUTHOR_NAME", "Me"),
+                ("GIT_AUTHOR_EMAIL", "me@x"),
+                ("GIT_COMMITTER_NAME", "Me"),
+                ("GIT_COMMITTER_EMAIL", "me@x"),
+            ]
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect::<Vec<_>>()
+        };
+        let env = squash_identity(&["A Person <a@x>".into(), "B <b@x>".into()], merger());
+        assert_eq!(author_line(&env), "A Person <a@x>");
+        assert!(env.contains(&("GIT_COMMITTER_NAME".into(), "Me".into())));
+        assert!(env.contains(&("GIT_COMMITTER_EMAIL".into(), "me@x".into())));
+        // No author, or one git would refuse: the merger is both.
+        assert_eq!(squash_identity(&[], merger()), merger());
+        assert_eq!(
+            squash_identity(&["Bad <x> <b@x>".into()], merger()),
+            merger()
+        );
+        assert_eq!(squash_identity(&[" <b@x>".into()], merger()), merger());
+        assert_eq!(squash_identity(&[",; <b@x>".into()], merger()), merger());
+        // As git writes it (crud stripped from both ends), so dg and the browser agree.
+        let env = squash_identity(&[" John Doe, <\"j@x\">".into()], merger());
+        assert_eq!(author_line(&env), "John Doe <j@x>");
+        let env = squash_identity(&["A Jr. <j@x>".into()], merger());
+        assert_eq!(author_line(&env), "A Jr. <j@x>");
+        // The author is not listed again as a co-author, whatever spacing their line has.
+        assert_eq!(
+            squash_message(
+                "T",
+                "",
+                1,
+                &["A  <a@x>".into(), "B <b@x>".into()],
+                "A <a@x>"
+            ),
+            "T (#1)\n\nCo-authored-by: B <b@x>"
+        );
     }
 
     #[test]

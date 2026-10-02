@@ -58,6 +58,7 @@ import {
   revokeLimitedKey,
   shortId,
   topUpLimitedKey,
+  withKnownRemaining,
   type HeldKey,
   type LimitedKey,
   type LimitedKeyRequest,
@@ -1251,12 +1252,14 @@ export class AuthController {
     const sdk = await this.getSdk()
     // Stamped before the read: a write recorded while it runs is not taken to be in it.
     const balanceReadAt = Date.now()
-    const [identity, keyLimits] = await Promise.all([
+    const [identity, readLimits] = await Promise.all([
       authSdk(sdk).identities.fetch(session.identityId),
       session.keyId === undefined ? Promise.resolve(null) : readKeyLimits(sdk, session.identityId, session.keyId).catch(() => session.keyLimits ?? null),
     ])
     const current = this.state.session
     if (current?.identityId !== session.identityId) return
+    // A node that has not seen the key's budget entry yet does not erase the one known (QW4-020).
+    const keyLimits = current.keyId === session.keyId ? withKnownRemaining(readLimits, current.keyLimits ?? null) : readLimits
     // The same read shows whether this browser's key is still live. Disabled (revoked from
     // another device) or expired on chain: the session ends in every tab, with the kept copy.
     // Replaced by another tab's renewal: this tab picks up the new key (H3). Not shown by this

@@ -19,7 +19,7 @@ import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { keyBudgetWords } from '@/lib/view/funds'
 import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
-import { topUpStays } from '@/components/top-up-stays'
+import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { KeyRevokeDialog } from '@/components/key-revoke-dialog'
 import { PendingRenewal } from '@/components/pending-renewal'
@@ -28,7 +28,7 @@ import { useConfirmAction, type ConfirmActionOptions } from '@/components/ui/con
 /** Shown before deleting a stored key: for a wallet-granted key this is the only copy. */
 export const FORGET_CONFIRM: ConfirmActionOptions = {
   title: "Forget this browser's key?",
-  body: "This deletes the key from this device. It does not revoke it: the key stays valid on chain until it expires, and a wallet key never expires (use \"Revoke on chain\" or \"Disable key on chain\" for that). You will need your identity file, recovery phrase or wallet to sign in here again.",
+  body: `This deletes the key from this device. It does not revoke it: the key stays valid on chain until it expires, and a wallet key never expires (use "Revoke on chain" or "Disable key on chain" for that). You will need your identity file, recovery phrase or wallet to sign in here again. ${FORGET_DELETES}`,
   confirmLabel: 'Forget key',
 }
 

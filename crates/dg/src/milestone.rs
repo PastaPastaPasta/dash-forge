@@ -7,6 +7,7 @@ use serde_json::json;
 
 use crate::common::{Reader, Session};
 use crate::context::Ctx;
+use crate::fmt::{cost_json, cost_line};
 use crate::MilestoneCommand;
 use forge_core::rules::v2::{fold_thread_meta_v2, MilestoneItem};
 
@@ -111,20 +112,31 @@ async fn define(
     closed: bool,
 ) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "milestone not changed").await?;
+    let price = ctx.usd_price();
+    let quote = crate::quote::milestone_definition((title.len() + description.len()) as u64);
     ctx.confirm_or_cancel(&format!(
-        "Define milestone {title:?} in {}? (one small document; maintainers, writers and triage members)",
-        s.repo.display()
+        "Define milestone {title:?} in {}? (one document, {}; maintainers, writers and triage members)",
+        s.repo.display(),
+        cost_line(quote, price)
     ))?;
-    let id = s
-        .collab()
-        .define_milestone(&s.repo, title, description, due_on, closed)
+    let collab = s.collab();
+    let (id, spent) = s
+        .metered(|| collab.define_milestone(&s.repo, title, description, due_on, closed))
         .await?;
     ctx.emit(
-        json!({ "status": "defined", "title": title, "closed": closed, "documentId": id, "id": id }),
+        json!({
+            "status": "defined",
+            "title": title,
+            "closed": closed,
+            "documentId": id,
+            "id": id,
+            "cost": cost_json(spent, price),
+        }),
         || {
             println!(
-                "✓ milestone {title} {}",
-                if closed { "closed" } else { "defined" }
+                "✓ milestone {title} {} · {}",
+                if closed { "closed" } else { "defined" },
+                cost_line(spent, price)
             );
         },
     );

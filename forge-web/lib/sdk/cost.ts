@@ -96,7 +96,9 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   issue: 59_000_000,
   patch: 72_000_000,
   comment: 52_000_000,
-  event: 43_000_000,
+  // 43.2M steady on moutai; 51.7M on sakura (Platform 5.0.0-beta.1, QA wave 4: a label removed
+  // in a thread that had events, with RC2's claimed role), which this covers.
+  event: 49_500_000,
   authorEvent: 41_500_000,
   // Bonsia (QA wave 3): 47.3M–56.5M in a thread that has one; a thread's first, and the repo's
   // first of its kind, add their subtrees (74.1M for both, QA wave 2).
@@ -457,6 +459,25 @@ export function previewCreate(
 ): CostPreview {
   const credits = estimateCreateCredits(documentType, data, first)
   return previewCredits(credits, admissionFor(documentType, textBytes(data), credits))
+}
+
+/**
+ * What an `event` naming an identity or an item in `refId` (an assignment, a review request or
+ * dismissal, a thread resolve, a hide of one comment) pays beyond one that names none: the
+ * 32-byte id and its entry in the sparse `addressee (refId)` index, with that addressee's
+ * subtree. Measured on sakura (Platform 5.0.0-beta.1, QA wave 4, QW4-039), where the previews
+ * left it out: an assignment 67.3M–67.4M (previewed 46.9M), a review request 74.0M (54.4M), a
+ * thread resolve 66.0M (45.6M), beside label events of 51.7M–59.4M in the same threads.
+ */
+export const ADDRESSEE_CREDITS = 16_000_000
+
+/** `preview` of an event that also names an addressee in `refId` ({@link ADDRESSEE_CREDITS}). */
+export function withAddressee(preview: CostPreview): CostPreview {
+  const extra = Math.ceil(ADDRESSEE_CREDITS * HEADROOM)
+  return previewCredits(preview.credits + extra, {
+    budget: preview.admit.budget + extra,
+    balance: preview.admit.balance + extra,
+  })
 }
 
 /** Estimated credits for a document that also stores `byteLen` bytes of byte-array fields. */

@@ -46,7 +46,7 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
     }
 }
 
-/// A membership document or a member delete (`dg collab`), estimated.
+/// A member delete (`dg collab remove`), estimated. A grant is `quote::MEMBER_GRANT`.
 const MEMBER_DOC_ESTIMATE_CREDITS: u64 = 20_000_000;
 /// How long `dg collab remove` waits for the deleted role to leave a proved read before it
 /// rotates: attempts, and the pause between them.
@@ -117,8 +117,9 @@ async fn accept(ctx: &Ctx, repo: &str, withdraw: bool) -> Result<()> {
         return Ok(());
     }
     if !ctx.confirm(&format!(
-        "Accept membership of {}? Its owner can then add you as a member (one small document)",
-        handle.display()
+        "Accept membership of {}? Its owner can then add you as a member (one document, {})",
+        handle.display(),
+        cost_line(crate::quote::CONSENT, ctx.usd_price())
     ))? {
         return Err(crate::errors::cancelled());
     }
@@ -223,16 +224,21 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             }
         }
     }
+    // QW4-049: the public add said "(one small document)" with no estimate; both were quoted
+    // at 20M, under the 48.1M sakura charged.
     let what = if private {
         format!(
             "a membership document + a key wrap, {}",
             cost_line(
-                MEMBER_DOC_ESTIMATE_CREDITS + crate::keys::WRAP_ESTIMATE_CREDITS,
+                crate::quote::MEMBER_GRANT + crate::keys::WRAP_ESTIMATE_CREDITS,
                 ctx.usd_price()
             )
         )
     } else {
-        "one small document".to_string()
+        format!(
+            "one membership document, {}",
+            cost_line(crate::quote::MEMBER_GRANT, ctx.usd_price())
+        )
     };
     let question = match change_from {
         Some(from) => format!(

@@ -144,6 +144,18 @@ export function urlHost(url: string): string {
   }
 }
 
+/**
+ * How a fork PR's head branch is named before its branch (QW4-030), as GitHub's `user:branch`:
+ * the fork's owner (`ownerLabel`, a DPNS name or short id), and its name too when it differs from
+ * the base repo's (`owner/name:`); only the name when the owner forked their own repo. Empty for a
+ * same-repo PR (`fork` null).
+ */
+export function forkSourcePrefix(fork: { readonly ownerId: string; readonly ownerLabel: string; readonly name: string } | null, base: { readonly ownerId: string; readonly name: string }): string {
+  if (fork === null) return ''
+  if (fork.ownerId === base.ownerId) return `${fork.name}:`
+  return fork.name === base.name ? `${fork.ownerLabel}:` : `${fork.ownerLabel}/${fork.name}:`
+}
+
 /** A short, readable identity fallback when no DPNS name is known. */
 export function shortIdentity(id: string, chars = 6): string {
   if (id.length <= chars * 2 + 1) return id

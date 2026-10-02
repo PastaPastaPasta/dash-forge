@@ -183,7 +183,7 @@ Fix: for the first, sign in again, replacing the key in use (`dg auth status` sh
 
 **No key for this private repository.** No `repoKey` wrap from a current maintainer opens this repository for your identity: you are not a member, you were removed, or a maintainer added you and has not wrapped the key to you yet.
 
-Fix: ask a maintainer to add you (`dg collab add <owner>/<repo> <your identity id>`). If you are a member already, ask a maintainer to run `dg repo keys repair <owner>/<repo>`, which wraps the key to every member that has none.
+Fix: not a member yet? Run `dg collab accept <owner>/<repo>` first (your consent, as the web app's **Accept**; the add is refused without it), then ask the owner to add you: `dg collab add <owner>/<repo> <your identity id> --role <role>`. `dg` prints both commands with the repository and your identity id filled in. If you are a member already, ask a maintainer to run `dg repo keys repair <owner>/<repo>`, which wraps the key to every member that has none. Removed? What was written after your removal is sealed to keys you are not given.
 
 ## E308
 
@@ -380,7 +380,7 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 ## E702
 
-**Dash Forge not deployed on this network.** The embedded `forge-contracts/deployments/<network>.json` records no registered forge-v2 contracts (forge-core, forge-collab, forge-community and their contract group), so there is nothing to read or write. The tools never fall back to another network's contracts. Forge targets devnet sakura, whose forge-v2 registration (RC2, Platform v5.0.0-beta.1) is in progress; testnet and mainnet follow once they run Platform protocol 14.
+**Dash Forge not deployed on this network.** The embedded `forge-contracts/deployments/<network>.json` records no registered forge-v2 contracts (forge-core, forge-collab, forge-community and their contract group), so there is nothing to read or write. The tools never fall back to another network's contracts. Forge targets devnet sakura, where forge-v2 (RC2, Platform v5.0.0-beta.1) is registered and live; testnet and mainnet follow once they run Platform protocol 14.
 
 Fix: use a network with a deployment. For `dg`, pass `--network devnet --devnet-name sakura` (`dg auth new` and `dg auth login` record it as the default). For `git clone` / `git push`, the helper takes the network from `DASH_FORGE_NETWORK`, then git config `dash.network` / `dash.devnetName`, then the network `dg` recorded, so set one of those: `git config --global dash.network devnet && git config --global dash.devnetName sakura`, or `git clone -c dash.network=devnet -c dash.devnetName=sakura dash://…` for one clone. See [the mainnet runbook](mainnet-runbook.md).
 

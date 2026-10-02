@@ -32,7 +32,8 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { NETWORKS, type Network } from '../constants'
 import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type CompositeResult, type CompositeSub } from '../sdk/composite'
 import { IncompleteReadError, queryAllDocuments, queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
-import { statusOfCode } from '../rules/transition'
+import { ISSUE_CLOSE, closeReasonOf, statusOfCode, type CloseReason } from '../rules/transition'
+import { compareKey } from '../rules/oid'
 import { DOC, asIdentifierString, num, repoKey, str, type RepoRef } from './contract'
 import { EMPTY_LOG, feedQuery, groupFeed, onRepoInvalidated, readRepoFeedFrom, repoEpoch, sharedRepoCounts, sharedRepoFeed, toLog, type TargetLog } from './issues'
 import { newestLabels, type LabelDef } from './labels'
@@ -40,7 +41,7 @@ import { HiddenTally, gateFor, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { newScan, readScanPage, scanCodes, scanFloor, settledCode, type StateScan } from './state-scan'
-import { readStateCodes, type readRepoCounts } from './transitions'
+import { readStateCodes, transitionOf, type readRepoCounts, type TransitionView } from './transitions'
 
 /** The repo's proved issue and PR totals by state ({@link repoCountsOf}). */
 export type RepoCounts = Awaited<ReturnType<typeof readRepoCounts>>
@@ -156,6 +157,8 @@ export interface ListIndex<Row extends RowExtras> {
   readonly byAuthor: Map<string, Set<string>>
   /** Targets per transition kind set, once read. */
   readonly byKinds: Map<string, Set<string> | null>
+  /** The repo's transitions of one kind, once read (null: too many). */
+  readonly byKind: Map<number, readonly TransitionView[] | null>
   /** The repo's proved counts, read once per index (a write drops the index). */
   counts?: Promise<RepoCounts>
   readonly gate: ContentGate
@@ -483,6 +486,7 @@ async function loadListIndex<Row extends RowExtras>(
     all: false,
     byAuthor: new Map(),
     byKinds: new Map(),
+    byKind: new Map(),
     gate: gateFor(repo),
     view,
   }
@@ -607,23 +611,59 @@ export function transitionTargets<Row extends RowExtras>(sdk: EvoSDK, index: Lis
     const cached = index.byKinds.get(key)
     if (cached !== undefined) return cached
     let out: Set<string> | null = new Set()
-    try {
-      for (const kind of kinds) {
-        const docs = await queryAllDocuments(
-          sdk,
-          repoSource(index.repo).repoQuery(DOC.transition, { where: [['kind', '==', kind]], orderBy: [['kind', 'asc']] }),
-          { maxPages: KIND_MAX_PAGES },
-        )
-        for (const d of docs) {
-          const id = asIdentifierString(d['targetId'])
-          if (id !== '') out.add(id)
-        }
+    for (const kind of kinds) {
+      const docs = await kindTransitions(sdk, index, kind)
+      if (docs === null) {
+        out = null
+        break
       }
-    } catch (e) {
-      if (!(e instanceof IncompleteReadError)) throw e
-      out = null
+      for (const t of docs) if (t.targetId !== '') out.add(t.targetId)
     }
     index.byKinds.set(key, out)
+    return out
+  })
+}
+
+/**
+ * Every transition of one `kind` in the repo (`perRepoKind`), read once per index; null when there
+ * are more than {@link KIND_MAX_PAGES} pages. Runs inside the index's queue (its callers' `serial`).
+ */
+async function kindTransitions<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, kind: number): Promise<readonly TransitionView[] | null> {
+  const cached = index.byKind.get(kind)
+  if (cached !== undefined) return cached
+  let out: TransitionView[] | null
+  try {
+    const docs = await queryAllDocuments(
+      sdk,
+      repoSource(index.repo).repoQuery(DOC.transition, { where: [['kind', '==', kind]], orderBy: [['kind', 'asc']] }),
+      { maxPages: KIND_MAX_PAGES },
+    )
+    out = docs.map(transitionOf)
+  } catch (e) {
+    if (!(e instanceof IncompleteReadError)) throw e
+    out = null
+  }
+  index.byKind.set(kind, out)
+  return out
+}
+
+/**
+ * The issues whose newest close says `reason` (`reason:`, QW4-028): from the repo's issue-close
+ * transitions, the same read as the Closed tab's candidates. A close that gives no reason is a
+ * completed one, as its icon says. The newest close is the current reason only while the issue is
+ * closed: the caller checks the row's state. Null when there are too many closes to read.
+ */
+export function closedWithReason<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, reason: CloseReason): Promise<Set<string> | null> {
+  return serial(index, async () => {
+    const closes = await kindTransitions(sdk, index, ISSUE_CLOSE)
+    if (closes === null) return null
+    const newest = new Map<string, TransitionView>()
+    for (const t of closes) {
+      const seen = newest.get(t.targetId)
+      if (seen === undefined || compareKey(t, seen) > 0) newest.set(t.targetId, t)
+    }
+    const out = new Set<string>()
+    for (const [id, t] of newest) if ((closeReasonOf(t, 0)?.reason ?? 'completed') === reason) out.add(id)
     return out
   })
 }

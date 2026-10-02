@@ -4,6 +4,8 @@
  * - QW-065: with no commit name and email set, Apply and "Add to batch" still show (Apply
  *   disabled), and the name and email are set right there, not by a trip to Settings that would
  *   lose the batch;
+ * - QW4-026: in Conversation, a review comment's suggestion offers the same Apply and "Add to
+ *   batch", not only "View in Files changed";
  * - QW-067: the line composer offers "Insert a suggestion" (pre-filled with the lines) and a
  *   Preview that shows it as the diff it will be, and a pending comment's suggestion shows the
  *   lines it replaces, not only the + lines.
@@ -19,7 +21,7 @@ import { lineKey } from '@/lib/view/inline-threads'
 import { PREFS_KEY } from '@/lib/view/prefs'
 import { linesAt, type SuggestionAnchor } from '@/lib/view/suggest-block'
 import { InlineCommentsContext } from '@/components/repo/diff-view'
-import { InlineCommentsProvider, type PendingReview, type SuggestionActions } from './inline-comments'
+import { InlineCommentsProvider, SuggestedBody, type PendingReview, type SuggestionActions } from './inline-comments'
 
 vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
@@ -176,5 +178,30 @@ describe('writing a suggestion (QW-067)', () => {
     const shown = host.querySelector('[data-testid="pending-comment"]')!
     expect(shown.querySelector('[data-kind="removed"]')?.textContent).toContain('echo "HELLO, $name"')
     expect(shown.querySelector('[data-kind="added"]')?.textContent).toContain('echo "HELLO, $name!"')
+  })
+})
+
+describe('a suggestion in Conversation (QW4-026)', () => {
+  it('offers Apply and Add to batch, and applies and batches', () => {
+    const onApply = vi.fn()
+    const onToggleBatch = vi.fn()
+    // The text the page shows (a mirrored comment's, its banner stripped) still carries the suggestion.
+    act(() => root.render(<SuggestedBody comment={suggestion} suggestions={actions({ onApply, onToggleBatch })} source={`Mirrored.\n\n${suggestion.body}`} />))
+    expect(host.textContent).toContain('Mirrored.')
+    // The suggestion renders as the diff of the line it replaces.
+    expect(host.textContent).toContain('echo "HELLO, $name"')
+    expect(host.textContent).toContain('echo "HELLO, $name!"')
+    act(() => button('Apply suggestion')!.click())
+    expect(onApply).toHaveBeenCalledWith(suggestion)
+    act(() => button('Add to batch')!.click())
+    expect(onToggleBatch).toHaveBeenCalledWith(suggestion)
+  })
+
+  it('is plain Markdown without suggestion actions, and says "Applied in" once applied', () => {
+    act(() => root.render(<SuggestedBody comment={{ ...suggestion, body: 'No suggestion here.' }} suggestions={actions()} />))
+    expect(host.querySelector('[data-testid="suggestion-actions"]')).toBeNull()
+    act(() => root.render(<SuggestedBody comment={suggestion} suggestions={actions({ applied: new Map([['c1', 'b'.repeat(40)]]) })} />))
+    expect(host.querySelector('[data-testid="suggestion-applied"]')?.textContent).toContain('Applied in')
+    expect(button('Apply suggestion')).toBeUndefined()
   })
 })

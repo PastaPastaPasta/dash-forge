@@ -111,7 +111,7 @@ test('t1. Trending this week matches a recount of the seeded stars in the window
 
   // Today: the newest window, same check.
   await section.getByTestId('trending-today').click()
-  await expect(section.getByRole('heading', { name: 'Trending today' })).toBeVisible()
+  await expect(section.getByRole('heading', { name: 'Trending today (UTC)' })).toBeVisible()
   const todayRecount = recount(seed.beats, Date.now(), 'newest')
   if (todayRecount.length > 0) {
     await expect(section.getByTestId('ranked-row').first()).toBeVisible({ timeout: 60_000 })

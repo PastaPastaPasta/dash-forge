@@ -17,7 +17,7 @@ use forge_core::user_error::{codes, UserError};
 use super::{estimate, event_estimate, open_pr, open_pr_read, Est, Pr};
 use crate::common::{resolve_identity, Session};
 use crate::context::Ctx;
-use crate::fmt::{cost_line, route_text, safe, short, transition_route_text};
+use crate::fmt::{cost_json, cost_line, route_text, safe, short, transition_route_text};
 use crate::git;
 
 /// The route an event of `kind` by the signer takes, or E601 before anything is signed.
@@ -56,17 +56,20 @@ fn verb(kind: EventKind) -> &'static str {
     }
 }
 
-/// Confirm and post one event of `kind` on the PR; returns its route and id.
+/// Confirm and post one event of `kind` on the PR; returns its route, its id and what it paid.
 async fn post(
     ctx: &Ctx,
     pr: &Pr,
     kind: EventKind,
     payload: &EventPayload<'_>,
     what: &str,
-) -> Result<(StateRoute, String)> {
+) -> Result<(StateRoute, String, u64)> {
     let collab = pr.s.collab();
     let route = route_for(&collab, &pr.s.repo, &pr.view, kind).await?;
-    let est = event_estimate(route, payload.value.map_or(0, str::len));
+    // An event naming a reviewer, a thread or a review in `refId` also writes its `addressee`
+    // index entry (QW4-039: a review request and a resolve were quoted ~20M under).
+    let addressee = payload.ref_id.map_or(0, |_| crate::quote::ADDRESSEE_EXTRA);
+    let est = event_estimate(route, payload.value.map_or(0, str::len)) + addressee;
     ctx.confirm_or_cancel(&format!(
         "{what}? (one {}, {})",
         match route {
@@ -75,9 +78,11 @@ async fn post(
         },
         cost_line(est, ctx.usd_price())
     ))?;
-    Ok(collab
-        .post_target_event(&pr.s.repo, &pr.view.patch.target(), kind, payload)
-        .await?)
+    let target = pr.view.patch.target();
+    let ((route, id), spent) =
+        pr.s.metered(|| collab.post_target_event(&pr.s.repo, &target, kind, payload))
+            .await?;
+    Ok((route, id, spent))
 }
 
 /// Print a no-op and emit its JSON.
@@ -216,7 +221,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Res
         return Ok(());
     }
     let oid = hex::decode(&new_head).context("head oid")?;
-    let (route, id) = post(
+    let (route, id, spent) = post(
         ctx,
         &pr,
         EventKind::HeadUpdate,
@@ -240,13 +245,15 @@ pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Res
             "headOid": new_head,
             "via": route,
             "eventId": id,
+            "cost": cost_json(spent, ctx.usd_price()),
         }),
         || {
             println!(
-                "✓ PR #{number} head {} → {} {}",
+                "✓ PR #{number} head {} → {} {} · {}",
                 short(&pr.view.head),
                 short(&new_head),
-                route_text(route)
+                route_text(route),
+                cost_line(spent, ctx.usd_price())
             );
         },
     );
@@ -284,7 +291,10 @@ pub async fn set_draft(ctx: &Ctx, repo: &str, number: u64, draft: bool) -> Resul
         "Mark PR #{number} {word}? (one transition, {})",
         cost_line(est, ctx.usd_price())
     ))?;
-    let change = collab.set_state(&pr.s.repo, &target, action, None).await?;
+    let (change, spent) =
+        pr.s.metered(|| collab.set_state(&pr.s.repo, &target, action, None))
+            .await?;
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": if draft { "draft" } else { "ready" },
@@ -294,11 +304,13 @@ pub async fn set_draft(ctx: &Ctx, repo: &str, number: u64, draft: bool) -> Resul
             "via": change.route,
             "transitionId": change.transition_id,
             "kind": change.kind,
+            "cost": cost_json(spent, price),
         }),
         || {
             println!(
-                "✓ PR #{number} is {word} {}",
-                transition_route_text(change.route)
+                "✓ PR #{number} is {word} {} · {}",
+                transition_route_text(change.route),
+                cost_line(spent, price)
             );
         },
     );
@@ -330,10 +342,13 @@ pub async fn set_locked(ctx: &Ctx, repo: &str, number: u64, lock: bool) -> Resul
     ))?;
     let collab = pr.s.collab();
     let target = pr.view.patch.target();
-    let id = collab.set_locked(&pr.s.repo, &target, lock).await?;
+    let (id, spent) =
+        pr.s.metered(|| collab.set_locked(&pr.s.repo, &target, lock))
+            .await?;
+    let price = ctx.usd_price();
     ctx.emit(
-        json!({ "status": done, "pr": number, "locked": lock, "transitionId": id }),
-        || println!("✓ {done} PR #{number}"),
+        json!({ "status": done, "pr": number, "locked": lock, "transitionId": id, "cost": cost_json(spent, price) }),
+        || println!("✓ {done} PR #{number} · {}", cost_line(spent, price)),
     );
     Ok(())
 }
@@ -371,13 +386,17 @@ pub async fn hide(
     } else {
         ""
     };
+    // The hidden item is the event's `refId`; the 32-byte `asMaintainer` proof rides along.
+    let price = ctx.usd_price();
+    let quote = crate::quote::event(reason.map_or(0, str::len) as u64 + 32, item.is_some());
     ctx.confirm_or_cancel(&format!(
-        "{verb} {what}? (one small event; maintainers only; nothing is deleted{review_note})"
+        "{verb} {what}? (one event, {}; maintainers only; nothing is deleted{review_note})",
+        cost_line(quote, price)
     ))?;
     let target = pr.view.patch.target();
-    let id =
-        pr.s.collab()
-            .set_hidden(&pr.s.repo, &target, item.map(|(_, id)| id), reason, on)
+    let collab = pr.s.collab();
+    let (id, spent) =
+        pr.s.metered(|| collab.set_hidden(&pr.s.repo, &target, item.map(|(_, id)| id), reason, on))
             .await?;
     ctx.emit(
         json!({
@@ -386,8 +405,9 @@ pub async fn hide(
             "item": item.map(|(_, id)| id),
             "reason": reason,
             "eventId": id,
+            "cost": cost_json(spent, price),
         }),
-        || println!("✓ {done} {what}"),
+        || println!("✓ {done} {what} · {}", cost_line(spent, price)),
     );
     Ok(())
 }
@@ -433,7 +453,7 @@ pub async fn resolve(
     } else {
         EventKind::ThreadUnresolve
     };
-    let (route, id) = post(
+    let (route, id, spent) = post(
         ctx,
         &pr,
         kind,
@@ -457,12 +477,14 @@ pub async fn resolve(
             "resolved": resolve,
             "via": route,
             "eventId": id,
+            "cost": cost_json(spent, ctx.usd_price()),
         }),
         || {
             println!(
-                "✓ {word} the conversation {} {}",
+                "✓ {word} the conversation {} {} · {}",
                 short(&root),
-                route_text(route)
+                route_text(route),
+                cost_line(spent, ctx.usd_price())
             );
         },
     );
@@ -529,7 +551,7 @@ pub async fn request_review(
             continue;
         }
         let re = add && standing.is_some();
-        let (route, ev) = post(
+        let (route, ev, spent) = post(
             ctx,
             &pr,
             kind,
@@ -550,12 +572,14 @@ pub async fn request_review(
         )
         .await?;
         results.push(json!({ "reviewer": id, "input": who, "written": true,
-            "status": if re { "re_requested" } else { word }, "via": route, "eventId": ev }));
+            "status": if re { "re_requested" } else { word }, "via": route, "eventId": ev,
+            "cost": cost_json(spent, ctx.usd_price()) }));
         if !ctx.json {
             println!(
-                "✓ {} {id} {}",
+                "✓ {} {id} {} · {}",
                 if re { "re-requested" } else { word },
-                route_text(route)
+                route_text(route),
+                cost_line(spent, ctx.usd_price())
             );
         }
     }
@@ -604,7 +628,7 @@ pub async fn dismiss(
         );
         return Ok(());
     }
-    let (route, id) = post(
+    let (route, id, spent) = post(
         ctx,
         &pr,
         EventKind::ReviewDismiss,
@@ -630,8 +654,16 @@ pub async fn dismiss(
             "reason": reason,
             "via": route,
             "eventId": id,
+            "cost": cost_json(spent, ctx.usd_price()),
         }),
-        || println!("✓ dismissed {}'s review {}", r.reviewer, short(review_id)),
+        || {
+            println!(
+                "✓ dismissed {}'s review {} · {}",
+                r.reviewer,
+                short(review_id),
+                cost_line(spent, ctx.usd_price())
+            );
+        },
     );
     Ok(())
 }
