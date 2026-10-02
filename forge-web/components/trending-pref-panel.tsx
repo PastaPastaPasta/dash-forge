@@ -26,7 +26,7 @@ export function TrendingPrefPanel(): JSX.Element {
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="trending-pref">
         Your stars count toward Trending on Explore for the week they were made. On this network a star carries that week itself, so there is
         nothing to turn off; unstarring takes the star away, but not the week it already counted in. Trending leaves out private repos, and
-        your star on a repo of your own while the repo is less than a week old.
+        your star on a repo of your own while the repo is newer than the window (under a week old for This week).
       </p>
     )
   }

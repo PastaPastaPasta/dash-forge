@@ -24,8 +24,10 @@ import {
   readTrending,
   selfStarDecidable,
   setTrendingPref,
+  trendingNote,
   trendingPref,
   trendingWindowOf,
+  trendingWindowStart,
   type TrendingRepo,
 } from './trending'
 
@@ -237,5 +239,37 @@ describe('readOwnerStars with the batched lookup', () => {
     const { sdk, reads } = counting([R1])
     expect([...(await readOwnerStars(sdk, FORGE, pairs))]).toEqual([R1])
     expect(reads()).toBe(2)
+  })
+})
+
+describe('the Trending window in words (QW4-018, QW4-019)', () => {
+  // 2026-10-02 02:16 UTC, a Friday: the QA repro's clock.
+  const NOW = Date.UTC(2026, 9, 2, 2, 16)
+
+  it('names "today" as the UTC day so far, with the local start when it differs', () => {
+    expect(trendingWindowStart('today', NOW, 'UTC')).toBe('00:00 UTC')
+    expect(trendingWindowStart('today', NOW, 'America/New_York')).toBe('00:00 UTC (8:00 PM your time)')
+    expect(trendingWindowStart('today', NOW, 'Asia/Tokyo')).toBe('00:00 UTC (9:00 AM your time)')
+  })
+
+  it('names the week by the UTC day it began, six days before today', () => {
+    expect(trendingWindowStart('week', NOW, 'UTC')).toBe('Sat, Sep 26, 00:00 UTC')
+    expect(trendingWindowStart('week', NOW, 'America/New_York')).toBe('Sat, Sep 26, 00:00 UTC (Fri, Sep 25, 8:00 PM your time)')
+  })
+
+  it('describes the fused star without an opt-out, and the beat shape with it', () => {
+    const fused = trendingNote('fused', 'week', NOW, 'UTC')
+    expect(fused).toContain('there is nothing to turn off')
+    expect(fused).toContain('newer than the window')
+    expect(fused).not.toContain('turned that off')
+    expect(fused).not.toContain('never counts')
+    expect(fused).toMatch(/This week began Sat, Sep 26, 00:00 UTC\.$/)
+    const beat = trendingNote('beat', 'today', NOW, 'UTC')
+    expect(beat).toContain('unless the starrer turned that off')
+    expect(beat).toMatch(/Today began 00:00 UTC\.$/)
+  })
+
+  it('says only what holds for both shapes while the shape is read, and no start without a clock', () => {
+    expect(trendingNote(null, 'today', null)).toBe('Ranked by new stargazers in the window, proved by the network.')
   })
 })

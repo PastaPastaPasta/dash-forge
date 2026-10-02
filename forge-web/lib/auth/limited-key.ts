@@ -355,7 +355,12 @@ export async function verifyLimitedKey(
     if (Number(k.expiresAt) !== request.expiresAt) throw new UnusableLimitedKeyError(`key ${keyId} has a different expiry than requested`)
   }
   if (wif !== undefined && !controlsKey(k, wif, network)) throw new UnusableLimitedKeyError(`the stored private key does not control key ${keyId}`)
-  const remaining = await readRemainingBudget(sdk, identityId, keyId)
+  // Drive writes a new key's remaining budget with the key (v5 book `data-model/key-limits.md`:
+  // "remaining budget = budget"), so a key with a budget always has one: an absent entry is a
+  // node that has not seen the key yet (QW4-020: the session then had no budget, and the funds
+  // pill read "Balance … · expires …"). A key registered just now (`request`) has spent nothing,
+  // so its remaining budget is its total.
+  const remaining = (await readRemainingBudget(sdk, identityId, keyId)) ?? (request ? k.totalBudget : null)
   if (remaining !== null && remaining <= 0n) throw new UnusableLimitedKeyError(`key ${keyId} has no budget left`)
   return { remaining, total: k.totalBudget, expiresAt: Number(k.expiresAt) }
 }

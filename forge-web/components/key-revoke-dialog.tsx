@@ -24,7 +24,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { ErrorBox } from '@/components/auth/protection-fields'
 import { useMasterKeyInput } from '@/components/auth/master-key-input'
 import { UnlockMore } from '@/components/auth/unlock-more'
-import { topUpStays } from '@/components/top-up-stays'
+import { FORGET_DELETES, topUpStays } from '@/components/top-up-stays'
 import { UnlockNeededError } from '@/lib/auth/controller'
 import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
 import { KEY_DISABLE_CREDITS, previewCredits } from '@/lib/sdk'
@@ -77,6 +77,9 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
           Only need this browser to stop signing? Sign out &amp; forget key instead: nothing is sent, and the key stays valid on chain until it
           expires.
+        </p>
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="revoke-forget-deletes">
+          {FORGET_DELETES}
         </p>
         {stays !== null ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="revoke-top-up-stays">

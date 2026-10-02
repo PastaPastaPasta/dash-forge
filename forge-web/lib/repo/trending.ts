@@ -22,7 +22,7 @@ import type { ForgeIds } from '../deployments'
 import { STAR_BEAT_GRID, trendingWindow, type Window } from '../rules/parity'
 import { rankedDocuments, type RankedEntry, type RankedPage } from '../sdk'
 import { DOC, asIdentifierString } from './contract'
-import { starShape } from './star-shape'
+import { starShape, type StarShape } from './star-shape'
 import { hasStar } from './writes'
 
 /**
@@ -171,6 +171,46 @@ export async function readOwnerStars(
 /** The window a Trending read of `span` selects at `nowMs` (`star.byWeek` and `starBeat.byWeek` share the grid). */
 export function trendingWindowOf(span: TrendingWindow, nowMs: number): Window | null {
   return trendingWindow(STAR_BEAT_GRID, nowMs, span === 'week' ? 'oldest' : 'newest')
+}
+
+/**
+ * When the window of `span` began at `nowMs`, in words (QW4-019). The grid's windows start at
+ * 00:00 UTC (`phase` 0), so "today" is the UTC calendar day so far, not a trailing 24 hours:
+ * Platform resolves `newest` to the window that started most recently (v5 book
+ * `contract-keywords/time-range.md`, "Queries"), and the frozen contract has no finer grid. The
+ * start is also given in `timeZone` (this device's, by default) unless that is UTC there.
+ * Null when the window is unknown.
+ */
+export function trendingWindowStart(span: TrendingWindow, nowMs: number, timeZone?: string): string | null {
+  const window = trendingWindowOf(span, nowMs)
+  if (window === null) return null
+  const day = (zone: string | undefined): Intl.DateTimeFormatOptions => ({ weekday: 'short', month: 'short', day: 'numeric', timeZone: zone })
+  const clock = (zone: string | undefined): Intl.DateTimeFormatOptions => ({ hour: 'numeric', minute: '2-digit', timeZone: zone })
+  const utc = span === 'today' ? '00:00 UTC' : `${new Intl.DateTimeFormat('en-US', day('UTC')).format(window.start)}, 00:00 UTC`
+  const stamp = (zone: string | undefined): string =>
+    new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: zone }).format(window.start)
+  if (stamp(timeZone) === stamp('UTC')) return utc
+  const local = new Intl.DateTimeFormat('en-US', span === 'today' ? clock(timeZone) : { ...day(timeZone), ...clock(timeZone) }).format(window.start)
+  return `${utc} (${local} your time)`
+}
+
+/**
+ * Explore's note under Trending, for the deployment's star shape (QW4-018: on a fused-star
+ * network it described RC1's opt-out and its "an owner's star never counts", contradicting
+ * Settings → Stars), then when the window began ({@link trendingWindowStart}). While the shape is
+ * being read (null), only what holds for both; without a clock (`nowMs` null), no start.
+ */
+export function trendingNote(shape: StarShape | null, span: TrendingWindow, nowMs: number | null, timeZone?: string): string {
+  const ranked = 'Ranked by new stargazers in the window, proved by the network.'
+  const rules =
+    shape === 'fused'
+      ? " Every star counts for the week it was made; there is nothing to turn off. Private repos never show, and an owner's star on their own repo is left out while the repo is newer than the window (under a week old for This week), so Trending can show fewer than Most starred. An unstar does not take a count back before its week ends."
+      : shape === 'beat'
+        ? " A star counts toward Trending unless the starrer turned that off, and an owner's star on their own repo never counts (so Trending can show fewer than Most starred). An unstar does not take a count back before its week ends."
+        : ''
+  const start = nowMs === null ? null : trendingWindowStart(span, nowMs, timeZone)
+  const when = start === null ? '' : ` ${span === 'today' ? 'Today' : 'This week'} began ${start}.`
+  return `${ranked}${rules}${when}`
 }
 
 /**

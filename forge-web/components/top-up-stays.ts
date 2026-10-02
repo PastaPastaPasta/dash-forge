@@ -21,6 +21,15 @@ export function topUpRecordsStay(r: { readonly next: boolean; readonly unfinishe
   return null
 }
 
+/**
+ * What a forget (and so a revoke, which forgets after it disables) deletes besides the key
+ * (QW4-021): what this browser recorded for the identity, its spend history and its
+ * notifications (QW2-028: a shared computer keeps no trace of the identity). Said in both
+ * confirmations rather than erased silently; the history is not on chain, so it cannot be read back.
+ */
+export const FORGET_DELETES =
+  "This browser also deletes what it recorded for this identity: its spend history (Settings → Spend), which is kept only here and can't be brought back, and its notifications."
+
 /** How long the forget confirmation waits to learn what stays: a stalled storage read never blocks it. */
 const RECORDS_READ_MS = 1500
 
