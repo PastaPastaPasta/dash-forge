@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is the first build, or waiting for the network to confirm your identity.
 
-> **Which network?** This guide's commands target devnet **sakura** (Platform protocol 14, v5.0.0-beta.1). Its status: RC2 registered on Platform v5.0.0-beta.1 (2026-10-01), and the web app at forge.dashhq.org runs on sakura. Devnet bonsia, where the RC1 contracts ran, is gone, and moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts. The fees below were measured on bonsia. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
+> **Which network?** This guide's commands target devnet **sakura** (Platform protocol 14, v5.0.0-beta.1). Its status: RC2 registered on Platform v5.0.0-beta.1 (2026-10-01), and the web app at forge.dashhq.org runs on sakura. Devnet bonsia, where the RC1 contracts ran, is gone, and moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts. The fees below were measured on sakura where they say so (2026-10-01), else on bonsia (Platform v4.2), and sakura's can differ: [Costs](costs.md) has both. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
 
 ---
 
@@ -71,7 +71,7 @@ dg auth new --network devnet --devnet-name sakura
 ```
 
 1. `dg` shows **12 recovery words**. Write them down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
-2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet sakura use the faucet at <https://faucet.sakura.networks.dash.org>, which sends 10 test DASH, far more than you need. A repository costs about 0.0016 DASH.
+2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet sakura use the faucet at <https://faucet.sakura.networks.dash.org>, which sends 10 test DASH, far more than you need. A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: the faucet's 10 test DASH all become credits (a balance of about 9.998 DASH), where the sample below sent 0.05.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
 ```
@@ -112,11 +112,11 @@ Register the key? [y/N] y
   key #6: limited, 0.25 DASH budget, expires in 180 day(s)
   with encryption key #4: private repositories you are a member of open with it
   stored in macOS Keychain (dash-forge/devnet-sakura/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
-  balance 0.0496 DASH
+  balance 0.0494 DASH
   the identity file is no longer needed here; keep it (or the words) offline
 ```
 
-The prompt defaults to no, so pressing Enter alone declines: type `y`. The quote is an upper bound: on devnet bonsia the update was charged about 0.00027 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
+The prompt defaults to no, so pressing Enter alone declines: type `y`. The quote is an upper bound: on devnet sakura the update was charged about 0.00047 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
 
 The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key, with your identity's encryption key beside it for private repositories (never the master key). Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
@@ -177,7 +177,7 @@ dg init                   # = dg repo create --push, for this directory
 Creating 8hJm…/my-project on devnet-sakura
   repo + maintainer + config     ~0.002 DASH
   packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
-  (storage: git config dash.storage)
+  (storage: git config dash.storage; recorded in the repository's public config, which readers and the web follow; `--storage <profile|platform>` records another)
 Proceed? [Y/n] y
 ✓ created  https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ✓ remote 'origin' → dash://8hJm…/my-project
@@ -190,18 +190,18 @@ dash: stored pack 6ce98e05facd (1.2 MiB, 312 objects)
 dash: pack 6ce98e05facd (1.2 MiB) stored on r2-main (1 verified)
 dash: updated main → 8f3e2a1
 dash: history index published (full, 42 paths, 1 commits)
-dash: done · Platform charged ≈0.0052 DASH · remaining 0.0428 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+dash: done · Platform charged ≈0.0052 DASH · remaining 0.0426 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 To dash://8hJm…/my-project
  * [new branch]      main -> main
 branch 'main' set up to track 'origin/main'.
 ✓ main → 8f3e2a1   this push ~0.0052 DASH
-  total ~0.0068 DASH (create ~0.0016 DASH + push ~0.0052 DASH) · balance 0.0428 DASH
+  total ~0.0068 DASH (create ~0.0016 DASH + push ~0.0052 DASH) · balance 0.0426 DASH
 Open it: https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ```
 
-(The charges are the ones measured on devnet bonsia on 2026-09-30 for a first push to your own bucket; the size and paths are illustrative. On a testnet or devnet, DASH is test money and `dg` prints no dollar figures; only on mainnet does it add `≈ $…`. See [Costs](costs.md).)
+(The charges are the ones measured on devnet sakura on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On a testnet or devnet, DASH is test money and `dg` prints no dollar figures; only on mainnet does it add `≈ $…`. See [Costs](costs.md).)
 
-A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH** on bonsia, is printed afterwards. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH** on sakura, is printed afterwards. See [Costs](costs.md).
 
 What it does, in order:
 

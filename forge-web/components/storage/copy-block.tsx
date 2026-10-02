@@ -17,18 +17,25 @@ export function CopyBlock({ text, label }: { text: string; label: string }): JSX
     }
   }
   return (
-    <div className="relative">
-      <ScrollRegion as="pre" label={label} className="max-h-72 overflow-auto rounded-md border border-anvil-200 bg-white p-3 pr-10 font-mono text-[12px] leading-relaxed text-anvil-800 dark:border-anvil-800 dark:bg-anvil-950 dark:text-anvil-200">
+    // The Copy button sits in a bar above the text, never over it (QW4-045: on a phone it
+    // covered the first YAML line, which scrolls sideways under an overlaid button).
+    // Not overflow-hidden: that would clip the focus rings of the button and the scroll region.
+    <div className="rounded-md border border-anvil-200 bg-white dark:border-anvil-800 dark:bg-anvil-950">
+      <div className="flex justify-end border-b border-anvil-200 px-1 py-1 dark:border-anvil-800">
+        <button
+          type="button"
+          onClick={copy}
+          // The name follows what it shows ("Copied" once done), as voice control reads it.
+          aria-label={copied ? 'Copied' : label}
+          className="inline-flex items-center gap-1 rounded px-2 py-1 text-[12px] text-anvil-600 hover:bg-anvil-100 hover:text-anvil-800 coarse:min-h-11 dark:text-anvil-300 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
+        >
+          {copied ? <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
+          <span aria-hidden>{copied ? 'Copied' : 'Copy'}</span>
+        </button>
+      </div>
+      <ScrollRegion as="pre" label={label} className="max-h-72 overflow-auto p-3 font-mono text-[12px] leading-relaxed text-anvil-800 dark:text-anvil-200">
         {text}
       </ScrollRegion>
-      <button
-        type="button"
-        onClick={copy}
-        aria-label={label}
-        className="absolute right-2 top-2 rounded p-1 text-anvil-500 hover:bg-anvil-100 hover:text-anvil-800 dark:text-anvil-400 dark:hover:bg-anvil-800 dark:hover:text-anvil-100"
-      >
-        {copied ? <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden /> : <Copy className="h-4 w-4" aria-hidden />}
-      </button>
     </div>
   )
 }

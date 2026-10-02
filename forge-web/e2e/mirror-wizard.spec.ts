@@ -239,7 +239,8 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
     `s3-endpoint: '${R2.endpoint}'`,
     `s3-bucket: '${R2.bucket}'`,
     `s3-public-url: '${R2.publicUrl}'`,
-    "sync: 'code,releases,labels,issues,prs'",
+    // Code and releases only by default, as in the Action (QW4-045).
+    "sync: 'code,releases'",
     `uses: PastaPastaPasta/dash-forge/action@${commit}`,
     "install: 'source'",
     'S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}',
@@ -254,8 +255,13 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   expect(url.searchParams.get('filename')).toBe('.github/workflows/forge-mirror.yml')
   expect(url.searchParams.get('value')?.trim()).toBe(yaml.trim())
   await shot(page, 'mirror-06-workflow')
-  // Code only: the issue and PR triggers go.
-  await wf.getByRole('checkbox', { name: /Mirror issues and pull requests too/ }).uncheck()
+  expect(yaml).not.toContain('pull_request_target')
+  // Issues and PRs, ticked: their triggers come; unticked, they go again.
+  const collab = wf.getByRole('checkbox', { name: /Mirror issues and pull requests too/ })
+  await collab.check()
+  await expect(page.getByTestId('mirror-yaml')).toContainText('pull_request_target')
+  await expect(page.getByTestId('mirror-yaml')).toContainText("sync: 'code,releases,labels,issues,prs'")
+  await collab.uncheck()
   await expect(page.getByTestId('mirror-yaml')).not.toContainText('pull_request_target')
   await expect(page.getByTestId('mirror-yaml')).toContainText("sync: 'code,releases'")
   await wf.getByRole('checkbox', { name: /I added the secrets and committed the workflow/ }).check()
@@ -274,6 +280,10 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   await expect(page.getByTestId('mirror-yaml')).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(0)
+  // The Copy button sits above the YAML, never over its first line (QW4-045).
+  const copyBox = await page.getByTestId('mirror-yaml').getByRole('button', { name: 'Copy the workflow file' }).boundingBox()
+  const preBox = await page.getByTestId('mirror-yaml').locator('pre').boundingBox()
+  expect(copyBox!.y + copyBox!.height).toBeLessThanOrEqual(preBox!.y + 0.5)
   await shot(page, 'mirror-08-workflow-390-dark')
   const serious = await runAxe(page, 'mirror-wizard')
   expect(serious, serious.map((v) => `${v.id}: ${v.help}`).join('\n')).toEqual([])

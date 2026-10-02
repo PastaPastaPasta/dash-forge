@@ -14,6 +14,7 @@ import {
   PLATFORM_STORAGE,
   checkGithubRepo,
   costCapProblem,
+  ACTION_COST_CAP,
   defaultCostCap,
   mirrorRepoInput,
   suggestedRunnerBudget,
@@ -328,10 +329,11 @@ describe('suggestedRunnerBudget, mirrorRepoInput and branch links', () => {
 })
 
 describe('defaultCostCap', () => {
-  it('is 0.1 with your own storage, and grows with the repository on Platform', () => {
+  it("is 0.1 with your own storage, and grows with the repository on Platform: above the Action's 0.05, for the first run", () => {
     expect(defaultCostCap('s3', 500_000, 0.39)).toBe('0.1')
     expect(defaultCostCap('platform', 20, 0.39)).toBe('0.1')
     // 10 MiB at 0.39 DASH/MiB: 3.9, a third over, plus the documents.
     expect(defaultCostCap('platform', 10 * 1024, 0.39)).toBe('5.32')
+    expect(Number(defaultCostCap('s3', 0, 0.39))).toBeGreaterThan(ACTION_COST_CAP)
   })
 })
