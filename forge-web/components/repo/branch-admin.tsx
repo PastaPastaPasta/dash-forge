@@ -20,7 +20,7 @@ import { BRANCH_PREFIX, branchNameProblem, createBranch, deleteBranch, deleteBra
 import { capabilitiesOf } from '@/lib/rules/roles'
 import type { Role } from '@/lib/rules/v2'
 import { EXISTING, newIntent, previewCreate } from '@/lib/sdk'
-import { spendAction } from '@/lib/spend-toast'
+import { namedAction, spendAction } from '@/lib/spend-toast'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
@@ -129,8 +129,9 @@ function NewBranchDialog({
     setPending(true)
     setError(null)
     try {
-      await spendAction({ running: `Creating ${trimmed}…`, done: `Branch ${trimmed} created` }, () =>
-        createBranch(sdk, signer, home.repo, { name: trimmed, target, intent: `branch-create:${home.repo.repoId}:${intent}:${trimmed}:${target}` }),
+      // The toast names the action: a ref update's own title is "Branch updated".
+      await spendAction({ running: `Creating ${trimmed}…`, ...namedAction(`Branch ${trimmed} created`) }, (tag) =>
+        createBranch(sdk, tag(signer), home.repo, { name: trimmed, target, intent: `branch-create:${home.repo.repoId}:${intent}:${trimmed}:${target}` }),
       )
       onCreated()
       onClose()
@@ -260,7 +261,7 @@ export function DeleteBranchButton({
           description={`${name} points at ${tip.slice(0, 7)}. Its commits stay stored: you can restore it from this page until you leave it, or push it again with git.`}
           cost={cost}
           confirmLabel="Delete branch"
-          toast={{ running: `Deleting ${name}…`, done: `Branch ${name} deleted` }}
+          toast={{ running: `Deleting ${name}…`, ...namedAction(`Branch ${name} deleted`) }}
           onConfirm={async (intent) => {
             if (!sdk || !signer) throw new Error('sign in to continue')
             await deleteBranch(sdk, signer, home.repo, { refName: branch.refName, tip, intent: `branch-delete:${home.repo.repoId}:${intent}:${branch.refName}:${tip}` })
@@ -288,8 +289,8 @@ export function RestoreBranchButton({ home, admin, refName, tip, onRestored }: {
     setPending(true)
     setError(null)
     try {
-      await spendAction({ running: `Restoring ${name}…`, done: `Branch ${name} restored` }, () =>
-        createBranch(sdk, signer, home.repo, { name, target: tip, intent: `branch-restore:${home.repo.repoId}:${intent}:${refName}:${tip}` }),
+      await spendAction({ running: `Restoring ${name}…`, ...namedAction(`Branch ${name} restored`) }, (tag) =>
+        createBranch(sdk, tag(signer), home.repo, { name, target: tip, intent: `branch-restore:${home.repo.repoId}:${intent}:${refName}:${tip}` }),
       )
       onRestored()
     } catch (e) {

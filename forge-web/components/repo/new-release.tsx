@@ -56,6 +56,7 @@ import {
 } from '@/lib/repo/new-release'
 import { externalTargets, policyForRepo } from '@/lib/storage'
 import { UnconfirmedWriteError, previewCreate, sumPreviews } from '@/lib/sdk'
+import { spendAction } from '@/lib/spend-toast'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -337,9 +338,9 @@ function NewReleaseDialog({
     let stored = 0
     let current: string | null = null
     try {
-      const published = await publishRelease(
+      const publish = (auth: typeof signer): ReturnType<typeof publishRelease> => publishRelease(
         sdk,
-        signer,
+        auth,
         repo,
         {
           tagName: trimmedTag,
@@ -379,6 +380,10 @@ function NewReleaseDialog({
           if (e.step === 'release') setStatus(sealedRepo ? 'Sealing and writing the release…' : 'Writing the release…')
         },
       )
+      // A new tag and its release are one action, one toast (a ref update alone reads "Branch updated").
+      const published = newTag
+        ? await spendAction({ running: `Publishing ${trimmedTag}…`, done: `Tag and release ${trimmedTag} saved`, failed: `Tag ${trimmedTag} created; the release stopped` }, (tag) => publish(tag(signer)))
+        : await publish(signer)
       invalidateSessionCache(`releases:${network}:${repoKey(repo)}`)
       setPendingAssets(null)
       setPhase('done')
