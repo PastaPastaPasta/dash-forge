@@ -278,6 +278,11 @@ const SETTLE_MAX: Duration = Duration::from_secs(300);
 /// How often that wait looks again.
 const SETTLE_POLL: Duration = Duration::from_secs(5);
 
+/// After the window is reached, how long more before the item reads the chain again: the
+/// failed write may have landed in the same block as the last of those writes, and a proved
+/// read may answer from a block behind.
+const SETTLE_LAG: Duration = Duration::from_secs(10);
+
 /// Writes signed after an unconfirmed one that must land before it is provably dead: Drive
 /// accepts a nonce up to 24 below the highest it has seen on the same identity-contract counter
 /// (`MAX_MISSING_IDENTITY_REVISIONS`), so once 25 writes signed later have landed, every
@@ -299,13 +304,14 @@ pub(crate) enum Nonces {
     Core,
 }
 
-/// A write that failed: what it was, the nonce counter it signed against, and how many writes
-/// of the run had begun when it failed ([`WriteLog`]). The writes begun after that signed later
-/// nonces, so once enough of them land the failed one is provably dead ([`NONCE_WINDOW`]).
+/// A write that failed: what it was, the nonce counter it signed against (`None`: an issue or
+/// PR create, [`Sink::write`]), and how many writes of the run had begun when it failed
+/// ([`WriteLog`]). The writes begun after that signed later nonces, so once enough of them land
+/// the failed one is provably dead ([`NONCE_WINDOW`]).
 #[derive(Debug)]
 pub(crate) struct WriteFailed {
     what: String,
-    nonces: Nonces,
+    nonces: Option<Nonces>,
     mark: u64,
     source: forge_core::Error,
 }
@@ -361,23 +367,21 @@ fn failure(e: &anyhow::Error) -> Failure {
     if item_error(e) {
         return Failure::Item;
     }
-    let retryable = |f: &E| {
-        matches!(
-            f,
-            E::Timeout { .. } | E::Nonce | E::Platform(_) | E::IncompleteRead { .. }
-        )
+    // A `WriteFailed`'s source is in the chain too.
+    let Some(f) = e.chain().find_map(|c| c.downcast_ref::<E>()) else {
+        return Failure::Run;
     };
-    if let Some(w) = e.downcast_ref::<WriteFailed>() {
-        if !retryable(&w.source) {
-            return Failure::Run;
-        }
-        let pending = (!matches!(w.source, E::Nonce)).then_some((w.nonces, w.mark));
-        return Failure::Write { pending };
+    if !matches!(
+        f,
+        E::Timeout { .. } | E::Nonce | E::Platform(_) | E::IncompleteRead { .. }
+    ) {
+        return Failure::Run;
     }
-    match e.chain().find_map(|c| c.downcast_ref::<E>()) {
-        Some(f) if retryable(f) => Failure::Write { pending: None },
-        _ => Failure::Run,
-    }
+    let pending = e
+        .downcast_ref::<WriteFailed>()
+        .filter(|_| !matches!(f, E::Nonce))
+        .and_then(|w| Some((w.nonces?, w.mark)));
+    Failure::Write { pending }
 }
 
 /// What the sink caches while it runs (read once, or kept from what it wrote).
@@ -466,6 +470,8 @@ pub struct Sink<'a, C: Chain> {
     writes: Mutex<WriteLog>,
     /// Items in a row that ended partial on failed writes ([`MAX_FAILED_IN_A_ROW`]).
     failed_in_a_row: std::sync::atomic::AtomicU32,
+    /// Whether this run has asked for an issue or PR create yet.
+    created_any: std::sync::atomic::AtomicBool,
 }
 
 /// Pauses (ms) between re-reads of a base's history that does not show this run's push yet
@@ -725,6 +731,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             release_storage: None,
             writes: Mutex::new(WriteLog::default()),
             failed_in_a_row: std::sync::atomic::AtomicU32::new(0),
+            created_any: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -784,10 +791,14 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// write), then reconciled with the measured balance so an estimate that ran low stops a
     /// later write. Refused once the run is stopping ([`Stop`]). A failure is a
     /// [`WriteFailed`], marked with the writes begun so far ([`WriteLog`]).
+    ///
+    /// `nonces` `None`: an issue or PR create, which is left out of the window count
+    /// ([`NONCE_WINDOW`]): it can succeed by adopting an earlier attempt's copy, without a new
+    /// nonce landing.
     async fn write<T, F, Fut>(
         &self,
         what: String,
-        nonces: Nonces,
+        nonces: Option<Nonces>,
         credits: u64,
         count: fn(&mut Counts),
         f: F,
@@ -820,7 +831,9 @@ impl<'a, C: Chain> Sink<'a, C> {
         self.measure(false).await;
         let out = match out {
             Ok(out) => {
-                lock(&self.writes).landed.push((nonces, seq));
+                if let Some(n) = nonces {
+                    lock(&self.writes).landed.push((n, seq));
+                }
                 count(&mut self.ledger().counts);
                 out
             }
@@ -864,7 +877,8 @@ impl<'a, C: Chain> Sink<'a, C> {
                 return false;
             }
             if landed(p) >= NONCE_WINDOW {
-                return true;
+                tokio::time::sleep(SETTLE_LAG).await;
+                return !self.stop.is_stopped();
             }
             if tokio::time::Instant::now() >= deadline {
                 return false;
@@ -879,12 +893,12 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// ([`Self::settled`]). `part` gets the attempt number (1 first): a retry reads the chain
     /// again for what landed. Returns the last error otherwise.
     ///
-    /// `create`: the part is the item's create, which needs no settling: every transition an
-    /// attempt signed carries the dense number it was signed for, so it can land only while
-    /// that number is free, and the retry asks for the item again
-    /// ([`Chain::create_imported`]'s `again`), adopting the earlier copy wherever it landed:
-    /// at the number before the next one, or at the number the retry is refused.
-    async fn retried<T, F, Fut>(&self, t: &SrcTarget, create: bool, mut part: F) -> Result<T>
+    /// A create needs no settling (its failure carries no counter, [`Sink::write`]): every
+    /// transition an attempt signed carries the dense number it was signed for, so it can land
+    /// only while that number is free, and the retry asks for the item again
+    /// ([`Chain::create_imported`]'s `again`), adopting the earlier copy wherever it landed: at
+    /// the number before the next one, or at the number the retry is refused.
+    async fn retried<T, F, Fut>(&self, t: &SrcTarget, mut part: F) -> Result<T>
     where
         F: FnMut(u32) -> Fut,
         Fut: Future<Output = Result<T>>,
@@ -898,7 +912,6 @@ impl<'a, C: Chain> Sink<'a, C> {
             let Failure::Write { pending } = failure(&e) else {
                 return Err(e);
             };
-            let pending = pending.filter(|_| !create);
             if attempt >= ITEM_ATTEMPTS || !self.settled(pending, attempt).await {
                 return Err(e);
             }
@@ -936,7 +949,8 @@ impl<'a, C: Chain> Sink<'a, C> {
         }
     }
 
-    /// An item whose part succeeded: the run of failing items is broken.
+    /// A lane item that succeeded: the run of failing items is broken (a create succeeding
+    /// says nothing about the lanes' writes).
     fn item_ok(&self) {
         self.failed_in_a_row
             .store(0, std::sync::atomic::Ordering::SeqCst);
@@ -1400,7 +1414,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             );
             self.write(
                 format!("label {}", l.name),
-                Nonces::Core,
+                Some(Nonces::Core),
                 credits,
                 |c| c.labels += 1,
                 || async move {
@@ -1521,7 +1535,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             let written = self
                 .write(
                     format!("release {}", r.tag_name),
-                    Nonces::Core,
+                    Some(Nonces::Core),
                     credits,
                     |c| c.releases += 1,
                     || async move { chain.create_release(need(repo)?, input).await },
@@ -1579,15 +1593,9 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// number would differ from the source's. The run stops instead, and the next one (reading
     /// the source from its snapshot) creates it.
     async fn open_target<'s>(&self, index: usize, t: &'s SrcTarget) -> Result<Option<Job<'s>>> {
-        let opened = self
-            .retried(t, true, |attempt| {
-                self.open_target_inner(index, t, attempt > 1)
-            })
-            .await;
-        if opened.is_ok() {
-            self.item_ok();
-        }
-        opened.or_else(|e| self.item_skipped(t, e).map(|()| None))
+        self.retried(t, |attempt| self.open_target_inner(index, t, attempt > 1))
+            .await
+            .or_else(|e| self.item_skipped(t, e).map(|()| None))
     }
 
     /// `t`'s copy read from the chain again, past the run's caches, before its create is tried
@@ -1632,7 +1640,12 @@ impl<'a, C: Chain> Sink<'a, C> {
         let (target, fresh) = if let Some(target) = self.existing(t).await? {
             (target, false)
         } else {
-            let target = self.create(t, noun, again).await?;
+            // A run's first create also looks for a copy an earlier run's last attempt may have
+            // left to land late.
+            let first = !self
+                .created_any
+                .swap(true, std::sync::atomic::Ordering::SeqCst);
+            let target = self.create(t, noun, again || first).await?;
             let mut caches = self.caches();
             if let Some(idx) = &mut caches.index {
                 idx.push((t.imported.url.clone(), target.clone()));
@@ -1665,7 +1678,7 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// left partial for the next run ([`Self::item_failed`]).
     async fn finish_target(&self, job: &Job<'_>) -> Result<()> {
         let done = self
-            .retried(job.t, false, |attempt| {
+            .retried(job.t, |attempt| {
                 if attempt > 1 {
                     // the attempt before may have held back its close: held once, written once
                     self.caches().deferred.retain(|d| d.index != job.index);
@@ -1911,7 +1924,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             TargetKind::Patch => |c| c.prs += 1,
         };
         let out = self
-            .write(what, Nonces::Collab, credits, count, || async move {
+            .write(what, None, credits, count, || async move {
                 chain.create_imported(need(repo)?, doc, from, again).await
             })
             .await?;
@@ -2004,7 +2017,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             let value = value.as_str();
             self.write(
                 what,
-                Nonces::Community,
+                Some(Nonces::Community),
                 credits,
                 |c| c.events += 1,
                 || async move { chain.post_event(need(repo)?, target, kind, value).await },
@@ -2059,7 +2072,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             let what = format!("kind-{} transition on #{}", mv.kind, t.number);
             self.write(
                 what,
-                Nonces::Collab,
+                Some(Nonces::Collab),
                 credits,
                 |c| c.transitions += 1,
                 || async move {
@@ -2148,7 +2161,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         );
         self.write(
             format!("comment on #{}", t.number),
-            Nonces::Collab,
+            Some(Nonces::Collab),
             credits,
             |n| n.comments += 1,
             || async move {
@@ -2177,7 +2190,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         let count = (count > 0).then_some(count);
         self.write(
             format!("review on #{}", t.number),
-            Nonces::Collab,
+            Some(Nonces::Collab),
             credits,
             |n| n.reviews += 1,
             // Always a comment verdict ([`Chain::review`]): the mirror identity is a member,
@@ -2351,7 +2364,7 @@ mod tests {
         let failed = |source| {
             anyhow::Error::from(WriteFailed {
                 what: "comment on #3".into(),
-                nonces: Nonces::Collab,
+                nonces: Some(Nonces::Collab),
                 mark: 7,
                 source,
             })

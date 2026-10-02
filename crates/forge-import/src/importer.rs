@@ -262,7 +262,8 @@ async fn run_inner<'a>(
         }
         _ => collab_src.clone(),
     };
-    let dry = dest::dry_collab(
+    // boxed: the dry run's future is large (the clippy `large_futures` limit)
+    let dry = Box::pin(dest::dry_collab(
         client,
         dest.existing.clone(),
         signer,
@@ -270,7 +271,7 @@ async fn run_inner<'a>(
         mirror.clone(),
         release_storage.clone(),
         cfg.concurrency,
-    )
+    ))
     .await?;
     let collab_estimate = dry.budget.spent();
     let create_credits = if create { REPO_CREATE_CREDITS } else { 0 };
@@ -437,24 +438,27 @@ fn read_collab(
     snapshot: Option<&Snapshot>,
     started: u64,
 ) -> Result<SrcCollab> {
-    let cached = snapshot.and_then(|s| s.load(started, crate::snapshot::MAX_AGE_SECS));
-    let collab = match (cached, snapshot) {
-        (Some(cached), Some(s)) => {
+    let cached = snapshot.and_then(|s| s.load(started).map(|c| (s, c)));
+    // When the full read started: this run's, or the reused snapshot's.
+    let mut read_at = started;
+    let collab = match cached {
+        Some((s, cached)) => {
             let refresh = cached.refresh_since();
-            let age = started.saturating_sub(cached.fetched_at);
+            read_at = cached.read_at;
             eprintln!(
-                "forge-import: reusing the source read saved in {} ({}m old); reading only what \
-                 changed at the source since {refresh}",
+                "forge-import: reusing the source read saved in {} ({}m old, last refreshed {}m \
+                 ago); reading only what changed at the source since {refresh}",
                 s.path().display(),
-                age / 60
+                started.saturating_sub(cached.read_at) / 60,
+                started.saturating_sub(cached.fetched_at) / 60,
             );
             let fresh = src.collect(classes, Some(&refresh), revisit, limit)?;
             crate::snapshot::merge(cached.collab, fresh, |t| src.sort_targets(t))
         }
-        _ => src.collect(classes, since, revisit, limit)?,
+        None => src.collect(classes, since, revisit, limit)?,
     };
     if let Some(s) = snapshot {
-        match s.save(started, &collab) {
+        match s.save(read_at, started, &collab) {
             Ok(()) => tracing::info!(path = %s.path().display(), "saved the source read"),
             Err(e) => tracing::warn!(
                 error = %format!("{e:#}"),

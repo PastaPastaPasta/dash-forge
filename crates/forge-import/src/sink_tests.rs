@@ -1417,12 +1417,14 @@ async fn a_create_that_goes_unconfirmed_is_found_or_created_once() {
         run.result.unwrap();
         assert_eq!(run.counts.skipped, 0, "{fault:?}");
         assert_complete(&chain, &src);
-        // Landed: found again by its upstream number, not created. Dropped: created again,
-        // asking forge-core to adopt a late landing of the first attempt.
+        // The run's first create looks back for an earlier run's late copy. Then, landed: found
+        // again by its upstream number, not created. Dropped: created again, asking forge-core
+        // to adopt a late landing of the first attempt.
+        let first = src.targets[0].imported.url.clone();
         let again = chain.st().created_again.clone();
         match fault {
-            Fault::LandedUnheard => assert!(again.is_empty(), "{again:?}"),
-            _ => assert_eq!(again, [url]),
+            Fault::LandedUnheard => assert_eq!(again, [first]),
+            _ => assert_eq!(again, [first, url]),
         }
     }
 }

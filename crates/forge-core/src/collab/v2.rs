@@ -41,7 +41,7 @@ use crate::members::{self, MemberReader};
 use crate::network::ForgeIds;
 use crate::platform::{
     self, BroadcastOutcome, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity,
-    PlatformClient, PreparedWrite, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
+    PlatformClient, PreparedWrite, QueryFilter, QueryOrder, Resign, WriteEngine, WriteIntent,
 };
 use crate::private::DocKind;
 use crate::rules::v2::{
@@ -2062,6 +2062,19 @@ fn is_own_copy(
             .all(|k| same_value(stored.fields.get(*k), plain.get(*k)))
 }
 
+/// How [`Collab::create_dense`] recognises a copy of its own create that landed without an
+/// answer saying so.
+#[derive(Debug, Clone, Copy, Default)]
+struct Adopt {
+    /// By content and provenance, whichever call signed it ([`is_own_copy`]): an imported item,
+    /// of which the importer never wants two. Otherwise only by the ids this call signed (the
+    /// signer may file the same title and body twice on purpose).
+    by_content: bool,
+    /// Look at the number before the next one before the first signing too: an earlier call
+    /// for the same item may have left a transition that landed late.
+    previous: bool,
+}
+
 /// Whether the document now at a refused number is this create's own landed attempt: one of
 /// the ids this call signed (`attempts`), and the signer's copy of `plain` ([`is_own_copy`]).
 /// Content alone is not enough: the signer may file the same title and body twice on purpose,
@@ -3704,6 +3717,7 @@ impl<'a> Collab<'a> {
             repo,
             TargetKind::Issue,
             Some((journal_dir, &fingerprint)),
+            Adopt::default(),
             |n| issue_props(n, title, body, Provenance::default()),
         )
         .await
@@ -3726,6 +3740,7 @@ impl<'a> Collab<'a> {
                 repo,
                 TargetKind::Patch,
                 Some((journal_dir, &fingerprint)),
+                Adopt::default(),
                 |n| patch_props(n, input, Provenance::default()),
             )
             .await?;
@@ -3822,45 +3837,32 @@ impl<'a> Collab<'a> {
     /// Create an imported issue or PR (the importer's primitive) at the dense next number,
     /// recording its provenance and source number (`upstreamNumber`). Not journaled: the
     /// importer finds what it already wrote on chain (`imported.url`, `upstreamNumber`).
+    ///
+    /// A copy of the same item by the signer (the same content and provenance: the importer
+    /// never wants two) found at a number this create is refused is a late landing of an
+    /// earlier attempt, and is returned instead of a second copy. `again` (a retry of an item
+    /// whose earlier create failed unconfirmed, or a run's first create, after a run that may
+    /// have stopped on one) also looks for it at the number before the next one, before signing.
     pub async fn create_imported(
-        &self,
-        repo: &RepoRef,
-        what: ImportedTarget<'_>,
-        from: Provenance<'_>,
-    ) -> Result<Created> {
-        self.create_imported_with(repo, what, from, false).await
-    }
-
-    /// [`Self::create_imported`] again, after an earlier call for the same item failed
-    /// unconfirmed: a transition it signed may still land, at the number it was signed for.
-    /// The signer's copy of this very item (the same content and provenance: the importer
-    /// never wants two) found at the number just before the next one, or at a number this call
-    /// is refused, is that earlier call's, and is returned instead of a second copy.
-    pub async fn create_imported_again(
-        &self,
-        repo: &RepoRef,
-        what: ImportedTarget<'_>,
-        from: Provenance<'_>,
-    ) -> Result<Created> {
-        self.create_imported_with(repo, what, from, true).await
-    }
-
-    async fn create_imported_with(
         &self,
         repo: &RepoRef,
         what: ImportedTarget<'_>,
         from: Provenance<'_>,
         again: bool,
     ) -> Result<Created> {
+        let adopt = Adopt {
+            by_content: true,
+            previous: again,
+        };
         match what {
             ImportedTarget::Issue { title, body } => {
-                self.create_dense_with(repo, TargetKind::Issue, None, again, |n| {
+                self.create_dense(repo, TargetKind::Issue, None, adopt, |n| {
                     issue_props(n, title, body, from)
                 })
                 .await
             }
             ImportedTarget::Patch(input) => {
-                self.create_dense_with(repo, TargetKind::Patch, None, again, |n| {
+                self.create_dense(repo, TargetKind::Patch, None, adopt, |n| {
                     patch_props(n, input, from)
                 })
                 .await
@@ -3926,31 +3928,32 @@ impl<'a> Collab<'a> {
         Ok(None)
     }
 
-    /// This call's own create of `plain` at `number`, when that is what holds it
-    /// ([`adoptable`]): an earlier attempt of it landed though its read lagged. `by_content`
-    /// (an imported item created again, [`Self::create_imported_again`]): the signer's copy of
-    /// the same content and provenance, whichever call signed it ([`is_own_copy`]).
+    /// The signer's own create of `plain` at `number`, when that is what holds it: one of the
+    /// ids this call signed (`signed`, [`adoptable`]: an earlier attempt landed though its read
+    /// lagged), or, with `signed` `None` (an imported item, [`Adopt::by_content`]), the signer's
+    /// copy of the same content and provenance whichever call signed it ([`is_own_copy`]). A
+    /// failed read is an error, never "not ours" (which would sign a second copy).
     async fn own_create_at(
         &self,
         repo: &RepoRef,
         kind: TargetKind,
         number: u32,
         (me, plain): (&str, &BTreeMap<String, FieldValue>),
-        signed: &[(u32, String)],
-        by_content: bool,
-    ) -> Option<Created> {
-        let d = self.readable_target(repo, kind, number).await.ok()??;
-        let own = if by_content {
-            is_own_copy(&d, me, plain)
-        } else {
-            adoptable(&d, me, plain, signed)
+        signed: Option<&[(u32, String)]>,
+    ) -> Result<Option<Created>> {
+        let Some(d) = self.readable_target(repo, kind, number).await? else {
+            return Ok(None);
         };
-        own.then_some(Created {
+        let own = match signed {
+            Some(ids) => adoptable(&d, me, plain, ids),
+            None => is_own_copy(&d, me, plain),
+        };
+        Ok(own.then_some(Created {
             number,
             document_id: d.id,
             resumed: false,
             draft_transition: None,
-        })
+        }))
     }
 
     /// Create a `kind` document at the dense next number ([`Self::next_number`]), counting
@@ -3958,26 +3961,15 @@ impl<'a> Collab<'a> {
     /// `dense` rule (10422, before execution: nothing landed, and a stale write is refused at
     /// CheckTx for free) or, when the count moved on after the rules ran, by the unique
     /// `number` index. `journal` (a directory and the content's fingerprint) makes it
-    /// resumable: the signed create is saved before its first broadcast.
+    /// resumable: the signed create is saved before its first broadcast. `adopt`: how a copy of
+    /// its own that landed unannounced is recognised ([`Adopt`]).
+    #[allow(clippy::too_many_lines)] // one numbered-create loop, its outcomes side by side
     async fn create_dense(
         &self,
         repo: &RepoRef,
         kind: TargetKind,
         journal: Option<(&Path, &str)>,
-        props: impl Fn(u32) -> Result<BTreeMap<String, FieldValue>>,
-    ) -> Result<Created> {
-        self.create_dense_with(repo, kind, journal, false, props)
-            .await
-    }
-
-    /// [`Self::create_dense`]; `again`: see [`Self::create_imported_again`].
-    #[allow(clippy::too_many_lines)] // one numbered-create loop, its outcomes side by side
-    async fn create_dense_with(
-        &self,
-        repo: &RepoRef,
-        kind: TargetKind,
-        journal: Option<(&Path, &str)>,
-        again: bool,
+        adopt: Adopt,
         props: impl Fn(u32) -> Result<BTreeMap<String, FieldValue>>,
     ) -> Result<Created> {
         let me = self.signer_id()?;
@@ -3999,12 +3991,14 @@ impl<'a> Collab<'a> {
         let mut proof_retried = false;
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
             let number = self.next_number(repo).await?.max(floor);
-            // Created again: the earlier call's copy, if it landed, holds the number before
-            // this one (creates are one sequence), even when the caller's own read lagged it.
-            if again && number > 1 {
+            // Before signing at a number past one this call (or, `adopt.previous`, an earlier
+            // call) signed for: creates are one sequence, so a copy of ours that landed late
+            // holds the number before this one, even when the refusal's read lagged it.
+            if number > 1 && (adopt.previous || !signed.is_empty()) {
                 let before = props(number - 1)?;
-                let own = self.own_create_at(repo, kind, number - 1, (&me, &before), &[], true);
-                if let Some(done) = own.await {
+                let ids = (!adopt.by_content).then_some(&signed[..]);
+                let own = self.own_create_at(repo, kind, number - 1, (&me, &before), ids);
+                if let Some(done) = own.await? {
                     return Ok(done);
                 }
             }
@@ -4034,15 +4028,14 @@ impl<'a> Collab<'a> {
             // of the first makes the second refused, and the number-taken arm adopts it by id). A
             // journaled one keeps a single transition: its journal holds only the latest, and a
             // resumed run could not adopt an earlier one that landed late.
-            let res = if path.is_some() {
-                engine
-                    .create_journaled(&collab, kind.doc_type(), all, save)
-                    .await
+            let resign = if path.is_some() {
+                Resign::Never
             } else {
-                engine
-                    .create_unique_journaled(&collab, kind.doc_type(), all, save)
-                    .await
+                Resign::Unique
             };
+            let res = engine
+                .create_journaled_with(&collab, kind.doc_type(), all, resign, save)
+                .await;
             let forget = || {
                 if let Some(path) = &path {
                     CreateJournal::remove(path);
@@ -4063,8 +4056,27 @@ impl<'a> Collab<'a> {
                 // another create, and nothing of ours landed: count again.
                 Err(e) if number_taken(&e) => {
                     forget();
-                    let own = self.own_create_at(repo, kind, number, (&me, &plain), &signed, again);
-                    if let Some(done) = own.await {
+                    // More than one transition signed at this number (an unconfirmed one signed
+                    // again): the earlier may be what took it, and the read right after the
+                    // refusal can lag that block, so every one of them is polled.
+                    let at: Vec<&str> = signed
+                        .iter()
+                        .filter(|(n, _)| *n == number)
+                        .map(|(_, id)| id.as_str())
+                        .collect();
+                    if at.len() > 1 {
+                        if let Some(i) = engine.landed_any(&collab, kind.doc_type(), &at).await? {
+                            return Ok(Created {
+                                number,
+                                document_id: at[i].to_string(),
+                                resumed: false,
+                                draft_transition: None,
+                            });
+                        }
+                    }
+                    let ids = (!adopt.by_content).then_some(&signed[..]);
+                    let own = self.own_create_at(repo, kind, number, (&me, &plain), ids);
+                    if let Some(done) = own.await? {
                         return Ok(done);
                     }
                     floor = number.saturating_add(1);

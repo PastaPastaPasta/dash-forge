@@ -7,11 +7,12 @@
 //! last read returned, keyed by the run's scope (source, classes, limit), the `since` it read
 //! with and the merges it revisited, and stamped with when that read started.
 //!
-//! A run that finds a matching snapshot younger than [`MAX_AGE`] does not read everything
-//! again: it asks the source only for what changed since the snapshot's read started (less
-//! [`crate::state`]'s overlap), and merges that in ([`merge`]). What is already mirrored is
-//! still decided on chain, item by item, so the snapshot can only make a run read less, never
-//! write twice. The snapshot is removed once a run completes and advances `--state`.
+//! A run that finds a matching snapshot whose full read is younger than [`MAX_AGE_SECS`] does
+//! not read everything again: it asks the source only for what changed since the snapshot's
+//! last read or refresh started (less an overlap), and merges that in ([`merge`]). What is
+//! already mirrored is still decided on chain, item by item, so the snapshot can only make a
+//! run read less, never write twice. The snapshot is removed once a run completes and advances
+//! `--state`. It can hold a private repository's plaintext, so only its owner may read it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,11 +20,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use forge_core::collab::Imported;
+
 use crate::model::{SrcCollab, SrcTarget};
 
-/// The oldest snapshot a run reuses. Past this, the source is read in full again, so edits
-/// to old comments, deleted items and the like are picked up at least once a day.
-pub const MAX_AGE_SECS: u64 = 24 * 3600;
+/// The oldest full read a run reuses, however often it was refreshed since. Past this, the
+/// source is read in full again, so edits to old comments, deleted items, and parts a read could
+/// not list are picked up at least once a day.
+const MAX_AGE_SECS: u64 = 24 * 3600;
 
 /// Re-read this much before the snapshot's read started, so an item updated while that read
 /// was running is seen again (it is diffed on chain, so seeing it twice costs nothing).
@@ -43,14 +47,18 @@ struct SnapshotFile<C> {
     since: Option<String>,
     /// The merges it revisited ([`crate::state::SyncState::revisit`]).
     revisit: Vec<u32>,
-    /// Unix seconds when the read (or its last refresh) started.
+    /// Unix seconds when the full read started (what [`MAX_AGE_SECS`] is measured from).
+    read_at: u64,
+    /// Unix seconds when the read or its last refresh started.
     fetched_at: u64,
     collab: C,
 }
 
 /// A snapshot that matched the run, ready to be refreshed.
 pub struct Cached {
-    /// When its read (or last refresh) started, unix seconds.
+    /// When its full read started, unix seconds.
+    pub read_at: u64,
+    /// When its read or last refresh started, unix seconds.
     pub fetched_at: u64,
     /// What it holds.
     pub collab: SrcCollab,
@@ -94,10 +102,10 @@ impl Snapshot {
         &self.path
     }
 
-    /// The snapshot, when the file holds one for this run that is younger than `max_age`
-    /// seconds at `now`. Anything else (no file, another scope or `since`, too old, unreadable)
-    /// is `None`: the run reads the source in full.
-    pub fn load(&self, now: u64, max_age: u64) -> Option<Cached> {
+    /// The snapshot, when the file holds one for this run whose full read is younger than
+    /// [`MAX_AGE_SECS`] at `now`. Anything else (no file, another scope or `since`, too old,
+    /// unreadable) is `None`: the run reads the source in full.
+    pub fn load(&self, now: u64) -> Option<Cached> {
         let bytes = std::fs::read(&self.path).ok()?;
         let file: SnapshotFile<SrcCollab> = match serde_json::from_slice(&bytes) {
             Ok(f) => f,
@@ -115,24 +123,27 @@ impl Snapshot {
             return None;
         }
         // A clock that went backwards makes the snapshot "from the future": not trusted.
-        if file.fetched_at > now || now - file.fetched_at > max_age {
+        if file.read_at > now || file.fetched_at > now || now - file.read_at > MAX_AGE_SECS {
             tracing::info!(path = %self.path.display(), "the source snapshot is too old; reading the source in full");
             return None;
         }
         Some(Cached {
+            read_at: file.read_at,
             fetched_at: file.fetched_at,
             collab: file.collab,
         })
     }
 
-    /// Save `collab`, read (or refreshed) starting at `fetched_at`. Written to a temporary file
-    /// and renamed, so a run killed mid-write leaves the previous snapshot or none.
-    pub fn save(&self, fetched_at: u64, collab: &SrcCollab) -> Result<()> {
+    /// Save `collab`, fully read starting at `read_at` and last refreshed starting at
+    /// `fetched_at`. Written to a temporary file (readable by its owner only) and renamed, so a
+    /// run killed mid-write leaves the previous snapshot or none.
+    pub fn save(&self, read_at: u64, fetched_at: u64, collab: &SrcCollab) -> Result<()> {
         let file = SnapshotFile {
             format: FORMAT,
             scope: self.scope.clone(),
             since: self.since.clone(),
             revisit: self.revisit.clone(),
+            read_at,
             fetched_at,
             collab,
         };
@@ -143,7 +154,7 @@ impl Snapshot {
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
         let written = (|| -> Result<()> {
-            let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            let mut out = std::io::BufWriter::new(private_file(&tmp)?);
             serde_json::to_writer(&mut out, &file)?;
             std::io::Write::flush(&mut out)?;
             Ok(())
@@ -160,6 +171,15 @@ impl Snapshot {
     pub fn remove(&self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// A new file at `path` (truncated if there is one) that only its owner can read.
+fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    open.open(path)
 }
 
 /// `base` (a snapshot) brought up to date with `fresh` (what the source returned for the items
@@ -205,35 +225,26 @@ pub fn merge(base: SrcCollab, fresh: SrcCollab, sort: impl FnOnce(&mut [SrcTarge
 /// One item read twice: `new`'s fields, with `old`'s comments and reviews that `new` lacks
 /// (by source URL) kept, in source time order.
 fn merge_target(old: SrcTarget, mut new: SrcTarget) -> SrcTarget {
-    let have: std::collections::BTreeSet<String> = new
-        .comments
-        .iter()
-        .map(|c| c.imported.url.clone())
-        .collect();
-    let mut comments: Vec<_> = old
-        .comments
-        .into_iter()
-        .filter(|c| !have.contains(&c.imported.url))
-        .collect();
-    if !comments.is_empty() {
-        comments.append(&mut new.comments);
-        // Stable: comments at the same second keep the order they were read in.
-        comments.sort_by_key(|c| c.imported.created_at);
-        new.comments = comments;
-    }
-    let have: std::collections::BTreeSet<String> =
-        new.reviews.iter().map(|r| r.imported.url.clone()).collect();
-    let mut reviews: Vec<_> = old
-        .reviews
-        .into_iter()
-        .filter(|r| !have.contains(&r.imported.url))
-        .collect();
-    if !reviews.is_empty() {
-        reviews.append(&mut new.reviews);
-        reviews.sort_by_key(|r| r.imported.created_at);
-        new.reviews = reviews;
-    }
+    keep_unseen(old.comments, &mut new.comments, |c| &c.imported);
+    keep_unseen(old.reviews, &mut new.reviews, |r| &r.imported);
     new
+}
+
+/// Add to `new` the entries of `old` whose source URL it lacks, then put them in source time
+/// order (stable: entries of the same second keep the order they were read in).
+fn keep_unseen<T>(old: Vec<T>, new: &mut Vec<T>, imported: impl Fn(&T) -> &Imported) {
+    let have: std::collections::BTreeSet<&str> =
+        new.iter().map(|e| imported(e).url.as_str()).collect();
+    let mut kept: Vec<T> = old
+        .into_iter()
+        .filter(|e| !have.contains(imported(e).url.as_str()))
+        .collect();
+    if kept.is_empty() {
+        return;
+    }
+    kept.append(new);
+    kept.sort_by_key(|e| imported(e).created_at);
+    *new = kept;
 }
 
 #[cfg(test)]
@@ -241,7 +252,6 @@ mod tests {
     use super::*;
     use crate::model::{SrcComment, SrcLabel};
     use forge_core::collab::v2::TargetKind;
-    use forge_core::collab::Imported;
 
     fn imported(url: &str, at: u64) -> Imported {
         Imported {
@@ -303,9 +313,9 @@ mod tests {
             ..SrcCollab::default()
         };
         let snap = Snapshot::new(&state, "scope", None, &[]);
-        assert!(snap.load(1_000, MAX_AGE_SECS).is_none(), "no file yet");
-        snap.save(1_000, &collab).unwrap();
-        let back = snap.load(1_500, MAX_AGE_SECS).expect("matches");
+        assert!(snap.load(1_000).is_none(), "no file yet");
+        snap.save(1_000, 1_000, &collab).unwrap();
+        let back = snap.load(1_500).expect("matches");
         assert_eq!(back.fetched_at, 1_000);
         assert_eq!(back.collab.targets.len(), 1);
         assert_eq!(back.collab.targets[0].comments[0].body, "hi");
@@ -313,22 +323,32 @@ mod tests {
         assert_eq!(back.refresh_since(), crate::github::unix_to_iso8601(400));
         // Another scope, `since` or revisit list, too old, or from the future: not reused.
         assert!(Snapshot::new(&state, "other", None, &[])
-            .load(1_500, MAX_AGE_SECS)
+            .load(1_500)
             .is_none());
         assert!(
             Snapshot::new(&state, "scope", Some("2026-01-01T00:00:00Z"), &[])
-                .load(1_500, MAX_AGE_SECS)
+                .load(1_500)
                 .is_none()
         );
         assert!(Snapshot::new(&state, "scope", None, &[7])
-            .load(1_500, MAX_AGE_SECS)
+            .load(1_500)
             .is_none());
-        assert!(snap.load(1_000 + MAX_AGE_SECS + 1, MAX_AGE_SECS).is_none());
-        assert!(snap.load(999, MAX_AGE_SECS).is_none());
+        assert!(snap.load(1_000 + MAX_AGE_SECS + 1).is_none());
+        assert!(snap.load(999).is_none());
+        // Refreshed lately, but its full read is over a day old: read in full again.
+        snap.save(1_000, 80_000, &collab).unwrap();
+        assert!(snap.load(80_100).is_some_and(|c| c.read_at == 1_000));
+        assert!(snap.load(1_000 + MAX_AGE_SECS + 1).is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(snap.path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "its owner's only: {mode:o}");
+        }
         // A damaged file is ignored, never an error.
         std::fs::write(snap.path(), b"{nope").unwrap();
-        assert!(snap.load(1_500, MAX_AGE_SECS).is_none());
-        snap.save(1_000, &collab).unwrap();
+        assert!(snap.load(1_500).is_none());
+        snap.save(1_000, 1_000, &collab).unwrap();
         snap.remove();
         assert!(!snap.path().exists());
     }
