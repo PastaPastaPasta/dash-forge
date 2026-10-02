@@ -32,12 +32,15 @@ export function RefSwitcher({
   addr,
   current,
   path,
+  keep,
 }: {
   home: RepoHome
   addr: RepoAddress
   current: SelectedRef
   /** The `path` param to preserve across a switch (tree/blob views). */
   path?: string
+  /** Other params to preserve across a switch (code search's `query`). */
+  keep?: Readonly<Record<string, string>>
 }): JSX.Element {
   const pathname = usePathname()
   const router = useRouter()
@@ -55,6 +58,7 @@ export function RefSwitcher({
   const hrefFor = (shortName: string, isTag: boolean): string => {
     const ref = refParamFor(shortName, isTag, home.defaultBranch)
     return repoHref(pathname, addr, {
+      ...keep,
       ...(path ? { path } : {}),
       ...(ref ? { ref } : {}),
     })

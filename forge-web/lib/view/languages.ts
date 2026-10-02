@@ -141,8 +141,13 @@ const BY_NAME: Readonly<Record<string, Language>> = {
  */
 const EXCLUDED = /(^|\/)(vendor|vendored|third[-_]party|thirdparty|node_modules|bower_components|deps|external|dist|build)\/|(^|\/)(docs?|documentation|examples?|samples?)\/|\.min\.(js|css)$|(^|\/)\.[^/]+$/i
 
+/** `table[key]` when the table itself has it (never `Object.prototype`'s: a file named `constructor`). */
+function own<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined
+}
+
 /** A file's lowercase extension (without the dot), or '' for none (a dotfile has none). */
-function extensionOf(path: string): string {
+export function extensionOf(path: string): string {
   const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
   const dot = name.lastIndexOf('.')
   return dot <= 0 ? '' : name.slice(dot + 1)
@@ -179,7 +184,7 @@ export function headerLanguage(paths: Iterable<string>): (path: string) => Langu
   const counts = new Map<string, Map<Language, number>>()
   for (const path of paths) {
     if (EXCLUDED.test(path)) continue
-    const lang = HEADER_SOURCES[extensionOf(path)]
+    const lang = own(HEADER_SOURCES, extensionOf(path))
     if (lang === undefined) continue
     let dir = path
     for (;;) {
@@ -226,9 +231,9 @@ export function headerLanguage(paths: Iterable<string>): (path: string) => Langu
 export function languageOf(path: string): Language | null {
   if (EXCLUDED.test(path)) return null
   const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
-  const byName = BY_NAME[name]
+  const byName = own(BY_NAME, name)
   if (byName !== undefined) return byName
-  return BY_EXTENSION[extensionOf(path)] ?? null
+  return own(BY_EXTENSION, extensionOf(path)) ?? null
 }
 
 /** {@link languageOf}, with `.h` and `.ts` decided by the repo's other files. */
@@ -239,6 +244,115 @@ function languageIn(path: string, header: () => (path: string) => Language): Lan
   if (ext === 'h') return header()(path)
   if (ext === 'ts') return isQtTranslation(path) ? null : TS
   return null
+}
+
+/**
+ * Languages code search's `language:` knows besides the bar's (data and prose, which the bar leaves
+ * out but GitHub's `language:` finds), by extension.
+ */
+const SEARCH_ONLY_BY_EXTENSION: Readonly<Record<string, string>> = {
+  md: 'Markdown',
+  markdown: 'Markdown',
+  mdx: 'MDX',
+  rst: 'reStructuredText',
+  txt: 'Text',
+  json: 'JSON',
+  yml: 'YAML',
+  yaml: 'YAML',
+  toml: 'TOML',
+  xml: 'XML',
+  xlf: 'XML',
+  ui: 'XML',
+  qrc: 'XML',
+  svg: 'SVG',
+  ini: 'INI',
+  proto: 'Protocol Buffer',
+  graphql: 'GraphQL',
+  gradle: 'Gradle',
+  bat: 'Batchfile',
+  cmd: 'Batchfile',
+}
+
+/**
+ * A file's language for code search's `language:` (GitHub's linguist names), by its name alone:
+ * every file counts, vendored and documentation ones too (unlike the bar). `header` decides a
+ * `.h` from the files around it ({@link headerLanguage}); a Qt translation `.ts` is XML, as
+ * linguist classifies it.
+ */
+export function searchLanguageOf(path: string, header: (path: string) => Language): string | null {
+  const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
+  const byName = own(BY_NAME, name)
+  if (byName !== undefined) return byName.name
+  const ext = extensionOf(path)
+  if (ext === 'h') return header(path).name
+  if (ext === 'ts') return isQtTranslation(path) ? 'XML' : TS.name
+  return own(BY_EXTENSION, ext)?.name ?? own(SEARCH_ONLY_BY_EXTENSION, ext) ?? null
+}
+
+/** Aliases `language:` takes for a language's name (lowercase), as GitHub's linguist aliases do. */
+const LANGUAGE_ALIASES: Readonly<Record<string, string>> = {
+  cpp: 'C++',
+  'c++': 'C++',
+  cxx: 'C++',
+  csharp: 'C#',
+  cs: 'C#',
+  js: 'JavaScript',
+  node: 'JavaScript',
+  ts: 'TypeScript',
+  py: 'Python',
+  python3: 'Python',
+  rs: 'Rust',
+  golang: 'Go',
+  sh: 'Shell',
+  bash: 'Shell',
+  zsh: 'Shell',
+  rb: 'Ruby',
+  kt: 'Kotlin',
+  objc: 'Objective-C',
+  objectivec: 'Objective-C',
+  'objc++': 'Objective-C++',
+  objectivecpp: 'Objective-C++',
+  md: 'Markdown',
+  yml: 'YAML',
+  make: 'Makefile',
+  mf: 'Makefile',
+  asm: 'Assembly',
+  nasm: 'Assembly',
+  docker: 'Dockerfile',
+  protobuf: 'Protocol Buffer',
+  proto: 'Protocol Buffer',
+  rst: 'reStructuredText',
+  text: 'Text',
+  plaintext: 'Text',
+  tex: 'TeX',
+  latex: 'TeX',
+  vim: 'Vim Script',
+  viml: 'Vim Script',
+  ps1: 'PowerShell',
+  pwsh: 'PowerShell',
+  pl: 'Perl',
+  hs: 'Haskell',
+  ml: 'OCaml',
+  ex: 'Elixir',
+  erl: 'Erlang',
+  clj: 'Clojure',
+}
+
+/** Every language name {@link searchLanguageOf} can answer, by its lowercase form without spaces. */
+const SEARCH_LANGUAGES: ReadonlyMap<string, string> = new Map(
+  [...Object.values(BY_EXTENSION), ...Object.values(BY_NAME)]
+    .map((l) => l.name)
+    .concat(Object.values(SEARCH_ONLY_BY_EXTENSION))
+    .map((name) => [name.toLowerCase().replace(/\s+/g, ''), name] as const),
+)
+
+/**
+ * The language a `language:` value names (`cpp`, `c++`, `C++`, `"objective-c"`, `python`), or null
+ * when it names none this search knows.
+ */
+export function searchLanguageNamed(value: string): string | null {
+  const key = value.toLowerCase().replace(/\s+/g, '')
+  return own(LANGUAGE_ALIASES, key) ?? SEARCH_LANGUAGES.get(key) ?? null
 }
 
 /** One language's share. */
