@@ -31,8 +31,11 @@ export interface ListGrammar<Q> {
   readonly parse: (text: string, base: Q) => Q
   /** The known qualifiers in `text` whose values could not be used. */
   readonly unresolved: (text: string) => string[]
-  /** What a submit keeps of the current query (the state tab); every other filter is what the box says. */
-  readonly submitBase: (q: Q) => Q
+  /**
+   * What a submit of `text` keeps of the current query: the state tab, unless `text` took its state
+   * qualifier out (then every state, QW4-023); every other filter is what the box says. `''`: a clear.
+   */
+  readonly submitBase: (q: Q, text: string) => Q
 }
 
 /** A list's search box state and its query changes, race-safe (L-43). */
@@ -152,7 +155,7 @@ export function useListQuery<Q extends { readonly page: number }>({
       setValue: setSearch,
       submit: async (e) => {
         e.preventDefault()
-        await resolveAndApply(value, grammar.submitBase(query))
+        await resolveAndApply(value, grammar.submitBase(query, value))
       },
       searching,
       dropped,
@@ -167,7 +170,7 @@ export function useListQuery<Q extends { readonly page: number }>({
         setDropped([])
         setNotFound([])
         setNotReady(false)
-        setQuery(grammar.submitBase(query))
+        setQuery(grammar.submitBase(query, ''))
       },
     },
   }
