@@ -41,7 +41,7 @@ use crate::members::{self, MemberReader};
 use crate::network::ForgeIds;
 use crate::platform::{
     self, BroadcastOutcome, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity,
-    PlatformClient, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
+    PlatformClient, PreparedWrite, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
 use crate::private::DocKind;
 use crate::rules::v2::{
@@ -3828,15 +3828,39 @@ impl<'a> Collab<'a> {
         what: ImportedTarget<'_>,
         from: Provenance<'_>,
     ) -> Result<Created> {
+        self.create_imported_with(repo, what, from, false).await
+    }
+
+    /// [`Self::create_imported`] again, after an earlier call for the same item failed
+    /// unconfirmed: a transition it signed may still land, at the number it was signed for.
+    /// The signer's copy of this very item (the same content and provenance: the importer
+    /// never wants two) found at the number just before the next one, or at a number this call
+    /// is refused, is that earlier call's, and is returned instead of a second copy.
+    pub async fn create_imported_again(
+        &self,
+        repo: &RepoRef,
+        what: ImportedTarget<'_>,
+        from: Provenance<'_>,
+    ) -> Result<Created> {
+        self.create_imported_with(repo, what, from, true).await
+    }
+
+    async fn create_imported_with(
+        &self,
+        repo: &RepoRef,
+        what: ImportedTarget<'_>,
+        from: Provenance<'_>,
+        again: bool,
+    ) -> Result<Created> {
         match what {
             ImportedTarget::Issue { title, body } => {
-                self.create_dense(repo, TargetKind::Issue, None, |n| {
+                self.create_dense_with(repo, TargetKind::Issue, None, again, |n| {
                     issue_props(n, title, body, from)
                 })
                 .await
             }
             ImportedTarget::Patch(input) => {
-                self.create_dense(repo, TargetKind::Patch, None, |n| {
+                self.create_dense_with(repo, TargetKind::Patch, None, again, |n| {
                     patch_props(n, input, from)
                 })
                 .await
@@ -3903,7 +3927,9 @@ impl<'a> Collab<'a> {
     }
 
     /// This call's own create of `plain` at `number`, when that is what holds it
-    /// ([`adoptable`]): an earlier attempt of it landed though its read lagged.
+    /// ([`adoptable`]): an earlier attempt of it landed though its read lagged. `by_content`
+    /// (an imported item created again, [`Self::create_imported_again`]): the signer's copy of
+    /// the same content and provenance, whichever call signed it ([`is_own_copy`]).
     async fn own_create_at(
         &self,
         repo: &RepoRef,
@@ -3911,9 +3937,14 @@ impl<'a> Collab<'a> {
         number: u32,
         (me, plain): (&str, &BTreeMap<String, FieldValue>),
         signed: &[(u32, String)],
+        by_content: bool,
     ) -> Option<Created> {
         let d = self.readable_target(repo, kind, number).await.ok()??;
-        let own = adoptable(&d, me, plain, signed);
+        let own = if by_content {
+            is_own_copy(&d, me, plain)
+        } else {
+            adoptable(&d, me, plain, signed)
+        };
         own.then_some(Created {
             number,
             document_id: d.id,
@@ -3928,12 +3959,25 @@ impl<'a> Collab<'a> {
     /// CheckTx for free) or, when the count moved on after the rules ran, by the unique
     /// `number` index. `journal` (a directory and the content's fingerprint) makes it
     /// resumable: the signed create is saved before its first broadcast.
-    #[allow(clippy::too_many_lines)] // one numbered-create loop, its outcomes side by side
     async fn create_dense(
         &self,
         repo: &RepoRef,
         kind: TargetKind,
         journal: Option<(&Path, &str)>,
+        props: impl Fn(u32) -> Result<BTreeMap<String, FieldValue>>,
+    ) -> Result<Created> {
+        self.create_dense_with(repo, kind, journal, false, props)
+            .await
+    }
+
+    /// [`Self::create_dense`]; `again`: see [`Self::create_imported_again`].
+    #[allow(clippy::too_many_lines)] // one numbered-create loop, its outcomes side by side
+    async fn create_dense_with(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        journal: Option<(&Path, &str)>,
+        again: bool,
         props: impl Fn(u32) -> Result<BTreeMap<String, FieldValue>>,
     ) -> Result<Created> {
         let me = self.signer_id()?;
@@ -3955,6 +3999,15 @@ impl<'a> Collab<'a> {
         let mut proof_retried = false;
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
             let number = self.next_number(repo).await?.max(floor);
+            // Created again: the earlier call's copy, if it landed, holds the number before
+            // this one (creates are one sequence), even when the caller's own read lagged it.
+            if again && number > 1 {
+                let before = props(number - 1)?;
+                let own = self.own_create_at(repo, kind, number - 1, (&me, &before), &[], true);
+                if let Some(done) = own.await {
+                    return Ok(done);
+                }
+            }
             let plain = props(number)?;
             // sealed per number: the AD binds it (§4.4), so a renumbered retry re-seals
             let sealed = self
@@ -3963,21 +4016,33 @@ impl<'a> Collab<'a> {
             let mut all = Self::with_repo(repo, sealed)?;
             self.stamp(repo, kind.doc_type(), &mut all).await?;
             let optional_proof = !proof_required(&all);
-            let res = engine
-                .create_journaled(&collab, kind.doc_type(), all, |p| {
-                    signed.push((number, p.document_id().to_string()));
-                    match &path {
-                        Some(path) => CreateJournal {
-                            saved_at: unix_now(),
-                            contract: collab.id(),
-                            number,
-                            intent: WriteIntent::for_prepared(0, p),
-                        }
-                        .save(path),
-                        None => Ok(()),
+            let save = |p: &PreparedWrite| {
+                signed.push((number, p.document_id().to_string()));
+                match &path {
+                    Some(path) => CreateJournal {
+                        saved_at: unix_now(),
+                        contract: collab.id(),
+                        number,
+                        intent: WriteIntent::for_prepared(0, p),
                     }
-                })
-                .await;
+                    .save(path),
+                    None => Ok(()),
+                }
+            };
+            // An unjournaled create (the importer's) whose send goes unconfirmed is signed again
+            // at once: both copies carry `number`, and the dense rule admits one (a late landing
+            // of the first makes the second refused, and the number-taken arm adopts it by id). A
+            // journaled one keeps a single transition: its journal holds only the latest, and a
+            // resumed run could not adopt an earlier one that landed late.
+            let res = if path.is_some() {
+                engine
+                    .create_journaled(&collab, kind.doc_type(), all, save)
+                    .await
+            } else {
+                engine
+                    .create_unique_journaled(&collab, kind.doc_type(), all, save)
+                    .await
+            };
             let forget = || {
                 if let Some(path) = &path {
                     CreateJournal::remove(path);
@@ -3998,7 +4063,7 @@ impl<'a> Collab<'a> {
                 // another create, and nothing of ours landed: count again.
                 Err(e) if number_taken(&e) => {
                     forget();
-                    let own = self.own_create_at(repo, kind, number, (&me, &plain), &signed);
+                    let own = self.own_create_at(repo, kind, number, (&me, &plain), &signed, again);
                     if let Some(done) = own.await {
                         return Ok(done);
                     }
