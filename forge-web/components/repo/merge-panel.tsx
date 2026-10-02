@@ -27,7 +27,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Link from 'next/link'
 import { GitMerge, Loader2 } from 'lucide-react'
 
 import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
@@ -45,6 +44,7 @@ import { StepRow, type StepState } from '@/components/repo/step-list'
 import { widenEstimate, type PackEstimate } from '@/lib/storage/merge-choice'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
+import { CommitIdentityPrompt } from '@/components/repo/branch-commit-panel'
 import { branchName, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
@@ -199,6 +199,9 @@ export function MergePanel({
   const [squashText, setSquashText] = useState<string | null>(null)
   const squash = squashDraft(pull, squashAuthors, committer, squashText)
   const squashMsg = squash.message
+  // The squash commit's author, as strings (the merge input below is memoized on them).
+  const squashByName = squash.author?.name ?? null
+  const squashByEmail = squash.author?.email ?? null
   const [alsoDelete, setAlsoDelete] = useState(true)
   // Linked issues the merger unticked (every other one offered is closed after the merge).
   const [keepOpen, setKeepOpen] = useState<ReadonlySet<number>>(() => new Set())
@@ -213,15 +216,17 @@ export function MergePanel({
       title: pull.title,
       author: { name: prefs.mergeName.trim(), email: prefs.mergeEmail.trim() },
       headInBase: sameRepo,
-      ...(method === 'squash' ? { squash: { message: squashMsg } } : {}),
+      // The PR's author authors the squash; the merger commits it (QW4-008).
+      ...(method === 'squash' ? { squash: { message: squashMsg, ...(squashByName !== null && squashByEmail !== null ? { author: { name: squashByName, email: squashByEmail } } : {}) } } : {}),
       ...(method === 'no-ff' ? { noFastForward: true as const } : {}),
     }),
-    [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg],
+    [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg, squashByName, squashByEmail],
   )
   // Widened for the real commit's identity (author and committer) and the squash message as it
   // is now: the check used a placeholder identity and the message of the moment.
   const packEstimate = sized !== null && sized.method === method ? sized.estimate : null
-  const storage = choiceFor(widenEstimate(packEstimate, `${input.author.name}${input.author.email}`.repeat(2) + (input.squash?.message ?? '')))
+  const authorIdent = input.squash?.author ?? input.author
+  const storage = choiceFor(widenEstimate(packEstimate, `${input.author.name}${input.author.email}${authorIdent.name}${authorIdent.email}${input.squash?.message ?? ''}`))
   const allowPlatform = allowTouched ?? storage?.allowByDefault ?? false
   // The pre-answer the run starts with: credits allowed on Platform (null: none, it asks).
   const preAgreedCredits = allowPlatform ? (storage?.platformCredits ?? null) : null
@@ -587,6 +592,11 @@ export function MergePanel({
             Commit message
           </label>
           <Textarea id="squash-message" value={squashMsg} onChange={(e) => setSquashText(e.target.value)} className="min-h-[96px] font-mono text-[12px]" disabled={!squash.ready} />
+          {squash.author !== null ? (
+            <p className="mt-1 break-words text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="squash-author">
+              Authored by <span className="font-mono">{`${squash.author.name} <${squash.author.email}>`}</span> (the PR&apos;s first commit); you commit it.
+            </p>
+          ) : null}
           {squash.warning !== null ? (
             <p className="mt-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="squash-warning">
               {squash.warning}
@@ -643,13 +653,15 @@ export function MergePanel({
         </fieldset>
       ) : null}
       {mergeable && !identityOk ? (
-        <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
-          A browser merge commit is authored with your name and email. Set them in{' '}
-          <Link href="/settings/" className="underline">
-            Settings
-          </Link>{' '}
-          first.
-        </p>
+        // Set right here, as the suggestion batch and "Update branch" do (QW4-027): a trip to
+        // Settings would leave the page and the merge box's choices.
+        <div className="mt-2" data-testid="merge-identity">
+          {method === 'squash' ? (
+            <CommitIdentityPrompt what="squash and merge" lead="A browser squash is committed with your name and email" />
+          ) : (
+            <CommitIdentityPrompt what="merge" lead="A browser merge commit is authored with your name and email" />
+          )}
+        </div>
       ) : null}
       {mergeable && storageNeedsUnlock ? (
         <div className="mt-3">
