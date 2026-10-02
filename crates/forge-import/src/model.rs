@@ -164,6 +164,11 @@ pub struct SrcCollab {
     /// Items (`(tk, source number)`) the destination refused on an earlier run
     /// ([`crate::state::SyncState::refused`]): the order check does not call them missing.
     pub refused: BTreeSet<(u8, u32)>,
+    /// Items (`(tk, source number)`) the source listed but the read left out on purpose (a
+    /// GitLab confidential issue): an older copy of one in a snapshot must not be mirrored
+    /// ([`crate::snapshot::merge`]).
+    #[serde(default)]
+    pub withheld: BTreeSet<(u8, u32)>,
 }
 
 /// An item URL split into (`host/repository`, the item: `issues/12`,

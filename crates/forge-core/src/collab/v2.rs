@@ -104,6 +104,12 @@ pub const MAX_FOLLOWING: usize = 20;
 /// took the number first) re-reads the count.
 const MAX_NUMBER_ATTEMPTS: usize = 8;
 
+/// How often an imported item's refused number is read for its own copy, and the pause between
+/// reads (about 15 s, as `WriteEngine::landed` polls): a read right after the refusal can lag
+/// the block that took the number.
+const CONFIRM_POLLS: usize = 10;
+const CONFIRM_POLL_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// The environment variable that turns the client-side role checks off, so a write reaches
 /// consensus and is judged there (the e2e suite proves the gates this way). Shared with the
 /// remote helper's push pre-check.
@@ -4075,9 +4081,21 @@ impl<'a> Collab<'a> {
                         }
                     }
                     let ids = (!adopt.by_content).then_some(&signed[..]);
-                    let own = self.own_create_at(repo, kind, number, (&me, &plain), ids);
-                    if let Some(done) = own.await? {
-                        return Ok(done);
+                    // An imported item's number is never taken by anything but its own copy in a
+                    // mirror, so that read is polled like a landing (it may lag the block); a
+                    // copy found, or another document there, settles it.
+                    let polls = if adopt.by_content { CONFIRM_POLLS } else { 1 };
+                    for poll in 0..polls {
+                        let own = self.own_create_at(repo, kind, number, (&me, &plain), ids);
+                        if let Some(done) = own.await? {
+                            return Ok(done);
+                        }
+                        if poll + 1 == polls
+                            || self.readable_target(repo, kind, number).await?.is_some()
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(CONFIRM_POLL_DELAY).await;
                     }
                     floor = number.saturating_add(1);
                     tracing::debug!(number, attempt, "number taken; counting again");

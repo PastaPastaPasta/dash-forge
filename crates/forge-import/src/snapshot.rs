@@ -173,10 +173,15 @@ impl Snapshot {
     }
 }
 
-/// A new file at `path` (truncated if there is one) that only its owner can read.
+/// A new file at `path` (replacing one there) that only its owner can read.
 fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    // The mode applies only to a file it creates: one left behind keeps its own.
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
     let mut open = std::fs::OpenOptions::new();
-    open.write(true).create(true).truncate(true);
+    open.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
     open.open(path)
@@ -187,15 +192,18 @@ fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
 /// are the union by source URL (`fresh`'s copy wins), because a windowed read can return only
 /// the comments updated in its window. Items only in `fresh` are added. Labels, releases and
 /// the open PRs are read in full every time, so `fresh`'s replace `base`'s. Warnings are
-/// joined, and the result is incomplete if either read was. `sort` puts the items back in
-/// source order ([`crate::source::Source::sort_targets`]).
+/// joined, and the result is incomplete if either read was. An item `fresh` withheld (it went
+/// confidential since) is dropped, never mirrored from its older copy. `sort` puts the items
+/// back in source order ([`crate::source::Source::sort_targets`]).
 pub fn merge(base: SrcCollab, fresh: SrcCollab, sort: impl FnOnce(&mut [SrcTarget])) -> SrcCollab {
     let key = |t: &SrcTarget| (t.kind.transition_target().code(), t.number);
     let mut fresh_targets: BTreeMap<(u8, u32), SrcTarget> =
         fresh.targets.into_iter().map(|t| (key(&t), t)).collect();
+    let withheld = fresh.withheld;
     let mut targets: Vec<SrcTarget> = base
         .targets
         .into_iter()
+        .filter(|old| !withheld.contains(&key(old)))
         .map(|old| match fresh_targets.remove(&key(&old)) {
             Some(new) => merge_target(old, new),
             None => old,
@@ -219,6 +227,7 @@ pub fn merge(base: SrcCollab, fresh: SrcCollab, sort: impl FnOnce(&mut [SrcTarge
         warnings,
         incremental: base.incremental,
         refused: base.refused,
+        withheld,
     }
 }
 
@@ -366,6 +375,7 @@ mod tests {
                 ),
                 item(2, "two", Vec::new()),
                 item(4, "four", Vec::new()),
+                item(5, "five, gone confidential since", Vec::new()),
             ],
             labels: Some(Vec::new()),
             open_pulls: Some(vec![2]),
@@ -391,12 +401,17 @@ mod tests {
             }]),
             open_pulls: Some(vec![]),
             incomplete: true,
+            withheld: [(0, 5)].into(),
             warnings: vec!["from the first read".into(), "from the refresh".into()],
             ..SrcCollab::default()
         };
         let merged = merge(base, fresh, by_number);
         let numbers: Vec<u32> = merged.targets.iter().map(|t| t.number).collect();
-        assert_eq!(numbers, [1, 2, 3, 4]);
+        assert_eq!(
+            numbers,
+            [1, 2, 3, 4],
+            "#5 withheld: its older copy is dropped"
+        );
         let one = &merged.targets[0];
         assert_eq!(one.title, "one!");
         let bodies: Vec<&str> = one.comments.iter().map(|c| c.body.as_str()).collect();

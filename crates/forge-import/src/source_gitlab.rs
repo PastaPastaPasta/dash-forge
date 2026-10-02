@@ -269,6 +269,8 @@ pub fn collect(
         };
         if item.gl.confidential {
             skipped_confidential += 1;
+            out.withheld
+                .insert((item.kind.transition_target().code(), number));
             continue;
         }
         let url = item_url(&canonical, item.kind, item.gl.iid);

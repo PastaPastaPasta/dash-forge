@@ -3873,9 +3873,15 @@ where
             }
             // Still ahead: nothing of it landed (refused before execution). A nonce error, so
             // the caller re-signs once it reads the chain again.
+            // A send of this call that a node took is valid again once the tip catches up, so it
+            // may still land: unconfirmed, not a nonce error.
             WriteFailure::NonceAhead => {
                 tracing::warn!("{document_type}: nonce still too far ahead of the landed writes");
-                return Err(Error::Nonce);
+                return Err(if tried || sent {
+                    Error::Timeout { retryable: true }
+                } else {
+                    Error::Nonce
+                });
             }
             WriteFailure::Retryable(reason) if used < MAX_BROADCAST_ATTEMPTS => {
                 let delay = backoff_delay(backoff, used);
@@ -5720,6 +5726,14 @@ mod tests {
             scripted_write_to((0..n).map(|_| Err(NonceAhead)).collect(), vec![], vec![]).await;
         assert!(matches!(out, Err(Error::Nonce)), "{out:?}");
         assert_eq!(nb, n);
+        // But a send a node took before may land once the tip catches up: unconfirmed.
+        let mut sends = vec![Ok(())];
+        sends.extend((0..n).map(|_| Err(NonceAhead)));
+        let (out, _, _, _) = scripted_write_to(sends, vec![Err(timeout())], vec![false]).await;
+        assert!(
+            matches!(out, Err(Error::Timeout { retryable: true })),
+            "{out:?}"
+        );
     }
 
     /// An indexOnly create whose nonce was found spent is settled by its probe: present means
