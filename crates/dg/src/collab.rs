@@ -550,7 +550,8 @@ async fn rotate_after_removal(
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let r = Reader::open(ctx, repo).await?;
+    // Membership is public, a private repository's included: no key is needed to list it.
+    let r = Reader::open_unsealed(ctx, repo).await?;
     let (client, handle) = (&r.client, &r.repo);
 
     let members = MemberReader::new(client)

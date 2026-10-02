@@ -145,7 +145,7 @@ Fix: pass the identity file with `--master <file>`, or type the recovery words w
 
 **Identity unreadable.** The identity file or stored key is missing, unreadable, not a bridge-format identity export or `dfk1:` key, or a sealed file could not be opened (wrong passphrase).
 
-Fix: `dg auth status` shows which key source is in use. Sign in again with `dg auth login <file>` or `dg auth login --mnemonic`. For a sealed file, set `DASH_FORGE_PASSPHRASE` or type the passphrase when asked. A wrong passphrase names the file and where the passphrase came from. Each sealed file keeps its own passphrase: `dg ci runner new --runner <file>` reads the runner file's from `DASH_FORGE_RUNNER_PASSPHRASE` (else `DASH_FORGE_PASSPHRASE`), so a script can open your key and the runner's when they differ.
+Fix: sign in again with `dg auth login <file>` or `dg auth login --mnemonic`. When the error says `DASH_FORGE_KEY`, the variable is what failed: it overrides every stored key, so correct it (a `dg auth export --format dfk1` key, a runner key from `dg ci runner new`, or an identity file's path) or `unset DASH_FORGE_KEY` to use the stored key. For a sealed file, set `DASH_FORGE_PASSPHRASE` or type the passphrase when asked. A wrong passphrase names the file and where the passphrase came from. Each sealed file keeps its own passphrase: `dg ci runner new --runner <file>` reads the runner file's from `DASH_FORGE_RUNNER_PASSPHRASE` (else `DASH_FORGE_PASSPHRASE`), so a script can open your key and the runner's when they differ.
 
 Reads do not open the key: `dg auth status`, `dg auth balance`, and `dg storage status` / `dg cost audit` of a public repository work with a sealed key and no terminal (the status says the key itself was not checked).
 

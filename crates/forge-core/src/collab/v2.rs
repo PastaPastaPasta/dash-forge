@@ -3159,6 +3159,69 @@ impl<'a> Collab<'a> {
         Ok(out)
     }
 
+    /// How long after a merge its linked issues' closes are taken to be its doing (the web's
+    /// `CLOSED_IN_WINDOW_MS`): the merge box and `dg pr merge` close them right after merging.
+    pub const CLOSED_IN_WINDOW_MS: u64 = 10 * 60_000;
+
+    /// The number of the pull request whose merge made `close` (an issue close of issue
+    /// `issue`), as the web's issue timeline reads it ("closed this as completed in #3",
+    /// `closedIn`; QW4-065): of the merges by the same identity at or before the close and at
+    /// most [`Self::CLOSED_IN_WINDOW_MS`] before it, the latest whose description closes the issue
+    /// ("Fixes #2"). A `transition` names no cause, so the close is matched to the merge it
+    /// followed. Requests: one read of the repository's transition feed back from the close,
+    /// and one read per candidate pull request (usually one). `None` for any other close.
+    pub async fn closing_merge(
+        &self,
+        repo: &RepoRef,
+        close: &Transition,
+        issue: u32,
+    ) -> Result<Option<u32>> {
+        use crate::rules::transition::{ISSUE_CLOSE, PR_MERGE};
+        if close.kind != ISSUE_CLOSE {
+            return Ok(None);
+        }
+        let collab = self.collab_contract(repo).await?;
+        let from = close.created_at.saturating_sub(Self::CLOSED_IN_WINDOW_MS);
+        // The whole window, however busy (a page of 100 could stop short of the merge).
+        let docs = self
+            .client
+            .query_all_documents(
+                &collab,
+                DOC_TRANSITION,
+                &[
+                    Self::repo_filter(repo)?,
+                    QueryFilter::gte("$createdAt", FieldValue::uint64(from)),
+                    QueryFilter::lte("$createdAt", FieldValue::uint64(close.created_at)),
+                ],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        // Newest first: the latest merge before the close is tried first.
+        let merges = docs.iter().rev().filter(|d| {
+            d.owner_id == close.actor
+                && d.created_at.is_some_and(|at| at >= from)
+                && d.field_u64("kind") == Some(u64::from(PR_MERGE))
+        });
+        for d in merges {
+            let Some(number) = d
+                .field_u64("targetNumber")
+                .and_then(|n| u32::try_from(n).ok())
+            else {
+                continue;
+            };
+            // An imported PR's "Fixes #n" are the source forge's numbers (the web maps them
+            // through the mirror; here they are not taken for this repository's).
+            let closes = self.patch(repo, number).await?.is_some_and(|p| {
+                p.imported.is_none()
+                    && crate::rules::review::linked_issues(&p.body).contains(&issue)
+            });
+            if closes {
+                return Ok(Some(number));
+            }
+        }
+        Ok(None)
+    }
+
     /// Every well-formed (and, private, readable) comment on a target, oldest first.
     pub async fn comments(&self, repo: &RepoRef, target_id: &str) -> Result<Vec<Comment>> {
         Ok(self.comments_counted(repo, target_id).await?.0)

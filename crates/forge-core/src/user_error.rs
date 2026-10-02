@@ -921,6 +921,13 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         );
         return Some(insufficient(ctx, &detail));
     }
+    // RC2 member roles: a role-gated write claims its signer's role in `r`, and consensus
+    // refuses one whose role cannot make it. 40127 ReferencedDocumentPropertyMismatch (the
+    // writer leaf's `r` against the writer document's `role`), or the schema's bound on `r`
+    // (QW4-051: both surfaced as raw contract text, or as E101).
+    if let Some(refusal) = claimed_role_refusal(msg) {
+        return Some(role_refused(ctx, &refusal, &one_line(msg)));
+    }
     // 40120 ReferencedEntityNotFound. On path `$ownerId` it is forge-v2's writer gate
     // (`ownerRefersTo`), and on `asMember` RC1's membership proof: no current
     // `writer`/`maintainer` document for the signer. On any other path a referenced document,
@@ -1130,6 +1137,26 @@ fn missing_reference(
         .fix("run the command again: it re-reads the members and plans the wraps afresh")
         .note("the wrap's recipient holds no maintainer or writer document (revoked after the wraps were planned, or never enrolled); nothing was written");
     }
+    if path == "asMaintainer" {
+        // RC2 moderation: a hide or unhide proves its writer a maintainer by naming their
+        // `maintainer` document (QW4-051: it read "a document it refers to at asMaintainer does
+        // not exist").
+        let repo = ctx.repo_or("<owner>/<repo>");
+        return UserError::new(
+            codes::NOT_A_WRITER,
+            ctx.rejected_headline(&format!(
+                "only maintainers of {} can hide or unhide what others posted",
+                ctx.repo_or("this repo")
+            )),
+        )
+        .cause(format!(
+            "Platform refused it at consensus: a hide names its writer's maintainer document (asMaintainer), and you hold none ({detail})"
+        ))
+        .fix(format!(
+            "ask a maintainer to do it, or the owner to make you one: `dg collab add {repo} <your identity id> --role maintainer`"
+        ))
+        .note("refused at consensus: nothing was written");
+    }
     if path == "consentBy" {
         // RC1: a maintainer/writer enrolled by the owner names the member's own `consent`.
         return UserError::new(
@@ -1335,6 +1362,109 @@ fn rule_explanation(document_type: &str, rule: &str) -> Option<&'static str> {
         })
 }
 
+/// How consensus refused a role-gated write's claimed role `r` (RC2 member roles).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RoleRefusal {
+    /// 40127: the claimed `r` does not agree with the signer's `writer` document's `role` on
+    /// the writer leaf (`where` on `$ownerId`): the type needs a role the signer does not hold.
+    Mismatch,
+    /// The schema bounds `r`: the signer's role (`claimed`) is above what the type admits
+    /// (`max`).
+    AboveMaximum { claimed: u64, max: u64 },
+}
+
+/// A claimed-role refusal in Platform's text, if `msg` is one.
+fn claimed_role_refusal(msg: &str) -> Option<RoleRefusal> {
+    if msg.contains("the document's r does not agree with the referenced document's role") {
+        return Some(RoleRefusal::Mismatch);
+    }
+    // `JsonSchemaError: 3 is greater than the maximum of 2, path: /r`.
+    let at = msg.find(" is greater than the maximum of ")?;
+    // `path: /r` exactly: not `/reason`, `/relayKeyId` or `/r/0`.
+    let path = msg[at..].find("path: /r")? + at + "path: /r".len();
+    if msg[path..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_')
+    {
+        return None;
+    }
+    let claimed = msg[..at]
+        .rsplit(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()?;
+    let rest = &msg[at + " is greater than the maximum of ".len()..];
+    let max = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()?;
+    Some(RoleRefusal::AboveMaximum { claimed, max })
+}
+
+/// A member role by its claimed-role code (`r`, the `writer` document's `role`).
+fn role_name(r: u64) -> &'static str {
+    match r {
+        1 => "a writer",
+        2 => "a triage member",
+        3 => "a reader",
+        _ => "a member",
+    }
+}
+
+/// E601 for a role-gated write consensus refused for its claimed role (QW4-051), worded as the
+/// pre-checks and the `t_triageKinds` rule word it: what the write needs, and who cannot make it.
+fn role_refused(ctx: &ErrorContext<'_>, refusal: &RoleRefusal, detail: &str) -> UserError {
+    let repo = ctx.repo_or("<owner>/<repo>");
+    let cause = match refusal {
+        RoleRefusal::Mismatch => format!(
+            "Platform checks the role the write claims against your membership in {repo}, and they do not agree: your role cannot make this write, or it changed since the command read it ({detail})"
+        ),
+        RoleRefusal::AboveMaximum { claimed, max } => format!(
+            "you are {} of {repo} (r {claimed}), and this write needs {} (r {max} at most): {} cannot make it ({detail})",
+            role_name(*claimed),
+            if *max >= 2 {
+                "a maintainer, writer or triage member"
+            } else {
+                "a maintainer or writer"
+            },
+            plural_role(*claimed),
+        ),
+    };
+    // The least role that can make it: triage where the schema admits r 2, else writer.
+    let needs = match refusal {
+        RoleRefusal::AboveMaximum { max, .. } if *max >= 2 => "triage",
+        _ => "writer",
+    };
+    let u = UserError::new(
+        codes::NOT_A_WRITER,
+        ctx.rejected_headline(&format!(
+            "your role in {} cannot make this write",
+            ctx.repo_or("this repo")
+        )),
+    )
+    .cause(cause);
+    let u = if *refusal == RoleRefusal::Mismatch {
+        u.fix("run it again: it re-reads your role, in case the owner changed it since")
+    } else {
+        u
+    };
+    u.fix(format!(
+        "`dg collab list {repo}` shows your role; ask the owner for the one this needs (`dg collab add {repo} <your identity id> --role {needs}`)"
+    ))
+    .note("refused at consensus: nothing was written")
+}
+
+/// The members of a role, for "… cannot make it".
+fn plural_role(r: u64) -> &'static str {
+    match r {
+        2 => "triage members",
+        3 => "readers",
+        _ => "members of that role",
+    }
+}
+
 fn not_a_writer(ctx: &ErrorContext<'_>, why: &str) -> UserError {
     let repo = ctx.repo_or("<owner>/<repo>");
     // "Not a writer" is what a refused push means. Other writes (collab admin, releases,
@@ -1484,6 +1614,11 @@ pub fn private_needs_identity(repo: &str) -> UserError {
 }
 
 fn identity_unreadable(msg: &str) -> UserError {
+    identity_unreadable_with(msg, std::env::var_os("DASH_FORGE_KEY").is_some())
+}
+
+/// [`identity_unreadable`], told whether DASH_FORGE_KEY is set (`env_key`).
+fn identity_unreadable_with(msg: &str, env_key: bool) -> UserError {
     // A sealed key that cannot be asked for (QW-034): the way out is the passphrase, not a
     // new sign-in, which costs a key registration.
     if msg.contains("needs a passphrase") {
@@ -1496,12 +1631,24 @@ fn identity_unreadable(msg: &str) -> UserError {
         .fix("scripts and CI: set DASH_FORGE_PASSPHRASE, or DASH_FORGE_KEY to a `dg auth export --format dfk1` key")
         .note("reads of public repositories, `dg auth status` and `dg auth balance` do not need the key opened");
     }
+    // The environment's key wins over every stored one, so the way out is the variable itself
+    // (QW4-059: it said "your identity file", and its fix was `dg auth status`, which fails
+    // the same way while the variable is set).
+    // `from_dfk1` words every bad dfk1 key this way, a stored or `--identity` one too: only
+    // the variable, when it is set, is named.
+    if msg.starts_with("DASH_FORGE_KEY ") && env_key {
+        return UserError::new(codes::IDENTITY_UNREADABLE, "could not read DASH_FORGE_KEY")
+            .cause(msg)
+            .fix("correct DASH_FORGE_KEY (`dg auth export --format dfk1` prints a key in that form; `dg ci runner new` makes a runner key), or set it to an identity file's path")
+            .fix("unset it to use the key stored on this computer: `unset DASH_FORGE_KEY`, then `dg auth status`")
+            .note("DASH_FORGE_KEY overrides every stored key, for dg and for git pushes alike");
+    }
     UserError::new(
         codes::IDENTITY_UNREADABLE,
         "could not load your identity file",
     )
     .cause(msg)
-    .fix("`dg auth status` shows which key source is in use; `dg auth login <file>` (or `--mnemonic`) stores a key again")
+    .fix("`dg auth login <file>` (or `--mnemonic`) stores a key again")
     .fix("pass `--identity <file>` / set DASH_FORGE_KEY for one command (the helper reads DASH_FORGE_KEY)")
 }
 
@@ -2690,6 +2837,99 @@ mod tests {
         retry_is_idempotent: false,
         via_git: false,
     };
+
+    /// QW4-051: consensus refusals of role-gated writes read as role refusals (E601), not raw
+    /// contract text (E604) or E101.
+    #[test]
+    fn a_claimed_role_refusal_says_which_roles_can_make_the_write() {
+        // A triage push or check run: 40127 on the writer leaf.
+        let mismatch = "state transition broadcast error: the document's r does not agree with the referenced document's role (where on $ownerId)";
+        let u = core_chain(CoreError::Platform(mismatch.into()), &PUSH);
+        assert_eq!(u.code, "E601");
+        assert_eq!(
+            u.message,
+            "push rejected: your role in alice/project cannot make this write"
+        );
+        let cause = u.cause.as_deref().unwrap();
+        assert!(
+            cause.contains("your role cannot make this write, or it changed"),
+            "{cause}"
+        );
+        // A role read before an owner's change: running it again re-reads the role.
+        assert!(u.fix[0].starts_with("run it again"), "{u:?}");
+        assert!(u.fix[1].contains("`dg collab list alice/project`"), "{u:?}");
+        assert!(u.fix[1].contains("--role writer"), "{u:?}");
+        assert!(!u.fix.iter().any(|f| f.contains("doctor")), "{u:?}");
+
+        // A reader's close: the transition schema bounds `r` at 2.
+        let schema =
+            "Protocol error: JsonSchemaError: 3 is greater than the maximum of 2, path: /r";
+        let u = core_chain(CoreError::Platform(schema.into()), &ISSUE);
+        assert_eq!(u.code, "E601");
+        let cause = u.cause.as_deref().unwrap();
+        assert!(
+            cause.starts_with("you are a reader of alice/project (r 3), and this write needs a maintainer, writer or triage member (r 2 at most): readers cannot make it"),
+            "{cause}"
+        );
+        // Triage can close: the owner is asked for that, not for writer.
+        assert!(u.fix[0].contains("--role triage"), "{u:?}");
+        // Another property's bound is not a role refusal, `/reason` included.
+        for other in ["/value", "/reason", "/relayKeyId", "/r/0"] {
+            let msg = format!("JsonSchemaError: 4 is greater than the maximum of 3, path: {other}");
+            assert_eq!(claimed_role_refusal(&msg), None, "{other}");
+        }
+        assert!(claimed_role_refusal(
+            "JsonSchemaError: 3 is greater than the maximum of 1, path: /r, x"
+        )
+        .is_some());
+    }
+
+    /// QW4-059: an unreadable DASH_FORGE_KEY is named as the variable, and its fix is not the
+    /// `dg auth status` that fails the same way.
+    #[test]
+    fn an_unreadable_dash_forge_key_names_the_variable() {
+        let garbled = "DASH_FORGE_KEY is not a valid dfk1 key (the key is not a private key in WIF form); expected dfk1:<network>:<identityId>:<keyId>:<wif>";
+        // A stored or `--identity` dfk1 key is worded the same; without the variable set, it is
+        // not named.
+        let stored = identity_unreadable_with(garbled, false);
+        assert_eq!(stored.message, "could not load your identity file");
+        let u = identity_unreadable_with(garbled, true);
+        assert_eq!(u.code, "E303");
+        assert_eq!(u.message, "could not read DASH_FORGE_KEY");
+        assert!(
+            u.fix.iter().any(|f| f.contains("unset DASH_FORGE_KEY")),
+            "{u:?}"
+        );
+        assert!(!u.fix[0].contains("dg auth status"), "{u:?}");
+        // A key file keeps the file's wording, without the circular status advice.
+        let u = identity_unreadable_with("reading /x/key.json: permission denied", true);
+        assert_eq!(u.message, "could not load your identity file");
+        assert!(!u.fix.iter().any(|f| f.contains("dg auth status")), "{u:?}");
+    }
+
+    /// QW4-051: a writer's hide reaches consensus without a maintainer document to name.
+    #[test]
+    fn a_hide_without_a_maintainer_document_needs_a_maintainer() {
+        let detail = "40120: referenced deletable document (contract X, document type maintainer, found by memberId, repoId) H3rx not found for path asMaintainer";
+        let ctx = ErrorContext {
+            goal: Some("nothing hidden"),
+            ..ISSUE
+        };
+        let u = core_chain(
+            CoreError::ReferenceNotFound {
+                document_type: "event".into(),
+                path: "asMaintainer".into(),
+                detail: detail.into(),
+            },
+            &ctx,
+        );
+        assert_eq!(u.code, "E601");
+        assert_eq!(
+            u.message,
+            "nothing hidden: only maintainers of alice/project can hide or unhide what others posted"
+        );
+        assert!(u.fix[0].contains("--role maintainer"), "{u:?}");
+    }
 
     #[test]
     fn a_10422_names_the_rule_and_explains_it() {

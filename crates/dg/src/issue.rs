@@ -524,6 +524,20 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
     let transitions = view.log.transitions.clone();
     let timeline = timeline(&comments, &events, &transitions);
     let issue_number = u32::try_from(number).unwrap_or(u32::MAX);
+    // "closed this as completed in #3" (QW4-065): the merged PR each close followed, as the
+    // web's timeline reads it. Only closes are looked up; a failed read leaves the line bare.
+    let mut closed_in = std::collections::BTreeMap::new();
+    // A close recorded as not planned or a duplicate was not the merge's doing (the web
+    // links neither).
+    let by_merge = |t: &&Transition| {
+        t.kind == forge_core::rules::transition::ISSUE_CLOSE
+            && close_reason_of(t, issue_number).is_none_or(|c| c.reason == CloseReason::Completed)
+    };
+    for t in transitions.iter().filter(by_merge) {
+        if let Ok(Some(pr)) = collab.closing_merge(&s.repo, t, issue_number).await {
+            closed_in.insert(t.id.clone(), pr);
+        }
+    }
     let closed = current_close_reason(&transitions, issue_number);
     let (state_reason, duplicate_of) = close_reason_json(closed.as_ref());
     // Milestone and pin: the member events folded (kinds 17-20). Lock: the transitions'
@@ -576,7 +590,10 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
                 "value": e.value,
                 "createdAt": e.created_at,
             })).collect::<Vec<_>>(),
-            "transitions": transitions.iter().map(transition_json).collect::<Vec<_>>(),
+            "transitions": transitions
+                .iter()
+                .map(|t| transition_json(t, closed_in.get(&t.id).copied()))
+                .collect::<Vec<_>>(),
             "hiddenComments": hidden,
             "moderation": moderation,
             "hiddenEventValues": hidden_values,
@@ -628,7 +645,14 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
                         safe(&event_phrase_with(e, &who))
                     ),
                     Item::Transition(t) => {
-                        println!("\n· {} {}", who(&t.actor), transition_line(t, issue_number));
+                        let pr = closed_in
+                            .get(&t.id)
+                            .map_or(String::new(), |n| format!(" in #{n}"));
+                        println!(
+                            "\n· {} {}{pr}",
+                            who(&t.actor),
+                            transition_line(t, issue_number)
+                        );
                     }
                 }
             }
@@ -643,8 +667,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
     Ok(())
 }
 
-/// A transition in `dg issue view --json`.
-fn transition_json(t: &Transition) -> serde_json::Value {
+/// A transition in `dg issue view --json`; `closed_in`: the PR whose merge made a close.
+fn transition_json(t: &Transition, closed_in: Option<u32>) -> serde_json::Value {
     json!({
         "id": t.id,
         "kind": t.kind,
@@ -653,6 +677,7 @@ fn transition_json(t: &Transition) -> serde_json::Value {
         "createdAt": t.created_at,
         "reason": t.reason,
         "dupNumber": t.dup_number,
+        "closedIn": closed_in,
     })
 }
 

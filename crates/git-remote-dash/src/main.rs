@@ -261,7 +261,7 @@ fn protocol_loop<R: BufRead, W: Write>(
                 goal.set(line.contains("for-push"), &opts);
                 fail_if_shallow(&opts)?;
                 let for_push = line.split_whitespace().nth(1) == Some("for-push");
-                let out = rt.block_on(helper.list(for_push)).context("list refs")?;
+                let out = step(rt.block_on(helper.list(for_push)), "list refs")?;
                 for l in &out {
                     writeln!(writer, "{l}")?;
                 }
@@ -285,8 +285,7 @@ fn protocol_loop<R: BufRead, W: Write>(
                         wants.push(w);
                     }
                 }
-                rt.block_on(helper.fetch(&wants, &opts))
-                    .context("fetch objects")?;
+                step(rt.block_on(helper.fetch(&wants, &opts)), "fetch objects")?;
                 writeln!(writer)?; // end-of-batch
                 writer.flush()?;
             }
@@ -305,9 +304,7 @@ fn protocol_loop<R: BufRead, W: Write>(
                         specs.push(s);
                     }
                 }
-                let outcomes = rt
-                    .block_on(helper.push(&specs, &opts))
-                    .context("push refs")?;
+                let outcomes = step(rt.block_on(helper.push(&specs, &opts)), "push refs")?;
                 for o in &outcomes {
                     writeln!(writer, "{}", o.wire())?;
                 }
@@ -337,6 +334,26 @@ fn protocol_loop<R: BufRead, W: Write>(
     Ok(())
 }
 
+/// `r` with the protocol step it failed in (`list refs`) as context, unless the error is
+/// already phrased for a person (a [`UserError`], or forge-core's `Error::User`): the step is
+/// then nothing the reader can use, and it printed as a raw `note: list refs` (QW4-065).
+fn step<T>(r: Result<T>, what: &'static str) -> Result<T> {
+    r.map_err(|e| {
+        let phrased = e.chain().any(|l| {
+            l.downcast_ref::<UserError>().is_some()
+                || matches!(
+                    l.downcast_ref::<forge_core::Error>(),
+                    Some(forge_core::Error::User(_))
+                )
+        });
+        if phrased {
+            e
+        } else {
+            e.context(what)
+        }
+    })
+}
+
 /// Abort loudly if a shallow request was latched (`--depth`/`--shallow-*`), rather than
 /// letting git silently produce a full clone (S0.9).
 fn fail_if_shallow(opts: &OptionState) -> Result<()> {
@@ -355,10 +372,26 @@ fn fail_if_shallow(opts: &OptionState) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        fail_if_shallow, parse_fetch_line, parse_push_line, version_line, ErrorContext,
+        fail_if_shallow, parse_fetch_line, parse_push_line, step, version_line, ErrorContext,
         CAPABILITIES,
     };
     use crate::options::{handle_option, OptionState};
+
+    /// QW4-065: a phrased error (E307 on a clone of a private repository) carries no
+    /// `note: list refs`; an unphrased one keeps the step, which says where it failed.
+    #[test]
+    fn a_phrased_error_carries_no_protocol_step() {
+        let phrased = forge_core::user_error::UserError::new(
+            "E307",
+            "private repo a/b: you hold no key for it",
+        );
+        let e = step::<()>(Err(forge_core::Error::from(phrased).into()), "list refs").unwrap_err();
+        let u = forge_core::user_error::classify(e.chain(), &ErrorContext::default());
+        assert_eq!(u.code, "E307");
+        assert_eq!(u.note, None);
+        let raw = step::<()>(Err(anyhow::anyhow!("boom")), "list refs").unwrap_err();
+        assert_eq!(raw.to_string(), "list refs");
+    }
 
     #[test]
     fn version_line_names_version_commit_and_target() {

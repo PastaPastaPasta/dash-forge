@@ -515,13 +515,17 @@ async fn submit(
     let est = submit_estimate(&draft);
     let moved = draft.head_oid != view.head;
     if !ctx.json {
-        eprintln!(
-            "{} review on PR #{} at {}: {} inline comment(s)",
-            v.label(),
-            a.number,
-            short(&draft.head_oid),
-            n
-        );
+        // What the question below asks about. With --yes nothing is asked, and the ✓ line
+        // after the write says the same (QW4-065: the review printed twice).
+        if !ctx.yes {
+            eprintln!(
+                "{} review on PR #{} at {}: {} inline comment(s)",
+                v.label(),
+                a.number,
+                short(&draft.head_oid),
+                n
+            );
+        }
         if moved {
             eprintln!(
                 "  note: the PR moved to {} since this review was started; it is recorded on {} and will read as stale",

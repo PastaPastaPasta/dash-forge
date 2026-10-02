@@ -260,6 +260,75 @@ fn repo_slot(root: &clap::Command, args: &[OsString]) -> Option<(usize, Option<S
     Some((at, given))
 }
 
+/// The subcommand `args` name, deepest first found (`dg pr merge 4 --x` → `pr merge`).
+fn leaf<'c>(root: &'c clap::Command, args: &[OsString]) -> Option<&'c clap::Command> {
+    let mut cmd = root;
+    let mut found = false;
+    let mut i = 1;
+    while i < args.len() {
+        let token = args[i].to_str()?;
+        if token == "--" {
+            break;
+        }
+        if token.starts_with('-') {
+            // `-R <REPO>` / `--repo <REPO>` is no clap option ([`explicit_repo`] moves it), so
+            // its value is skipped here by name.
+            i += if matches!(token, "-R" | "--repo") || takes_separate_value(cmd, token) {
+                2
+            } else {
+                1
+            };
+            continue;
+        }
+        match cmd.find_subcommand(token) {
+            Some(sub) => {
+                cmd = sub;
+                found = true;
+                i += 1;
+            }
+            None => break,
+        }
+    }
+    found.then_some(cmd)
+}
+
+/// The `Usage:` line of the subcommand `args` name, for a usage error (QW3-069 / QW4-066 /
+/// QW4-065): clap's own lists the options used and the one it suggests as if required
+/// (`dg pr merge --override-policy --merge-oid <MERGE_OID> <REPO> <NUMBER>`), and a repository
+/// as required where a clone supplies it. This is the command's plain usage, with the
+/// repository optional (`[REPO]`) where it can be left out: inside a clone (`in_clone`).
+pub fn usage_line(args: &[OsString], in_clone: bool) -> Option<String> {
+    let root = built();
+    let cmd = leaf(&root, args)?;
+    if cmd.has_subcommands() {
+        return None;
+    }
+    let mut usage = cmd.clone().render_usage().to_string();
+    let inferable = in_clone
+        && !NEVER_INFERRED.contains(&cmd.get_name())
+        && cmd
+            .get_positionals()
+            .next()
+            .is_some_and(|p| p.get_id().as_str() == "repo");
+    if inferable {
+        usage = usage.replacen(" <REPO>", " [REPO]", 1);
+    }
+    Some(usage.trim().to_string())
+}
+
+/// A pointer for an option `dg` spells another way than `gh` (QW4-066: `--method squash` was
+/// pointed at `--merge-oid`), when `unknown` is one, for the subcommand `args` name.
+pub fn flag_tip(args: &[OsString], unknown: &str) -> Option<&'static str> {
+    let root = built();
+    let cmd = leaf(&root, args)?;
+    let path = cmd.get_bin_name().unwrap_or_default();
+    match (path.ends_with(" pr merge"), unknown) {
+        (true, "--method") => Some("the merge method is a flag: `--squash` for a squash, or none for a merge (fast-forward or merge commit)"),
+        (true, "--rebase") => Some("a rebase merge is not supported: use `--squash`, or none for a merge (fast-forward or merge commit)"),
+        _ => None,
+    }
+}
+
 /// Whether option `token` (`--name`, `-n`) takes its value as the next argument (not
 /// `--name=value` or `-nvalue`).
 fn takes_separate_value(cmd: &clap::Command, token: &str) -> bool {
@@ -267,13 +336,20 @@ fn takes_separate_value(cmd: &clap::Command, token: &str) -> bool {
         if long.contains('=') {
             return false;
         }
-        cmd.get_arguments().find(|a| a.get_long() == Some(long))
+        // Its aliases too (`release create --title` is `--name`).
+        cmd.get_arguments().find(|a| {
+            a.get_long() == Some(long) || a.get_all_aliases().is_some_and(|all| all.contains(&long))
+        })
     } else {
         let mut chars = token.chars().skip(1);
         let (Some(c), None) = (chars.next(), chars.next()) else {
             return false;
         };
-        cmd.get_arguments().find(|a| a.get_short() == Some(c))
+        cmd.get_arguments().find(|a| {
+            a.get_short() == Some(c)
+                || a.get_all_short_aliases()
+                    .is_some_and(|all| all.contains(&c))
+        })
     };
     arg.is_some_and(|a| a.get_action().takes_values())
 }
@@ -287,6 +363,59 @@ mod tests {
 
     fn split(line: &str) -> Vec<OsString> {
         line.split(' ').map(OsString::from).collect()
+    }
+
+    /// QW4-066: a parse error's usage line is the command's own, with the repository optional
+    /// where a clone supplies it, and `--method` points at `--squash`, not `--merge-oid`.
+    #[test]
+    fn a_usage_error_shows_the_commands_usage_and_points_at_gh_spellings() {
+        let line = split("dg pr merge 4 --override-policy --method squash");
+        let usage = usage_line(&line, true).unwrap();
+        assert_eq!(usage, "Usage: dg pr merge [OPTIONS] [REPO] <NUMBER>");
+        assert!(!usage.contains("merge-oid"), "{usage}");
+        assert!(flag_tip(&line, "--method").unwrap().contains("`--squash`"));
+        assert_eq!(
+            flag_tip(&split("dg issue close 4 --method x"), "--method"),
+            None
+        );
+        // QW4-065: `release create` takes the repository from the clone too.
+        let usage = usage_line(&split("dg release create --tag v1 --bogus"), true).unwrap();
+        assert!(usage.contains("[REPO]"), "{usage}");
+        // `dg repo clone` never infers its repository.
+        let usage = usage_line(&split("dg repo clone --bogus"), true).unwrap();
+        assert!(!usage.contains("[REPO]"), "{usage}");
+        assert_eq!(usage_line(&split("dg --bogus"), true), None);
+        // Outside a clone the repository is required, as clap's error says.
+        let usage = usage_line(&split("dg pr merge 4 --bogus"), false).unwrap();
+        assert_eq!(usage, "Usage: dg pr merge [OPTIONS] <REPO> <NUMBER>");
+        // `-R <REPO>` before the subcommand is skipped with its value.
+        for line in [
+            "dg -R a/b pr merge 4 --method x",
+            "dg --repo a/b pr merge 4 --method x",
+        ] {
+            let args = split(line);
+            assert!(
+                usage_line(&args, false).is_some_and(|u| u.starts_with("Usage: dg pr merge")),
+                "{line}"
+            );
+            assert!(flag_tip(&args, "--method").is_some(), "{line}");
+        }
+    }
+
+    /// QW4-065: `gh release create --title` / `-t` is `--name` here, under either spelling.
+    #[test]
+    fn release_create_takes_gh_title() {
+        use clap::Parser as _;
+        for flag in ["--title", "-t", "--name"] {
+            let cli = crate::Cli::try_parse_from([
+                "dg", "release", "create", "a/b", "--tag", "v1", flag, "First",
+            ])
+            .unwrap_or_else(|e| panic!("{flag}: {e}"));
+            let crate::Command::Release(crate::ReleaseCommand::Create(a)) = cli.command else {
+                panic!("{flag}")
+            };
+            assert_eq!(a.name, "First");
+        }
     }
 
     fn join(args: &[OsString]) -> String {

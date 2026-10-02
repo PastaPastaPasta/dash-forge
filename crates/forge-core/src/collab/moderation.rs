@@ -158,7 +158,7 @@ impl Collab<'_> {
                 } else {
                     "comment"
                 };
-                return Err(Error::Config(format!(
+                return Err(Error::InvalidInput(format!(
                     "{id} is no {kinds} of {} #{} that you can read",
                     target.kind.noun(),
                     target.number
@@ -176,7 +176,7 @@ impl Collab<'_> {
             item,
             hidden,
         ) {
-            return Err(Error::Config(blocked_words(block, &what, repo)));
+            return Err(blocked_error(block, &format!("{verb} {what}"), &what, repo));
         }
         let community = self.community_contract(repo).await?;
         if community.has_property(DOC_EVENT, EVENT_AS_MAINTAINER) {
@@ -257,6 +257,25 @@ impl Collab<'_> {
     }
 }
 
+/// A hide or unhide refused before signing, typed by why (QW4-050: every block was
+/// [`Error::Config`], E204 "invalid configuration" with a `dg doctor` fix). Only the owner may
+/// hide what the owner wrote or decided: a role refusal ([`Error::NotPermitted`], E601). An
+/// item hidden with its review, or one already in the asked state, is the command's input
+/// ([`Error::InvalidInput`], E201).
+fn blocked_error(block: HideBlock, action: &str, what: &str, repo: &RepoRef) -> Error {
+    let reason = blocked_words(block, what, repo);
+    match block {
+        HideBlock::OwnersContent | HideBlock::OwnerDecided => Error::NotPermitted {
+            action: action.to_string(),
+            reason,
+            needs: format!("the owner of {}", repo.display()),
+        },
+        HideBlock::WithItsReview | HideBlock::AlreadyHidden | HideBlock::NotHidden => {
+            Error::InvalidInput(reason)
+        }
+    }
+}
+
 /// Why a hide or unhide is refused before signing ([`HideBlock`]).
 fn blocked_words(block: HideBlock, what: &str, repo: &RepoRef) -> String {
     let owner = format!("the owner of {}", repo.display());
@@ -300,6 +319,55 @@ mod tests {
             created_at: at,
         }
     }
+    /// QW4-050: a maintainer's hide of the owner's post is a role refusal naming the owner (E601,
+    /// exit 6), not "invalid configuration" with a `dg doctor` fix; a no-op hide is the input.
+    #[test]
+    fn a_blocked_hide_is_a_role_refusal_or_the_input() {
+        let repo = RepoRef {
+            forge: crate::network::ForgeIds::test_forge(),
+            repo_id: "R".into(),
+            owner_id: "own".into(),
+            name: "proj".into(),
+            visibility: crate::rules::v2::Visibility::Public,
+        };
+        let e = blocked_error(HideBlock::OwnersContent, "hide issue #1", "issue #1", &repo);
+        let Error::NotPermitted {
+            action,
+            reason,
+            needs,
+        } = e
+        else {
+            panic!("{e:?}")
+        };
+        assert_eq!(action, "hide issue #1");
+        assert!(reason.contains("only the owner can hide it"), "{reason}");
+        assert_eq!(needs, "the owner of own/proj");
+        let u = crate::user_error::classify(
+            [&Error::NotPermitted {
+                action,
+                reason,
+                needs,
+            } as &(dyn std::error::Error + 'static)],
+            &crate::user_error::ErrorContext {
+                goal: Some("nothing hidden"),
+                ..crate::user_error::ErrorContext::default()
+            },
+        );
+        assert_eq!(u.code, "E601");
+        assert_eq!(
+            u.fix,
+            vec!["ask the owner of own/proj to do it".to_string()]
+        );
+        for block in [
+            HideBlock::AlreadyHidden,
+            HideBlock::NotHidden,
+            HideBlock::WithItsReview,
+        ] {
+            let e = blocked_error(block, "hide issue #1", "issue #1", &repo);
+            assert!(matches!(e, Error::InvalidInput(_)), "{e:?}");
+        }
+    }
+
     fn hiders(proved: bool, maintainers: &[&str]) -> Hiders {
         Hiders {
             owner: "own".into(),
