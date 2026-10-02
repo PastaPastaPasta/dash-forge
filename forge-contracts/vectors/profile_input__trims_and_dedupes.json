@@ -1,0 +1,33 @@
+{
+  "name": "trims_and_dedupes",
+  "description": "Fields are trimmed of Unicode White_Space, a bio's CRLF becomes LF, and repeated links are kept once, in order.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "displayName": "  Alice　",
+    "bio": "\r\nBuilds things.\r\nOn Dash.\n\n",
+    "location": " Lisbon ",
+    "company": " Acme ",
+    "links": [
+      " https://alice.dev ",
+      "https://example.com/a?b#c",
+      "https://alice.dev"
+    ],
+    "avatarConfig": " identicon "
+  },
+  "expected": {
+    "valid": true,
+    "invalid": [],
+    "normalized": {
+      "displayName": "Alice",
+      "bio": "Builds things.\nOn Dash.",
+      "location": "Lisbon",
+      "company": "Acme",
+      "links": [
+        "https://alice.dev",
+        "https://example.com/a?b#c"
+      ],
+      "avatarConfig": "identicon"
+    }
+  }
+}

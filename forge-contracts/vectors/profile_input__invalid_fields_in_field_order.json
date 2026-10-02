@@ -1,0 +1,24 @@
+{
+  "name": "invalid_fields_in_field_order",
+  "description": "Every refused field is reported, in the order displayName, bio, avatarConfig, links, location, company.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "company": "a\nb",
+    "links": [
+      "ftp://x"
+    ],
+    "displayName": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "avatarConfig": "identicon:"
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "displayName",
+      "avatarConfig",
+      "links",
+      "company"
+    ],
+    "normalized": null
+  }
+}

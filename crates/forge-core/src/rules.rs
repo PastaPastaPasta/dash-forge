@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod moderation;
 pub mod parity;
+pub mod profile;
 pub mod review;
 pub mod transition;
 pub mod v2;
@@ -2189,6 +2190,30 @@ mod tests {
         }
     }
 
+    /// `profile_input` and `avatar_config`: the profile rules ([`super::profile`]).
+    fn run_profile_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct AvatarConfigInput {
+            config: Option<String>,
+            identity_id: String,
+        }
+        let ctx = &v.name;
+        if v.case == "profile_input" {
+            let inp: super::profile::ProfileInput = input(v);
+            let got = serde_json::to_value(super::profile::check_profile(&inp)).expect("serialize");
+            assert_eq!(got, v.expected, "vector `{ctx}`");
+        } else {
+            let inp: AvatarConfigInput = input(v);
+            let got = super::profile::avatar_spec(inp.config.as_deref(), &inp.identity_id);
+            assert_eq!(
+                got,
+                expected::<super::profile::AvatarSpec>(v),
+                "vector `{ctx}`"
+            );
+        }
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2242,6 +2267,7 @@ mod tests {
                 let got = v2::ref_name_hashes_agree(&inp.doc, key.as_ref());
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
+            "profile_input" | "avatar_config" => run_profile_case(v),
             "repo_name" => {
                 let inp: RepoNameInput = input(v);
                 let got = serde_json::json!({

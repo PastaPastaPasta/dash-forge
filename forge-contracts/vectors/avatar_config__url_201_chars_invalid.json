@@ -1,0 +1,13 @@
+{
+  "name": "url_201_chars_invalid",
+  "description": "An avatarConfig holds at most 200 characters.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "https://a.dev/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "invalid"
+  }
+}

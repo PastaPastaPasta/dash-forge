@@ -60,6 +60,7 @@ const SITE_TITLES: Readonly<Record<string, string>> = {
   '/notifications': 'Notifications',
   '/settings': 'Settings',
   '/settings/storage': 'Storage settings',
+  '/settings/profile': 'Public profile',
   '/login': 'Sign in',
   '/start': 'Getting started',
 }
@@ -88,7 +89,7 @@ export function pageTitle(pathname: string, query: Query, ownerName?: string | n
     return withSite(sealed ? name : route(query, `${ownerLabel(owner, ownerName)}/${name}`))
   }
   const profile = PROFILE_TITLES[path]
-  const who = query.get('name')
+  const who = query.get('id') || query.get('name')
   if (profile !== undefined && who) return withSite(profile(ownerLabel(who, ownerName)))
   if (path === '/explore' && query.get('q')) return withSite(`Search “${query.get('q')}”`)
   return withSite(SITE_TITLES[path] ?? SITE_TITLE)

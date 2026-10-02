@@ -1,0 +1,14 @@
+{
+  "name": "identicon_seeds_with_identity",
+  "description": "`identicon` alone is seeded with the identity id.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "identicon",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "identicon",
+    "seed": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  }
+}

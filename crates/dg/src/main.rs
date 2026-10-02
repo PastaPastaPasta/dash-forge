@@ -25,6 +25,7 @@ mod maint;
 mod milestone;
 mod pin;
 mod pr;
+mod profile;
 mod prompt;
 mod publish;
 mod quote;
@@ -138,6 +139,9 @@ pub enum Command {
     /// Milestones (put an issue in one with `dg issue milestone`).
     #[command(subcommand)]
     Milestone(MilestoneCommand),
+    /// Your public profile: display name, bio, avatar, links, location and company.
+    #[command(subcommand)]
+    Profile(ProfileCommand),
     /// Repository members (maintainers, writers, triage members and readers).
     #[command(subcommand)]
     Collab(CollabCommand),
@@ -721,6 +725,21 @@ pub enum IssueCommand {
         #[arg(long)]
         off: bool,
     },
+}
+
+/// `dg profile` subcommands. A profile is public, whatever repositories it is shown beside.
+#[derive(Debug, Subcommand)]
+pub enum ProfileCommand {
+    /// Show a profile: yours, or an identity's (id, DPNS name or `@name`).
+    Show {
+        /// The identity (default: yours).
+        #[arg(value_name = "IDENTITY")]
+        who: Option<String>,
+    },
+    /// Set fields of your profile; a field not named is kept, an empty value clears it.
+    Set(profile::SetArgs),
+    /// Delete your profile document (part of its storage fee is refunded).
+    Delete,
 }
 
 /// `dg milestone` subcommands.
@@ -1859,6 +1878,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Release(cmd) => release::run(ctx, cmd).await,
         Command::Label(cmd) => label::run(ctx, cmd).await,
         Command::Milestone(cmd) => milestone::run(ctx, cmd).await,
+        Command::Profile(cmd) => profile::run(ctx, cmd).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,

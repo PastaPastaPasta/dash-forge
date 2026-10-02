@@ -33,6 +33,7 @@ import {
   v2,
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
+import { avatarSpec, checkProfile, type ProfileInput } from './profile'
 import { planRefs, syncDecision } from '../repo/fork'
 import type {
   ConfigDoc,
@@ -494,6 +495,17 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['doc', 'refKey'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly refKey?: string }
       expect(v2.refNameHashesAgree(inp.doc, inp.refKey ?? null)).toEqual(v.expected)
+      break
+    }
+    case 'profile_input': {
+      onlyKeys(v, ['displayName', 'bio', 'avatarConfig', 'links', 'location', 'company'])
+      expect(checkProfile(v.input as ProfileInput)).toEqual(v.expected)
+      break
+    }
+    case 'avatar_config': {
+      onlyKeys(v, ['config', 'identityId'])
+      const inp = v.input as { readonly config: string | null; readonly identityId: string }
+      expect(avatarSpec(inp.config, inp.identityId)).toEqual(v.expected)
       break
     }
     case 'repo_name': {

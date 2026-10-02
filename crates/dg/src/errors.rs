@@ -231,6 +231,11 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Webhook(w) => w.context(),
         Command::Ci(c) => c.context(),
         Command::Import(a) => ("import failed", a.repo.as_ref()),
+        Command::Profile(crate::ProfileCommand::Show { .. }) => {
+            ("could not read the profile", None)
+        }
+        Command::Profile(crate::ProfileCommand::Set(_)) => ("profile not changed", None),
+        Command::Profile(crate::ProfileCommand::Delete) => ("profile not deleted", None),
         Command::Doctor { .. } => ("doctor found problems", None),
         Command::Completions { .. } => ("could not print completions", None),
     };

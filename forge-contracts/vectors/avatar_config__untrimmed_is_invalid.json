@@ -1,0 +1,13 @@
+{
+  "name": "untrimmed_is_invalid",
+  "description": "A stored value is read as is: surrounding spaces make it invalid (writers trim).",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": " identicon",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "invalid"
+  }
+}

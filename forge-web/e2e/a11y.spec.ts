@@ -29,7 +29,9 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   ['notifications', '/notifications/', (page) => page.getByRole('main')],
   ['settings', '/settings/', (page) => page.getByRole('main')],
   ['settings-storage', '/settings/storage/', (page) => page.getByRole('main')],
+  ['settings-profile', '/settings/profile/', (page) => page.getByRole('heading', { name: 'Public profile' })],
   ['profile', `/u/?name=${DEMO.owner}`, (page) => page.getByRole('heading', { name: 'Repositories' })],
+  ['profile-by-id', `/u/?id=${DEMO.owner}`, (page) => page.getByTestId('profile-card')],
   ['repo-home', repoUrl(), (page) => page.getByRole('link', { name: 'README.md' }).first()],
   ['tree', repoUrl('tree', '&path=src'), (page) => page.getByRole('link', { name: 'main.rs' }).first()],
   ['blob', repoUrl('blob', '&path=src/main.rs'), (page) => page.getByText('reads are proof-checked').first()],
@@ -93,6 +95,7 @@ test('a11y: the profile and the signed-out /new and /settings gates have one h1'
     [`/u/?name=${DEMO.owner}`, new RegExp(`^Profile of `)],
     ['/new/', /^Sign in to forge a repo$/],
     ['/settings/', /^Sign in to see your settings$/],
+    ['/settings/profile/', /^Public profile$/],
   ]
   for (const [href, h1] of pages) {
     await page.goto(href, { waitUntil: 'domcontentloaded' })

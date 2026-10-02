@@ -63,6 +63,7 @@ pub mod network;
 pub mod pack;
 pub mod platform;
 pub mod private;
+pub mod profile;
 pub mod refs;
 pub mod repo;
 pub mod repo_pin;

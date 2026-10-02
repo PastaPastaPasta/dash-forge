@@ -1,0 +1,16 @@
+{
+  "name": "avatar_unknown_refused",
+  "description": "Any other avatar config is refused by writers.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "avatarConfig": "data:image/png;base64,AAAA"
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "avatarConfig"
+    ],
+    "normalized": null
+  }
+}

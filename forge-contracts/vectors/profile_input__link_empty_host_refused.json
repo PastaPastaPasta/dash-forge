@@ -1,0 +1,18 @@
+{
+  "name": "link_empty_host_refused",
+  "description": "`https://` alone, or with an empty host, is not a link.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "links": [
+      "https:///path"
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "links"
+    ],
+    "normalized": null
+  }
+}

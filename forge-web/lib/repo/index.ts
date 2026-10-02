@@ -42,6 +42,7 @@ export {
   readRepoById,
   resolveAnyRepo,
   resolveAnyRepoWith,
+  isIdentifier,
   resolveOwner,
   toRepoDoc,
   repoRefOf,
