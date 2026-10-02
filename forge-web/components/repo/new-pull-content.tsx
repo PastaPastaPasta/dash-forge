@@ -318,7 +318,18 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             {(forks.data ?? []).length > 0 ? (
               <optgroup label={ownForks.length === (forks.data ?? []).length ? 'Your forks' : 'Forks'}>
                 {options
-                  .filter((o) => o.repo.repoId !== repo.repoId)
+                  .filter((o) => o.repo.repoId !== repo.repoId && o.repo.repoId !== forkParent?.repoId)
+                  .map((o) => (
+                    <option key={o.key} value={o.key}>
+                      {o.label}
+                    </option>
+                  ))}
+              </optgroup>
+            ) : null}
+            {forkParent !== null && (parentBranches.data ?? []).length > 0 ? (
+              <optgroup label={`${forkParent.name} (forked from)`}>
+                {options
+                  .filter((o) => o.repo.repoId === forkParent.repoId)
                   .map((o) => (
                     <option key={o.key} value={o.key}>
                       {o.label}
