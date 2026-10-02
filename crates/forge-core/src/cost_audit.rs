@@ -20,6 +20,11 @@
 //! * **[`GLOBAL_TYPES`]** (`repo`, `issue`, `patch`, `comment`, `star`, `follow`, `starBeat`,
 //!   `watch`, and `profile` handled alongside them) carry `$ownerId` as an index's leading
 //!   field, so a single query across the whole network finds every one the target created.
+//!   `starBeat` is one of [`crate::layout::OPTIONAL_TYPES`]: RC2's fused star (C1) drops it and
+//!   the star itself carries the trending week, so a contract without it is audited without it
+//!   and its stars are priced at the fused figure ([`FUSED_STAR_CREDITS`]). No type is ever
+//!   queried against a contract that does not declare it (QW4-001: one missing type used to
+//!   abort the whole audit with E101).
 //! * **[`REPO_OWNER_FILTERED_TYPES`]** (`refUpdate`, `protectedRefUpdate`, `packManifest`,
 //!   `consent`) index `repoId` and `$ownerId` together, so each repository the target could
 //!   plausibly have written to is queried with both as equality filters. `chunk` is not queried
@@ -60,9 +65,10 @@
 //! there, leaves no trace any proved query can find; this audit cannot see that repo-scoped
 //! history at all, and says so in its output rather than silently under-reporting with no hint.
 //!
-//! A document type with no `$createdAt` field at all (`star`, `watch`, `follow`, `profile`) is
-//! never dropped by `--since`: [`Totals::record`] only excludes a document it can actually date
-//! before the cutoff, not one it cannot date at all.
+//! A document type with no `$createdAt` field at all (`watch`, `follow`, `profile`, and `star`
+//! before RC2's fused star, which requires one) is never dropped by `--since`: [`Totals::record`]
+//! only excludes a document it can actually date before the cutoff, not one it cannot date at
+//! all.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -172,6 +178,23 @@ fn base_credits(doc_type: &str) -> u64 {
 /// The fallback for a document type with no measured figure.
 const DEFAULT_BASE_CREDITS: u64 = 50_000_000;
 
+/// A fused star's create cost (RC2 C1: the star carries the trending window itself, so there is
+/// no `starBeat` beside it): devnet sakura's registration fee probe priced one at 45.49M credits
+/// (`forge-contracts/schema/build.py`'s `fused_star` note), against 55.09M there for a star
+/// and its `starBeat`.
+const FUSED_STAR_CREDITS: u64 = 45_000_000;
+
+/// What one `doc_type` document is estimated to have cost: [`base_credits`], except a fused
+/// star ([`FUSED_STAR_CREDITS`]), which pays for the trending window a separate `starBeat` used
+/// to.
+fn unit_credits(doc_type: &str, fused_star: bool) -> u64 {
+    if doc_type == "star" && fused_star {
+        FUSED_STAR_CREDITS
+    } else {
+        base_credits(doc_type)
+    }
+}
+
 /// What a pack manifest's `chunkCount` chunks cost, from its `sizeBytes` when it records one
 /// (`git push`'s calibrated chunk fees, `push_fees::chunks`: a full 14.7 KB chunk is ~0.0055
 /// DASH, not the flat figure), else the flat figure per chunk.
@@ -222,7 +245,8 @@ const GLOBAL_TYPES: &[TypeQuery] = &[
     // equality filter already consumes the whole index, so there is no remaining field to
     // order by. Ordering by the filtered field itself (rather than an empty order) matches
     // `Collab::patches_from_source`'s convention for this shape of query. All four are
-    // forge-community types.
+    // forge-community types; `starBeat` only where the contract still has it (not RC2's fused
+    // star — [`Auditor::declares`]).
     TypeQuery {
         doc_type: "star",
         contract: ForgeContract::Community,
@@ -501,6 +525,18 @@ struct Auditor<'a> {
 }
 
 impl Auditor<'_> {
+    /// Whether the loaded `sel` contract declares `doc_type`. A type it doesn't declare (RC2's
+    /// fused star drops `starBeat`) is skipped, not queried: querying it is a protocol error
+    /// that would abort the whole audit (QW4-001).
+    fn declares(&self, sel: ForgeContract, doc_type: &str) -> bool {
+        self.contract(sel).has_document_type(doc_type)
+    }
+
+    /// Whether forge-community is RC2's fused star (no `starBeat`; the star carries the week).
+    fn fused_star(&self) -> bool {
+        !self.declares(ForgeContract::Community, "starBeat")
+    }
+
     fn contract(&self, sel: ForgeContract) -> &platform::LoadedContract {
         match sel {
             ForgeContract::Core => &self.core,
@@ -525,6 +561,9 @@ impl Auditor<'_> {
     async fn global_pass(&self, totals: &mut Totals) -> Result<BTreeSet<[u8; 32]>> {
         let mut discovered_repos = BTreeSet::new();
         for g in GLOBAL_TYPES {
+            if !self.declares(g.contract, g.doc_type) {
+                continue;
+            }
             let docs = self
                 .client
                 .query_all_documents(
@@ -542,8 +581,9 @@ impl Auditor<'_> {
             } else if matches!(g.doc_type, "issue" | "patch") {
                 discovered_repos.extend(docs.iter().filter_map(|d| d.field_bytes32("repoId")));
             }
+            let credits = unit_credits(g.doc_type, self.fused_star());
             for d in &docs {
-                totals.record(g.doc_type, d);
+                totals.record_priced(g.doc_type, 1, credits, d);
             }
         }
 
@@ -605,6 +645,9 @@ impl Auditor<'_> {
     async fn repo_scoped_pass(&self, repo_id: [u8; 32], totals: &mut Totals) -> Result<()> {
         let in_repo = || QueryFilter::eq("repoId", FieldValue::identifier(repo_id));
         for t in REPO_OWNER_FILTERED_TYPES {
+            if !self.declares(ForgeContract::Core, t.doc_type) {
+                continue;
+            }
             let docs = self
                 .client
                 .query_all_documents(
@@ -630,6 +673,9 @@ impl Auditor<'_> {
             }
         }
         for t in REPO_SCANNED_TYPES {
+            if !self.declares(t.contract, t.doc_type) {
+                continue;
+            }
             let docs = self
                 .client
                 .query_all_documents(
@@ -895,6 +941,107 @@ mod tests {
                 "{doc_type} appears in more than one query table"
             );
         }
+    }
+
+    /// Every audited type is declared by the contract this checkout registers (the committed
+    /// `forge-contracts/contracts` build, RC2 on sakura), or is one a build may leave out
+    /// ([`crate::layout::OPTIONAL_TYPES`]) and the audit skips where it is absent. QW4-001: the
+    /// fused star dropped `starBeat` and the audit still queried it, failing E101.
+    #[test]
+    fn every_audited_type_is_on_the_registered_contracts_or_optional() {
+        use crate::layout::OPTIONAL_TYPES;
+        use crate::test_support::rc1::loaded;
+        let tables = GLOBAL_TYPES
+            .iter()
+            .chain(REPO_SCANNED_TYPES)
+            .map(|t| (t.contract, t.doc_type))
+            .chain(
+                REPO_OWNER_FILTERED_TYPES
+                    .iter()
+                    .map(|t| (ForgeContract::Core, t.doc_type)),
+            );
+        for (contract, doc_type) in tables {
+            assert!(
+                loaded(contract).has_document_type(doc_type) || OPTIONAL_TYPES.contains(&doc_type),
+                "{doc_type} is audited but {} doesn't declare it",
+                contract.name()
+            );
+        }
+        // The committed build is the fused star: `starBeat` is skipped, not queried.
+        assert!(!loaded(ForgeContract::Community).has_document_type("starBeat"));
+    }
+
+    /// Every query this audit sends is served by an index of the committed contracts: its
+    /// equality filters then its order fields are a prefix of some index's properties. A
+    /// query no index serves fails at the node, aborting the audit like QW4-001 did.
+    #[test]
+    fn every_audit_query_matches_an_index_on_the_registered_contracts() {
+        fn schemas(contract: ForgeContract) -> serde_json::Value {
+            let json = match contract {
+                ForgeContract::Core => {
+                    include_str!("../../../forge-contracts/contracts/forge-core.json")
+                }
+                ForgeContract::Collab => {
+                    include_str!("../../../forge-contracts/contracts/forge-collab.json")
+                }
+                ForgeContract::Community => {
+                    include_str!("../../../forge-contracts/contracts/forge-community.json")
+                }
+            };
+            serde_json::from_str::<serde_json::Value>(json).unwrap()["documentSchemas"].clone()
+        }
+        fn served(contract: ForgeContract, doc_type: &str, filters: &[&str], order: &[&str]) {
+            let schemas = schemas(contract);
+            let Some(schema) = schemas.get(doc_type) else {
+                assert!(crate::layout::OPTIONAL_TYPES.contains(&doc_type));
+                return;
+            };
+            // An order on the (only) filtered field itself adds nothing (`star` and friends).
+            let mut wanted: Vec<&str> = filters.to_vec();
+            wanted.extend(order.iter().filter(|o| !filters.contains(o)));
+            let ok = schema["indices"].as_array().unwrap().iter().any(|i| {
+                let props: Vec<&str> = i["properties"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| p.as_object().unwrap().keys().next().unwrap().as_str())
+                    .collect();
+                props.starts_with(&wanted)
+            });
+            assert!(ok, "no {doc_type} index serves {wanted:?}");
+        }
+        for g in GLOBAL_TYPES {
+            served(g.contract, g.doc_type, &["$ownerId"], g.order);
+        }
+        served(ForgeContract::Community, "profile", &["$ownerId"], &[]);
+        for (contract, doc_type) in [
+            (ForgeContract::Core, "maintainer"),
+            (ForgeContract::Core, "writer"),
+            (ForgeContract::Community, "runner"),
+            (ForgeContract::Collab, "repoKey"),
+        ] {
+            served(contract, doc_type, &["memberId"], &[]);
+        }
+        for t in REPO_OWNER_FILTERED_TYPES {
+            served(
+                ForgeContract::Core,
+                t.doc_type,
+                &["repoId", "$ownerId"],
+                t.order,
+            );
+        }
+        for t in REPO_SCANNED_TYPES {
+            served(t.contract, t.doc_type, &["repoId"], t.order);
+        }
+    }
+
+    #[test]
+    fn a_fused_star_is_priced_with_its_trending_window() {
+        assert_eq!(unit_credits("star", true), FUSED_STAR_CREDITS);
+        assert_eq!(unit_credits("star", false), base_credits("star"));
+        // A fused star pays for the trending window too, so it costs more than a bare star.
+        assert!(FUSED_STAR_CREDITS > base_credits("star"));
+        assert_eq!(unit_credits("follow", true), base_credits("follow"));
     }
 
     /// `chunk` must stay out of every query table: it is deliberately derived from each owned
