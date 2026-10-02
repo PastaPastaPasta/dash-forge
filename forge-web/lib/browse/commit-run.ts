@@ -65,9 +65,9 @@ const SCAN_CHAIN_MAX = 64
 
 /**
  * The commits stored in `block` (pack `packRef`'s bytes from offset `blockStart`) from the entry at
- * pack offset `from` on, and where the scan stopped: whole ones, and OFS deltas of commits. A delta's base is decoded where it
- * is held: earlier in the same scan, or anywhere in `block` or in a window `held` returns (a block
- * read before), following its chain; a delta built on a tree or a blob, or on a base not held, is
+ * pack offset `from` on, and where the scan stopped: whole ones, and OFS deltas of commits. A
+ * delta's base is decoded where it is held: earlier in the same scan, or anywhere in `block` or in
+ * a window `held` returns (a block read before), following its chain; a delta built on a tree or a blob, or on a base not held, is
  * stepped over. A whole tree, blob or tag ends the scan (the commit run is over), as does an entry
  * the block cuts short or that does not parse.
  *
@@ -77,12 +77,10 @@ const SCAN_CHAIN_MAX = 64
  */
 export function scanCommits(block: Uint8Array, blockStart: number, from: number, packRef: number, held?: (offset: number) => PackWindow | undefined): CommitRun {
   const found: ScannedCommit[] = []
-  const foundAt = new Set<number>()
-  // Decoded entries by pack offset; null: not a commit (or not decodable here).
+  // Decoded entries by pack offset (each is decoded, and so noted, once); null: not a commit (or
+  // not decodable here).
   const decoded = new Map<number, GitObject | null>()
   const note = (offset: number, obj: GitObject, length: number, whole: boolean): void => {
-    if (foundAt.has(offset)) return
-    foundAt.add(offset)
     found.push({
       oid: gitOidHex('commit', obj.bytes),
       entry: { packRef, offset, length, deltaChainSpan: whole ? length : SPAN_SENTINEL, deltaDepth: whole ? 0 : 1 },
