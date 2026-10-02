@@ -311,6 +311,11 @@ export interface LastCommit {
  */
 export const LAST_COMMIT_WALK = 400
 
+/** First-parent commits whose trees a column walk reads ahead, side by side ({@link walkDir}). */
+export const WALK_TREES_AHEAD = 24
+/** Commits a column walk takes before it reads ahead: most walks with an index end sooner. */
+const WALK_AHEAD_AFTER = 6
+
 /**
  * A reader for walks over many commits: the reader's own read-ahead walker when it has one (one
  * ranged read per block of neighbouring commits, not one per commit), else the reader. Pass one
@@ -319,6 +324,15 @@ export const LAST_COMMIT_WALK = 400
  */
 export function historyWalker(reader: ObjectReader): ObjectReader & { flush?(): void } {
   return reader.forHistoryWalk?.() ?? reader
+}
+
+/**
+ * A reader for a walk over many trees (Go to file, the language bar): the reader's own tree
+ * walker when it has one (exact ranges, its hash-check verdicts batched), else the reader. Unlike
+ * {@link historyWalker} it reads no blocks ahead: a pack keeps its commits together, not its trees.
+ */
+export function treeWalker(reader: ObjectReader): ObjectReader & { flush?(): void } {
+  return reader.forTreeWalk?.() ?? reader
 }
 
 /** Options of a history walk. */
@@ -411,6 +425,34 @@ export async function walkDir(
   const found = new Map<string, LastCommit>()
   const open = new Set(names)
   let oldestWhen = 0
+  // How far ahead the directory's trees have been asked for ({@link readAhead}).
+  let aheadOf = 0
+  // Set when the walk returns: a read-ahead still going reads no more (what it would read is not
+  // needed; the trees it already asked for still land, in the reader's memo).
+  let finished = false
+  /**
+   * Ask for the directory's trees of the next {@link WALK_TREES_AHEAD} first-parent commits side by
+   * side: the walk reads one after the other, and each was a query of its own for its index row
+   * and another for its pack bytes (a column walked from a tag on dashpay/dash: 180 queries,
+   * QW4-004). Read together, their reads share queries; the walk then finds them in the reader's
+   * memo. The commits are read first, one after the other, from the run the walk already holds.
+   */
+  const readAhead = async (start: CommitObject, steps: number, upTo: number): Promise<void> => {
+    const trees: string[] = []
+    let c = start
+    for (let at = steps + 1; at <= upTo && at <= limit; at++) {
+      const p = c.parents[0]
+      if (p === undefined || finished || stopAt?.(p) === true || signal?.aborted === true) break
+      // The commits up to where the last read-ahead reached were read by it: memo hits.
+      c = await readCommit(walker, p)
+      // Not the next commit's: the walk reads that one now itself.
+      if (at > Math.max(steps + 1, upTo - WALK_TREES_AHEAD)) trees.push(c.tree)
+    }
+    if (finished) return
+    await Promise.all(trees.map((t) => dirOf(t).catch(() => null)))
+    // Done after the walk returned: its verdicts were held back from the walk's last flush.
+    if (finished) walker.flush?.()
+  }
   try {
     let oid = from?.oid ?? tipOid
     let commit = from?.commit ?? (await readCommit(walker, tipOid))
@@ -419,6 +461,12 @@ export async function walkDir(
       signal?.throwIfAborted()
       if (stopAt?.(oid)) return { found, next: { oid, commit, here }, oldestWhen, indexTip: oid }
       if (steps >= limit) return { found, next: { oid, commit, here }, oldestWhen, indexTip: null }
+      // Once the walk is past a few commits with names still open (a short walk reads nothing
+      // ahead), and again half way through what was read ahead.
+      if (steps >= WALK_AHEAD_AFTER && steps + WALK_TREES_AHEAD / 2 >= aheadOf) {
+        aheadOf = Math.max(aheadOf, steps) + WALK_TREES_AHEAD
+        void readAhead(commit, steps, aheadOf).catch(() => undefined)
+      }
       oldestWhen = commit.author.when
       const parentOid = commit.parents[0]
       const parent = parentOid !== undefined ? await readCommit(walker, parentOid) : null
@@ -438,6 +486,7 @@ export async function walkDir(
     }
     return { found, next: null, oldestWhen, indexTip: null }
   } finally {
+    finished = true
     walker.flush?.()
   }
 }

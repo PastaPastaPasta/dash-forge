@@ -121,6 +121,25 @@ describe('pathVersions from the history index', () => {
     expect(page.entries[0]).toMatchObject({ subject: 'commit 117', author: { name: 'Test' } })
   })
 
+  // QW4-017: a History page shows no version's blob; resolving all 256 a list holds read
+  // dashpay/dash's whole object index (9.65 MB) for a page of 40 rows.
+  it('resolves no version’s blob for History, and only the page’s for Blame', async () => {
+    const { s, tips } = history(120)
+    const tip = tips[119] as string
+    const ix = await indexOf(s, tip, ['a.txt'], 256)
+    const reader = indexedReader(s, tip, () => Promise.resolve(ix))
+    const prefixes: string[] = []
+    const counted: PrefixReader = { ...reader, findByPrefix: (prefix, limit) => (prefixes.push(prefix), reader.findByPrefix!(prefix, limit)) }
+    const listed = await pathVersions(counted, tip, 'a.txt', { withEntries: false })
+    expect(listed.entries).toHaveLength(40)
+    expect(listed.entries.every((e) => e.entry === undefined)).toBe(true)
+    expect(prefixes).toHaveLength(0)
+    // The same list read for Blame: the page's versions only (the newest is the trees' own).
+    const blame = await pathVersions(counted, tip, 'a.txt', { limit: 5 })
+    expect(blame.entries.every((e) => e.entry !== undefined)).toBe(true)
+    expect(prefixes).toHaveLength(4)
+  })
+
   it('pages on from the list and matches the walk to the path’s first commit, for files and directories', async () => {
     const { s, tips } = history(120)
     const tip = tips[119] as string

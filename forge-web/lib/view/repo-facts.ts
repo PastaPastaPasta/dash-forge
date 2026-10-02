@@ -24,7 +24,7 @@ import { onPrivateSessionEnded } from '../repo/private-session'
 import { onRepoContentWritten } from '../repo/push'
 import { readReleaseCount, readReleases, releaseCountOf } from '../repo/releases'
 import { invalidateSessionCache, sessionCached } from './session-cache'
-import { historyWalker } from './commit-log'
+import { treeWalker } from './commit-log'
 import { historyOf } from './history-source'
 import { readBlob, type ObjectReader } from './tree-nav'
 import { decodeTextBlob, type TreeEntry } from './git-objects'
@@ -89,8 +89,10 @@ export function subscribeRepoFacts(listener: () => void): () => void {
  * The walk of the repo's files at this tip (up to {@link FILE_WALK_FILES} files, and a safety cap of
  * {@link FILE_WALK_TREES} trees so a push of many empty directories cannot make it read without
  * end; no real repo reaches it before the file bound, so Go to file keeps its reach), started once per tip and
- * shared with the language bar, through a read-ahead walker (a pack keeps its trees together). Not
- * cancellable: the next caller wants the same walk.
+ * shared with the language bar, through a {@link treeWalker}: each tree read is its own range. A
+ * read-ahead block per tree read 1,141 chunk documents (16.8 MB) of dashpay/dash's pack for its 600
+ * trees, which a pack does not keep together; exact ranges read 101 (QW4-002). Not cancellable:
+ * the next caller wants the same walk.
  */
 export function repoFilesWalk(
   repoKey: string,
@@ -102,7 +104,7 @@ export function repoFilesWalk(
   const key = keyOf(repoKey, tipOid)
   let walk = walks.get(key)
   if (walk === undefined) {
-    const walker = historyWalker(reader)
+    const walker = treeWalker(reader)
     const started = walkFiles(walker, rootTree, { maxTrees, maxFiles: FILE_WALK_FILES }).finally(() => walker.flush?.())
     walk = started
     walks.set(key, started)

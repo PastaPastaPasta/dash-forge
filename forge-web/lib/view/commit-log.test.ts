@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { countCommits, historyWalker, lastCommitsForDir, walkCommitColumn, type IndexedHistory, type LastCommit, type LastCommitColumn } from './commit-log'
+import { countCommits, historyWalker, lastCommitsForDir, walkCommitColumn, WALK_TREES_AHEAD, type IndexedHistory, type LastCommit, type LastCommitColumn } from './commit-log'
 import { Store } from './diff-fixtures'
 
 describe('lastCommitsForDir', () => {
@@ -44,6 +44,43 @@ describe('lastCommitsForDir', () => {
     const got = await lastCommitsForDir(big.reader(), tip, '', ['old.txt', 'hot.txt'])
     expect(got.get('hot.txt')?.subject).toBe('hot 300')
     expect(got.get('old.txt')?.subject).toBe('add old')
+  })
+
+  // QW4-004: a column walked from a tag on dashpay/dash read 400 commits' trees one after the
+  // other, each its own index and pack query (180 requests). Read side by side, they share queries.
+  it('reads the trees of the commits ahead side by side, with the same answer', async () => {
+    const big = new Store()
+    let tip = big.commit(big.files({ 'old.txt': 'x', 'hot.txt': '0' }), [], 'add old')
+    for (let i = 1; i <= 120; i++) tip = big.commit(big.files({ 'old.txt': 'x', 'hot.txt': String(i) }), [tip], `hot ${i}`)
+    const base = big.reader()
+    let inFlight = 0
+    let most = 0
+    const reader = {
+      readObject: async (oid: string) => {
+        inFlight += 1
+        most = Math.max(most, inFlight)
+        await new Promise((r) => setTimeout(r, 0))
+        inFlight -= 1
+        return base.readObject(oid)
+      },
+    }
+    const got = await lastCommitsForDir(reader, tip, '', ['old.txt', 'hot.txt'])
+    expect(got.get('old.txt')?.subject).toBe('add old')
+    expect(got.get('hot.txt')?.subject).toBe('hot 120')
+    expect(most).toBeGreaterThan(WALK_TREES_AHEAD / 2)
+  })
+
+  it('reads nothing ahead for a walk that settles in a few commits', async () => {
+    const st = new Store()
+    let tip = st.commit(st.files({ a: '0', b: '0' }), [], 'root')
+    for (let i = 1; i <= 60; i++) tip = st.commit(st.files({ a: String(i), b: i === 59 ? '1' : i >= 59 ? '1' : '0' }), [tip], `c${i}`)
+    const base = st.reader()
+    let reads = 0
+    const reader = { readObject: (oid: string) => (reads++, base.readObject(oid)) }
+    const got = await lastCommitsForDir(reader, tip, '', ['a', 'b'])
+    expect(got.get('b')?.subject).toBe('c59')
+    // The tip, its parent and the one before, and their trees.
+    expect(reads).toBeLessThanOrEqual(6)
   })
 
   it('walks through the reader’s read-ahead walker and flushes it', async () => {
