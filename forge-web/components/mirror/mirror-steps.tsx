@@ -36,6 +36,7 @@ import {
   RUNNER_KEY_DEFAULTS,
   checkGithubRepo,
   costCapProblem,
+  ACTION_COST_CAP,
   defaultCostCap,
   dfk1,
   latestCommit,
@@ -536,8 +537,13 @@ export function WorkflowStep({
   runnerKey: RunnerKeyRecord | null
   onDone: () => void
 }): JSX.Element {
-  const [collab, setCollab] = useState(true)
-  const [costCap, setCostCap] = useState(() => defaultCostCap(storage.kind, github.sizeKib, PUSH_COST_DASH.perMib))
+  // Off by default, as in the Action (`sync: code,releases`) and as its own hint advises
+  // (QW4-045): anyone who can open an issue or PR could make a run spend.
+  const [collab, setCollab] = useState(false)
+  // The cap follows the choice until it is typed: 0.05 DASH (the Action's default), 0.1 with
+  // issues and PRs, more for packs on Platform.
+  const [typedCap, setCostCap] = useState<string | null>(null)
+  const costCap = typedCap ?? defaultCostCap(storage.kind, github.sizeKib, PUSH_COST_DASH.perMib, collab)
   // Typed by the person, else the build's commit, else the latest on master.
   const [typed, setCommit] = useState<string | null>(null)
   const master = useAsync(() => latestCommit(DASH_FORGE_REPO, 'master'), [], { enabled: BUILD_COMMIT === '' })
@@ -614,7 +620,11 @@ export function WorkflowStep({
         </h3>
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
-            <Field label="Cost cap per run (DASH)" htmlFor="mirror-cost-cap" hint="A run that would spend more stops before writing.">
+            <Field
+              label="Cost cap per run (DASH)"
+              htmlFor="mirror-cost-cap"
+              hint={`A run that would spend more stops before writing. The Action's default is ${ACTION_COST_CAP}${costCap === ACTION_COST_CAP ? '' : '; this one is sized for the first run'}.`}
+            >
               <Input id="mirror-cost-cap" inputMode="decimal" value={costCap} onChange={(e) => setCostCap(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={capError !== null} />
             </Field>
             {capError ? <Hint tone="danger">{capError}</Hint> : null}

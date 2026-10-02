@@ -14,6 +14,7 @@ import {
   PLATFORM_STORAGE,
   checkGithubRepo,
   costCapProblem,
+  ACTION_COST_CAP,
   defaultCostCap,
   mirrorRepoInput,
   suggestedRunnerBudget,
@@ -328,9 +329,13 @@ describe('suggestedRunnerBudget, mirrorRepoInput and branch links', () => {
 })
 
 describe('defaultCostCap', () => {
-  it('is 0.1 with your own storage, and grows with the repository on Platform', () => {
-    expect(defaultCostCap('s3', 500_000, 0.39)).toBe('0.1')
-    expect(defaultCostCap('platform', 20, 0.39)).toBe('0.1')
+  it("is the Action's 0.05 with your own storage, 0.1 with issues and PRs, and grows with the repository on Platform (QW4-045)", () => {
+    expect(defaultCostCap('s3', 500_000, 0.39)).toBe(ACTION_COST_CAP)
+    expect(ACTION_COST_CAP).toBe('0.05')
+    expect(defaultCostCap('s3', 500_000, 0.39, true)).toBe('0.1')
+    // 20 KiB on Platform: the documents and a few cents of pack bytes, over the floor.
+    expect(defaultCostCap('platform', 20, 0.39)).toBe('0.07')
+    expect(defaultCostCap('platform', 20, 0.39, true)).toBe('0.1')
     // 10 MiB at 0.39 DASH/MiB: 3.9, a third over, plus the documents.
     expect(defaultCostCap('platform', 10 * 1024, 0.39)).toBe('5.32')
   })

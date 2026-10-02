@@ -389,16 +389,22 @@ export function workflowRunsUrl(github: GithubName): string {
   return `${githubUrl(github)}/actions/workflows/forge-mirror.yml`
 }
 
+/** The Action's own `cost-cap` default (action/action.yml, the README's sample). */
+export const ACTION_COST_CAP = '0.05'
+
 /**
- * A per-run cap that lets the first run through: with your own storage a push pays only its
- * manifest and ref updates, so 0.1 DASH leaves room for a first sync of issues and PRs; on
- * Platform the pack bytes are paid too, so the cap grows with GitHub's size of the repository
- * (a third over the estimate, as the estimate is an upper bound anyway).
+ * A per-run cap that lets the first run through. With your own storage a push pays only its
+ * manifest and ref updates, so the Action's default ({@link ACTION_COST_CAP}) covers code and
+ * releases, and 0.1 DASH leaves room for a first sync of issues and PRs (`collab`; QW4-045: the
+ * wizard set 0.1 with them off too). On Platform the pack bytes are paid as well, so the cap
+ * grows with GitHub's size of the repository (a third over the estimate, as the estimate is an
+ * upper bound anyway).
  */
-export function defaultCostCap(kind: 'platform' | 's3', sizeKib: number, perMibDash: number): string {
-  if (kind === 's3') return '0.1'
+export function defaultCostCap(kind: 'platform' | 's3', sizeKib: number, perMibDash: number, collab = false): string {
+  const floor = collab ? 0.1 : Number(ACTION_COST_CAP)
+  if (kind === 's3') return String(floor)
   const estimate = (sizeKib / 1024) * perMibDash * 1.35 + 0.05
-  return String(Math.max(0.1, Math.ceil(estimate * 100) / 100))
+  return String(Math.max(floor, Math.ceil(estimate * 100) / 100))
 }
 
 /**
