@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import tailwindConfig from '@/tailwind.config.js'
 import { DIFF_PALETTES } from '@/lib/view/prefs'
 import { avatarFill, hslToRgb, whiteContrast } from './avatar'
+import { STATE_FILL, STATE_TEXT } from './state'
 
 /**
  * WCAG 2 AA contrast for the design tokens, checked without a browser.
@@ -24,17 +25,52 @@ const colors = (
 const anvil = colors['anvil'] as Record<string, string>
 const dash = colors['dash'] as Record<string, string>
 
-/** A Tailwind color class suffix (`dash-700`, `verify`, `anvil-500`) to its hex, if known. */
-function tokenHex(token: string): string | undefined {
-  if (token === 'white') return '#ffffff'
-  const m = /^([a-z]+)(?:-(\d+))?$/.exec(token)
+type Rgb = [number, number, number]
+
+/** The app's sources root (forge-web/). */
+const root = resolve(__dirname, '../..')
+
+/**
+ * The theme tokens of app/globals.css: every `--name: R G B;` in its `:root` blocks (light) and
+ * its `.dark` blocks (dark, falling back to light where a token has no dark value).
+ */
+function themeTokens(): { readonly light: Readonly<Record<string, Rgb>>; readonly dark: Readonly<Record<string, Rgb>> } {
+  const css = readFileSync(join(root, 'app/globals.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  const block = (selector: RegExp): Record<string, Rgb> => {
+    const out: Record<string, Rgb> = {}
+    for (const b of css.matchAll(selector)) {
+      for (const v of (b[1] as string).matchAll(/--([\w-]+):\s*(\d+)\s+(\d+)\s+(\d+)\s*;/g)) {
+        out[v[1] as string] = [Number(v[2]), Number(v[3]), Number(v[4])]
+      }
+    }
+    return out
+  }
+  const light = block(/(?:^|[\s;{}]):root\s*\{([^}]*)\}/g)
+  return { light, dark: { ...light, ...block(/(?:^|[\s;{}])\.dark\s*\{([^}]*)\}/g) } }
+}
+const TOKENS = themeTokens()
+
+const hexOf = (c: Rgb): string => `#${c.map((n) => n.toString(16).padStart(2, '0')).join('')}`
+
+/**
+ * A Tailwind color class suffix (`dash-700`, `verify`, `state-open-fill`) to its hex in each theme:
+ * one value for a fixed colour, light then dark for a theme token. Undefined when unknown.
+ */
+function tokenHexes(token: string): string[] | undefined {
+  if (token === 'white') return ['#ffffff']
+  const m = /^([a-z]+)(?:-([\w-]+))?$/.exec(token)
   if (m === null) return undefined
   const entry = colors[m[1] as string]
-  if (typeof entry === 'string') return m[2] === undefined ? entry : undefined
-  return entry?.[m[2] ?? 'DEFAULT']
+  const value = typeof entry === 'string' ? (m[2] === undefined ? entry : undefined) : entry?.[m[2] ?? 'DEFAULT']
+  if (value === undefined) return undefined
+  const variable = /^rgb\(var\(--([\w-]+)\)/.exec(value)?.[1]
+  if (variable === undefined) return [value]
+  const [light, dark] = [TOKENS.light[variable], TOKENS.dark[variable]]
+  return light === undefined || dark === undefined ? undefined : [...new Set([hexOf(light), hexOf(dark)])]
 }
 
-type Rgb = [number, number, number]
+/** A colour's hex (its light-theme value, for a theme token), if known. */
+const tokenHex = (token: string): string | undefined => tokenHexes(token)?.[0]
 
 function rgb(hex: string): Rgb {
   const n = Number.parseInt(hex.slice(1), 16)
@@ -60,7 +96,6 @@ function over(fg: Rgb, bg: Rgb, alpha: number): Rgb {
 }
 
 /** The app's React sources (app/ and components/), for the class-string checks below. */
-const root = resolve(__dirname, '../..')
 function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const p = join(dir, e.name)
@@ -236,12 +271,6 @@ describe('no component renders text in the raw brand blue', () => {
   // non-text graphic, which WCAG 1.4.11 asks 3:1 of — the brand value meets that on every
   // dark surface.
   const ICON = /<[A-Z]\w*\s+className="[^"]*\btext-dash(?![-\w/])[^"]*"\s+aria-hidden\s*\/>/g
-  // Class strings that are applied only to an icon wrapper, checked by hand: the file and the
-  // line's code (not its number, which any edit above it moves).
-  const ICON_ONLY: readonly { file: string; code: string }[] = [
-    { file: 'components/repo/pulls-content.tsx', code: `label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, klass: 'text-dash' }` },
-  ]
-  const iconOnly = (where: string, text: string): boolean => ICON_ONLY.some((o) => where.startsWith(o.file + ':') && text.includes(o.code))
 
   it('uses raw dash blue only on icons', () => {
     const offenders = ['app', 'components']
@@ -250,7 +279,7 @@ describe('no component renders text in the raw brand blue', () => {
         readFileSync(file, 'utf8')
           .split('\n')
           .map((text, i) => ({ where: `${file.slice(root.length + 1)}:${i + 1}`, text }))
-          .filter(({ where, text }) => RAW.test(text.replace(ICON, '')) && !iconOnly(where, text)),
+          .filter(({ text }) => RAW.test(text.replace(ICON, ''))),
       )
       .map(({ where }) => where)
     expect(offenders).toEqual([])
@@ -338,7 +367,7 @@ describe('white text on solid fills meets WCAG AA', () => {
   // behind the same white text), arbitrary values and `/NN` tints. The token captured is
   // what follows `bg-`; anything this test cannot resolve to a solid colour FAILS, so a new
   // shape of fill cannot slip past it unchecked.
-  const SOLID_BG = /(?<![\w-])(?:[a-z-]+:)*bg-([a-z]+(?:-\d+)?(?:\/\d+)?|\[[^\]]+\])(?![-\w])/g
+  const SOLID_BG = /(?<![\w-])(?:[a-z-]+:)*bg-([a-z]+(?:-[a-z]+)*(?:-\d+)?(?:\/\d+)?|\[[^\]]+\])(?![-\w])/g
 
   /**
    * Every solid background that can sit behind `text-white`: backgrounds on the same line as
@@ -392,17 +421,17 @@ describe('white text on solid fills meets WCAG AA', () => {
     let checked = 0
     for (const file of ['app', 'components'].flatMap((d) => sources(join(root, d)))) {
       for (const { token, line } of whiteTextBackgrounds(readFileSync(file, 'utf8'))) {
-        const hex = tokenHex(token)
-        if (hex === undefined) {
+        const hexes = tokenHexes(token)
+        if (hexes === undefined) {
           // Not a token from this config (a Tailwind default like `green-600`, an arbitrary
           // `[#…]`, a `/NN` tint): this test cannot vouch for it, so it is a failure, not a pass.
           failures.push(`${file.slice(root.length + 1)}:${line} bg-${token} (unknown to the contrast test)`)
           continue
         }
         checked += 1
-        const ratio = contrast(rgb('#ffffff'), rgb(hex))
-        if (ratio < AA_TEXT) {
-          failures.push(`${file.slice(root.length + 1)}:${line} bg-${token} ${ratio.toFixed(2)}:1`)
+        for (const hex of hexes) {
+          const ratio = contrast(rgb('#ffffff'), rgb(hex))
+          if (ratio < AA_TEXT) failures.push(`${file.slice(root.length + 1)}:${line} bg-${token} ${hex} ${ratio.toFixed(2)}:1`)
         }
       }
     }
@@ -425,6 +454,10 @@ describe('white text on solid fills meets WCAG AA', () => {
     expect(tokens('<b\n  className={cn(\n    \'rounded text-white\',\n    \'bg-dash\',\n  )}\n>')).toEqual(['dash'])
     expect(tokens('<b className="px-2\n  text-white\n  bg-verify">')).toEqual(['verify'])
     expect(tokens('<b className="text-anvil-700 bg-dash/10">')).toEqual([])
+    // A theme token's name has hyphens; both its values sit behind the white text.
+    expect(tokens('<b className="text-white bg-state-closed">')).toEqual(['state-closed'])
+    expect(tokens('<b className="text-white bg-state-open-fill">')).toEqual(['state-open-fill'])
+    expect(Math.min(...(tokenHexes('state-closed') as string[]).map((h) => contrast(rgb('#ffffff'), rgb(h))))).toBeLessThan(AA_TEXT)
   })
 })
 
@@ -461,5 +494,54 @@ describe('non-text fills meet WCAG 1.4.11 (3:1)', () => {
   it('catches the fill it exists for', () => {
     // forge-500 on the anvil-200 track: the light-mode bar before the fix, 2.23:1.
     expect(contrast(rgb(forge['500']!), rgb(anvil['200']!))).toBeLessThan(GRAPHIC)
+  })
+})
+
+describe('theme tokens', () => {
+  const GRAPHIC = 3
+  const LIGHT = Object.values(LIGHT_SURFACES).map((h) => rgb(h!))
+  const DARK = Object.values(DARK_SURFACES).map((h) => rgb(h!))
+
+  it('are read from app/globals.css, in both themes', () => {
+    expect(TOKENS.light['focus']).toBeDefined()
+    expect(TOKENS.dark['focus']).not.toEqual(TOKENS.light['focus'])
+    expect(tokenHexes('state-open')).toHaveLength(2)
+    // A token with no dark value is the light one in both themes.
+    expect(tokenHexes('state-open-fill')).toHaveLength(1)
+    expect(tokenHexes('state-nope')).toBeUndefined()
+  })
+
+  it('the focus ring is 3:1 or more against its offset and every surface (WCAG 1.4.11)', () => {
+    const [light, dark] = [TOKENS.light['focus']!, TOKENS.dark['focus']!]
+    // The ring sits 2px outside the element, on the page colour (its ring offset), beside cards.
+    for (const bg of LIGHT) expect(contrast(light, bg), `light ring on ${hexOf(bg)}`).toBeGreaterThanOrEqual(GRAPHIC)
+    for (const bg of DARK) expect(contrast(dark, bg), `dark ring on ${hexOf(bg)}`).toBeGreaterThanOrEqual(GRAPHIC)
+    // forge-400, the light ring before the fix, was 2.17:1 on anvil-50.
+    expect(contrast(rgb((colors['forge'] as Record<string, string>)['400']!), rgb(anvil['50']!))).toBeLessThan(GRAPHIC)
+  })
+
+  it('the global focus rule uses the token', () => {
+    const css = readFileSync(join(root, 'app/globals.css'), 'utf8')
+    expect(/:focus-visible\s*\{[^}]*ring-focus\b/.exec(css)).not.toBeNull()
+  })
+
+  it.each(Object.entries(STATE_TEXT))('%s state text on every surface, both themes', (_, klass) => {
+    const variable = /^text-(state-[a-z]+)$/.exec(klass)?.[1] as string
+    const [light, dark] = [TOKENS.light[variable]!, TOKENS.dark[variable]!]
+    for (const bg of LIGHT) expect(contrast(light, bg), `${variable} on ${hexOf(bg)}`).toBeGreaterThanOrEqual(AA_TEXT)
+    for (const bg of DARK) expect(contrast(dark, bg), `${variable} on ${hexOf(bg)}`).toBeGreaterThanOrEqual(AA_TEXT)
+  })
+
+  it.each(Object.entries(STATE_FILL))('%s state badge: white text on its fill, both themes', (_, klass) => {
+    const hexes = tokenHexes(/^bg-(.+)$/.exec(klass)?.[1] as string)
+    expect(hexes).toBeDefined()
+    for (const hex of hexes!) expect(contrast(rgb('#ffffff'), rgb(hex)), hex).toBeGreaterThanOrEqual(AA_TEXT)
+  })
+
+  it('state colours are not the trust colours', () => {
+    const trust = ['verify', 'verify-700', 'verify-400', 'danger', 'danger-700', 'danger-400', 'dash', 'dash-600', 'dash-700', 'forge-700'].map((t) => tokenHex(t))
+    for (const klass of [...Object.values(STATE_TEXT), ...Object.values(STATE_FILL)]) {
+      for (const hex of tokenHexes(klass.replace(/^(?:text|bg)-/, '')) ?? []) expect(trust, klass).not.toContain(hex)
+    }
   })
 })

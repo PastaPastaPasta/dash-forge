@@ -21,6 +21,7 @@ import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
+import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
 import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
@@ -482,7 +483,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               data-testid="issue-state"
               data-reason={open ? undefined : data.closedAs?.reason}
               title={open || !data.closedAs ? undefined : closedTitle(data.closedAs)}
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${open ? 'bg-verify-700' : skipped ? 'bg-anvil-600' : 'bg-forge-700'}`}
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${STATE_FILL[open ? 'open' : skipped ? 'skipped' : 'done']}`}
             >
               {open ? <CircleDot className="h-3.5 w-3.5" aria-hidden /> : skipped ? <CircleSlash className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
               {open ? 'Open' : 'Closed'}
@@ -609,7 +610,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   title={guard.disabledReason ?? undefined}
                   data-testid="issue-state-toggle"
                 >
-                  <CircleDot className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
+                  <CircleDot className={`h-3.5 w-3.5 ${STATE_TEXT.open}`} aria-hidden />
                   {stateToggleLabel(open, withComment !== null, 'issue')}
                 </Button>
               ) : null}

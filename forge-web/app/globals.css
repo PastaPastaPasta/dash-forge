@@ -17,6 +17,34 @@
     color-scheme: light dark;
   }
 
+  /*
+   * Theme tokens, as RGB channels so Tailwind's `/alpha` works (`bg-state-open/10`). Light values
+   * in :root, dark overrides in .dark; a token with no dark value is the same in both themes.
+   * lib/design/contrast.test.ts reads these two blocks and checks every pair, so keep each
+   * value a plain `R G B` triple on its own line.
+   */
+  :root {
+    /* Keyboard focus ring: 3:1 or more against every surface (WCAG 1.4.11). forge-700. */
+    --focus: 194 65 12;
+    /* Issue and pull request states. Never the trust colours (verify, danger, dash): a state
+       says where work is, not whether data checked out. Text and icons; fills sit behind white. */
+    --state-open: 26 127 55;
+    --state-done: 130 80 223;
+    --state-closed: 207 34 46;
+    --state-draft: 107 100 96;
+    --state-open-fill: 26 127 55;
+    --state-done-fill: 130 80 223;
+    --state-closed-fill: 207 34 46;
+    --state-draft-fill: 107 100 96;
+  }
+  .dark {
+    --focus: 251 146 60;
+    --state-open: 63 185 80;
+    --state-done: 163 113 247;
+    --state-closed: 248 81 73;
+    --state-draft: 168 162 158;
+  }
+
   html {
     -webkit-text-size-adjust: 100%;
   }
@@ -67,9 +95,9 @@
     }
   }
 
-  /* Visible focus ring on every interactive element (forge-400). */
+  /* Visible focus ring on every interactive element (the `--focus` token). */
   :focus-visible {
-    @apply outline-none ring-2 ring-forge-400 ring-offset-2;
+    @apply outline-none ring-2 ring-focus ring-offset-2;
     @apply ring-offset-anvil-50 dark:ring-offset-anvil-950;
   }
 
