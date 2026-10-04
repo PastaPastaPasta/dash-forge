@@ -15,7 +15,8 @@ export const metadata: Metadata = {
 //   (verified: reads, writes and sign-in run without it). 'unsafe-inline' stays for Next's
 //   inline bootstrap scripts.
 // - frame-ancestors is not here: browsers ignore it in a <meta> CSP (and log an error on every
-//   page). The host must send it as a header; on Pages, Cloudflare adds it (docs/hosting.md §7).
+//   page). The host must send it as a header; GitHub Pages cannot, so Cloudflare in front of it
+//   has to (docs/hosting.md §7).
 //   A framed page never restores a kept session (lib/auth/session-resume.ts `framed`).
 // - connect-src https:/wss:: DAPI endpoints + IPFS/S3/HTTPS pack backends. Plain http to this
 //   machine is allowed so the storage settings can reach the user's OWN local node (a kubo

@@ -30,9 +30,9 @@ check-web:
 	fi
 
 ## dev-web: run the web app's dev server on http://localhost:3000, reading devnet sakura
-## (forge-web/.env.development). Installs its dependencies first when they are missing.
+## (forge-web/.env.development). Installs the locked dependencies first (quick when nothing changed).
 dev-web:
-	@cd forge-web && { [ -d node_modules ] || pnpm install --frozen-lockfile; } && pnpm dev
+	@cd forge-web && pnpm install --frozen-lockfile && pnpm dev
 
 ## build: build rust workspace + web app; tolerant of dirs that don't exist yet
 build: build-rust build-web

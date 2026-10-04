@@ -72,7 +72,7 @@ pnpm test:e2e e2e/v2-home.spec.ts                   # one spec
 The specs run against a local build of the app reading live sakura. `E2E_SKIP_BUILD=1` serves an `out/` you already built for sakura.
 
 - **Read-only specs** read the shared fixture and need nothing else.
-- **Write specs** sign in as test identities: files named `OWNER.identity.json`, `COLLAB.identity.json` and so on, in `E2E_IDENTITY_DIR` (default `~/.config/dash-forge/test-identities/devnet-sakura/`). A spec whose identities are missing skips. [CONTRIBUTING.md](../CONTRIBUTING.md#end-to-end-tests) shows how to mint your own.
+- **Write specs** sign in as test identities (`OWNER.identity.json`, `COLLAB.identity.json` and so on in `E2E_IDENTITY_DIR`) and write to a copy of the fixture those identities seeded. A spec whose identities are missing skips. [CONTRIBUTING.md](../CONTRIBUTING.md#end-to-end-tests) shows how to mint identities and seed your copy.
 - **Request budgets.** `e2e/page-budget.spec.ts` and `e2e/pulls-budget.spec.ts` count the Platform requests each page makes. A change that adds requests to a page has to fit its budget.
 
 ## Layout
