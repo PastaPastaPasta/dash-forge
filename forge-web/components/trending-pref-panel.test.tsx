@@ -41,11 +41,9 @@ describe('TrendingPrefPanel', () => {
     expect(panel.textContent).toContain('Count my stars toward Trending')
   })
 
-  it('on a fused star says stars count, with nothing to turn off, and what Trending leaves out', () => {
+  it('on a fused star says stars count, with nothing to turn off', () => {
     const panel = render('fused')
     expect(panel.querySelector('[data-testid="trending-pref-toggle"]')).toBeNull()
-    expect(panel.textContent).toContain('Your stars count toward Trending')
-    expect(panel.textContent).toContain('nothing to turn off')
-    expect(panel.textContent).toContain('leaves out private repos, and your star on a repo of your own while the repo is new: under a week old for This week on Explore, created today (UTC) for Today')
+    expect(panel.textContent).toBe("Your stars count toward Trending on Explore. There's nothing to turn off.")
   })
 })

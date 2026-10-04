@@ -456,8 +456,8 @@ function NewReleaseDialog({
       title={fixedTag !== undefined ? `Edit release ${fixedTag}` : 'Publish a release'}
       description={
         sealedRepo
-          ? 'Maintainers only. Encrypted to this repo’s members: files are sealed in this tab, then go to your own storage; the release itself is one small Platform document.'
-          : 'Maintainers only. Assets go to your own storage, hashed; the release itself is one small Platform document.'
+          ? 'Maintainers only. Files are encrypted to this repo’s members in this tab, then uploaded to your storage.'
+          : 'Maintainers only. Files go to your own storage. The release itself is stored on Platform.'
       }
       className="max-w-lg"
       footer={

@@ -46,7 +46,7 @@ interface PendingTopUp {
 }
 
 /**
- * Top-ups sent but not yet seen on chain, per identity. Module-level so closing and reopening
+ * Top-ups sent but not yet seen on Platform, per identity. Module-level so closing and reopening
  * the dialog still shows "sent, check again" instead of a form that could send a second
  * `IdentityKeyLimitsUpdate`. Cleared once the chain shows limits different from `before`.
  */
@@ -68,7 +68,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
   const [submitError, setError] = useState<string | null>(null)
   const error = master.error ?? submitError
   const [done, setDone] = useState<{ before: KeyLimits | null; after: KeyLimits } | null>(null)
-  // Sent, but not visible on chain yet: re-read, never re-send (kept across close / reopen).
+  // Sent, but not visible on Platform yet: re-read, never re-send (kept across close / reopen).
   const pending = usePendingTopUps((s) => (identity === null ? null : s.byIdentity[identity] ?? null))
   const setPending = (p: PendingTopUp | null): void => {
     if (identity !== null) setPendingTopUp(identity, p)
@@ -167,7 +167,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
       ) : done ? (
         <div className="space-y-3 text-dense" data-testid="key-top-up-done">
           <p className="flex items-center gap-2 text-verify-700 dark:text-verify-400">
-            <CheckCircle2 className="h-4 w-4" aria-hidden /> Key limits updated on chain.
+            <CheckCircle2 className="h-4 w-4" aria-hidden /> Key limits updated on Platform.
           </p>
           <dl className="grid grid-cols-[auto_1fr_1fr] gap-x-3 gap-y-1">
             <dt />

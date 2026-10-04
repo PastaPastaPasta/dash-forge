@@ -89,7 +89,7 @@ test('a2. create an identity in the browser, funded from the devnet key', async 
   await page.getByTestId('tile-create').click()
   const words = page.getByTestId('mnemonic-words')
   await expect(words).toBeVisible({ timeout: 60_000 })
-  await page.getByRole('button', { name: /reveal recovery words/i }).click()
+  await page.getByRole('button', { name: /reveal recovery phrase/i }).click()
   const list = await words.locator('[data-word]').allInnerTexts()
   expect(list).toHaveLength(12)
   await shot(page, 'v2a-02-words')

@@ -49,7 +49,7 @@ export function SecurityPanel(): JSX.Element {
             {pasted
               ? 'Not for a pasted key: it is held in this tab only and is gone after a reload. Import your identity file or recovery phrase to get a key this browser can keep.'
               : stay
-              ? `Keeps a spend-capped signing key in this browser (a browser key: ${BROWSER_KEY_DEFAULTS.budgetDash} DASH and ${BROWSER_KEY_DEFAULTS.days} days by default; never a key without a budget, an expiry or Forge-only bounds), so reloads and new tabs stay signed in for public repos: for up to ${KEPT_TTL_MS / HOUR_MS} hours after you unlock, and until ${KEPT_IDLE_MS / HOUR_MS} hours pass without using Forge in this browser. Private repos, storage credentials and wallet grants still ask you to unlock.`
+              ? `Reloads and new tabs stay signed in for up to ${KEPT_TTL_MS / HOUR_MS} hours, or until ${KEPT_IDLE_MS / HOUR_MS} idle hours pass. The key kept here can spend at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge. Private repos still ask you to unlock.`
               : 'Off: each reload or new tab starts locked; unlock with your passkey or passphrase to write.'}
           </span>
         </span>

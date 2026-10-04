@@ -60,8 +60,8 @@ describe('ContractsMissingState', () => {
       const { title, body } = render(config)
       expect(title).toBe('Dash Forge moved to a new devnet')
       expect(body).toContain(`${name} was retired`)
-      expect(body).toContain('devnet sakura (Platform v5)')
-      expect(body).toContain('re-push from your clone')
+      expect(body).toContain('now runs on devnet sakura')
+      expect(body).toContain('re-push your repos from your clones')
       expect(body).toContain('/mirror wizard')
       expect(body).not.toMatch(/reset/i)
       const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href'))
@@ -72,14 +72,14 @@ describe('ContractsMissingState', () => {
   it('on devnet sakura (not retired): the generic wording, never the move', () => {
     const { title, body } = render(SAKURA)
     expect(title).toBe("Dash Forge isn't deployed on devnet sakura right now")
-    expect(body).toContain('devnets are reset from time to time')
+    expect(body).toContain('Devnet sakura is a test network, and it was probably reset')
     expect(el.querySelector('a[href$="devnet-move.md"]')).toBeNull()
   })
 
   it('on another devnet: names it, says devnets are reset and it is being redeployed', () => {
     const { title, body } = render(OTHER_DEVNET)
     expect(title).toBe("Dash Forge isn't deployed on devnet tango right now")
-    expect(body).toContain('devnets are reset from time to time')
+    expect(body).toContain('Devnet tango is a test network, and it was probably reset')
     expect(body).toContain('redeployed')
   })
 

@@ -27,6 +27,7 @@ import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
+import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
@@ -181,7 +182,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     { enabled: ready && sdk !== null && canSetMilestone },
   )
 
-  const [comment, setComment] = useState('')
+  // The unsent comment survives a reload (never stored for a private repo).
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity))
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -227,7 +229,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const commentTooLong = commentLong.long ? commentLong.problem !== null : utf8Length(comment) > BODY_MAX
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
-  if (loading && !data) return <LoadingBlock label="Folding issue" />
+  if (loading && !data) return <LoadingBlock label="Loading issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="issue" icon={CircleDot} title={`Issue #${number} not found`} body="No issue or pull request with that number in this repo." />
 
@@ -276,20 +278,27 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
+    // Until the outcome is known, a reload must not bring the text back to be posted again.
+    holdDraft(true, comment)
     try {
       const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext })
       setComment('')
+      holdDraft(false, '')
       draft.renew()
       refresh((t) => issueWriteShows(t, { kind: 'comment', id: posted.documentId }))
     } catch (e) {
       if (e instanceof SupersededWriteError) {
         // The earlier version was posted: show it, and never post this draft a second time.
         setComment('')
+        holdDraft(false, '')
         draft.renew()
         refresh((t) => issueWriteShows(t, { kind: 'comment', id: e.documentId }))
       } else if (e instanceof UnconfirmedWriteError) {
         // Sent, not yet visible: keep reading until it shows (the draft stays, as the error says).
         refresh((t) => issueWriteShows(t, { kind: 'comment', id: e.documentId }))
+      } else {
+        // Nothing was sent: keep the draft again.
+        holdDraft(false, comment)
       }
       setCommentError(guard.failed(e))
     } finally {
@@ -564,7 +573,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 ...slots,
                 header: (
                   <>
-                    <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="posted-while-locked" title="A non-member posted this while the conversation was locked to members (consensus cannot refuse it; Forge clients do not offer it).">
+                    <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="posted-while-locked" title="Posted by a non-member while the conversation was locked.">
                       posted while locked
                     </span>
                     {slots.header}
@@ -584,7 +593,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <LockedBanner locked={lockApplies} viewer={lockViewer} target="issue">
             <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
             {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
-            <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+            <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={composeBlock === null ? () => void postComment() : undefined} />
             <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} long={commentLong} />
           </LockedBanner>
           {lockedOutNow && !canToggle ? null : (
@@ -749,17 +758,17 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
     case 'defineLabel':
       return {
         title: `Create label "${pending.name}"`,
-        description: pending.apply ? 'Two documents: the label definition (for the whole repo), then a label event on this issue.' : 'One label definition for the whole repo.',
+        description: pending.apply ? 'Creates the label for this repo and adds it here.' : 'Creates the label for this repo.',
         label: 'Sign & create',
       }
     case 'editIssue':
-      return { title: `Edit issue #${number}`, description: 'Replaces your issue document; you pay only for the changed bytes. Earlier versions stay readable on Platform.', label: 'Sign & save' }
+      return { title: `Edit issue #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'editComment':
-      return { title: 'Edit comment', description: 'Replaces your comment document; you pay only for the changed bytes.', label: 'Sign & save' }
+      return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'deleteComment':
       return {
         title: 'Delete comment',
-        description: 'Deletes your comment document (its storage fee is partly refunded). Replies to it stay. The write that posted it stays in the chain history, so rotate any secret it held.',
+        description: 'Part of its storage fee is refunded, and replies stay. The original stays in Platform history, so rotate any secret it held.',
         label: 'Sign & delete',
       }
     default: {

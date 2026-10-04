@@ -126,7 +126,7 @@ describe('module-level config (default build env)', () => {
   it('throws the actionable NotDeployedError for a network without forge-v2', () => {
     if (NETWORKS.mainnet.v2 !== null) return
     expect(() => requireForge('mainnet')).toThrow(NotDeployedError)
-    expect(() => requireForge('mainnet')).toThrow(/forge-v2 is not deployed on mainnet/)
+    expect(() => requireForge('mainnet')).toThrow("Dash Forge isn't available on mainnet yet")
   })
 })
 

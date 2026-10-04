@@ -129,6 +129,7 @@ function bind(doc: PrivateDoc, keys: EpochKeys): Bytes {
  */
 export function docAd(doc: PrivateDoc, keys: EpochKeys): Bytes {
   const epoch = u32Field(doc.epoch, 'epoch')
+  // copy-lint-ignore: an invariant the caller checks first; never shown on its own
   if (keys.epoch !== doc.epoch) throw new RangeError('the key is not for the document epoch')
   return concat(
     utf8('dash-forge/v2/doc'),
