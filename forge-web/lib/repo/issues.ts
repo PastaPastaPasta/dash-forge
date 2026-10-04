@@ -175,6 +175,9 @@ export interface PullView {
    * at open would count base commits a later "Update branch" merged in as the PR's own (QW3-014).
    */
   readonly baseOidAtMerge?: string
+  /** The merge transition's commit and `$createdAt`, when the PR is merged and a detail read it. */
+  readonly mergeOid?: string
+  readonly mergedAt?: number
   /**
    * The PR's CURRENT head, hex: the newest `headUpdate` (author or member), else
    * {@link initialHeadOid}. Approvals, staleness, the diff and merges use this.
@@ -835,6 +838,7 @@ export async function readPull(
     baseTipOid: baseTip ?? '',
     baseOidAtOpen: tips.atOpen ?? baseTip ?? '',
     baseOidAtMerge: mergeOid === null ? '' : tipBeforeMerge(tips.historical, mergeOid),
+    ...(merge !== null && mergeOid !== null ? { mergeOid: mergeOid.toLowerCase(), mergedAt: merge.createdAt } : {}),
     headOid,
     initialHeadOid,
     review,

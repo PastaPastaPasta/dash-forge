@@ -46,6 +46,7 @@ import { PLATFORM_READ_MS, withPlatformRead } from './connect'
 import { withTimeout } from '../timeout'
 import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
+import { clearDrafts } from '../view/draft-text'
 import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import { PRIVATE_REPOS_FLOW, adoptEncryptionKey, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
@@ -1626,8 +1627,8 @@ export class AuthController {
 
   /**
    * Delete the stored key of `identityId` from this device (ending its session if open), and
-   * what this browser recorded for the identity: its spend ledger, its notifications inbox and
-   * the last-used marker (QW2-028). Write journals stay: they finish an interrupted write. So do
+   * what this browser recorded for the identity: its spend ledger, its notifications inbox, its
+   * comment drafts and the last-used marker (QW2-028). Write journals stay: they finish an interrupted write. So do
    * the top-up records (`topUpRecords`, QW3-034: an unfinished top-up, and where the next one
    * starts), which the forget and revoke confirmations name.
    */
@@ -1636,6 +1637,7 @@ export class AuthController {
     forgetKeySnapshot(this.network, identityId)
     await forgetVault(this.network, identityId)
     forgetLastIdentity(this.network, identityId)
+    clearDrafts(identityId)
     await Promise.allSettled([clearLedger(this.network, identityId), clearInbox(this.network, identityId)])
   }
 }
