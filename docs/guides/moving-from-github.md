@@ -11,7 +11,7 @@ For a public GitHub repository, the quickest path needs no install. Open **[forg
 1. **The GitHub repository.** Type `owner/name` or paste its URL. Your browser asks GitHub's public API, without signing in, whether the repository exists and is public. There is no GitHub OAuth app, because Forge runs no server.
 2. **The Forge repository.** The name comes from GitHub and the price is shown before you sign. Creating it writes three documents, for about 0.002 DASH. If you already own a Forge repository with that name, the mirror writes into it at no cost.
 3. **Storage.** Pick a bucket you have already saved, or add one with the [storage wizard](bring-your-own-storage.md). Cloudflare R2 or S3 is recommended. The step shows the CORS policy to paste. Dash Platform is also offered, priced per MiB.
-4. **A runner key.** This is a limited key on your identity, bound to Forge's contracts, with its own budget and expiry (default 0.5 DASH and 365 days). Your master key signs once, from your identity file or recovery words. The key is shown **once**, as the `DASH_FORGE_KEY` value to paste into GitHub, and is not stored in the browser. Because it belongs to the repository's owner, the Action needs no other membership.
+4. **A runner key.** This is a limited key on your identity, bound to Forge's contracts, with its own budget and expiry (default 0.5 DASH and 365 days). Your master key signs once, from your identity file or recovery phrase. The key is shown **once**, as the `DASH_FORGE_KEY` value to paste into GitHub, and is not stored in the browser. Because it belongs to the repository's owner, the Action needs no other membership.
 5. **The workflow.** The wizard lists the secrets to add first: `DASH_FORGE_KEY`, plus `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` for a bucket. It then builds `.github/workflows/forge-mirror.yml` with the repository, network, devnet name and storage filled in, and both the build and the Action pinned to one commit. **Create this file on GitHub** opens GitHub's new-file page with the file filled in, and committing it starts the first run.
 6. **The first run.** The page checks Platform until the mirror's branches appear, then links to the repository.
 
@@ -30,7 +30,7 @@ The rest of this guide covers the command-line path: private repositories, GitLa
 9. [What it costs](#9-what-it-costs)
 10. [GitHub features with no Forge equivalent](#10-github-features-with-no-forge-equivalent)
 
-Replace every `<…>` placeholder with your own value. Forge runs on **devnet sakura** (RC2 registered on Platform v5.0.0-beta.1), where Dash is free ([Which network](README.md#which-network)).
+Replace every `<…>` placeholder with your own value. Forge runs on **devnet sakura**, where Dash is free ([Which network](README.md#which-network)).
 
 ---
 
@@ -81,7 +81,7 @@ A Dash identity is your account. You create it yourself by locking some Dash. No
 dg auth new --network devnet --devnet-name sakura
 ```
 
-`dg` shows 12 recovery words (write them down), then a deposit address. Fund it from any Dash wallet; on sakura, use the [faucet](https://faucet.sakura.networks.dash.org). How much you need depends on the repository: `forge-import --dry-run` in the next step tells you. [Quick start §2–3](quick-start.md#2-get-an-identity) has the details, and [Identity and keys](identity-and-keys.md) covers backups and top-ups.
+`dg` shows a 12-word recovery phrase (write it down), then a deposit address. Fund it from any Dash wallet; on sakura, use the [faucet](https://faucet.sakura.networks.dash.org). How much you need depends on the repository: `forge-import --dry-run` in the next step tells you. [Quick start §2–3](quick-start.md#2-get-an-identity) has the details, and [Identity and keys](identity-and-keys.md) covers backups and top-ups.
 
 ## 4. Import the repository
 

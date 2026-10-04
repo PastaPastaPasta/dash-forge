@@ -23,7 +23,7 @@ import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { deriveConnectionTrust, listRecentRepos, type DiscoveredRepo } from '@/lib/view'
 import { listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { faucetUrl } from '@/components/top-up-sheet'
 
@@ -58,9 +58,8 @@ export default function LandingPage(): JSX.Element {
           A git forge with <span className="text-forge-700 dark:text-forge-500">no server to trust.</span>
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-prose text-anvil-600 dark:text-anvil-300">
-          Host git repositories with issues, pull requests and reviews, like GitHub, but nobody runs
-          the server: everything is stored on the Dash network, and your browser checks what it reads
-          instead of trusting a company. No account to lose, no host to take it down.
+          Git repositories, issues, pull requests and reviews, like GitHub, with no server. Everything lives on
+          the Dash network, and your browser verifies what it shows. No host can take it down.
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           <Link href="/new/">
@@ -93,7 +92,7 @@ export default function LandingPage(): JSX.Element {
       {/* Capability strip */}
       <section className="mx-auto mt-8 grid max-w-4xl grid-cols-1 gap-3 sm:grid-cols-3">
         <Feature icon={<Search className="h-4 w-4 text-forge-500" aria-hidden />} title="Size-independent browse" body="With a published browse index, tree, blob, and commit views fetch only the bytes they show, at any repo size." />
-        <Feature icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />} title="Proof-checked reads" body="Refs by Platform proof, file contents by git hash. Each repo's Verification card shows what this session actually checked." />
+        <Feature icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />} title="Verified, not trusted" body="Your browser checks every branch and file it shows. Each repo's Verification card shows what was checked." />
         <Feature icon={<GitBranch className="h-4 w-4 text-forge-500" aria-hidden />} title="Issues & threads in-browser" body="Open issues, comment, close and reopen, and grant collaborators — each write signed by your Platform identity." />
       </section>
 
@@ -104,7 +103,7 @@ export default function LandingPage(): JSX.Element {
           <Step
             icon={<KeyRound className="h-4 w-4 text-forge-500" aria-hidden />}
             title="1. Get a Dash identity"
-            body="Your account is an identity on the Dash network, made from 12 recovery words that only you hold. Reading and cloning need no identity at all."
+            body="Your identity is your account, made from a 12-word recovery phrase only you hold. Reading and cloning need no identity."
             link={{ href: DOCS.identity, label: 'Identities and keys' }}
           />
           <Step
@@ -113,9 +112,9 @@ export default function LandingPage(): JSX.Element {
             body={
               ACTIVE_NETWORK.network === 'mainnet'
                 ? 'Writes (a repo, an issue, a push) cost a small fee in DASH, paid from your identity’s credits and shown before you sign. Reading is free.'
-                : `Writes (a repo, an issue, a push) cost a small fee in credits, shown before you sign. On ${ACTIVE_NETWORK.key} the DASH is free test money${faucet ? ', from the faucet' : ''}. Reading is free.`
+                : `Writes (a repo, an issue, a push) cost a small fee, shown before you sign. On ${networkName()} the DASH is free test money${faucet ? ', from the faucet' : ''}. Reading is free.`
             }
-            link={faucet ? { href: faucet, label: `${ACTIVE_NETWORK.key} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
+            link={faucet ? { href: faucet, label: `${networkName()} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
           />
           <Step
             icon={<Upload className="h-4 w-4 text-forge-500" aria-hidden />}

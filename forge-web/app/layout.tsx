@@ -7,7 +7,7 @@ import './globals.css'
 export const metadata: Metadata = {
   title: 'Dash Forge',
   description:
-    'Zero-backend git forge on Dash Platform. Browse code and collaborate on issues, with proof-checked reads.',
+    'Git hosting with no server, on Dash Platform. Your browser verifies every branch and file it shows.',
 }
 
 // CSP is delivered via <meta> so it survives static export (yappr pattern).
@@ -15,7 +15,8 @@ export const metadata: Metadata = {
 //   (verified: reads, writes and sign-in run without it). 'unsafe-inline' stays for Next's
 //   inline bootstrap scripts.
 // - frame-ancestors is not here: browsers ignore it in a <meta> CSP (and log an error on every
-//   page). The host must send it as a header; GitHub Pages cannot (docs/guides/identity-and-keys.md).
+//   page). The host must send it as a header; GitHub Pages cannot, so Cloudflare in front of it
+//   has to (docs/hosting.md §7).
 //   A framed page never restores a kept session (lib/auth/session-resume.ts `framed`).
 // - connect-src https:/wss:: DAPI endpoints + IPFS/S3/HTTPS pack backends. Plain http to this
 //   machine is allowed so the storage settings can reach the user's OWN local node (a kubo

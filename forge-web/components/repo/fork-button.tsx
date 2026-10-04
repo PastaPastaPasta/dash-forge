@@ -30,7 +30,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 
 const STEPS: readonly { step: ForkStep; label: string }[] = [
-  { step: 'repo', label: 'Fork repository document' },
+  { step: 'repo', label: 'The fork' },
   { step: 'maintainer', label: 'You, as its first maintainer' },
   { step: 'config', label: 'Initial config' },
   { step: 'manifests', label: "The parent's packs, by reference" },

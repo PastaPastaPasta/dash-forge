@@ -10,7 +10,7 @@
  *    ENCRYPTION key from the writer's (so writing one needs the writer's encryption key);
  *  - newest per `(repoId, hookId)` by (`$createdAt`, `$id`) wins, and a newest `disabled`
  *    document stops the hook;
- *  - the URL is public on chain: `https://` to a DNS name, and no query string (where tokens
+ *  - the URL is public on Platform: `https://` to a DNS name, and no query string (where tokens
  *    usually hide) unless the writer says it holds nothing secret;
  *  - public repos only (`vis` is `public`): a relay is not a member of a private repo.
  */
@@ -146,20 +146,20 @@ export function webhookUrlSecret(url: string): UrlSecret {
  * Why `url` cannot be a webhook's (forge-core `check_url_and_events`), or null. A chat service's
  * webhook URL is refused, except in a disabled revision (`disabled`: removing a hook another
  * maintainer pointed at one); a query string or a token-like path segment is refused unless
- * `allowQuery`: the URL is public on chain.
+ * `allowQuery`: the URL is public on Platform.
  */
 export function webhookUrlProblem(url: string, allowQuery = false, disabled = false): string | null {
   if (url === '') return 'Enter the URL to deliver to.'
   if (new TextEncoder().encode(url).length > WEBHOOK_URL_MAX) return `A webhook URL is at most ${WEBHOOK_URL_MAX} bytes.`
   if (!url.startsWith('https://')) return 'A webhook URL must be https://.'
   const authority = url.slice('https://'.length).split(/[/?#]/, 1)[0] ?? ''
-  if (authority.includes('@')) return 'The URL is public on chain, so it must not carry user:password@. Deliveries are signed with the secret instead.'
+  if (authority.includes('@')) return 'The URL is public on Platform, so it must not carry user:password@. Deliveries are signed with the secret instead.'
   if (!URL_PATTERN.test(url)) return 'Use a DNS name (not an IP address, localhost or a name ending in a dot), an optional port, and no spaces.'
   const secret = webhookUrlSecret(url)
   if (secret.secret === 'chatService' && !disabled)
     return `${secret.service} webhook URLs contain their token, and a webhook's URL is public, so anyone could post to your channel. Keep it in your own relay's config instead.`
-  if (!allowQuery && secret.secret === 'pathToken') return 'The URL is public on chain, and the part after /webhook/ looks like a token. Remove it, or confirm it holds nothing secret.'
-  if (!allowQuery && url.includes('?')) return 'The URL is public on chain, and a query string is where tokens usually hide. Remove it, or confirm it holds nothing secret.'
+  if (!allowQuery && secret.secret === 'pathToken') return 'The URL is public on Platform, and the part after /webhook/ looks like a token. Remove it, or confirm it holds nothing secret.'
+  if (!allowQuery && url.includes('?')) return 'The URL is public on Platform, and a query string is where tokens usually hide. Remove it, or confirm it holds nothing secret.'
   return null
 }
 

@@ -231,8 +231,8 @@ test('g3. a merge commit built in the browser (a new pack), then the Code tab re
   await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
   await shot(page, 'g4-06-merge-commit-done')
 
-  // The merge commit's oid, from the panel ("Base branch moved to <oid>").
-  const moved = page.getByText(/Base branch moved to/)
+  // The merge commit's oid, from the panel ("The base branch is now at <oid>").
+  const moved = page.getByText(/The base branch is now at/)
   await expect(moved).toBeVisible({ timeout: 120_000 })
   const mergeTip = ((await moved.getByRole('button').first().getAttribute('title')) ?? '').split('\n')[0] ?? ''
   expect(mergeTip).toMatch(/^[0-9a-f]{40}$/)

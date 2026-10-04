@@ -150,7 +150,7 @@ test('c5. a writer comments inline and requests changes; merge is maintainers-on
   // main is protected in the fixture: a writer cannot move it. Since #66 (repo settings) the
   // writer gets no merge panel at all; Branch rules says why.
   await page.getByTestId('pr-tab-conversation').click()
-  await expect(page.getByTestId('protected-base')).toContainText('only maintainers can merge into it', { timeout: 60_000 })
+  await expect(page.getByTestId('protected-base')).toContainText('Only maintainers can merge into it', { timeout: 60_000 })
   await expect(page.getByTestId('merge-button-state')).toHaveCount(0)
 
   await page.getByRole('button', { name: /^request changes$/i }).click()
@@ -218,8 +218,8 @@ test('c7. the owner merges a divergent PR in the browser (merge commit, Platform
   const pr = `/repo/pull/?owner=${seed.owner}&name=${seed.name}&number=${seed.number}`
 
   const page = await signedIn(browser, 'OWNER', '/settings/')
-  await page.getByLabel('Merge commit name').fill('Forge E2E Owner')
-  await page.getByLabel('Merge commit email').fill('owner@e2e.forge.invalid')
+  await page.getByLabel('Commit author name').fill('Forge E2E Owner')
+  await page.getByLabel('Commit author email').fill('owner@e2e.forge.invalid')
   await page.goto(pr, { waitUntil: 'domcontentloaded' })
   await unlock(page)
   await waitForRepoResolved(page)

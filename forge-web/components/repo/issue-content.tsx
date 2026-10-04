@@ -21,6 +21,7 @@ import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
+import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
 import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
@@ -226,7 +227,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const commentTooLong = commentLong.long ? commentLong.problem !== null : utf8Length(comment) > BODY_MAX
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
-  if (loading && !data) return <LoadingBlock label="Folding issue" />
+  if (loading && !data) return <LoadingBlock label="Loading issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="issue" icon={CircleDot} title={`Issue #${number} not found`} body="No issue or pull request with that number in this repo." />
 
@@ -480,7 +481,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               data-testid="issue-state"
               data-reason={open ? undefined : data.closedAs?.reason}
               title={open || !data.closedAs ? undefined : closedTitle(data.closedAs)}
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${open ? 'bg-verify-700' : skipped ? 'bg-anvil-600' : 'bg-forge-700'}`}
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${STATE_FILL[open ? 'open' : skipped ? 'skipped' : 'done']}`}
             >
               {open ? <CircleDot className="h-3.5 w-3.5" aria-hidden /> : skipped ? <CircleSlash className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
               {open ? 'Open' : 'Closed'}
@@ -563,7 +564,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 ...slots,
                 header: (
                   <>
-                    <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="posted-while-locked" title="A non-member posted this while the conversation was locked to members (consensus cannot refuse it; Forge clients do not offer it).">
+                    <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="posted-while-locked" title="Posted by a non-member while the conversation was locked.">
                       posted while locked
                     </span>
                     {slots.header}
@@ -607,7 +608,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   title={guard.disabledReason ?? undefined}
                   data-testid="issue-state-toggle"
                 >
-                  <CircleDot className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
+                  <CircleDot className={`h-3.5 w-3.5 ${STATE_TEXT.open}`} aria-hidden />
                   {stateToggleLabel(open, withComment !== null, 'issue')}
                 </Button>
               ) : null}
@@ -748,17 +749,17 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
     case 'defineLabel':
       return {
         title: `Create label "${pending.name}"`,
-        description: pending.apply ? 'Two documents: the label definition (for the whole repo), then a label event on this issue.' : 'One label definition for the whole repo.',
+        description: pending.apply ? 'Creates the label for this repo and adds it here.' : 'Creates the label for this repo.',
         label: 'Sign & create',
       }
     case 'editIssue':
-      return { title: `Edit issue #${number}`, description: 'Replaces your issue document; you pay only for the changed bytes. Earlier versions stay readable on Platform.', label: 'Sign & save' }
+      return { title: `Edit issue #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'editComment':
-      return { title: 'Edit comment', description: 'Replaces your comment document; you pay only for the changed bytes.', label: 'Sign & save' }
+      return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'deleteComment':
       return {
         title: 'Delete comment',
-        description: 'Deletes your comment document (its storage fee is partly refunded). Replies to it stay. The write that posted it stays in the chain history, so rotate any secret it held.',
+        description: 'Part of its storage fee is refunded, and replies stay. The original stays in Platform history, so rotate any secret it held.',
         label: 'Sign & delete',
       }
     default: {

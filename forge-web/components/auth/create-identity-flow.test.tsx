@@ -64,9 +64,9 @@ describe('CreateIdentityFlow: the recovery words', () => {
   it('are masked until revealed, and can be hidden again', () => {
     expect(host.querySelectorAll('[data-testid="mnemonic-words"] li')).toHaveLength(12)
     expect(wordsInDom()).toEqual([])
-    act(() => byText('Reveal recovery words')!.click())
+    act(() => byText('Reveal recovery phrase')!.click())
     expect(wordsInDom()).toEqual(WORDS)
-    act(() => byText('Hide recovery words')!.click())
+    act(() => byText('Hide recovery phrase')!.click())
     expect(wordsInDom()).toEqual([])
   })
 

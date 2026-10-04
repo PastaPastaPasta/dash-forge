@@ -113,7 +113,7 @@ test.describe('in-browser fallback clone (locator unavailable)', () => {
     // renders again with no re-download prompt.
     await page.getByRole('link', { name: 'src', exact: true }).first().click()
     await page.getByRole('link', { name: 'main.rs', exact: true }).first().click()
-    await expect(page.getByText('reads are proof-checked').first()).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText('Your browser verifies what it shows').first()).toBeVisible({ timeout: 30_000 })
     await expect(page.getByText(/copy loaded into your browser/i)).toBeVisible()
     await expect(loadButton).toHaveCount(0)
     await shot(page, 'fallback-02-blob')
@@ -123,7 +123,7 @@ test.describe('in-browser fallback clone (locator unavailable)', () => {
     await page.reload({ waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expect(page.getByText(/copy loaded into your browser/i)).toBeVisible({ timeout: 30_000 })
-    await expect(page.getByText('reads are proof-checked').first()).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText('Your browser verifies what it shows').first()).toBeVisible({ timeout: 30_000 })
     await expect(loadButton).toHaveCount(0)
 
     expect(errors, `uncaught page errors:\n${errors.join('\n')}`).toEqual([])

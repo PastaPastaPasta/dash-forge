@@ -190,7 +190,7 @@ describe('a sign-in during a quorum rotation (QW3-007)', () => {
       },
     }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(IdentityUpdateNotSentError)
-    expect(String((err as Error).message)).toMatch(/switching to a new quorum.*Nothing was sent and nothing was charged/)
+    expect(String((err as Error).message)).toMatch(/switching to a new quorum.*Nothing was sent, and you weren't charged/)
     expect(String((err as Error).message)).not.toMatch(/Proof verification|446f75d0/)
     expect(dropped).toEqual([6])
     expect(chain.updates).toEqual([])
