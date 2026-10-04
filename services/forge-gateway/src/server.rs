@@ -51,6 +51,9 @@ pub const MAX_UPLOAD_PACK_REQUEST: usize = 16 * 1024 * 1024;
 const RESOLVE_TTL: Duration = Duration::from_secs(300);
 const RESOLVE_MISS_TTL: Duration = Duration::from_secs(60);
 
+/// The most `owner/name` resolutions kept.
+const MAX_RESOLVED: usize = 50_000;
+
 /// Entries in the feed.
 const FEED_ENTRIES: usize = 30;
 
@@ -250,6 +253,22 @@ fn repo_name(repo: &str) -> &str {
     repo.strip_suffix(".git").unwrap_or(repo)
 }
 
+/// Record a resolution, keeping at most [`MAX_RESOLVED`] however many names are asked for:
+/// when full, drop the expired entries and the misses, and if it is still full, start over.
+fn remember(
+    resolved: &mut HashMap<(String, String), Resolved>,
+    key: (String, String),
+    info: Option<RepoInfo>,
+) {
+    if resolved.len() >= MAX_RESOLVED {
+        resolved.retain(|_, (at, i)| at.elapsed() < RESOLVE_TTL && i.is_some());
+        if resolved.len() >= MAX_RESOLVED {
+            resolved.clear();
+        }
+    }
+    resolved.insert(key, (Instant::now(), info));
+}
+
 /// Resolve `owner/name` to a public repository this gateway serves, or the response that says
 /// why not. A failed Platform read falls back to the last resolution (a mirror keeps serving
 /// while Platform is down).
@@ -285,11 +304,14 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<RepoInfo, 
         _ => match state.mirrors.upstream().resolve(owner, name).await {
             Ok(info) => {
                 state.metrics.upstream(true);
-                state
-                    .resolved
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(key, (Instant::now(), info.clone()));
+                remember(
+                    &mut state
+                        .resolved
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner),
+                    key,
+                    info.clone(),
+                );
                 info
             }
             Err(e) => {
@@ -1056,6 +1078,36 @@ async fn metrics(State(state): St) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_resolution_cache_is_bounded() {
+        let hit = |n: usize| {
+            Some(RepoInfo {
+                repo_id: format!("r{n}"),
+                owner_id: "o".into(),
+                name: format!("n{n}"),
+                public: true,
+            })
+        };
+        let mut m = HashMap::new();
+        for n in 0..MAX_RESOLVED {
+            let info = if n % 2 == 0 { hit(n) } else { None };
+            remember(&mut m, ("o".into(), format!("n{n}")), info);
+        }
+        assert_eq!(m.len(), MAX_RESOLVED);
+        // Full: the misses go, the live hits stay.
+        remember(&mut m, ("o".into(), "new".into()), hit(MAX_RESOLVED));
+        assert_eq!(m.len(), MAX_RESOLVED / 2 + 1);
+        assert!(m.contains_key(&("o".to_string(), "n0".to_string())));
+        assert!(!m.contains_key(&("o".to_string(), "n1".to_string())));
+        // Full of live hits: it starts over rather than grow.
+        let mut m = HashMap::new();
+        for n in 0..MAX_RESOLVED {
+            remember(&mut m, ("o".into(), format!("n{n}")), hit(n));
+        }
+        remember(&mut m, ("o".into(), "new".into()), None);
+        assert_eq!(m.len(), 1);
+    }
 
     #[test]
     fn segments_are_checked() {

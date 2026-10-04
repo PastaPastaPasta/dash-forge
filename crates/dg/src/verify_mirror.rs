@@ -293,7 +293,7 @@ fn report(
                 ),
                 (None, Some(e)) => println!("  manifest: unreadable ({})", safe(e)),
                 (None, None) => {
-                    println!("  manifest: none published (staleness is judged without it)")
+                    println!("  manifest: none published (staleness is judged without it)");
                 }
             }
             for p in problems {

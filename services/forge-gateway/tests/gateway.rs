@@ -575,7 +575,7 @@ async fn limits_and_eviction() {
     gw.mirrors.evict().await;
     let dirs = std::fs::read_dir(gw.tmp.join("data/mirrors/devnet-stub"))
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().ends_with(".git"))
         .count();
     assert_eq!(

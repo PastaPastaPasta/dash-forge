@@ -87,96 +87,102 @@ impl Metrics {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Every counter: name, help and value.
+    fn counters(&self) -> [(&'static str, &'static str, &AtomicU64); 16] {
+        [
+            (
+                "forge_gateway_requests_git_total",
+                "git smart-HTTP requests.",
+                &self.requests_git,
+            ),
+            (
+                "forge_gateway_requests_badge_total",
+                "Badge requests.",
+                &self.requests_badge,
+            ),
+            (
+                "forge_gateway_requests_feed_total",
+                "Atom feed requests.",
+                &self.requests_feed,
+            ),
+            (
+                "forge_gateway_requests_og_total",
+                "Link-preview requests.",
+                &self.requests_og,
+            ),
+            (
+                "forge_gateway_requests_other_total",
+                "Other requests.",
+                &self.requests_other,
+            ),
+            (
+                "forge_gateway_upload_packs_total",
+                "git-upload-pack responses started.",
+                &self.upload_packs,
+            ),
+            (
+                "forge_gateway_git_bytes_total",
+                "Bytes streamed to git clients.",
+                &self.git_bytes,
+            ),
+            (
+                "forge_gateway_rate_limited_total",
+                "Requests refused by a limit.",
+                &self.rate_limited,
+            ),
+            (
+                "forge_gateway_refresh_ok_total",
+                "Mirror refreshes that succeeded.",
+                &self.refresh_ok,
+            ),
+            (
+                "forge_gateway_refresh_failed_total",
+                "Mirror refreshes that failed.",
+                &self.refresh_failed,
+            ),
+            (
+                "forge_gateway_refresh_changed_total",
+                "Refreshes that moved a ref.",
+                &self.refresh_changed,
+            ),
+            (
+                "forge_gateway_mirrors_created_total",
+                "Mirrors created.",
+                &self.mirrors_created,
+            ),
+            (
+                "forge_gateway_mirrors_evicted_total",
+                "Mirrors evicted by the disk cap.",
+                &self.mirrors_evicted,
+            ),
+            (
+                "forge_gateway_private_refused_total",
+                "Requests for private repositories.",
+                &self.private_refused,
+            ),
+            (
+                "forge_gateway_wakes_total",
+                "Relay wakes received.",
+                &self.wakes,
+            ),
+            (
+                "forge_gateway_stale_renders_total",
+                "Renders served stale because Platform failed.",
+                &self.stale_renders,
+            ),
+        ]
+    }
+
     /// The Prometheus exposition.
     pub fn render(&self, g: Gauges) -> String {
         let mut out = String::new();
-        let mut counter = |name: &str, help: &str, v: &AtomicU64| {
+        for (name, help, v) in self.counters() {
             let _ = writeln!(
                 out,
                 "# HELP {name} {help}\n# TYPE {name} counter\n{name} {}",
                 v.load(Ordering::Relaxed)
             );
-        };
-        counter(
-            "forge_gateway_requests_git_total",
-            "git smart-HTTP requests.",
-            &self.requests_git,
-        );
-        counter(
-            "forge_gateway_requests_badge_total",
-            "Badge requests.",
-            &self.requests_badge,
-        );
-        counter(
-            "forge_gateway_requests_feed_total",
-            "Atom feed requests.",
-            &self.requests_feed,
-        );
-        counter(
-            "forge_gateway_requests_og_total",
-            "Link-preview requests.",
-            &self.requests_og,
-        );
-        counter(
-            "forge_gateway_requests_other_total",
-            "Other requests.",
-            &self.requests_other,
-        );
-        counter(
-            "forge_gateway_upload_packs_total",
-            "git-upload-pack responses started.",
-            &self.upload_packs,
-        );
-        counter(
-            "forge_gateway_git_bytes_total",
-            "Bytes streamed to git clients.",
-            &self.git_bytes,
-        );
-        counter(
-            "forge_gateway_rate_limited_total",
-            "Requests refused by a limit.",
-            &self.rate_limited,
-        );
-        counter(
-            "forge_gateway_refresh_ok_total",
-            "Mirror refreshes that succeeded.",
-            &self.refresh_ok,
-        );
-        counter(
-            "forge_gateway_refresh_failed_total",
-            "Mirror refreshes that failed.",
-            &self.refresh_failed,
-        );
-        counter(
-            "forge_gateway_refresh_changed_total",
-            "Refreshes that moved a ref.",
-            &self.refresh_changed,
-        );
-        counter(
-            "forge_gateway_mirrors_created_total",
-            "Mirrors created.",
-            &self.mirrors_created,
-        );
-        counter(
-            "forge_gateway_mirrors_evicted_total",
-            "Mirrors evicted by the disk cap.",
-            &self.mirrors_evicted,
-        );
-        counter(
-            "forge_gateway_private_refused_total",
-            "Requests for private repositories.",
-            &self.private_refused,
-        );
-        counter(
-            "forge_gateway_wakes_total",
-            "Relay wakes received.",
-            &self.wakes,
-        );
-        counter(
-            "forge_gateway_stale_renders_total",
-            "Renders served stale because Platform failed.",
-            &self.stale_renders,
-        );
+        }
         let mut gauge = |name: &str, help: &str, v: u64| {
             let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {v}");
         };
