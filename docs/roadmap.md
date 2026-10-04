@@ -158,7 +158,7 @@ Work:
 
 ### Phase 5 — Daily-driver parity (L) · *gate: a maintainer runs a real project from the web app for a month*
 - [x] Line-level commit/PR diffs, inline review comments, approve/request-changes, re-review on new heads.
-- [x] Real merges from the browser, pushed to the user's bucket, respecting protected refs. Forge has its own merge engine (`forge-web/lib/merge/engine.ts`): fast-forward, a merge commit when the two sides changed different paths, and squash. It never merges file contents, so a PR whose two sides touched the same path is merged with `dg pr merge`. There is no rebase merge yet.
+- [x] Real merges from the browser, pushed to the user's bucket, respecting protected refs. Forge has its own merge engine (`forge-web/lib/merge/engine.ts`): fast-forward, a merge commit, and squash. A file both sides changed is merged line by line with a port of git's xdiff (`merge3.ts`, `xdiff.ts`), byte for byte git's result (proven against `git merge-file` and `git merge-tree` by the parity suites); what git would conflict on, and renames or moved directories, go to `dg pr merge`. Rebase and merge (`lib/merge/rebase.ts`, `dg pr merge --rebase`) replays the PR's commits as `git rebase --merge` does, commit for commit (the `rebase.parity.test.ts` suite); what the browser cannot prove matches git (a merge commit in the PR, a commit the base may already hold, a conflict) goes to `dg pr merge --rebase`.
 - [x] Open a PR from the browser; forks (`dg repo fork` = a few documents on forge-v2).
 - [x] Releases page with assets in the user's bucket; labels and assignees UI; history pagination, blame; a poll-based notification inbox (local state).
 - [ ] Web editing (CodeMirror → commit → push). *Not started.*
@@ -189,7 +189,7 @@ Launch checklist (`ux-dx-spec.md` §11 P0), where it stands: done 1–9, 11–16
 
 Next:
 - **Open:** tag the first release so `install.sh`, `cargo binstall`, the relay image, the Action's `install: 'true'` and the published IPFS web build work · the trust panel's "private" state, and a final security sign-off on private repos (launch criterion 6; [docs/security/private-repos.md](security/private-repos.md) §13 lists contract changes required before mainnet registration) · the wallet-side changes D-L needs on mainnet (group-scoped, limited grants through App Connect; a signed responder), drafted for dashpay in `docs/upstream/` (not yet filed) · the D-L gate (a real Dash Wallet sign-in on a device, then a write) is not yet run · 7 green nights in a row (Phase 0), then 14 (launch criterion 4).
-- **Not started:** web file editing · in-repo content search · rebase merges, and 3-way content merges in the browser · a `packMirror` document type (a later contract update).
+- **Not started:** web file editing · in-repo content search · a `packMirror` document type (a later contract update).
 - **Networks:** register forge-v2 on testnet when PV14 reaches it, and move the nightly and a testnet web build there; mainnet after PV14 (Phase 6, D-D, D-J).
 
 Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) §11. Its **P0 backlog is the launch checklist** and supersedes the per-phase bullet lists below where they overlap.

@@ -1181,9 +1181,20 @@ pub struct PrMergeArgs {
     /// Squash the PR's commits into one commit on the base.
     #[arg(long, conflicts_with = "event_only")]
     pub squash: bool,
-    /// The squash commit's message (default: the PR title, body and `Co-authored-by` lines).
-    #[arg(long, requires = "squash")]
+    /// The commit's message: the merge commit's (default: `Merge pull request #<n> from
+    /// <branch>` and the PR title) or, with --squash, the squash commit's (default: the PR title,
+    /// body and `Co-authored-by` lines). A fast-forward writes no commit: pass --no-ff with it.
+    #[arg(long, conflicts_with = "event_only")]
     pub message: Option<String>,
+    /// Always write a merge commit, even when the base could fast-forward to the head
+    /// (`git merge --no-ff`; GitHub's "Create a merge commit").
+    #[arg(long = "no-ff", conflicts_with_all = ["squash", "event_only"])]
+    pub no_ff: bool,
+    /// Rebase the PR's commits onto the base branch and fast-forward it (`git rebase --merge`;
+    /// GitHub's "Rebase and merge"): each commit keeps its author and message and you commit
+    /// it. A head already on the base tip with a linear history is fast-forwarded unchanged.
+    #[arg(long, conflicts_with_all = ["squash", "no_ff", "message", "event_only"])]
+    pub rebase: bool,
     /// Delete the source branch after merging (needs write access to the source repo).
     #[arg(long = "delete-branch", conflicts_with = "event_only")]
     pub delete_branch: bool,

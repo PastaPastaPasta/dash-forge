@@ -79,7 +79,7 @@ The specs read the forge-v2 read fixture (`forge-v2-demo` and `forge-v2-empty` o
 2. **Auth**: key login, password vault, passkey PRF (virtual authenticator), logout clears storage.
 3. **Repo lifecycle**: create (three documents + cost preview), settings, backend switch.
 4. **Issues**: full lifecycle across two browser identities; labels (member); event timeline order; visitor sees updates within poll interval.
-5. ⭐ **Full review flow**: line comment → request changes → re-review → **merge from browser** (fast-forward or a disjoint-path merge commit, by Forge's own merge engine); merged state visible to CLI clone.
+5. ⭐ **Full review flow**: line comment → request changes → re-review → **merge from browser** (fast-forward, or a merge commit with git's three-way line merge, by Forge's own merge engine); merged state visible to CLI clone.
 6. **Browser edit**: CodeMirror edit → commit → push → visible in CLI clone.
 7. **Collaborator UI ↔ CLI parity**: web add member → immediate CLI push; web remove → CLI push fails at consensus (40120).
 8. **checkRun rendering**: CI-RUNNER writes check docs → PR shows status.

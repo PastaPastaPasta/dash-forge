@@ -323,8 +323,7 @@ pub fn flag_tip(args: &[OsString], unknown: &str) -> Option<&'static str> {
     let cmd = leaf(&root, args)?;
     let path = cmd.get_bin_name().unwrap_or_default();
     match (path.ends_with(" pr merge"), unknown) {
-        (true, "--method") => Some("the merge method is a flag: `--squash` for a squash, or none for a merge (fast-forward or merge commit)"),
-        (true, "--rebase") => Some("a rebase merge is not supported: use `--squash`, or none for a merge (fast-forward or merge commit)"),
+        (true, "--method") => Some("the merge method is a flag: `--squash` for a squash, `--rebase` for a rebase, or none for a merge (fast-forward or merge commit)"),
         _ => None,
     }
 }
