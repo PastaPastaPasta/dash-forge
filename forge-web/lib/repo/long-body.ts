@@ -34,14 +34,22 @@ export type LongBodyKind = SealedKind | 'release'
 
 /**
  * How many UTF-8 bytes of text the field holds in `repo`, beside `others` (the document's other
- * text: a title, branch names, a path): 5,120 in a public repo and for release notes; in a private
- * one, what the sealed text limit leaves (`SEALED_TEXT_LIMIT`, which counts every record's
- * framing, so it is at most a few bytes under what the sealer takes).
+ * text: a title, branch names, a path, and an imported document's `imported` author and URL, which
+ * a re-seal keeps): 5,120 in a public repo and for release notes; in a private one, what the sealed
+ * text limit leaves (`SEALED_TEXT_LIMIT`, which counts every record's framing, so it is at most a
+ * few bytes under what the sealer takes). Parity: forge-core `BodyField::room`.
  */
 export function bodyRoom(repo: RepoRef, kind: LongBodyKind, others: Readonly<Record<string, unknown>> = {}): number {
   if (repo.visibility !== 'private' || kind === 'release') return FIELD_MAX
   const rest = Object.fromEntries(Object.entries(others).filter(([k]) => k !== 'body'))
-  return Math.min(FIELD_MAX, Math.max(0, SEALED_TEXT_LIMIT[kind] - sealedTextUse(kind, rest).used))
+  return Math.min(FIELD_MAX, Math.max(0, SEALED_TEXT_LIMIT[kind] - sealedTextUse(kind, rest).used - provenanceBytes(others['imported'])))
+}
+
+/** The sealed records an importer's `imported.author` and `imported.url` take: 3 bytes of tag and length, then the text. */
+function provenanceBytes(imported: unknown): number {
+  if (imported === null || typeof imported !== 'object') return 0
+  const { author, url } = imported as Readonly<Record<string, unknown>>
+  return [author, url].reduce<number>((n, v) => n + (typeof v === 'string' && v !== '' ? 3 + utf8Bytes(v) : 0), 0)
 }
 
 /**

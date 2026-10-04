@@ -108,11 +108,28 @@ export function needsLongBodyArtifact(full: string, room: number): boolean {
 export function longBodyStoredText(full: string, room: number, sha256Hex: string): string | null {
   const bytes = utf8Bytes(full)
   if (bytes === 0 || bytes > LONG_BODY_MAX_BYTES) return null
-  const line = longBodyTrailer(sha256Hex, bytes)
+  return withTrailer(full, longBodyTrailer(sha256Hex, bytes), room)
+}
+
+/**
+ * A stored long body's field (`stored`, a continued one) within `room` bytes, naming the same
+ * artifact: its prefix cut again by {@link fitPrefix} (the trailer alone when none fits). What an
+ * edit of a private document's other text (a longer title) writes when that text leaves the field
+ * less room than it took. `stored` itself when it fits or is not continued; null when `room` cannot
+ * hold the trailer. Parity: forge-core `rules::long_body::refit`.
+ */
+export function refitLongBodyField(stored: string, room: number): string | null {
+  const parsed = parseLongBody(stored)
+  if (parsed.kind !== 'continued' || utf8Bytes(stored) <= room) return stored
+  return withTrailer(parsed.prefix, longBodyTrailer(parsed.sha256, parsed.bytes), room)
+}
+
+/** {@link fitPrefix} of `text` within what `room` leaves after the separator and `line`, then both (`line` alone when no prefix fits); null when `room` cannot hold `line`. */
+function withTrailer(text: string, line: string, room: number): string | null {
   // The trailer is ASCII: its length is its byte length.
   const budget = room - line.length
   if (budget < 0) return null
-  const prefix = budget >= LONG_BODY_SEPARATOR.length ? fitPrefix(full, budget - LONG_BODY_SEPARATOR.length) : ''
+  const prefix = budget >= LONG_BODY_SEPARATOR.length ? fitPrefix(text, budget - LONG_BODY_SEPARATOR.length) : ''
   return prefix === '' ? line : `${prefix}${LONG_BODY_SEPARATOR}${line}`
 }
 

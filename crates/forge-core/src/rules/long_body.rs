@@ -142,11 +142,37 @@ pub fn stored_text(full: &str, room: usize, sha256: &[u8; 32]) -> Option<String>
     if bytes == 0 || bytes > MAX_BYTES {
         return None;
     }
-    let line = trailer(sha256, bytes);
+    with_trailer(full, trailer(sha256, bytes), room)
+}
+
+/// A stored long body's field (`stored`, a [`LongBody::Continued`] one) within `room` bytes,
+/// naming the same artifact: its prefix cut again by [`fit_prefix`] (the trailer alone when
+/// none fits). What an edit of a private document's other text (a longer title) writes when
+/// that text leaves the field less room than it took. `stored` itself when it fits or is not
+/// continued; `None` when `room` cannot hold the trailer.
+#[must_use]
+pub fn refit(stored: &str, room: usize) -> Option<String> {
+    let LongBody::Continued {
+        prefix,
+        sha256,
+        bytes,
+    } = parse(stored)
+    else {
+        return Some(stored.to_string());
+    };
+    if stored.len() <= room {
+        return Some(stored.to_string());
+    }
+    with_trailer(prefix, trailer(&sha256, bytes), room)
+}
+
+/// [`fit_prefix`] of `text` within what `room` leaves after [`SEPARATOR`] and `line`, then the
+/// separator and `line` (`line` alone when no prefix fits); `None` when `room` cannot hold `line`.
+fn with_trailer(text: &str, line: String, room: usize) -> Option<String> {
     let budget = room.checked_sub(line.len())?;
     let prefix = budget
         .checked_sub(SEPARATOR.len())
-        .map_or_else(String::new, |max| fit_prefix(full, max));
+        .map_or_else(String::new, |max| fit_prefix(text, max));
     Some(if prefix.is_empty() {
         line
     } else {
@@ -400,6 +426,31 @@ mod tests {
         assert_eq!(bytes, full.len() as u64);
         assert!(full.starts_with(prefix));
         assert_eq!(stored, format!("{prefix}{SEPARATOR}{}", trailer(&H, bytes)));
+    }
+
+    /// A field cut again for less room keeps naming the same artifact; one that fits, or a
+    /// plain field, is kept as it is.
+    #[test]
+    fn a_field_refits_into_less_room() {
+        let full = "word ".repeat(2000);
+        let stored = stored_text(&full, 5085, &H).unwrap();
+        assert_eq!(refit(&stored, 5085).as_deref(), Some(stored.as_str()));
+        let cut = refit(&stored, 4000).unwrap();
+        assert!(cut.len() <= 4000, "{}", cut.len());
+        let LongBody::Continued {
+            prefix,
+            sha256,
+            bytes,
+        } = parse(&cut)
+        else {
+            panic!("not continued: {cut}");
+        };
+        assert_eq!((sha256, bytes), (H, full.len() as u64));
+        assert!(full.starts_with(prefix));
+        assert_eq!(refit(&stored, 40), None);
+        let line = trailer(&H, full.len() as u64);
+        assert_eq!(refit(&stored, line.len()).as_deref(), Some(line.as_str()));
+        assert_eq!(refit("short", 2).as_deref(), Some("short"));
     }
 
     #[test]

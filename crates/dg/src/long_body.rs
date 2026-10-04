@@ -181,6 +181,23 @@ impl<'f> Planned<'f> {
     }
 }
 
+/// The body a private issue's or PR's edit of its other text alone (a new title) writes:
+/// its stored long body cut again to the room `field` now leaves (`rules::long_body::refit`),
+/// naming the same artifact. `None` when the stored body is kept as it is: a public
+/// repository, a body that still fits, or one that cannot (the edit is then refused as before).
+pub fn refit_kept(
+    repo: &RepoRef,
+    field: BodyField<'_>,
+    imported: Option<&Imported>,
+    stored: &str,
+) -> Option<String> {
+    if repo.visibility != Visibility::Private {
+        return None;
+    }
+    forge_core::rules::long_body::refit(stored, field.room(repo.visibility, imported))
+        .filter(|f| f != stored)
+}
+
 /// The line printed under a text of which only the first part could be read.
 pub fn partial_line(why: &str) -> String {
     format!("[only the first part is shown: {why}]")

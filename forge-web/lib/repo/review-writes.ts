@@ -37,7 +37,8 @@ import { invalidateRepoFeed, readReviews } from './issues'
 import { readMemberships } from './members'
 import { readRunners } from './checks'
 import { sealEdit } from './private-writes'
-import { longBodyField } from './long-body'
+import { bodyRoom, longBodyField } from './long-body'
+import { refitLongBodyField } from '../rules/long-body'
 import { bypassValue } from '../view/pull-actions'
 import { repoSource } from './source'
 import { admitAll, gateFor } from './private-content'
@@ -779,10 +780,16 @@ export async function updateTarget(
     if (input.title.trim() === '') throw new Error('a title is required')
     changes['title'] = input.title
   }
+  const others = { ...(input.seal?.current ?? {}), ...changes, imported: input.seal?.imported }
   if (input.body !== undefined && input.body !== '') {
-    const others = { ...(input.seal?.current ?? {}), ...changes }
     changes['body'] = await longBodyField(sdk, auth, repo, input.type, input.body, others, input.intent)
   } else if (input.body !== undefined) changes['body'] = undefined
+  else if (repo.visibility === 'private' && typeof input.seal?.current['body'] === 'string') {
+    // A longer title leaves a private long body less room: its prefix is cut again (same artifact).
+    const kept = input.seal.current['body']
+    const refit = refitLongBodyField(kept, bodyRoom(repo, input.type, others))
+    if (refit !== null && refit !== kept) changes['body'] = refit
+  }
   if (Object.keys(changes).length === 0) throw new Error('nothing to change')
   return replace(sdk, auth, repo, input.type, input.id, changes, input.expectedRevision, input.seal)
 }

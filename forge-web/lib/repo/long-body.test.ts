@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RepoRef } from './contract'
-import { parseLongBody } from '../rules/long-body'
+import { longBodyStoredText, longBodyTrailer, parseLongBody, refitLongBodyField } from '../rules/long-body'
 
 const role = vi.hoisted(() => ({ value: null as string | null }))
 const stored = vi.hoisted(() => ({
@@ -52,6 +52,26 @@ describe('long bodies, written (forge-v2.md §6.3)', () => {
     expect(bodyRoom(priv, 'release')).toBe(5120)
     expect(isLongBody(pub, 'comment', 'x'.repeat(5120))).toBe(false)
     expect(isLongBody(pub, 'comment', 'x'.repeat(5121))).toBe(true)
+  })
+
+  it("an imported document's provenance takes room beside a private body", () => {
+    expect(bodyRoom(priv, 'issue', { title: 'A title', imported: { author: 'octocat', url: 'https://x' } })).toBe(5085 - 7 - (3 + 7) - (3 + 9))
+    expect(bodyRoom(pub, 'issue', { imported: { author: 'octocat', url: 'https://x' } })).toBe(5120)
+  })
+
+  it('a stored long body is cut again for less room, naming the same artifact', () => {
+    const full = 'word '.repeat(2000)
+    const hash = 'cd'.repeat(32)
+    const kept = longBodyStoredText(full, 5085, hash)!
+    expect(refitLongBodyField(kept, 5085)).toBe(kept)
+    const cut = refitLongBodyField(kept, 4000)!
+    expect(new TextEncoder().encode(cut).length).toBeLessThanOrEqual(4000)
+    const parsed = parseLongBody(cut)
+    expect(parsed.kind === 'continued' && parsed.sha256 === hash && parsed.bytes === 10_000 && full.startsWith(parsed.prefix)).toBe(true)
+    const line = longBodyTrailer(hash, 10_000)
+    expect(refitLongBodyField(kept, line.length)).toBe(line)
+    expect(refitLongBodyField(kept, 40)).toBeNull()
+    expect(refitLongBodyField('short', 2)).toBe('short')
   })
 
   it('prices the field as written and the artifact on Platform (sealed: a little larger)', () => {

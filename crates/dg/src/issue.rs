@@ -1047,7 +1047,8 @@ async fn edit(
             p.field_text(&collab, &s.repo, issue.imported.as_ref())
                 .await?,
         ),
-        None => None,
+        // a longer title leaves a private long body less room: its prefix is cut again
+        None => crate::long_body::refit_kept(&s.repo, field, issue.imported.as_ref(), &issue.body),
     };
     let edited = collab
         .update_target(&s.repo, &target, title, body.as_deref())
@@ -1059,7 +1060,7 @@ async fn edit(
             "status": if edited { "edited" } else { "unchanged" },
             "issue": number,
             "title": title,
-            "bodyChanged": body.is_some(),
+            "bodyChanged": planned.is_some(),
             "cost": cost_json(spent, price),
         }),
         || {

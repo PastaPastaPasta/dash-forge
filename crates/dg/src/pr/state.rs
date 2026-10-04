@@ -120,20 +120,14 @@ pub async fn edit(
     // only the author may edit: refused before a long body's artifact is paid for
     pr.s.collab()
         .require_author(&patch.author, &format!("edit PR #{number}"))?;
+    let field = forge_core::collab::long_body::BodyField::Patch {
+        title: title.unwrap_or(&patch.title),
+        base_ref_name: &patch.base_ref_name,
+        source_ref_name: patch.source_ref_name.as_deref().unwrap_or_default(),
+    };
     let planned = body
         .as_deref()
-        .map(|b| {
-            crate::long_body::Planned::new(
-                &pr.s.repo,
-                forge_core::collab::long_body::BodyField::Patch {
-                    title: title.unwrap_or(&patch.title),
-                    base_ref_name: &patch.base_ref_name,
-                    source_ref_name: patch.source_ref_name.as_deref().unwrap_or_default(),
-                },
-                patch.imported.as_ref(),
-                b,
-            )
-        })
+        .map(|b| crate::long_body::Planned::new(&pr.s.repo, field, patch.imported.as_ref(), b))
         .transpose()?;
     let changed = title.map_or(0, str::len) as u64
         + planned
@@ -166,7 +160,10 @@ pub async fn edit(
             p.field_text(&collab, &pr.s.repo, patch.imported.as_ref())
                 .await?,
         ),
-        None => None,
+        // a longer title leaves a private long body less room: its prefix is cut again
+        None => {
+            crate::long_body::refit_kept(&pr.s.repo, field, patch.imported.as_ref(), &patch.body)
+        }
     };
     let landed = collab
         .update_target(&pr.s.repo, &patch.target(), title, body.as_deref())
@@ -177,7 +174,7 @@ pub async fn edit(
             "pr": number,
             "written": landed,
             "title": title.unwrap_or(&pr.view.patch.title),
-            "bodyChanged": body.is_some(),
+            "bodyChanged": planned.is_some(),
         }),
         || {
             if landed {
