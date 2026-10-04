@@ -52,7 +52,7 @@ export function writeBatched(dir: string, objects: Iterable<GitObject>): void {
     else list.push(file)
   }
   for (const [type, files] of byType) {
-    const r = spawnSync('git', ['hash-object', '-w', '-t', type, '--stdin-paths'], { cwd: dir, input: files.join('\n'), maxBuffer: 1 << 28 })
+    const r = spawnSync('git', ['hash-object', '-w', '--no-filters', '-t', type, '--stdin-paths'], { cwd: dir, input: files.join('\n'), maxBuffer: 1 << 28 })
     if (r.status !== 0) throw new Error(`git hash-object failed: ${r.error?.message ?? r.stderr.toString()}`)
     for (const f of files) rmSync(f)
   }
@@ -136,6 +136,8 @@ export function gitMergeTrees(dir: string, pairs: readonly (readonly [string, st
   if (!HAVE_GIT) return null
   const r = spawnSync('git', ['merge-tree', '--stdin', '--name-only', '--no-messages', '-z'], {
     cwd: dir,
+    // No user configuration: a `merge.renames` or `merge.directoryRenames` would change answers.
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
     input: pairs.map(([o, t]) => `${o} ${t}\n`).join(''),
     maxBuffer: 1 << 26,
   })

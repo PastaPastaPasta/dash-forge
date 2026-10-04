@@ -1446,6 +1446,8 @@ enum Method {
     Merge,
     /// One new commit on the base with the merged tree.
     Squash,
+    /// The PR's commits replayed on the base (`git rebase --merge`), then a fast-forward.
+    Rebase,
 }
 
 impl Method {
@@ -1454,6 +1456,7 @@ impl Method {
         match self {
             Method::Merge => "merge",
             Method::Squash => "squash",
+            Method::Rebase => "rebase",
         }
     }
 }
@@ -1463,6 +1466,8 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let (repo, number, event_only) = (a.repo.as_str(), a.number, a.event_only);
     let method = if a.squash {
         Method::Squash
+    } else if a.rebase {
+        Method::Rebase
     } else {
         Method::Merge
     };
@@ -1483,14 +1488,19 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let merge_oid = event_only
         .then(|| event_only_oid(&view, a.merge_oid.as_deref(), number))
         .transpose()?;
-    // A squash's method is known now; a merge's (fast-forward or merge commit) once planned.
-    let squash_bit = (method == Method::Squash).then_some(METHOD_SQUASH);
+    // A squash's or a rebase's method is known now; a merge's (fast-forward or merge commit)
+    // once planned.
+    let method_bit = match method {
+        Method::Squash => Some(METHOD_SQUASH),
+        Method::Rebase => Some(METHOD_REBASE),
+        Method::Merge => None,
+    };
     let MergeRights { policy, bypassed } = require_merge_rights(
         &s,
         handle,
         &view,
         !event_only,
-        squash_bit,
+        method_bit,
         a.override_policy,
     )
     .await?;
@@ -1521,7 +1531,11 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             // A pull request from a fork: its commits go into the base as a new pack. A squash
             // writes a new commit, uploaded the same way (QW4-046: it was left out). A merge
             // commit is known only once planned: the prompt says new objects come on top.
-            uploads_pack: view.patch.source_repo_id != handle.id() || method == Method::Squash,
+            // --no-ff writes a merge commit whatever the plan; a rebase writes new commits
+            // unless the head is already on the base tip.
+            uploads_pack: view.patch.source_repo_id != handle.id()
+                || method != Method::Merge
+                || a.no_ff,
         })
     };
     // QW3-021: the open issues the description closes ("Fixes #12"), closed after the merge as
@@ -1567,10 +1581,10 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             "Merging PR #{number} of {} into {}{}",
             handle.display(),
             view.patch.base_ref_name,
-            if method == Method::Squash {
-                " (squash)"
-            } else {
-                ""
+            match method {
+                Method::Squash => " (squash)",
+                Method::Rebase => " (rebase)",
+                Method::Merge => "",
             }
         );
     }
@@ -1605,6 +1619,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         let how = MergeHow {
             method,
             message: a.message.as_deref(),
+            no_ff: a.no_ff,
             signer: &s.identity.id(),
             policy: policy.as_ref(),
         };
@@ -1889,8 +1904,10 @@ fn not_passing_words(
 /// What a merge builds.
 struct MergeHow<'a> {
     method: Method,
-    /// `--message` (a squash's commit message).
+    /// `--message`: the merge or squash commit's message (review-parity M2).
     message: Option<&'a str>,
+    /// `--no-ff`: a merge commit even where the base could fast-forward.
+    no_ff: bool,
     /// The signing identity (the commit author when git has no `user.name`).
     signer: &'a str,
     /// The branch policy in force (also under `--override-policy`): its merge methods are
@@ -2183,6 +2200,8 @@ pub const METHOD_FF: u8 = 1;
 pub const METHOD_MERGE: u8 = 2;
 /// A squash.
 pub const METHOD_SQUASH: u8 = 4;
+/// A rebase.
+pub const METHOD_REBASE: u8 = 8;
 
 /// When `policy` requires checks, where the head's checks stand: the newest trusted run per name
 /// decides (`checks_state`, the web merge box's rule too).
@@ -2724,6 +2743,64 @@ pub(crate) fn conflict_error(
     .into()
 }
 
+/// `git rebase` of the PR head onto `base` in `dir`: the tip to push and how it was reached, or
+/// `None` when every commit's change is already in the base (nothing to push).
+fn build_rebase(
+    dir: &Path,
+    handle: &Repo,
+    view: &PatchView,
+    base: &str,
+    committer: &[(String, String)],
+    steps: &mut Steps,
+) -> Result<Option<(String, &'static str)>> {
+    let base_ref = &view.patch.base_ref_name;
+    match git::rebase(dir, base, &view.head, committer)? {
+        git::Rebased::Tip(tip) if tip == view.head => Ok(Some((tip, "fast-forward to"))),
+        git::Rebased::Tip(tip) if tip == base => {
+            steps.ok(
+                "merge",
+                format!("every commit's change is already in {base_ref}; nothing to push"),
+            );
+            Ok(None)
+        }
+        git::Rebased::Tip(tip) => Ok(Some((tip, "rebased; new tip"))),
+        git::Rebased::Stopped { commit, paths } => Err(rebase_conflict_error(
+            handle,
+            view.patch.number,
+            base_ref,
+            &commit,
+            &paths,
+        )),
+    }
+}
+
+/// The E105 for a rebase that stops at `commit` (conflicting in `paths`).
+fn rebase_conflict_error(
+    handle: &Repo,
+    number: u32,
+    base_ref: &str,
+    commit: &str,
+    paths: &[String],
+) -> anyhow::Error {
+    let mut cause = format!("commit {} does not apply cleanly", short(commit));
+    if !paths.is_empty() {
+        cause.push_str(" (conflicts in ");
+        cause.push_str(&paths.join(", "));
+        cause.push(')');
+    }
+    UserError::new(
+        codes::MERGE_CONFLICT,
+        format!("merge failed: PR #{number} does not rebase cleanly onto {base_ref}"),
+    )
+    .cause(cause)
+    .fix(format!(
+        "merge it without --rebase (a merge commit or --squash may still be clean), or `dg pr checkout {} {number}`, rebase it onto {base_ref} and resolve, push it to the PR's branch, then `dg pr sync`",
+        handle.display(),
+    ))
+    .note("nothing was pushed and no merge event was posted")
+    .into()
+}
+
 /// Decide and build the merge in `dir` (holding base and head): the commit to push to the
 /// base, or `None` when the head is already in the base (nothing to push).
 fn build_merge(
@@ -2742,9 +2819,14 @@ fn build_merge(
         base_tip.is_some_and(|b| git::is_ancestor(dir, head, b)),
         base_tip.is_some_and(|b| git::is_ancestor(dir, b, head)),
     );
+    // --no-ff writes a merge commit (the merge-commit method), except onto an empty base, which
+    // has nothing to merge into: the head becomes the branch.
+    let no_ff = how.no_ff && base_tip.is_some();
     let method = match (&plan, how.method) {
         (MergePlan::AlreadyMerged { .. }, _) => None,
         (_, Method::Squash) => Some(METHOD_SQUASH),
+        (_, Method::Rebase) => Some(METHOD_REBASE),
+        (MergePlan::FastForward { .. }, Method::Merge) if no_ff => Some(METHOD_MERGE),
         (MergePlan::FastForward { .. }, Method::Merge) => Some(METHOD_FF),
         (MergePlan::MergeCommit { .. }, Method::Merge) => Some(METHOD_MERGE),
     };
@@ -2800,21 +2882,37 @@ fn build_merge(
             let c = git::commit_tree(dir, &tree, &parents, &message, &author)?;
             (c, "squash commit")
         }
-        (MergePlan::FastForward { oid }, Method::Merge) => (oid.clone(), "fast-forward to"),
+        // Rebase: `git rebase --merge` of the head onto the base tip, as the browser replays it
+        // (forge-web `lib/merge/rebase.ts`, held to git by its parity suite).
+        (_, Method::Rebase) => match base_tip {
+            // An empty base: the head becomes the branch.
+            None => (head.clone(), "fast-forward to"),
+            Some(base) => {
+                let Some(built) = build_rebase(dir, handle, view, base, &author(), steps)? else {
+                    return Ok(None);
+                };
+                built
+            }
+        },
+        (MergePlan::FastForward { oid }, Method::Merge) if !no_ff => {
+            if how.message.is_some() {
+                return Err(crate::errors::usage(format!(
+                    "PR #{} fast-forwards {base_ref}: no commit is written, so --message has nothing to set (add --no-ff to write a merge commit)",
+                    view.patch.number
+                )));
+            }
+            (oid.clone(), "fast-forward to")
+        }
+        // --no-ff onto a base the head descends from: the head's tree, parents base tip then head.
+        (MergePlan::FastForward { oid }, Method::Merge) => {
+            let base = base_tip.unwrap_or_default();
+            let tree = git::git(dir, &["rev-parse", &format!("{oid}^{{tree}}")], &[])?;
+            let message = merge_commit_message(view, how.message);
+            let c = git::commit_tree(dir, &tree, &[base, oid], &message, &author())?;
+            (c, "merge commit (--no-ff)")
+        }
         (MergePlan::MergeCommit { base, head }, Method::Merge) => {
-            // The subject names the PR's source branch by its short name (`feature/x`, not
-            // `refs/heads/feature/x`), matching the browser merge's short-name format
-            // (`forge-web` `lib/merge/engine.ts` `mergeMessage`) and closer to GitHub's
-            // `owner/branch` (Forge has no login to put before the branch).
-            let source = view
-                .patch
-                .source_ref_name
-                .as_deref()
-                .map_or(head.as_str(), forge_core::repo::short_branch_name);
-            let message = format!(
-                "Merge pull request #{} from {}\n\n{}",
-                view.patch.number, source, view.patch.title
-            );
+            let message = merge_commit_message(view, how.message);
             let c = git::merge_commit(dir, base, head, &message, &author())?
                 .ok_or_else(|| conflict(base, head))?;
             (c, "merge commit")
@@ -2822,6 +2920,25 @@ fn build_merge(
     };
     steps.ok("merge", format!("{detail} {}", short(&commit)));
     Ok(Some(commit))
+}
+
+/// The merge commit's message: `--message` as typed (review-parity M2), else the subject naming
+/// the PR's source branch by its short name (`feature/x`, not `refs/heads/feature/x`), matching
+/// the browser merge's format (`forge-web` `lib/merge/engine.ts` `mergeMessage`) and closer to
+/// GitHub's `owner/branch` (Forge has no login to put before the branch), and the PR title.
+fn merge_commit_message(view: &PatchView, message: Option<&str>) -> String {
+    if let Some(m) = message {
+        return m.to_string();
+    }
+    let source = view
+        .patch
+        .source_ref_name
+        .as_deref()
+        .map_or(view.head.as_str(), forge_core::repo::short_branch_name);
+    format!(
+        "Merge pull request #{} from {}\n\n{}",
+        view.patch.number, source, view.patch.title
+    )
 }
 
 /// `Name <email>` of a [`git::merge_author`] environment.
@@ -4113,6 +4230,203 @@ mod tests {
                 "A <a@x>"
             ),
             "T (#1)\n\nCo-authored-by: B <b@x>"
+        );
+    }
+
+    /// A bare scratch repository with commits written by plumbing: `commit(files, parents)`
+    /// returns the oid of a commit whose tree holds `files` (`path`, `content`).
+    struct Scratch(tempfile::TempDir);
+
+    impl Scratch {
+        fn new() -> Self {
+            Self(scratch_repo().unwrap())
+        }
+        fn dir(&self) -> &Path {
+            self.0.path()
+        }
+        fn commit(&self, files: &[(&str, &str)], parents: &[&str]) -> String {
+            let index = tempfile::NamedTempFile::new().unwrap();
+            let env = [(
+                "GIT_INDEX_FILE".to_string(),
+                index.path().to_string_lossy().into_owned(),
+            )];
+            git::git(self.dir(), &["read-tree", "--empty"], &env).unwrap();
+            for (path, content) in files {
+                let oid = git::hash_blob(self.dir(), content.as_bytes()).unwrap();
+                git::git(
+                    self.dir(),
+                    &[
+                        "update-index",
+                        "--add",
+                        "--cacheinfo",
+                        &format!("100644,{oid},{path}"),
+                    ],
+                    &env,
+                )
+                .unwrap();
+            }
+            let tree = git::git(self.dir(), &["write-tree"], &env).unwrap();
+            let who = [
+                ("GIT_AUTHOR_NAME", "A"),
+                ("GIT_AUTHOR_EMAIL", "a@x"),
+                ("GIT_AUTHOR_DATE", "@1700000000 +0000"),
+                ("GIT_COMMITTER_NAME", "A"),
+                ("GIT_COMMITTER_EMAIL", "a@x"),
+                ("GIT_COMMITTER_DATE", "@1700000000 +0000"),
+            ]
+            .map(|(k, v)| (k.to_string(), v.to_string()));
+            git::commit_tree(self.dir(), &tree, parents, "c", &who).unwrap()
+        }
+        fn show(&self, rev: &str, format: &str) -> String {
+            git::git(
+                self.dir(),
+                &["log", "-1", &format!("--format={format}"), rev],
+                &[],
+            )
+            .unwrap()
+        }
+    }
+
+    fn build(s: &Scratch, base: &str, head: &str, how: &MergeHow<'_>) -> Result<Option<String>> {
+        let mut view = view_with("refs/heads/main", head);
+        view.base_tip = Some(base.to_string());
+        build_merge(s.dir(), &dummy_repo(), &view, how, &mut Steps::new(true))
+    }
+
+    /// Review-parity M1 (P1-2): `--rebase` replays the PR's commits on the base with `git rebase`
+    /// (authors and messages kept), fast-forwards a linear head already on the base, skips a
+    /// commit whose change the base already has, refuses a conflict naming the commit and paths,
+    /// and is the rebase method a branch policy is checked against.
+    #[test]
+    fn a_rebase_replays_the_commits_and_refuses_a_conflict() {
+        if !git::git_ok(Path::new("."), &["--version"]) {
+            return;
+        }
+        let s = Scratch::new();
+        let root = s.commit(&[("a.txt", "a\n"), ("b.txt", "b\n")], &[]);
+        let base = s.commit(&[("a.txt", "A\n"), ("b.txt", "b\n")], &[&root]);
+        let one = s.commit(&[("a.txt", "a\n"), ("b.txt", "B\n")], &[&root]);
+        let two = s.commit(
+            &[("a.txt", "a\n"), ("b.txt", "B\n"), ("c.txt", "c\n")],
+            &[&one],
+        );
+        let how = MergeHow {
+            method: Method::Rebase,
+            message: None,
+            no_ff: false,
+            signer: "signer-identity-id",
+            policy: None,
+        };
+        let tip = build(&s, &base, &two, &how).unwrap().unwrap();
+        assert_ne!(tip, two);
+        assert_eq!(s.show(&format!("{tip}~2"), "%H"), base);
+        assert_eq!(s.show(&tip, "%an <%ae> %B"), "A <a@x> c");
+        let files = git::git(s.dir(), &["ls-tree", "--name-only", &tip], &[]).unwrap();
+        assert_eq!(files, "a.txt\nb.txt\nc.txt");
+        assert_eq!(
+            git::git(s.dir(), &["show", &format!("{tip}:a.txt")], &[]).unwrap(),
+            "A"
+        );
+
+        // A linear head already on the base tip: fast-forwarded unchanged.
+        let ahead = s.commit(&[("a.txt", "A\n"), ("b.txt", "B\n")], &[&base]);
+        assert_eq!(build(&s, &base, &ahead, &how).unwrap(), Some(ahead.clone()));
+
+        // The base already made the same change: git skips that commit (by patch-id).
+        let other = s.commit(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("e", "")], &[&root]);
+        let dup = s.commit(&[("a.txt", "A\n"), ("b.txt", "b\n"), ("e", "")], &[&other]);
+        let tip = build(&s, &base, &dup, &how).unwrap().unwrap();
+        assert_eq!(s.show(&format!("{tip}~1"), "%H"), base);
+
+        // A conflict: refused, naming the commit and the path.
+        let clash = s.commit(&[("a.txt", "x\n"), ("b.txt", "b\n")], &[&root]);
+        let err = format!("{:#}", build(&s, &base, &clash, &how).unwrap_err());
+        assert!(err.contains("does not rebase cleanly"), "{err}");
+        let cause = format!("{:?}", build(&s, &base, &clash, &how).unwrap_err());
+        assert!(
+            cause.contains("a.txt") && cause.contains(&clash[..7]),
+            "{cause}"
+        );
+
+        // The rebase method (8): a policy allowing merge commits only refuses it.
+        let merges_only = policy(0, false, METHOD_MERGE);
+        let refused = build(
+            &s,
+            &base,
+            &two,
+            &MergeHow {
+                policy: Some(&merges_only),
+                ..how
+            },
+        )
+        .unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("merge method"),
+            "{refused:#}"
+        );
+    }
+
+    /// Review-parity M2: `--message` sets the merge commit's message (as the browser's merge box
+    /// does), `--no-ff` writes a merge commit where the base could fast-forward, and `--message`
+    /// on a fast-forward (which writes no commit) is refused rather than dropped.
+    #[test]
+    fn the_merge_commit_message_is_editable_and_no_ff_writes_one() {
+        if !git::git_ok(Path::new("."), &["--version"]) {
+            return;
+        }
+        let s = Scratch::new();
+        let root = s.commit(&[("a.txt", "a\n"), ("b.txt", "b\n")], &[]);
+        let base = s.commit(&[("a.txt", "A\n"), ("b.txt", "b\n")], &[&root]);
+        let head = s.commit(&[("a.txt", "a\n"), ("b.txt", "B\n")], &[&root]);
+        let how = |message, no_ff| MergeHow {
+            method: Method::Merge,
+            message,
+            no_ff,
+            signer: "signer-identity-id",
+            policy: None,
+        };
+        let c = build(&s, &base, &head, &how(None, false)).unwrap().unwrap();
+        assert_eq!(s.show(&c, "%B"), "Merge pull request #1 from f\n\nt");
+        let c = build(
+            &s,
+            &base,
+            &head,
+            &how(Some("Ship it\n\nwith a body"), false),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(s.show(&c, "%B"), "Ship it\n\nwith a body");
+        assert_eq!(s.show(&c, "%P"), format!("{base} {head}"));
+
+        // A head that descends from the base: a fast-forward, unless --no-ff.
+        let ahead = s.commit(&[("a.txt", "A\n"), ("b.txt", "B\n")], &[&base]);
+        assert_eq!(
+            build(&s, &base, &ahead, &how(None, false)).unwrap(),
+            Some(ahead.clone())
+        );
+        let err = build(&s, &base, &ahead, &how(Some("m"), false)).unwrap_err();
+        assert!(format!("{err:#}").contains("--no-ff"), "{err:#}");
+        let c = build(&s, &base, &ahead, &how(Some("m"), true))
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.show(&c, "%P"), format!("{base} {ahead}"));
+        assert_eq!(s.show(&c, "%T"), s.show(&ahead, "%T"));
+        assert_eq!(s.show(&c, "%B"), "m");
+        // --no-ff is the merge-commit method: a policy allowing fast-forwards only refuses it.
+        let ff_only = policy(0, false, METHOD_FF);
+        let refused = build(
+            &s,
+            &base,
+            &ahead,
+            &MergeHow {
+                policy: Some(&ff_only),
+                ..how(None, true)
+            },
+        )
+        .unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("merge method"),
+            "{refused:#}"
         );
     }
 

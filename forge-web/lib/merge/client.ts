@@ -4,6 +4,7 @@
  * terminated when the call settles.
  */
 
+import { ObjectTooLargeError } from '../browse'
 import type { ObjectReader } from '../view/tree-nav'
 import type { MergeCheckResult, MergeInput } from './engine'
 import type { FromWorker, MergeResult, ToWorker } from './protocol'
@@ -42,9 +43,15 @@ function withWorker<T>(
       const m = e.data
       if (m.type === 'read') {
         if (signal?.aborted) return
-        reader.readObject(m.oid).then(
+        reader.readObject(m.oid, m.maxBytes !== undefined ? { maxBytes: m.maxBytes } : undefined).then(
           (object) => send({ type: 'object', req: m.req, object }),
-          (err: unknown) => send({ type: 'object', req: m.req, error: err instanceof Error ? err.message : String(err) }),
+          (err: unknown) =>
+            send({
+              type: 'object',
+              req: m.req,
+              error: err instanceof Error ? err.message : String(err),
+              ...(err instanceof ObjectTooLargeError ? { tooLarge: { size: err.size, max: err.maxBytes } } : {}),
+            }),
         )
         return
       }

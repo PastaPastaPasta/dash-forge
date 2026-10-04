@@ -8,7 +8,12 @@
  *
  * `changed[i]` marks record `i` of a file as changed (deleted from the old file, or added to the
  * new one). It is mutated in place, as xdiff does. Records are lines with their terminators.
+ *
+ * Merges compact differently ({@link CompactOptions}): `merge-ort` passes no indent heuristic, and
+ * its histogram diff re-diffs a group that grew while sliding.
  */
+
+import { xdiffChanges } from './xdiff.ts'
 
 /** A contiguous run of changed records `[start, end)` (possibly empty). */
 interface Group {
@@ -83,6 +88,11 @@ class CompactFile {
       return true
     }
     return false
+  }
+
+  /** Overwrite the marks of records `[start, start + marks.length)` (xdl_fall_back_diff's copy). */
+  setRange(start: number, marks: Uint8Array): void {
+    for (let i = 0; i < marks.length; i++) this.set(start + i, marks[i] ? 1 : 0)
   }
 
   /** The final marks. */
@@ -183,12 +193,27 @@ function scoreCmp(a: SplitScore, b: SplitScore): number {
   return INDENT_WEIGHT * cmpIndents + (a.penalty - b.penalty)
 }
 
-/** xdl_change_compact(xdf, xdfo, XDF_INDENT_HEURISTIC). */
-function changeCompact(f: CompactFile, o: CompactFile): void {
+/** How `xdl_change_compact` runs: its flags. */
+export interface CompactOptions {
+  /** `XDF_INDENT_HEURISTIC` (`diff.indentHeuristic`, on for `git diff` and blame; merges pass none). Default true. */
+  readonly indentHeuristic?: boolean
+  /**
+   * `XDF_HISTOGRAM_DIFF`: a group that moved while sliding, facing a non-empty group of the other
+   * file, is re-diffed with Myers (`xdl_fall_back_diff`) and its marks replaced. Default false.
+   */
+  readonly histogram?: boolean
+}
+
+/** No bound on the Myers re-diff of one group (xdiff has none; its own cost heuristics bound it). */
+const NO_LIMITS = { maxEdits: Infinity, maxWork: Infinity }
+
+/** xdl_change_compact(xdf, xdfo, flags). */
+function changeCompact(f: CompactFile, o: CompactFile, opts: CompactOptions): void {
   const g = f.first()
   const go = o.first()
   for (;;) {
     if (g.end !== g.start) {
+      const orig = { start: g.start, end: g.end }
       let groupsize: number
       let earliestEnd: number
       let endMatchingOther: number
@@ -214,7 +239,7 @@ function changeCompact(f: CompactFile, o: CompactFile): void {
           if (!f.slideUp(g)) throw new Error('xdiff compaction: match disappeared')
           if (!o.previous(go)) throw new Error('xdiff compaction: group sync broken sliding to match')
         }
-      } else {
+      } else if (opts.indentHeuristic !== false) {
         let shift = earliestEnd
         if (g.end - groupsize - 1 > shift) shift = g.end - groupsize - 1
         if (g.end - INDENT_HEURISTIC_MAX_SLIDING > shift) shift = g.end - INDENT_HEURISTIC_MAX_SLIDING
@@ -234,6 +259,13 @@ function changeCompact(f: CompactFile, o: CompactFile): void {
           if (!o.previous(go)) throw new Error('xdiff compaction: group sync broken sliding to blank line')
         }
       }
+      // A group merged with others while sliding may now hold lines both files share.
+      if (opts.histogram === true && go.end !== go.start && (g.start !== orig.start || g.end !== orig.end)) {
+        const sub = xdiffChanges(f.recs.slice(g.start, g.end), o.recs.slice(go.start, go.end), NO_LIMITS)
+        if (sub === null) throw new Error('xdiff compaction: an unbounded re-diff gave up')
+        f.setRange(g.start, sub.oldChanged)
+        o.setRange(go.start, sub.newChanged)
+      }
     }
     if (!f.next(g)) break
     if (!o.next(go)) throw new Error('xdiff compaction: group sync broken moving to next group')
@@ -249,10 +281,11 @@ export function compactChanges(
   newRecs: readonly string[],
   oldChanged: ArrayLike<number | boolean>,
   newChanged: ArrayLike<number | boolean>,
+  opts: CompactOptions = {},
 ): { readonly oldChanged: Uint8Array; readonly newChanged: Uint8Array } {
   const a = new CompactFile(oldRecs, oldChanged)
   const b = new CompactFile(newRecs, newChanged)
-  changeCompact(a, b)
-  changeCompact(b, a)
+  changeCompact(a, b, opts)
+  changeCompact(b, a, opts)
   return { oldChanged: a.marks(), newChanged: b.marks() }
 }

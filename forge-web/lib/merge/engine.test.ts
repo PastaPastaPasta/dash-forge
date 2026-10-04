@@ -185,21 +185,59 @@ describe('merge engine', () => {
   })
 })
 
-describe('only disjoint changes merge; file contents are never merged', () => {
-  it('a file both sides edited is a conflict, even on lines far apart', async () => {
+describe("three-way merges: disjoint paths, and a file's lines as git merges them (QW3-016)", () => {
+  /** The merge's tree, read back from its pack. */
+  const mergedTree = async (s: Store, base: string, head: string): Promise<string> => {
+    const out = await runMerge(s.reader(), input(base, head))
+    if (out.kind !== 'merge') throw new Error(out.kind)
+    const { reader } = await readBack(out.pack)
+    return parseCommit((await reader.readObject(out.newTip)).bytes).tree
+  }
+
+  it('a file both sides edited on lines far apart merges line by line', async () => {
     const s = new Store()
     const root = s.commit(s.files({ 'a.txt': 'one\ntwo\nthree\n', 'k.txt': 'k\n' }))
     const base = s.commit(s.files({ 'a.txt': 'ONE\ntwo\nthree\n', 'k.txt': 'k\n' }), [root])
     const head = s.commit(s.files({ 'a.txt': 'one\ntwo\nTHREE\n', 'k.txt': 'k\n' }), [root])
-    expect(await runMerge(s.reader(), input(base, head))).toEqual({ kind: 'conflict', paths: ['a.txt'] })
+    expect(await checkMerge(s.reader(), input(base, head))).toBe('merge')
+    expect(await mergedTree(s, base, head)).toBe(new Store().files({ 'a.txt': 'ONE\ntwo\nTHREE\n', 'k.txt': 'k\n' }))
   })
 
-  it('the same change on both sides is still a path both touched', async () => {
+  it('edits to the same lines, or to lines next to each other, are a conflict', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ 'a.txt': 'one\ntwo\nthree\n' }))
+    const base = s.commit(s.files({ 'a.txt': 'ONE\ntwo\nthree\n' }), [root])
+    expect(await runMerge(s.reader(), input(base, s.commit(s.files({ 'a.txt': 'uno\ntwo\nthree\n' }), [root])))).toEqual({ kind: 'conflict', paths: ['a.txt'] })
+    expect(await runMerge(s.reader(), input(base, s.commit(s.files({ 'a.txt': 'one\nTWO\nthree\n' }), [root])))).toEqual({ kind: 'conflict', paths: ['a.txt'] })
+  })
+
+  it('the same change on both sides is taken, as git takes it', async () => {
     const s = new Store()
     const root = s.commit(s.files({ 'a.txt': 'a\n', 'b.txt': 'b\n', 'c.txt': 'c\n' }))
     const base = s.commit(s.files({ 'a.txt': 'A\n', 'b.txt': 'B\n', 'c.txt': 'c\n' }), [root])
     const head = s.commit(s.files({ 'a.txt': 'A\n', 'b.txt': 'b\n', 'c.txt': 'C\n' }), [root])
-    expect(await runMerge(s.reader(), input(base, head))).toEqual({ kind: 'conflict', paths: ['a.txt'] })
+    expect(await mergedTree(s, base, head)).toBe(new Store().files({ 'a.txt': 'A\n', 'b.txt': 'B\n', 'c.txt': 'C\n' }))
+  })
+
+  it('a text file over 2 MiB both sides changed is left to git, read no further than the limit', async () => {
+    const s = new Store()
+    const big = (first: string, last: string): string => `${first}\n${'line\n'.repeat(450_000)}${last}\n`
+    const root = s.commit(s.files({ 'big.txt': big('a', 'z') }))
+    const base = s.commit(s.files({ 'big.txt': big('A', 'z') }), [root])
+    const head = s.commit(s.files({ 'big.txt': big('a', 'Z') }), [root])
+    const bounded: number[] = []
+    const reader = s.reader()
+    const watched = { readObject: (oid: string, o?: { maxBytes?: number }) => (o?.maxBytes !== undefined && bounded.push(o.maxBytes), reader.readObject(oid)) }
+    expect(await runMerge(watched, input(base, head))).toEqual({ kind: 'conflict', paths: ['big.txt'] })
+    expect(bounded).toEqual([2 * 1024 * 1024, 2 * 1024 * 1024, 2 * 1024 * 1024])
+  })
+
+  it('a file added on both sides with different contents is a conflict', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ k: 'k\n' }))
+    const base = s.commit(s.files({ k: 'k\n', 'n.txt': 'x\n' }), [root])
+    const head = s.commit(s.files({ k: 'k\n', 'n.txt': 'y\n' }), [root])
+    expect(await runMerge(s.reader(), input(base, head))).toEqual({ kind: 'conflict', paths: ['n.txt'] })
   })
 
   it('a directory one side removed and the other changed inside, or replaced by a file', async () => {

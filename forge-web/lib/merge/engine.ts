@@ -1,15 +1,18 @@
 /**
  * The browser merge engine (`ux-dx-spec.md` §5.7): given the base branch's tip and a PR head,
- * decide how the PR merges and build the pack that makes it so. The browser never merges file
- * contents:
+ * decide how the PR merges and build the pack that makes it so:
  *
  *  - **Fast-forward** when the head descends from the base tip: the new tip is the head.
- *  - A **merge commit** only when the two sides changed disjoint sets of paths since their one
- *    merge base ({@link mergeTrees}): each path takes the side that changed it. Anything else —
- *    a path, or an ancestor or descendant of it, touched by both sides; a criss-cross history
- *    with more than one merge base — is refused as "overlapping", and `dg pr merge` does it.
- *    The merge commit is authored and committed by the merger, message
- *    `Merge pull request #<n> from <source>`.
+ *  - A **merge commit** when the two sides merge cleanly from their one merge base
+ *    ({@link mergeTrees}): each path takes the side that changed it, and a text file both sides
+ *    changed is merged line by line as git does (`merge3.ts`, QW3-016), byte for byte git's
+ *    result. Whatever git would conflict on — and the few things only git merges (renames, a
+ *    directory one side removed, a criss-cross history with more than one merge base) — is
+ *    refused as a conflict, and `dg pr merge` does it. The merge commit is authored and
+ *    committed by the merger, message `Merge pull request #<n> from <source>` (or the
+ *    merger's own, review-parity M2).
+ *  - A **rebase** (`rebase.ts`): the PR's commits replayed on the base tip as `git rebase`
+ *    replays them, each authored as before and committed by the merger.
  *  - The **pack**: every object reachable from the new tip that the base repo does not hold,
  *    as a non-thin pack (see `objects.ts`, `pack-writer.ts`).
  *
@@ -19,13 +22,15 @@
  * Web Worker and in tests.
  */
 
-import { gitOidHex, MODE_TREE, type GitObject } from '../browse'
-import { checkCommit, checkTree, MalformedObjectError, MAX_TREE_DEPTH, parseCommit, parseTree, serializeTree, treeTooDeep, type TreeEntry } from '../view/git-objects'
+import { gitOidHex, MODE_TREE, ObjectTooLargeError, type GitObject } from '../browse'
+import { checkCommit, checkTree, MalformedObjectError, MAX_TREE_DEPTH, parseCommit, parseTree, serializeTree, specialFileName, treeTooDeep, type TreeEntry } from '../view/git-objects'
 import { branchName, plural } from '../view/format'
 import { findMergeBases, MergeBaseSearchLimitError } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
 import { isLegalRefName } from '../rules'
 import { newCommits, objectsToPack, UnsupportedChangeError, WalkLimitError } from './objects'
+import { merge3, MERGE3_MAX_BYTES } from './merge3'
+import { rebaseCommits } from './rebase'
 import { writePack } from './pack-writer'
 import type { PackEstimate } from '../storage/merge-choice'
 
@@ -49,6 +54,11 @@ export interface MergeInput {
   readonly sourceLabel: string
   /** The PR title, the message body. */
   readonly title?: string
+  /**
+   * The merge commit's message as the merger edited it (review-parity M2, `dg pr merge --message`);
+   * absent: {@link mergeMessage}. Written as `git commit-tree -m` writes it ({@link commitMessage}).
+   */
+  readonly message?: string
   readonly author: MergeIdentity
   /**
    * Whether the head's objects are already in the base repo's packs (a same-repo PR): then
@@ -70,14 +80,24 @@ export interface MergeInput {
    * head, instead of a fast-forward. Ignored with {@link squash}, and on an empty base.
    */
   readonly noFastForward?: true
+  /**
+   * Rebase and merge (review-parity M1, `dg pr merge --rebase`): the PR's commits replayed on the
+   * base tip ({@link rebaseCommits}), authors kept, the merger ({@link MergeInput.author})
+   * committing each. A head on the base tip with a linear history fast-forwards, as git leaves
+   * it. Ignored with {@link squash}.
+   */
+  readonly rebase?: true
 }
 
 /** A merge the engine can make, before its pack is built. */
 export type MergePlan =
   | { readonly kind: 'fast-forward'; readonly newTip: string }
   | { readonly kind: 'merge'; readonly mergeBase: string }
-  /** Both sides touched the same paths (or the history has several merge bases): `paths` says where, when known. */
-  | { readonly kind: 'conflict'; readonly paths: readonly string[] }
+  /**
+   * git would conflict, or only git merges it (renames, a moved directory, binary or very large
+   * files; or the history has several merge bases): `paths` says where, when known.
+   */
+  | { readonly kind: 'conflict'; readonly paths: readonly string[]; readonly reason?: string }
   /** A commit or tree fsck would refuse, or a change only the CLI merges: nothing is merged in the browser. */
   | { readonly kind: 'malformed'; readonly reason: string }
   /** Past a walk or read limit: too large to merge in a tab. */
@@ -87,7 +107,7 @@ export type MergePlan =
 
 /** A merge ready to push. */
 export interface MergeOutcome {
-  readonly kind: 'fast-forward' | 'merge' | 'squash'
+  readonly kind: 'fast-forward' | 'merge' | 'squash' | 'rebase'
   readonly newTip: string
   readonly pack: Uint8Array
   readonly packHash: string
@@ -141,19 +161,34 @@ const same = (a: Entry | undefined, b: Entry | undefined): boolean => a?.mode ==
 /** A merged directory with nothing left in it. */
 const EMPTY = Symbol('empty tree')
 
+/** A regular file's mode (`100644` or `100755`): the only entries whose contents merge. */
+const isRegular = (e: Entry | undefined): e is Entry => e !== undefined && (e.mode === 0o100644 || e.mode === 0o100755)
+
 /**
- * The tree a merge of two disjoint sides makes, over `reader`: `ours` and `theirs` as changed
- * from `base` (root tree oids). Walked name by name:
+ * The tree a three-way merge makes, over `reader`: `ours` and `theirs` as changed from `base`
+ * (root tree oids), as `merge-ort` merges them where it needs no rename detection. Walked name
+ * by name:
  *
  *  - unchanged on a side → the other side's entry (a deletion included);
- *  - changed on both → both must be directories (or new on both as directories), merged the
- *    same way one level down; anything else — the same file changed twice, even identically;
- *    a file on one side where the other changed the directory it replaced, or anything under
- *    a directory the other side removed entirely — is a conflict at that path.
+ *  - changed on both → directories on both sides (or new on both as directories) merge the same
+ *    way one level down; a file (any non-directory) in all three that both sides changed the same
+ *    way is taken (ort's "sides match"); a regular file in all three that both changed is merged:
+ *    its mode as ort merges modes (a side that kept the base's mode takes the other's), its
+ *    contents line by line ({@link merge3}) unless a side kept the base's blob. Anything else —
+ *    a file added on both sides, a symlink or submodule changed differently, a file on one side
+ *    where the other changed the directory it replaced, anything under a directory one side
+ *    removed entirely (a directory rename, to git), a delete on one side and a change on the
+ *    other (perhaps a rename), two changed directories that came out identical, lines that
+ *    conflict, a binary or very large file — is a conflict at that path.
+ *  - Contents are merged only where no `.gitattributes` sits in the path's directory or above it
+ *    in any of the three trees: a merge driver (`merge=union`, `binary`, `-merge`) would change
+ *    git's answer.
  *
- * A merged directory left with no entries (each side deleted different files of it) is dropped
- * from its parent, as git does; an empty root is written as the empty tree. Returns the merged
- * root oid and the trees it wrote (bytes as git writes them), or the conflicting paths.
+ * Whatever this merges, `git merge-tree --write-tree` merges cleanly to the identical tree (the
+ * git-parity suite); whatever git conflicts on, this refuses. A merged directory left with no
+ * entries (each side deleted different files of it) is dropped from its parent, as git does; an
+ * empty root is written as the empty tree. Returns the merged root oid and the trees and blobs
+ * it wrote (bytes as git writes them), or the conflicting paths.
  */
 export async function mergeTrees(
   reader: ObjectReader,
@@ -169,23 +204,64 @@ export async function mergeTrees(
     if (obj.type !== 'tree') throw new MalformedObjectError(oid, `a ${obj.type} where a tree was expected`)
     return new Map(parseTree(obj.bytes).map((e) => [e.name, { mode: e.mode, oid: e.oid }]))
   }
+  // A blob over merge3's limit is refused on its first bytes, not downloaded whole (null).
+  const blob = async (oid: string): Promise<Uint8Array | null> => {
+    const obj = await reader.readObject(oid, { maxBytes: MERGE3_MAX_BYTES }).catch((e: unknown) => {
+      if (e instanceof ObjectTooLargeError) return null
+      throw e
+    })
+    if (obj === null) return null
+    if (obj.type !== 'blob') throw new MalformedObjectError(oid, `a ${obj.type} where a file was expected`)
+    return obj.bytes.length > MERGE3_MAX_BYTES ? null : obj.bytes
+  }
+  /** A text merge's three sides when all three changed, read together. */
+  const contentSides = (bb: Entry | undefined, oo: Entry | undefined, tt: Entry | undefined): [string, string, string] | null =>
+    isRegular(bb) && isRegular(oo) && isRegular(tt) && oo.oid !== tt.oid && oo.oid !== bb.oid && tt.oid !== bb.oid ? [bb.oid, oo.oid, tt.oid] : null
   const isTree = (e: Entry | undefined): e is Entry => e !== undefined && e.mode === MODE_TREE
   const conflict = (prefix: string): null => {
     conflicts.push(prefix === '' ? '/' : prefix.slice(0, -1))
     return null
   }
+  /** A file in all three that both sides changed: the merged entry, or null for a conflict. */
+  const mergeFile = async (bb: Entry, oo: Entry, tt: Entry, attributes: boolean, blobs: Map<string, Promise<Uint8Array | null>>): Promise<Entry | null> => {
+    // ort's "sides match": the same change on both sides.
+    if (same(oo, tt)) return oo
+    if (!isRegular(bb) || !isRegular(oo) || !isRegular(tt)) return null
+    // `handle_content_merge`'s mode merge (with only the two regular modes it is always clean).
+    const mode = oo.mode === tt.mode || oo.mode === bb.mode ? tt.mode : oo.mode
+    if (oo.oid === tt.oid || oo.oid === bb.oid) return { mode, oid: tt.oid }
+    if (tt.oid === bb.oid) return { mode, oid: oo.oid }
+    if (attributes) return null
+    const [b, o, t] = await Promise.all([bb.oid, oo.oid, tt.oid].map((oid) => blobs.get(oid) ?? blob(oid)))
+    if (b == null || o == null || t == null) return null
+    const merged = merge3(b, o, t)
+    if (merged.kind !== 'clean') return null
+    written.push({ type: 'blob', bytes: merged.bytes })
+    return { mode, oid: gitOidHex('blob', merged.bytes) }
+  }
   // Returns the merged tree's oid, EMPTY when the merge leaves it with no entries, or null
-  // once a conflict was recorded at or below `prefix`.
-  const walk = async (b: string | undefined, o: string, t: string, prefix: string, depth: number): Promise<string | typeof EMPTY | null> => {
+  // once a conflict was recorded at or below `prefix`. `attributesAbove`: a `.gitattributes`
+  // in a directory above this one (in any of the three trees).
+  const walk = async (b: string | undefined, o: string, t: string, prefix: string, depth: number, attributesAbove: boolean): Promise<string | typeof EMPTY | null> => {
     if (b === o) return t
     if (b === t) return o
-    // The same change on both sides is still a path both touched.
+    // Two directories changed into the same tree: ort may still detect renames under them.
     if (o === t) return conflict(prefix)
     if (depth > MAX_TREE_DEPTH) throw treeTooDeep(o)
     const [be, oe, te] = await Promise.all([entries(b), entries(o), entries(t)])
     // A side that emptied this directory removed every entry of it: whatever the other side
     // changed here overlaps (git would call it a directory rename or a delete/modify).
     if (oe.size === 0 || te.size === 0) return conflict(prefix)
+    const attributes = attributesAbove || [be, oe, te].some((m) => [...m.keys()].some((n) => specialFileName(n) === 'gitattributes'))
+    // Every file here both sides changed is read at once, not one round trip after another.
+    const blobs = new Map<string, Promise<Uint8Array | null>>()
+    if (!attributes) {
+      for (const name of oe.keys()) {
+        for (const oid of contentSides(be.get(name), oe.get(name), te.get(name)) ?? []) if (!blobs.has(oid)) blobs.set(oid, blob(oid))
+      }
+      // A refused read surfaces where the merge reads it, not as an unhandled rejection.
+      for (const p of blobs.values()) p.catch(() => undefined)
+    }
     const out: TreeEntry[] = []
     let clean = true
     for (const name of new Set([...be.keys(), ...oe.keys(), ...te.keys()])) {
@@ -195,7 +271,7 @@ export async function mergeTrees(
       if (same(oo, bb)) pick = tt
       else if (same(tt, bb)) pick = oo
       else if (isTree(oo) && isTree(tt) && (bb === undefined || isTree(bb))) {
-        const sub = await walk(bb?.oid, oo.oid, tt.oid, `${path}/`, depth + 1)
+        const sub = await walk(bb?.oid, oo.oid, tt.oid, `${path}/`, depth + 1, attributes)
         if (sub === null) {
           clean = false
           continue
@@ -204,9 +280,13 @@ export async function mergeTrees(
         if (sub === EMPTY) continue
         pick = { mode: MODE_TREE, oid: sub }
       } else {
-        conflicts.push(path)
-        clean = false
-        continue
+        const file = bb !== undefined && oo !== undefined && tt !== undefined && !isTree(bb) && !isTree(oo) && !isTree(tt) ? await mergeFile(bb, oo, tt, attributes, blobs) : null
+        if (file === null) {
+          conflicts.push(path)
+          clean = false
+          continue
+        }
+        pick = file
       }
       if (pick !== undefined) out.push({ name, ...pick })
     }
@@ -219,7 +299,7 @@ export async function mergeTrees(
     written.push({ type: 'tree', bytes })
     return oid
   }
-  const root = await walk(base, ours, theirs, '', 0)
+  const root = await walk(base, ours, theirs, '', 0, false)
   if (root === null) return { kind: 'conflict', paths: conflicts }
   if (root === EMPTY) {
     const bytes = new Uint8Array(0)
@@ -236,7 +316,7 @@ export async function mergeTrees(
 const STRICT_IDENT = /^[^<>\n]* <[^<>\n]*> (0|[1-9]\d{0,17}) [+-]\d{4}$/
 
 /** `Name <email> <seconds> <±hhmm>` for a git commit header. */
-function identLine(who: MergeIdentity): string {
+export function identLine(who: MergeIdentity): string {
   const when = who.timestamp ?? Math.floor(Date.now() / 1000)
   // The offset in force at that moment (daylight saving differs across the year).
   const offset = who.timezoneOffset ?? new Date(when * 1000).getTimezoneOffset()
@@ -347,15 +427,24 @@ export function squashCommitBytes(tree: string, input: MergeInput): Uint8Array {
   const by = input.squash?.author
   const author = by === undefined ? committer : identLine({ ...at, name: by.name, email: by.email })
   const parents = input.baseTip === '' ? '' : `parent ${input.baseTip}\n`
-  const message = (input.squash?.message ?? '').replace(/\0/g, '')
-  return new TextEncoder().encode(`tree ${tree}\n${parents}author ${author}\ncommitter ${committer}\n\n${message.endsWith('\n') ? message : `${message}\n`}`)
+  return new TextEncoder().encode(`tree ${tree}\n${parents}author ${author}\ncommitter ${committer}\n\n${commitMessage(input.squash?.message ?? '')}`)
 }
 
 /** The merge commit's bytes: the merged tree, parents base tip then head, the merger as author and committer. */
 export function mergeCommitBytes(tree: string, input: MergeInput): Uint8Array {
   const ident = identLine(input.author)
-  const text = `tree ${tree}\nparent ${input.baseTip}\nparent ${input.headOid}\nauthor ${ident}\ncommitter ${ident}\n\n${mergeMessage(input.prNumber, input.sourceLabel, input.title)}`
+  const message = input.message !== undefined ? commitMessage(input.message) : mergeMessage(input.prNumber, input.sourceLabel, input.title)
+  const text = `tree ${tree}\nparent ${input.baseTip}\nparent ${input.headOid}\nauthor ${ident}\ncommitter ${ident}\n\n${message}`
   return new TextEncoder().encode(text)
+}
+
+/**
+ * A message the merger typed, as `git commit-tree -m` (what `dg pr merge --message` runs) writes
+ * it: NULs dropped (git refuses them), a final newline added when missing.
+ */
+export function commitMessage(raw: string): string {
+  const message = raw.replace(/\0/g, '')
+  return message.endsWith('\n') ? message : `${message}\n`
 }
 
 /** `reader` with some objects added in memory (what the merge wrote). */
@@ -365,7 +454,7 @@ function withObjects(reader: ObjectReader, objects: readonly GitObject[]): Objec
 }
 
 /** The merge commit over `reader`, with every object it created, or the conflicting paths. */
-export async function disjointMerge(
+export async function threeWayMerge(
   reader: ObjectReader,
   input: MergeInput,
   mergeBase: string,
@@ -401,10 +490,10 @@ export function strictReader(reader: ObjectReader, budget = MERGE_READ_BUDGET): 
   // exactly what its check did. The walks' own caps bound repeated visits.
   const seen = new Set<string>()
   return {
-    readObject: async (oid) => {
+    readObject: async (oid, options) => {
       seen.add(oid)
       if (seen.size > budget) throw new ReadBudgetError(budget)
-      const obj = await reader.readObject(oid)
+      const obj = await reader.readObject(oid, options)
       if (obj.type === 'commit') checkCommit(oid, obj.bytes)
       else if (obj.type === 'tree') checkTree(oid, obj.bytes)
       return obj
@@ -420,6 +509,8 @@ export type MergeCheck = MergePlan['kind']
 export interface MergeCheckResult {
   readonly check: MergeCheck
   readonly conflictPaths: readonly string[]
+  /** Why it cannot merge, when the kind does not say it (a rebase's refusals, a malformed or too-large history); else null. */
+  readonly reason: string | null
   /**
    * An upper bound on the pack the merge will store: its objects' raw bytes (a pack is zlib-
    * compressed, so never larger in practice) plus the pack framing, and its object count. The
@@ -445,9 +536,12 @@ export function packSizeBound(objects: readonly { readonly bytes: Uint8Array }[]
 /** {@link checkMerge} with the conflicting paths (the merge box lists them, review-parity F7). */
 export async function checkMergeDetailed(raw: ObjectReader, input: MergeInput, budget = MERGE_READ_BUDGET): Promise<MergeCheckResult> {
   const out = await refusing(() => build(strictReader(raw, budget), input, false))
-  if (out.kind === 'checked') return { check: out.check, conflictPaths: [], packEstimate: out.packEstimate }
-  if (out.kind === 'squash' || out.kind === 'fast-forward' || out.kind === 'merge') return { check: out.kind === 'squash' ? 'merge' : out.kind, conflictPaths: [], packEstimate: { bytes: out.pack.length, objectCount: out.objectCount } }
-  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [], packEstimate: null }
+  if (out.kind === 'checked') return { check: out.check, conflictPaths: [], reason: null, packEstimate: out.packEstimate }
+  if (out.kind === 'squash' || out.kind === 'rebase' || out.kind === 'fast-forward' || out.kind === 'merge') {
+    return { check: out.kind === 'fast-forward' ? 'fast-forward' : 'merge', conflictPaths: [], reason: null, packEstimate: { bytes: out.pack.length, objectCount: out.objectCount } }
+  }
+  const reason = out.kind === 'conflict' || out.kind === 'malformed' || out.kind === 'too-large' ? (out.reason ?? null) : null
+  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [], reason, packEstimate: null }
 }
 
 /**
@@ -491,9 +585,20 @@ async function build(
   if (plan.kind === 'up-to-date' || plan.kind === 'unrelated' || plan.kind === 'conflict') return plan
   let tip: string
   let source = reader
-  // What the base gains: a fast-forward, unless --no-ff makes it a merge commit.
-  let kind: 'fast-forward' | 'merge' = plan.kind
-  if (input.squash !== undefined) {
+  // What the base gains: a fast-forward, unless --no-ff makes it a merge commit (or a rebase
+  // rewrites the PR's commits).
+  let kind: 'fast-forward' | 'merge' | 'rebase' = plan.kind
+  if (input.rebase === true && input.squash === undefined && input.baseTip !== '') {
+    onProgress?.('merge')
+    const rebased = await rebaseCommits(reader, input.baseTip, input.headOid, plan.kind === 'merge' ? plan.mergeBase : null, identLine(input.author), mergeTrees)
+    if (rebased.kind === 'conflict') return rebased
+    if (rebased.kind === 'fast-forward') tip = input.headOid
+    else {
+      tip = rebased.tip
+      source = rebased.reader
+      kind = 'rebase'
+    }
+  } else if (input.squash !== undefined) {
     // One commit on the base tip with the merged tree (the head's own when it descends).
     onProgress?.('merge')
     let tree: string
@@ -523,7 +628,7 @@ async function build(
     kind = 'merge'
   } else {
     onProgress?.('merge')
-    const merged = await disjointMerge(reader, input, plan.mergeBase)
+    const merged = await threeWayMerge(reader, input, plan.mergeBase)
     if (merged.kind === 'conflict') return merged
     tip = merged.oid
     source = merged.reader
@@ -536,11 +641,11 @@ async function build(
   let objects = await objectsToPack(source, await newCommits(source, tip, baseHave))
   // The check sizes what it walked: at least what the merge packs (a same-repo head's history is
   // then left out of the pack), so an upper bound.
-  if (!pack) return { kind: 'checked', check: kind, packEstimate: { bytes: packSizeBound(objects), objectCount: objects.length } }
-  // A squash commit's only parent is the base tip: nothing of the head's history is pushed.
-  // What the base repo's packs already hold is not packed again: for a same-repo PR the head's
-  // history (a fast-forward to it packs nothing).
-  if (input.headInBase && input.squash === undefined) objects = await objectsToPack(source, await newCommits(source, tip, [...baseHave, input.headOid]))
+  if (!pack) return { kind: 'checked', check: kind === 'fast-forward' ? 'fast-forward' : 'merge', packEstimate: { bytes: packSizeBound(objects), objectCount: objects.length } }
+  // A squash commit's only parent is the base tip, and a rebase's commits are new: nothing of the
+  // head's history is pushed. What the base repo's packs already hold is not packed again: for a
+  // same-repo PR the head's history (a fast-forward to it packs nothing).
+  if (input.headInBase && input.squash === undefined && kind !== 'rebase') objects = await objectsToPack(source, await newCommits(source, tip, [...baseHave, input.headOid]))
   const built = writePack(objects)
   onProgress?.('pack', plural(built.objectCount, 'object'))
   return { kind: input.squash !== undefined ? 'squash' : kind, newTip: tip, pack: built.bytes, packHash: built.packHash, objectCount: built.objectCount }
