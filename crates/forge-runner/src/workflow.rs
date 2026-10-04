@@ -131,8 +131,10 @@ pub enum Facts<'a> {
     Push(PushFacts<'a>),
     /// A pull request was opened, its head moved, it was reopened or marked ready.
     PullRequest(PullFacts<'a>),
-    /// A `schedule` entry's time came: the workflows that list this cron expression run.
-    Schedule(&'a str),
+    /// A `schedule` entry's time came: the workflows that list this cron expression run, except
+    /// those that list one of `earlier` (due in the same poll and run with that one already), so
+    /// a workflow runs once a poll however many of its expressions are due.
+    Schedule(&'a str, &'a [String]),
 }
 
 impl Facts<'_> {
@@ -141,9 +143,10 @@ impl Facts<'_> {
         match self {
             Facts::Push(p) => runs_on_push(on, p),
             Facts::PullRequest(p) => runs_on_pull_request(on, p),
-            Facts::Schedule(cron) => {
-                let cron = normal_cron(cron);
-                schedule_crons(on).iter().any(|c| normal_cron(c) == cron)
+            Facts::Schedule(cron, earlier) => {
+                let listed: Vec<String> =
+                    schedule_crons(on).iter().map(|c| normal_cron(c)).collect();
+                listed.contains(&normal_cron(cron)) && !earlier.iter().any(|e| listed.contains(e))
             }
         }
     }
@@ -790,12 +793,16 @@ jobs:
             on("on:\n  schedule:\n    - cron: '0  3 * * *'\n    - cron: '*/5 * * * *'\n  push:");
         assert_eq!(schedule_crons(&nightly), ["0  3 * * *", "*/5 * * * *"]);
         assert!(
-            Facts::Schedule("0 3 * * *").runs(&nightly),
+            Facts::Schedule("0 3 * * *", &[]).runs(&nightly),
             "spacing does not matter"
         );
-        assert!(Facts::Schedule("*/5 * * * *").runs(&nightly));
-        assert!(!Facts::Schedule("0 4 * * *").runs(&nightly));
-        assert!(!Facts::Schedule("0 3 * * *").runs(&on("on: push")));
+        assert!(Facts::Schedule("*/5 * * * *", &[]).runs(&nightly));
+        assert!(
+            !Facts::Schedule("*/5 * * * *", &["0 3 * * *".into()]).runs(&nightly),
+            "it ran for an earlier expression due in the same poll"
+        );
+        assert!(!Facts::Schedule("0 4 * * *", &[]).runs(&nightly));
+        assert!(!Facts::Schedule("0 3 * * *", &[]).runs(&on("on: push")));
         assert!(
             schedule_crons(&on("on: [push, schedule]")).is_empty(),
             "a bare schedule lists no time"

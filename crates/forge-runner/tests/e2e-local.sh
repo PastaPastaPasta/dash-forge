@@ -26,9 +26,11 @@
 #      branch; a re-poll runs nothing again.
 #  10. A request for every check covers a named one beside it; one whose PR could not be read
 #      runs nothing and is tried again on the next poll.
-#  11. `schedule = true`: a cron expression of the default branch whose time came runs once, as
-#      `schedule` on the branch's tip, its checks named `(schedule)` and the job seeing the cron;
-#      an invalid expression is logged, never run.
+#  11. `schedule = true`: the cron expressions of the default branch whose time came run its
+#      workflow once, as `schedule` on the branch's tip (github.ref the branch), its checks named
+#      `(schedule)` and the job seeing the cron; an invalid expression is logged, never run; an
+#      expression runs at most every five minutes; a HEAD that is not the default branch runs
+#      no schedule.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -61,6 +63,7 @@ case " $* " in
   *" pr view "*) [[ -e "$FAKE_VIEW_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
                 python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
   *" ci reruns "*) cat "$FAKE_RERUNS" 2>/dev/null || echo '{"requests":[]}'; exit 0 ;;
+  *" repo view "*) cat "$FAKE_REPO" 2>/dev/null || echo '{"defaultBranch":"main"}'; exit 0 ;;
   *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}],"roles":true,"ownerId":"OWNER"}'; exit 0 ;;
 esac
 python3 - "$@" >>"$FAKE_DG_LOG" <<'PY'
@@ -88,6 +91,7 @@ export FAKE_DG_LOG="$W/reports.jsonl"; : >"$FAKE_DG_LOG"
 export FAKE_PRS="$W/prs.json"
 export FAKE_RERUNS="$W/reruns.json"
 export FAKE_VIEW_FAILS="$W/view-fails"
+export FAKE_REPO="$W/repo.json"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
@@ -367,14 +371,16 @@ name: nightly
 on:
   schedule:
     - cron: '* * * * *'
+    - cron: '*/1  * * * *'
     - cron: '0 0 1 1 *'
     - cron: '61 * * * *'
 jobs:
   sweep:
     runs-on: ubuntu-latest
     steps:
-      - run: node -e 'console.log("cron=[" + require(process.env.GITHUB_EVENT_PATH).schedule + "] event=" + process.env.GITHUB_EVENT_NAME)'
+      - run: node -e 'console.log("cron=[" + require(process.env.GITHUB_EVENT_PATH).schedule + "] event=" + process.env.GITHUB_EVENT_NAME + " ref=" + process.env.GITHUB_REF)'
 EOF
+echo '{"defaultBranch":"sched"}' >"$FAKE_REPO"
 git -C "$R" add -A; git -C "$R" commit -qm nightly
 SCHED=$(git -C "$R" rev-parse HEAD)
 poll   # the push runs nothing (no push workflow); the tip's expressions are read
@@ -385,7 +391,16 @@ python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['schedule_si
 : >"$FAKE_DG_LOG"
 poll
 check "the cron whose time came ran once, on the default branch's tip" test "$(q "[(r['name'], r['sha'], r['conclusion']) for r in rs if r['status']=='completed']")" = "[('nightly / sweep (schedule)', '$SCHED', 'success')]"
-check "…as schedule, seeing the cron" test "$(q "'cron=[* * * * *] event=schedule' in [r for r in rs if r['status']=='completed'][0]['log_text']")" = True
+check "…as schedule on the branch, seeing the cron" test "$(q "'cron=[* * * * *] event=schedule ref=refs/heads/sched' in [r for r in rs if r['status']=='completed'][0]['log_text']")" = True
+sched_back() { python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['schedule_since']-=180000; json.dump(d,open(p,'w'))" "$W/state/repos/e2e__app.json"; }
+sched_back; : >"$FAKE_DG_LOG"; poll
+check "an expression runs at most every five minutes" test ! -s "$FAKE_DG_LOG"
+# HEAD names a branch that is not the default one (the helper's fallback when it is missing).
+echo '{"defaultBranch":"gone"}' >"$FAKE_REPO"
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['schedule_ran']={}; d['schedule_tip']=None; json.dump(d,open(p,'w'))" "$W/state/repos/e2e__app.json"
+sched_back; : >"$FAKE_DG_LOG"; poll
+check "a HEAD that is not the default branch runs no schedule" test ! -s "$FAKE_DG_LOG"
+check "…and says so" grep -q "the default branch gone is missing; no schedule runs" "$W/runner.log"
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 

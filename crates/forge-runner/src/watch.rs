@@ -201,12 +201,17 @@ pub struct RepoState {
     /// `None` until the first poll with `schedule = true`, which runs nothing.
     #[serde(default)]
     pub schedule_since: Option<u64>,
-    /// The default branch's tip whose expressions [`Self::schedule_crons`] holds.
+    /// The default branch and its tip (`<ref> <oid>`) whose expressions
+    /// [`Self::schedule_crons`] holds.
     #[serde(default)]
     pub schedule_tip: Option<String>,
-    /// That tip's valid `on.schedule` expressions, each with the workflow file listing it.
+    /// That tip's valid `on.schedule` expressions, normalized, once each. Empty when the
+    /// `HEAD` the listing named is not the repository's default branch.
     #[serde(default)]
-    pub schedule_crons: Vec<(String, String)>,
+    pub schedule_crons: Vec<String>,
+    /// When each expression last ran (ms): one runs at most every five minutes, as on GitHub.
+    #[serde(default)]
+    pub schedule_ran: BTreeMap<String, u64>,
 }
 
 impl RepoState {

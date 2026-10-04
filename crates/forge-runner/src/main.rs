@@ -417,9 +417,10 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
 
 /// The `schedule` half of a poll (`schedule = true`): run, on the default branch's tip, each
 /// `on.schedule` cron expression whose time came since the last poll (UTC), once however many
-/// of its times passed, as `schedule` with checks named `… (schedule)`. The expressions are read
-/// from the tip once per tip. The first poll only records the time; a missed time is not run
-/// later, and a run that fails is not repeated (as on GitHub).
+/// of its times passed and at most every [`SCHEDULE_MIN_MS`], as `schedule` with checks named
+/// `… (schedule)`; a workflow listing several due expressions runs once. The expressions are
+/// read from the tip once per tip. The first poll only records the time; a missed time is not
+/// run later, and a run that fails is not repeated (as on GitHub).
 fn poll_schedule(
     cfg: &Config,
     repo: &config::RepoConfig,
@@ -432,6 +433,7 @@ fn poll_schedule(
             state.schedule_since = None;
             state.schedule_tip = None;
             state.schedule_crons.clear();
+            state.schedule_ran.clear();
             state.save(path)?;
         }
         return Ok(());
@@ -449,33 +451,54 @@ fn poll_schedule(
         state.schedule_since = Some(now);
         return state.save(path);
     };
-    if state.schedule_tip.as_deref() != Some(tip.as_str()) {
-        // Read once per tip; a failed read is tried again at the next poll (the window stays).
-        let crons = locked(cfg, repo, |_| run::scheduled_crons(cfg, repo, refname, tip))?;
-        state.schedule_crons = crons
-            .into_iter()
-            .filter(|(c, file)| match cron::Cron::parse(c) {
-                Ok(_) => true,
-                Err(e) => {
-                    eprintln!(
+    let at = format!("{refname} {tip}");
+    if state.schedule_tip.as_deref() != Some(at.as_str()) {
+        // Once per branch and tip; a failed read is tried again at the next poll (the window
+        // stays). `HEAD` names the first branch when the default one is missing: check it.
+        let default = run::default_branch_name(cfg, repo)?;
+        state.schedule_crons = if refname.strip_prefix("refs/heads/") == Some(default.as_str()) {
+            let mut crons: Vec<String> = Vec::new();
+            for (c, file) in locked(cfg, repo, |_| run::scheduled_crons(cfg, repo, refname, tip))? {
+                match cron::Cron::parse(&c) {
+                    Ok(_) => crons.push(workflow::normal_cron(&c)),
+                    Err(e) => eprintln!(
                         "forge-runner: {} {file}: schedule {c:?} not run: {e}",
                         repo.repo
-                    );
-                    false
+                    ),
                 }
-            })
-            .collect();
-        state.schedule_tip = Some(tip.clone());
+            }
+            crons.sort();
+            crons.dedup();
+            crons
+        } else {
+            eprintln!(
+                "forge-runner: {}: the default branch {default} is missing; no schedule runs",
+                repo.repo
+            );
+            Vec::new()
+        };
+        state.schedule_tip = Some(at);
     }
-    let due: std::collections::BTreeSet<String> = state
+    let due: Vec<String> = state
         .schedule_crons
         .iter()
-        .filter(|(c, _)| cron::Cron::parse(c).is_ok_and(|c| c.fires_in(since, now)))
-        .map(|(c, _)| workflow::normal_cron(c))
+        .filter(|c| {
+            state
+                .schedule_ran
+                .get(*c)
+                .is_none_or(|t| now.saturating_sub(*t) >= SCHEDULE_MIN_MS)
+        })
+        .filter(|c| cron::Cron::parse(c).is_ok_and(|c| c.fires_in(since, now)))
+        .cloned()
         .collect();
     state.schedule_since = Some(now);
+    let listed = state.schedule_crons.clone();
+    state.schedule_ran.retain(|c, _| listed.contains(c));
+    for c in &due {
+        state.schedule_ran.insert(c.clone(), now);
+    }
     state.save(path)?;
-    for cron in due {
+    for (i, cron) in due.iter().enumerate() {
         eprintln!(
             "forge-runner: {} schedule {cron:?} → {} at {}",
             repo.repo,
@@ -488,7 +511,8 @@ fn poll_schedule(
                 oid: tip.clone(),
                 before: None,
             },
-            cron,
+            cron: cron.clone(),
+            earlier: due[..i].to_vec(),
         };
         if let Err(e) = run_locked(cfg, repo, &trig, &run::RunOpts::default()) {
             eprintln!("forge-runner: {} {}: {e:#}", repo.repo, trig.label());
@@ -496,6 +520,9 @@ fn poll_schedule(
     }
     Ok(())
 }
+
+/// The shortest interval a cron expression runs at (ms): five minutes, GitHub's limit.
+const SCHEDULE_MIN_MS: u64 = 5 * 60 * 1000;
 
 /// The pull-request half of a poll: list the newest [`PULL_LIMIT`] PRs, and run each one that
 /// was opened, reopened, marked ready or whose head moved since the last poll, as the

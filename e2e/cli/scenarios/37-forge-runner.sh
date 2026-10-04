@@ -151,8 +151,12 @@ check "a newer completed run of the check, by the runner" \
 check "…not the first one" test "$(jq_py "$LOG-st2.json" "[c['documentId'] for c in d['checks'] if c['name']=='$CHECK'][0]")" != "$FIRST_ID"
 check "…its summary names who asked" assert_contains \
   "$(jq_py "$LOG-st2.json" "[c['summary'] for c in d['checks'] if c['name']=='$CHECK'][0]")" "re-run requested by ${E2E_OWNER_ID}"
-poll again || true
-check "a poll after it runs nothing" bash -c "! grep -q ' = queued' '$LOG-again.log'"
+if poll again; then
+  check "a poll after it runs nothing" bash -c "! grep -q ' = queued' '$LOG-again.log'"
+else
+  cat "$LOG-again.log" >&2
+  bad "the poll after the re-run failed"
+fi
 
 step "5. clean-up: close the PR, revoke the runner, disable its key"
 dg_as "$ID_OWNER" --yes --json pr close "$REPO" "$PR" >"$LOG-close.json" 2>"$LOG-close.err" \

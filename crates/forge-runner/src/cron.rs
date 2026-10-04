@@ -110,8 +110,8 @@ fn field(text: &str, lo: u64, hi: u64, names: &[&str]) -> Result<u64, String> {
             (value(a)?, value(b)?)
         } else {
             let a = value(range)?;
-            // `a/n` runs from a to the end, as in POSIX cron.
-            (a, if step > 1 { hi } else { a })
+            // `a/n` runs from a to the end, as in vixie cron (and GitHub).
+            (a, if item.contains('/') { hi } else { a })
         };
         if a > b {
             return Err(format!("{range:?} runs backwards"));
@@ -177,6 +177,11 @@ mod tests {
         assert!(!named.matches(at(2026, 8, 1, 0, 0)), "not August");
         let sunday7 = Cron::parse("0 12 * * 7").unwrap();
         assert!(sunday7.matches(at(2026, 10, 4, 12, 0)), "7 is Sunday");
+        let one = Cron::parse("5/1 * * * *").unwrap();
+        assert!(
+            one.matches(at(2026, 1, 1, 0, 6)),
+            "a/1 runs from a to the end"
+        );
         let stepped = Cron::parse("5/20 * * * *").unwrap();
         assert!(stepped.matches(at(2026, 1, 1, 0, 45)) && !stepped.matches(at(2026, 1, 1, 0, 0)));
         let list = Cron::parse("0 9-17/4,23 * * *").unwrap();
