@@ -55,6 +55,8 @@ export async function mergeFacts(sides: DiffSides, input: MergeCheckInput, searc
     const facts: MergeFacts = { headOid, mergeOid, tipBefore, mergeParents, headInMerge }
     if (tipBefore === '' || headInMerge === true) return facts
     const tipBeforeInMerge = await contains(walk.reader, mergeOid, tipBefore, search)
+    // Not built on the base: no tree comparison can make it a squash or a rebase.
+    if (tipBeforeInMerge === false) return { ...facts, tipBeforeInMerge }
     const mergeBase = await findMergeBase(walk.reader, tipBefore, headOid, search).catch(() => null)
     const base: DiffSides = { base: sides.base, head: sides.base }
     const [mergeChange, prChange, baseChange] = await Promise.all([

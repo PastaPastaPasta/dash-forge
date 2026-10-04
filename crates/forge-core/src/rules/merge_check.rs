@@ -88,10 +88,12 @@ impl MergeContent {
     }
 }
 
-/// Whether the merge's change is the PR's change. `Ok(Some(combined))` when the merge changes
-/// exactly the paths the PR changes, each to the PR's blob or, where the base changed that path
-/// too, to any blob (git combined both sides; those paths are `combined`). `Ok(None)` when it
-/// does not. `Err(())` when a fact needed to decide could not be read.
+/// Whether the merge's change is the PR's change. `Ok(Some(combined))` when it is: the merge
+/// changes no path the PR leaves alone, and each path the PR changes ends with the PR's blob, or
+/// the base changed that path too (git combined both sides, or the base already held the PR's
+/// change, which the merge then leaves as it is). The combined paths are those where the merge's
+/// blob is not the PR's. `Ok(None)` when it is not; `Err(())` when a fact needed to decide could
+/// not be read.
 fn same_changes(f: &MergeFacts) -> Result<Option<Vec<String>>, ()> {
     if f.tip_before.is_empty() || f.tip_before_in_merge == Some(false) {
         return Ok(None);
@@ -101,24 +103,32 @@ fn same_changes(f: &MergeFacts) -> Result<Option<Vec<String>>, ()> {
     else {
         return Err(());
     };
-    if merge.len() != pr.len() || merge.keys().any(|p| !pr.contains_key(p)) {
+    if merge.keys().any(|p| !pr.contains_key(p)) {
         return Ok(None);
     }
-    let differing: Vec<String> = merge
+    let differing: Vec<&String> = pr
         .iter()
-        .filter(|(path, blob)| pr.get(*path) != Some(blob))
-        .map(|(path, _)| path.clone())
+        .filter(|(path, blob)| merge.get(*path) != Some(blob))
+        .map(|(path, _)| path)
         .collect();
     if differing.is_empty() {
-        return Ok(Some(differing));
+        return Ok(Some(Vec::new()));
     }
     let Some(base) = &f.base_change else {
         return Err(());
     };
-    Ok(differing
-        .iter()
-        .all(|p| base.contains_key(p))
-        .then_some(differing))
+    if !differing.iter().all(|p| base.contains_key(*p)) {
+        return Ok(None);
+    }
+    // A path the base already changed exactly as the PR does, left alone by the merge, is the
+    // PR's change already on the base: not combined.
+    Ok(Some(
+        differing
+            .into_iter()
+            .filter(|p| !(merge.get(*p).is_none() && base.get(*p) == pr.get(*p)))
+            .cloned()
+            .collect(),
+    ))
 }
 
 /// Label a recorded merge from git facts (see [`MergeFacts`]):

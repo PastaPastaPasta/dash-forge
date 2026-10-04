@@ -1140,7 +1140,7 @@ async fn view(
     let unresolved = conv.threads.iter().filter(|t| !t.resolved).count();
     // Merge integrity: whether the recorded merge contains the PR, checked here only when the
     // current repository already holds the commits (`dg pr verify` fetches them).
-    let merge_check = v.merge_oid().filter(|_| v.state.merged).map(|oid| {
+    let merge_check = verify::checkable_merge(&v).map(|oid| {
         let local = std::env::current_dir()
             .ok()
             .filter(|d| verify::has_merge_objects(d, &v))
@@ -2212,25 +2212,25 @@ fn require_merge_contains_pr(ctx: &Ctx, handle: &Repo, view: &PatchView, oid: &s
         return Ok(());
     }
     let number = view.patch.number;
-    let scratch = scratch_with_pr(ctx, handle, view)?;
+    let scratch = verify::scratch_for_check(ctx, handle, view, &view.head)?;
     let facts = verify::merge_facts(scratch.path(), &view.head, oid, &view.tip_before(oid));
-    let content = merge_content(&facts);
-    let cause = match content.verdict {
+    let (headline, cause) = match merge_content(&facts).verdict {
         MergeVerdict::Contains | MergeVerdict::Squash | MergeVerdict::Rebase => return Ok(()),
-        MergeVerdict::Missing => format!(
-            "{} {}: the PR head {} is not in it, and it does not make the PR's changes",
-            short(oid),
-            verify::verdict_words(&content),
-            short(&view.head)
+        MergeVerdict::Missing => (
+            format!("{} does not contain PR #{number}", short(oid)),
+            format!(
+                "the PR head {} is not in it, and it does not make the PR's changes",
+                short(&view.head)
+            ),
         ),
-        MergeVerdict::Unknown => format!(
-            "whether {} contains PR #{number} could not be checked: its commits could not be read",
-            short(oid)
+        MergeVerdict::Unknown => (
+            format!("could not check that {} contains PR #{number}", short(oid)),
+            "the commits needed for the check could not be fetched".to_string(),
         ),
     };
     Err(UserError::new(
         codes::USAGE,
-        format!("merge event not posted: {} does not contain PR #{number}", short(oid)),
+        format!("merge event not posted: {headline}"),
     )
     .cause(cause)
     .fix(format!(

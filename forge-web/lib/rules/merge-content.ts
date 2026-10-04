@@ -10,6 +10,7 @@
  * (it cannot read git objects), so it stays a reader rule.
  */
 
+import { compareStrings } from './oid'
 import type { HeadUpdate } from './review'
 
 /** A tree-level change: each changed path and the blob it ends with (`''` when deleted). */
@@ -45,14 +46,11 @@ export interface MergeContent {
   readonly combined: readonly string[]
 }
 
-/** Code-point order, as Rust's `BTreeMap`. */
-function byCodePoint(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0
-}
-
 /**
- * Whether the merge's change is the PR's: the combined paths when it is, `null` when it is not,
- * `'unread'` when a fact needed to decide is missing.
+ * Whether the merge's change is the PR's: the merge changes no path the PR leaves alone, and each
+ * path the PR changes ends with the PR's blob or the base changed it too (git combined both sides,
+ * or the base already held the PR's change). The combined paths when it is, `null` when it is
+ * not, `'unread'` when a fact needed to decide is missing. Parity: forge-core `same_changes`.
  */
 function sameChanges(f: MergeFacts): string[] | null | 'unread' {
   const tipBefore = f.tipBefore ?? ''
@@ -60,13 +58,16 @@ function sameChanges(f: MergeFacts): string[] | null | 'unread' {
   const merge = f.mergeChange ?? null
   const pr = f.prChange ?? null
   if (f.tipBeforeInMerge !== true || merge === null || pr === null) return 'unread'
-  const paths = Object.keys(merge)
-  if (paths.length !== Object.keys(pr).length || paths.some((p) => !Object.hasOwn(pr, p))) return null
-  const differing = paths.filter((p) => pr[p] !== merge[p]).sort(byCodePoint)
+  if (Object.keys(merge).some((p) => !Object.hasOwn(pr, p))) return null
+  const differing = Object.keys(pr)
+    .filter((p) => !Object.hasOwn(merge, p) || merge[p] !== pr[p])
+    .sort(compareStrings)
   if (differing.length === 0) return differing
   const base = f.baseChange ?? null
   if (base === null) return 'unread'
-  return differing.every((p) => Object.hasOwn(base, p)) ? differing : null
+  if (!differing.every((p) => Object.hasOwn(base, p))) return null
+  // The PR's change already on the base, left alone by the merge: not combined.
+  return differing.filter((p) => Object.hasOwn(merge, p) || base[p] !== pr[p])
 }
 
 /**

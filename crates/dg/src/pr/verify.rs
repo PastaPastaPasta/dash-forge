@@ -13,6 +13,7 @@ use forge_core::collab::v2::PatchView;
 use forge_core::rules::merge_check::{
     head_at, merge_content, MergeContent, MergeFacts, MergeVerdict, TreeChange,
 };
+use forge_core::scope::RepoRef as Repo;
 use serde_json::json;
 
 use crate::common::Reader;
@@ -20,13 +21,31 @@ use crate::context::Ctx;
 use crate::fmt::short;
 use crate::git;
 
-/// `git merge-base --is-ancestor a b`: `Some(true)`/`Some(false)` from its exit code, `None` when
-/// it could not answer (an object is missing).
+/// `git merge-base --is-ancestor a b`: `Some(true)` (exit 0) or `Some(false)` (exit 1), `None`
+/// when it could not answer: an object is missing, the walk failed, or the repository is shallow
+/// (a walk that stops at the shallow boundary would say "no" for a commit it never reached).
 fn ancestor(dir: &Path, a: &str, b: &str) -> Option<bool> {
     if !git::has_object(dir, a) || !git::has_object(dir, b) {
         return None;
     }
-    Some(git::is_ancestor(dir, a, b))
+    let code = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(["merge-base", "--is-ancestor", a, b])
+        .output()
+        .ok()?
+        .status
+        .code();
+    match code {
+        Some(0) => Some(true),
+        Some(1) if !shallow(dir) => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether `dir` is a shallow clone.
+fn shallow(dir: &Path) -> bool {
+    git::git(dir, &["rev-parse", "--is-shallow-repository"], &[])
+        .map_or(true, |o| o.trim() != "false")
 }
 
 /// The tree-level change `a` → `b` (`git diff-tree -r --no-renames`): each changed path and its
@@ -80,6 +99,10 @@ pub(crate) fn merge_facts(dir: &Path, head: &str, merge_oid: &str, tip_before: &
         return f;
     }
     f.tip_before_in_merge = ancestor(dir, tip_before, merge_oid);
+    if f.tip_before_in_merge == Some(false) {
+        // Not built on the base: no tree comparison can make it a squash or a rebase.
+        return f;
+    }
     f.merge_change = tree_change(dir, tip_before, merge_oid);
     if let Ok(mb) = git::git(dir, &["merge-base", head, tip_before], &[]) {
         f.pr_change = tree_change(dir, &mb, head);
@@ -88,22 +111,78 @@ pub(crate) fn merge_facts(dir: &Path, head: &str, merge_oid: &str, tip_before: &
     f
 }
 
-/// The verdict on `view`'s recorded merge (`None` when it is not merged or names no commit),
-/// from `dir`'s repository: the head as it was at the merge, the base tip the merge built on.
+/// The PR head when it was merged, when it is merged.
+fn merged_head(view: &PatchView) -> Option<String> {
+    Some(head_at(
+        &view.review,
+        &view.patch.head_oid,
+        view.merged_at()?,
+    ))
+}
+
+/// The merge `view` records, when there is one to check: merged, naming a commit, and that commit
+/// a tip the base held (one that never was is labelled "merge commit not found on the base"
+/// instead, as the web does).
+pub(crate) fn checkable_merge(view: &PatchView) -> Option<String> {
+    view.merge_oid()
+        .filter(|_| view.state.merged && view.state.merge_on_base != Some(false))
+}
+
+/// The verdict on `view`'s recorded merge (`None` when there is none to check), from `dir`'s
+/// repository: the head as it was at the merge, the base tip the merge built on.
 pub(crate) fn merged_content(dir: &Path, view: &PatchView) -> Option<MergeContent> {
-    let merge_oid = view.merge_oid()?;
-    let head = head_at(&view.review, &view.patch.head_oid, view.merged_at()?);
+    let merge_oid = checkable_merge(view)?;
+    let head = merged_head(view)?;
     let facts = merge_facts(dir, &head, &merge_oid, &view.tip_before(&merge_oid));
     Some(merge_content(&facts))
 }
 
-/// Whether `dir` is a git repository holding both the merge commit and the head: then
+/// Whether `dir` is a git repository holding both the merge commit and the merged head: then
 /// [`merged_content`] needs no fetch.
 pub(crate) fn has_merge_objects(dir: &Path, view: &PatchView) -> bool {
-    let Some(merge_oid) = view.merge_oid() else {
-        return false;
-    };
-    git::has_object(dir, &merge_oid) && git::has_object(dir, &view.head)
+    match (checkable_merge(view), merged_head(view)) {
+        (Some(merge_oid), Some(head)) => {
+            git::has_object(dir, &merge_oid) && git::has_object(dir, &head)
+        }
+        _ => false,
+    }
+}
+
+/// A scratch repository for checking a merge of `view` naming `merge_oid` into its base: the
+/// base's history (every branch of the repository when the base has been deleted since; packs
+/// are whole, so the old tips come with them) and `head` from the PR's source repository. A head
+/// that cannot be fetched (its branch deleted or force-pushed away) is left out: a merge that
+/// contains it brings it with the base, and otherwise the check says it could not be read.
+pub(crate) fn scratch_for_check(
+    ctx: &Ctx,
+    handle: &Repo,
+    view: &PatchView,
+    head: &str,
+) -> Result<tempfile::TempDir> {
+    super::require_git_safe(view)?;
+    let scratch = super::scratch_repo()?;
+    let dir = scratch.path();
+    let private = handle.visibility == forge_core::rules::v2::Visibility::Private;
+    let env = super::read_env(ctx, private)?;
+    if view.base_tip.is_some() {
+        super::fetch_base(dir, handle, &view.merge_base.ref_name, &env)?;
+    } else {
+        // Best effort: a repository with no branch left has nothing to fetch.
+        let _ = git::git_dash(
+            dir,
+            &[
+                "fetch",
+                "-q",
+                &format!("dash://{}", handle.id()),
+                "+refs/heads/*:refs/remotes/target/*",
+            ],
+            &env,
+        );
+    }
+    if git::is_oid(head) && !git::has_object(dir, head) {
+        let _ = super::fetch_pr_head(dir, &view.patch.source_repo_id, head, &env);
+    }
+    Ok(scratch)
 }
 
 /// `dg pr verify`: fetch the base's history and the PR head into a scratch repository and say
@@ -113,10 +192,22 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let (handle, collab) = (&s.repo, s.collab());
     let p = super::patch(&collab, handle, repo, number).await?;
     let view = collab.patch_view(handle, p).await?;
-    let Some(merge_oid) = view.merge_oid().filter(|_| view.state.merged) else {
+    if !view.state.merged {
         ctx.emit(
             json!({ "pr": number, "merged": false, "mergeContent": null }),
             || println!("PR #{number} is not merged; there is no merge to check"),
+        );
+        return Ok(());
+    }
+    let (Some(merge_oid), Some(head)) = (checkable_merge(&view), merged_head(&view)) else {
+        let why = if view.state.merge_on_base == Some(false) {
+            "its merge commit was never a tip of the base branch"
+        } else {
+            "its merge names no commit"
+        };
+        ctx.emit(
+            json!({ "pr": number, "merged": true, "mergeContent": null }),
+            || println!("PR #{number} is merged, but {why}, so there is nothing to check"),
         );
         return Ok(());
     };
@@ -127,11 +218,14 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             short(&merge_oid)
         );
     }
-    let scratch = super::scratch_with_pr(ctx, handle, &view)?;
-    let content = merged_content(scratch.path(), &view).unwrap_or(MergeContent {
-        verdict: MergeVerdict::Unknown,
-        combined: Vec::new(),
-    });
+    let scratch = scratch_for_check(ctx, handle, &view, &head)?;
+    let facts = merge_facts(
+        scratch.path(),
+        &head,
+        &merge_oid,
+        &view.tip_before(&merge_oid),
+    );
+    let content = merge_content(&facts);
     ctx.emit(
         json!({ "pr": number, "merged": true, "mergeContent": content_json(&merge_oid, &content) }),
         || println!("{}", merge_line(&merge_oid, &content)),
