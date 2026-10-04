@@ -62,6 +62,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ipfs-build/forge-web.cid
             ${{ runner.temp }}/ipfs-build/forge-web.car
+            ${{ runner.temp }}/ipfs-build/forge-web.manifest.json
           if-no-files-found: error
           retention-days: 7
 
@@ -89,7 +90,8 @@ jobs:
           cmp "$a/forge-web.car" "$b/forge-web.car" || { echo "::error::same CID, different CAR bytes"; exit 1; }
           echo "### Reproducible: both builds are \`$cid\`" >> "$GITHUB_STEP_SUMMARY"
           mkdir web-ipfs
-          cp "$a/forge-web.cid" "$a/forge-web.car" web-ipfs/
+          cmp "$a/forge-web.manifest.json" "$b/forge-web.manifest.json" || { echo "::error::same CID, different manifests"; exit 1; }
+          cp "$a/forge-web.cid" "$a/forge-web.car" "$a/forge-web.manifest.json" web-ipfs/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: web-ipfs

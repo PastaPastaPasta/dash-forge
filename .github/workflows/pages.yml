@@ -29,6 +29,8 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  # The build manifest's provenance attestation (below).
+  attestations: write
 
 concurrency:
   group: pages
@@ -60,6 +62,14 @@ jobs:
           # The /mirror wizard pins the Mirror Action and its binaries to the commit deployed.
           FORGE_BUILD_COMMIT: ${{ github.sha }}
         run: pnpm build
+      # `pnpm build` wrote out/forge-manifest.json: every file of this build with its SHA-256
+      # (the previous builds' chunks merged in below are not in it). The attestation is what
+      # `dg verify-app` and the app's own check look up: a manifest GitHub never attested is
+      # not a build of this repository (docs/guides/verify-the-app.md).
+      - name: Attest the build manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: forge-web/out/forge-manifest.json
       # Deploy skew: a tab opened before this deploy still runs the previous build and lazily
       # loads that build's chunks (the Platform SDK, the sign-in flows). Those files must stay
       # up or the tab breaks mid-session. So the chunks of the last two builds are merged into
