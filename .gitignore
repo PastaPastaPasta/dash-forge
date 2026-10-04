@@ -17,6 +17,8 @@ dist/
 # Env & secrets — never commit identities or keys
 .env
 .env.*
+# The web dev server's network defaults (no secrets): see forge-web/README.md.
+!forge-web/.env.development
 *.identity.json
 test-identities/
 dash-identity-*.json

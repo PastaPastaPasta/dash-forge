@@ -141,3 +141,9 @@ Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) �
 - `../platform` — Dash Platform monorepo (source of all cited limits/fees).
 - `../yappr` — reference zero-backend Platform app (SDK/auth/write patterns to reuse).
 - `../mainnet-bridge` / `../platform-identity-faucet` — bridge.thepasta.org and faucet.thepasta.org sources (identity/funding for users and e2e tests).
+
+## Contributing, security and license
+
+- **Contributing:** how to build, test and send a change is in [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Security:** report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes. Don't open a public issue.
+- **License:** Dash Forge is licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
