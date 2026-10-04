@@ -1,0 +1,15 @@
+{
+  "name": "parse_trailer_only",
+  "description": "A trailer alone (no prefix fitted), attributes in the other order.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "<!-- forge:body bytes=262144 sha256=abababababababababababababababababababababababababababababababab -->"
+  },
+  "expected": {
+    "kind": "continued",
+    "prefix": "",
+    "sha256": "abababababababababababababababababababababababababababababababab",
+    "bytes": 262144
+  }
+}

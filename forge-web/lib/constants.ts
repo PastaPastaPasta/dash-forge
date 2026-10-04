@@ -274,6 +274,11 @@ export const PACK_KIND = {
    * column index (kind 3, format 1) of the same tip: only Blame and a path's History read it.
    */
   HISTORY_VERSIONS: 5,
+  /**
+   * A long body (`forge-v2.md` §6.3): the full text of an issue, PR, comment, review or release
+   * notes longer than its field, named by the field's trailer (`lib/rules/long-body.ts`).
+   */
+  LONG_BODY: 6,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 

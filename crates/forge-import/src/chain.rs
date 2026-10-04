@@ -8,6 +8,7 @@
 
 use std::collections::BTreeSet;
 
+use forge_core::collab::long_body::{BodyField, BodyStore};
 use forge_core::collab::v2::{
     Collab, Created, ImportedRow, ImportedTarget, Provenance, Target, TargetKind,
 };
@@ -19,6 +20,7 @@ use forge_core::rules::{EventKind, MergeBaseTips};
 use forge_core::scope::RepoRef;
 use forge_core::Result;
 
+use crate::long_body::BodyStorage;
 use crate::model::SrcRelease;
 use crate::sealed_release::{CollabDest, ReleaseStorage, ReleaseTargets};
 use crate::sink::Ledger;
@@ -149,6 +151,17 @@ pub trait Chain {
     ) -> Result<String>;
     /// Publish a release.
     async fn create_release(&self, repo: &RepoRef, input: &ReleaseInput) -> Result<String>;
+    /// The text to write into `field` for `full` (forge-core `Collab::store_long_body`,
+    /// forge-v2.md §6.3): `full` when it fits, else its first part and the trailer naming its
+    /// full text, stored as a kind-6 artifact on `storage` first.
+    async fn long_body(
+        &self,
+        repo: &RepoRef,
+        field: BodyField<'_>,
+        imported: Option<&Imported>,
+        full: &str,
+        storage: &BodyStorage,
+    ) -> Result<String>;
     /// A private destination's releases, sealed ([`crate::sealed_release::sync`]), their files
     /// and asset lists stored on `storage`.
     async fn sync_sealed_releases(
@@ -385,6 +398,28 @@ impl Chain for CollabChain<'_> {
 
     async fn create_release(&self, repo: &RepoRef, input: &ReleaseInput) -> Result<String> {
         self.collab.create_release(repo, input).await
+    }
+
+    async fn long_body(
+        &self,
+        repo: &RepoRef,
+        field: BodyField<'_>,
+        imported: Option<&Imported>,
+        full: &str,
+        storage: &BodyStorage,
+    ) -> Result<String> {
+        let targets = storage.external_targets()?;
+        let store = BodyStore {
+            external: targets
+                .iter()
+                .map(|t| t as &dyn forge_core::storage::StorageTarget)
+                .collect(),
+            platform: storage.platform_targeted(),
+            required: storage.replicas(),
+        };
+        self.collab
+            .store_long_body(repo, field, imported, full, &store)
+            .await
     }
 
     async fn sync_sealed_releases(

@@ -465,6 +465,8 @@ function asSuggestion(c: CommentView): SuggestionComment {
     author: c.author,
     body: c.body,
     anchor: c.anchor === null ? {} : { path: c.anchor.path, line: c.anchor.line, startLine: c.anchor.startLine, side: c.anchor.side, commitOid: c.anchor.commitOid },
+    // a long comment whose rest could not be read is never applied (forge-v2.md §6.3)
+    ...(c.long ? { long: c.long } : {}),
   }
 }
 

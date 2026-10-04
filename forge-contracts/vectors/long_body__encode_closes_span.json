@@ -1,0 +1,15 @@
+{
+  "name": "encode_closes_span",
+  "description": "An inline code span left open by the cut is closed.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "full": "Run `cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc` now",
+    "room": 260,
+    "sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "needsArtifact": true,
+    "stored": "Run `ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc`\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=310 -->"
+  }
+}

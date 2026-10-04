@@ -1,0 +1,13 @@
+{
+  "name": "parse_bytes_leading_zero",
+  "description": "A length with a leading zero is unsupported.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=09000 -->"
+  },
+  "expected": {
+    "kind": "unsupported",
+    "prefix": "Head"
+  }
+}

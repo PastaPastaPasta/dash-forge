@@ -23,6 +23,7 @@ pub mod gitlab;
 pub mod gitsync;
 pub mod hunk;
 pub mod importer;
+pub mod long_body;
 pub mod model;
 pub mod pipeline;
 pub mod sealed_release;

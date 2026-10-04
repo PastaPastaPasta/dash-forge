@@ -1,0 +1,13 @@
+{
+  "name": "open_not_utf8",
+  "description": "Bytes that are not UTF-8 are refused.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Re\n\n<!-- forge:body sha256=da1fab66fecd69c3ecf1a4d84f3849257e3ec0b3624c8b8bbb628ee47e8b03e5 bytes=4 -->",
+    "blobHex": "5265fffe"
+  },
+  "expected": {
+    "error": "utf8"
+  }
+}

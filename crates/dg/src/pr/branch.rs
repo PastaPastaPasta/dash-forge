@@ -441,8 +441,23 @@ pub async fn apply_suggestions(
     )
     .await?;
     require_branch_at_head(s, &src, view, repo, number).await?;
-    let comments = collab.comments(&s.repo, &view.patch.document_id).await?;
+    let mut comments = collab.comments(&s.repo, &view.patch.document_id).await?;
     let state = view.review_with_threads(&comments);
+    // A long comment's suggestion is read from its full text (forge-v2.md §6.3): its field holds
+    // a cut prefix whose closed fence would read as a complete, shorter suggestion. One whose
+    // rest cannot be read is never applied.
+    let unreadable = {
+        let texts: Vec<&str> = comments.iter().map(|c| c.body.as_str()).collect();
+        let reads = collab.read_long_bodies(&s.repo, &texts).await;
+        let mut unreadable = BTreeMap::new();
+        for (c, r) in comments.iter_mut().zip(reads) {
+            c.body = r.text().to_string();
+            if let Some(why) = r.incomplete() {
+                unreadable.insert(c.document_id.clone(), why.to_string());
+            }
+        }
+        unreadable
+    };
 
     let scratch = scratch_with_pr(ctx, &s.repo, view)?;
     let dir = scratch.path();
@@ -465,6 +480,7 @@ pub async fn apply_suggestions(
             .filter(|c| {
                 let root = super::threads::root_id(&comments, &c.document_id).unwrap_or_default();
                 !applied.contains(&c.document_id)
+                    && !unreadable.contains_key(&c.document_id)
                     && !resolved.contains(root.as_str())
                     && trusted(&c.author)
             })
@@ -483,6 +499,13 @@ pub async fn apply_suggestions(
             if applied.contains(id) {
                 return Err((*e107(format!(
                     "the suggestion of comment {} is already applied",
+                    short(id)
+                )))
+                .into());
+            }
+            if let Some(why) = unreadable.get(id) {
+                return Err((*e107(format!(
+                    "comment {} is longer than its field and {why}: its suggestion is not applied",
                     short(id)
                 )))
                 .into());

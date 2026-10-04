@@ -20,6 +20,7 @@ use forge_core::repo::credits_to_dash;
 use crate::budget::{Budget, CapExceeded};
 use crate::chain::CollabChain;
 use crate::gitsync::ProofRepo;
+use crate::long_body::BodyStorage;
 use crate::model::SrcCollab;
 use crate::sealed_release::ReleaseStorage;
 use crate::sink::{Ledger, Sink};
@@ -350,11 +351,15 @@ pub async fn dry_collab<'a>(
     client: &'a PlatformClient,
     existing: Option<RepoRef>,
     signer: Option<&'a Signer>,
-    src: &SrcCollab,
-    mirror: Option<ProofRepo>,
-    release_storage: Option<ReleaseStorage>,
-    lanes: usize,
+    source: CollabSource<'_>,
 ) -> Result<Ledger<'a>> {
+    let CollabSource {
+        src,
+        mirror,
+        release_storage,
+        body_storage,
+        lanes,
+    } = source;
     // A private destination is read with the signer's keys (its documents are sealed).
     let collab = match signer {
         Some(s) => Collab::new(client, &s.identity, &s.bridge),
@@ -367,6 +372,7 @@ pub async fn dry_collab<'a>(
     )
     .with_mirror(mirror)
     .with_release_storage(release_storage)
+    .with_body_storage(body_storage)
     .with_lanes(lanes);
     dry.sync(src).await?;
     Ok(dry.into_ledger())
@@ -443,6 +449,8 @@ pub struct CollabSource<'s> {
     pub mirror: Option<ProofRepo>,
     /// Where a private destination's sealed release files and asset lists go.
     pub release_storage: Option<ReleaseStorage>,
+    /// Where texts longer than their field keep their full text (forge-v2.md §6.3).
+    pub body_storage: BodyStorage,
     /// Lanes for the items' dependent writes ([`crate::pipeline`]; 1: one write at a time).
     pub lanes: usize,
 }
@@ -463,6 +471,7 @@ pub async fn write_collab<'a>(
         src,
         mirror,
         release_storage,
+        body_storage,
         lanes,
     } = source;
     let mut ledger = outcome.ledger.take().expect("the write phase has a ledger");
@@ -481,6 +490,7 @@ pub async fn write_collab<'a>(
     )
     .with_mirror(mirror)
     .with_release_storage(release_storage)
+    .with_body_storage(body_storage)
     .with_lanes(lanes);
     let result = sink.sync(&plan).await;
     outcome.ledger = Some(sink.into_ledger());

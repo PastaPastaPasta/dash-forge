@@ -1197,12 +1197,19 @@ pub fn issue_props(
     Ok(p)
 }
 
+/// What makes two `create_issue` calls the same create, for its resume journal: a long body
+/// by its prefix and length (§6.3: a private one's artifact hash changes with every seal).
+fn issue_fingerprint(title: &str, body: &str) -> String {
+    [title, "\0", &crate::rules::long_body::journal_key(body)].concat()
+}
+
 /// What makes two `create_patch` calls the same create, for its resume journal.
 fn patch_fingerprint(input: &PatchInput) -> String {
     format!(
         "{}\0{}\0{}\0{}\0{}",
         input.title,
-        input.body,
+        // a long body by its prefix and length (§6.3: a private one's hash changes per seal)
+        crate::rules::long_body::journal_key(&input.body),
         input.base_ref_name,
         input.source_repo_id,
         hex::encode(&input.head_oid)
@@ -2101,9 +2108,35 @@ fn is_own_copy(
     plain: &BTreeMap<String, FieldValue>,
 ) -> bool {
     stored.owner_id == signer
-        && CONTENT_FIELDS
-            .iter()
-            .all(|k| same_value(stored.fields.get(*k), plain.get(*k)))
+        && CONTENT_FIELDS.iter().all(|k| match *k {
+            "body" => same_body(stored.fields.get(*k), plain.get(*k)),
+            _ => same_value(stored.fields.get(*k), plain.get(*k)),
+        })
+}
+
+/// [`same_value`] for a body, where two long bodies (forge-v2.md §6.3) with the same prefix and
+/// length are the same: a private repository's full text is sealed afresh by every attempt, so
+/// its artifact hash differs between two attempts at one item.
+fn same_body(a: Option<&FieldValue>, b: Option<&FieldValue>) -> bool {
+    use crate::rules::long_body::{parse, LongBody};
+    if let (Some(FieldValue::Text(x)), Some(FieldValue::Text(y))) = (a, b) {
+        if let (
+            LongBody::Continued {
+                prefix: px,
+                bytes: bx,
+                ..
+            },
+            LongBody::Continued {
+                prefix: py,
+                bytes: by,
+                ..
+            },
+        ) = (parse(x), parse(y))
+        {
+            return px == py && bx == by;
+        }
+    }
+    same_value(a, b)
 }
 
 /// How [`Collab::create_dense`] recognises a copy of its own create that landed without an
@@ -2382,12 +2415,17 @@ impl<'a> Collab<'a> {
         }
     }
 
-    /// Reads only. A private repository needs a signer (its keys are the signer's).
     /// The client this reads and writes through.
     pub(super) fn client(&self) -> &'a PlatformClient {
         self.client
     }
 
+    /// Whether this `Collab` signs (else it only reads public repositories).
+    pub(super) fn has_signer(&self) -> bool {
+        self.signer.is_some()
+    }
+
+    /// Reads only. A private repository needs a signer (its keys are the signer's).
     pub fn reader(client: &'a PlatformClient) -> Self {
         Self {
             client,
@@ -3858,7 +3896,7 @@ impl<'a> Collab<'a> {
         journal_dir: &Path,
     ) -> Result<Created> {
         issue_props(1, title, body, Provenance::default())?;
-        let fingerprint = [title, "\0", body].concat();
+        let fingerprint = issue_fingerprint(title, body);
         self.create_dense(
             repo,
             TargetKind::Issue,
@@ -3894,6 +3932,60 @@ impl<'a> Collab<'a> {
             created.draft_transition = self.mark_new_draft(repo, &created).await?;
         }
         Ok(created)
+    }
+
+    /// Finish an interrupted [`Self::create_issue`] of this same issue (`body`: the field as its
+    /// journal keys it, [`crate::rules::long_body::journal_key`]) before anything else is paid
+    /// for: `Some` when it landed. A caller storing a long body's artifact calls this first, so
+    /// a retry does not store (and pay for) another artifact, sealed afresh in a private
+    /// repository, for an issue that is already open.
+    pub async fn resume_issue_create(
+        &self,
+        repo: &RepoRef,
+        title: &str,
+        body: &str,
+        journal_dir: &Path,
+    ) -> Result<Option<Created>> {
+        let fingerprint = issue_fingerprint(title, body);
+        self.resume_journaled(repo, TargetKind::Issue, journal_dir, &fingerprint)
+            .await
+    }
+
+    /// [`Self::resume_issue_create`] for [`Self::create_patch`] (a draft's transition written
+    /// as that would).
+    pub async fn resume_patch_create(
+        &self,
+        repo: &RepoRef,
+        input: &PatchInput,
+        journal_dir: &Path,
+    ) -> Result<Option<Created>> {
+        let fingerprint = patch_fingerprint(input);
+        let mut created = self
+            .resume_journaled(repo, TargetKind::Patch, journal_dir, &fingerprint)
+            .await?;
+        if let (Some(c), true) = (created.as_mut(), input.draft) {
+            c.draft_transition = self.mark_new_draft(repo, c).await?;
+        }
+        Ok(created)
+    }
+
+    /// The saved create of `fingerprint`, replayed ([`Self::resume_create`]) when one is on disk.
+    async fn resume_journaled(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        journal_dir: &Path,
+        fingerprint: &str,
+    ) -> Result<Option<Created>> {
+        let me = self.signer_id()?;
+        let path = self.journal_path(repo, kind, &me, Some((journal_dir, fingerprint)))?;
+        if !path.as_ref().is_some_and(|p| p.exists()) {
+            return Ok(None);
+        }
+        let collab = self.collab_contract(repo).await?;
+        let engine = self.engine()?;
+        self.resume_create(&engine, &collab, kind, path.as_deref())
+            .await
     }
 
     /// Whether an earlier [`Self::create_patch`] of this same PR was interrupted before it was
@@ -4388,6 +4480,33 @@ impl<'a> Collab<'a> {
             .await
     }
 
+    /// One of the signer's comments, read for an edit before anything is written (opened in a
+    /// private repository): refused as [`Self::update_comment`] would refuse it (another's
+    /// comment, or another repository's), so a caller storing a long body's artifact first
+    /// (forge-v2.md §6.3) pays for nothing that edit cannot use. Its inline `path` and its
+    /// `imported` provenance share a private comment's room with the body.
+    pub async fn comment_for_edit(&self, repo: &RepoRef, comment_id: &str) -> Result<Comment> {
+        let collab = self.collab_contract(repo).await?;
+        let stored = self
+            .client
+            .fetch_document(&collab, DOC_COMMENT, comment_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        edit_check(repo, DOC_COMMENT, &stored, &self.signer_id()?)?;
+        if repo.visibility == Visibility::Private {
+            let kr = self.keyring(repo).await?;
+            let opened =
+                private::open_doc(kr.open(DocKind::Comment, &stored), stored).ok_or_else(|| {
+                    Error::from(UserError::new(
+                        codes::NOT_A_KEY_HOLDER,
+                        "this comment cannot be read with your keys, so it cannot be edited",
+                    ))
+                })?;
+            return Ok(comment_from_doc(&opened));
+        }
+        Ok(comment_from_doc(&stored))
+    }
+
     /// Delete one of the signer's comments (on an issue or a PR; QW-016). A `comment` is
     /// deletable by its author only at consensus; the stored document is read first
     /// ([`owner_check`]: it is `repo`'s and the signer's), so another's comment, or one of
@@ -4567,7 +4686,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Refuse, before anything is signed, an edit of a document the signer does not own.
-    fn require_author(&self, author: &str, action: &str) -> Result<()> {
+    pub fn require_author(&self, author: &str, action: &str) -> Result<()> {
         if self.signer_id()? == author {
             return Ok(());
         }
@@ -5765,7 +5884,7 @@ impl<'a> Collab<'a> {
     }
 
     /// The pack-manifest service for this signer, sharing this `Collab`'s keyring.
-    fn repo_service(&self) -> Result<crate::repo::RepoService<'a>> {
+    pub(super) fn repo_service(&self) -> Result<crate::repo::RepoService<'a>> {
         let (identity, bridge) = self.signer.ok_or_else(|| {
             Error::from(crate::user_error::private_needs_identity("the repository"))
         })?;
@@ -7072,6 +7191,30 @@ mod fused_star_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A long body's create is keyed alike before its artifact is stored (any hash, as
+    /// `dg` plans it) and after (the stored field), so an interrupted create is replayed
+    /// before a retry stores another artifact; a different text is a different create.
+    #[test]
+    fn a_long_body_create_is_keyed_before_its_artifact_is_stored() {
+        use crate::rules::long_body::stored_text;
+        let full = "word ".repeat(3000);
+        let planned = stored_text(&full, 5085, &[0; 32]).unwrap();
+        let stored = stored_text(&full, 5085, &[7; 32]).unwrap();
+        assert_eq!(
+            issue_fingerprint("T", &planned),
+            issue_fingerprint("T", &stored)
+        );
+        let other = stored_text(&"else ".repeat(3000), 5085, &[7; 32]).unwrap();
+        assert_ne!(
+            issue_fingerprint("T", &planned),
+            issue_fingerprint("T", &other)
+        );
+        assert_ne!(
+            issue_fingerprint("T", &planned),
+            issue_fingerprint("U", &planned)
+        );
+    }
 
     const ME: &str = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
     const OTHER_REPO: &str = "9sGUjxras61DAe457iUfbJcKTfVT7qVj16PJ3xstqMKr";

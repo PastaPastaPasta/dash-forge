@@ -262,6 +262,14 @@ pub struct Edit<'a> {
     pub title: Option<&'a str>,
     /// The new body.
     pub body: Option<&'a str>,
+    /// How `body` is written: whole, or (over its field) as a long body's artifact and the
+    /// field naming it (forge-v2.md §6.3). Set when `body` is.
+    pub long: Option<crate::long_body::Planned<'a>>,
+    /// With a new title alone: the stored long body cut again for the room the title leaves
+    /// (`crate::long_body::refit_kept`), written in the same replace.
+    pub refit: Option<String>,
+    /// The item's imported provenance, which shares a private item's sealed room with the body.
+    pub imported: Option<&'a forge_core::collab::Imported>,
     /// Said after the replace's price (a private PR's epoch note).
     pub replace_note: String,
     /// The events to write (labels, assignees, milestone, a PR's retarget).
@@ -300,25 +308,38 @@ pub async fn run_edit(ctx: &crate::context::Ctx, s: &Session, e: Edit<'_>) -> Re
         println!("{noun} #{number}: {}; skipped", e.plan.unchanged.join(", "));
     }
     let replace_quote = if replace {
+        let body_bytes = e.long.as_ref().map_or_else(
+            || e.body.map_or(0, str::len),
+            |p| usize::try_from(p.field_bytes()).unwrap_or(usize::MAX),
+        );
         crate::pr::estimate(
             crate::pr::Est::Replace,
-            e.title.map_or(0, str::len) + e.body.map_or(0, str::len),
-        )
+            e.title.map_or(0, str::len) + body_bytes,
+        ) + e.long.as_ref().map_or(0, |p| p.extra_credits(&s.repo))
     } else {
         0
     };
     let quote = replace_quote + e.plan.events.iter().map(|p| p.quote).sum::<u64>();
     let (what, docs) = edit_words(&e);
     ctx.confirm_or_cancel(&format!(
-        "Edit {noun} #{number}: {}? ({docs}, {}{})",
+        "Edit {noun} #{number}: {}? ({docs}, {}{}{})",
         what.join("; "),
         cost_line(quote, ctx.usd_price()),
+        e.long
+            .as_ref()
+            .map_or_else(String::new, crate::long_body::Planned::clause),
         e.replace_note
     ))?;
     let before = s.balance().await;
     let replaced = if replace {
-        s.collab()
-            .update_target(&s.repo, &e.target, e.title, e.body)
+        let collab = s.collab();
+        // a long body's full text is stored first; a new title alone carries a refit body
+        let body = match &e.long {
+            Some(p) => Some(p.field_text(&collab, &s.repo, e.imported).await?),
+            None => e.refit.clone(),
+        };
+        collab
+            .update_target(&s.repo, &e.target, e.title, body.as_deref())
             .await?
     } else {
         false
@@ -558,6 +579,9 @@ mod tests {
             },
             title,
             body: None,
+            long: None,
+            refit: None,
+            imported: None,
             replace_note: String::new(),
             plan: Plan {
                 events: planned,

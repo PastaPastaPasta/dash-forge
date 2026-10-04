@@ -1,0 +1,13 @@
+{
+  "name": "parse_duplicate_attribute",
+  "description": "An attribute given twice is unsupported.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=9000 bytes=9000 -->"
+  },
+  "expected": {
+    "kind": "unsupported",
+    "prefix": "Head"
+  }
+}

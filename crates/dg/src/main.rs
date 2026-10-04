@@ -22,6 +22,7 @@ mod infer;
 mod issue;
 mod keys;
 mod label;
+mod long_body;
 mod maint;
 mod meta;
 mod milestone;

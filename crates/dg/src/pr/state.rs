@@ -145,13 +145,32 @@ pub async fn edit(ctx: &Ctx, a: &crate::PrEditArgs) -> Result<()> {
     } else {
         String::new()
     };
+    let patch = &v.patch;
+    let field = forge_core::collab::long_body::BodyField::Patch {
+        title: a.title.as_deref().unwrap_or(&patch.title),
+        base_ref_name: &patch.base_ref_name,
+        source_ref_name: patch.source_ref_name.as_deref().unwrap_or_default(),
+    };
+    let long = body
+        .as_deref()
+        .map(|b| crate::long_body::Planned::new(&pr.s.repo, field, patch.imported.as_ref(), b))
+        .transpose()?;
+    // a longer title leaves a private long body less room: its prefix is cut again
+    let refit = (a.title.is_some() && body.is_none())
+        .then(|| {
+            crate::long_body::refit_kept(&pr.s.repo, field, patch.imported.as_ref(), &patch.body)
+        })
+        .flatten();
     let edit = crate::meta::Edit {
         noun: "PR",
         key: "pr",
         number,
-        target: v.patch.target(),
+        target: patch.target(),
         title: a.title.as_deref(),
         body: body.as_deref(),
+        long,
+        refit,
+        imported: patch.imported.as_ref(),
         replace_note,
         plan,
         title_json: json!(a.title.as_deref().unwrap_or(&v.patch.title)),

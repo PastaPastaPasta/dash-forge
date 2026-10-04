@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod ci_rerun;
 pub mod codeowners;
+pub mod long_body;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
@@ -1238,7 +1239,7 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        ci_rerun, codeowners, display_ref_name, is_legal_ref_name, matches_protected,
+        ci_rerun, codeowners, display_ref_name, is_legal_ref_name, long_body, matches_protected,
         merge_base_tips, overlay_tree, pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event,
         EventKind, FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff,
         Verdict,
@@ -2506,9 +2507,75 @@ mod tests {
             "checks" | "thread_meta" | "pinned" | "milestones" | "trending" | "hidden_items" => {
                 run_parity_case(v);
             }
+            "long_body" => run_long_body(v),
             "ci_rerun" | "ci_rerun_write" => run_ci_rerun_case(v),
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields, rename_all = "camelCase")]
+    struct LongBodyInput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stored: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        full: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        room: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blob_hex: Option<String>,
+    }
+
+    /// `long_body__*` (forge-v2.md §6.3): `{stored}` reads a field, `{full, room, sha256}`
+    /// stores a text, `{stored, blobHex}` opens a public artifact.
+    fn run_long_body(v: &Vector) {
+        use long_body::{needs_artifact, open_public, parse, stored_text, LongBody};
+        let ctx = &v.name;
+        let inp: LongBodyInput = input(v);
+        let got = match (&inp.stored, &inp.full, &inp.blob_hex) {
+            (Some(stored), None, None) => match parse(stored) {
+                LongBody::Plain => serde_json::json!({ "kind": "plain" }),
+                LongBody::Continued {
+                    prefix,
+                    sha256,
+                    bytes,
+                } => serde_json::json!({
+                    "kind": "continued",
+                    "prefix": prefix,
+                    "sha256": hex::encode(sha256),
+                    "bytes": bytes,
+                }),
+                LongBody::Unsupported { prefix } => {
+                    serde_json::json!({ "kind": "unsupported", "prefix": prefix })
+                }
+            },
+            (None, Some(full), None) => {
+                let room = inp.room.unwrap_or_else(|| panic!("vector `{ctx}`: room"));
+                let mut sha = [0u8; 32];
+                hex::decode_to_slice(inp.sha256.as_deref().unwrap_or_default(), &mut sha)
+                    .unwrap_or_else(|e| panic!("vector `{ctx}`: sha256: {e}"));
+                let needs = needs_artifact(full, room);
+                let stored = if needs {
+                    stored_text(full, room, &sha)
+                } else {
+                    None
+                };
+                serde_json::json!({ "needsArtifact": needs, "stored": stored })
+            }
+            (Some(stored), None, Some(blob)) => {
+                let blob = hex::decode(blob).unwrap_or_else(|e| panic!("vector `{ctx}`: {e}"));
+                match open_public(stored, &blob) {
+                    Ok(text) => serde_json::json!({ "text": text }),
+                    Err(e) => serde_json::json!({ "error": e.as_str() }),
+                }
+            }
+            _ => panic!(
+                "vector `{ctx}`: one of {{stored}}, {{full, room, sha256}}, {{stored, blobHex}}"
+            ),
+        };
+        assert_eq!(got, v.expected, "vector `{ctx}`");
     }
 
     /// Load every `forge-contracts/vectors/*.json` and assert the rules reproduce

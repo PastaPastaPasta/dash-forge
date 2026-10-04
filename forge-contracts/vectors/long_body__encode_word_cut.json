@@ -1,0 +1,15 @@
+{
+  "name": "encode_word_cut",
+  "description": "No line break: the last space.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "full": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet ",
+    "room": 240,
+    "sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "needsArtifact": true,
+    "stored": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=540 -->"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "encode_bom_kept",
+  "description": "A leading U+FEFF is text: the prefix keeps it (a decoder that drops a BOM would not).",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "full": "﻿Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. ",
+    "room": 300,
+    "sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "needsArtifact": true,
+    "stored": "﻿Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes. Notes.\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=563 -->"
+  }
+}

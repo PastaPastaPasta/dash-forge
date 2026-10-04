@@ -24,6 +24,7 @@ import { useState, type ReactNode } from 'react'
 import { isEmptyMirroredReview, mirroredCommentText } from '@/lib/view/mirror-review-fold'
 import type { CloseWhy } from '@/lib/view/close-reason'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
+import { LongBodyNote } from '@/components/repo/long-body'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
@@ -394,6 +395,7 @@ function ReviewComment({
         <div className="space-y-2 px-3 py-2">
           {c.anchor ? anchorContext?.(c) : null}
           <MarkdownView source={mirrored?.text ?? c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
+          <LongBodyNote long={c.long} />
         </div>
       )}
     </div>
@@ -609,6 +611,7 @@ export function Timeline({
               {slot.body ?? (
                 <div className="px-4 py-3">
                   <MarkdownView source={item.comment.body} links={links} imported={importedUrlOf(item.comment.importedRaw)} />
+                  <LongBodyNote long={item.comment.long} />
                 </div>
               )}
             </div>
@@ -676,6 +679,7 @@ export function Timeline({
               {review.body && !(origin !== null && searchableBody(review.body).trim() === '') ? (
                 <div className="px-4 py-3">
                   <MarkdownView source={review.body} links={links} imported={review.origin?.url ?? null} />
+                  <LongBodyNote long={review.long} />
                 </div>
               ) : null}
               {item.comments.length > 0 || item.expected > 0 ? (

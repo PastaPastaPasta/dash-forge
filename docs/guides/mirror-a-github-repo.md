@@ -65,6 +65,8 @@ You need:
 
 `forge-import` (or `dg import`, the same engine) copies a GitHub repository into a forge-v2 repository: every branch and tag, the head of every open PR (as `refs/mirror/pull/<n>/head`, so imported PRs can be checked out; a closed PR's head is removed and its commits are not the mirror's to pay for), labels, issues and PRs with their comments, reviews and state (open, closed, merged, labels, draft), and releases (tag, title, notes, and each asset referenced by its GitHub URL and SHA-256; assets are not re-uploaded).
 
+**Long text.** An issue, PR, comment, review or release whose text is longer than the 5,120-byte field (Dash Core's release notes, a long bug report) keeps its whole text, up to 256 KiB: the importer stores it as a repository artifact on the same storage policy as the packs (Platform when the policy names none), and the field holds its first part and a hidden line naming it ([forge-v2.md §6.3](../contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9)). The estimate includes it. If the artifact cannot be stored (your storage refuses it), the text is cut to the field with a link to the source, as importers before this did, and the run warns. A longer text than 256 KiB is cut to that with a link. Releases an older importer mirrored with cut notes are left as they are: a run does not publish them again only to store their full notes.
+
 **Where the packs go.** The importer pushes through `git-remote-dash`, so it follows the git config the helper reads. To keep packs off Platform, set the storage policy globally before you import:
 
 ```sh

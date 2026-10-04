@@ -790,12 +790,24 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     };
     let price = ctx.usd_price();
     let path_len = spec.as_ref().map_or(0, |s| s.path.len());
-    let est = estimate(Est::Comment, body.len() + path_len);
+    // A body longer than the field is stored as a repository artifact (forge-v2.md §6.3).
+    let planned = crate::long_body::Planned::new(
+        &s.repo,
+        forge_core::collab::long_body::BodyField::Comment {
+            path: spec.as_ref().map(|s| s.path.as_str()),
+        },
+        None,
+        &body,
+    )?;
+    let field_bytes = usize::try_from(planned.field_bytes()).unwrap_or(usize::MAX);
+    let est = estimate(Est::Comment, field_bytes + path_len) + planned.extra_credits(&s.repo);
     ctx.confirm_or_cancel(&format!(
-        "Post a {kind} comment on PR #{}? (one document, {})",
+        "Post a {kind} comment on PR #{}? (one document, {}{})",
         a.number,
-        cost_line(est, price)
+        cost_line(est, price),
+        planned.clause()
     ))?;
+    let body = planned.field_text(&collab, &s.repo, None).await?;
     let id = collab
         .comment(
             &s.repo,

@@ -378,9 +378,23 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             .ok_or_else(|| crate::errors::usage("pass --title (the head commit is not local)"))?,
     };
 
-    let input = PatchInput {
+    // A body longer than the field is stored as a repository artifact (forge-v2.md §6.3); the
+    // PR carries its first part and the line naming it.
+    let planned = crate::long_body::Planned::new(
+        handle,
+        forge_core::collab::long_body::BodyField::Patch {
+            title: &title,
+            base_ref_name: &base,
+            source_ref_name: &head_ref,
+        },
+        None,
+        &args.body,
+    )?;
+    let mut input = PatchInput {
         title: title.clone(),
-        body: args.body.clone(),
+        // the field as an interrupted create's journal keys it (replaced by the stored field
+        // below, which keys alike)
+        body: planned.journal_text(),
         base_ref_name: base.clone(),
         source_repo_id: source.id().to_string(),
         source_ref_name: Some(head_ref.clone()),
@@ -416,12 +430,13 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         );
     }
     // The PR's title, body and ref names are its text (QW2-020: this was a fixed "~0.0001").
-    let text = input.title.len()
-        + input.body.len()
-        + input.base_ref_name.len()
-        + input.source_ref_name.as_deref().map_or(0, str::len);
-    let pr_quote = crate::quote::target_create(text as u64);
+    let text = input.title.len() as u64
+        + planned.field_bytes()
+        + input.base_ref_name.len() as u64
+        + input.source_ref_name.as_deref().map_or(0, str::len) as u64;
+    let pr_quote = crate::quote::target_create(text) + planned.extra_credits(handle);
     let price = ctx.usd_price();
+    let stored = planned.clause();
     // Each code owner review request is one more event naming its reviewer.
     let asked = owner_plan.as_ref().map_or(0, |p| p.requests.request.len());
     let requests_quote = owner_plan.as_ref().map_or(0, |p| {
@@ -437,21 +452,33 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     };
     ctx.confirm_or_cancel(&if args.draft {
         format!(
-            "Open it as a draft? (the PR and a draft transition{requests_text}: {} documents, {})",
+            "Open it as a draft? (the PR and a draft transition{requests_text}: {} documents, {}{stored})",
             2 + asked,
             cost_line(pr_quote + crate::quote::TRANSITION + requests_quote, price)
         )
     } else if asked > 0 {
         format!(
-            "Open it? (the PR{requests_text}: {} documents, {})",
+            "Open it? (the PR{requests_text}: {} documents, {}{stored})",
             1 + asked,
             cost_line(pr_quote + requests_quote, price)
         )
     } else {
-        format!("Open it? (one document, {})", cost_line(pr_quote, price))
+        format!(
+            "Open it? (one document, {}{stored})",
+            cost_line(pr_quote, price)
+        )
     })?;
     let before = s.balance().await;
-    let created = s.collab().create_patch(handle, &input, &journal).await?;
+    let collab = s.collab();
+    // An interrupted create of this PR that landed is finished first, before a long body's
+    // artifact would be stored (and paid for) again.
+    let created =
+        if let Some(created) = collab.resume_patch_create(handle, &input, &journal).await? {
+            created
+        } else {
+            input.body = planned.field_text(&collab, handle, None).await?;
+            collab.create_patch(handle, &input, &journal).await?
+        };
     let requested = match &owner_plan {
         Some(plan) if !plan.requests.request.is_empty() => {
             owners::request(&s, handle, created.number, &created.document_id, plan).await
@@ -902,6 +929,7 @@ fn reviews_json(
     comments: &[forge_core::collab::v2::Comment],
     head: &str,
     dismissed: &std::collections::BTreeMap<String, String>,
+    incomplete: &std::collections::BTreeMap<String, String>,
 ) -> Vec<serde_json::Value> {
     let flat: Vec<forge_core::rules::v2::ReviewComment> = comments
         .iter()
@@ -934,6 +962,7 @@ fn reviews_json(
                 "commentsLanded": group.landed,
                 "commentIds": group.comments,
                 "body": r.body,
+                "bodyIncomplete": incomplete.get(&r.document_id),
                 "createdAt": r.created_at,
             })
         })
@@ -941,8 +970,12 @@ fn reviews_json(
 }
 
 /// A PR's comments for `dg pr view --json`: thread, review and anchor (`anchor_of`: null for
-/// a general or malformed-anchor comment).
-fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json::Value> {
+/// a general or malformed-anchor comment), and why only the first part of a long body was read
+/// (`incomplete`, by id).
+fn comments_json(
+    comments: &[forge_core::collab::v2::Comment],
+    incomplete: &std::collections::BTreeMap<String, String>,
+) -> Vec<serde_json::Value> {
     comments
         .iter()
         .map(|c| {
@@ -950,6 +983,7 @@ fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json
                 "id": c.document_id,
                 "author": c.author,
                 "body": c.body,
+                "bodyIncomplete": incomplete.get(&c.document_id),
                 "replyTo": c.reply_to,
                 "reviewId": c.review_id,
                 "anchor": forge_core::rules::v2::anchor_of(&c.anchor),
@@ -976,12 +1010,33 @@ async fn view(
     let s = Reader::open(ctx, repo).await?;
     let (client, handle, collab) = (&s.client, &s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
-    let v = collab.patch_view(handle, p).await?;
+    let mut v = collab.patch_view(handle, p).await?;
     let oracle = collab.member_oracle(handle).await?;
-    let doc_id = &v.patch.document_id;
-    let (reviews, hidden_reviews) = collab.reviews_counted(handle, doc_id).await?;
+    let doc_id = v.patch.document_id.clone();
+    let (mut reviews, hidden_reviews) = collab.reviews_counted(handle, &doc_id).await?;
     let approvals = approvals_over(&reviews, &v, &oracle);
-    let (comments, hidden_comments) = collab.comments_counted(handle, doc_id).await?;
+    let (mut comments, hidden_comments) = collab.comments_counted(handle, &doc_id).await?;
+    // Long bodies (forge-v2.md §6.3): each field's full text, fetched and checked; a text whose
+    // rest cannot be read keeps its first part and says why: in `bodyIncomplete` (the
+    // description's, and by id each comment's and review's), and in a line under it when printed.
+    let mut why = crate::long_body::read_in_place(
+        &collab,
+        handle,
+        std::iter::once(&mut v.patch.body)
+            .chain(comments.iter_mut().map(|c| &mut c.body))
+            .chain(reviews.iter_mut().map(|r| &mut r.body))
+            .collect(),
+    )
+    .await
+    .into_iter();
+    let body_incomplete = why.next().flatten();
+    let incomplete: std::collections::BTreeMap<String, String> = comments
+        .iter()
+        .map(|c| &c.document_id)
+        .chain(reviews.iter().map(|r| &r.document_id))
+        .zip(why)
+        .filter_map(|(id, w)| w.map(|w| (id.clone(), w)))
+        .collect();
     let review_state = v.review_with_threads(&comments);
     // RC2 MOD: what maintainers hid. Collapsed in the human view unless --show-hidden; a hidden
     // review's verdict still counts (only a dismissal stops it), so approvals are unchanged.
@@ -996,18 +1051,33 @@ async fn view(
     // A mirrored hunk shows only from a signer who may mirror (the web's trust set: the owner
     // and the current maintainers), as the web shows it.
     threads::drop_untrusted_hunks(&mut conv, trusted);
-    // The conversations as printed: a hidden comment's body is its one "hidden by" line.
-    let printed_conv = if show_hidden || moderation.items.is_empty() {
+    // The conversations as printed: a hidden comment's body is its one "hidden by" line, and a
+    // long body read only in part has the line saying why under it.
+    let printed_conv = if (show_hidden || moderation.items.is_empty()) && incomplete.is_empty() {
         None
     } else {
         let shown: Vec<_> = comments
             .iter()
-            .map(|c| match moderation.item(&c.document_id) {
-                Some(h) => forge_core::collab::v2::Comment {
-                    body: crate::fmt::hidden_line("comment", h, &|id: &str| id.to_string(), false),
-                    ..c.clone()
-                },
-                None => c.clone(),
+            .map(|c| {
+                let hidden = (!show_hidden)
+                    .then(|| moderation.item(&c.document_id))
+                    .flatten();
+                match (hidden, incomplete.get(&c.document_id)) {
+                    (Some(h), _) => forge_core::collab::v2::Comment {
+                        body: crate::fmt::hidden_line(
+                            "comment",
+                            h,
+                            &|id: &str| id.to_string(),
+                            false,
+                        ),
+                        ..c.clone()
+                    },
+                    (None, Some(why)) => forge_core::collab::v2::Comment {
+                        body: format!("{}\n{}", c.body, crate::long_body::partial_line(why)),
+                        ..c.clone()
+                    },
+                    (None, None) => c.clone(),
+                }
             })
             .collect();
         let mut printed = threads::threads(&shown, &v.head, &review_state.resolved_threads);
@@ -1064,7 +1134,7 @@ async fn view(
             .map_or_else(|_| v.patch.source_repo_id.clone(), |r| r.display())
     };
 
-    let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed);
+    let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed, &incomplete);
     let unresolved = conv.threads.iter().filter(|t| !t.resolved).count();
     let standing = json!({
         // Each required check's run on the head (the names are `policy.requiredChecks`).
@@ -1085,6 +1155,7 @@ async fn view(
             "repoId": v.patch.repo_id,
             "title": v.patch.title,
             "body": v.patch.body,
+            "bodyIncomplete": body_incomplete,
             "author": v.patch.author,
             "state": state_field(&v),
             "draft": v.state.draft,
@@ -1117,7 +1188,7 @@ async fn view(
             "reviews": reviews_json,
             "threads": conv.threads,
             "generalComments": conv.general,
-            "comments": comments_json(&comments),
+            "comments": comments_json(&comments, &incomplete),
             "hiddenComments": hidden_comments,
             "hiddenReviews": hidden_reviews,
             "moderation": moderation,
@@ -1255,6 +1326,9 @@ async fn view(
             if !v.patch.body.is_empty() {
                 println!("\n{}", safe(&v.patch.body));
             }
+            if let Some(why) = &body_incomplete {
+                println!("{}", crate::long_body::partial_line(why));
+            }
             for r in &reviews {
                 let tag = if dismissed.contains_key(&r.document_id) {
                     " (dismissed)"
@@ -1282,6 +1356,9 @@ async fn view(
                 }
                 if !r.body.is_empty() {
                     println!("  {}", safe(&r.body));
+                }
+                if let Some(why) = incomplete.get(&r.document_id) {
+                    println!("  {}", crate::long_body::partial_line(why));
                 }
             }
             if show_comments {
@@ -1523,7 +1600,18 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "merge").await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
-    let view = collab.patch_view(handle, p).await?;
+    let mut view = collab.patch_view(handle, p).await?;
+    // The description as readers show it (a long body's full text, forge-v2.md §6.3): the
+    // issues it closes and a squash commit's message come from all of it, never its trailer.
+    // When only its first part can be read, the merge goes on with that part, and says so.
+    let read = collab.read_long_body(handle, &view.patch.body).await;
+    if let Some(why) = read.incomplete() {
+        eprintln!(
+            "warning: only the first part of the description could be read ({why}): the issues \
+             it closes and a squash commit's message come from that part only"
+        );
+    }
+    view.patch.body = read.text().to_string();
     if view.state.merged {
         ctx.emit(
             json!({ "status": "already_merged", "pr": number, "merged": true }),

@@ -1,0 +1,15 @@
+{
+  "name": "encode_long_word",
+  "description": "No boundary in the second half: cut where it is, on a character boundary.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "full": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "room": 230,
+    "sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "needsArtifact": true,
+    "stored": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=400 -->"
+  }
+}

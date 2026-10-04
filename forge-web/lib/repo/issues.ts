@@ -53,6 +53,7 @@ import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
 import { readRepoCounts, readStateCodes, readTransitions, transitionOf, type TransitionView } from './transitions'
 import { ISSUE_CLOSE } from '../rules/transition'
+import type { LongBodyState } from '../rules/long-body'
 
 /** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
 export function titleOf(doc: PlainDocument): string {
@@ -66,7 +67,10 @@ export interface IssueView {
   readonly id: string
   readonly number: number
   readonly title: string
+  /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
   readonly body: string
+  /** A body longer than its field: its state (`lib/view/long-body.ts`). Absent otherwise. */
+  readonly long?: LongBodyState
   readonly author: string
   readonly createdAt: number
   /**
@@ -137,7 +141,10 @@ export interface PullView {
   readonly id: string
   readonly number: number
   readonly title: string
+  /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
   readonly body: string
+  /** A body longer than its field: its state (`lib/view/long-body.ts`). Absent otherwise. */
+  readonly long?: LongBodyState
   readonly author: string
   readonly createdAt: number
   /** The base the PR was opened against (`patch.baseRefName`, immutable). */
@@ -262,6 +269,8 @@ export interface ReviewView {
   readonly verdictCode: number
   readonly commitOid: string
   readonly body: string
+  /** A body longer than its field: its state (`forge-v2.md` §6.3). Absent otherwise. */
+  readonly long?: LongBodyState
   /** How many `reviewId` comments the review announced (`commentCount`), or null. */
   readonly commentCount: number | null
   readonly createdAt: number

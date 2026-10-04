@@ -38,6 +38,8 @@ import { invalidateRepoFeed, readReviews } from './issues'
 import { readMemberships } from './members'
 import { readRunners } from './checks'
 import { sealEdit } from './private-writes'
+import { bodyRoom, longBodyField } from './long-body'
+import { refitLongBodyField } from '../rules/long-body'
 import { bypassValue } from '../view/pull-actions'
 import { repoSource } from './source'
 import { admitAll, gateFor } from './private-content'
@@ -787,19 +789,33 @@ async function replace(
   }
 }
 
-/** Edit an issue's or PR's title and/or body (its author only; `number` and the PR's head, refs and draft flag are immutable). */
-export function updateTarget(
+/**
+ * Edit an issue's or PR's title and/or body (its author only; `number` and the PR's head, refs and
+ * draft flag are immutable). A body longer than its field has its full text stored first
+ * (forge-v2.md §6.3); in a private repo `seal.current` holds the stored fields (a long body's
+ * field, not its full text), which an edit of the title keeps.
+ */
+export async function updateTarget(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { type: 'issue' | 'patch'; id: string; title?: string; body?: string; expectedRevision?: bigint; seal?: SealContext },
+  input: { type: 'issue' | 'patch'; id: string; title?: string; body?: string; expectedRevision?: bigint; seal?: SealContext; intent?: string },
 ): Promise<ReplaceResult> {
   const changes: Record<string, unknown> = {}
   if (input.title !== undefined) {
     if (input.title.trim() === '') throw new Error('a title is required')
     changes['title'] = input.title
   }
-  if (input.body !== undefined) changes['body'] = input.body === '' ? undefined : input.body
+  const others = { ...(input.seal?.current ?? {}), ...changes, imported: input.seal?.imported }
+  if (input.body !== undefined && input.body !== '') {
+    changes['body'] = await longBodyField(sdk, auth, repo, input.type, input.body, others, input.intent)
+  } else if (input.body !== undefined) changes['body'] = undefined
+  else if (repo.visibility === 'private' && typeof input.seal?.current['body'] === 'string') {
+    // A longer title leaves a private long body less room: its prefix is cut again (same artifact).
+    const kept = input.seal.current['body']
+    const refit = refitLongBodyField(kept, bodyRoom(repo, input.type, others))
+    if (refit !== null && refit !== kept) changes['body'] = refit
+  }
   if (Object.keys(changes).length === 0) throw new Error('nothing to change')
   return replace(sdk, auth, repo, input.type, input.id, changes, input.expectedRevision, input.seal)
 }
@@ -812,14 +828,17 @@ export function updateTarget(
  * `dropProof` when it carries `asMember` but the signer is no longer a member (the proof is
  * re-checked too). An imported comment keeps its proof (`i_provenance`): it cannot be edited then.
  */
-export function updateComment(
+export async function updateComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { id: string; body: string; dropReviewId?: boolean; dropReplyTo?: boolean; dropProof?: boolean; expectedRevision?: bigint; seal?: SealContext },
+  input: { id: string; body: string; dropReviewId?: boolean; dropReplyTo?: boolean; dropProof?: boolean; expectedRevision?: bigint; seal?: SealContext; intent?: string },
 ): Promise<ReplaceResult> {
   if (input.body.trim() === '') throw new Error('a comment needs a body')
-  const changes: Record<string, unknown> = { body: input.body }
+  // A body longer than its field: its full text stored first (forge-v2.md §6.3); an inline
+  // comment's path shares a private comment's room.
+  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, input.seal?.current ?? {}, input.intent)
+  const changes: Record<string, unknown> = { body }
   if (input.dropReviewId) changes['reviewId'] = undefined
   if (input.dropReplyTo) changes['replyTo'] = undefined
   if (input.dropProof) changes['asMember'] = undefined

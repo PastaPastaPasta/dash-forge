@@ -235,20 +235,24 @@ async fn run_inner<'a>(
         .existing
         .as_ref()
         .is_some_and(|r| r.visibility == forge_core::rules::v2::Visibility::Private);
+    // the mirror's git config when there is one (its global scope too), else this
+    // directory's, as `dg release create` reads it
+    let policy_dir = if work.is_dir() {
+        work.as_path()
+    } else {
+        Path::new(".")
+    };
     let release_storage = if private && collab_src.releases.as_ref().is_some_and(|r| !r.is_empty())
     {
-        // the mirror's git config when there is one (its global scope too), else this
-        // directory's, as `dg release create` reads it
-        let dir = if work.is_dir() {
-            work.as_path()
-        } else {
-            Path::new(".")
-        };
-        crate::sealed_release::ReleaseStorage::from_git_dir(dir)
+        crate::sealed_release::ReleaseStorage::from_git_dir(policy_dir)
             .context("reading the storage policy for the releases' assets")?
     } else {
         None
     };
+    // Where texts longer than their field keep their full text (forge-v2.md §6.3): the same
+    // policy, Platform when it names none. A policy that cannot be read fails only a text that
+    // needs it.
+    let body_storage = crate::long_body::BodyStorage::from_git_dir(policy_dir);
     let priced = match &dest.existing {
         Some(r) if r.visibility == forge_core::rules::v2::Visibility::Private => {
             let definitions = cfg.classes.include_label_definitions;
@@ -267,10 +271,13 @@ async fn run_inner<'a>(
         client,
         dest.existing.clone(),
         signer,
-        &priced,
-        mirror.clone(),
-        release_storage.clone(),
-        cfg.concurrency,
+        dest::CollabSource {
+            src: &priced,
+            mirror: mirror.clone(),
+            release_storage: release_storage.clone(),
+            body_storage: body_storage.clone(),
+            lanes: cfg.concurrency,
+        },
     ))
     .await?;
     let collab_estimate = dry.budget.spent();
@@ -378,6 +385,7 @@ async fn run_inner<'a>(
         src: &collab_src,
         mirror,
         release_storage,
+        body_storage,
         lanes: cfg.concurrency,
     };
     // boxed: the write phase's future is large (the clippy `large_futures` limit)

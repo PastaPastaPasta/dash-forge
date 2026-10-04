@@ -56,8 +56,11 @@ import {
   tagProblem,
 } from '@/lib/repo/new-release'
 import { externalTargets, policyForRepo } from '@/lib/storage'
-import { UnconfirmedWriteError, previewCreate, sumPreviews } from '@/lib/sdk'
+import { UnconfirmedWriteError, previewCreate, previewCredits, sumPreviews } from '@/lib/sdk'
 import { spendAction } from '@/lib/spend-toast'
+import { fieldEstimate, isLongBody, longBodyCredits } from '@/lib/repo/long-body'
+import { LONG_BODY_MAX_BYTES, utf8Bytes } from '@/lib/rules/long-body'
+import { LongComposeNote, type LongCompose } from '@/components/repo/long-body'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -279,6 +282,14 @@ function NewReleaseDialog({
   const kept = useMemo(() => carriedAssets(existing, files), [existing, files])
   const finalName = title.trim() || existing?.name || ''
   const finalNotes = notes.trimEnd() || existing?.notes || ''
+  // New public notes longer than the field: stored whole (forge-v2.md §6.3; releases are a
+  // maintainer's, and maintainers may). A private release's notes keep the field's 5,120 bytes here.
+  const longNotes = !sealedRepo && repo !== null && repo !== undefined && notes.trimEnd() !== '' && isLongBody(repo, 'release', notes.trimEnd())
+  const longNotesCompose: LongCompose = {
+    long: longNotes,
+    problem: longNotes && utf8Bytes(notes.trimEnd()) > LONG_BODY_MAX_BYTES ? `The notes hold at most ${LONG_BODY_MAX_BYTES} bytes.` : null,
+    credits: longNotes && repo ? longBodyCredits(repo, utf8Bytes(notes.trimEnd())) : 0,
+  }
   const yanked = yankedChoice ?? existing?.yanked ?? false
   const draftFlag = draftChoice ?? sealedExisting?.draft === true
   const prerelease = prereleaseChoice ?? sealedExisting?.prerelease === true
@@ -302,7 +313,8 @@ function NewReleaseDialog({
   const problem =
     tagProblem(trimmedTag) ??
     (newTag && targetOid === null ? `${trimmedTag} does not exist yet, and this repo has no branch to tag: push one first.` : null) ??
-    releaseTextProblem(sealedRepo ? { name: title.trim(), notes: notes.trimEnd() } : { name: finalName, notes: finalNotes }) ??
+    releaseTextProblem(sealedRepo ? { name: title.trim(), notes: notes.trimEnd() } : { name: finalName, notes: longNotes ? '' : finalNotes }) ??
+    longNotesCompose.problem ??
     assetFilesProblem(newFiles) ??
     // A sealed revision whose notes continue stores an asset list even with no file.
     ((newFiles.length > 0 || sealedPlan?.storesList === true) && gap !== null ? gap.message : null) ??
@@ -313,13 +325,13 @@ function NewReleaseDialog({
       previewCreate('release', {
         tagName: trimmedTag,
         name: finalName,
-        notes: finalNotes,
+        notes: longNotes && repo ? fieldEstimate(repo, 'release', finalNotes) : finalNotes,
         yanked,
         assets: JSON.stringify([...kept, ...files.map((f) => plannedAsset(f.name, f.size, policy, profiles))]),
       }),
-    [trimmedTag, finalName, finalNotes, yanked, kept, files, policy, profiles],
+    [trimmedTag, finalName, finalNotes, yanked, kept, files, policy, profiles, longNotes, repo],
   )
-  const releaseCost = sealedPlan?.cost ?? publicCost
+  const releaseCost = sealedPlan?.cost ?? (longNotes ? sumPreviews([publicCost, previewCredits(longNotesCompose.credits)]) : publicCost)
   // A new tag is one more write: a ref update of a new name.
   const cost = useMemo(() => (newTag ? sumPreviews([releaseCost, previewCreate('refUpdate', {}, { repo: false })]) : releaseCost), [newTag, releaseCost])
   const locked = phase !== 'edit'
@@ -573,6 +585,7 @@ function NewReleaseDialog({
         {sealedPlan ? (
           <SealedBudget used={sealedPlan.used} limit={sealedPlan.limit} notesContinue={sealedPlan.notesContinue} storageMaybe={sealedPlan.storesList === 'maybe' && gap !== null} />
         ) : null}
+        <LongComposeNote compose={longNotesCompose} text={notes.trimEnd()} />
         <label className="flex items-start gap-2 text-dense text-anvil-700 dark:text-anvil-200">
           <input type="checkbox" checked={yanked} onChange={(e) => setYanked(e.target.checked)} disabled={locked} className="mt-0.5" data-testid="release-yanked" />
           <span>

@@ -23,6 +23,7 @@ import { preferring, type PullComparison } from '@/lib/view/pull-diff'
 import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/refs'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
+import { useLongCompose } from '@/components/repo/long-body'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -255,7 +256,9 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const cost = sumPreviews([composeCost(repo, 'patch', input ?? { title: title.trim(), body }), ...ownerRequests.map(() => withAddressee(previewCreate(requestAs)))])
   // An archived repo is read-only (QW3-017): no pull request opens there, from any link.
   const composeBlock = home.config?.archived === true ? ARCHIVED_REASON : privateComposeBlock(home)
-  const tooLong = composeTooLong(repo, 'patch', input ?? { title: title.trim(), body })
+  // A description over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
+  const longBody = useLongCompose(repo, 'patch', body, input ?? { title: title.trim() })
+  const tooLong = composeTooLong(repo, 'patch', input ?? { title: title.trim(), body }, longBody)
   const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null || tooLong
 
   // The PR is open whatever happens here: a request that fails is reported, and can be made again
@@ -486,8 +489,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               {body.trim() ? <MarkdownView source={body} /> : <p className="italic text-anvil-600 dark:text-anvil-400">Nothing to preview.</p>}
             </div>
           ) : null}
-          <BodyCounter repo={home.repo} text={body} field="description" />
-          <SealedLimit repo={home.repo} kind="patch" text={title.trim() + body + (input?.baseRefName ?? '') + (input?.sourceRefName ?? '')} />
+          <BodyCounter repo={home.repo} text={body} field="description" long={longBody} />
+          <SealedLimit repo={home.repo} kind="patch" text={title.trim() + body + (input?.baseRefName ?? '') + (input?.sourceRefName ?? '')} long={longBody} />
         </div>
         <CodeOwnerReviewers
           owners={owners}

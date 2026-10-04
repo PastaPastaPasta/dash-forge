@@ -1,0 +1,13 @@
+{
+  "name": "parse_uppercase_hex",
+  "description": "The hash is lowercase hex only.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Head\n\n<!-- forge:body sha256=ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB bytes=9000 -->"
+  },
+  "expected": {
+    "kind": "unsupported",
+    "prefix": "Head"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "encode_text_ending_in_trailer",
+  "description": "A short text whose last line reads as a trailer is stored as an artifact, so readers show it as written.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "full": "Quoting the format:\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=9 -->",
+    "room": 5120,
+    "sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "needsArtifact": true,
+    "stored": "Quoting the format:\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=9 -->\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=119 -->"
+  }
+}

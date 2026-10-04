@@ -95,6 +95,7 @@ import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
 import { TriageNav } from '@/components/repo/triage-nav'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
+import { useLongCompose } from '@/components/repo/long-body'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
 import { applyTemplate, type IssueTemplate } from '@/lib/view/issue-templates'
@@ -455,6 +456,9 @@ function ComposeIssueDialog({
   const labelsLoading = wantsLabels && labelDefs.data === null && labelDefs.error === null
   const cost = sumPreviews([composeCost(repo, 'issue', { title: title.trim(), body: issueBody }, first), ...labelsToApply.map(() => previewCreate('event'))])
   const bodyBytes = utf8Length(issueBody)
+  // A body over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
+  const longBody = useLongCompose(repo, 'issue', issueBody, { title: title.trim() })
+  const bodyTooLong = longBody.long ? longBody.problem !== null : bodyBytes > BODY_MAX
 
   // Untouched template text follows the pick; anything typed stays (QW4-037). A form starts
   // with its own answers; the Markdown body typed meanwhile is kept for a later Markdown pick.
@@ -486,7 +490,7 @@ function ComposeIssueDialog({
   }
 
   const submit = async (): Promise<void> => {
-    if (pending || bodyBytes > BODY_MAX || missing.length > 0 || needsTemplate || labelsLoading || !guard.check(cost, 'collab', 'open an issue')) return
+    if (pending || bodyTooLong || missing.length > 0 || needsTemplate || labelsLoading || !guard.check(cost, 'collab', 'open an issue')) return
     if (!sdk || !signer || title.trim() === '') return
     setPending(true)
     setError(null)
@@ -533,7 +537,7 @@ function ComposeIssueDialog({
             variant="primary"
             onClick={submit}
             loading={pending}
-            disabled={title.trim() === '' || bodyBytes > BODY_MAX || missing.length > 0 || needsTemplate || labelsLoading || guard.disabledReason !== null}
+            disabled={title.trim() === '' || bodyTooLong || missing.length > 0 || needsTemplate || labelsLoading || guard.disabledReason !== null}
             title={guard.disabledReason ?? (needsTemplate ? 'Pick a template' : missing.length > 0 ? `Answer: ${missing.join(', ')}` : undefined)}
           >
             {identity ? 'Submit issue' : locked ? 'Unlock to submit' : 'Sign in to submit'}
@@ -564,8 +568,8 @@ function ComposeIssueDialog({
             links={links}
           />
         )}
-        <SealedLimit repo={repo} kind="issue" text={title.trim() + issueBody} />
-        <BodyCounter repo={repo} text={issueBody} field="description" />
+        <SealedLimit repo={repo} kind="issue" text={title.trim() + issueBody} long={longBody} />
+        <BodyCounter repo={repo} text={issueBody} field="description" long={longBody} />
         {needsTemplate ? <p className="text-[12px] text-anvil-600 dark:text-anvil-400">This repository asks for a template: pick one above.</p> : null}
         {template !== null && template.labels.length > 0 ? (
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="template-labels">

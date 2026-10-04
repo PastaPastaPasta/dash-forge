@@ -1,0 +1,13 @@
+{
+  "name": "open_hash_mismatch",
+  "description": "Bytes that do not hash to the trailer's sha256 are refused.",
+  "case": "long_body",
+  "rules": "v2",
+  "input": {
+    "stored": "Release notes\n\n<!-- forge:body sha256=abababababababababababababababababababababababababababababababab bytes=30 -->",
+    "blobHex": "52656c65617365206e6f7465730a0a2d206f6e650a2d2074776f20c3a90a"
+  },
+  "expected": {
+    "error": "hash"
+  }
+}

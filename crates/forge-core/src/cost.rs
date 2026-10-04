@@ -241,6 +241,14 @@ pub mod push_fees {
         chunk_credits + MANIFEST_FIRST + first_extra + URIS_PER_TARGET * external_targets
     }
 
+    /// The credits of a long body's artifact (`packManifest.kind == 6`, forge-v2.md §6.3) of
+    /// `plain_bytes` of text: its manifest (priced as the repository's first of the kind, with
+    /// each external target's URIs) and, when Platform stores it, its chunks, sealed for a
+    /// private repository. An upper bound.
+    pub fn long_body(plain_bytes: u64, sealed: bool, external_targets: u64, platform: bool) -> u64 {
+        history_index(plain_bytes, sealed, external_targets, platform, true)
+    }
+
     /// What a repository's first history index costs beyond [`MANIFEST_FIRST`] and its chunks:
     /// a new `kind` value opens its own subtree of the manifest's `(repoId, kind, $createdAt)`
     /// index. Measured: dashpay/dash's backfill (67 KB, 5 chunks, moutai beta.6, 2026-09-29)

@@ -10,10 +10,13 @@
 import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
 import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
-import { previewCreate, previewCredits, type CostPreview, type FirstWrite } from '@/lib/sdk'
+import { previewCreate, previewCredits, sumPreviews, type CostPreview, type FirstWrite } from '@/lib/sdk'
+import { fieldEstimate, isLongBody, longBodyCredits } from '@/lib/repo/long-body'
+import { utf8Bytes } from '@/lib/rules/long-body'
 import { admissionFor, estimateBytesCredits } from '@/lib/sdk/cost'
 import { BODY_LIMIT, TITLE_LIMIT, textUse, type TextLimit } from '@/lib/view/text-limits'
 import { TextCounter } from '@/components/ui/text-counter'
+import { LongComposeNote, type LongCompose } from '@/components/repo/long-body'
 
 /** For a public repo: always null. For a private one: null when sealed writes can go ahead, else why not. */
 export function privateComposeBlock(home: RepoHome): string | null {
@@ -46,8 +49,24 @@ export function PrivateComposeNote({ reason }: { reason: string }): JSX.Element 
 export function composeCost(
   repo: RepoRef,
   kind: SealedKind | 'event',
-  data: Readonly<Record<string, unknown>>,
+  input: Readonly<Record<string, unknown>>,
   first: FirstWrite = {},
+): CostPreview {
+  // A body over its field is priced as the field it is written as, plus its artifact
+  // (forge-v2.md §6.3: `longBodyField`).
+  const body = input['body']
+  const long = kind !== 'event' && typeof body === 'string' && isLongBody(repo, kind, body, input)
+  const data = long ? { ...input, body: fieldEstimate(repo, kind, body, input) } : input
+  const extra = long ? previewCredits(longBodyCredits(repo, utf8Bytes(body))) : null
+  const doc = composeDocCost(repo, kind, data, first)
+  return extra === null ? doc : sumPreviews([doc, extra])
+}
+
+function composeDocCost(
+  repo: RepoRef,
+  kind: SealedKind | 'event',
+  data: Readonly<Record<string, unknown>>,
+  first: FirstWrite,
 ): CostPreview {
   const { used, fields, props } = sealedTextUse(kind, data)
   if (repo.visibility !== 'private' || (fields === 0 && kind === 'event')) return previewCreate(kind, data, first)
@@ -62,7 +81,10 @@ export function composeCost(
  * else the contract's own (`body` 5,120 bytes and characters, `title` 1,024 bytes / 256
  * characters). A composer disables its submit on it, so nothing over-long is signed.
  */
-export function composeTooLong(repo: RepoRef, kind: SealedKind, data: Readonly<Record<string, unknown>>): boolean {
+export function composeTooLong(repo: RepoRef, kind: SealedKind, data: Readonly<Record<string, unknown>>, long?: LongCompose): boolean {
+  // a body over the field that this viewer may store whole (`useLongCompose`) is written so; the
+  // title still has its own limit
+  if (long?.long) return long.problem !== null || (repo.visibility !== 'private' && typeof data['title'] === 'string' && textUse(data['title'], TITLE_LIMIT).over)
   if (repo.visibility === 'private') {
     const { used, limit } = sealedTextUse(kind, data)
     return limit !== null && used > limit
@@ -71,8 +93,12 @@ export function composeTooLong(repo: RepoRef, kind: SealedKind, data: Readonly<R
   return over(data['body'], BODY_LIMIT) || over(data['title'], TITLE_LIMIT)
 }
 
-/** The public composer's live byte counter for a body (private repos show {@link SealedLimit}). */
-export function BodyCounter({ repo, text, field = 'text' }: { repo: RepoRef; text: string; field?: string }): JSX.Element | null {
+/**
+ * The public composer's live byte counter for a body (private repos show {@link SealedLimit}); a
+ * text over the field (`long`, `useLongCompose`) shows where its whole text goes instead.
+ */
+export function BodyCounter({ repo, text, field = 'text', long }: { repo: RepoRef; text: string; field?: string; long?: LongCompose }): JSX.Element | null {
+  if (long?.long) return <LongComposeNote compose={long} text={text} />
   if (repo.visibility === 'private') return null
   return <TextCounter text={text} limit={BODY_LIMIT} field={field} />
 }
@@ -81,8 +107,9 @@ export function BodyCounter({ repo, text, field = 'text' }: { repo: RepoRef; tex
  * The composer line §4.3 asks for on a private repo: the combined size limit of the sealed text,
  * and how much of it is used. Null on a public repo.
  */
-export function SealedLimit({ repo, kind, text }: { repo: RepoRef; kind: SealedKind; text: string }): JSX.Element | null {
-  if (repo.visibility !== 'private') return null
+export function SealedLimit({ repo, kind, text, long }: { repo: RepoRef; kind: SealedKind; text: string; long?: LongCompose }): JSX.Element | null {
+  // a body over the field says so in its BodyCounter (`long`) instead
+  if (repo.visibility !== 'private' || long?.long) return null
   const used = new TextEncoder().encode(text).length
   const limit = SEALED_TEXT_LIMIT[kind]
   return (
