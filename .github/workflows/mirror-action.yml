@@ -93,9 +93,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # No release is published yet, so the action builds forge-import, git-remote-dash and dg
-      # from this checkout itself (install: 'source', the path the /mirror wizard's workflows
-      # and the default install take today), installing protoc and caching the build.
+      # The action builds forge-import, git-remote-dash and dg from this checkout itself
+      # (install: 'source', the path the /mirror wizard's workflows take), installing protoc and
+      # caching the build, so the test covers this commit's code, not the pinned release's.
       - name: Mirror (first run)
         id: first
         uses: ./action

@@ -13,9 +13,11 @@
 
 ## Quick start (devnet sakura)
 
-You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)). Prebuilt binaries and the one-line `install.sh` are **coming soon**: the release pipeline is merged, but no release has been tagged yet ([INSTALL.md](docs/INSTALL.md)).
-
-1. **Install** both binaries:
+1. **Install** `dg` and `git-remote-dash` from the latest release ([v0.1.0](docs/releases/v0.1.0.md)); the script checks the archive's SHA-256 before installing into `~/.local/bin`:
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
+   ```
+   Windows, manual downloads, checksums and attestations: [INSTALL.md](docs/INSTALL.md). To build from source instead (Rust and `protoc` 25 or newer, [BUILDING.md](docs/BUILDING.md)):
    ```sh
    git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge
    cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash
@@ -46,7 +48,7 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
 - **Check everything.** A Verification card on every repository page says what was proven and how, including a cross-check of the quorum keys against a second source.
 - **Wire up CI.** `dg webhook add` plus a relay you run yourself (`forge-relay`) turn on-chain activity into GitHub-shaped webhooks, with a durable retry queue.
 
-**Coming soon:** opening pull requests, inline review comments, forks and real merges in the browser; prebuilt releases.
+**Coming soon:** editing files in the browser, and browser merges for private repositories (`dg` has them). The [release notes](docs/releases/v0.1.0.md#known-limitations) list what else is not there yet.
 
 ## Guides
 

@@ -87,8 +87,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # No release is pinned yet, so the action's default install builds dg from this checkout
-      # (installing protoc and caching the build): the path a user's workflow takes today. The
+      # install: 'source' builds dg from this checkout (installing protoc and caching the
+      # build), so the test covers this commit's code, not the release the default pins. The
       # second use reuses the dg the first one built.
       - name: Report in_progress
         uses: ./check-action
@@ -98,6 +98,7 @@ jobs:
           status: in_progress
           network: devnet
           devnet-name: ${{ vars.FORGE_CHECK_DEVNET }}
+          install: 'source'
           fail-on-error: 'true'
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_CI_RUNNER_KEY }}
@@ -112,6 +113,7 @@ jobs:
           job-status: ${{ job.status }}
           network: devnet
           devnet-name: ${{ vars.FORGE_CHECK_DEVNET }}
+          install: 'source'
           fail-on-error: 'true'
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_CI_RUNNER_KEY }}
