@@ -15,7 +15,7 @@
 //! the secrets only when [`pull_trusted`] says so; otherwise it runs as GitHub runs a fork's PR:
 //! no secrets and an empty `GITHUB_TOKEN`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -433,11 +433,13 @@ pub fn author_of(members: &Members, id: &str) -> Author {
 /// Keep in `plan` only what reports check `only` under `trig`: the workflows with a job of
 /// that check name (all their jobs run), and a broken file whose failure carries it.
 pub fn keep_check(plan: &mut workflow::Plan, trig: &Trigger, only: &str) {
-    plan.run.retain(|wf| {
+    let reports = |wf: &workflow::Workflow| {
         wf.jobs
             .iter()
             .any(|j| trig.check_name(&j.check_name) == only)
-    });
+    };
+    plan.run.retain(reports);
+    plan.path_filtered.retain(reports);
     plan.broken
         .retain(|b| trig.check_name(&format!("{} (invalid workflow)", b.file.display())) == only);
 }
@@ -899,7 +901,7 @@ pub fn run(
     }
     if let Some(only) = &opts.only {
         keep_check(&mut plan, trig, only);
-        if plan.run.is_empty() && plan.broken.is_empty() {
+        if plan.run.is_empty() && plan.broken.is_empty() && plan.path_filtered.is_empty() {
             eprintln!(
                 "forge-runner: {} {}: no workflow here reports the check {only:?}; nothing re-run",
                 repo.repo,
@@ -942,10 +944,66 @@ pub fn run(
         let name = ctx.refuse(&b.file, "", &name, &b.reason);
         ran.checks.push((name, "failure"));
     }
+    if !plan.path_filtered.is_empty() {
+        skip_required(&ctx, &plan.path_filtered, &mut ran);
+    }
     for wf in &plan.run {
         run_workflow(&ctx, wf, &mut ran)?;
     }
     Ok(ran)
+}
+
+/// The repository's required check names (`dg repo policy show`): `Some` empty with no policy,
+/// `None` when the policy could not be read.
+fn required_checks(cfg: &Config, repo: &RepoConfig) -> Option<BTreeSet<String>> {
+    match dg_read(cfg, &["repo", "policy", "show", &repo.repo]) {
+        Ok(v) => Some(required_checks_of(&v)),
+        Err(e) => {
+            eprintln!("forge-runner: {}: branch policy not read: {e:#}", repo.repo);
+            None
+        }
+    }
+}
+
+/// [`required_checks`]' reading of `dg repo policy show --json`.
+fn required_checks_of(v: &serde_json::Value) -> BTreeSet<String> {
+    v["policy"]["requiredChecks"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Report `skipped` for each job of `filtered` (workflows a pull request's paths filtered out)
+/// whose check the branch policy requires, so the check is decided instead of waiting forever
+/// for a run that will never come (GitHub's "Expected — waiting for status" trap). Other jobs
+/// get nothing: each report is a paid write. When the policy can't be read, every job is
+/// reported, so a required one is never left waiting.
+fn skip_required(c: &RunCtx<'_>, filtered: &[workflow::Workflow], ran: &mut Ran) {
+    let required = required_checks(c.cfg, c.repo);
+    for wf in filtered {
+        for j in &wf.jobs {
+            let name = c.trig.check_name(&j.check_name);
+            if required.as_ref().is_some_and(|r| !r.contains(&name)) {
+                continue;
+            }
+            let r = Report {
+                conclusion: Some("skipped"),
+                summary: Some(format!(
+                    "Skipped: {} changes no file this workflow's `paths` filters select{}.",
+                    c.trig.label(),
+                    c.note
+                )),
+                ..c.report_of(&wf.file, &j.id, &j.check_name, "completed")
+            };
+            report(c.cfg, &r);
+            ran.checks.push((r.name, "skipped"));
+        }
+    }
 }
 
 /// Run one workflow file with act (its refused jobs reported, not run) and report its jobs.
@@ -1374,6 +1432,7 @@ mod tests {
                 file: PathBuf::from(".forge/workflows/bad.yml"),
                 reason: "x".into(),
             }],
+            path_filtered: vec![wf("docs.yml", "Docs", &["spell"])],
         };
         let push = Trigger::Push(push());
         let mut p = plan();
@@ -1384,7 +1443,13 @@ mod tests {
             2,
             "every job of the workflow runs again"
         );
-        assert!(p.broken.is_empty());
+        assert!(p.broken.is_empty() && p.path_filtered.is_empty());
+        let mut p = plan();
+        keep_check(&mut p, &push, "Docs / spell");
+        assert!(
+            p.run.is_empty() && p.path_filtered.len() == 1,
+            "a re-run of a skipped check is judged again"
+        );
         let mut p = plan();
         keep_check(&mut p, &push, ".forge/workflows/bad.yml (invalid workflow)");
         assert!(p.run.is_empty() && p.broken.len() == 1);
@@ -1402,6 +1467,22 @@ mod tests {
         keep_check(&mut p, &pr, "Lint / lint (pull_request)");
         assert_eq!(p.run.len(), 1);
         assert_eq!(p.run[0].name, "Lint");
+    }
+
+    #[test]
+    fn the_required_checks_come_from_the_policy() {
+        let v = json!({"repo": "o/r", "policy": {"requiredChecks": ["CI / test (pull_request)", "Lint / lint"]}});
+        assert_eq!(
+            required_checks_of(&v),
+            BTreeSet::from([
+                "CI / test (pull_request)".to_string(),
+                "Lint / lint".to_string()
+            ])
+        );
+        assert!(
+            required_checks_of(&json!({"repo": "o/r", "policy": null})).is_empty(),
+            "no policy requires nothing"
+        );
     }
 
     #[test]

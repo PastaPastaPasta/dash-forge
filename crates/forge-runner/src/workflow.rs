@@ -99,6 +99,10 @@ pub struct Plan {
     pub run: Vec<Workflow>,
     /// The files that could not be read (each reported as one failed check).
     pub broken: Vec<Broken>,
+    /// The files that would run on this pull request but for their `paths` / `paths-ignore`
+    /// filter ([`Facts::filtered_by_paths`]). A required check among their jobs is reported
+    /// `skipped`, so it does not wait forever for a run that will never come.
+    pub path_filtered: Vec<Workflow>,
 }
 
 /// The push a workflow's `on.push` filter is judged against.
@@ -111,6 +115,7 @@ pub struct PushFacts<'a> {
 }
 
 /// The pull-request activity a workflow's `on.pull_request` filter is judged against.
+#[derive(Clone, Copy)]
 pub struct PullFacts<'a> {
     /// The base branch, short (`main`): what `branches` / `branches-ignore` match.
     pub base: &'a str,
@@ -138,6 +143,23 @@ pub enum Facts<'a> {
 }
 
 impl Facts<'_> {
+    /// Whether a workflow whose `on` is `on` does not run on this pull request only because the
+    /// PR changes no path its `paths` / `paths-ignore` filter selects. Pull requests only: their
+    /// changes are the whole PR (`base...head`). A push's are only that push's commits, so a
+    /// skip there could pass a required check on a head whose earlier commits it never ran on.
+    pub fn filtered_by_paths(&self, on: &Value) -> bool {
+        match self {
+            Facts::PullRequest(p) if p.changed.is_some() => {
+                let unfiltered = PullFacts {
+                    changed: None,
+                    ..*p
+                };
+                !runs_on_pull_request(on, p) && runs_on_pull_request(on, &unfiltered)
+            }
+            _ => false,
+        }
+    }
+
     /// Whether a workflow whose `on` is `on` runs.
     pub fn runs(&self, on: &Value) -> bool {
         match self {
@@ -206,6 +228,8 @@ pub fn plan(
             Ok((wf, on)) => {
                 if facts.runs(&on) {
                     plan.run.push(wf);
+                } else if facts.filtered_by_paths(&on) {
+                    plan.path_filtered.push(wf);
                 }
             }
             Err(reason) => plan.broken.push(Broken { file: rel, reason }),
@@ -786,6 +810,67 @@ jobs:
         #[cfg(unix)]
         assert_eq!(broken, [".forge/workflows/c.yml", ".forge/workflows/d.yml"]);
     }
+    #[test]
+    fn a_pull_request_that_changes_no_watched_path_is_path_filtered() {
+        let on = |t: &str| {
+            wf(&format!("{t}\njobs:\n  a:\n    runs-on: x\n"))
+                .unwrap()
+                .1
+        };
+        let docs = ["docs/a.md".to_string()];
+        let src = ["src/a.rs".to_string()];
+        let pr = |changed| {
+            Facts::PullRequest(PullFacts {
+                base: "main",
+                action: "opened",
+                changed,
+                any_type: false,
+            })
+        };
+        let paths = on("on:\n  pull_request:\n    paths: ['src/**']");
+        let ignore = on("on:\n  pull_request:\n    paths-ignore: ['docs/**']");
+        assert!(pr(Some(&docs)).filtered_by_paths(&paths));
+        assert!(pr(Some(&docs)).filtered_by_paths(&ignore));
+        assert!(
+            !pr(Some(&src)).filtered_by_paths(&paths),
+            "a workflow that runs is not filtered"
+        );
+        assert!(
+            !pr(None).filtered_by_paths(&paths),
+            "unknown changes run the workflow"
+        );
+        let other_base = on("on:\n  pull_request:\n    branches: [dev]\n    paths: ['src/**']");
+        assert!(
+            !pr(Some(&docs)).filtered_by_paths(&other_base),
+            "a workflow for another base would not run whatever the paths"
+        );
+        assert!(!pr(Some(&docs)).filtered_by_paths(&on("on: push")));
+        let push_paths = on("on:\n  push:\n    paths: ['src/**']");
+        assert!(
+            !Facts::Push(facts("refs/heads/main", Some(&docs))).filtered_by_paths(&push_paths),
+            "a push's changes are only its own commits, so a push is never skipped"
+        );
+
+        let d = tempfile::tempdir().unwrap();
+        let w = d.path().join(".forge/workflows");
+        std::fs::create_dir_all(&w).unwrap();
+        std::fs::write(
+            w.join("a.yml"),
+            "on:\n  pull_request:\n    paths: ['src/**']\njobs:\n  a:\n    runs-on: x\n",
+        )
+        .unwrap();
+        std::fs::write(
+            w.join("b.yml"),
+            "on: pull_request\njobs:\n  b:\n    runs-on: x\n",
+        )
+        .unwrap();
+        let p = plan(d.path(), &w, &pr(Some(&docs)), false, &["x"]);
+        assert_eq!(p.run.len(), 1);
+        assert_eq!(p.run[0].file, Path::new(".forge/workflows/b.yml"));
+        assert_eq!(p.path_filtered.len(), 1);
+        assert_eq!(p.path_filtered[0].jobs[0].check_name, "a.yml / a");
+    }
+
     #[test]
     fn a_schedule_runs_the_workflows_that_list_its_cron() {
         let on = |t: &str| -> Value { yaml_serde::from_str::<Value>(t).unwrap()["on"].clone() };
