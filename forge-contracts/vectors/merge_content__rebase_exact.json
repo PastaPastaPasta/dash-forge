@@ -1,0 +1,27 @@
+{
+  "name": "rebase_exact",
+  "description": "Commits on the base's previous tip (the merge commit's parent is a rebased commit, not the tip) that together make exactly the PR's changes are a rebase of it.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "4444444444444444444444444444444444444444"
+    ],
+    "headInMerge": false,
+    "tipBeforeInMerge": true,
+    "mergeChange": {
+      "src/a.rs": "a1"
+    },
+    "prChange": {
+      "src/a.rs": "a1"
+    },
+    "baseChange": {}
+  },
+  "expected": {
+    "verdict": "rebase",
+    "combined": []
+  }
+}
