@@ -734,9 +734,13 @@ pub fn draft_after(kind: u64) -> bool {
 /// skipped (consensus refuses it: `a_kindOfTarget`).
 ///
 /// A merge (kind 13) is `merged: true`: "merged" is the chain fact (a member recorded it, D-9).
-/// When the relay did not find its `oid` as the tip of a valid update of the PR's base ref
-/// (`merge_on_base == false`) the payload adds `dash_merge_unverified: true`, the label forge
-/// readers show ("merge commit not found on the base").
+/// Consensus admits a merge naming any commit the base once held, and the relay reads no git
+/// objects, so it cannot tell whether that commit contains the PR. Every merge therefore adds
+/// `dash_merge_unverified: true` and `dash_merge_check`: `"not_on_base"` when the relay did not
+/// find its `oid` as the tip of a valid update of the PR's base ref (`merge_on_base == false`,
+/// the label forge readers show as "merge commit not found on the base"), else
+/// `"content_unchecked"`. A receiver that acts on merges (a release, a deploy) checks the
+/// commit itself (`dg pr verify`).
 ///
 /// A lock or unlock ([`lock_action`]) is `locked` / `unlocked` with the object's `locked` set
 /// and its state as the relay last saw it: open unless the target is in `closed`, and merged
@@ -777,8 +781,13 @@ pub fn translate_transition(
     };
     // The actor is the transition's writer, not the target's author.
     e.payload["sender"] = repo.user_json(&d.owner_id);
-    if merged && !merge_on_base {
+    if merged {
         e.payload["dash_merge_unverified"] = serde_json::Value::Bool(true);
+        e.payload["dash_merge_check"] = serde_json::Value::from(if merge_on_base {
+            "content_unchecked"
+        } else {
+            "not_on_base"
+        });
     }
     Some(e)
 }
@@ -1225,16 +1234,26 @@ mod tests {
                 matches!(kind, 14 | 16 | 17),
                 "kind {kind}"
             );
-            assert!(e.payload.get("dash_merge_unverified").is_none());
+            assert_eq!(
+                e.payload.get("dash_merge_unverified").is_some(),
+                merged,
+                "kind {kind}: only a merge carries the merge flags"
+            );
         }
         // A review (or any event) on a draft PR says draft, as the relay last saw it.
         let mut drafted = target(true, 3);
         drafted.draft = true;
         assert!(drafted.pr_obj("p", true, false).draft);
-        // Merged is the chain fact (D-9); a commit not found on the base is labelled.
+        // Merged is the chain fact (D-9). The relay reads no git, so no merge is verified: a
+        // commit found on the base still needs its content checked, and one not found is labelled.
+        let e = translate_transition(&meta(), &tr(13, [9; 32]), &prs, true, &none).unwrap();
+        assert_eq!(e.payload["pull_request"]["merged"], true);
+        assert_eq!(e.payload["dash_merge_unverified"], true);
+        assert_eq!(e.payload["dash_merge_check"], "content_unchecked");
         let e = translate_transition(&meta(), &tr(13, [9; 32]), &prs, false, &none).unwrap();
         assert_eq!(e.payload["pull_request"]["merged"], true);
         assert_eq!(e.payload["dash_merge_unverified"], true);
+        assert_eq!(e.payload["dash_merge_check"], "not_on_base");
         // A PR kind on an issue (or the reverse), an unknown kind or target: nothing.
         assert!(translate_transition(&meta(), &tr(11, [1; 32]), &issues, true, &none).is_none());
         assert!(translate_transition(&meta(), &tr(1, [9; 32]), &prs, true, &none).is_none());

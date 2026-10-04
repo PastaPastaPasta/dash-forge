@@ -1,0 +1,29 @@
+{
+  "name": "contains_merge_commit",
+  "description": "A merge commit whose second parent is the PR head contains the PR.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "3333333333333333333333333333333333333333",
+      "1111111111111111111111111111111111111111"
+    ],
+    "headInMerge": true,
+    "tipBeforeInMerge": true,
+    "mergeChange": {
+      "src/a.rs": "a1",
+      "docs/x.md": "x9"
+    },
+    "prChange": {
+      "src/a.rs": "a1"
+    },
+    "baseChange": {}
+  },
+  "expected": {
+    "verdict": "contains",
+    "combined": []
+  }
+}

@@ -55,6 +55,7 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
@@ -101,7 +102,7 @@ import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { pendingReruns, rerunCounts } from '@/lib/rules/ci-rerun'
-import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { firstPushers, headUpdatePhrases, sourceBranchEvents, type HeadUpdatePhrase } from '@/lib/view/head-updates'
@@ -142,6 +143,8 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
+import { checkMerge } from '@/lib/view/merge-check'
+import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
 import { CopyRow } from '@/components/ui/copy-row'
@@ -406,6 +409,15 @@ function PullPage({
     [cmp === null ? '' : `${cmp.comparedBaseOid}:${comparison.sidesKey}`, pull.headOid, baseTipOid],
     { enabled: headReader !== null && cmp !== null },
   )
+  // Merge integrity: whether the recorded merge commit contains this PR (a squash or a rebase of
+  // it counts), read through the comparison's readers once it has loaded. Git objects only: no
+  // Platform reads beyond the page's own.
+  const mergeHead = merged && pull.mergedAt !== undefined ? headAt(pull.review.headUpdates, pull.initialHeadOid, pull.mergedAt) : ''
+  const mergeCheck = useAsync(
+    () => checkMerge(cmp!.sides, { headOid: mergeHead, mergeOid: pull.mergeOid!, tipBefore: pull.baseOidAtMerge ?? '' }),
+    [pull.mergeOid ?? '', mergeHead, pull.baseOidAtMerge ?? '', comparison.sidesKey],
+    { enabled: merged && cmp !== null && (pull.mergeOid ?? '') !== '' && mergeHead !== '' && pull.state.mergeOnBase !== false },
+  )
   // The repo holding the PR's source branch: this one for a same-repo PR, else the fork once read.
   const sourceRefOf = (): RepoRef | null =>
     pull.sourceId === '' || pull.sourceId === repo.repoId ? repo : comparison.source.kind === 'found' ? comparison.source.repo : null
@@ -569,7 +581,8 @@ function PullPage({
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
-  const [comment, setComment] = useState('')
+  // The unsent comment survives a reload (never stored for a private repo).
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity))
   const commentIntent = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -756,17 +769,24 @@ function PullPage({
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
+    // Until the outcome is known, a reload must not bring the text back to be posted again.
+    holdDraft(true, comment)
     try {
       const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent, post: postContext })
       setComment('')
+      holdDraft(false, '')
       commentIntent.renew()
       refresh((t) => t.comments.some((c) => c.id === r.documentId))
     } catch (e) {
       // Another tab of this identity wrote it: the composer's text is on chain, clear it.
       if (e instanceof SupersededWriteError) {
         setComment('')
+        holdDraft(false, '')
         commentIntent.renew()
         refresh()
+      } else if (!(e instanceof UnconfirmedWriteError)) {
+        // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays held.)
+        holdDraft(false, comment)
       }
       setCommentError(guard.failed(e))
     } finally {
@@ -1189,6 +1209,7 @@ function PullPage({
               merge commit not found on the base
             </span>
           ) : null}
+          {mergeCheck.data ? <MergeContentNote content={mergeCheck.data} mergeOid={pull.mergeOid ?? ''} /> : null}
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
               head <Oid value={pull.headOid} chars={9} />
@@ -1555,7 +1576,7 @@ function PullPage({
                     <PrivateComposeNote reason={composeBlock} />
                   ) : (
                     <>
-                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} />
                       <SealedLimit repo={repo} kind="comment" text={comment.trim()} long={commentLong} />
                       <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} />
                     </>
@@ -2248,13 +2269,21 @@ function BranchRules({
           <span>Couldn&apos;t read the branch policy; merging is blocked until it loads (a maintainer can bypass it).</span>
         </p>
       ) : policy !== null && status !== null ? (
-        <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
-          {status.met ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
-          <span>
-            {status.have} of {plural(status.need, 'required approval')}
-            {policy.approverRole === 1 ? ' (maintainers)' : ''}
-          </span>
-        </p>
+        <>
+          <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
+            {status.have >= status.need ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
+            <span>
+              {status.have} of {plural(status.need, 'required approval')}
+              {policy.approverRole === 1 ? ' (maintainers)' : ''}
+            </span>
+          </p>
+          {status.blockedBy.length > 0 ? (
+            <p className="mt-1 flex items-center gap-2" data-testid="policy-changes-requested">
+              <X className="h-4 w-4 shrink-0 text-danger" aria-hidden />
+              <span>Changes requested by {plural(status.blockedBy.length, 'reviewer')}. Merging waits until they approve or the review is dismissed.</span>
+            </p>
+          ) : null}
+        </>
       ) : null}
       {known !== null && (named.length > 0 || known.requireChecks === true) ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
@@ -2289,4 +2318,28 @@ function commitAuthors(commits: readonly { readonly commit: { readonly author: {
     }
   }
   return out
+}
+
+/** What a merged PR's recorded merge commit holds (`merge-content.ts`), next to its state. */
+function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeOid: string }) {
+  const combined = content.combined.length > 0 ? `, combined with base changes in ${plural(content.combined.length, 'file')}` : ''
+  const words: Record<MergeContent['verdict'], string> = {
+    contains: 'contains this PR',
+    squash: `squash of this PR${combined}`,
+    rebase: `rebase of this PR${combined}`,
+    missing: "does not contain this PR's commits",
+    unknown: "couldn't check: its commits could not be read",
+  }
+  const missing = content.verdict === 'missing'
+  return (
+    <span
+      className={`flex items-center gap-1 text-[12px] ${missing ? 'font-medium text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400'}`}
+      data-testid="pr-merge-content"
+      data-verdict={content.verdict}
+      title={missing ? 'A maintainer or writer recorded this merge, but the commit it names neither contains the PR head nor makes its changes.' : undefined}
+    >
+      {missing ? <X className="h-3.5 w-3.5" aria-hidden /> : content.verdict === 'unknown' ? null : <Check className="h-3.5 w-3.5 text-verify" aria-hidden />}
+      merge <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
+    </span>
+  )
 }

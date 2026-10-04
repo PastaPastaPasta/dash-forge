@@ -1,0 +1,27 @@
+{
+  "name": "missing_base_rewritten",
+  "description": "The merge commit does not descend from the base's previous tip (the base was rewritten), and the head is not in it: no squash or rebase is recognised.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "3333333333333333333333333333333333333333"
+    ],
+    "headInMerge": false,
+    "tipBeforeInMerge": false,
+    "mergeChange": {
+      "src/a.rs": "a1"
+    },
+    "prChange": {
+      "src/a.rs": "a1"
+    },
+    "baseChange": {}
+  },
+  "expected": {
+    "verdict": "missing",
+    "combined": []
+  }
+}
