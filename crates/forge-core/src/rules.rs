@@ -2355,6 +2355,16 @@ mod tests {
         assert_eq!(got.expect("serialize"), v.expected, "vector `{ctx}`");
     }
 
+    /// `repo_name`: [`v2::is_valid_repo_name`] and [`v2::normalize_repo_name`].
+    fn run_repo_name_case(v: &Vector) {
+        let inp: RepoNameInput = input(v);
+        let got = serde_json::json!({
+            "valid": v2::is_valid_repo_name(&inp.name),
+            "normalized": v2::normalize_repo_name(&inp.name),
+        });
+        assert_eq!(got, v.expected, "vector `{}`", v.name);
+    }
+
     /// `mirror_backlink` and `mirror_backlink_file`: the mirror back-link ([`super::mirror`]).
     fn run_mirror_case(v: &Vector) {
         #[derive(Deserialize, Serialize)]
@@ -2503,14 +2513,7 @@ mod tests {
             "profile_input" | "avatar_config" => run_profile_case(v),
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
             "pubkey_entry" | "commit_signature" => run_signature_case(v),
-            "repo_name" => {
-                let inp: RepoNameInput = input(v);
-                let got = serde_json::json!({
-                    "valid": v2::is_valid_repo_name(&inp.name),
-                    "normalized": v2::normalize_repo_name(&inp.name),
-                });
-                assert_eq!(got, v.expected, "vector `{ctx}`");
-            }
+            "repo_name" => run_repo_name_case(v),
             "role_oracle" => {
                 let inp: RoleOracleInput = input(v);
                 let oracle = v2::RoleOracle::new(inp.memberships);
