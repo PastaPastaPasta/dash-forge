@@ -95,7 +95,8 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   const repoName = home.repo.name || addr.name
   const lookalikes = [
     ownerName ? { kind: 'owner' as const, name: ownerName, identity: home.repo.ownerId } : null,
-    { kind: 'repo' as const, name: repoName, identity: home.repo.ownerId, repoId: home.repo.repoId, label: `${ownerLabel(home.repo.ownerId, ownerName)}/${repoName}` },
+    // Another owner's repo of the very same name is worth a note, unless this one is a fork.
+    { kind: 'repo' as const, name: repoName, identity: home.repo.ownerId, repoId: home.repo.repoId, label: `${ownerLabel(home.repo.ownerId, ownerName)}/${repoName}`, sameNameCounts: !home.v2.forkOf },
   ]
   const tabs = [
     { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true, count: null },
@@ -134,7 +135,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           <CopyLinkButton repo={addr} />
           {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
           <WatchButton repo={home.repo} />
-          <StarButton repo={home.repo} count={home.starCount} />
+          <StarButton repo={home.repo} count={home.starCount} lookalikes={lookalikes} />
         </div>
       </div>
 

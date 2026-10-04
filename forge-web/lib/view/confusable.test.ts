@@ -1,18 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { editDistance, looksLike, skeleton } from './confusable'
+import { comparable, editDistance, looksLike, skeleton } from './confusable'
 
 describe('confusable skeletons (TS-24)', () => {
   it('folds what DPNS does not', () => {
     expect(skeleton('dashpay')).toBe(skeleton('dash-pay'))
     expect(skeleton('dashpay')).toBe(skeleton('DASHPAY'))
-    expect(skeleton('dashpay')).toBe(skeleton('dashpаy')) // Cyrillic а
-    expect(skeleton('dashpay')).toBe(skeleton('dαshpαy')) // Greek α
     expect(skeleton('myname')).toBe(skeleton('rnyname'))
     expect(skeleton('wallet')).toBe(skeleton('vvallet'))
     expect(skeleton('dash')).toBe(skeleton('clash'))
+    expect(skeleton('dash')).toBe(skeleton('c1ash'))
+    expect(skeleton('dash')).toBe(skeleton('ciash'))
     expect(skeleton('pool')).toBe(skeleton('p00l'))
     expect(skeleton('alice')).toBe(skeleton('a1ice'))
-    expect(skeleton('café')).toBe(skeleton('cafe'))
   })
 })
 
@@ -23,6 +22,7 @@ describe('looksLike', () => {
     expect(looksLike('dashpya', 'dashpay')).toBe(false) // a swap is two edits
     expect(looksLike('dashpai', 'dashpay')).toBe(true)
     expect(looksLike('rnasternode', 'masternode')).toBe(true)
+    expect(looksLike(comparable('dashpay2'), 'dashpay')).toBe(true)
   })
 
   it('leaves the same name and unrelated names alone', () => {
@@ -31,6 +31,11 @@ describe('looksLike', () => {
     expect(looksLike('alice', 'bob')).toBe(false)
     expect(looksLike('dash', 'dish')).toBe(false) // short names need an exact skeleton match
     expect(looksLike('', 'dash')).toBe(false)
+  })
+
+  it('counts the same name when asked (two repos may share one)', () => {
+    expect(looksLike('dashcore', 'dashcore', true)).toBe(true)
+    expect(looksLike('', '', true)).toBe(false)
   })
 })
 

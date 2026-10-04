@@ -168,7 +168,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
   const following = follow.on === true
   // A named identity is remembered for the look-alike note (TS-24): followed, or visited below.
   const named = data?.name ? { kind: 'owner' as const, name: data.name, identity: identityId } : null
-  useRememberAcquaintance(named, 'followed', following)
+  useRememberAcquaintance([named], 'followed', isSelf ? null : follow.on)
   const first = useFirstWrite(
     () => followFirsts(sdk!, forge!.community, identity!, identityId, data?.followers),
     [identity ?? '', network, identityId],
