@@ -1,0 +1,60 @@
+{
+  "name": "stale_changes_request_does_not_block",
+  "description": "A request for changes on an older head no longer stands once the head moves.",
+  "case": "policy",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "maint2",
+        "verdict": 2,
+        "commitOid": "OLD",
+        "createdAt": 90
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "prAuthor": "auth",
+    "policy": {
+      "requiredApprovals": 1,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0
+    }
+  },
+  "expected": {
+    "met": true,
+    "have": 1,
+    "need": 1,
+    "blockedBy": []
+  }
+}
