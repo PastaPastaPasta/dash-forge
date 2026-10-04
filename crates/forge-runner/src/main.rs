@@ -27,6 +27,7 @@
 mod act;
 mod artifacts;
 mod config;
+mod cron;
 mod relay;
 mod run;
 mod watch;
@@ -39,13 +40,13 @@ use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
 
 use crate::config::{Config, PullPolicy};
-use crate::watch::{parse_ls_remote, pull_events, pushes, state_path, RepoState};
+use crate::watch::{default_branch, parse_ls_remote, pull_events, pushes, state_path, RepoState};
 
 /// forge-runner command line.
 #[derive(Debug, Parser)]
 #[command(
     name = "forge-runner",
-    version,
+    version = env!("DASH_FORGE_VERSION"),
     about = "Run Dash Forge workflows with act and report check runs"
 )]
 struct Cli {
@@ -305,6 +306,24 @@ fn run_locked(
     trig: &run::Trigger,
     opts: &run::RunOpts,
 ) -> Result<run::Ran> {
+    locked(cfg, repo, |dir| {
+        run::reset_toolcache(cfg);
+        let run_dir = dir
+            .join("runs")
+            .join(format!("{}-{}", std::process::id(), run::now_ms()));
+        std::fs::create_dir_all(&run_dir)?;
+        let result = run::run(cfg, repo, trig, opts, &run_dir);
+        let _ = std::fs::remove_dir_all(&run_dir);
+        result
+    })
+}
+
+/// Run `f` on the repository's work directory while holding its lock (see [`run_locked`]).
+fn locked<T>(
+    cfg: &Config,
+    repo: &config::RepoConfig,
+    f: impl FnOnce(&std::path::Path) -> Result<T>,
+) -> Result<T> {
     let dir = run::repo_dir(cfg, repo);
     std::fs::create_dir_all(&dir)?;
     let lock_path = dir.join("lock");
@@ -321,13 +340,7 @@ fn run_locked(
             lock_path.display()
         )
     })?;
-    run::reset_toolcache(cfg);
-    let run_dir = dir
-        .join("runs")
-        .join(format!("{}-{}", std::process::id(), run::now_ms()));
-    std::fs::create_dir_all(&run_dir)?;
-    let result = run::run(cfg, repo, trig, opts, &run_dir);
-    let _ = std::fs::remove_dir_all(&run_dir);
+    let result = f(&dir);
     drop(lock);
     result
 }
@@ -346,7 +359,9 @@ const FOLLOW_BEYOND: usize = 10;
 fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
     let path = state_path(&cfg.state_dir, &repo.repo);
     let mut state = RepoState::load(&path)?;
-    let now = parse_ls_remote(&run::ls_remote(cfg, repo)?);
+    let listing = run::ls_remote(cfg, repo)?;
+    let now = parse_ls_remote(&listing);
+    let head = default_branch(&listing, &now);
     if !state.primed {
         // The first poll records where the repository is; it does not run its history.
         eprintln!("forge-runner: watching {} ({} refs)", repo.repo, now.len());
@@ -354,7 +369,9 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
         state.primed = true;
         state.save(&path)?;
         let pulls = poll_pulls(cfg, repo, &mut state, &path);
-        return pulls.and(poll_reruns(cfg, repo, &mut state, &path));
+        let reruns = poll_reruns(cfg, repo, &mut state, &path);
+        let schedule = poll_schedule(cfg, repo, &mut state, &path, head.as_ref());
+        return pulls.and(reruns).and(schedule);
     }
     for push in pushes(&state.tips, &now) {
         let key = format!("{} {}", push.refname, push.oid);
@@ -392,9 +409,92 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
     });
     state.save(&path)?;
     let pulls = poll_pulls(cfg, repo, &mut state, &path);
-    // Re-run requests are read even when the pull requests could not be.
+    // Re-run requests and schedules are judged even when the pull requests could not be read.
     let reruns = poll_reruns(cfg, repo, &mut state, &path);
-    pulls.and(reruns)
+    let schedule = poll_schedule(cfg, repo, &mut state, &path, head.as_ref());
+    pulls.and(reruns).and(schedule)
+}
+
+/// The `schedule` half of a poll (`schedule = true`): run, on the default branch's tip, each
+/// `on.schedule` cron expression whose time came since the last poll (UTC), once however many
+/// of its times passed, as `schedule` with checks named `… (schedule)`. The expressions are read
+/// from the tip once per tip. The first poll only records the time; a missed time is not run
+/// later, and a run that fails is not repeated (as on GitHub).
+fn poll_schedule(
+    cfg: &Config,
+    repo: &config::RepoConfig,
+    state: &mut RepoState,
+    path: &std::path::Path,
+    head: Option<&(String, String)>,
+) -> Result<()> {
+    if !repo.schedule {
+        if state.schedule_since.is_some() || state.schedule_tip.is_some() {
+            state.schedule_since = None;
+            state.schedule_tip = None;
+            state.schedule_crons.clear();
+            state.save(path)?;
+        }
+        return Ok(());
+    }
+    let now = run::now_ms();
+    let Some(since) = state.schedule_since else {
+        state.schedule_since = Some(now);
+        return state.save(path);
+    };
+    let Some((refname, tip)) = head else {
+        eprintln!(
+            "forge-runner: {}: no default branch to run schedules on",
+            repo.repo
+        );
+        state.schedule_since = Some(now);
+        return state.save(path);
+    };
+    if state.schedule_tip.as_deref() != Some(tip.as_str()) {
+        // Read once per tip; a failed read is tried again at the next poll (the window stays).
+        let crons = locked(cfg, repo, |_| run::scheduled_crons(cfg, repo, refname, tip))?;
+        state.schedule_crons = crons
+            .into_iter()
+            .filter(|(c, file)| match cron::Cron::parse(c) {
+                Ok(_) => true,
+                Err(e) => {
+                    eprintln!(
+                        "forge-runner: {} {file}: schedule {c:?} not run: {e}",
+                        repo.repo
+                    );
+                    false
+                }
+            })
+            .collect();
+        state.schedule_tip = Some(tip.clone());
+    }
+    let due: std::collections::BTreeSet<String> = state
+        .schedule_crons
+        .iter()
+        .filter(|(c, _)| cron::Cron::parse(c).is_ok_and(|c| c.fires_in(since, now)))
+        .map(|(c, _)| workflow::normal_cron(c))
+        .collect();
+    state.schedule_since = Some(now);
+    state.save(path)?;
+    for cron in due {
+        eprintln!(
+            "forge-runner: {} schedule {cron:?} → {} at {}",
+            repo.repo,
+            refname,
+            &tip[..12.min(tip.len())]
+        );
+        let trig = run::Trigger::Schedule {
+            push: watch::Push {
+                refname: refname.clone(),
+                oid: tip.clone(),
+                before: None,
+            },
+            cron,
+        };
+        if let Err(e) = run_locked(cfg, repo, &trig, &run::RunOpts::default()) {
+            eprintln!("forge-runner: {} {}: {e:#}", repo.repo, trig.label());
+        }
+    }
+    Ok(())
 }
 
 /// The pull-request half of a poll: list the newest [`PULL_LIMIT`] PRs, and run each one that
@@ -626,6 +726,11 @@ fn rerun_triggers(
             &pr.head_oid[..12.min(pr.head_oid.len())]
         )));
     }
+    if req.check.as_deref().is_some_and(is_schedule_check) {
+        return Ok(Err(
+            "a scheduled check is not re-run on request; it runs again at its next time".into(),
+        ));
+    }
     let (pull, push) = match req.check.as_deref() {
         None => (true, true),
         Some(c) => (is_pull_check(c), !is_pull_check(c)),
@@ -714,6 +819,11 @@ fn is_pull_check(name: &str) -> bool {
     name.ends_with(" (pull_request)") || name.ends_with(" (pull_request, non-member)")
 }
 
+/// Whether check `name` is a scheduled run's (` (schedule)`).
+fn is_schedule_check(name: &str) -> bool {
+    name.ends_with(" (schedule)")
+}
+
 /// Why a poll does not run a PR's activity, if it does not:
 ///
 /// * `pull_requests = "members"` runs members' PRs only;
@@ -781,6 +891,7 @@ mod tests {
         assert!(is_pull_check("CI / build (pull_request, non-member)"));
         assert!(!is_pull_check("CI / build"));
         assert!(!is_pull_check("CI / build (schedule)"));
+        assert!(is_schedule_check("CI / build (schedule)") && !is_schedule_check("CI / build"));
     }
 
     #[test]

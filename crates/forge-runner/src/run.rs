@@ -51,6 +51,9 @@ pub enum Trigger {
         event: Box<PullEvent>,
         author: Author,
     },
+    /// A `schedule` cron expression's time came: the default branch's tip (`push.before` is
+    /// `None`) runs the workflows that list `cron`.
+    Schedule { push: Push, cron: String },
 }
 
 impl Trigger {
@@ -59,7 +62,7 @@ impl Trigger {
     /// branch's own push runs.
     pub fn key(&self) -> Push {
         match self {
-            Trigger::Push(p) => p.clone(),
+            Trigger::Push(p) | Trigger::Schedule { push: p, .. } => p.clone(),
             Trigger::Pull { event, .. } => Push {
                 refname: format!("refs/pull/{}/head", event.pr.number),
                 oid: event.pr.head_oid.clone(),
@@ -73,17 +76,19 @@ impl Trigger {
         match self {
             Trigger::Push(_) => "push",
             Trigger::Pull { .. } => "pull_request",
+            Trigger::Schedule { .. } => "schedule",
         }
     }
 
     /// A job's check name: `<workflow> / <job>`, then ` (pull_request)` for a member's PR run,
-    /// or ` (pull_request, non-member)` for anyone else's (at most 100 characters, the suffix
-    /// kept). So a PR's checks and the branch's push checks on one commit never replace each
+    /// ` (pull_request, non-member)` for anyone else's, or ` (schedule)` for a scheduled run (at
+    /// most 100 characters, the suffix kept), so a scheduled run never replaces a push's check. So a PR's checks and the branch's push checks on one commit never replace each
     /// other, and a stranger's PR that names a member's commit as its head cannot post the run
     /// that decides the member's required check (readers keep the newest run per name).
     pub fn check_name(&self, base: &str) -> String {
         let suffix = match self {
             Trigger::Push(_) => "",
+            Trigger::Schedule { .. } => " (schedule)",
             Trigger::Pull {
                 author: Author::Stranger,
                 ..
@@ -100,7 +105,7 @@ impl Trigger {
     pub fn allows_container_options(&self, repo: &RepoConfig) -> bool {
         repo.allow_container_options
             && match self {
-                Trigger::Push(_) => true,
+                Trigger::Push(_) | Trigger::Schedule { .. } => true,
                 Trigger::Pull { event, author } => {
                     !event.pr.is_fork() && *author != Author::Stranger
                 }
@@ -112,13 +117,14 @@ impl Trigger {
         match self {
             Trigger::Push(p) => p.refname.clone(),
             Trigger::Pull { event, .. } => format!("PR #{}", event.pr.number),
+            Trigger::Schedule { push, cron } => format!("schedule {cron:?} on {}", push.refname),
         }
     }
 
     /// Whether this run gets the secrets file and its `GITHUB_TOKEN`.
     pub fn trusted(&self, repo: &RepoConfig) -> bool {
         match self {
-            Trigger::Push(p) => repo.trusted(&p.refname),
+            Trigger::Push(p) | Trigger::Schedule { push: p, .. } => repo.trusted(&p.refname),
             Trigger::Pull { event, author } => pull_trusted(repo, &event.pr, *author),
         }
     }
@@ -320,10 +326,10 @@ fn with_network(mut cmd: Command, cfg: &Config) -> Command {
     cmd
 }
 
-/// `git ls-remote <url>`.
+/// `git ls-remote --symref <url>` (the `HEAD` symref names the default branch).
 pub fn ls_remote(cfg: &Config, repo: &RepoConfig) -> Result<String> {
     let mut cmd = with_network(Command::new(&cfg.bin.git), cfg);
-    cmd.args(["ls-remote", &repo.url()]);
+    cmd.args(["ls-remote", "--symref", &repo.url()]);
     output(&mut cmd, "git ls-remote")
 }
 
@@ -559,6 +565,83 @@ fn workflow_dir(cfg: &Config, checkout: &Path) -> Option<PathBuf> {
         .find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
 }
 
+/// The `on.schedule` cron expressions of the workflows `refname` holds at `oid` (fetched into the
+/// repository's cache, then read from git: no checkout), each with the workflow file that lists
+/// it. Read from the first configured workflow directory the commit has, as a run reads them.
+pub fn scheduled_crons(
+    cfg: &Config,
+    repo: &RepoConfig,
+    refname: &str,
+    oid: &str,
+) -> Result<Vec<(String, String)>> {
+    let cache = repo_dir(cfg, repo).join("cache.git");
+    let url = repo.url();
+    let own = Source {
+        url: &url,
+        cache: &cache,
+        tags: true,
+    };
+    fetch_at(cfg, &own, refname, oid)?;
+    let git = |args: &[&str]| {
+        let mut c = Command::new(&cfg.bin.git);
+        c.arg("--git-dir").arg(&cache).args(args);
+        output(&mut c, &format!("git {}", args.first().unwrap_or(&"")))
+    };
+    let mut out = Vec::new();
+    for dir in &cfg.workflow_dirs {
+        let listing = git(&[
+            "ls-tree",
+            "-z",
+            oid,
+            "--",
+            &format!("{}/", dir.trim_end_matches('/')),
+        ])?;
+        // `<mode> <type> <oid>\t<path>`: regular files only (no symlinks or submodules).
+        let files: Vec<(&str, &str)> = listing
+            .split('\0')
+            .filter_map(|e| e.split_once('\t'))
+            .filter(|(meta, path)| {
+                let mut m = meta.split(' ');
+                matches!(m.next(), Some("100644" | "100755"))
+                    && m.next() == Some("blob")
+                    && Path::new(path)
+                        .extension()
+                        .is_some_and(|x| x == "yml" || x == "yaml")
+            })
+            .map(|(meta, path)| (meta.rsplit(' ').next().unwrap_or_default(), path))
+            .collect();
+        if listing.is_empty() {
+            continue;
+        }
+        for (blob, path) in files {
+            let size: u64 = git(&["cat-file", "-s", blob])?
+                .trim()
+                .parse()
+                .unwrap_or(u64::MAX);
+            if size > workflow::MAX_WORKFLOW_BYTES {
+                continue;
+            }
+            let text = git(&["cat-file", "blob", blob])?;
+            let Ok(v) = yaml_serde::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let on = v
+                .get("on")
+                .or_else(|| v.get("true"))
+                .cloned()
+                .unwrap_or_default();
+            out.extend(
+                workflow::schedule_crons(&on)
+                    .into_iter()
+                    .map(|c| (c, path.to_string())),
+            );
+        }
+        // The first directory the commit has is the one that runs.
+        break;
+    }
+    Ok(out)
+}
+
 /// The runner's clock, ms since 1970.
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -716,6 +799,13 @@ fn fetch_run(
                 .and_then(|b| changed_paths(cfg, &cache, &format!("{b}..{}", p.oid)));
             (changed, None, event_json(&repo.repo, p))
         }
+        Trigger::Schedule { push, cron } => {
+            fetch_at(cfg, &own, &push.refname, &push.oid)?;
+            // GitHub's `schedule` payload: the cron expression that fired.
+            let mut event = event_json(&repo.repo, push);
+            event["schedule"] = json!(cron);
+            (None, None, event)
+        }
         Trigger::Pull { event: ev, .. } => {
             let pr = &ev.pr;
             let source = pr
@@ -785,6 +875,7 @@ pub fn run(
             changed,
             any_type: opts.rerun,
         }),
+        (Trigger::Schedule { cron, .. }, _) => Facts::Schedule(cron),
         _ => Facts::Push(PushFacts {
             refname: &key.refname,
             changed,
@@ -793,6 +884,10 @@ pub fn run(
     let labels: Vec<&str> = cfg.platforms.keys().map(String::as_str).collect();
     let allow = trig.allows_container_options(repo);
     let mut plan = workflow::plan(&co, &wf_dir, &facts, allow, &labels);
+    if matches!(trig, Trigger::Schedule { .. }) {
+        // A broken file is reported on its push, not again at every scheduled time.
+        plan.broken.clear();
+    }
     if let Some(only) = &opts.only {
         keep_check(&mut plan, trig, only);
         if plan.run.is_empty() && plan.broken.is_empty() {

@@ -30,6 +30,7 @@ On every poll (every `interval_secs`, default 120 s, and within seconds of a pus
 
 6. **Lists the pull requests** (`dg pr list`, the newest 100, and up to 10 older members' open PRs it keeps following) and runs each one that was opened, reopened or marked ready for review, or whose head moved, as [Pull requests](#pull-requests) says. The first poll only records them.
 7. **Reads the re-run requests** written since the last poll (`dg ci reruns`, one query) and runs each one that counts, as [Re-runs](#re-runs) says. The first poll only records the time (five minutes back, so a clock running ahead hides no request).
+8. **Runs the schedules** whose time came since the last poll, with `schedule = true`, as [Schedules](#schedules) says.
 
 If a run could not start because the fetch or checkout failed, the next polls try it again, up to `attempts` (default 3). A run whose jobs did run is not repeated by a poll: a maintainer or writer [asks for a re-run](#re-runs), or you run `forge-runner run` by hand.
 
@@ -43,7 +44,7 @@ A workflow whose `on:` includes `pull_request` runs when a pull request is opene
 - **Checks go on the head, named apart.** A member's PR posts `<workflow> / <job> (pull_request)` on its head commit; anyone else's posts `<workflow> / <job> (pull_request, non-member)`. Both are keyed by `refs/pull/<n>/head`, so a PR's run and the branch's own push run on the same commit never replace each other, and a stranger's PR that names a member's commit can never post the run a member's required check reads. Require `ci / build (pull_request)` in a branch policy to gate merges on it.
 - **Which PRs are watched.** Each poll reads the newest 100 PRs (open and closed, by creation). A member's open PR it has seen stays followed after newer PRs push it out of that window: each poll reads up to 10 such PRs, one read each, in turn, and a failed read drops nothing. Anyone can open PRs, so an identity that opens more than 100 between two polls can hide a PR opened in between from CI until its next head; `forge-runner run --pr <n>` reads any PR directly.
 - **Polling sees states, not every step.** A draft marked ready whose head also moved runs as `synchronize`; a close and reopen between two polls runs nothing. A PR the policy skipped is not revisited until its head moves or it is reopened.
-- **`pull_request_target`, `schedule` and `workflow_dispatch` never run.**
+- **`pull_request_target` and `workflow_dispatch` never run.** `schedule` runs on the default branch with `schedule = true` ([Schedules](#schedules)).
 
 Which pull requests run is the repository's `pull_requests` setting. A member is the owner, a maintainer or a writer, as `dg collab list` reads them at the poll:
 
@@ -84,8 +85,26 @@ A maintainer or writer can ask the runners to run a pull request's checks again:
 
 `forge-runner -c runner.toml run alice/project --pr 12 --check "ci / build (pull_request)"` runs only the workflow that reports one check, by hand; `--check` works with `--ref`/`--sha` too.
 
+## Schedules
+
+With `schedule = true` on a repository, a workflow's `on.schedule` runs as on GitHub:
+
+```yaml
+on:
+  schedule:
+    - cron: '30 5 * * 1-5'   # 05:30 UTC on weekdays
+```
+
+- **On the default branch's tip.** Each poll reads the default branch (the `HEAD` that `git ls-remote --symref` names) and, once per tip, the `cron` entries of its workflows, from the first workflow directory the commit has. The `refs` setting does not apply: a schedule always runs on the default branch.
+- **Cron as GitHub reads it.** Five fields (minute, hour, day of the month, month, day of the week), in UTC: `*`, values, ranges `a-b`, steps `/n` and comma-separated lists; month and day names (`JAN`, `MON`); 7 is Sunday too. When both day fields are restricted, a day matches if either does. An expression the runner cannot read is logged with its file and never runs.
+- **Once per poll, however many times passed.** A poll runs each expression whose time came since the last poll once, as `schedule` (`github.event.schedule` is the expression), and only the workflows that list that expression. Polling every `interval_secs` means a run starts up to that late. A time missed while the runner was stopped is not made up (only the last week is looked at), and a run that fails is not repeated, as on GitHub. The first poll with `schedule = true` only records the time.
+- **Checks are named apart.** A scheduled job posts `<workflow> / <job> (schedule)` on the tip, so it never replaces the push run's check. A re-run request for a scheduled check runs nothing: it runs again at its next time.
+- **Secrets as for a push of the branch.** A scheduled run gets the secrets when `trusted_refs` covers the default branch.
+- **Every run costs credits.** Each job posts three check-run reports, so `*/5 * * * *` writes hundreds of documents a day. That is why `schedule` is off by default. Pick the longest interval that does the job.
+
 ## Set it up
 
+0. **The binaries.** Each release archive for Linux and macOS holds `forge-runner` beside `dg` and `git-remote-dash` ([Install](../INSTALL.md)): `curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | DASH_FORGE_BINARIES="dg git-remote-dash forge-runner" sh` installs all three. The Windows archive leaves it out: the runner drives act and Linux job containers. From source, `cargo install --locked --path crates/forge-runner`. Install [act](https://github.com/nektos/act) yourself, or use the [image](#with-docker), which has all four tools.
 1. **A runner identity and key.** On your own computer, create the runner identity with `dg auth new --backup-file runner.json`. In a terminal it shows the recovery words once. Without one it never prints them: they go only to `runner.json`, sealed under `DASH_FORGE_PASSPHRASE`. Then, as the repository owner, run `dg ci runner new alice/project --runner runner.json -o runner.dfk1` ([CI and check runs](ci.md#enrol-a-runner)). `runner.dfk1` is the runner's `DASH_FORGE_KEY`: copy it to the runner host (0600) and delete your copy. Keep `runner.json` offline, not on the runner host.
 2. **A storage profile for logs.** This is optional, but without it reports carry no log. Run `dg storage add ci-logs --kind s3 …` on the runner's machine ([Bring your own storage](bring-your-own-storage.md)). Its public URL must be readable by browsers, with CORS for the web app.
 3. **A Docker daemon for the runner alone.** See [Security](#security).
@@ -112,6 +131,7 @@ trusted_refs = ["refs/heads/main"]  # only these get the secrets
 secrets_file = "/etc/forge-runner/project.secrets"   # KEY=value lines, as act reads them
 # pull_requests = "members"         # or "all" (strangers' too, never with secrets) or "off"
 # reruns = true                     # honour maintainers' and writers' re-run requests (see Re-runs)
+# schedule = false                  # run on.schedule crons on the default branch (see Schedules)
 # allow_container_options = false   # see Security before turning it on
 ```
 
@@ -232,7 +252,7 @@ The runner executes code from the repository: anyone who can push to a watched r
 
 ## What it does not do (yet)
 
-- **Only `push` and `pull_request` run.** There are no `pull_request_target`, `schedule` or `workflow_dispatch` events, and a pull request runs its head, not a merge preview.
+- **Only `push`, `pull_request` and (opted in) `schedule` run.** There are no `pull_request_target` or `workflow_dispatch` events, and a pull request runs its head, not a merge preview.
 - **Pull requests are watched by window.** The newest 100, and members' open PRs already seen, 10 a poll in turn; see [Pull requests](#pull-requests).
 - **One push at a time.** The workflow files of a push run one after another, within one `job_timeout_secs`.
 - **Only configured `runs-on` labels.** A job whose `runs-on` label is not in `[platforms]` is refused, rather than run on act's own default image.
@@ -253,4 +273,8 @@ The runner executes code from the repository: anyone who can push to a watched r
 - a pull request's moved head runs as `synchronize`, and a closed one runs nothing;
 - a member's re-run request runs its check again on the head (once, however often it is asked in a poll), a push check re-runs as its branch's push, and an uncounted request or one for a moved head runs nothing;
 - with `artifacts = true`, an `upload-artifact@v4` zip is recorded as uploaded and a v3 upload is zipped, each on the job that uploaded it (on Docker Desktop or OrbStack, set `FORGE_RUNNER_E2E_ARTIFACT_ADDR=127.0.0.1` and `FORGE_RUNNER_E2E_ARTIFACT_URL=http://host.docker.internal:34567/`);
+- a request for every check covers a named one in the same poll, and a request whose pull request could not be read is tried again;
+- with `schedule = true`, a cron expression of the default branch whose time came runs once, as `schedule` on the branch's tip, named `(schedule)`, and an invalid expression is logged and never run;
 - a commit without workflows runs nothing, and no `act-*` container is left behind.
+
+On a live devnet, `bash e2e/cli/run.sh 37` (scenario `37-forge-runner`) enrols a runner on the suite repository, pushes a workflow, runs one `forge-runner watch --once` and reads the check back with `dg ci status`, then asks for a re-run with `dg ci rerun` and checks that the next poll runs it again. It needs act, Docker and `forge-runner` beside `dg`.

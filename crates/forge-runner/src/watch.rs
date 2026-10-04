@@ -42,6 +42,15 @@ pub fn parse_ls_remote(out: &str) -> Tips {
     tips
 }
 
+/// The default branch `git ls-remote --symref` names (`ref: refs/heads/main\tHEAD`), and its tip
+/// in `tips`.
+pub fn default_branch(out: &str, tips: &Tips) -> Option<(String, String)> {
+    out.lines()
+        .filter_map(|l| l.strip_prefix("ref: ")?.split_once('\t'))
+        .find(|(_, name)| *name == "HEAD")
+        .and_then(|(target, _)| Some((target.to_string(), tips.get(target)?.clone())))
+}
+
 /// One ref that moved to a commit the runner has not run for that ref.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Push {
@@ -188,6 +197,16 @@ pub struct RepoState {
     pub reruns_since: Option<u64>,
     #[serde(default)]
     pub reruns_seen: std::collections::BTreeSet<String>,
+    /// `schedule`: when the last poll judged the cron expressions (ms, the runner's clock).
+    /// `None` until the first poll with `schedule = true`, which runs nothing.
+    #[serde(default)]
+    pub schedule_since: Option<u64>,
+    /// The default branch's tip whose expressions [`Self::schedule_crons`] holds.
+    #[serde(default)]
+    pub schedule_tip: Option<String>,
+    /// That tip's valid `on.schedule` expressions, each with the workflow file listing it.
+    #[serde(default)]
+    pub schedule_crons: Vec<(String, String)>,
 }
 
 impl RepoState {
@@ -282,6 +301,28 @@ mod tests {
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const C: &str = "cccccccccccccccccccccccccccccccccccccccc";
+
+    #[test]
+    fn the_default_branch_is_heads_symref() {
+        let out = format!(
+            "ref: refs/heads/trunk\tHEAD\n{A}\tHEAD\n{A}\trefs/heads/trunk\n{B}\trefs/heads/main\n"
+        );
+        let tips = parse_ls_remote(&out);
+        assert_eq!(
+            default_branch(&out, &tips),
+            Some(("refs/heads/trunk".to_string(), A.to_string()))
+        );
+        assert_eq!(
+            default_branch(&format!("{A}\tHEAD\n"), &tips),
+            None,
+            "no symref"
+        );
+        assert_eq!(
+            default_branch("ref: refs/heads/gone\tHEAD\n", &tips),
+            None,
+            "a default branch with no tip"
+        );
+    }
 
     #[test]
     fn ls_remote_keeps_branches_and_tags_and_peels_tags() {
