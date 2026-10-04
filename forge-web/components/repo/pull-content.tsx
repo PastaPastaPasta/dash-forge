@@ -55,6 +55,7 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { useDraftText } from '@/lib/view/draft-text'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
@@ -568,7 +569,8 @@ function PullPage({
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
-  const [comment, setComment] = useState('')
+  // The unsent comment survives a reload (never stored for a private repo).
+  const [comment, setComment] = useDraftText(repo.visibility === 'private' ? null : `${repo.repoId}:${pull.id}:comment`)
   const commentIntent = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -1554,7 +1556,7 @@ function PullPage({
                     <PrivateComposeNote reason={composeBlock} />
                   ) : (
                     <>
-                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} />
                       <SealedLimit repo={repo} kind="comment" text={comment.trim()} long={commentLong} />
                       <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} />
                     </>

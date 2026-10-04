@@ -767,6 +767,7 @@ function Composer({
         textareaRef={field}
         suggestion={preview}
         hint={null}
+        onSubmit={() => (reviewing ? addToReview() : void submit())}
         tools={
           suggestAt !== null ? (
             <Button

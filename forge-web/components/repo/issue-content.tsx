@@ -27,6 +27,7 @@ import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
+import { useDraftText } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
@@ -181,7 +182,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     { enabled: ready && sdk !== null && canSetMilestone },
   )
 
-  const [comment, setComment] = useState('')
+  // The unsent comment survives a reload (never stored for a private repo).
+  const [comment, setComment] = useDraftText(data && home.repo.visibility !== 'private' ? `${home.repo.repoId}:${data.issue.id}:comment` : null)
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -584,7 +586,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <LockedBanner locked={lockApplies} viewer={lockViewer} target="issue">
             <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
             {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
-            <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+            <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={composeBlock === null && !lockedOutNow ? () => void postComment() : undefined} />
             <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} long={commentLong} />
           </LockedBanner>
           {lockedOutNow && !canToggle ? null : (
