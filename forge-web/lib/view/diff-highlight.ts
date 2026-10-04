@@ -75,8 +75,7 @@ export function lineHtml(h: DiffHighlight, line: TextDiffLine, side: DiffSide): 
   const hl = side === 'old' ? h.old : h.new
   const index = (side === 'old' ? h.sides.oldIndex : h.sides.newIndex).get(line)
   const syntax = hl !== null && index !== undefined ? (hl[index] ?? null) : null
-  const spans = line.kind === 'context' ? undefined : h.words.get(line)
-  if (syntax === null && spans === undefined) return null
-  const html = syntax ?? escapeHtml(line.text)
-  return spans === undefined || line.kind === 'context' ? html : markSpans(html, spans, WORD_CLASS[line.kind])
+  if (line.kind === 'context') return syntax
+  const spans = h.words.get(line)
+  return spans === undefined ? syntax : markSpans(syntax ?? escapeHtml(line.text), spans, WORD_CLASS[line.kind])
 }
