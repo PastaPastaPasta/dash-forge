@@ -533,6 +533,13 @@ function runCaseV2(v: Vector): void {
       expect(v2.prMergeBase(inp.baseRefName, inp.openedAt, inp.events, inp.mergedAt ?? null)).toEqual(v.expected)
       break
     }
+    case 'ref_collision': {
+      onlyKeys(v, ['existing', 'name'])
+      const inp = v.input as { readonly existing: readonly string[]; readonly name: string }
+      const collision = v2.refCollision(inp.existing, inp.name)
+      expect({ collision, reason: collision === null ? null : v2.collisionReason(inp.name, collision) }).toEqual(v.expected)
+      break
+    }
     case 'ref_name_hashes': {
       onlyKeys(v, ['doc', 'refKey'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly refKey?: string }

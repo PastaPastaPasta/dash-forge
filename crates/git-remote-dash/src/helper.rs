@@ -479,7 +479,7 @@ impl Helper {
             specs
         };
 
-        let mut planned = plan_pushes(specs, &remote_refs);
+        let mut planned = plan_pushes(specs, &remote_refs, options);
         let progress = Progress::new(options.verbosity);
         let balance_before = conn.identity().balance();
         let mut est_credits = push_fees::estimate_ref_updates(
@@ -1387,11 +1387,29 @@ struct Planned {
 
 /// Decide accept/reject for every refspec up front (no writes): deletions and new refs are
 /// accepted; an update is accepted iff forced, a no-op, or a fast-forward — otherwise
-/// rejected as `non-fast-forward` (§2.3 / PRD 02).
-fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Planned> {
+/// rejected as `non-fast-forward` (§2.3 / PRD 02). A `--force-with-lease` expectation
+/// ([`OptionState::lease`]) makes the update forced while the ref still points where the lease
+/// says, and rejects it as `stale info` (git's words) otherwise. A new ref that git clients could
+/// not hold next to an existing one (`feature` and `feature/x`, or `Foo` and `foo`) is refused
+/// (`forge_core::rules::ref_collision`).
+fn plan_pushes(
+    specs: &[PushSpec],
+    remote_refs: &[(String, RefState)],
+    options: &OptionState,
+) -> Vec<Planned> {
     let mut planned = Vec::with_capacity(specs.len());
     for spec in specs {
         let prev = remote_tip(remote_refs, &spec.dst);
+        let lease = options.lease(&spec.dst);
+        if let Some(reject) = lease.and_then(|want| lease_reject(want, prev.as_deref())) {
+            planned.push(Planned {
+                spec: spec.clone(),
+                new_oid: None,
+                prev_oid: prev,
+                reject: Some(reject),
+            });
+            continue;
+        }
         if spec.src.is_empty() {
             // Deletion.
             planned.push(Planned {
@@ -1411,11 +1429,12 @@ fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Pl
             });
             continue;
         };
+        let forced = spec.force || lease.is_some();
         let reject = match &prev {
-            None => None, // new ref
+            None => collision_reject(&spec.dst, remote_refs, specs),
             Some(tip) => {
                 let fast_forward =
-                    spec.force || tip == &new_oid || LocalRepo::is_ancestor(tip, &new_oid);
+                    forced || tip == &new_oid || LocalRepo::is_ancestor(tip, &new_oid);
                 if fast_forward {
                     None
                 } else {
@@ -1431,6 +1450,32 @@ fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Pl
         });
     }
     planned
+}
+
+/// A `--force-with-lease` that no longer holds: the ref is not where the lease expects (`want`,
+/// `""` for "must not exist"). git reports it as `stale info`.
+fn lease_reject(want: &str, prev: Option<&str>) -> Option<String> {
+    let holds = match prev {
+        None => want.is_empty(),
+        Some(p) => want.eq_ignore_ascii_case(p),
+    };
+    (!holds).then(|| "stale info".to_string())
+}
+
+/// Why the new ref `dst` cannot be created next to the remote's refs (the ones this push does not
+/// delete), or `None`.
+fn collision_reject(
+    dst: &str,
+    remote_refs: &[(String, RefState)],
+    specs: &[PushSpec],
+) -> Option<String> {
+    use forge_core::rules::ref_collision::{collision_reason, ref_collision};
+    let deleted = |name: &str| specs.iter().any(|s| s.src.is_empty() && s.dst == name);
+    let live = remote_refs
+        .iter()
+        .filter(|(name, state)| tip_oid(state).is_some() && !deleted(name))
+        .map(|(name, _)| name.as_str());
+    ref_collision(live, dst).map(|existing| collision_reason(dst, &existing))
 }
 
 /// What [`upload_push_pack`] needs from the push.
@@ -3200,6 +3245,52 @@ mod tests {
         settle_ref_writes, write_denied, Planned, PushOutcome, PushSpec, Unreadable,
     };
     use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
+
+    #[test]
+    fn a_lease_holds_only_where_the_ref_still_points() {
+        use super::lease_reject;
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        assert_eq!(lease_reject(&a, Some(&a)), None);
+        assert_eq!(lease_reject(&a, Some(&b)).as_deref(), Some("stale info"));
+        assert_eq!(lease_reject(&a, None).as_deref(), Some("stale info"));
+        assert_eq!(lease_reject("", None), None);
+        assert_eq!(lease_reject("", Some(&a)).as_deref(), Some("stale info"));
+    }
+
+    #[test]
+    fn a_new_ref_that_collides_is_refused_unless_this_push_deletes_the_other() {
+        use super::collision_reject;
+        use forge_core::rules::RefState;
+        let live = RefState::Resolved {
+            oid: "a".repeat(40),
+            author: String::new(),
+            created_at: 0,
+        };
+        let refs = vec![("refs/heads/feature".to_string(), live)];
+        let create = PushSpec {
+            force: false,
+            src: "HEAD".into(),
+            dst: "refs/heads/feature/x".into(),
+        };
+        assert_eq!(
+            collision_reject(&create.dst, &refs, std::slice::from_ref(&create)).as_deref(),
+            Some("refs/heads/feature exists, so refs/heads/feature/x cannot be created under it")
+        );
+        let delete = PushSpec {
+            force: false,
+            src: String::new(),
+            dst: "refs/heads/feature".into(),
+        };
+        assert_eq!(
+            collision_reject(&create.dst, &refs, &[delete, create.clone()]),
+            None
+        );
+        assert_eq!(
+            collision_reject("refs/heads/Feature", &refs, &[]).as_deref(),
+            Some("refs/heads/feature exists and differs only in letter case")
+        );
+    }
 
     fn planned(dst: &str) -> Planned {
         Planned {

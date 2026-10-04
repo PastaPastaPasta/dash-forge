@@ -52,6 +52,7 @@ pub mod long_body;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
+pub mod ref_collision;
 pub mod review;
 pub mod search;
 pub mod signature;
@@ -2410,6 +2411,37 @@ mod tests {
         assert_eq!(got, v.expected, "vector `{ctx}`");
     }
 
+    fn run_approvals_case(v: &Vector) {
+        let inp: ApprovalsInput = input(v);
+        let oracle = v2::RoleOracle::new(inp.memberships);
+        let got = v2::count_approvals(
+            &inp.reviews,
+            &oracle,
+            &inp.head_oid,
+            &inp.dismissed,
+            &inp.pr_author,
+        );
+        assert_eq!(got, expected::<v2::Approvals>(v), "vector `{}`", v.name);
+    }
+
+    fn run_ref_collision_case(v: &Vector) {
+        use super::ref_collision::{collision_reason, ref_collision};
+        #[derive(Serialize, Deserialize)]
+        struct In {
+            existing: Vec<String>,
+            name: String,
+        }
+        let inp: In = input(v);
+        let collision = ref_collision(inp.existing.iter().map(String::as_str), &inp.name);
+        let reason = collision.as_deref().map(|c| collision_reason(&inp.name, c));
+        assert_eq!(
+            serde_json::json!({ "collision": collision, "reason": reason }),
+            v.expected,
+            "vector `{}`",
+            v.name
+        );
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2426,18 +2458,7 @@ mod tests {
                 let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());
                 assert_eq!(got, expected::<Vec<v2::V2Pack>>(v), "vector `{ctx}`");
             }
-            "approvals" => {
-                let inp: ApprovalsInput = input(v);
-                let oracle = v2::RoleOracle::new(inp.memberships);
-                let got = v2::count_approvals(
-                    &inp.reviews,
-                    &oracle,
-                    &inp.head_oid,
-                    &inp.dismissed,
-                    &inp.pr_author,
-                );
-                assert_eq!(got, expected::<v2::Approvals>(v), "vector `{ctx}`");
-            }
+            "approvals" => run_approvals_case(v),
             "well_formed" => {
                 let inp: WellFormedInput = input(v);
                 let got = v2::is_well_formed(&inp.doc, inp.visibility);
@@ -2463,6 +2484,7 @@ mod tests {
                 );
                 assert_eq!(got, expected::<v2::MergeBase>(v), "vector `{ctx}`");
             }
+            "ref_collision" => run_ref_collision_case(v),
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);
                 let key: Option<[u8; 32]> = inp.ref_key.as_deref().map(|k| {

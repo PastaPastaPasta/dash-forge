@@ -18,7 +18,7 @@ import { ARCHIVED_REASON, isLive, tipOidOf } from '@/lib/view'
 import { compareRefNames, type ResolvedRef } from '@/lib/repo'
 import { BRANCH_PREFIX, branchNameProblem, createBranch, deleteBranch, deleteBranchBlock, refWriteBlock, shortRef } from '@/lib/repo/ref-admin'
 import { capabilitiesOf } from '@/lib/rules/roles'
-import type { Role } from '@/lib/rules/v2'
+import { collisionReason, refCollision, type Role } from '@/lib/rules/v2'
 import { EXISTING, newIntent, previewCreate } from '@/lib/sdk'
 import { namedAction, spendAction } from '@/lib/spend-toast'
 import { useAuth } from '@/contexts/auth-context'
@@ -138,11 +138,17 @@ function NewBranchDialog({
   const source = sources.find((s) => s.refName === from) ?? null
   const target = tipOidOf(source ?? undefined)
   const refName = `${BRANCH_PREFIX}${trimmed}`
-  const exists = home.branches.some((b) => b.refName === refName && isLive(b))
+  const live = home.branches.filter(isLive)
+  const exists = live.some((b) => b.refName === refName)
+  // git stores refs as files: `feature` cannot also be a folder, and `Foo` is `foo` on macOS.
+  const collision = exists ? null : refCollision(live.map((b) => b.refName), refName)
   const problem =
     trimmed === ''
       ? null
-      : (branchNameProblem(trimmed) ?? (exists ? `a branch named ${trimmed} already exists` : null) ?? refWriteBlock(admin.role, refName, admin.patterns, 'create this branch'))
+      : (branchNameProblem(trimmed) ??
+        (exists ? `a branch named ${trimmed} already exists` : null) ??
+        (collision === null ? null : collisionReason(trimmed, shortRef(collision))) ??
+        refWriteBlock(admin.role, refName, admin.patterns, 'create this branch'))
   const cost = useMemo(() => previewCreate('refUpdate', {}, NEW_REF), [])
   const disabled = pending || trimmed === '' || problem !== null || target === null || guard.disabledReason !== null
 

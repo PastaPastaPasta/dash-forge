@@ -38,9 +38,29 @@ pub struct OptionState {
     pub fatal: Option<String>,
     /// `git push -o <value>` values (`option push-option <value>`), in order.
     pub push_options: Vec<String>,
+    /// `git push --force-with-lease` expectations (`option cas <ref>:<oid>`): each ref and
+    /// the tip it must still have for the push to overwrite it; `""` (or a null oid) means the
+    /// ref must not exist.
+    pub leases: Vec<(String, String)>,
 }
 
 impl OptionState {
+    /// The `--force-with-lease` expectation for `dst`, when one was given: the tip it must
+    /// still have, or `""` when it must not exist (git sends a null oid or nothing for that).
+    pub fn lease(&self, dst: &str) -> Option<&str> {
+        self.leases
+            .iter()
+            .rev()
+            .find(|(r, _)| r == dst)
+            .map(|(_, oid)| {
+                if oid.bytes().all(|b| b == b'0') {
+                    ""
+                } else {
+                    oid.as_str()
+                }
+            })
+    }
+
     /// Whether `git push -o <name>` was given.
     pub fn has_push_option(&self, name: &str) -> bool {
         self.push_options.iter().any(|o| o == name)
@@ -74,6 +94,33 @@ fn truthy(value: &str) -> bool {
     matches!(value, "true" | "1")
 }
 
+/// `git push --atomic` cannot be honoured: Platform takes one write per state transition, so
+/// each ref is its own write and some can land when another fails (git then reports each).
+pub const ATOMIC_UNSUPPORTED: &str = "dash:// cannot push atomically: each branch and tag is a separate Platform write, so some can land while another fails. Push without --atomic: git reports each ref, and a failed one can be pushed again";
+
+/// Undo git's C-style quoting of an option value (`quote_c_style`): only applied when the value
+/// holds a character that needs it.
+fn unquote(value: &str) -> String {
+    let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+        return value.to_string();
+    };
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some(other) => out.push(other),
+                None => {}
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 const SHALLOW_UNSUPPORTED: &str =
     "shallow clone (--depth/--shallow-*) is not supported by dash://; use --filter=blob:none for a lightweight clone";
 
@@ -103,9 +150,34 @@ pub fn handle_option(state: &mut OptionState, rest: &str) -> OptionReply {
         }
         // Harmless modifiers / capabilities git always probes. `deepen-relative` is only a
         // modifier for a real deepen; on its own it is inert.
+        "atomic" => {
+            if truthy(value) {
+                OptionReply::Error(ATOMIC_UNSUPPORTED.to_string())
+            } else {
+                OptionReply::Ok
+            }
+        }
+        // `git push --force-with-lease`: `<ref>:<expected oid>` (empty: must not exist). The
+        // push plan overwrites the ref only while it still points there (`plan_pushes`).
+        "cas" => {
+            let value = unquote(value);
+            match value.split_once(':') {
+                Some((r, oid))
+                    if r.starts_with("refs/")
+                        && (oid.is_empty()
+                            || (matches!(oid.len(), 40 | 64)
+                                && oid.bytes().all(|b| b.is_ascii_hexdigit()))) =>
+                {
+                    state.leases.push((r.to_string(), oid.to_ascii_lowercase()));
+                    OptionReply::Ok
+                }
+                _ => OptionReply::Error(format!(
+                    "--force-with-lease expects <ref>:<full commit id>, got {value:?}"
+                )),
+            }
+        }
         "followtags"
         | "check-connectivity"
-        | "atomic"
         | "no-recurse-submodules"
         | "object-format"
         | "report-status"
@@ -161,6 +233,38 @@ pub fn handle_option(state: &mut OptionState, rest: &str) -> OptionReply {
 #[cfg(test)]
 mod tests {
     use super::{handle_option, OptionReply, OptionState};
+
+    #[test]
+    fn atomic_is_refused_with_a_reason() {
+        let mut s = OptionState::default();
+        match handle_option(&mut s, "atomic true") {
+            OptionReply::Error(msg) => assert!(msg.contains("cannot push atomically")),
+            other => panic!("expected error, got {other:?}"),
+        }
+        assert_eq!(handle_option(&mut s, "atomic false"), OptionReply::Ok);
+        assert!(s.fatal.is_none(), "a refused --atomic stops only that push");
+    }
+
+    #[test]
+    fn leases_are_recorded_quoted_or_not() {
+        let mut s = OptionState::default();
+        let oid = "a".repeat(40);
+        assert_eq!(
+            handle_option(&mut s, &format!("cas refs/heads/main:{oid}")),
+            OptionReply::Ok
+        );
+        assert_eq!(
+            handle_option(&mut s, "cas \"refs/heads/new:\""),
+            OptionReply::Ok
+        );
+        assert_eq!(s.lease("refs/heads/main"), Some(oid.as_str()));
+        assert_eq!(s.lease("refs/heads/new"), Some(""));
+        assert_eq!(s.lease("refs/heads/other"), None);
+        assert!(matches!(
+            handle_option(&mut s, "cas refs/heads/main:abc"),
+            OptionReply::Error(_)
+        ));
+    }
 
     #[test]
     fn verbosity_and_flags_are_recorded() {
