@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 use forge_core::platform::PlatformClient;
 use forge_relay::config::{CliOverrides, RelayConfig};
@@ -20,7 +20,7 @@ use crate::config::{secret_env, Config};
 use crate::crypto::Vault;
 use crate::dispatch::Dispatcher;
 use crate::error::{NotifyError, Result};
-use crate::index::Indexer;
+use crate::index::{Indexer, ReindexQueue};
 use crate::limits::RateLimiter;
 use crate::mail::{Mailer, SmtpMailer};
 use crate::push::{Pusher, WebPusher};
@@ -114,8 +114,8 @@ pub async fn run(cfg: Config) -> Result<()> {
     );
 
     let ready = Arc::new(AtomicBool::new(false));
-    let (reindex_tx, reindex_rx) = mpsc::unbounded_channel();
-    spawn_background(&cfg, &indexer, &dispatcher, &store, reindex_rx);
+    let reindex = Arc::new(ReindexQueue::default());
+    spawn_background(&cfg, &indexer, &dispatcher, &store, Arc::clone(&reindex));
 
     let relay = tokio::spawn({
         let sinks: Vec<Arc<dyn EventSink>> = vec![Arc::new(sink)];
@@ -142,7 +142,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         keys: Arc::new(PlatformKeys::new(client)),
         dispatcher,
         limiter: RateLimiter::new(cfg.limits.per_ip_per_minute),
-        reindex: reindex_tx,
+        reindex,
         ready,
         settings: api_settings(&cfg),
     });
@@ -234,7 +234,7 @@ fn spawn_background(
     indexer: &Arc<Indexer>,
     dispatcher: &Arc<Dispatcher>,
     store: &Store,
-    mut reindex: mpsc::UnboundedReceiver<String>,
+    reindex: Arc<ReindexQueue>,
 ) {
     let ix = Arc::clone(indexer);
     let every = cfg.index_interval;
@@ -249,10 +249,12 @@ fn spawn_background(
     let ix = Arc::clone(indexer);
     let st = store.clone();
     tokio::spawn(async move {
-        while let Some(identity) = reindex.recv().await {
-            if let Ok(Some(s)) = st.subscriber(&identity) {
-                if let Err(e) = ix.refresh_one(&s).await {
-                    tracing::warn!(error = %e, "indexing a subscriber failed");
+        loop {
+            for identity in reindex.next_batch().await {
+                if let Ok(Some(s)) = st.subscriber(&identity) {
+                    if let Err(e) = ix.refresh_one(&s).await {
+                        tracing::warn!(error = %e, "indexing a subscriber failed");
+                    }
                 }
             }
             if let Err(e) = ix.rebuild_feed() {

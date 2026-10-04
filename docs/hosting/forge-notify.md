@@ -113,10 +113,10 @@ Every setting is a flag of `forge-notify serve` or the environment variable name
 | `FORGE_NOTIFY_DEVNET_NAME` | | The devnet's name (with `devnet`), e.g. `sakura` |
 | `FORGE_NOTIFY_DAPI_ADDRESSES` | the network's seeds | Comma-separated DAPI addresses (devnets) |
 | `FORGE_NOTIFY_PUBLIC_URL` | (required) | This service's https URL. Mail links (confirm, unsubscribe) use it. |
-| `FORGE_NOTIFY_OPERATOR` | the public URL's host | The operator name signed requests must carry, shown to users |
+| `FORGE_NOTIFY_OPERATOR` | the public URL's host | The operator name signed requests must carry, shown to users. The web app signs only for the host it calls, so leave this unset unless you serve other clients. |
 | `FORGE_NOTIFY_WEB_URL` | `https://forge.dashhq.org` | The forge-web origin notices link to (with a sub-path deploy's base path) |
 | `FORGE_NOTIFY_ALLOWED_ORIGINS` | the web URL's origin | Comma-separated browser origins allowed to call `/v1/*` (CORS) |
-| `FORGE_NOTIFY_PRIVACY_URL` | | Your privacy notice, linked before anyone subscribes |
+| `FORGE_NOTIFY_PRIVACY_URL` | | Your privacy notice (https), linked before anyone subscribes |
 | `FORGE_NOTIFY_CONTACT` | | Your contact address, shown in `/v1/info` |
 | `FORGE_NOTIFY_DATA_DIR` | `/data` | The SQLite store's directory |
 | `FORGE_NOTIFY_LISTEN` | `0.0.0.0:8080` | Listen address (behind the TLS proxy) |
@@ -140,7 +140,7 @@ Every setting is a flag of `forge-notify serve` or the environment variable name
 | `FORGE_NOTIFY_DAILY_SEND_BUDGET` | 20000 | Mails and pushes per day, in total |
 | `FORGE_NOTIFY_PER_USER_DAILY` | 200 | Instant notices per subscriber per day (more wait for the digest) |
 | `FORGE_NOTIFY_PER_IP_PER_MINUTE` | 60 | API requests per minute per client address |
-| `FORGE_NOTIFY_TRUST_PROXY` | `false` (`true` in the compose file) | Take the client address from `CF-Connecting-IP` / `X-Forwarded-For`. Only behind a proxy that sets them. |
+| `FORGE_NOTIFY_TRUST_PROXY` | `none` (`cloudflare` in the compose file) | Where the client address for rate limits comes from: `none` (the socket peer), `cloudflare` (`CF-Connecting-IP`, which Cloudflare overwrites) or `forwarded` (the **last** `X-Forwarded-For` entry, the one your proxy appended) |
 | `FORGE_NOTIFY_INSECURE_LOCAL` | `false` | Allow http and loopback URLs and push endpoints. Local tests only. |
 | `RUST_LOG` | `info` | Log level |
 
@@ -148,10 +148,10 @@ Every setting is a flag of `forge-notify serve` or the environment variable name
 
 The service speaks plain HTTP on the host's loopback. Put TLS in front of it:
 
-- **Cloudflare tunnel (dashhq).** Add a public hostname `notify.forge.dashhq.org` → `http://localhost:8080` to the tunnel. Cloudflare sets `CF-Connecting-IP`, so keep `FORGE_NOTIFY_TRUST_PROXY=true`. No inbound port is opened.
-- **Caddy or nginx.** An `A`/`AAAA` record for the hostname, a certificate (Caddy gets one by itself), and `reverse_proxy 127.0.0.1:8080`. Set `X-Forwarded-For`.
+- **Cloudflare tunnel (dashhq).** Add a public hostname `notify.forge.dashhq.org` → `http://localhost:8080` to the tunnel. Cloudflare sets `CF-Connecting-IP` and overwrites any value a client sends, so keep `FORGE_NOTIFY_TRUST_PROXY=cloudflare`. No inbound port is opened.
+- **Caddy or nginx.** An `A`/`AAAA` record for the hostname, a certificate (Caddy gets one by itself), and `reverse_proxy 127.0.0.1:8080`, with `FORGE_NOTIFY_TRUST_PROXY=forwarded`. The service reads only the last `X-Forwarded-For` entry, the one your proxy appends; earlier entries come from the client.
 
-If the host can be reached without the proxy, set `FORGE_NOTIFY_TRUST_PROXY=false`. Otherwise anyone can pick their own rate-limit key.
+If the host can be reached without the proxy, set `FORGE_NOTIFY_TRUST_PROXY=none`. Otherwise anyone can pick their own rate-limit key.
 
 ## Email deliverability: SPF, DKIM, DMARC
 
@@ -272,7 +272,7 @@ The web app shows **Settings → Notifications → Email and push** only when it
 NEXT_PUBLIC_NOTIFY_URL=https://notify.forge.dashhq.org pnpm build
 ```
 
-Without the variable, the section and its code stay out of the page. The service must allow the web app's origin (`FORGE_NOTIFY_ALLOWED_ORIGINS`, which defaults to `FORGE_NOTIFY_WEB_URL`'s origin). A build served from IPFS gateways has a different origin on each gateway. List the ones you support, or accept that those builds can't reach the service. Every other part of Forge still works.
+Without the variable, the section and its code stay out of the page. The web app signs requests for the host in that URL, so the service's operator name must be that host (the default when `FORGE_NOTIFY_OPERATOR` is unset). The service must allow the web app's origin (`FORGE_NOTIFY_ALLOWED_ORIGINS`, which defaults to `FORGE_NOTIFY_WEB_URL`'s origin). A build served from IPFS gateways has a different origin on each gateway. List the ones you support, or accept that those builds can't reach the service. Every other part of Forge still works.
 
 ## Test it locally
 
@@ -317,7 +317,7 @@ The MVP is free, within the rate limits above. Billing is designed but not built
 >
 > **Where.** On a server operated by <operator> in <country>. Our mail provider may process mail in <regions>.
 >
-> **Your choices.** Unsubscribe from any mail with one click. Download everything we keep, or delete it, from Settings → Notifications. Deleting stops all notifications at once. Contact: <contact>.
+> **Your choices.** Unsubscribe from any mail with one click. Download everything we keep, or delete it, from Settings → Notifications. Deleting stops all notifications at once. Only a count of today's confirmation mails for your identity stays until the next day, so deleting cannot be used to send more. Contact: <contact>.
 >
 > **Logs.** Our server logs contain no addresses or tokens. Network addresses are used for rate limiting in memory and are not stored.
 >

@@ -25,6 +25,50 @@ use crate::error::Result;
 use crate::route::MentionIndex;
 use crate::store::{now_ms, Follow, FollowReason, Store, Subscriber};
 
+/// Subscribers waiting for a re-index ([`ReindexQueue`]); more requests are dropped (the
+/// periodic rebuild still reaches them).
+const MAX_PENDING_REINDEX: usize = 10_000;
+
+/// Requests to re-index one subscriber now (after a sign-up or a change of choices), merged:
+/// an identity waits at most once, however often it asks, and the watch feed is rebuilt once
+/// per batch rather than once per request.
+#[derive(Default)]
+pub struct ReindexQueue {
+    pending: Mutex<BTreeSet<String>>,
+    wake: tokio::sync::Notify,
+}
+
+impl ReindexQueue {
+    /// Ask for `identity` to be re-indexed soon.
+    pub fn request(&self, identity: &str) {
+        let mut p = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if p.len() < MAX_PENDING_REINDEX {
+            p.insert(identity.to_string());
+        }
+        drop(p);
+        self.wake.notify_one();
+    }
+
+    /// Wait for requests and take them all.
+    pub async fn next_batch(&self) -> BTreeSet<String> {
+        loop {
+            let batch = std::mem::take(
+                &mut *self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            if !batch.is_empty() {
+                return batch;
+            }
+            self.wake.notified().await;
+        }
+    }
+}
+
 /// How long a repository's name and visibility are cached.
 const REPO_TTL: Duration = Duration::from_secs(3600);
 
@@ -130,6 +174,11 @@ impl Indexer {
             let Some(info) = self.repo(&repo_id).await? else {
                 continue;
             };
+            // A `watch` document is public and anyone can write one: a private repository is
+            // followed through membership only.
+            if info.private && reason == FollowReason::Watch {
+                continue;
+            }
             follows.push(Follow {
                 repo_id,
                 reason,
@@ -211,18 +260,23 @@ impl Indexer {
         let mut cursor = since;
         for a in found {
             cursor = cursor.max(a.created_at);
+            // forge-web's inbox rules: an assignment is a member's `event`; a review request
+            // asks only on a pull request, and either must name a thread of its own repository.
             let reason = match a.kind {
-                KIND_ASSIGN => Reason::Assigned,
+                KIND_ASSIGN if !a.via_author => Reason::Assigned,
                 KIND_REVIEW_REQUEST => Reason::ReviewRequested,
                 _ => continue,
             };
             if a.author == s.identity {
                 continue;
             }
-            let (Some(repo), Some(target)) = (
-                self.repo(&a.repo_id).await?,
-                self.chain.target(&a.target_id).await?,
-            ) else {
+            let Some(target) = self.chain.target(&a.target_id).await? else {
+                continue;
+            };
+            if target.repo_id != a.repo_id || (reason == Reason::ReviewRequested && !target.is_pr) {
+                continue;
+            }
+            let Some(repo) = self.repo(&a.repo_id).await? else {
                 continue;
             };
             let what = if target.is_pr {

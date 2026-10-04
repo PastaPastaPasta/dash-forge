@@ -2,6 +2,7 @@
 //! container needs no config file. Secrets come from the environment or from a file (`*_FILE`,
 //! for Docker or systemd credentials), never from a flag.
 
+use crate::limits::TrustProxy;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -121,10 +122,11 @@ pub struct ServeArgs {
     /// API requests per minute per client address.
     #[arg(long, env = "FORGE_NOTIFY_PER_IP_PER_MINUTE", default_value_t = 60)]
     pub per_ip_per_minute: u32,
-    /// Take the client address from `CF-Connecting-IP` / `X-Forwarded-For` (only behind a
-    /// proxy that sets them).
-    #[arg(long, env = "FORGE_NOTIFY_TRUST_PROXY", default_value_t = false)]
-    pub trust_proxy: bool,
+    /// Where the client address comes from: `none` (the socket peer), `cloudflare`
+    /// (`CF-Connecting-IP`, behind a Cloudflare tunnel or proxy only) or `forwarded` (the last
+    /// `X-Forwarded-For` entry, the one the proxy in front appended).
+    #[arg(long, env = "FORGE_NOTIFY_TRUST_PROXY", value_enum, default_value_t = TrustProxy::None)]
+    pub trust_proxy: TrustProxy,
     /// Allow http and loopback endpoints and origins (local tests only).
     #[arg(long, env = "FORGE_NOTIFY_INSECURE_LOCAL", default_value_t = false)]
     pub insecure_local: bool,
@@ -190,7 +192,7 @@ pub struct Config {
     /// Limits.
     pub limits: Limits,
     /// Whether client addresses come from proxy headers.
-    pub trust_proxy: bool,
+    pub trust_proxy: TrustProxy,
     /// Local test mode.
     pub insecure_local: bool,
 }
@@ -242,6 +244,18 @@ pub fn base_url(field: &str, raw: &str, insecure_local: bool) -> Result<String> 
         )));
     }
     Ok(u.as_str().trim_end_matches('/').to_string())
+}
+
+/// A link shown to users (the privacy notice): https (or http to loopback in local mode),
+/// so a page can never be handed a `javascript:` or `data:` URL.
+pub fn web_link(field: &str, raw: &str, insecure_local: bool) -> Result<String> {
+    let u = url::Url::parse(raw.trim())
+        .map_err(|_| NotifyError::Config(format!("{field} is not a URL")))?;
+    let local = u.host_str().is_some_and(is_loopback_host);
+    if !(u.scheme() == "https" || (u.scheme() == "http" && (local || insecure_local))) {
+        return Err(NotifyError::Config(format!("{field} must be https")));
+    }
+    Ok(u.to_string())
 }
 
 /// The origin of a base URL (`https://host[:port]`).
@@ -309,7 +323,14 @@ impl ServeArgs {
             operator,
             allowed_origins,
             data_dir: self.data_dir,
-            privacy_url: self.privacy_url,
+            privacy_url: match self.privacy_url.as_deref().map(str::trim) {
+                Some(p) if !p.is_empty() => Some(web_link(
+                    "FORGE_NOTIFY_PRIVACY_URL",
+                    p,
+                    self.insecure_local,
+                )?),
+                _ => None,
+            },
             contact: self.contact,
             network: NetworkSettings {
                 network: self.network,

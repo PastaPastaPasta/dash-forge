@@ -19,7 +19,7 @@ const SECRET = new Uint8Array(32).fill(0x22)
 const auth = { identity: null as string | null, controller: { serviceKey: () => ({ identityId: 'IDENTITY', keyId: 4, wif: encodeWif(SECRET, 'testnet') }) } }
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => auth }))
 
-const { NotifyService } = await import('./notify-panel')
+const { NotifyService, safeLink } = await import('./notify-panel')
 
 const BASE = 'https://notify.example.org'
 const INFO = {
@@ -78,6 +78,20 @@ describe('NotifyService', () => {
     expect(privacy).toContain('never a title')
     expect(el.textContent).toContain('Sign in to set up email or push')
     expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('a service that names another operator is not signed for', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ ...INFO, operator: 'notify.forge.dashhq.org' }), { status: 200 }))))
+    await render()
+    expect(el.querySelector('[data-testid="notify-mismatch"]')?.textContent).toContain('notify.forge.dashhq.org')
+    expect(el.querySelector('[data-testid="notify-privacy"]')).toBeNull()
+  })
+
+  it('links only an http(s) privacy notice', () => {
+    expect(safeLink('javascript:alert(1)')).toBeNull()
+    expect(safeLink('data:text/html,x')).toBeNull()
+    expect(safeLink('not a url')).toBeNull()
+    expect(safeLink('https://example.org/privacy')).toBe('https://example.org/privacy')
   })
 
   it('signed in: account.get is signed for the operator with this browser key', async () => {

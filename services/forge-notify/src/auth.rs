@@ -136,6 +136,7 @@ impl PlatformKeys {
 }
 
 const KEY_CACHE_TTL: Duration = Duration::from_secs(60);
+const KEY_CACHE_MAX: usize = 10_000;
 
 impl KeySource for PlatformKeys {
     fn keys<'a>(&'a self, identity: &'a str) -> KeysFuture<'a> {
@@ -151,8 +152,16 @@ impl KeySource for PlatformKeys {
                 Err(e) => return Err(e.into()),
             };
             let mut cache = lock(&self.cache);
-            if cache.len() > 10_000 {
-                cache.clear();
+            if cache.len() >= KEY_CACHE_MAX {
+                // Expired entries first, then misses (random ids cost a read each and must not
+                // push real subscribers' keys out), and only then everything.
+                cache.retain(|_, (_, at)| at.elapsed() < KEY_CACHE_TTL);
+                if cache.len() >= KEY_CACHE_MAX {
+                    cache.retain(|_, (k, _)| k.is_some());
+                }
+                if cache.len() >= KEY_CACHE_MAX {
+                    cache.clear();
+                }
             }
             cache.insert(identity.to_string(), (keys.clone(), Instant::now()));
             Ok(keys)

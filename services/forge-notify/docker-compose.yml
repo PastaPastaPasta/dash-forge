@@ -41,7 +41,8 @@ services:
       # Encryption at rest.
       FORGE_NOTIFY_DATA_KEY_FILE: /run/secrets/data_key
       # Abuse controls and caps.
-      FORGE_NOTIFY_TRUST_PROXY: ${FORGE_NOTIFY_TRUST_PROXY:-true}
+      # cloudflare (CF-Connecting-IP), forwarded (the last X-Forwarded-For entry) or none.
+      FORGE_NOTIFY_TRUST_PROXY: ${FORGE_NOTIFY_TRUST_PROXY:-cloudflare}
       FORGE_NOTIFY_PER_IP_PER_MINUTE: ${FORGE_NOTIFY_PER_IP_PER_MINUTE:-60}
       FORGE_NOTIFY_MAX_SUBSCRIBERS: ${FORGE_NOTIFY_MAX_SUBSCRIBERS:-10000}
       FORGE_NOTIFY_MAX_REPOS_PER_USER: ${FORGE_NOTIFY_MAX_REPOS_PER_USER:-50}

@@ -53,6 +53,9 @@ pub struct Addressed {
     pub author: String,
     /// When (ms).
     pub created_at: u64,
+    /// An `authorEvent` (written by the target's author, who need not be a member), not an
+    /// `event` (a member's).
+    pub via_author: bool,
 }
 
 /// An issue or PR.
@@ -60,10 +63,34 @@ pub struct Addressed {
 pub struct TargetInfo {
     /// A pull request (else an issue).
     pub is_pr: bool,
+    /// Its repository.
+    pub repo_id: String,
     /// Its number.
     pub number: u64,
     /// Its title; `None` when sealed (a private repo).
     pub title: Option<String>,
+}
+
+/// The most addressed documents read per type and poll.
+const ADDRESSED_PAGE: u32 = 50;
+
+/// Merge two pages read past the same cursor, oldest first. A full page may have more after
+/// it, so nothing newer than its last item is kept: the next poll's cursor then stops there,
+/// and the rest is read next time instead of being skipped.
+pub fn merge_pages(a: Vec<Addressed>, b: Vec<Addressed>) -> Vec<Addressed> {
+    let full = |p: &[Addressed]| p.len() >= ADDRESSED_PAGE as usize;
+    let horizon = [&a, &b]
+        .into_iter()
+        .filter(|p| full(p))
+        .filter_map(|p| p.iter().map(|x| x.created_at).max())
+        .min();
+    let mut out: Vec<Addressed> = a
+        .into_iter()
+        .chain(b)
+        .filter(|x| horizon.is_none_or(|h| x.created_at <= h))
+        .collect();
+    out.sort_by_key(|x| x.created_at);
+    out
 }
 
 /// The reads the service needs.
@@ -175,7 +202,7 @@ impl PlatformChain {
                 doc_type,
                 &filters,
                 &[QueryOrder::asc("$createdAt")],
-                50,
+                ADDRESSED_PAGE,
                 None,
             )
             .await?;
@@ -189,6 +216,7 @@ impl PlatformChain {
                     target_id: id_field(d, "targetId")?,
                     author: d.owner_id.clone(),
                     created_at: d.created_at?,
+                    via_author: doc_type == "authorEvent",
                 })
             })
             .collect())
@@ -260,13 +288,15 @@ impl Chain for PlatformChain {
     fn addressed(&self, identity: &str, since: u64) -> Read<'_, Vec<Addressed>> {
         let identity = identity.to_string();
         Box::pin(async move {
-            let mut out = self.addressed_of("event", &identity, since).await?;
-            match self.addressed_of("authorEvent", &identity, since).await {
-                Ok(more) => out.extend(more),
-                Err(e) => tracing::debug!(error = %e, "authorEvent by addressee: not read"),
-            }
-            out.sort_by_key(|a| a.created_at);
-            Ok(out)
+            let events = self.addressed_of("event", &identity, since).await?;
+            let author_events = match self.addressed_of("authorEvent", &identity, since).await {
+                Ok(more) => more,
+                Err(e) => {
+                    tracing::debug!(error = %e, "authorEvent by addressee: not read");
+                    Vec::new()
+                }
+            };
+            Ok(merge_pages(events, author_events))
         })
     }
 
@@ -281,8 +311,12 @@ impl Chain for PlatformChain {
                 {
                     // A private repo's thread seals its title (`enc`): no title then.
                     let sealed = d.fields.contains_key("enc");
+                    let Some(repo_id) = id_field(&d, "repoId") else {
+                        return Ok(None);
+                    };
                     return Ok(Some(TargetInfo {
                         is_pr,
+                        repo_id,
                         number: d.field_u64("number").unwrap_or(0),
                         title: if sealed { None } else { d.field_str("title") },
                     }));
@@ -336,5 +370,38 @@ impl Chain for PlatformChain {
                 .next()
                 .map(|n| n.strip_suffix(".dash").unwrap_or(&n).to_string()))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(t: u64) -> Addressed {
+        Addressed {
+            doc_id: format!("d{t}"),
+            kind: KIND_ASSIGN,
+            repo_id: "r".into(),
+            target_id: "t".into(),
+            author: "a".into(),
+            created_at: t,
+            via_author: false,
+        }
+    }
+
+    #[test]
+    fn a_full_page_holds_the_cursor_back() {
+        // Short pages: everything, oldest first.
+        let got = merge_pages(vec![at(5), at(1)], vec![at(3)]);
+        assert_eq!(
+            got.iter().map(|a| a.created_at).collect::<Vec<_>>(),
+            [1, 3, 5]
+        );
+        // A full page of `event`s up to 50, and one `authorEvent` at 90: the 90 waits, so the
+        // cursor stops at 50 and the events after the page are read next time.
+        let full: Vec<Addressed> = (1..=u64::from(ADDRESSED_PAGE)).map(at).collect();
+        let got = merge_pages(full, vec![at(90), at(20)]);
+        assert_eq!(got.len(), ADDRESSED_PAGE as usize + 1);
+        assert_eq!(got.last().unwrap().created_at, 50);
     }
 }

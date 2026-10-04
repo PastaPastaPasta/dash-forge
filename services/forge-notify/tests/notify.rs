@@ -15,19 +15,21 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tower::ServiceExt as _;
 use web_push_native::p256::elliptic_curve::sec1::ToEncodedPoint as _;
 
 use forge_core::platform::IdentityKeyInfo;
 use forge_notify::api::{self, ApiSettings, App};
 use forge_notify::auth::{sign, KeySource, KeysFuture};
-use forge_notify::chain::{Addressed, Chain, Read, RepoInfo, TargetInfo, KIND_REVIEW_REQUEST};
+use forge_notify::chain::{
+    Addressed, Chain, Read, RepoInfo, TargetInfo, KIND_ASSIGN, KIND_REVIEW_REQUEST,
+};
 use forge_notify::config::Limits;
 use forge_notify::crypto::Vault;
 use forge_notify::dispatch::Dispatcher;
-use forge_notify::index::Indexer;
-use forge_notify::limits::RateLimiter;
+use forge_notify::index::{Indexer, ReindexQueue};
+use forge_notify::limits::{RateLimiter, TrustProxy};
 use forge_notify::mail::{CaptureMailer, Mailer};
 use forge_notify::push::{CapturePusher, Pusher};
 use forge_notify::route::{MentionIndex, Router};
@@ -40,6 +42,8 @@ const REPO: &str = "DEp9c8kkjc5LBheVBFScdjWsGhs77BtcYdfNGCHwQEtf";
 const PRIVATE: &str = "8KBVQ41HTueY1nuGhpAGNUEy9BQSAgCHV9Z34VUw9ZuP";
 const TARGET: &str = "G6D3ejKxgcc4yRSRyuLoPg9RGa7XWPwB9kBzU29hgEQH";
 const OP: &str = "notify.test";
+const ISSUE: &str = "4Rgqa4QcqiqYNXxvCZbKXFYZv1spbYaugUwuhaJ8ATzV";
+const FOREIGN: &str = "BKhXUWPTj4ue2JxSLXwhv8LF4jmYbBD9aCPxjyXgv5Uy";
 
 struct Keys(IdentityKeyInfo);
 
@@ -86,25 +90,34 @@ impl Chain for StubChain {
         Box::pin(async move { Ok(Some(r)) })
     }
     fn addressed(&self, _identity: &str, _since: u64) -> Read<'_, Vec<Addressed>> {
+        let ev = |doc_id: &str, kind, target: &str, via_author| Addressed {
+            doc_id: doc_id.into(),
+            kind,
+            repo_id: REPO.into(),
+            target_id: target.into(),
+            author: BOB.into(),
+            created_at: 2_000_000_000_000,
+            via_author,
+        };
         Box::pin(async move {
-            Ok(vec![Addressed {
-                doc_id: "EvReview1".into(),
-                kind: KIND_REVIEW_REQUEST,
-                repo_id: REPO.into(),
-                target_id: TARGET.into(),
-                author: BOB.into(),
-                created_at: 2_000_000_000_000,
-            }])
+            Ok(vec![
+                ev("EvReview1", KIND_REVIEW_REQUEST, TARGET, true),
+                // Dropped: a review request on an issue asks nothing; a thread of another
+                // repository; an assignment that is not a member's `event`.
+                ev("EvReview2", KIND_REVIEW_REQUEST, ISSUE, true),
+                ev("EvReview3", KIND_REVIEW_REQUEST, FOREIGN, false),
+                ev("EvAssign1", KIND_ASSIGN, TARGET, true),
+            ])
         })
     }
-    fn target(&self, _id: &str) -> Read<'_, Option<TargetInfo>> {
-        Box::pin(async move {
-            Ok(Some(TargetInfo {
-                is_pr: true,
-                number: 7,
-                title: Some("Fix the parser".into()),
-            }))
-        })
+    fn target(&self, id: &str) -> Read<'_, Option<TargetInfo>> {
+        let t = TargetInfo {
+            is_pr: id != ISSUE,
+            repo_id: if id == FOREIGN { PRIVATE } else { REPO }.into(),
+            number: 7,
+            title: Some("Fix the parser".into()),
+        };
+        Box::pin(async move { Ok(Some(t)) })
     }
     fn latest_activity(&self, _repo_id: &str) -> Read<'_, Option<(u64, String)>> {
         let mut l = self.latest.lock().unwrap();
@@ -126,7 +139,6 @@ struct World {
     indexer: Indexer,
     router: Router,
     feed: watch::Receiver<BTreeSet<String>>,
-    _reindex: mpsc::UnboundedReceiver<String>,
 }
 
 fn world() -> World {
@@ -158,14 +170,13 @@ fn world() -> World {
         per_user_daily: 100,
         daily_budget: 1000,
     });
-    let (reindex, reindex_rx) = mpsc::unbounded_channel();
     let app = Arc::new(App {
         store: store.clone(),
         vault,
         keys: Arc::new(Keys(key)),
         dispatcher: Arc::clone(&dispatcher),
         limiter: RateLimiter::new(1000),
-        reindex,
+        reindex: Arc::new(ReindexQueue::default()),
         ready: Arc::new(AtomicBool::new(true)),
         settings: ApiSettings {
             operator: OP.into(),
@@ -175,7 +186,7 @@ fn world() -> World {
             contact: None,
             push_hosts: vec!["fcm.googleapis.com".into()],
             insecure_local: false,
-            trust_proxy: false,
+            trust_proxy: TrustProxy::None,
             max_subscribers: 10,
             max_repos_per_user: 50,
             digest_hour: 8,
@@ -208,7 +219,6 @@ fn world() -> World {
         indexer,
         router,
         feed,
-        _reindex: reindex_rx,
     }
 }
 

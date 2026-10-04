@@ -46,6 +46,17 @@ async function currentPush(): Promise<PushSubscription | null> {
   return (await reg?.pushManager.getSubscription()) ?? null
 }
 
+/** An http(s) link from the service, or null: never a `javascript:` or `data:` URL. */
+export function safeLink(raw: string | null): string | null {
+  if (!raw) return null
+  try {
+    const u = new URL(raw)
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null
+  } catch {
+    return null
+  }
+}
+
 function browserLabel(): string {
   const ua = navigator.userAgent
   const browser = /Firefox\//.test(ua) ? 'Firefox' : /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser'
@@ -117,6 +128,18 @@ export function NotifyService({ base }: { base: string }): JSX.Element {
     )
   }
   if (!info) return <p className="text-dense text-anvil-500 dark:text-anvil-400">Asking the notification service what it offers…</p>
+  // Requests are signed for the host this build names, so a service cannot collect requests
+  // meant for another operator by claiming its name.
+  const host = new URL(base).host
+  if (info.operator !== host) {
+    return (
+      <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="notify-mismatch">
+        The notification service at <span className="font-mono">{host}</span> calls itself <span className="font-mono">{info.operator}</span>, so this browser will not sign
+        requests for it. Its operator must set its name to its host.
+      </p>
+    )
+  }
+  const privacyUrl = safeLink(info.privacyUrl)
 
   const channels = [info.channels.email ? 'email' : null, info.channels.push ? 'browser push' : null].filter(Boolean).join(' and ')
   const privacy = (
@@ -129,10 +152,10 @@ export function NotifyService({ base }: { base: string }): JSX.Element {
         It keeps your identity id, your address and push subscriptions (encrypted), your choices below and which repos it follows for you. None of it
         goes on chain. It reads only public data: for a private repo it can say “new activity”, never a title. Sign-in is a request signed by this
         browser&apos;s key, so there is no account or password.
-        {info.privacyUrl ? (
+        {privacyUrl ? (
           <>
             {' '}
-            <a href={info.privacyUrl} target="_blank" rel="noreferrer" className="underline">
+            <a href={privacyUrl} target="_blank" rel="noreferrer" className="underline">
               Privacy notice
             </a>
             .

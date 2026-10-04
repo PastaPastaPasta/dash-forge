@@ -437,9 +437,13 @@ impl Store {
         let now = to_i64(now_ms());
         let prefs = serde_json::to_string(&Prefs::default())
             .map_err(|e| NotifyError::Internal(e.to_string()))?;
+        // A random first epoch: unsubscribe links mailed before a `data.delete` must not work
+        // for the identity's next subscription.
+        let epoch = i64::from(rand::random::<u32>() >> 1);
         let n = self.db().execute(
-            "INSERT OR IGNORE INTO subscriber (identity, prefs, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-            params![identity, prefs, now],
+            "INSERT OR IGNORE INTO subscriber (identity, prefs, created_at, updated_at, unsub_epoch) \
+             VALUES (?1, ?2, ?3, ?3, ?4)",
+            params![identity, prefs, now, epoch],
         )?;
         Ok(n == 1)
     }
@@ -512,7 +516,8 @@ impl Store {
         )?;
         let n = tx.execute(
             "UPDATE subscriber SET email_sealed = ?2, email_idx = ?3, email_verified = 1, \
-             email_paused = 0, email_failures = 0, updated_at = ?4 WHERE identity = ?1",
+             email_paused = 0, email_failures = 0, unsub_epoch = unsub_epoch + 1, \
+             updated_at = ?4 WHERE identity = ?1",
             params![p.identity, p.email_sealed, p.email_idx, to_i64(now_ms())],
         )?;
         tx.commit()?;
@@ -846,12 +851,12 @@ impl Store {
         ] {
             tx.execute(sql, [identity])?;
         }
-        for sql in [
+        tx.execute(
             "DELETE FROM cursor WHERE key LIKE ?1",
-            "DELETE FROM counter WHERE key LIKE ?1",
-        ] {
-            tx.execute(sql, [format!("%:{identity}")])?;
-        }
+            [format!("%:{identity}")],
+        )?;
+        // The day's quota counters stay (they hold no address and are purged tomorrow):
+        // deleting must not reset the confirmation-mail limit.
         tx.commit()?;
         Ok(())
     }
@@ -897,7 +902,10 @@ mod tests {
         };
         s.add_pending("h", &p).unwrap();
         assert_eq!(s.identities_with_email("idx").unwrap(), 1);
+        let before = s.subscriber("A").unwrap().unwrap().unsub_epoch;
         assert_eq!(s.confirm_pending("h").unwrap().as_deref(), Some("A"));
+        let epoch = s.subscriber("A").unwrap().unwrap().unsub_epoch;
+        assert_eq!(epoch, before + 1, "a new address voids the old links");
         assert!(s.confirm_pending("h").unwrap().is_none());
         assert!(s.subscriber("A").unwrap().unwrap().mail_ok());
 
@@ -906,11 +914,20 @@ mod tests {
         assert!(s.email_failed("A", 3).unwrap());
         assert!(!s.subscriber("A").unwrap().unwrap().mail_ok());
 
-        assert!(!s.unsubscribe("A", 7).unwrap());
-        assert!(s.unsubscribe("A", 0).unwrap());
+        assert!(
+            !s.unsubscribe("A", before).unwrap(),
+            "a link to the old address"
+        );
+        assert!(s.unsubscribe("A", epoch).unwrap());
         let sub = s.subscriber("A").unwrap().unwrap();
-        assert!(sub.email_sealed.is_none() && sub.unsub_epoch == 1);
-        assert!(!s.unsubscribe("A", 0).unwrap(), "an old link is void");
+        assert!(sub.email_sealed.is_none() && sub.unsub_epoch == epoch + 1);
+        assert!(!s.unsubscribe("A", epoch).unwrap(), "an old link is void");
+
+        // A deleted and re-created subscriber does not start where it left off.
+        s.delete_identity("A").unwrap();
+        s.ensure_subscriber("A").unwrap();
+        let again = s.subscriber("A").unwrap().unwrap().unsub_epoch;
+        assert_ne!(again, epoch + 1);
     }
 
     #[test]

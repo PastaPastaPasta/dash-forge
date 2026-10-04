@@ -29,14 +29,14 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::auth::{self, KeySource, SignedEnvelope, SignedRequest};
 use crate::crypto::{random_token, token_hash, Vault};
 use crate::dispatch::{email_context, push_context, Dispatcher};
 use crate::error::{NotifyError, Result};
-use crate::limits::{client_ip, RateLimiter};
+use crate::index::ReindexQueue;
+use crate::limits::{client_ip, RateLimiter, TrustProxy};
 use crate::mail::Mail;
 use crate::push::{check_target, PushMessage, PushTarget};
 use crate::store::{now_ms, Pending, Prefs, Store};
@@ -67,7 +67,7 @@ pub struct App {
     /// Per-address limits.
     pub limiter: RateLimiter,
     /// Ask the indexer to rebuild one identity's follows.
-    pub reindex: mpsc::UnboundedSender<String>,
+    pub reindex: Arc<ReindexQueue>,
     /// Set once the watcher is running.
     pub ready: Arc<AtomicBool>,
     /// Settings the API needs.
@@ -92,7 +92,7 @@ pub struct ApiSettings {
     /// Local test mode.
     pub insecure_local: bool,
     /// Trust proxy headers for the client address.
-    pub trust_proxy: bool,
+    pub trust_proxy: TrustProxy,
     /// Subscriber cap.
     pub max_subscribers: u64,
     /// Repos per subscriber.
@@ -249,7 +249,7 @@ async fn signed(
             p.prefs.check()?;
             ensure_room(&app, id)?;
             app.store.set_prefs(id, &p.prefs)?;
-            let _ = app.reindex.send(id.to_string());
+            app.reindex.request(id);
             account(&app, id)
         }
         "push.add" => push_add(&app, &req),
@@ -455,7 +455,7 @@ fn push_add(app: &App, req: &SignedRequest) -> Result<Json<Value>> {
         &app.vault.seal(&push_context(id), &plain)?,
         label.as_deref(),
     )?;
-    let _ = app.reindex.send(id.to_string());
+    app.reindex.request(id);
     Ok(Json(json!({"ok": true})))
 }
 
@@ -603,7 +603,7 @@ async fn verify_confirm(
 ) -> Result<Html<String>> {
     match app.store.confirm_pending(&token_hash(&q.token))? {
         Some(identity) => {
-            let _ = app.reindex.send(identity);
+            app.reindex.request(&identity);
             Ok(page(
                 "Email confirmed",
                 "<p>Notifications will reach this address. Choose what you hear about in Forge's \

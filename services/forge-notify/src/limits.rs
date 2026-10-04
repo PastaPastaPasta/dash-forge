@@ -33,6 +33,10 @@ impl RateLimiter {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if w.len() > MAX_TRACKED {
             w.retain(|_, (start, _)| now.duration_since(*start) < Duration::from_secs(60));
+            // Still full of live windows: start over rather than scan on every request.
+            if w.len() > MAX_TRACKED {
+                w.clear();
+            }
         }
         let e = w.entry(normalize(ip)).or_insert((now, 0));
         if now.duration_since(e.0) >= Duration::from_secs(60) {
@@ -57,22 +61,29 @@ fn normalize(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// The client's address: the socket peer, or (behind a trusted proxy) `CF-Connecting-IP`, else
-/// the first `X-Forwarded-For` entry.
-pub fn client_ip(peer: SocketAddr, headers: &HeaderMap, trust_proxy: bool) -> IpAddr {
-    if trust_proxy {
-        let from = |name: &str| {
-            headers
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(',').next())
-                .and_then(|v| v.trim().parse::<IpAddr>().ok())
-        };
-        if let Some(ip) = from("cf-connecting-ip").or_else(|| from("x-forwarded-for")) {
-            return ip;
-        }
-    }
-    peer.ip()
+/// Where the client's address comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TrustProxy {
+    /// The socket peer (the service is reached directly).
+    None,
+    /// `CF-Connecting-IP`, which Cloudflare sets and overwrites (only behind Cloudflare).
+    Cloudflare,
+    /// The last `X-Forwarded-For` entry: the one the proxy in front appended. Earlier entries
+    /// come from the client and are ignored.
+    Forwarded,
+}
+
+/// The client's address, per `trust` (the socket peer when the header is missing or bad).
+pub fn client_ip(peer: SocketAddr, headers: &HeaderMap, trust: TrustProxy) -> IpAddr {
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let ip = match trust {
+        TrustProxy::None => None,
+        TrustProxy::Cloudflare => header("cf-connecting-ip").and_then(|v| v.trim().parse().ok()),
+        TrustProxy::Forwarded => header("x-forwarded-for")
+            .and_then(|v| v.rsplit(',').next())
+            .and_then(|v| v.trim().parse().ok()),
+    };
+    ip.unwrap_or_else(|| peer.ip())
 }
 
 #[cfg(test)]
@@ -95,10 +106,18 @@ mod tests {
         let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
         let mut h = HeaderMap::new();
         h.insert("x-forwarded-for", "198.51.100.7, 10.0.0.1".parse().unwrap());
-        assert_eq!(client_ip(peer, &h, false), peer.ip());
+        h.insert("cf-connecting-ip", "203.0.113.9".parse().unwrap());
+        assert_eq!(client_ip(peer, &h, TrustProxy::None), peer.ip());
+        // The proxy appended 10.0.0.1; 198.51.100.7 is whatever the client sent.
         assert_eq!(
-            client_ip(peer, &h, true),
-            "198.51.100.7".parse::<IpAddr>().unwrap()
+            client_ip(peer, &h, TrustProxy::Forwarded),
+            "10.0.0.1".parse::<IpAddr>().unwrap()
         );
+        assert_eq!(
+            client_ip(peer, &h, TrustProxy::Cloudflare),
+            "203.0.113.9".parse::<IpAddr>().unwrap()
+        );
+        h.remove("cf-connecting-ip");
+        assert_eq!(client_ip(peer, &h, TrustProxy::Cloudflare), peer.ip());
     }
 }
