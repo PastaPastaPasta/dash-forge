@@ -103,6 +103,11 @@ export default function NewRepoPage(): JSX.Element {
   // D6: a new repo protects its default branch and tags unless its creator opts out.
   const [protect, setProtect] = useState(true)
   const branchShown = defaultBranch.trim() || 'main'
+  // `/new/?visibility=private` (the Private repositories page's button) starts on Private, after
+  // hydration so the static page and the first client render agree.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('visibility') === 'private') setVisibility('private')
+  }, [])
   const isPrivate = visibility === 'private'
   // A private create wraps its key from the encryption key in this browser's vault.
   const ops = useAsync(
