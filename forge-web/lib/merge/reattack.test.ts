@@ -1,16 +1,19 @@
 /**
  * Regressions from the third adversarial review of the browser merge (each repro failed on the
- * code before the fix). The product rule since then: the browser never merges file contents —
- * a fast-forward, or a merge commit when the two sides changed disjoint paths — and everything
- * it reads or writes passes `git fsck --strict`, for fast-forwards and merges alike, with the
- * check and the run always agreeing.
+ * code before the fix). The rule since then: the browser merges file contents only as git's own
+ * xdiff does (`merge3.ts`, a port proven against `git merge-file` and `git merge-tree`), so a
+ * text merge that once got these shapes wrong now gives git's bytes; every tree-level shape git
+ * resolves with rename detection is a conflict; and everything it reads or writes passes
+ * `git fsck --strict`, for fast-forwards and merges alike, with the check and the run always
+ * agreeing.
  */
 
 import { describe, expect, it } from 'vitest'
 
-import { gitOidHex, MODE_TREE } from '../browse'
+import { BrowseReader, gitOidHex, MODE_TREE, ObjectLocator } from '../browse'
+import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
-import { checkCommit, checkTree, MalformedObjectError, specialFileName } from '../view/git-objects'
+import { checkCommit, checkTree, MalformedObjectError, parseCommit, parseTree, specialFileName } from '../view/git-objects'
 import { checkMerge, runMerge, type MergeInput } from './engine'
 
 const ME = { name: 'M', email: 'm@x', timestamp: 1_700_000_000, timezoneOffset: 0 }
@@ -56,25 +59,64 @@ async function verdict(s: Store, base: string, head: string): Promise<string> {
   return run
 }
 
-describe('no content-level merges: every shape a text merge got wrong is a conflict', () => {
+/** The merged file at `name` (a top-level entry) of a clean merge: its mode and text. */
+async function mergedFile(s: Store, base: string, head: string, name: string): Promise<{ mode: number; text: string }> {
+  expect(await verdict(s, base, head)).toBe('merge')
+  const out = await runMerge(s.reader(), input(base, head))
+  if (out.kind !== 'merge') throw new Error(out.kind)
+  const rows = await indexPacks([out.pack])
+  const packed = new BrowseReader(ObjectLocator.parse(serializeLocator(rows)), memoryPackSource([out.pack]))
+  const read = async (oid: string) => (s.objects.get(oid) ?? (await packed.readObject(oid)))
+  const tree = parseTree((await read(parseCommit((await read(out.newTip)).bytes).tree)).bytes)
+  const e = tree.find((x) => x.name === name)
+  if (e === undefined) throw new Error(`${name} is not in the merge`)
+  return { mode: e.mode, text: new TextDecoder().decode((await read(e.oid)).bytes) }
+}
+
+describe("content merges are git's: every shape a text merge once got wrong gives git's bytes", () => {
   const G = '  grant(user, ADMIN);\n'
   it('the base branch deletes a duplicate line the PR moved (diff3 kept the grant, git drops it)', async () => {
     const s = new Store()
     const m = s.commit(s.files({ 'acl.c': ['if (ok) {\n', G, G, '}\n', G, G, G, 'audit();\n'].join('') }))
     const baseTip = s.commit(s.files({ 'acl.c': ['if (ok) {\n', G, G, '}\n', G, G, 'audit();\n'].join('') }), [m])
     const head = s.commit(s.files({ 'acl.c': ['if (ok) {\n', G, G, '}\n', 'audit();\n', G, G, 'audit();\n'].join('') }), [m])
-    expect(await verdict(s, baseTip, head)).toBe('conflict')
+    // `git merge-tree` writes exactly this: one grant after the moved audit(), as git drops it.
+    expect((await mergedFile(s, baseTip, head, 'acl.c')).text).toBe(['if (ok) {\n', G, G, '}\n', 'audit();\n', G, 'audit();\n'].join(''))
   })
 
-  it('bare CR and U+2028 outside the edited hunks can no longer be stripped', async () => {
+  it('bare CR and U+2028 outside the edited hunks are kept byte for byte', async () => {
     for (const sep of ['\r', ' ', ' ']) {
       const s = new Store()
       const f = (a: string, e: string): string => `// setup${sep}verify(token);\n${a}\nB\nC\nD\n${e}\n`
       const m = s.commit(s.files({ 'auth.js': f('A', 'E') }))
       const baseTip = s.commit(s.files({ 'auth.js': f('A2', 'E') }), [m])
       const head = s.commit(s.files({ 'auth.js': f('A', 'E2') }), [m])
-      expect(await verdict(s, baseTip, head)).toBe('conflict')
+      expect((await mergedFile(s, baseTip, head, 'auth.js')).text).toBe(f('A2', 'E2'))
     }
+  })
+
+  it('a mode change one side and a content change the other: both kept (as git)', async () => {
+    const s = new Store()
+    const a = s.blob('1\n2\n')
+    const m = s.commit(rawTree(s, [E('100644', 'f', a)]))
+    const baseTip = s.commit(rawTree(s, [E('100755', 'f', a)]), [m])
+    const head = s.commit(rawTree(s, [E('100644', 'f', s.blob('1\n2x\n'))]), [m])
+    expect(await mergedFile(s, baseTip, head, 'f')).toEqual({ mode: 0o100755, text: '1\n2x\n' })
+  })
+
+  it('lines both sides changed, or changed next to each other, are a conflict', async () => {
+    const s = new Store()
+    const m = s.commit(s.files({ 'a.txt': '1\n2\n3\n4\n' }))
+    expect(await verdict(s, s.commit(s.files({ 'a.txt': '1\nX\n3\n4\n' }), [m]), s.commit(s.files({ 'a.txt': '1\nY\n3\n4\n' }), [m]))).toBe('conflict')
+    expect(await verdict(s, s.commit(s.files({ 'a.txt': '1\nX\n3\n4\n' }), [m]), s.commit(s.files({ 'a.txt': '1\n2\nY\n4\n' }), [m]))).toBe('conflict')
+  })
+
+  it('a .gitattributes anywhere above the file leaves its contents to git (a merge driver may apply)', async () => {
+    const s = new Store()
+    const m = s.commit(s.files({ '.gitattributes': '*.txt merge=union\n', 'd/a.txt': '1\n2\n3\n4\n5\n' }))
+    const baseTip = s.commit(s.files({ '.gitattributes': '*.txt merge=union\n', 'd/a.txt': 'X\n2\n3\n4\n5\n' }), [m])
+    const head = s.commit(s.files({ '.gitattributes': '*.txt merge=union\n', 'd/a.txt': '1\n2\n3\n4\nY\n' }), [m])
+    expect(await verdict(s, baseTip, head)).toBe('conflict')
   })
 
   it('add/add of the same content with different modes (either way round)', async () => {
@@ -130,11 +172,6 @@ describe('tree-level shapes (renames, deletes, type changes) are conflicts where
       const bt = s.commit(rawTree(s, [E('40000', 'e', d), E('100644', 'k', k)]), [m])
       const hd = s.commit(rawTree(s, [E('40000', 'd', s.files({ 'a.c': 'a\n', 'b.c': 'b\n', 'c.c': 'c\n', 'new.c': 'backdoor\n' })), E('100644', 'k', k)]), [m])
       return [bt, hd]
-    }],
-    ['mode-only vs content', (s) => {
-      const a = s.blob('1\n2\n')
-      const m = s.commit(rawTree(s, [E('100644', 'f', a)]))
-      return [s.commit(rawTree(s, [E('100755', 'f', a)]), [m]), s.commit(rawTree(s, [E('100644', 'f', s.blob('1\n2x\n'))]), [m])]
     }],
     ['delete vs mode-only', (s) => {
       const a = s.blob('1\n')

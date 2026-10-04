@@ -281,7 +281,7 @@ describe('--no-ff where a fast-forward is possible (QW-069)', () => {
 
   it('offers "Create a merge commit" beside the fast-forward, and sizes it as a merge commit', async () => {
     await render(0)
-    expect(options()).toEqual(['merge', 'no-ff', 'squash'])
+    expect(options()).toEqual(['merge', 'no-ff', 'squash', 'rebase'])
     const select = host.querySelector('#merge-method') as HTMLSelectElement
     expect(select.value).toBe('merge')
     await act(async () => {
@@ -297,7 +297,7 @@ describe('--no-ff where a fast-forward is possible (QW-069)', () => {
 
   it('merges under a merge-commits-only policy instead of refusing the fast-forward', async () => {
     await render(2)
-    expect(options()).toEqual(['merge(off)', 'no-ff', 'squash(off)'])
+    expect(options()).toEqual(['merge(off)', 'no-ff', 'squash(off)', 'rebase(off)'])
     expect((host.querySelector('#merge-method') as HTMLSelectElement).value).toBe('no-ff')
     expect(mergeButton()?.disabled).toBe(false)
     expect(host.textContent).not.toMatch(/does not allow this merge method/)

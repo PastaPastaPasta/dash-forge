@@ -76,8 +76,12 @@ export interface MergeRun {
   readonly squash?: string
   /** Built as a merge commit where a fast-forward was possible (--no-ff): the other choice is a new run. */
   readonly noFastForward?: true
+  /** The merge commit's edited message this run built with (M2): a different one is a new run. */
+  readonly message?: string
+  /** Built as a rebase (M1): another method is a new run. */
+  readonly rebase?: true
   readonly done: readonly MergeStepId[]
-  readonly result?: Extract<MergeResult, { kind: 'fast-forward' | 'merge' | 'squash' }>
+  readonly result?: Extract<MergeResult, { kind: 'fast-forward' | 'merge' | 'squash' | 'rebase' }>
   readonly stored?: StoredPack
   readonly manifestId?: string
   readonly refDocumentId?: string
@@ -86,28 +90,35 @@ export interface MergeRun {
 }
 
 /** A fresh run for `input` (into `baseRef`, when known). */
-export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward'>, baseRef?: string): MergeRun {
+export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message' | 'rebase'>, baseRef?: string): MergeRun {
   return {
     baseTip: input.baseTip,
     headOid: input.headOid,
     ...(baseRef !== undefined ? { baseRef } : {}),
     ...(input.squash ? { squash: input.squash.message } : {}),
     ...(input.noFastForward === true && !input.squash ? { noFastForward: true as const } : {}),
+    ...(input.message !== undefined && !input.squash ? { message: input.message } : {}),
+    ...(input.rebase === true && !input.squash ? { rebase: true as const } : {}),
     done: [],
   }
 }
 
-/** `run` when it is for `input`'s base branch, base tip, head and method, else a fresh run. */
-export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward'>, baseRef?: string): MergeRun {
-  const noFf = input.noFastForward === true && !input.squash
-  return run !== null &&
-    run.baseTip === input.baseTip &&
-    run.headOid === input.headOid &&
-    run.baseRef === baseRef &&
-    run.squash === input.squash?.message &&
-    (run.noFastForward === true) === noFf
-    ? run
-    : newRun(input, baseRef)
+/** Whether `run` was built for `input`'s base tip, head, method and message. */
+function runMatches(run: MergeRun, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message' | 'rebase'>): boolean {
+  const fresh = newRun(input)
+  return (
+    run.baseTip === fresh.baseTip &&
+    run.headOid === fresh.headOid &&
+    run.squash === fresh.squash &&
+    run.noFastForward === fresh.noFastForward &&
+    run.message === fresh.message &&
+    run.rebase === fresh.rebase
+  )
+}
+
+/** `run` when it is for `input`'s base branch, base tip, head, method and message, else a fresh run. */
+export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message' | 'rebase'>, baseRef?: string): MergeRun {
+  return run !== null && run.baseRef === baseRef && runMatches(run, input) ? run : newRun(input, baseRef)
 }
 
 export interface MergeRunDeps {
@@ -232,10 +243,9 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   // A private repo's pack must be encrypted, which the browser merge does not do: refused
   // here too, not only by the panel, so no caller can store a plaintext pack for one.
   if (deps.repo.visibility !== 'public') throw new MergeStopped('Private repositories are merged with `dg pr merge` for now.')
-  const noFf = deps.input.noFastForward === true && !deps.input.squash
   const otherBase = from.baseRef !== undefined && from.baseRef !== deps.pull.baseRefName
-  if (otherBase || from.baseTip !== deps.input.baseTip || from.headOid !== deps.input.headOid || from.squash !== deps.input.squash?.message || (from.noFastForward === true) !== noFf) {
-    throw new MergeStopped('the base branch or the PR head changed since this merge started; merge again')
+  if (otherBase || !runMatches(from, deps.input)) {
+    throw new MergeStopped('the base branch, the PR head or the merge method changed since this merge started; merge again')
   }
   // The base ref and head come from the PR document, which its author wrote: refuse anything
   // but an existing plain branch and a full commit id before a byte is paid for.
@@ -274,8 +284,11 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
     } catch (e) {
       throw new MergeStepError(phase, reasonOf(e), run)
     }
+    if (result.kind === 'conflict' && result.reason !== undefined) {
+      throw new MergeStopped(`${result.reason}${result.paths.length ? ` (${result.paths.slice(0, 5).join(', ')})` : ''}; merge with \`dg pr merge\``)
+    }
     if (result.kind === 'conflict') {
-      throw new MergeStopped(`both sides changed the same paths${result.paths.length ? ` (${result.paths.slice(0, 5).join(', ')})` : ''}; merge with \`dg pr merge\``)
+      throw new MergeStopped(`the merge conflicts${result.paths.length ? ` in ${result.paths.slice(0, 5).join(', ')}` : ' (more than one merge base)'}, or changes them in a way only git merges; merge with \`dg pr merge\``)
     }
     if (result.kind === 'malformed' || result.kind === 'too-large') throw new MergeStopped(`${result.reason}; it is not merged in the browser`)
     if (result.kind === 'up-to-date') throw new MergeStopped('the base branch already contains this head')

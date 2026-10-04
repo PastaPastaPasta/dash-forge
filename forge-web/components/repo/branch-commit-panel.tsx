@@ -449,8 +449,8 @@ export async function buildUpdateBranch(reader: ObjectReader, pull: PullView, ba
     case 'up-to-date':
       throw new BranchStopped('The PR branch already contains the base branch; nothing to update.')
     case 'conflict':
-      // The browser never merges a file's contents: no conflict verdict, git may merge it cleanly (QW3-016).
-      throw new BranchStopped(`Both sides changed ${out.plan.paths.length ? `the same files (${out.plan.paths.slice(0, 5).join(', ')})` : 'history with more than one merge base'}, which the browser can't merge; git may still merge it cleanly. Update it with the CLI (\`dg pr checkout\`, merge, push, \`dg pr sync\`).`)
+      // Lines both sides changed, or a shape only git merges (renames, a moved directory, binary files; QW3-016).
+      throw new BranchStopped(`${out.plan.paths.length ? `These files conflict, or change in a way only git merges (a rename, a moved directory, a binary file): ${out.plan.paths.slice(0, 5).join(', ')}.` : 'The history has more than one merge base, which only git merges.'} Update it with the CLI (\`dg pr checkout\`, merge, resolve, push, \`dg pr sync\`).`)
     case 'fast-forward':
       throw new BranchStopped('The PR branch has nothing the base lacks; nothing to update.')
     case 'unrelated':

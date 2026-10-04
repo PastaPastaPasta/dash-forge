@@ -318,7 +318,7 @@ pub fn tree_with(
 }
 
 /// Write `bytes` as a blob in `dir`, returning its id.
-fn hash_blob(dir: &Path, bytes: &[u8]) -> Result<String> {
+pub(crate) fn hash_blob(dir: &Path, bytes: &[u8]) -> Result<String> {
     use std::io::Write as _;
     let mut child = Command::new("git")
         .current_dir(dir)
@@ -567,6 +567,107 @@ pub fn merge_commit(
         return Ok(None);
     };
     commit_tree(dir, &tree, &[base, head], message, author).map(Some)
+}
+
+/// The `-c` settings [`rebase`] pins over the user's config.
+const REBASE_CONFIG: [&str; 8] = [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "commit.cleanup=verbatim",
+    "-c",
+    "advice.mergeConflict=false",
+];
+
+/// Where a [`rebase`] ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Rebased {
+    /// The rebased head (the head itself when it was already on the base with a linear history;
+    /// the base when every commit's change was already there).
+    Tip(String),
+    /// It stopped at `commit`, conflicting in `paths` (never empty); nothing was kept.
+    Stopped {
+        /// The commit that did not apply.
+        commit: String,
+        /// The conflicting paths.
+        paths: Vec<String>,
+    },
+}
+
+/// `git rebase --merge <onto>` of `head`, in a throwaway worktree of the bare repository `dir`,
+/// committed as `committer` (the `GIT_COMMITTER_*` pairs of a [`merge_author`] environment; each
+/// commit keeps its own author). The choices a user's config could change are pinned: the merge
+/// backend, patch-equivalent commits skipped, commits that become empty dropped, merges
+/// flattened, no autosquash or ref updates, verbatim messages, no hooks, no line-ending
+/// conversion and no LFS smudge — the rebase the browser replays (forge-web `rebase.ts`). Like
+/// dg's other merge commits, signing follows the user's `commit.gpgSign` (the browser cannot
+/// sign, so a signed rebase differs from the browser's only by its signatures).
+pub fn rebase(
+    dir: &Path,
+    onto: &str,
+    head: &str,
+    committer: &[(String, String)],
+) -> Result<Rebased> {
+    let wt = tempfile::tempdir().context("creating a scratch worktree")?;
+    let wt_path = wt.path().to_string_lossy().to_string();
+    let lfs = [("GIT_LFS_SKIP_SMUDGE".to_string(), "1".to_string())];
+    let run = |cwd: &Path, args: &[&str], env: &[(String, String)]| {
+        let mut all: Vec<&str> = REBASE_CONFIG.to_vec();
+        all.extend_from_slice(args);
+        git(cwd, &all, env)
+    };
+    run(
+        dir,
+        &["worktree", "add", "-q", "--detach", &wt_path, head],
+        &lfs,
+    )?;
+    let mut env: Vec<(String, String)> = committer
+        .iter()
+        .filter(|(k, _)| k.starts_with("GIT_COMMITTER_"))
+        .cloned()
+        .collect();
+    env.extend(lfs.iter().cloned());
+    let result = (|| {
+        let rebased = run(
+            wt.path(),
+            &[
+                "rebase",
+                "--merge",
+                "--empty=drop",
+                "--no-reapply-cherry-picks",
+                "--no-rebase-merges",
+                "--no-autosquash",
+                "--no-update-refs",
+                "-q",
+                onto,
+            ],
+            &env,
+        );
+        let Err(failed) = rebased else {
+            return Ok(Rebased::Tip(git(wt.path(), &["rev-parse", "HEAD"], &[])?));
+        };
+        // Stopped on a conflict (REBASE_HEAD names the commit), or failed outright.
+        let Ok(commit) = git(
+            wt.path(),
+            &["rev-parse", "-q", "--verify", "REBASE_HEAD"],
+            &[],
+        ) else {
+            return Err(failed);
+        };
+        let paths: Vec<String> = git(wt.path(), &["diff", "--name-only", "--diff-filter=U"], &[])
+            .map(|o| o.lines().map(str::to_string).collect())
+            .unwrap_or_default();
+        let _ = git(wt.path(), &["rebase", "--abort"], &[]);
+        // Stopped with nothing unmerged (a signing failure, say): git's own error, not a conflict.
+        if paths.is_empty() {
+            return Err(failed);
+        }
+        Ok(Rebased::Stopped { commit, paths })
+    })();
+    let _ = git(dir, &["worktree", "remove", "--force", &wt_path], &[]);
+    result
 }
 
 /// The distinct `Name <email>` authors of the commits in `base..head` (oldest first), for
