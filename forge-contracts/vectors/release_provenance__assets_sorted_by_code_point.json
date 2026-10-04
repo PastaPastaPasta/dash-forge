@@ -1,6 +1,6 @@
 {
-  "name": "pinned_by_release",
-  "description": "A release that records its commit, and whose tag named nothing when it was published, is judged against its record: a tag pushed later at another commit reads as moved.",
+  "name": "assets_sorted_by_code_point",
+  "description": "Asset names are listed in code-point order on both sides (UTF-16 order differs above U+FFFF).",
   "case": "release_provenance",
   "input": {
     "refNameHash": "T",
@@ -14,7 +14,7 @@
         "force": false,
         "protected": false,
         "author": "alice",
-        "createdAt": 300
+        "createdAt": 100
       }
     ],
     "configs": [],
@@ -30,9 +30,28 @@
             "sha256": "aa"
           }
         ]
+      },
+      {
+        "id": "r2",
+        "createdAt": 250,
+        "delta": 0,
+        "publisher": "alice",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "aa"
+          },
+          {
+            "name": "😀.zip",
+            "sha256": "bb"
+          },
+          {
+            "name": "Ａ.zip",
+            "sha256": "cc"
+          }
+        ]
       }
-    ],
-    "pin": "C"
+    ]
   },
   "expected": {
     "published": {
@@ -41,21 +60,24 @@
       "by": "alice"
     },
     "baseline": {
-      "oid": "c",
+      "oid": "A",
       "by": "alice",
-      "at": 200
+      "at": 100
     },
-    "pinnedBy": "release",
-    "lateTag": true,
+    "pinnedBy": "tag",
+    "lateTag": false,
     "current": {
       "oid": "A",
       "by": "alice",
-      "at": 300
+      "at": 100
     },
     "moves": [],
-    "tag": "moved",
+    "tag": "unchanged",
     "assets": {
-      "added": [],
+      "added": [
+        "Ａ.zip",
+        "😀.zip"
+      ],
       "removed": [],
       "replaced": []
     }

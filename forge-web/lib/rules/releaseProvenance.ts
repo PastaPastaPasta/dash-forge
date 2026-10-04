@@ -6,10 +6,15 @@
  *
  * A release names no commit of its own on a public repo, so its baseline is the tag's tip when
  * its first revision was published, folded by {@link resolveRef} over the updates written by
- * then. A release that records its commit (`pin`: a sealed release's `target`, or a later
- * `release.targetOid`) is judged against that instead. A tag first pushed after the release
- * (an import that wrote the release before the code) takes its first tip as the baseline, and
- * says so.
+ * then. A tag first pushed after the release (an import that wrote the release before the
+ * code) takes its first tip as the baseline, and says so. A release that records its commit
+ * (`pin`: a sealed release's `targetOid`, or a later `release.targetOid`) is judged against
+ * that only when the tag named nothing at the first publish (pushed later, or deleted or racing
+ * then): the tag's own history otherwise wins, because it names what the tag ref held, and an
+ * annotated tag's ref names a tag object rather than the pinned commit. (A pin is compared to
+ * the tag ref's tip unpeeled, so a late annotated tag reads as moved against it.) A tag deleted
+ * or racing at the first publish is not a late tag: its later tip is no baseline, so a push
+ * after the publish reads as a move.
  *
  * Parity: forge-core `rules::release_provenance` (vectors `release_provenance__*`).
  */
@@ -109,10 +114,18 @@ const tipOf = (s: RefState): ProvenanceTip | null => (s.state === 'resolved' ? {
 
 const sameAncestry = (a: string, b: string): boolean => a === b
 
+/** Code-point order, as Rust orders a `String` (UTF-16 `<` differs above U+FFFF). */
+function byCodePoint(a: string, b: string): number {
+  const x = Array.from(a, (c) => c.codePointAt(0) as number)
+  const y = Array.from(b, (c) => c.codePointAt(0) as number)
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return (x[i] as number) - (y[i] as number)
+  return x.length - y.length
+}
+
 function assetChanges(first: ProvenanceRevision, newest: ProvenanceRevision): AssetChanges {
   const was = new Map(first.assets.map((a) => [a.name, a.sha256.toLowerCase()]))
   const now = new Map(newest.assets.map((a) => [a.name, a.sha256.toLowerCase()]))
-  const sorted = (xs: string[]): string[] => xs.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  const sorted = (xs: string[]): string[] => xs.sort(byCodePoint)
   return {
     added: sorted([...now.keys()].filter((n) => !was.has(n))),
     removed: sorted([...was.keys()].filter((n) => !now.has(n))),
@@ -133,12 +146,14 @@ export function releaseProvenance(input: ProvenanceInput): ReleaseProvenance {
 
   // The baseline: the release's own pin, else the tag's tip at the first publish, else (a tag
   // pushed later) its first tip.
-  const atPublish = tipOf(resolveRef(valid.filter((u) => u.createdAt <= publishedAt), input.configs, input.refNameHash, sameAncestry))
+  const before = valid.filter((u) => u.createdAt <= publishedAt)
+  const atPublish = tipOf(resolveRef(before, input.configs, input.refNameHash, sameAncestry))
   const later = valid.filter((u) => u.createdAt > publishedAt)
   const firstLater = later.find((u) => !isNullOid(u.newOid))
-  const pin = input.pin && !isNullOid(input.pin) ? input.pin.toLowerCase() : null
-  const lateTag = atPublish === null && firstLater !== undefined
-  const tagBaseline = atPublish ?? (firstLater ? { oid: firstLater.newOid, by: firstLater.author, at: firstLater.createdAt } : null)
+  const lateTag = before.length === 0 && firstLater !== undefined
+  // The release's own record counts only when the tag named nothing at the first publish.
+  const pin = input.pin && !isNullOid(input.pin) && atPublish === null ? input.pin.toLowerCase() : null
+  const tagBaseline = lateTag ? { oid: firstLater.newOid, by: firstLater.author, at: firstLater.createdAt } : atPublish
   const baseline = pin !== null ? { oid: pin, by: first?.publisher ?? '', at: publishedAt } : tagBaseline
 
   // Moves: each later update that changed the tip, walked in the causal order.

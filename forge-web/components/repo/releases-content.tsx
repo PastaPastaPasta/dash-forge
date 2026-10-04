@@ -247,7 +247,6 @@ function SealedListNotes({ list }: { list: ReleaseList }): JSX.Element | null {
   )
 }
 
-/** The tip of a release's tag (a commit, or an annotated tag object), or null when no live tag has the name. */
 /** The tags of the list's releases whose provenance is altered (empty until read, or when it fails). */
 function useAlteredReleaseTags(repo: RepoRef, list: ReleaseList | null): ReadonlySet<string> {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
@@ -260,6 +259,7 @@ function useAlteredReleaseTags(repo: RepoRef, list: ReleaseList | null): Readonl
 
 const NONE: ReadonlySet<string> = new Set()
 
+/** The tip of a release's tag (a commit, or an annotated tag object), or null when no live tag has the name. */
 function releaseTagTip(home: RepoHome, tag: string): string | null {
   return tipOidOf(home.tags.find((t) => t.refName === `refs/tags/${tag}`))
 }

@@ -1,6 +1,6 @@
 {
-  "name": "pinned_by_release",
-  "description": "A release that records its commit, and whose tag named nothing when it was published, is judged against its record: a tag pushed later at another commit reads as moved.",
+  "name": "pin_yields_to_tag_history",
+  "description": "When the tag named something at the first publish, the tag's history is the baseline, not the release's record (an annotated tag's ref names a tag object, not the pinned commit).",
   "case": "release_provenance",
   "input": {
     "refNameHash": "T",
@@ -14,7 +14,7 @@
         "force": false,
         "protected": false,
         "author": "alice",
-        "createdAt": 300
+        "createdAt": 100
       }
     ],
     "configs": [],
@@ -41,19 +41,19 @@
       "by": "alice"
     },
     "baseline": {
-      "oid": "c",
+      "oid": "A",
       "by": "alice",
-      "at": 200
+      "at": 100
     },
-    "pinnedBy": "release",
-    "lateTag": true,
+    "pinnedBy": "tag",
+    "lateTag": false,
     "current": {
       "oid": "A",
       "by": "alice",
-      "at": 300
+      "at": 100
     },
     "moves": [],
-    "tag": "moved",
+    "tag": "unchanged",
     "assets": {
       "added": [],
       "removed": [],

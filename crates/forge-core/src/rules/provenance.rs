@@ -5,10 +5,15 @@
 //!
 //! A release names no commit of its own on a public repository, so its baseline is the tag's
 //! tip when its first revision was published, folded by [`super::resolve_ref`] over the updates
-//! written by then. A release that records its commit (`pin`: a sealed release's `target`, or a
-//! later `release.targetOid`) is judged against that instead. A tag first pushed after the
-//! release (an import that wrote the release before the code) takes its first tip as the
-//! baseline, and says so.
+//! written by then. A tag first pushed after the release (an import that wrote the release
+//! before the code) takes its first tip as the baseline, and says so. A release that records
+//! its commit (`pin`: a sealed release's `targetOid`, or a later `release.targetOid`) is judged
+//! against that only when the tag named nothing at the first publish (pushed later, or deleted
+//! or racing then): the tag's own history otherwise wins, because it names what the tag ref
+//! held, and an annotated tag's ref names a tag object rather than the pinned commit. (A pin is
+//! compared to the tag ref's tip unpeeled, so a late annotated tag reads as moved against it.)
+//! A tag deleted or racing at the first publish is not a late tag: its later tip is no baseline,
+//! so a push after the publish reads as a move.
 //!
 //! Parity: `releaseProvenance` in `forge-web/lib/rules/releaseProvenance.ts` (vectors
 //! `release_provenance__*`).
@@ -232,15 +237,20 @@ pub fn release_provenance(
         .filter(|u| u.created_at > published_at)
         .collect();
     let first_later = later.iter().position(|u| !is_null_oid(&u.new_oid));
-    let pin = pin.filter(|p| !is_null_oid(p)).map(str::to_ascii_lowercase);
-    let late_tag = at_publish.is_none() && first_later.is_some();
-    let tag_baseline = at_publish.or_else(|| {
+    let late_tag = before.is_empty() && first_later.is_some();
+    // The release's own record counts only when the tag named nothing at the first publish.
+    let pin = pin
+        .filter(|p| !is_null_oid(p) && at_publish.is_none())
+        .map(str::to_ascii_lowercase);
+    let tag_baseline = if late_tag {
         first_later.map(|i| ProvenanceTip {
             oid: later[i].new_oid.clone(),
             by: later[i].author.clone(),
             at: later[i].created_at,
         })
-    });
+    } else {
+        at_publish
+    };
     let baseline = match &pin {
         Some(p) => Some(ProvenanceTip {
             oid: p.clone(),

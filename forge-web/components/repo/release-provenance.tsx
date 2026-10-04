@@ -27,7 +27,7 @@ import type { ReleaseList } from '@/lib/repo/releases'
 import { readReleaseProvenance } from '@/lib/repo/release-provenance'
 import { readRepoSigners } from '@/lib/repo/signers'
 import { matchesProtected, provenanceAltered, type AssetChanges, type ReleaseProvenance } from '@/lib/rules'
-import { verifyTagSignature } from '@/lib/rules/signature'
+import { splitSignedTag, verifyTagSignature } from '@/lib/rules/signature'
 import type { RepoHome } from '@/lib/view'
 import { plural } from '@/lib/view'
 import { cn } from '@/lib/utils'
@@ -43,22 +43,26 @@ function useTagSignature(repo: RepoRef, oid: string | null): TagSignature | null
   const shared = browse.data?.kind === 'ready' ? browse.data.context.reader : null
   const reader = useMemo(() => shared?.forView(view) ?? null, [shared, view])
   const settled = reader === null && (browse.error !== null || (browse.data !== null && browse.data.kind !== 'ready'))
-  const [sig, setSig] = useState<TagSignature | null>(null)
+  const [sig, setSig] = useState<{ readonly oid: string; readonly sig: TagSignature } | null>(null)
   useEffect(() => {
-    if (oid === null) return setSig(null)
-    if (settled) return setSig({ kind: 'unknown' })
+    if (oid === null) return
+    if (settled) return setSig({ oid, sig: { kind: 'unknown' } })
     if (reader === null || !ready || sdk === null) return
     let live = true
+    const set = (s: TagSignature): void => {
+      if (live) setSig({ oid, sig: s })
+    }
     void (async () => {
       try {
         const obj = await reader.readObject(oid)
-        if (obj.type !== 'tag') return live && setSig({ kind: 'lightweight' })
-        setSig({ kind: 'signed', state: 'checking' })
+        if (obj.type !== 'tag') return set({ kind: 'lightweight' })
+        if (splitSignedTag(obj.bytes) === null) return set({ kind: 'unsigned' })
+        set({ kind: 'signed', state: 'checking' })
         const signers = await readRepoSigners(sdk, repo, network)
         const v = await verifyTagSignature(obj.bytes, signers)
-        if (live) setSig(v === null ? { kind: 'unsigned' } : { kind: 'signed', state: v })
+        set(v === null ? { kind: 'unsigned' } : { kind: 'signed', state: v })
       } catch {
-        if (live) setSig({ kind: 'unknown' })
+        set({ kind: 'unknown' })
       }
     })()
     return () => {
@@ -67,7 +71,8 @@ function useTagSignature(repo: RepoRef, oid: string | null): TagSignature | null
     // `reader` follows the browse state and the view; the repo and network are in its key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oid, reader, settled, ready, sdk])
-  return sig
+  // A result read for another tip (the tag moved under a reload) is not this tip's.
+  return sig !== null && sig.oid === oid ? sig.sig : null
 }
 
 function assetSentence(a: AssetChanges): string | null {

@@ -641,7 +641,7 @@ fn est_deposit(bytes: u64) -> u64 {
 /// person gave it as, not the raw milliseconds `forge_core::cost_audit::parse_since` produced.
 /// No `chrono` / `time` dependency: the importer's existing `unix_to_iso8601` (Howard
 /// Hinnant's `civil_from_days`) does the calendar math.
-fn format_utc(ms: u64) -> String {
+pub(crate) fn format_utc(ms: u64) -> String {
     // `YYYY-MM-DDTHH:MM:SSZ` -> `YYYY-MM-DD HH:MM:SS`.
     forge_import::github::unix_to_iso8601(ms / 1000)
         .trim_end_matches('Z')

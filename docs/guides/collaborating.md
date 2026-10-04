@@ -501,7 +501,7 @@ The tag must exist in the repository first (push it, as above, or publish from t
 
 The card turns red, and the release list marks the release **changed since publish**, when the tag points somewhere else, was deleted, or two pushes race on it, or when the assets changed. A tag that was moved and then moved back is shown in amber.
 
-`dg release verify <owner>/<repo> <tag>` prints the same checks and exits with [E504](../errors.md#e504) when the release changed, so a script can stop before installing from the tag. Run it inside a clone that has fetched the tag (`git fetch --tags`) to check the tag's signature as well. A private repository's sealed release records its commit, and is checked against that.
+`dg release verify <owner>/<repo> <tag>` prints the same checks and exits with [E504](../errors.md#e504) when the release changed, so a script can stop before installing from the tag. Run it inside a clone that has fetched the tag (`git fetch --tags`) to check the tag's signature as well. A private repository's sealed release may record its commit; it is checked against that when its tag named nothing at the moment of publish (the tag's own history wins otherwise).
 
 ### Labels
 

@@ -7,6 +7,7 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { bytesToBase64 } from '../sdk'
 import { provenanceAltered, releaseProvenance, type ConfigDoc, type ProvenanceRevision, type RefUpdate, type ReleaseProvenance } from '../rules'
@@ -24,8 +25,6 @@ export interface TagHistory {
   readonly configs: readonly ConfigDoc[]
 }
 
-const toHex = (b: Uint8Array): string => [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
-
 /** The history of `refs/tags/<tag>`. */
 export async function readTagHistory(sdk: EvoSDK, repo: RepoRef, tag: string): Promise<TagHistory> {
   const hash = refNameHash(`refs/tags/${tag}`)
@@ -34,13 +33,13 @@ export async function readTagHistory(sdk: EvoSDK, repo: RepoRef, tag: string): P
   if (stored !== null) {
     const [rows, config] = await Promise.all([stored.ref(b64), stored.config()])
     return {
-      refNameHash: toHex(hash),
+      refNameHash: bytesToHex(hash),
       updates: refUpdatesFromRows(repo, rows.refUpdate, rows.protectedRefUpdate, b64),
       configs: configBundleOf(repo, config).history,
     }
   }
   const [updates, bundle] = await Promise.all([readRefUpdates(sdk, repo, b64), readConfigBundle(sdk, repo)])
-  return { refNameHash: toHex(hash), updates, configs: bundle.history }
+  return { refNameHash: bytesToHex(hash), updates, configs: bundle.history }
 }
 
 const byKey = (a: ReleaseView, b: ReleaseView): number => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
@@ -48,11 +47,12 @@ const byKey = (a: ReleaseView, b: ReleaseView): number => a.createdAt - b.create
 /**
  * Every revision of `tag`'s release in `list`. A sealed revision lists its assets in its
  * encrypted manifest, not here, so its assets are left out (no change is claimed for them); the
- * target its first published revision records is the pin.
+ * target its first published revision records is the pin. A sealed draft is not a publish: it
+ * counts as unpublished, so the release is first published when a revision leaves draft.
  */
 export function tagRevisions(list: ReleaseList, tag: string): { revisions: ProvenanceRevision[]; pin: string | null } {
   const all = [...list.current, ...list.previous].filter((r) => r.tagName === tag)
-  const unpublishes = (r: ReleaseView): boolean => r.delta < 0 || r.sealed?.fields.unpublished === true
+  const unpublishes = (r: ReleaseView): boolean => r.delta < 0 || r.sealed?.fields.unpublished === true || r.sealed?.fields.draft === true
   const revisions = all.map((r) => ({
     id: r.id,
     createdAt: r.createdAt,
@@ -73,7 +73,8 @@ export async function readReleaseProvenance(sdk: EvoSDK, repo: RepoRef, list: Re
 
 /**
  * The tags of `list`'s live releases whose provenance is altered (the tag moved, was deleted or
- * races, or the assets changed): the list marks them. One read of every ref's history, which a
+ * races, or the assets changed): the list marks them "changed since publish". A tag never pushed
+ * is left out (nothing changed; the release page says the tag is missing). One read of every ref's history, which a
  * releases page holds already (its tag tips came from it).
  */
 export async function readAlteredReleaseTags(sdk: EvoSDK, repo: RepoRef, list: ReleaseList): Promise<ReadonlySet<string>> {
@@ -88,15 +89,15 @@ export async function readAlteredReleaseTags(sdk: EvoSDK, repo: RepoRef, list: R
     configs = configBundleOf(repo, config).history
   } else {
     const [all, bundle] = await Promise.all([readAllRefUpdates(sdk, repo), readConfigBundle(sdk, repo)])
-    historyOf = (hash) => all.get(toHex(hash)) ?? []
+    historyOf = (hash) => all.get(bytesToHex(hash)) ?? []
     configs = bundle.history
   }
   const altered = new Set<string>()
   for (const tag of tags) {
     const hash = refNameHash(`refs/tags/${tag}`)
     const { revisions, pin } = tagRevisions(list, tag)
-    const p = releaseProvenance({ refNameHash: toHex(hash), updates: historyOf(hash), configs, revisions, pin })
-    if (provenanceAltered(p)) altered.add(tag)
+    const p = releaseProvenance({ refNameHash: bytesToHex(hash), updates: historyOf(hash), configs, revisions, pin })
+    if (p.tag !== 'missing' && provenanceAltered(p)) altered.add(tag)
   }
   return altered
 }

@@ -11,7 +11,7 @@ use forge_core::collab::Release;
 use forge_core::rules::provenance::{
     release_provenance, ProvenanceAsset, ProvenanceRevision, ReleaseProvenance, TagVerdict,
 };
-use forge_core::rules::signature::{verify_tag_signature, SignatureVerdict};
+use forge_core::rules::signature::{split_signed_tag, verify_tag_signature, SignatureVerdict};
 use forge_core::user_error::{codes, UserError};
 
 use crate::common::Reader;
@@ -28,6 +28,8 @@ enum LocalSignature {
     Lightweight,
     /// The object is not in this directory's git (or this is no git repository).
     NotHere,
+    /// The tag is signed, but the repository's signing keys could not be read.
+    KeysUnread(String),
 }
 
 impl LocalSignature {
@@ -37,8 +39,14 @@ impl LocalSignature {
             Self::Unsigned => json!({"state": "unsigned"}),
             Self::Lightweight => json!({"state": "lightweight"}),
             Self::NotHere => json!({"state": "not-checked"}),
+            Self::KeysUnread(e) => json!({"state": "not-checked", "reason": e}),
         }
     }
+}
+
+/// An unpublish, or a sealed draft (not yet published).
+fn unpublished(r: &Release) -> bool {
+    r.is_unpublish() || r.sealed.as_ref().is_some_and(|s| s.fields.draft)
 }
 
 /// Every revision of `tag`'s release, and the target its first published revision records.
@@ -48,7 +56,9 @@ fn revisions_of(all: &[&Release]) -> (Vec<ProvenanceRevision>, Option<String>) {
         .map(|r| ProvenanceRevision {
             id: r.document_id.clone(),
             created_at: r.created_at,
-            delta: if r.is_unpublish() { -1 } else { r.delta },
+            // A sealed draft is not a publish: the release is first published when a
+            // revision leaves draft.
+            delta: if unpublished(r) { -1 } else { r.delta },
             publisher: r.publisher.clone(),
             // A sealed revision's assets are in its encrypted list: no change is claimed for them.
             assets: if r.sealed.is_some() {
@@ -66,7 +76,7 @@ fn revisions_of(all: &[&Release]) -> (Vec<ProvenanceRevision>, Option<String>) {
         .collect();
     let first = all
         .iter()
-        .filter(|r| !r.is_unpublish())
+        .filter(|r| !unpublished(r))
         .min_by(|a, b| (a.created_at, &a.document_id).cmp(&(b.created_at, &b.document_id)));
     let pin = first
         .and_then(|r| r.sealed.as_ref())
@@ -74,8 +84,8 @@ fn revisions_of(all: &[&Release]) -> (Vec<ProvenanceRevision>, Option<String>) {
     (revisions, pin)
 }
 
-/// The object `oid` in this directory's git: its signature, or why there is none to check.
-fn local_signature(oid: &str, signers: &[forge_core::rules::signature::Signer]) -> LocalSignature {
+/// The tag object `oid` in this directory's git, or the signature state there is without one.
+fn local_tag_object(oid: &str) -> std::result::Result<Vec<u8>, LocalSignature> {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
@@ -89,13 +99,9 @@ fn local_signature(oid: &str, signers: &[forge_core::rules::signature::Signer]) 
         .as_deref()
         .map(<[u8]>::trim_ascii)
     {
-        Some(b"tag") => match git(&["cat-file", "tag", oid]) {
-            Some(raw) => verify_tag_signature(&raw, signers)
-                .map_or(LocalSignature::Unsigned, LocalSignature::Signed),
-            None => LocalSignature::NotHere,
-        },
-        Some(b"commit") => LocalSignature::Lightweight,
-        _ => LocalSignature::NotHere,
+        Some(b"tag") => git(&["cat-file", "tag", oid]).ok_or(LocalSignature::NotHere),
+        Some(b"commit") => Err(LocalSignature::Lightweight),
+        _ => Err(LocalSignature::NotHere),
     }
 }
 
@@ -119,10 +125,7 @@ fn headline(p: &ReleaseProvenance, tag: &str) -> String {
 }
 
 fn when(ms: u64) -> String {
-    forge_import::github::unix_to_iso8601(ms / 1000)
-        .trim_end_matches('Z')
-        .replacen('T', " ", 1)
-        + " UTC"
+    crate::cost::format_utc(ms) + " UTC"
 }
 
 fn print_human(p: &ReleaseProvenance, tag: &str, repo: &str, sig: &LocalSignature) {
@@ -196,6 +199,10 @@ fn print_human(p: &ReleaseProvenance, tag: &str, repo: &str, sig: &LocalSignatur
         LocalSignature::NotHere => println!(
             "  signature   not checked: this directory's git has no copy of the tag (run it in a clone after `git fetch --tags`)"
         ),
+        LocalSignature::KeysUnread(e) => println!(
+            "  signature   not checked: the repository's signing keys could not be read ({})",
+            safe(e)
+        ),
     }
 }
 
@@ -220,11 +227,18 @@ pub async fn verify(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
     let ref_name = format!("refs/tags/{tag}");
     let (hash, updates, configs) = s.service().ref_history(&s.repo, &ref_name).await?;
     let p = release_provenance(&hash, &updates, &configs, &revisions, pin.as_deref());
-    let sig = match &p.current {
-        Some(c) => {
-            let signers = forge_core::signing_keys::repo_signers(&s.client, &s.repo, &[]).await?;
-            local_signature(&c.oid, &signers)
+    // Best effort: the keys are read only for a signed tag object this git holds, and a failed
+    // read leaves the signature unchecked rather than hiding the provenance.
+    let sig = match p.current.as_ref().map(|c| local_tag_object(&c.oid)) {
+        Some(Ok(raw)) if split_signed_tag(&raw).is_none() => LocalSignature::Unsigned,
+        Some(Ok(raw)) => {
+            match forge_core::signing_keys::repo_signers(&s.client, &s.repo, &[]).await {
+                Ok(signers) => verify_tag_signature(&raw, &signers)
+                    .map_or(LocalSignature::Unsigned, LocalSignature::Signed),
+                Err(e) => LocalSignature::KeysUnread(format!("{e:#}")),
+            }
         }
+        Some(Err(state)) => state,
         None => LocalSignature::NotHere,
     };
     let display = s.repo.display();
