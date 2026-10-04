@@ -2451,9 +2451,7 @@ mod tests {
                 );
                 assert_eq!(inp.tips(), expected::<MergeBaseTips>(v), "vector `{ctx}`");
             }
-            "search_issues" | "search_prs" | "search_text" | "search_mentions" => {
-                run_search_case(v);
-            }
+            c if c.starts_with("search_") => run_search_case(v),
             "pr_merge_base" => {
                 let inp: PrMergeBaseInput = input(v);
                 let got = v2::pr_merge_base(
