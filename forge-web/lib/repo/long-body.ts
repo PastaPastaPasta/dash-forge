@@ -14,6 +14,7 @@ import { sealedLength } from '../private/pack'
 import { LONG_BODY_MAX_BYTES, longBodyStoredText, needsLongBodyArtifact, utf8Bytes } from '../rules/long-body'
 import type { WriteAuth } from '../sdk'
 import { estimateChunkCredits } from '../sdk/cost'
+import { BODY_LIMIT } from '../view/text-limits'
 import { storeArtifact } from '../storage/upload'
 import { writePackManifest } from './push'
 import type { RepoRef } from './contract'
@@ -23,7 +24,10 @@ import { capabilitiesOf } from '../rules/roles'
 import type { Role } from '../rules/v2'
 
 /** A `body` or `notes` field's own cap (5,120 characters and bytes). */
-export const FIELD_MAX = 5120
+export const FIELD_MAX = BODY_LIMIT.bytes
+
+/** Any artifact hash: a trailer is as long whatever its hash, which is all an estimate needs. */
+export const ANY_HASH = '0'.repeat(64)
 
 /** The fields a long body may be written to. */
 export type LongBodyKind = SealedKind | 'release'
@@ -70,7 +74,7 @@ export function mayStoreLongBodies(role: Role | null | undefined): boolean {
 export function fieldEstimate(repo: RepoRef, kind: LongBodyKind, full: string, others: Readonly<Record<string, unknown>> = {}): string {
   const room = bodyRoom(repo, kind, others)
   if (!needsLongBodyArtifact(full, room)) return full
-  return longBodyStoredText(full, room, '0'.repeat(64)) ?? full
+  return longBodyStoredText(full, room, ANY_HASH) ?? full
 }
 
 /** "the text is too long: …holds at most N bytes (this one has M)", the field's own limit. */
@@ -120,7 +124,7 @@ export async function longBodyField(
   }
   // The field must hold the trailer (its length does not depend on the hash): checked before
   // anything is paid for.
-  if (longBodyStoredText(full, room, '0'.repeat(64)) === null) {
+  if (longBodyStoredText(full, room, ANY_HASH) === null) {
     throw new LongBodyRefusedError(`the rest of this ${kind}'s text leaves ${room} bytes, too few for the line naming the full text: shorten the title or the text`)
   }
   // A private repo's text is sealed under the write key. Its sealed bytes stay kept in this

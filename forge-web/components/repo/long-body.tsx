@@ -11,8 +11,8 @@ import { useAsync } from '@/hooks/use-async'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useSdk } from '@/hooks/use-sdk'
 import { repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
-import { bodyRoom, fieldEstimate, isLongBody, longBodyCredits, mayStoreLongBodies, type LongBodyKind } from '@/lib/repo/long-body'
-import { LONG_BODY_MAX_BYTES, parseLongBody, utf8Bytes, type LongBodyState } from '@/lib/rules/long-body'
+import { ANY_HASH, bodyRoom, longBodyCredits, mayStoreLongBodies, type LongBodyKind } from '@/lib/repo/long-body'
+import { LONG_BODY_MAX_BYTES, longBodyStoredText, needsLongBodyArtifact, parseLongBody, utf8Bytes, type LongBodyState } from '@/lib/rules/long-body'
 import { readLongBody, type BodyRead } from '@/lib/view/long-body'
 import { creditsAsDash } from '@/lib/view/format'
 import { formatCount } from '@/lib/view/text-limits'
@@ -70,16 +70,16 @@ export interface LongCompose {
  */
 export function useLongCompose(repo: RepoRef, kind: LongBodyKind, text: string, others: Readonly<Record<string, unknown>> = {}): LongCompose {
   const viewer = useViewerRole(repo)
-  if (!isLongBody(repo, kind, text, others)) return { long: false, problem: null, credits: 0 }
-  const bytes = utf8Bytes(text)
   const room = bodyRoom(repo, kind, others)
+  if (!needsLongBodyArtifact(text, room)) return { long: false, problem: null, credits: 0 }
+  const bytes = utf8Bytes(text)
   const credits = longBodyCredits(repo, bytes)
   if (bytes > LONG_BODY_MAX_BYTES) {
     return { long: true, credits, problem: `This text is ${formatCount(bytes)} bytes: Dash Forge keeps at most ${formatCount(LONG_BODY_MAX_BYTES)} bytes of one text.` }
   }
   if (viewer.failed) return { long: true, credits, problem: "Couldn't read your role in this repo, so a text this long cannot be posted yet: reload to try again." }
   if (!viewer.known) return { long: true, credits, problem: 'Checking whether you can post a text this long…' }
-  if (fieldEstimate(repo, kind, text, others) === text) {
+  if (longBodyStoredText(text, room, ANY_HASH) === null) {
     return { long: true, credits, problem: `The rest of this document's text leaves no room for its first part and the line naming the full text: shorten the title or the text.` }
   }
   if (!mayStoreLongBodies(viewer.role)) {
