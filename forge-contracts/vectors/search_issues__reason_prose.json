@@ -1,0 +1,32 @@
+{
+  "name": "reason_prose",
+  "description": "reason: with no value stays prose.",
+  "case": "search_issues",
+  "rules": "v2",
+  "input": {
+    "text": "reason: timeout reason:dupe"
+  },
+  "expected": {
+    "query": {
+      "state": "open",
+      "labels": [],
+      "author": null,
+      "assignee": null,
+      "mentions": false,
+      "sort": "newest",
+      "q": "reason: timeout",
+      "page": 1,
+      "notLabels": [],
+      "noLabel": false,
+      "milestone": null,
+      "noMilestone": false,
+      "authorLogin": null,
+      "scope": "any",
+      "comments": null,
+      "reason": null
+    },
+    "unresolved": [
+      "reason:dupe"
+    ]
+  }
+}

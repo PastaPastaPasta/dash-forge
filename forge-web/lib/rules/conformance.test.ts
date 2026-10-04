@@ -39,6 +39,9 @@ import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-re
 import { avatarSpec, checkProfile, type ProfileInput } from './profile'
 import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
 import { planRefs, syncDecision } from '../repo/fork'
+import { matchesText, mentions } from '../repo/issue-index'
+import { parseSearchText, unresolvedQualifiers } from '../view/issue-query'
+import { parsePullSearch, unresolvedPullQualifiers } from '../view/pull-query'
 import type {
   ConfigDoc,
   Event,
@@ -493,6 +496,30 @@ function runCaseV2(v: Vector): void {
       const inp = v.input as BaseHistory
       expect(inp.openedAt !== undefined, `vector ${v.name}: openedAt is given exactly for pr_base_tips`).toBe(v.case === 'pr_base_tips')
       expect(baseTipsOf(inp)).toEqual(v.expected)
+      break
+    }
+    case 'search_issues': {
+      onlyKeys(v, ['text'])
+      const { text } = v.input as { readonly text: string }
+      expect({ query: parseSearchText(text), unresolved: unresolvedQualifiers(text) }).toEqual(v.expected)
+      break
+    }
+    case 'search_prs': {
+      onlyKeys(v, ['text'])
+      const { text } = v.input as { readonly text: string }
+      expect({ query: parsePullSearch(text), unresolved: unresolvedPullQualifiers(text) }).toEqual(v.expected)
+      break
+    }
+    case 'search_text': {
+      onlyKeys(v, ['text', 'title', 'number', 'body', 'scope'])
+      const inp = v.input as { readonly text: string; readonly title: string; readonly number: number; readonly body: string; readonly scope: 'any' | 'title' | 'body' }
+      expect(matchesText(inp.text, { title: inp.title, number: inp.number, body: inp.body }, inp.scope)).toEqual(v.expected)
+      break
+    }
+    case 'search_mentions': {
+      onlyKeys(v, ['body', 'id', 'name'])
+      const inp = v.input as { readonly body: string; readonly id: string; readonly name: string | null }
+      expect(mentions(inp.body, inp.id, inp.name)).toEqual(v.expected)
       break
     }
     case 'pr_merge_base': {

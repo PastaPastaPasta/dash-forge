@@ -1,0 +1,12 @@
+{
+  "name": "by_id",
+  "description": "The raw identity id counts.",
+  "case": "search_mentions",
+  "rules": "v2",
+  "input": {
+    "body": "cc 7K1EkGWmXmYBcrQFzNE5P2iv4ww5pRkUY8nNrLVixKkK",
+    "id": "7K1EkGWmXmYBcrQFzNE5P2iv4ww5pRkUY8nNrLVixKkK",
+    "name": null
+  },
+  "expected": true
+}

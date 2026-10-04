@@ -1,0 +1,33 @@
+{
+  "name": "draft_and_rest",
+  "description": "is:draft, and the issue grammar for the rest.",
+  "case": "search_prs",
+  "rules": "v2",
+  "input": {
+    "text": "is:draft -label:wip author:@me no:assignee \"exact phrase\""
+  },
+  "expected": {
+    "query": {
+      "labels": [],
+      "author": "me",
+      "assignee": "none",
+      "sort": "newest",
+      "q": "\"exact phrase\"",
+      "page": 1,
+      "notLabels": [
+        "wip"
+      ],
+      "noLabel": false,
+      "milestone": null,
+      "noMilestone": false,
+      "authorLogin": null,
+      "scope": "any",
+      "comments": null,
+      "reason": null,
+      "state": "open",
+      "draft": true,
+      "reviewRequested": null
+    },
+    "unresolved": []
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "bare_number",
+  "description": "A bare number matches the number.",
+  "case": "search_text",
+  "rules": "v2",
+  "input": {
+    "text": "3",
+    "title": "nothing",
+    "number": 3,
+    "body": "",
+    "scope": "any"
+  },
+  "expected": true
+}

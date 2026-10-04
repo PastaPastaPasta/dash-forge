@@ -27,6 +27,7 @@ use crate::{CloseReasonArg, HideReasonArg, IssueCommand, IssueListArgs};
 #[allow(clippy::too_many_lines)] // one arm per subcommand
 pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
     match cmd {
+        IssueCommand::Status { repo } => crate::status::issue_status(ctx, repo).await,
         IssueCommand::List(args) => list(ctx, args).await,
         IssueCommand::View {
             repo,

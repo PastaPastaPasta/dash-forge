@@ -229,6 +229,14 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Storage(S::Add(_)) => ("storage profile not added", None),
         Command::Storage(_) => ("storage command failed", None),
         Command::Webhook(w) => w.context(),
+        Command::Search(crate::SearchCommand::Issues(a) | crate::SearchCommand::Prs(a)) => {
+            ("search failed", Some(&a.repo))
+        }
+        Command::Search(crate::SearchCommand::Repos(_)) => ("search failed", None),
+        Command::Api(_) => ("query failed", None),
+        Command::Issue(I::Status { repo }) | Command::Pr(P::Status { repo }) => {
+            ("could not read the status", Some(repo))
+        }
         Command::Ci(c) => c.context(),
         Command::Import(a) => ("import failed", a.repo.as_ref()),
         Command::Profile(crate::ProfileCommand::Show { .. }) => {

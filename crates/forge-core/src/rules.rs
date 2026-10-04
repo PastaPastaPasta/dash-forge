@@ -53,6 +53,7 @@ pub mod moderation;
 pub mod parity;
 pub mod profile;
 pub mod review;
+pub mod search;
 pub mod signature;
 pub mod transition;
 pub mod v2;
@@ -2377,6 +2378,38 @@ mod tests {
         }
     }
 
+    /// The search grammar and matchers (`rules::search`), shared with forge-web's
+    /// `issue-query.ts` / `pull-query.ts` / `issue-index.ts`.
+    fn run_search_case(v: &Vector) {
+        use super::search;
+        let ctx = &v.name;
+        let inp = &v.input;
+        let s = |k: &str| inp[k].as_str().unwrap_or_default().to_string();
+        let got = match v.case.as_str() {
+            "search_issues" => serde_json::to_value(search::parse_issue_search(
+                &s("text"),
+                &search::IssueQuery::default(),
+            )),
+            "search_prs" => serde_json::to_value(search::parse_pull_search(
+                &s("text"),
+                &search::PullQuery::default(),
+            )),
+            "search_text" => serde_json::to_value(search::matches_text(
+                &s("text"),
+                &s("title"),
+                inp["number"].as_u64().unwrap_or_default(),
+                &s("body"),
+                inp["scope"].as_str().unwrap_or("any"),
+            )),
+            "search_mentions" => {
+                serde_json::to_value(search::mentions(&s("body"), &s("id"), inp["name"].as_str()))
+            }
+            other => panic!("vector `{ctx}`: not a search case `{other}`"),
+        }
+        .unwrap();
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2419,6 +2452,7 @@ mod tests {
                 );
                 assert_eq!(inp.tips(), expected::<MergeBaseTips>(v), "vector `{ctx}`");
             }
+            c if c.starts_with("search_") => run_search_case(v),
             "pr_merge_base" => {
                 let inp: PrMergeBaseInput = input(v);
                 let got = v2::pr_merge_base(
