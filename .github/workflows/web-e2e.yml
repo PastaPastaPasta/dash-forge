@@ -12,12 +12,10 @@ name: Web e2e
 # (forge-contracts/deployments/fixtures/devnet-sakura.json) committed, which is the signal.
 
 on:
+  # No `paths:` filter on pull_request: the Playwright check is REQUIRED by branch protection,
+  # and a workflow that a path filter keeps from starting never reports it, which blocks the
+  # merge forever. The `changes` job applies the same path list at job level instead.
   pull_request:
-    paths:
-      - 'forge-web/**'
-      - 'forge-contracts/deployments/**'
-      - 'forge-contracts/scripts/seed-v2-fixture.mjs'
-      - '.github/workflows/web-e2e.yml'
   push:
     branches: [master]
     paths:
@@ -34,8 +32,55 @@ permissions:
   contents: read
 
 jobs:
+  # Decides whether the suite runs. Always runs and always reports. On a pull request it diffs
+  # the merge commit against its first parent (the base tip) and matches the paths that used to
+  # be the workflow-level `pull_request.paths` filter. Any other event (push, workflow_dispatch)
+  # always runs. Fails open: if the diff cannot be computed, run.
+  changes:
+    name: changes (web e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Did this PR touch the web app or what it reads?
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -u
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # For pull_request, HEAD is the synthetic merge commit; HEAD^1 is the base tip.
+          if ! files=$(git diff --name-only --no-renames HEAD^1 HEAD); then
+            echo "::warning::could not diff against the base; running the Playwright suite"
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Changed files:"
+          printf '%s\n' "$files"
+          pattern='^(forge-web/|forge-contracts/deployments/|forge-contracts/scripts/seed-v2-fixture\.mjs$|\.github/workflows/web-e2e\.yml$)'
+          if printf '%s\n' "$files" | grep -Eq "$pattern"; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "web=false" >> "$GITHUB_OUTPUT"
+            echo "No web-relevant paths changed; the Playwright job is skipped."
+          fi
+
   playwright:
     name: playwright (read-only, devnet sakura)
+    needs: changes
+    # `!cancelled()` replaces the implicit success() so a FAILED `changes` job runs this job
+    # (and fails it in the first step) instead of skipping it, since a skipped job satisfies a
+    # required check. Not `always()`: that would stop cancel-in-progress from cancelling a
+    # superseded build.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -44,6 +89,15 @@ jobs:
     env:
       E2E_DEVNET: sakura
     steps:
+      # A failed `changes` job must not turn into a skipped (= passing) required check.
+      - name: Fail when change detection did not succeed
+        if: needs.changes.result != 'success'
+        working-directory: ${{ github.workspace }}
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          echo "::error::the changes job ended '$CHANGES_RESULT'; refusing to skip this required check"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
