@@ -317,14 +317,14 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
 
   it('M1: landed, but the key check fails transiently: no paid renewal, a named error', async () => {
     chain.verifyFails = 'no available addresses to retry, last error: x'
-    await expect(run().promise).rejects.toThrow(/was created, but its browser key could not be checked \(no available addresses/)
+    await expect(run().promise).rejects.toThrow(/was created, but this browser's key could not be checked \(no available addresses/)
     expect(renewed.calls).toEqual([])
   })
 
   it('M1: landed, the key check fails, and the identity cannot be read again: no renewal', async () => {
     chain.verifyFails = 'key 5 is not on identity x'
     chain.readsFailAfterVerify = true
-    await expect(run().promise).rejects.toThrow(/browser key could not be checked/)
+    await expect(run().promise).rejects.toThrow(/browser's key could not be checked/)
     expect(renewed.calls).toEqual([])
   })
 

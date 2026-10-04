@@ -521,7 +521,7 @@ describe('the merge box review line (RC1 R-16): the fold gates, the proved count
   it('says "N of M required approvals" from the fold, and names a larger proved count "on chain"', () => {
     const line = verdictSummary(fold([MAINTAINER], [], { requiredApprovals: 2 }), proved(3), HEAD)
     expect(line).toMatchObject({ tone: 'required', headline: '1 of 2 required approvals', proved: false })
-    expect(line?.onChain).toMatch(/^3 member approvals on chain \(an upper bound/)
+    expect(line?.onChain).toMatch(/^3 member approvals on Platform \(an upper bound/)
     expect(verdictSummary(fold([MAINTAINER, WRITER], [], { requiredApprovals: 2 }), proved(2), HEAD)).toMatchObject({ tone: 'approved', headline: '2 of 2 required approvals', onChain: null })
     // Maintainers only: the writer's approval is in the fold but not in the policy's count.
     expect(verdictSummary(fold([MAINTAINER, WRITER], [], { requiredApprovals: 2 }, 1), null, HEAD)).toMatchObject({ headline: '1 of 2 required approvals', detail: '2 approvals in all' })
@@ -548,7 +548,7 @@ describe('the merge box review line (RC1 R-16): the fold gates, the proved count
   it('falls back to the proved count, said to be an upper bound, only when the members could not be read', () => {
     const line = verdictSummary(null, proved(2, 1), HEAD.toUpperCase())
     expect(line).toMatchObject({ tone: 'changes', headline: 'Changes requested', proved: false })
-    expect(line?.onChain).toMatch(/^2 member approvals and 1 change request on chain\. The members couldn't be read/)
+    expect(line?.onChain).toMatch(/^2 member approvals and 1 change request on Platform\. The members couldn't be read/)
     expect(verdictSummary(null, null, HEAD)).toBeNull()
   })
 })

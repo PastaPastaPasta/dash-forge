@@ -284,7 +284,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
           description={
             following
               ? 'Removes your follow from Platform and returns part of its storage fee.'
-              : 'Your follow is a public document on Platform, signed by this browser\'s key.'
+              : 'Your follow is public. Anyone can see it.'
           }
           cost={following ? unfollowRefund : followCost}
           refund={following}
