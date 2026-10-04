@@ -24,7 +24,7 @@ import { PaymentAddress } from '@/components/ui/payment-address'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { StepFailed, Waiting } from '@/components/auth/step-status'
 import { faucetUrl } from '@/components/top-up-sheet'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK, NotDeployedError } from '@/lib/constants'
 import { pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
 import { isAbort } from '@/lib/sdk/facade'
@@ -52,7 +52,7 @@ const STAGE_TEXT: Readonly<Record<CreateStage, string>> = {
   locking: 'Locking the deposit for Platform…',
   proving: 'Waiting for the lock to be provable…',
   registering: 'Registering your identity…',
-  verifying: 'Checking your browser key on Platform…',
+  verifying: "Checking this browser's key on Platform…",
 }
 
 /** What the funding step suggests sending, and the amount its wallet link fills in (DASH). */
@@ -207,7 +207,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     const m = normalizeMnemonic(phrase)
     const v2 = ACTIVE_NETWORK.v2
     if (!v2) {
-      setError('forge-v2 is not deployed here.')
+      setError(new NotDeployedError(ACTIVE_NETWORK).message + '.')
       return
     }
     const deposit = await checkWords(m)
@@ -347,7 +347,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
           ))}
         </ol>
         <Button variant="outline" className="w-full" disabled={words.length === 0} aria-pressed={revealed} onClick={() => setRevealed((r) => !r)}>
-          {revealed ? 'Hide recovery words' : 'Reveal recovery words'}
+          {revealed ? 'Hide recovery phrase' : 'Reveal recovery phrase'}
         </Button>
         <div className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
@@ -467,10 +467,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         ) : null}
       </div>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        This page watches for your deposit through the Dash network&apos;s own nodes, and asks a block explorer (
-        {new URL(coreEndpoints(network).insight).host}, changeable in Settings) only if they cannot answer. Amounts are checked against the raw
-        transactions, so neither can take funds or keys. On {ACTIVE_NETWORK.key} the lock is proven once a block chain-locks it, which can take a few
-        minutes.
+        Waiting for your deposit. It usually takes a few minutes. If Dash nodes don&apos;t answer, this page asks{' '}
+        {new URL(coreEndpoints(network).insight).host} instead (change it in Settings). Amounts are checked either way.
       </p>
       {error && !running && notCreated === 'final' ? (
         // Nothing left to retry with: this deposit cannot create the identity.

@@ -57,7 +57,7 @@ describe('forgetConfirm (QW3-034)', () => {
     expect(withNote.body).toContain(topUpRecordsStay({ next: true, unfinished: false }))
     // A top-up still running: its own record stays, and says so.
     await idbPut('journal', `top-up:${ACTIVE_NETWORK.network}:${ID}`, { index: 1, depositAddress: 'y' })
-    expect((await forgetConfirm(ID)).body).toMatch(/unfinished top-up of this identity stays/)
+    expect((await forgetConfirm(ID)).body).toMatch(/Your unfinished top-up stays in this browser/)
   })
 
   it('QW4-021: says the spend history and notifications here are deleted with the key', async () => {

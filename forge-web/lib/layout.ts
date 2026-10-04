@@ -101,7 +101,8 @@ export function withVis(visibility: 'public' | 'private', documentType: string, 
 export function rc1WriteProblem(forge: ForgeIds | null, contractId: string, documentType: string, data: Readonly<Record<string, unknown>>): string | null {
   if (forge === null || (contractId !== forge.core && contractId !== forge.collab && contractId !== forge.community)) return null
   const kind = contractKindOfType(documentType)
-  if (kind === null) return `no forge-v2 contract holds the document type ${JSON.stringify(documentType)}`
+  // copy-lint-ignore: a developer error naming a schema type, caught by tests before release
+  if (kind === null) return `no Forge contract holds the document type ${JSON.stringify(documentType)}`
   if (forge[kind] !== contractId) return `a ${documentType} belongs in forge-${kind}, not the contract it was sent to`
   const vis = data['vis']
   if (PUBLIC_ONLY_TYPES.has(documentType) && vis !== 'public') return `a ${documentType} must carry vis "public"`
