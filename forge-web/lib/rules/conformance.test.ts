@@ -33,6 +33,7 @@ import {
   v2,
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
+import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
 import { avatarSpec, checkProfile, type ProfileInput } from './profile'
 import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
 import { planRefs, syncDecision } from '../repo/fork'
@@ -555,6 +556,31 @@ function runCaseV2(v: Vector): void {
         readonly author: string
       }
       const got = v2.codeOwnerRequests(inp.tokens, new Map(Object.entries(inp.resolved)), new v2.RoleOracle(inp.memberships), inp.author)
+      expect(got).toEqual(v.expected)
+      break
+    }
+    case 'ci_rerun': {
+      const eventKeys = ['id', 'repoId', 'targetId', 'targetNumber', 'kind', 'refId', 'oid', 'value', 'valueHidden', 'actor', 'createdAt']
+      onlyKeys(v, ['repoId', 'owner', 'memberships', 'events'], { ...NESTED_KEYS, events: eventKeys })
+      const inp = v.input as { readonly repoId: string; readonly owner: string; readonly memberships: readonly v2.Membership[]; readonly events: readonly RerunEvent[] }
+      const oracle = new v2.RoleOracle(inp.memberships)
+      const got = inp.events.map((e) => {
+        const request = rerunRequest(inp.repoId, e)
+        return { request, counts: request === null ? null : rerunCounts(request, inp.owner, oracle) }
+      })
+      expect(got).toEqual(v.expected)
+      break
+    }
+    case 'ci_rerun_write': {
+      onlyKeys(v, ['repoId', 'cases'], { cases: ['sha', 'check'] })
+      const inp = v.input as { readonly repoId: string; readonly cases: readonly { readonly sha: string; readonly check?: string }[] }
+      const got = inp.cases.map((c) => {
+        try {
+          return rerunFields(inp.repoId, c.sha, c.check)
+        } catch {
+          return { error: true }
+        }
+      })
       expect(got).toEqual(v.expected)
       break
     }

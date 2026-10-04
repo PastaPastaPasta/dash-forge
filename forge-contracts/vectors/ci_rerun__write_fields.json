@@ -1,0 +1,51 @@
+{
+  "name": "write_fields",
+  "description": "What a request stores beside its target: kind 26, the commit (lowercased), refId = the repository id, and the check name only when one is asked for. A bad commit id or check name is refused before signing.",
+  "case": "ci_rerun_write",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "cases": [
+      {
+        "sha": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      {
+        "sha": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "check": "CI / test"
+      },
+      {
+        "sha": "abc"
+      },
+      {
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": ""
+      },
+      {
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    ]
+  },
+  "expected": [
+    {
+      "kind": 26,
+      "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "refId": "Repo111111111111111111111111111111111111111"
+    },
+    {
+      "kind": 26,
+      "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "refId": "Repo111111111111111111111111111111111111111",
+      "value": "CI / test"
+    },
+    {
+      "error": true
+    },
+    {
+      "error": true
+    },
+    {
+      "error": true
+    }
+  ]
+}

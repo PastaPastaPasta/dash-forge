@@ -29,8 +29,9 @@ On every poll (every `interval_secs`, default 120 s, and within seconds of a pus
 5. **Uploads each job's log** (capped at 16 MiB) to your storage profile, with secret values redacted, and, with `artifacts = true`, [its artifacts](#artifacts). The check run records the log's URL and SHA-256, and the web app shows the log only if the bytes match.
 
 6. **Lists the pull requests** (`dg pr list`, the newest 100, and up to 10 older members' open PRs it keeps following) and runs each one that was opened, reopened or marked ready for review, or whose head moved, as [Pull requests](#pull-requests) says. The first poll only records them.
+7. **Reads the re-run requests** written since the last poll (`dg ci reruns`, one query) and runs each one that counts, as [Re-runs](#re-runs) says. The first poll only records the time (five minutes back, so a clock running ahead hides no request).
 
-If a run could not start because the fetch or checkout failed, the next polls try it again, up to `attempts` (default 3). A run whose jobs did run is not repeated; `forge-runner run` repeats one by hand.
+If a run could not start because the fetch or checkout failed, the next polls try it again, up to `attempts` (default 3). A run whose jobs did run is not repeated by a poll: a maintainer or writer [asks for a re-run](#re-runs), or you run `forge-runner run` by hand.
 
 ## Pull requests
 
@@ -68,7 +69,20 @@ Every other PR, including a maintainer's PR from a fork and every PR from a writ
 
 **Private repositories.** The runner reads pull requests without its key, and a private repository's PRs are sealed to its members: a runner that is not a member cannot read them. Set `pull_requests = "off"` for a private repository, or its polls log that `dg pr list` failed.
 
-The runner needs a `dg` of the same release: it reads `repoId`, `sourceRefName` and `baseTip` from `dg pr list --json` and `dg pr view --json`, and `ownerId` from `dg collab list --json`.
+The runner needs a `dg` of the same release: it reads `repoId`, `sourceRefName` and `baseTip` from `dg pr list --json` and `dg pr view --json`, `ownerId` from `dg collab list --json`, and the re-run requests from `dg ci reruns --json`.
+
+## Re-runs
+
+A maintainer or writer can ask the runners to run a pull request's checks again: **Re-run** beside a completed check, or **Re-run all checks**, on the PR's Checks tab, or `dg ci rerun alice/project 12 [--check "ci / build (pull_request)"]` ([CI and check runs](ci.md#re-run-checks)). The request is an `event` on the PR (kind 26, [forge-v2.md §3.3](../contracts/forge-v2.md#33-ci-re-run-requests-kind-26)) naming the PR's head and, optionally, one check. The runner reads the requests on each poll, and within seconds when [your relay](#wake-it-from-your-relay) wakes it: the relay wakes runners on a request too.
+
+- **Who counts.** Only the owner's, a maintainer's or a writer's request runs. A triage member's is admitted by Platform but not counted, as GitHub needs write access to re-run a workflow; `dg ci reruns` marks it, and the runner logs it and runs nothing.
+- **What runs is the PR's current head, as a poll would run it.** A request for a commit that is no longer the head runs nothing: the new head ran by itself. A check of the PR's own runs (`… (pull_request)`) re-runs the PR as `pull_request` (`opened`; a workflow runs when its `types` name any activity the runner runs PRs on, `opened`, `synchronize`, `reopened` or `ready_for_review`, since it may have run on another of them, and never one only for `closed` or `labeled`; the runner keeps no record of which ran, so **Re-run all checks** can also run a workflow typed only for an activity this PR has not had, such as `ready_for_review` on a PR never a draft), under the same `pull_requests` policy, so a re-run never runs a PR the poll would have skipped. Any other check (a push run's) re-runs the push of the branch at that commit: the PR's own branch here, or another watched branch at it. A request without a check re-runs both, where each applies.
+- **One workflow, all its jobs.** A check is re-run by running again the workflow file whose job reports it, every job of it, as GitHub's "Re-run all jobs" does for a workflow. Each job is a new check run (a new run id), which then becomes the one shown.
+- **Secrets as before.** A re-run gets the secrets only when the run it repeats would ([Security](#security)); who asked does not matter. Its summary and the act event (`github.event.forge.rerun_requested_by`) name who asked.
+- **Once each.** A request is handled once, whatever its runs came to; two requests for the same check in one poll run once, and a request for every check covers the named ones beside it. A request whose pull request or members could not be read is tried again on the next polls, up to `attempts`. `forge-runner run <repo> --pr N --check NAME` re-runs one check by hand the same way. Turn re-runs off for a repository with `reruns = false`.
+- **Private repositories.** The runner reads requests without its key; a private repository's are sealed like its pull requests, so a runner that is not a member cannot read them.
+
+`forge-runner -c runner.toml run alice/project --pr 12 --check "ci / build (pull_request)"` runs only the workflow that reports one check, by hand; `--check` works with `--ref`/`--sha` too.
 
 ## Set it up
 
@@ -97,17 +111,18 @@ refs = ["refs/heads/**"]            # which pushes run; `*` stays in one path se
 trusted_refs = ["refs/heads/main"]  # only these get the secrets
 secrets_file = "/etc/forge-runner/project.secrets"   # KEY=value lines, as act reads them
 # pull_requests = "members"         # or "all" (strangers' too, never with secrets) or "off"
+# reruns = true                     # honour maintainers' and writers' re-run requests (see Re-runs)
 # allow_container_options = false   # see Security before turning it on
 ```
 
 5. **Run it.**
    - `DASH_FORGE_KEY="$(cat runner.dfk1)" forge-runner -c runner.toml watch` runs the service. It needs `dg`, `git`, `git-remote-dash` and `act` on `PATH`, and `DOCKER_HOST` pointing at the runner's daemon.
    - `forge-runner … watch --once` polls once, for cron or a first try.
-   - `forge-runner … run alice/project --ref refs/heads/main --sha <oid>` runs one commit again; `--pr <n>` runs a pull request's head.
+   - `forge-runner … run alice/project --ref refs/heads/main --sha <oid>` runs one commit again; `--pr <n>` runs a pull request's head; `--check <name>` only the workflow that reports that check.
 
 ### Wake it from your relay
 
-Polling finds a push within `interval_secs`. If you run a [relay](../../crates/forge-relay/README.md#wake-a-runner), it can wake the runner as soon as it sees a push or a pull request's activity (opened, head moved, reopened, marked ready, …):
+Polling finds a push within `interval_secs`. If you run a [relay](../../crates/forge-relay/README.md#wake-a-runner), it can wake the runner as soon as it sees a push, a pull request's activity (opened, head moved, reopened, marked ready, …) or a [re-run request](#re-runs):
 
 ```toml
 # runner.toml
@@ -236,5 +251,6 @@ The runner executes code from the repository: anyone who can push to a watched r
 - a planted `.actrc` and `.secrets` are ignored;
 - a member's pull request from a trusted branch here runs as `pull_request` with GitHub's context and the secrets, a member's from a fork runs without them, and a stranger's is skipped, then runs by hand without them;
 - a pull request's moved head runs as `synchronize`, and a closed one runs nothing;
+- a member's re-run request runs its check again on the head (once, however often it is asked in a poll), a push check re-runs as its branch's push, and an uncounted request or one for a moved head runs nothing;
 - with `artifacts = true`, an `upload-artifact@v4` zip is recorded as uploaded and a v3 upload is zipped, each on the job that uploaded it (on Docker Desktop or OrbStack, set `FORGE_RUNNER_E2E_ARTIFACT_ADDR=127.0.0.1` and `FORGE_RUNNER_E2E_ARTIFACT_URL=http://host.docker.internal:34567/`);
 - a commit without workflows runs nothing, and no `act-*` container is left behind.

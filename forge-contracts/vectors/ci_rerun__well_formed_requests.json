@@ -1,0 +1,111 @@
+{
+  "name": "well_formed_requests",
+  "description": "Event kind 26 with refId = the repository id and a commit oid is a re-run request; value, when present, names the check (absent: every check). The oid is lowercased. The owner, a maintainer and a role-1 writer count.",
+  "case": "ci_rerun",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "events": [
+      {
+        "id": "e1",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100,
+        "value": "CI / build (pull_request)"
+      },
+      {
+        "id": "e2",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "e3",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "actor": "own",
+        "createdAt": 100
+      }
+    ]
+  },
+  "expected": [
+    {
+      "request": {
+        "id": "e1",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": "CI / build (pull_request)",
+        "requester": "wri",
+        "createdAt": 100
+      },
+      "counts": true
+    },
+    {
+      "request": {
+        "id": "e2",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": null,
+        "requester": "maint",
+        "createdAt": 100
+      },
+      "counts": true
+    },
+    {
+      "request": {
+        "id": "e3",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "check": null,
+        "requester": "own",
+        "createdAt": 100
+      },
+      "counts": true
+    }
+  ]
+}

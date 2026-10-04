@@ -42,6 +42,11 @@ export interface CheckRun {
   /** When the run started / completed (ms), as the reporter says; 0 when not given. */
   readonly startedAt: number
   readonly completedAt: number
+  /**
+   * The CI's own run id ('' when none, and always on a private repository): forge-runner's start
+   * `forge-runner:` ({@link isForgeRunnerRun}).
+   */
+  readonly externalId: string
   /** Where the log is and its SHA-256 (hex); '' when none. The bytes are checked against it. */
   readonly logUrl: string
   readonly logSha256: string
@@ -136,6 +141,7 @@ export function newestCheckRuns(docs: readonly PlainDocument[], isMember: (who: 
         createdAt: num(d, '$createdAt'),
         startedAt: num(d, 'startedAt'),
         completedAt: num(d, 'completedAt'),
+        externalId: str(d, 'externalId'),
         logUrl: str(d, 'logUrl'),
         logSha256: byteFieldToHex(d, 'logSha256'),
         artifacts: parseReleaseAssets(str(d, 'artifacts')).assets,
@@ -143,6 +149,27 @@ export function newestCheckRuns(docs: readonly PlainDocument[], isMember: (who: 
         fromRequiredSource: pin === null || pin === reporter,
       }
     })
+}
+
+/** The run id prefix forge-runner gives every job (`external_id` in `crates/forge-runner/src/run.rs`). */
+export const FORGE_RUNNER_RUN_PREFIX = 'forge-runner:'
+
+/**
+ * How long a run may stay queued or in progress before it is taken for stuck (its runner stopped
+ * mid-job) and offered for a re-run: twice forge-runner's default `job_timeout_secs`.
+ */
+export const STUCK_RUN_MS = 2 * 60 * 60 * 1000
+
+/**
+ * Whether a CI re-run request can reach whatever reported `run` (display only: which rows offer
+ * "Re-run"): a completed run by forge-runner, which reads the requests (its run id says so), or,
+ * on a private repository where a run carries no run id, one by an enrolled runner; a run still
+ * queued or in progress only once it is stuck ({@link STUCK_RUN_MS}). A check mirrored from
+ * GitHub Actions has a run id of its own and is re-run there.
+ */
+export function isRerunnable(run: Pick<CheckRun, 'status' | 'externalId' | 'reporter' | 'createdAt'>, runners: ReadonlySet<string>, now = Date.now()): boolean {
+  if (run.status !== 'completed' && now - run.createdAt < STUCK_RUN_MS) return false
+  return run.externalId === '' ? runners.has(run.reporter) : run.externalId.startsWith(FORGE_RUNNER_RUN_PREFIX)
 }
 
 /** The trusted runs' tally: what the checks row and the policy's `requireChecks` read. */

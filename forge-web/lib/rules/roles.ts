@@ -106,6 +106,8 @@ export interface Capabilities {
   /** Pin or unpin (event kinds 19/20). */
   readonly canPin: boolean
   readonly canPostChecks: boolean
+  /** Ask the runners to re-run a PR's checks (event kind 26; a client rule keeps it from triage, as GitHub needs write access). */
+  readonly canRerunChecks: boolean
   /** Merge past an unmet branch policy, recorded as event kind 23 (maintainers only, a client rule). */
   readonly canBypass: boolean
   /** Protected branches, config, releases, members, moderation. */
@@ -127,6 +129,7 @@ const NONE: Capabilities = {
   canRetarget: false,
   canPin: false,
   canPostChecks: false,
+  canRerunChecks: false,
   canBypass: false,
   canManageSettings: false,
 }
@@ -151,6 +154,7 @@ const WRITER: Capabilities = {
   canRetarget: true,
   canPin: true,
   canPostChecks: true,
+  canRerunChecks: true,
 }
 
 /** A policy bypass is a maintainer's (the clients' rule: consensus admits role 1 too). */
@@ -210,6 +214,12 @@ export const WRITER_TRANSITION_KINDS: ReadonlySet<number> = new Set([13, 14, 15]
  * unpin, policy bypass.
  */
 export const WRITER_EVENT_KINDS: ReadonlySet<number> = new Set([8, 15, 16, 19, 20, 23])
+/**
+ * Event kinds a client convention keeps from triage though consensus admits them: a CI re-run
+ * request (26, `ci-rerun.ts`), which no reader counts from triage. Parity: forge-core
+ * `members::CLIENT_WRITER_EVENT_KINDS`.
+ */
+export const CLIENT_WRITER_EVENT_KINDS: ReadonlySet<number> = new Set([26])
 
 /** Whether `documentType` carries `r` (its gate proves the writer document's role). */
 export function isRoleGated(documentType: string): boolean {
@@ -240,6 +250,7 @@ const EVENT_WHAT: Readonly<Record<number, string>> = {
   19: 'pin a conversation',
   20: 'unpin a conversation',
   23: 'record a policy bypass',
+  26: 're-run checks',
 }
 
 const TRANSITION_WHAT: Readonly<Record<number, string>> = {
@@ -277,7 +288,7 @@ export function claimedRole(documentType: string, data: Readonly<Record<string, 
   if (documentType === 'transition' && kind !== null && WRITER_TRANSITION_KINDS.has(kind)) {
     throw new RoleRefusedError(role, TRANSITION_WHAT[kind] as string)
   }
-  if (documentType === 'event' && kind !== null && WRITER_EVENT_KINDS.has(kind)) {
+  if (documentType === 'event' && kind !== null && (WRITER_EVENT_KINDS.has(kind) || CLIENT_WRITER_EVENT_KINDS.has(kind))) {
     throw new RoleRefusedError(role, EVENT_WHAT[kind] as string)
   }
   return 2
@@ -302,5 +313,5 @@ export function roleLimit(role: Role | null | undefined, cap: keyof Capabilities
  */
 export function memberMayWriteEvent(role: Role | null | undefined, kind: number): boolean {
   if (role === 'maintainer' || role === 'writer') return true
-  return role === 'triage' && !WRITER_EVENT_KINDS.has(kind) && kind !== 24 && kind !== 25
+  return role === 'triage' && !WRITER_EVENT_KINDS.has(kind) && !CLIENT_WRITER_EVENT_KINDS.has(kind) && kind !== 24 && kind !== 25
 }
