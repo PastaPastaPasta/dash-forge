@@ -108,8 +108,8 @@ describe('branch tip row', () => {
     expect(r.tip.heads).toHaveLength(1)
   })
 
-  it('names the rules that folded the refs', () => {
-    expect(deriveTrust(inputs()).tip.note).toMatch(/FORGE_RULES_V2/)
+  it('says where the refs came from, in words a user reads', () => {
+    expect(deriveTrust(inputs()).tip.note).toBe("Built from the repo's update history, checked against Platform proofs.")
   })
 
   it('is amber for a diverged ref and carries both candidates', () => {
@@ -331,7 +331,7 @@ describe('a quorum-key mismatch leaves nothing verified that relied on it (QW-00
     const r = deriveTrust(inputs({ quorum: MISMATCH }))
     expect(r.chain.state).toBe('failed')
     expect(r.tip.state).toBe('unverified')
-    expect(r.tip.note).toMatch(/quorum keys that a second source disputes/)
+    expect(r.tip.note).toMatch(/a second source disagrees with the quorum keys/)
     // The facts stay on the card; only the claim about them changes.
     expect(r.tip.heads).toHaveLength(1)
   })

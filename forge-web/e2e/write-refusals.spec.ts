@@ -192,7 +192,7 @@ test('r2. exhaust the key budget, write: the Renew sheet opens, not "sent" (D-00
   await expect(page.getByRole('dialog', { name: /renew this browser's key/i })).toContainText(/does not have enough budget left/)
   await expect(page.getByText(/Sent, not yet visible/)).toHaveCount(0)
   await shot(page, `${SHOTS}-r2-renew-sheet`)
-  await expect(page.getByRole('dialog', { name: 'Open an issue' })).toContainText(/Platform refused the write\. Nothing was charged/)
+  await expect(page.getByRole('dialog', { name: 'Open an issue' })).toContainText(/doesn't have enough budget left\. You weren't charged/)
   expect(await scratchIssueTitles()).not.toContain('r2 refused by Platform')
 })
 

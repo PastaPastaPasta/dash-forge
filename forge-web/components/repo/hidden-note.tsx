@@ -54,8 +54,7 @@ export function HiddenNote({
       .map((r) => `${by[r]} ${HIDDEN_REASON_TEXT[r]}`)
     return (
       <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="private-hidden">
-        {plural(totalHidden(by), 'document')} ignored ({parts.join(', ')}). Anyone can post into a repo&apos;s namespace; only documents
-        that decrypt with this repo&apos;s key are shown.
+        {plural(totalHidden(by), 'item')} ignored ({parts.join(', ')}). Only items encrypted with this repo&apos;s key are shown.
       </p>
     )
   }
