@@ -1,5 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { DEMO, EMPTY, expectLanded, loadSeedPulls, repoUrl, runAxe } from './helpers'
+import { quorumGuard } from './quorum-sync'
 
 /**
  * Accessibility via axe-core (WCAG 2.1 A/AA), on the forge-v2 read fixture (e2e/helpers.ts
@@ -11,7 +12,13 @@ import { DEMO, EMPTY, expectLanded, loadSeedPulls, repoUrl, runAxe } from './hel
  * The theme is set the way the app stores it (`localStorage.theme`, read by next-themes before
  * first paint) and asserted on <html>: emulating `prefers-color-scheme` alone does not switch
  * the app, whose default is dark — which is how an earlier "light" run was really a dark run.
+ *
+ * Each test waits a fixed 45 s for its page's Platform content, so it starts only while the
+ * devnet's quorum keys can check DAPI's proofs (`quorum-sync.ts`): a test started in the gap
+ * read nothing but "Waiting for the network's new quorum…" until it timed out.
  */
+
+test.beforeEach(quorumGuard)
 
 // A page whose URL needs a fixture PR number, resolved lazily (inside the test body) so
 // importing this file never throws merely because the seed summary is absent.
