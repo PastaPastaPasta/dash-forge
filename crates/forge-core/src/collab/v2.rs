@@ -2768,12 +2768,13 @@ impl<'a> Collab<'a> {
 
     /// Refuse, before signing, a write the signer's role cannot make. `needs` is the least
     /// role that can (maintainer, writer or triage: [`members::event_needs`],
-    /// [`members::transition_needs`]). Off when [`SKIP_PRECHECK_ENV`] is set.
+    /// [`members::transition_needs`]). Off when [`SKIP_PRECHECK_ENV`] is set. The role is read
+    /// once per `Collab` and repository, as the write itself reads it.
     pub async fn require_role(&self, repo: &RepoRef, needs: Role, action: &str) -> Result<()> {
         if !precheck_enabled() {
             return Ok(());
         }
-        let role = self.signer_role(repo).await?;
+        let role = self.cached_role(repo).await?;
         role_refusal(role, needs, repo, action).map_or(Ok(()), Err)
     }
 
@@ -4756,7 +4757,8 @@ impl<'a> Collab<'a> {
 
     /// Ask the repository's runners to run pull request `target`'s checks on `sha` (hex) again:
     /// one member `event` of kind 26 ([`rules::ci_rerun`], forge-v2.md §3.3). `check` names one
-    /// check (as its run is named); `None` asks for every check of the PR's own runs.
+    /// check (as its run is named); `None` asks for every check of the head (the PR's
+    /// runs and its branch's push runs).
     ///
     /// A maintainer or role-1 writer only: consensus admits a triage member's too, but no reader
     /// counts it ([`rules::ci_rerun::rerun_counts`]), so it is refused before signing (unless

@@ -146,6 +146,7 @@ fn real_main(cli: &Cli) -> Result<()> {
             let opts = run::RunOpts {
                 only: check.clone(),
                 requested_by: None,
+                rerun: pr.is_some() && check.is_some(),
             };
             let ran = run_locked(&cfg, r, &trig, &opts)?;
             for (name, conclusion) in &ran.checks {
@@ -507,9 +508,11 @@ fn poll_pulls(
 
 /// The CI re-run half of a poll (`reruns = true`): read the requests written since the last
 /// poll (`dg ci reruns`, one query on the `addressee` index) and run each that counts, once per
-/// pull request, commit and check in a poll ([`rerun_trigger`] decides what runs). The first poll
-/// only records the runner's clock. A request is handled once, whatever came of it: a failed run
-/// is asked for again from the web or `dg ci rerun`.
+/// pull request, commit and check in a poll, a request for every check covering the named ones
+/// ([`rerun_triggers`] decides what runs). The first poll only sets the cursor, [`RERUN_SLACK_MS`]
+/// before the runner's clock. A request is handled once, whatever its runs came to (a failed run
+/// is asked for again from the web or `dg ci rerun`); one whose pull request or members could
+/// not be read is tried again on the next polls, up to `attempts`, and the requests after it wait.
 fn poll_reruns(
     cfg: &Config,
     repo: &config::RepoConfig,
@@ -520,7 +523,7 @@ fn poll_reruns(
         return Ok(());
     }
     let Some(since) = state.reruns_since else {
-        state.reruns_since = Some(run::now_ms());
+        state.reruns_since = Some(run::now_ms().saturating_sub(RERUN_SLACK_MS));
         return state.save(path);
     };
     let fresh: Vec<run::RerunRow> = run::list_reruns(cfg, repo, since)?
@@ -528,6 +531,12 @@ fn poll_reruns(
         .filter(|r| {
             r.created_at > since || (r.created_at == since && !state.reruns_seen.contains(&r.id))
         })
+        .collect();
+    let key = |r: &run::RerunRow| (r.number, r.sha.to_ascii_lowercase());
+    let every: std::collections::BTreeSet<_> = fresh
+        .iter()
+        .filter(|r| r.counts && r.check.is_none())
+        .map(key)
         .collect();
     let mut members: Option<run::Members> = None;
     let mut done = std::collections::BTreeSet::new();
@@ -540,17 +549,21 @@ fn poll_reruns(
             req.sha.get(..12).unwrap_or(&req.sha),
             req.requester
         );
+        let failed_key = format!("rerun/{}", req.id);
         if !req.counts {
             eprintln!("forge-runner: {what} not run: the requester is not the owner, a maintainer or a writer");
-        } else if !done.insert((req.number, req.sha.to_ascii_lowercase(), req.check.clone())) {
+        } else if req.check.is_some() && every.contains(&key(&req)) {
+            eprintln!("forge-runner: {what}: covered by a request for every check in this poll");
+        } else if done.contains(&(key(&req), req.check.clone())) {
             eprintln!("forge-runner: {what}: the same as an earlier request in this poll");
         } else {
             match rerun_triggers(cfg, repo, state, &req, &mut members) {
-                Ok(triggers) => {
+                Ok(Ok(triggers)) => {
                     eprintln!("forge-runner: {what}");
                     let opts = run::RunOpts {
                         only: req.check.clone(),
                         requested_by: Some(req.requester.clone()),
+                        rerun: true,
                     };
                     for trig in &triggers {
                         if let Err(e) = run_locked(cfg, repo, trig, &opts) {
@@ -558,16 +571,35 @@ fn poll_reruns(
                         }
                     }
                 }
-                Err(why) => eprintln!("forge-runner: {what} not run: {why}"),
+                Ok(Err(why)) => eprintln!("forge-runner: {what} not run: {why}"),
+                Err(e) => {
+                    let tries = state.failed.entry(failed_key.clone()).or_insert(0);
+                    *tries += 1;
+                    eprintln!(
+                        "forge-runner: {what} (attempt {tries} of {}): {e:#}",
+                        cfg.attempts
+                    );
+                    if *tries < cfg.attempts {
+                        // Not handled: the cursor stays before it, and the next poll reads it again.
+                        return state.save(path);
+                    }
+                }
             }
+            done.insert((key(&req), req.check.clone()));
         }
+        state.failed.remove(&failed_key);
         state.handled_rerun(&req.id, req.created_at);
         state.save(path)?;
     }
     Ok(())
 }
 
-/// What a counted re-run request runs, or why it runs nothing. Only the PR's current head
+/// How far before the runner's clock its first poll starts reading re-run requests: a request
+/// carries Platform's block time, and a host clock running ahead must not hide the first ones.
+const RERUN_SLACK_MS: u64 = 300_000;
+
+/// What a counted re-run request runs (`Ok(Ok)`), or why it runs nothing (`Ok(Err)`); `Err` when
+/// the pull request or the members could not be read (tried again). Only the PR's current head
 /// runs, and only what a poll would run for it:
 ///
 /// * a check of the PR's own runs (` (pull_request)` or ` (pull_request, non-member)`): the PR as
@@ -581,18 +613,18 @@ fn rerun_triggers(
     state: &RepoState,
     req: &run::RerunRow,
     members: &mut Option<run::Members>,
-) -> std::result::Result<Vec<run::Trigger>, String> {
+) -> Result<std::result::Result<Vec<run::Trigger>, String>> {
     let sha = req.sha.to_ascii_lowercase();
-    let mut pr = run::view_pull(cfg, repo, req.number).map_err(|e| format!("{e:#}"))?;
+    let mut pr = run::view_pull(cfg, repo, req.number)?;
     pr.head_oid = pr.head_oid.to_ascii_lowercase();
     if pr.state != "open" {
-        return Err(format!("the pull request is {}", pr.state));
+        return Ok(Err(format!("the pull request is {}", pr.state)));
     }
     if pr.head_oid != sha {
-        return Err(format!(
+        return Ok(Err(format!(
             "its head moved to {} since (the new head runs by itself)",
             &pr.head_oid[..12.min(pr.head_oid.len())]
-        ));
+        )));
     }
     let (pull, push) = match req.check.as_deref() {
         None => (true, true),
@@ -611,15 +643,19 @@ fn rerun_triggers(
         }
     }
     if pull {
-        match pull_rerun(cfg, repo, pr, members) {
+        let members = match members {
+            Some(m) => m,
+            None => members.insert(run::list_members(cfg, repo)?),
+        };
+        match pull_rerun(repo, pr, members) {
             Ok(t) => out.push(t),
             Err(e) => why.push(e),
         }
     }
     if out.is_empty() {
-        return Err(why.join("; "));
+        return Ok(Err(why.join("; ")));
     }
-    Ok(out)
+    Ok(Ok(out))
 }
 
 /// The watched branch of the repository a push check on `sha` re-runs as: the PR's own source
@@ -649,10 +685,9 @@ fn branch_at(
 
 /// The PR's re-run as `pull_request` (`opened`), when the repository's policy runs it.
 fn pull_rerun(
-    cfg: &Config,
     repo: &config::RepoConfig,
     pr: watch::PullRow,
-    members: &mut Option<run::Members>,
+    members: &run::Members,
 ) -> std::result::Result<run::Trigger, String> {
     if repo.pull_requests == PullPolicy::Off {
         return Err("this runner does not run pull requests (pull_requests = \"off\")".into());
@@ -660,10 +695,6 @@ fn pull_rerun(
     if pr.source_ref_name.is_none() {
         return Err("the pull request names no source branch (imported)".into());
     }
-    let members = match members {
-        Some(m) => m,
-        None => members.insert(run::list_members(cfg, repo).map_err(|e| format!("{e:#}"))?),
-    };
     let author = run::author_of(members, &pr.author);
     if let Some(why) = skip_reason(repo.pull_requests, &pr, author) {
         return Err(why);

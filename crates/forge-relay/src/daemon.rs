@@ -1851,9 +1851,7 @@ mod tests {
         assert!(!st.merge_on_base(&merge(&"ab".repeat(20))));
     }
 
-    /// Open / closed follows the transitions (which threads are read first): a close, a merge
-    /// or a draft close closes the target; a reopen (either axis) opens it; a draft or ready
-    /// leaves it open.
+    /// Only a member `event` of kind 26 is a CI re-run request the runners are woken for.
     #[test]
     fn a_ci_rerun_request_wakes_runners_and_nothing_else_does_by_itself() {
         let ev = |kind: u64| FetchedDocument {
@@ -1874,6 +1872,9 @@ mod tests {
         assert!(!is_rerun_request(DOC_TRANSITION, &ev(26)));
     }
 
+    /// Open / closed follows the transitions (which threads are read first): a close, a merge
+    /// or a draft close closes the target; a reopen (either axis) opens it; a draft or ready
+    /// leaves it open.
     #[test]
     fn transitions_open_and_close_their_target() {
         let mut st = state_with_threads(0);

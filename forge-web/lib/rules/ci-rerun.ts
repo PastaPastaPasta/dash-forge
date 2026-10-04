@@ -6,7 +6,7 @@
  * A request asks the repository's runners to run a pull request's checks again: `targetId` the
  * PR, `oid` the commit (its head when asked), `refId` **the repository's own id** (so runners
  * read exactly its requests on the sparse `addressee (refId, $createdAt)` index), and `value`
- * the check's name, or none for every check of the PR's own runs. Consensus admits it from
+ * the check's name, or none for every check of the head (the PR's and its branch's push runs). Consensus admits it from
  * triage too (`t_triageKinds` is a deny-list); it counts only from the owner, a maintainer or a
  * role-1 writer ({@link rerunCounts}), so clients refuse a triage member's before signing.
  */
@@ -52,7 +52,7 @@ export interface RerunRequest {
   readonly number: number
   /** The commit (lowercase hex). */
   readonly sha: string
-  /** The check to run again; null: every check of the PR's own runs. */
+  /** The check to run again; null: every check of the head (the PR's and its branch's push runs). */
   readonly check: string | null
   readonly requester: string
   readonly createdAt: number

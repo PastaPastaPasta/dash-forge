@@ -120,7 +120,7 @@ pub enum CiCommand {
         /// The pull request's number.
         pr: u64,
         /// The check to run again, as its run is named (`dg pr checks` lists them). Without
-        /// it, every check of the pull request's own runs.
+        /// it, every check of the head (the pull request's runs and its branch's push runs).
         #[arg(long, value_name = "NAME")]
         check: Option<String>,
         /// The commit you expect to re-run: refused when the pull request's head is no longer

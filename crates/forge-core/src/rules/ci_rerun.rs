@@ -13,7 +13,8 @@
 //!   the whole event feed. No other kind names a repository there (they name an identity, a
 //!   comment or a review), so the index entry is unambiguous;
 //! * `value` (optional): the check's name, as its run is named (≤ 100 characters and 200 bytes,
-//!   the `checkRun.name` bounds). Absent: every check the PR's own runs report. In a private
+//!   the `checkRun.name` bounds). Absent: every check of the head (the PR's
+//!   runs and its branch's push runs). In a private
 //!   repository it is sealed in `enc` like every event value.
 //!
 //! Consensus admits the `event` from any maintainer or role-1/role-2 writer (`t_triageKinds`
@@ -93,7 +94,7 @@ pub struct RerunRequest {
     pub number: u32,
     /// The commit (lowercase hex).
     pub sha: String,
-    /// The check to run again; `None`: every check of the PR's own runs.
+    /// The check to run again; `None`: every check of the head (the PR's and its branch's push runs).
     pub check: Option<String>,
     /// Who asked.
     pub requester: String,

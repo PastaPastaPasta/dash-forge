@@ -24,6 +24,8 @@
 #      on the head, said in its summary; a duplicate in the same poll, an uncounted request and
 #      one for a head that moved run nothing; a push check re-runs as the push of the PR's
 #      branch; a re-poll runs nothing again.
+#  10. A request for every check covers a named one beside it; one whose PR could not be read
+#      runs nothing and is tried again on the next poll.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -53,7 +55,8 @@ cat >"$W/bin/dg" <<'EOF'
 case " $* " in
   *" pr list "*" --include-hidden "*) cat "$FAKE_PRS" 2>/dev/null || echo '{"prs":[]}'; exit 0 ;;
   *" pr list "*) echo "fake dg: the runner must list hidden PRs too (--include-hidden)" >&2; exit 2 ;;
-  *" pr view "*) python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
+  *" pr view "*) [[ -e "$FAKE_VIEW_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
+                python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
   *" ci reruns "*) cat "$FAKE_RERUNS" 2>/dev/null || echo '{"requests":[]}'; exit 0 ;;
   *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}],"roles":true,"ownerId":"OWNER"}'; exit 0 ;;
 esac
@@ -81,6 +84,7 @@ chmod +x "$W/bin/dg"
 export FAKE_DG_LOG="$W/reports.jsonl"; : >"$FAKE_DG_LOG"
 export FAKE_PRS="$W/prs.json"
 export FAKE_RERUNS="$W/reruns.json"
+export FAKE_VIEW_FAILS="$W/view-fails"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
@@ -326,6 +330,27 @@ check "a request for a head that moved runs nothing" grep -q "not run: its head 
 check "a push check re-runs its workflow as the branch's push" test "$(q "sorted(r['name'] for r in rs if r['status']=='completed' and r['sha']=='$FEAT')")" = "['ci / build', 'ci / escape', 'ci / nested', 'ci / test']"
 check "…and nothing else ran" test "$(q "len([r for r in rs if r['status']=='completed'])")" = 5
 check "a re-poll runs no request again" bash -c ": >'$FAKE_DG_LOG'; '$RUNNER' -c '$W/runner.toml' watch --once >>'$W/runner.log' 2>&1; test ! -s '$FAKE_DG_LOG'"
+
+echo "== 10. Every check covers a named one; a failed read is tried again"
+: >"$FAKE_DG_LOG"
+NOW=$(python3 -c 'import time; print(int(time.time() * 1000))')
+python3 - "$NOW" "$H1B" >"$FAKE_RERUNS" <<'PY'
+import json, sys
+now, h1b = int(sys.argv[1]), sys.argv[2]
+def req(i, check, dt):
+    return {"id": f"F{i}", "targetId": "T1", "number": 1, "sha": h1b, "check": check,
+            "requester": "MEMBER", "createdAt": now + dt, "counts": True}
+print(json.dumps({"requests": [req(1, "pr / check (pull_request)", 1), req(2, None, 2)]}))
+PY
+touch "$FAKE_VIEW_FAILS"
+poll
+check "a request whose PR could not be read runs nothing" test ! -s "$FAKE_DG_LOG"
+check "…and is tried again" grep -q "re-run of every check on .* (attempt 1 of" "$W/runner.log"
+rm -f "$FAKE_VIEW_FAILS"
+poll
+check "the next poll runs the PR check once" test "$(q "len([r for r in rs if r['status']=='completed' and r['name']=='pr / check (pull_request)'])")" = 1
+check "…the named request covered by the one for every check" grep -q "covered by a request for every check in this poll" "$W/runner.log"
+check "a re-poll runs neither again" bash -c ": >'$FAKE_DG_LOG'; '$RUNNER' -c '$W/runner.toml' watch --once >>'$W/runner.log' 2>&1; test ! -s '$FAKE_DG_LOG'"
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 

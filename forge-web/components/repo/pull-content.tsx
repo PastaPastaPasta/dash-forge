@@ -427,11 +427,11 @@ function PullPage({
   const checkSummary = checks.data === null ? null : summarizeChecks(checks.data.runs, membersKnown)
   // CI re-run requests no newer run answers yet: the owner's, maintainers' and writers' only (a
   // triage member's is not counted, so runners ignore it).
+  const roleOracle = useMemo(() => new RoleOracle(thread.members), [thread.members])
   const rerunPending = useMemo(() => {
-    const oracle = new RoleOracle(thread.members)
-    const counted = thread.ciReruns.filter((r) => rerunCounts(r, repo.ownerId, oracle))
+    const counted = thread.ciReruns.filter((r) => rerunCounts(r, repo.ownerId, roleOracle))
     return pendingReruns(counted, checks.data?.runs ?? [], pull.headOid)
-  }, [thread.ciReruns, thread.members, repo.ownerId, checks.data, pull.headOid])
+  }, [thread.ciReruns, roleOracle, repo.ownerId, checks.data, pull.headOid])
   const rerunWaiting = tab === 'checks' && rerunPending.size > 0
   const reloadChecks = checks.reload
   useEffect(() => {
@@ -542,7 +542,7 @@ function PullPage({
       ? null
       : checks.data === null || !membersKnown
         ? ('unknown' as const)
-        : checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, policyNow)
+        : checksState(checks.data.rows, pull.headOid, roleOracle, checks.data.runners, policyNow)
   const actions = pullActions({
     pull,
     viewer,

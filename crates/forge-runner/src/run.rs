@@ -438,7 +438,7 @@ pub struct RerunRow {
     pub number: u64,
     /// The commit (hex).
     pub sha: String,
-    /// The check to run again; `None`: every check of the PR's own runs.
+    /// The check to run again; `None`: every check of the head (the PR's and its branch's push runs).
     #[serde(default)]
     pub check: Option<String>,
     /// Who asked.
@@ -575,6 +575,9 @@ pub struct RunOpts {
     /// Who asked for this run (a CI re-run request's writer), named in each summary and in the
     /// event (`forge.rerun_requested_by`).
     pub requested_by: Option<String>,
+    /// A re-run of a pull request's checks: its workflows are those of any activity the runner
+    /// runs PRs on ([`workflow::PullFacts::any_type`]), not only the trigger's own.
+    pub rerun: bool,
 }
 
 /// What a run produced: each check name and its conclusion.
@@ -780,7 +783,7 @@ pub fn run(
             base,
             action: event.action,
             changed,
-            any_type: opts.requested_by.is_some(),
+            any_type: opts.rerun,
         }),
         _ => Facts::Push(PushFacts {
             refname: &key.refname,
