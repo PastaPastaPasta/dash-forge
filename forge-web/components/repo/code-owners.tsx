@@ -155,8 +155,9 @@ export interface OwnerReviewers {
 }
 
 /**
- * The code owner review requests of a new PR whose changes are `changes`, compared against base
- * tip `baseOid` read through `reader`. Names resolve through DPNS (one batched read), and only
+ * The code owner review requests of a new PR whose changes are `changes` (null until the
+ * comparison is made; `changesFailed` says why it never will be), compared against base tip
+ * `baseOid` read through `reader`. Names resolve through DPNS (one batched read), and only
  * current maintainers and role-1 writers are asked (the members read, session-cached).
  */
 export function useOwnerRequests({
@@ -165,6 +166,7 @@ export function useOwnerRequests({
   readerKey,
   baseOid,
   changes,
+  changesFailed,
   author,
 }: {
   repo: RepoRef
@@ -172,10 +174,13 @@ export function useOwnerRequests({
   readerKey: string
   baseOid: string
   changes: readonly FileChange[] | null
+  changesFailed: string | null
   author: string | null
 }): OwnerReviewers {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
-  const file = useCodeOwners(changes === null || author === null ? null : reader, baseOid, readerKey)
+  // Read as soon as there is a reader: a base with a code owners file holds the form until the
+  // changed files are listed, so a PR never opens before its owners are known.
+  const file = useCodeOwners(author === null ? null : reader, baseOid, readerKey)
   const tokens = useMemo(() => (file.data == null || changes === null ? [] : ownersOfPaths(file.data.owners, changedPaths(changes))), [file.data, changes])
   const requests = useAsync(
     async () => {
@@ -186,12 +191,13 @@ export function useOwnerRequests({
     [tokens.join('\n'), repo.repoId, network, author ?? ''],
     { enabled: ready && sdk !== null && tokens.length > 0 && author !== null },
   )
+  const waitingForChanges = file.data != null && changes === null
   return {
     file: file.data?.path ?? null,
-    requests: tokens.length === 0 ? (file.settled ? { request: [], skipped: [] } : null) : requests.data,
+    requests: tokens.length === 0 ? (file.settled && !waitingForChanges ? { request: [], skipped: [] } : null) : requests.data,
     // Until whom to ask is known (the form waits for it, so a PR never opens without them).
-    loading: file.loading || (tokens.length > 0 && requests.data === null && requests.error === null),
-    error: file.error ?? requests.error,
+    loading: file.loading || (waitingForChanges && changesFailed === null) || (tokens.length > 0 && requests.data === null && requests.error === null),
+    error: file.error ?? (waitingForChanges && changesFailed !== null ? `the changed files could not be listed: ${changesFailed}` : null) ?? requests.error,
   }
 }
 

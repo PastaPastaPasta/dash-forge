@@ -293,12 +293,6 @@ fn path_parts(path: &str) -> Vec<Vec<char>> {
 }
 
 impl OwnerRule {
-    /// Whether this rule's pattern matches `path` (a repository path, no leading `/`).
-    #[must_use]
-    pub fn matches(&self, path: &str) -> bool {
-        self.matches_parts(&path_parts(path))
-    }
-
     fn matches_parts(&self, parts: &[Vec<char>]) -> bool {
         !self.segs.is_empty() && matches_from(&self.segs, parts, 0, 0, &mut BTreeMap::new())
     }
@@ -432,13 +426,11 @@ pub enum OwnerKind {
     Invalid,
 }
 
-/// Whether `s` is a base58 identity id: 32 to 44 base58 characters that decode to 32 bytes.
+/// Whether `s` is a base58 identity id, as `dg` reads one anywhere
+/// ([`crate::resolve::looks_like_identity_id`]).
 #[must_use]
 pub fn is_identity_token(s: &str) -> bool {
-    (32..=44).contains(&s.len())
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() && !matches!(c, '0' | 'O' | 'I' | 'l'))
-        && crate::platform::decode_identifier(s).is_ok()
+    crate::resolve::looks_like_identity_id(s)
 }
 
 /// Classify an owner token.
@@ -455,14 +447,7 @@ pub fn owner_kind(token: &str) -> OwnerKind {
             return OwnerKind::Identity;
         }
         // `label` or `label.dash` (any case): the names both clients look up in DPNS.
-        let label = match rest.len().checked_sub(5) {
-            Some(at) if rest.is_char_boundary(at) && rest[at..].eq_ignore_ascii_case(".dash") => {
-                &rest[..at]
-            }
-            _ => rest,
-        };
-        let name_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_');
-        return if !label.is_empty() && label.chars().all(name_char) {
+        return if crate::resolve::dpns_label(rest).is_some() {
             OwnerKind::Name
         } else {
             OwnerKind::Invalid

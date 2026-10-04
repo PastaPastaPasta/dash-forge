@@ -26,9 +26,6 @@ use crate::common::Session;
 use crate::context::Ctx;
 use crate::git;
 
-/// git's empty tree: what a head with no parent and no merge base is compared with.
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
 /// The code owners a new PR will ask for review.
 pub struct OwnerPlan {
     /// Where the owners came from (one of [`CODEOWNERS_PATHS`]).
@@ -78,21 +75,27 @@ pub fn read_code_owners(dir: &Path, commit: &str) -> Result<Option<(String, Code
 }
 
 /// The paths the PR changes: `git diff --name-only --no-renames` from the merge base of `base`
-/// and `head` (no merge base: the head's first parent, or the empty tree) to `head`.
+/// and `head` (no merge base: the head's first parent) to `head`. A root head with no merge
+/// base changes every file it holds.
 pub fn changed_paths(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
-    let from = git::git(dir, &["merge-base", base, head], &[])
-        .or_else(|_| {
-            git::git(
-                dir,
-                &["rev-parse", "--verify", "-q", &format!("{head}^")],
-                &[],
-            )
-        })
-        .unwrap_or_else(|_| EMPTY_TREE.to_string());
-    let out = git::git_bytes(
-        dir,
-        &["diff", "--name-only", "--no-renames", "-z", &from, head],
-    )?;
+    let from = git::git(dir, &["merge-base", base, head], &[]).or_else(|_| {
+        git::git(
+            dir,
+            &["rev-parse", "--verify", "-q", &format!("{head}^")],
+            &[],
+        )
+    });
+    let out = match from {
+        Ok(from) => git::git_bytes(
+            dir,
+            &["diff", "--name-only", "--no-renames", "-z", &from, head],
+        )?,
+        // Not the empty tree's oid: that differs between SHA-1 and SHA-256 repositories.
+        Err(_) => git::git_bytes(
+            dir,
+            &["ls-tree", "-r", "--full-tree", "--name-only", "-z", head],
+        )?,
+    };
     Ok(out
         .split(|&b| b == 0)
         .filter(|p| !p.is_empty())
@@ -142,10 +145,20 @@ async fn plan_inner(
     head_ref: &str,
     head_oid: &str,
 ) -> Result<Option<OwnerPlan>> {
-    // The clone dg runs in when it has both commits; else a scratch fetch of the two branches.
+    // The clone dg runs in when it has both commits (a base without a code owners file needs
+    // no head at all); else a scratch fetch of the two branches.
+    let in_clone = git::has_object(cwd, base_tip);
+    let found = if in_clone {
+        read_code_owners(cwd, base_tip)?
+    } else {
+        None
+    };
+    if in_clone && found.is_none() {
+        return Ok(None);
+    }
     let scratch;
-    let dir = if git::has_object(cwd, base_tip) && git::has_object(cwd, head_oid) {
-        cwd
+    let (dir, found) = if in_clone && git::has_object(cwd, head_oid) {
+        (cwd, found)
     } else {
         git::require_branch_ref(base_ref)?;
         git::require_branch_ref(head_ref)?;
@@ -157,69 +170,59 @@ async fn plan_inner(
         scratch = super::scratch_repo()?;
         let private = handle.visibility == forge_core::rules::v2::Visibility::Private;
         let env = super::read_env(ctx, private)?;
-        git::git_dash(
-            scratch.path(),
-            &[
-                "fetch",
-                "-q",
-                &format!("dash://{}", handle.id()),
-                &format!("+{base_ref}:refs/remotes/base/tip"),
-            ],
-            &env,
-        )
-        .context("fetching the base branch")?;
-        if !git::has_object(scratch.path(), head_oid) {
-            git::git_dash(
-                scratch.path(),
-                &[
-                    "fetch",
-                    "-q",
-                    &format!("dash://{}", source.id()),
-                    &format!("+{head_ref}:refs/remotes/source/head"),
-                ],
-                &env,
-            )
-            .context("fetching the head branch")?;
-        }
-        scratch.path()
+        super::fetch_base(scratch.path(), handle, base_ref, &env)?;
+        super::fetch_pr_head(scratch.path(), source.id(), head_oid, &env)?;
+        let found = match found {
+            Some(f) => Some(f),
+            None => read_code_owners(scratch.path(), base_tip)?,
+        };
+        (scratch.path(), found)
     };
-    let Some((file, owners)) = read_code_owners(dir, base_tip)? else {
+    let Some((file, owners)) = found else {
         return Ok(None);
     };
     let tokens = owners.owners_of_paths(&changed_paths(dir, base_tip, head_oid)?);
     if tokens.is_empty() {
         return Ok(None);
     }
-    // An unregistered (or not DPNS-shaped) name is unresolved, as on the web. Looked up at once.
+    // Names are looked up at once. An unregistered one is unresolved, as on the web; a failed
+    // lookup fails the plan (it is no proof the name is unregistered).
     let names: Vec<&String> = tokens
         .iter()
         .filter(|t| owner_kind(t) == OwnerKind::Name)
         .collect();
-    let ids = futures::future::join_all(
-        names
-            .iter()
-            .map(|t| forge_core::resolve::resolve_owner(&s.client, t)),
-    )
+    let ids = futures::future::join_all(names.iter().map(|t| async {
+        match forge_core::resolve::dpns_label(t.trim_start_matches('@')) {
+            Some(label) => s.client.resolve_dpns_name(label).await,
+            None => Ok(None),
+        }
+    }))
     .await;
-    let resolved: BTreeMap<String, Option<String>> = names
-        .into_iter()
-        .cloned()
-        .zip(ids.into_iter().map(Result::ok))
-        .collect();
-    let collab = s.collab();
-    let oracle = collab.member_oracle(handle).await?;
+    let mut resolved: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for (name, id) in names.into_iter().zip(ids) {
+        resolved.insert(
+            name.clone(),
+            id.with_context(|| format!("looking up the DPNS name {name}"))?,
+        );
+    }
+    let oracle = s.collab().member_oracle(handle).await?;
     let me = s.identity.id().clone();
     let requests = code_owner_requests(&tokens, &resolved, &oracle, &me);
-    // The PR does not exist yet: its author will be the signer.
+    // The PR does not exist yet: its author will be the signer. One membership read decides
+    // both whom to ask and how every request is written.
     let target = Target {
         kind: TargetKind::Patch,
         id: String::new(),
         number: 0,
         author: me.clone(),
     };
-    let role = collab.signer_role(handle).await?;
-    let route =
-        kind_route(role, &me, &target, EventKind::ReviewRequest).unwrap_or(StateRoute::Author);
+    let route = kind_route(
+        oracle.current_role(&me),
+        &me,
+        &target,
+        EventKind::ReviewRequest,
+    )
+    .unwrap_or(StateRoute::Author);
     Ok(Some(OwnerPlan {
         file,
         requests,
@@ -277,6 +280,10 @@ pub async fn request(
         number,
         author: s.identity.id().clone(),
     };
+    let via = match plan.route {
+        StateRoute::Member => "event",
+        StateRoute::Author => "authorEvent",
+    };
     let mut out = Vec::new();
     for reviewer in &plan.requests.request {
         let payload = forge_core::collab::v2::EventPayload {
@@ -284,14 +291,16 @@ pub async fn request(
             ..forge_core::collab::v2::EventPayload::default()
         };
         match collab
-            .post_target_event(handle, &target, EventKind::ReviewRequest, &payload)
+            .post_target_event_via(
+                handle,
+                &target,
+                EventKind::ReviewRequest,
+                &payload,
+                plan.route,
+            )
             .await
         {
-            Ok((route, event)) => {
-                let via = match route {
-                    StateRoute::Member => "event",
-                    StateRoute::Author => "authorEvent",
-                };
+            Ok(event) => {
                 out.push(json!({ "reviewer": reviewer, "requested": true, "via": via, "eventId": event }));
             }
             Err(e) => {

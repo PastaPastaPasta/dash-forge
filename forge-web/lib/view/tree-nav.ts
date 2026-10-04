@@ -166,33 +166,6 @@ export async function treeAtPath(
   return readTree(reader, treeOid)
 }
 
-/**
- * The entries of the directory at `path` under `rootTreeOid` (`''`: the root), or null when no
- * directory is there. Unlike {@link treeAtPath}, a missing path is an answer, not an error.
- */
-export async function dirEntriesAt(reader: ObjectReader, rootTreeOid: string, path: string): Promise<TreeEntry[] | null> {
-  let oid = rootTreeOid
-  for (const seg of path.split('/').filter((s) => s !== '')) {
-    const next = (await readTree(reader, oid)).find((e) => e.name === seg && e.mode === MODE_TREE)
-    if (next === undefined) return null
-    oid = next.oid
-  }
-  return readTree(reader, oid)
-}
-
-/** Whether an entry is a regular file (`100644`, `100755`, …): not a tree, a symlink or a submodule. */
-export function isRegularFile(entry: TreeEntry): boolean {
-  return (entry.mode & 0o170000) === 0o100000
-}
-
-/** The regular file at `path` under `rootTreeOid`, or null when there is none. */
-export async function fileEntryAt(reader: ObjectReader, rootTreeOid: string, path: string): Promise<TreeEntry | null> {
-  const slash = path.lastIndexOf('/')
-  const dir = await dirEntriesAt(reader, rootTreeOid, slash < 0 ? '' : path.slice(0, slash))
-  const entry = dir?.find((e) => e.name === path.slice(slash + 1))
-  return entry !== undefined && isRegularFile(entry) ? entry : null
-}
-
 /** Find a directory entry (blob) by its leaf name within a tree, returning its oid. */
 export function findEntry(entries: readonly TreeEntry[], name: string): TreeEntry | undefined {
   return entries.find((e) => e.name === name)

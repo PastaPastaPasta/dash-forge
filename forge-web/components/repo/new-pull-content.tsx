@@ -28,7 +28,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
-import { SupersededWriteError, previewCreate, sumPreviews, withAddressee } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, sumPreviews, withAddressee } from '@/lib/sdk'
 import { memberMayWriteEvent } from '@/lib/rules/roles'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { toast } from '@/hooks/use-toasts'
@@ -180,6 +180,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const sameBranch = head !== null && head.repo.repoId === repo.repoId && head.refName === base
   // The comparison below says whether the base already contains the head (nothing to merge).
   const [comparison, setComparison] = useState<PullComparison | null>(null)
+  const [comparisonError, setComparisonError] = useState<string | null>(null)
   const nothing = head !== null && (head.oid === baseTip || comparison?.upToDate === true)
 
   // The head commit's subject becomes the title until the author types one (L-16). It is read
@@ -214,7 +215,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     reader: sides?.sides.base ?? null,
     readerKey: sides?.key ?? '',
     baseOid: baseTip,
-    changes: head !== null && comparison !== null && comparison.upToDate !== true ? comparison.changes : null,
+    changes: comparison === null ? null : comparison.upToDate === true ? [] : comparison.changes,
+    changesFailed: comparisonError,
     author: identity,
   })
   const [skipOwners, setSkipOwners] = useState<ReadonlySet<string>>(() => new Set())
@@ -232,6 +234,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const requestOwners = async (auth: NonNullable<typeof signer>, pr: { readonly documentId: string; readonly number: number }, ids: readonly string[]): Promise<void> => {
     if (!sdk || identity === null) return
     let failed = 0
+    let unconfirmed = 0
     for (const id of ids) {
       try {
         await postTargetEvent(sdk, auth, repo, {
@@ -242,9 +245,14 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           payload: { refId: id },
           intent: `${draftIntent.intent}:owner:${id}`,
         })
-      } catch {
-        failed++
+      } catch (e) {
+        // Sent but not yet seen: it may land, so it is never offered as safe to redo.
+        if (e instanceof UnconfirmedWriteError) unconfirmed++
+        else failed++
       }
+    }
+    if (unconfirmed > 0) {
+      toast({ title: `${unconfirmed} code owner review ${unconfirmed === 1 ? 'request was' : 'requests were'} sent but not yet confirmed`, tone: 'warn', detail: 'Check the Reviewers card on the pull request in a moment before requesting again.' })
     }
     if (failed > 0) {
       toast({ title: `${failed} code owner review ${failed === 1 ? 'request' : 'requests'} failed`, tone: 'warn', detail: 'Request them again from the Reviewers card on the pull request.' })
@@ -262,9 +270,16 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       // The PR, its draft mark and its code owners' review requests are one action: one toast
       // with their total (QW3-039).
       const created = await spendAction({ running: 'Opening the pull request…', done: 'Pull request opened' }, async (tag) => {
-        const pr = await createPatch(sdk, tag(signer), repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
-          setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
-        )
+        let pr: Awaited<ReturnType<typeof createPatch>>
+        try {
+          pr = await createPatch(sdk, tag(signer), repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
+            setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
+          )
+        } catch (e) {
+          // The PR landed without its draft mark: its owners are still asked, in this action.
+          if (e instanceof DraftMarkError) await requestOwners(tag(signer), e.created, ownerRequests)
+          throw e
+        }
         await requestOwners(tag(signer), pr, ownerRequests)
         return pr
       })
@@ -274,7 +289,6 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       if (e instanceof DraftMarkError) {
         // The PR itself landed: never post it again. Open it; its page offers "Convert to draft".
         dropPrDraft(repo)
-        await requestOwners(signer, e.created, ownerRequests)
         draftIntent.renew()
         router.push(repoHref('/repo/pull', addr, { number: String(e.created.number), created: '1' }))
         return
@@ -491,6 +505,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           noHead="Pick a branch to compare."
           onSides={onSides}
           onResult={setComparison}
+          onError={setComparisonError}
         />
       ) : null}
     </div>

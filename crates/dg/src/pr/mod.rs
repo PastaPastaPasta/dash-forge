@@ -2666,31 +2666,49 @@ pub(crate) fn fetch_base_and_head(
     env: &git::DashEnv<'_>,
 ) -> Result<()> {
     require_git_safe(view)?;
-    let base_ref = &view.patch.base_ref_name;
-    let head = &view.head;
     if view.base_tip.is_some() {
-        git::git_dash(
-            dir,
-            &[
-                "fetch",
-                "-q",
-                &format!("dash://{}", handle.id()),
-                &format!("+{base_ref}:refs/remotes/base/tip"),
-            ],
-            env,
-        )
-        .context("fetching the base branch")?;
+        fetch_base(dir, handle, &view.patch.base_ref_name, env)?;
     }
+    fetch_pr_head(dir, &view.patch.source_repo_id, &view.head, env)
+}
+
+/// Fetch `base_ref` of `handle` (a checked branch name) into `dir` as `refs/remotes/base/tip`.
+pub(crate) fn fetch_base(
+    dir: &Path,
+    handle: &Repo,
+    base_ref: &str,
+    env: &git::DashEnv<'_>,
+) -> Result<()> {
+    git::git_dash(
+        dir,
+        &[
+            "fetch",
+            "-q",
+            &format!("dash://{}", handle.id()),
+            &format!("+{base_ref}:refs/remotes/base/tip"),
+        ],
+        env,
+    )
+    .context("fetching the base branch")?;
+    Ok(())
+}
+
+/// Fetch the PR head `head` from its source repository `source_id` into `dir`, unless `dir` has it.
+pub(crate) fn fetch_pr_head(
+    dir: &Path,
+    source_id: &str,
+    head: &str,
+    env: &git::DashEnv<'_>,
+) -> Result<()> {
     if !git::has_object(dir, head) {
-        let source_url = format!("dash://{}", view.patch.source_repo_id);
-        // Refspec fixed by us: the PR's `sourceRefName` is attacker-chosen and never used
-        // as a refspec. The helper downloads the repo's packs whatever is asked for.
+        // Refspec fixed by us: a PR's `sourceRefName` is attacker-chosen and never used as a
+        // refspec. The helper downloads the repo's packs whatever is asked for.
         git::git_dash(
             dir,
             &[
                 "fetch",
                 "-q",
-                &source_url,
+                &format!("dash://{source_id}"),
                 "+refs/heads/*:refs/remotes/source/*",
             ],
             env,

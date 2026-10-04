@@ -4,11 +4,11 @@
  * whom a PR asks) are `lib/rules/codeowners`, shared with `dg` by conformance vectors.
  */
 
-import { ObjectTooLargeError } from '../browse'
+import { MODE_TREE, ObjectTooLargeError } from '../browse'
 import { CODEOWNERS_PATHS, MAX_CODEOWNERS_BYTES, parseCodeOwners, type CodeOwners } from '../rules/codeowners'
-import { decodeTextBlob } from './git-objects'
+import { decodeTextBlob, type TreeEntry } from './git-objects'
 import type { FileChange } from './commit-log'
-import { commitRootTree, fileEntryAt, readBlob, type ObjectReader } from './tree-nav'
+import { commitRootTree, readBlob, readTree, type ObjectReader } from './tree-nav'
 
 /** A commit's code owners file, parsed. */
 export interface CodeOwnersFile {
@@ -31,9 +31,20 @@ export function readCodeOwners(reader: ObjectReader, commitOid: string): Promise
   if (cached !== undefined) return cached
   const read = (async (): Promise<CodeOwnersFile | null> => {
     const { tree } = await commitRootTree(reader, commitOid)
+    // Every candidate is at the root or one directory down: the root is read once, and each
+    // directory at most once.
+    const root = await readTree(reader, tree)
+    const dirs = new Map<string, TreeEntry[] | null>([['', root]])
     for (const path of CODEOWNERS_PATHS) {
-      const entry = await fileEntryAt(reader, tree, path)
-      if (entry === null) continue
+      const slash = path.lastIndexOf('/')
+      const dir = slash < 0 ? '' : path.slice(0, slash)
+      if (!dirs.has(dir)) {
+        const sub = root.find((e) => e.name === dir && e.mode === MODE_TREE)
+        dirs.set(dir, sub === undefined ? null : await readTree(reader, sub.oid))
+      }
+      const entry = dirs.get(dir)?.find((e) => e.name === path.slice(slash + 1))
+      // A regular file (`100644`, `100755`, …): not a tree, a symlink or a submodule.
+      if (entry === undefined || (entry.mode & 0o170000) !== 0o100000) continue
       let bytes: Uint8Array
       try {
         bytes = await readBlob(reader, entry.oid, MAX_CODEOWNERS_BYTES)

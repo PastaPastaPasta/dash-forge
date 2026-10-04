@@ -240,8 +240,9 @@ export function sameDpnsName(a: string, b: string): boolean {
 /**
  * Forward-resolve many names at once ({@link resolveDpnsId} for each, but one
  * `normalizedLabel in [...]` query per parent domain and 100 names instead of one per name). A
- * name not shaped like one, or whose batch failed, maps to null; the batch answers seed the
- * per-name cache, so a later {@link resolveDpnsId} costs nothing.
+ * name not shaped like one, or not registered, maps to null; a failed read rejects (it proves
+ * nothing about the name). The batch answers seed the per-name cache, so a later
+ * {@link resolveDpnsId} costs nothing.
  */
 export async function resolveDpnsIds(sdk: EvoSDK, names: readonly string[], network: Network): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>()
@@ -279,24 +280,19 @@ export async function resolveDpnsIds(sdk: EvoSDK, names: readonly string[], netw
           ],
           orderBy: [['normalizedLabel', 'asc']],
           limit: 100,
-        }).then(
-          (docs) => {
-            const found = new Map<string, Record<string, unknown>>()
-            for (const d of docs) if (typeof d['normalizedLabel'] === 'string') found.set(d['normalizedLabel'], d)
-            for (const label of batch) {
-              const doc = found.get(label)
-              const id = identityOf(doc)
-              // A whole answer (each label is unique, so at most 100 docs for 100 labels) proves
-              // absence: cached like a single lookup's.
-              idLookups.set(keyOf(network, `${label}.${parent}`), Promise.resolve(id))
-              if (id !== null && doc !== undefined && !cache.has(keyOf(network, id))) cache.set(keyOf(network, id), nameOf(doc))
-              for (const name of labels.get(label) ?? []) out.set(name, id)
-            }
-          },
-          () => {
-            for (const label of batch) for (const name of labels.get(label) ?? []) out.set(name, null)
-          },
-        ),
+        }).then((docs) => {
+          const found = new Map<string, Record<string, unknown>>()
+          for (const d of docs) if (typeof d['normalizedLabel'] === 'string') found.set(d['normalizedLabel'], d)
+          for (const label of batch) {
+            const doc = found.get(label)
+            const id = identityOf(doc)
+            // A whole answer (each label is unique, so at most 100 docs for 100 labels) proves
+            // absence: cached like a single lookup's.
+            idLookups.set(keyOf(network, `${label}.${parent}`), Promise.resolve(id))
+            if (id !== null && doc !== undefined && !cache.has(keyOf(network, id))) cache.set(keyOf(network, id), nameOf(doc))
+            for (const name of labels.get(label) ?? []) out.set(name, id)
+          }
+        }),
       )
     }
   }

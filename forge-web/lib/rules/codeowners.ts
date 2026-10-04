@@ -182,11 +182,6 @@ function matchesParts(rule: Pick<OwnerRule, 'segs'>, parts: readonly string[][])
   return rule.segs.length > 0 && matchesFrom(rule.segs, parts, 0, 0, new Map())
 }
 
-/** Whether `rule`'s pattern matches `path` (a repository path, no leading `/`). */
-export function ruleMatches(rule: Pick<OwnerRule, 'segs'>, path: string): boolean {
-  return matchesParts(rule, pathParts(path))
-}
-
 /** Parse a code owners file (GitHub's or GitLab's format). */
 export function parseCodeOwners(text: string): CodeOwners {
   const rules: OwnerRule[] = []
@@ -251,9 +246,9 @@ export function ownersOfPaths(owners: CodeOwners, paths: readonly string[]): str
 /** What an owner token names. */
 export type OwnerKind = 'name' | 'identity' | 'team' | 'email' | 'role' | 'invalid'
 
-const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/
+const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{40,44}$/
 
-/** Whether `s` is a base58 identity id: 32 to 44 base58 characters that decode to 32 bytes. */
+/** Whether `s` is a base58 identity id: 40 to 44 base58 characters that decode to 32 bytes (`dg`'s rule). */
 export function isIdentityToken(s: string): boolean {
   if (!BASE58.test(s)) return false
   try {
@@ -271,7 +266,7 @@ export function ownerKind(token: string): OwnerKind {
     if (rest.includes('/')) return 'team'
     if (isIdentityToken(rest)) return 'identity'
     // `label` or `label.dash` (any case): the names both clients look up in DPNS.
-    return /^[A-Za-z0-9_-]+(\.dash)?$/i.test(rest) ? 'name' : 'invalid'
+    return /^[A-Za-z0-9-]+(\.dash)?$/i.test(rest) ? 'name' : 'invalid'
   }
   if (isIdentityToken(token)) return 'identity'
   const at = token.indexOf('@')
