@@ -214,9 +214,14 @@ octokit) reads them:
   earlier than the earliest hook that wants it.
 - What is reported: a `push` only for a ref update that moves its ref by forge's rules (a
   plain `refUpdate` on a protected branch is inert and is not reported). A merge is
-  `merged: true` when a member's transition landed a merge, even one an unverified base-branch
-  update could not confirm (`merged` is the chain fact); an unverified merge instead adds
-  `dash_merge_unverified: true`. A lock or unlock on an already-merged PR keeps reporting
+  `merged: true` when a member's transition landed a merge (`merged` is the chain fact).
+  Platform admits a merge naming any commit the base branch once pointed at, and the relay reads
+  no git, so it can't tell whether that commit contains the pull request. Every merge therefore
+  carries `dash_merge_unverified: true` and `dash_merge_check`: `not_on_base` when the commit
+  was never the tip of the base branch (forge shows "merge commit not found on the base"), or
+  `content_unchecked` when it was. Before a merge triggers a release or a deploy, check it:
+  `dg pr verify <repo> <number>` says whether the commit contains the PR, is a squash of it, or
+  does not contain it. A lock or unlock on an already-merged PR keeps reporting
   `merged: true`. A newly-yanked release is `release` / `unpublished`; a further edit of one
   already yanked is `edited`, not a repeated `unpublished`.
 - Comments and reviews: per cycle and repo, up to 40 open or recently active threads, plus 10

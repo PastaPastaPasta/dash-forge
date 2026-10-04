@@ -31,6 +31,9 @@
 #      `(schedule)` and the job seeing the cron; an invalid expression is logged, never run; an
 #      expression runs at most every five minutes; a HEAD that is not the default branch runs
 #      no schedule.
+#  12. Path filters: a PR that changes no file a workflow's `paths` selects gets `skipped` for each
+#      of its checks the branch policy requires and nothing for the rest; when the policy can't be
+#      read, every one of its checks is reported.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -64,6 +67,8 @@ case " $* " in
                 python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
   *" ci reruns "*) cat "$FAKE_RERUNS" 2>/dev/null || echo '{"requests":[]}'; exit 0 ;;
   *" repo view "*) cat "$FAKE_REPO" 2>/dev/null || echo '{"defaultBranch":"main"}'; exit 0 ;;
+  *" repo policy show "*) [[ -e "$FAKE_POLICY_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
+                         cat "$FAKE_POLICY" 2>/dev/null || echo '{"policy":null}'; exit 0 ;;
   *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}],"roles":true,"ownerId":"OWNER"}'; exit 0 ;;
 esac
 python3 - "$@" >>"$FAKE_DG_LOG" <<'PY'
@@ -92,6 +97,8 @@ export FAKE_PRS="$W/prs.json"
 export FAKE_RERUNS="$W/reruns.json"
 export FAKE_VIEW_FAILS="$W/view-fails"
 export FAKE_REPO="$W/repo.json"
+export FAKE_POLICY="$W/policy.json"
+export FAKE_POLICY_FAILS="$W/policy-fails"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
@@ -401,6 +408,39 @@ python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['schedule_ra
 sched_back; : >"$FAKE_DG_LOG"; poll
 check "a HEAD that is not the default branch runs no schedule" test ! -s "$FAKE_DG_LOG"
 check "…and says so" grep -q "the default branch gone is missing; no schedule runs" "$W/runner.log"
+
+echo "== 12. path filters: a required check the PR's paths filter out is reported skipped"
+: >"$FAKE_DG_LOG"
+git -C "$R" switch -q -c filt main
+git -C "$R" rm -rq --ignore-unmatch .forge
+mkdir -p "$R/.forge/workflows" "$R/docs"
+cat >"$R/.forge/workflows/paths.yml" <<'EOF'
+name: paths
+on:
+  pull_request:
+    paths: ['src/**']
+jobs:
+  req:
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+  other:
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+EOF
+echo hi >"$R/docs/x.md"
+git -C "$R" add -A; git -C "$R" commit -qm "docs only"
+HFILT=$(git -C "$R" rev-parse HEAD)
+prs "4,MEMBER,app,refs/heads/filt,$HFILT,open"
+echo '{"repo":"e2e/app","policy":{"requiredChecks":["paths / req (pull_request)"]}}' >"$FAKE_POLICY"
+"$RUNNER" -c "$W/runner.toml" run e2e/app --pr 4 >>"$W/runner.log" 2>&1
+check "the required check is reported skipped on the head, and nothing else" test "$(q "[(r['name'], r['sha'], r['status'], r['conclusion']) for r in rs]")" = "[('paths / req (pull_request)', '$HFILT', 'completed', 'skipped')]"
+check "…saying why" test "$(q "'PR #4 changes no file' in rs[0]['summary']")" = True
+: >"$FAKE_DG_LOG"; touch "$FAKE_POLICY_FAILS"
+"$RUNNER" -c "$W/runner.toml" run e2e/app --pr 4 >>"$W/runner.log" 2>&1
+rm -f "$FAKE_POLICY_FAILS"
+check "an unreadable policy reports every filtered check" test "$(q "sorted(r['name'] for r in rs)")" = "['paths / other (pull_request)', 'paths / req (pull_request)']"
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 

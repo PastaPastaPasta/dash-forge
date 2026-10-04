@@ -6,7 +6,7 @@
  * marker.
  */
 
-import { useState, type ReactNode, type Ref } from 'react'
+import { useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 import { Check } from 'lucide-react'
 import { labelTextColor, type LabelDef } from '@/lib/repo'
 import { Identicon } from '@/components/ui/identicon'
@@ -94,6 +94,13 @@ export function EditedMarker({ createdAt, updatedAt }: { createdAt: number; upda
 
 const EDITOR_HINT = 'Markdown supported. #12 links an issue, @name a profile.'
 
+/** Cmd+Enter or Ctrl+Enter (not while an input method is composing) runs `submit`. */
+export function submitShortcut(e: KeyboardEvent<HTMLTextAreaElement>, submit: () => void): void {
+  if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey) || e.nativeEvent.isComposing) return
+  e.preventDefault()
+  submit()
+}
+
 /** A markdown field with Write / Preview tabs (the preview renders exactly what will be shown). */
 export function MarkdownEditor({
   id,
@@ -108,6 +115,7 @@ export function MarkdownEditor({
   tools,
   suggestion = null,
   hint = EDITOR_HINT,
+  onSubmit,
 }: {
   id: string
   label: string
@@ -124,6 +132,8 @@ export function MarkdownEditor({
   suggestion?: SuggestionContext | null
   /** The line under the field; null: none. */
   hint?: string | null
+  /** Cmd+Enter (Ctrl+Enter) in the field: the composer's main action, as on GitHub. */
+  onSubmit?: () => void
 }): JSX.Element {
   const [tab, setTab] = useState<'write' | 'preview'>('write')
   const tabClass = (on: boolean) =>
@@ -147,7 +157,17 @@ export function MarkdownEditor({
       {tab === 'write' ? (
         <>
           <label htmlFor={id} className="sr-only">{label}</label>
-          <Textarea ref={textareaRef} id={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="min-h-[120px] rounded-tl-none" autoFocus={autoFocus} />
+          <Textarea
+            ref={textareaRef}
+            id={id}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={onSubmit ? (e) => submitShortcut(e, onSubmit) : undefined}
+            aria-keyshortcuts={onSubmit ? 'Meta+Enter Control+Enter' : undefined}
+            placeholder={placeholder}
+            className="min-h-[120px] rounded-tl-none"
+            autoFocus={autoFocus}
+          />
         </>
       ) : (
         <div role="tabpanel" aria-label="Rendered preview" className="min-h-[120px] rounded-md rounded-tl-none border border-anvil-300 px-3 py-2 dark:border-anvil-700" data-testid="markdown-preview">
