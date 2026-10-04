@@ -123,7 +123,7 @@ export async function openHandoffReply(reply: string, network: string, secret: U
   if (colon < 0) throw bad('malformed')
   const net = rest.slice(0, colon)
   if (!validNetwork(net)) throw bad('malformed')
-  if (net !== network) throw new HandoffError('network', `This key was made for ${net}, but this site is on ${network}. Run the command with --network ${network}.`)
+  if (net !== network) throw new HandoffError('network', `This key was made for ${net}, but this site is on ${network}. Run the command shown here, with ${networkFlag(network)}.`)
   const bytes = base64urlDecode(rest.slice(colon + 1))
   if (bytes === null || bytes.length < 33 + 12 + 16) throw bad('malformed')
   const ephemeralPub = bytes.slice(0, 33)
@@ -213,6 +213,8 @@ export function parseHandoffPayload(plain: Uint8Array, network: string): Handoff
 
 /** What the `dg` command asks for: its network, limits, the key it replaces, whether to bring the encryption key. */
 export interface HandoffOptions {
+  /** The identity the key is for, when this tab knows it: dg refuses to make it for another. */
+  readonly identityId?: string
   readonly replaceKeyId?: number
   readonly days: number
   readonly budgetDash: number
@@ -230,6 +232,7 @@ export function handoffCommand(request: HandoffRequest, o: HandoffOptions): stri
     'dg auth keys add',
     networkFlag(request.network),
     `--for-browser ${request.text}`,
+    ...(o.identityId !== undefined ? [`--for-identity ${o.identityId}`] : []),
     `--budget ${o.budgetDash}`,
     `--expires ${o.days}d`,
     ...(o.replaceKeyId !== undefined ? [`--replace ${o.replaceKeyId}`] : []),

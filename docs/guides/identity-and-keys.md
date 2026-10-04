@@ -209,7 +209,7 @@ On a computer where `dg` is signed in, a browser can get its key without the rec
 2. Run it. `dg` shows what the key can spend and what the update costs, asks, signs with your master key (the stored identity file, `--master <file>`, or your words), and prints one line starting with `dfkh1:`.
 3. Paste that line into the page and choose a passphrase or passkey. The browser checks the key on chain and keeps it in its vault.
 
-The printed line is sealed to the tab that showed the request: anyone else who sees it cannot open it, and it opens on that network only. `--replace <id>` (filled in by Renew) disables the browser's old key in the same update; `--with-encryption-key` hands over the identity's encryption key too, for private repos. This computer keeps signing with its own key. A key that came from `dg` renews with `dg` by default, so renewing never asks for the recovery phrase.
+When the page knows your identity (a renewal, or a key this browser already holds), the command carries `--for-identity <id>` and `--replace <key>`, and `dg` refuses before signing if it would make the key for another identity. The printed line is sealed to the tab that showed the request: anyone else who sees it cannot open it, and it opens on that network only. `--replace <id>` (filled in by Renew) disables the browser's old key in the same update; `--with-encryption-key` hands over the identity's encryption key too, for private repos. This computer keeps signing with its own key. A key that came from `dg` renews with `dg` by default, so renewing never asks for the recovery phrase.
 
 Ways to get one in the web app (**Sign in**):
 

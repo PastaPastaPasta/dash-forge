@@ -65,6 +65,10 @@ pub struct AddArgs {
     /// private repositories.
     #[arg(long, requires = "for_browser")]
     pub with_encryption_key: bool,
+    /// With --for-browser: the identity the browser asked a key for. dg refuses, before anything
+    /// is signed, to make the key for another identity.
+    #[arg(long, value_name = "IDENTITY_ID", requires = "for_browser")]
+    pub for_identity: Option<String>,
     /// Bound to the `dash-forge` contract group (the only binding dg makes; kept for the
     /// spec's command line).
     #[arg(long, value_name = "GROUP", default_value = "dash-forge", value_parser = ["dash-forge"])]
@@ -288,19 +292,20 @@ fn browser_request(ctx: &Ctx, text: &str) -> Result<forge_core::browser_key::Req
     Ok(request)
 }
 
-/// The encryption key `--with-encryption-key` hands over: the highest-id one `master` opens.
+/// The encryption key `--with-encryption-key` hands over: the highest-id one `sources` (the
+/// master source and the key dg signs with) open.
 /// Checked before anything is paid for, so a key dg cannot hand over never leaves the browser
 /// with a signing key and a promise.
 fn handover_encryption_key(
     ctx: &Ctx,
     identity: &forge_core::platform::LoadedIdentity,
-    master: &forge_core::keystore::BridgeIdentity,
+    sources: &[&forge_core::keystore::BridgeIdentity],
 ) -> Result<forge_core::browser_key::EncryptionKey> {
     let storage = super::StorageArgs {
         insecure_plaintext: false,
         signing_only: false,
     };
-    let key = super::encryption_to_store(ctx, &storage, identity, &[master])
+    let key = super::encryption_to_store(ctx, &storage, identity, sources)
         .into_iter()
         .max_by_key(|k| k.id)
         .ok_or_else(|| {
@@ -315,63 +320,112 @@ fn handover_encryption_key(
     })
 }
 
+/// The longest a browser key may live (the web app's longest choice, TS-06).
+const BROWSER_KEY_MAX_DAYS: u64 = 365;
+
+/// The master identity for `--for-browser`: `--master`, else the identity dg is signed in as,
+/// else the recovery words (only when dg is not signed in at all: a key file that fails to
+/// open is an error, not a reason to ask for the words). Refused when it is not `for_identity`.
+async fn browser_master(
+    ctx: &Ctx,
+    client: &forge_core::platform::PlatformClient,
+    args: &AddArgs,
+) -> Result<(
+    forge_core::keystore::BridgeIdentity,
+    Option<forge_core::keystore::BridgeIdentity>,
+)> {
+    let current = match ctx.identity_path {
+        Some(_) => Some(ctx.load_bridge()?),
+        None => None,
+    };
+    let current_id = current.as_ref().map(|b| b.identity_id.clone());
+    let master = match (&current_id, &args.master) {
+        (None, None) => {
+            eprintln!("{}", super::MASTER_PROMPT);
+            let words = super::read_mnemonic()?;
+            super::identity_from_words(ctx, client, &words).await?
+        }
+        _ => master_identity(
+            ctx,
+            args.master.as_deref(),
+            current_id.as_deref().unwrap_or(""),
+        )?,
+    };
+    if let Some(want) = &args.for_identity {
+        if *want != master.identity_id {
+            return Err(
+                UserError::new(codes::KEY_CANNOT_SIGN, "that is a different identity")
+                    .cause(format!(
+                        "the browser asked for a key of {want}, and dg would sign for {}",
+                        master.identity_id
+                    ))
+                    .fix(format!("pass --master with the identity file of {want}"))
+                    .note("nothing was sent")
+                    .into(),
+            );
+        }
+    }
+    Ok((master, current))
+}
+
+/// The key a reply carries, from the `dfk1:` text `register_limited_key` hands its `persist`.
+fn handoff_payload(
+    network: &str,
+    dfk1: &forge_core::keystore::Secret,
+    replaced: Option<u32>,
+    encryption: Option<&forge_core::browser_key::EncryptionKey>,
+) -> Result<forge_core::browser_key::Payload> {
+    let bridge = forge_core::keystore::BridgeIdentity::from_dfk1(dfk1.expose())?;
+    let key = bridge.doc_op_key()?;
+    Ok(forge_core::browser_key::Payload {
+        v: 1,
+        network: network.to_string(),
+        identity_id: bridge.identity_id.clone(),
+        key_id: key.id,
+        wif: key.private_key_wif.expose().to_string(),
+        replaced_key_id: replaced,
+        encryption_key: encryption.map(|e| forge_core::browser_key::EncryptionKey {
+            key_id: e.key_id,
+            private_key_hex: e.private_key_hex.clone(),
+        }),
+    })
+}
+
 /// `dg auth keys add --for-browser <request>` (TS-06): register a limited key for a browser tab
 /// and print it sealed to the tab's one-time key (`forge_core::browser_key`). Nothing is stored
 /// here; this computer's own key is untouched unless `--replace` names it.
 async fn add_for_browser(ctx: &Ctx, args: &AddArgs, request: &str) -> Result<()> {
-    use forge_core::browser_key::{self, EncryptionKey, Payload};
     let request = browser_request(ctx, request)?;
     let network = ctx.network_label();
     let client = ctx.connect().await?;
-    let current_id = ctx.load_bridge().map(|b| b.identity_id).unwrap_or_default();
-    let master = if current_id.is_empty() && args.master.is_none() {
-        eprintln!("{}", super::MASTER_PROMPT);
-        let words = super::read_mnemonic()?;
-        super::identity_from_words(ctx, &client, &words).await?
-    } else {
-        master_identity(ctx, args.master.as_deref(), &current_id)?
-    };
+    let (master, current) = browser_master(ctx, &client, args).await?;
     let identity = client.fetch_signer(&master).await?;
     let encryption = if args.with_encryption_key {
-        Some(handover_encryption_key(ctx, &identity, &master)?)
+        let sources: Vec<_> = std::iter::once(&master).chain(current.as_ref()).collect();
+        Some(handover_encryption_key(ctx, &identity, &sources)?)
     } else {
         None
     };
     let spec = key_spec(ctx, &args.limits, BROWSER_KEY_BUDGET_DASH, BROWSER_KEY_DAYS)?;
+    if spec.expires_at_ms > super::expiry_ms(BROWSER_KEY_MAX_DAYS) {
+        return Err(crate::errors::usage(format!(
+            "a browser key lives at most {BROWSER_KEY_MAX_DAYS} days; pass --expires 365d or less"
+        )));
+    }
     let checked = super::check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
     super::explain_new_key(ctx, &master.identity_id, &spec, "for a browser", &checked);
-    if !ctx.json {
-        if let Some(old) = args.replace {
-            eprintln!("  key #{old} is disabled in the same update");
-        }
-        if let Some(e) = &encryption {
-            eprintln!(
-                "  the browser also gets encryption key #{}: it opens your private repositories",
-                e.key_id
-            );
-        }
-    }
+    explain_handover(ctx, args.replace, encryption.as_ref());
     ctx.confirm_or_cancel("Add the key?")?;
     // The reply is sealed before anything is sent (as `register_limited_key` stores a key before
     // it registers it), and again if the key lands under another id.
     let seal = |dfk1: &forge_core::keystore::Secret| -> Result<(u32, String)> {
-        let bridge = forge_core::keystore::BridgeIdentity::from_dfk1(dfk1.expose())?;
-        let key = bridge.doc_op_key()?;
-        let payload = Payload {
-            v: 1,
-            network: network.clone(),
-            identity_id: master.identity_id.clone(),
-            key_id: key.id,
-            wif: key.private_key_wif.expose().to_string(),
-            replaced_key_id: args.replace,
-            encryption_key: encryption.as_ref().map(|e| EncryptionKey {
-                key_id: e.key_id,
-                private_key_hex: e.private_key_hex.clone(),
-            }),
-        };
-        Ok((key.id, browser_key::seal(&request, &payload)?))
+        let payload = handoff_payload(&network, dfk1, args.replace, encryption.as_ref())?;
+        Ok((
+            payload.key_id,
+            forge_core::browser_key::seal(&request, &payload)?,
+        ))
     };
-    let mut sealed: Option<(u32, String)> = None;
+    let mut sealed: Option<(u32, String, forge_core::keystore::Secret)> = None;
     let registered = super::register_limited_key(
         ctx,
         &client,
@@ -380,17 +434,27 @@ async fn add_for_browser(ctx: &Ctx, args: &AddArgs, request: &str) -> Result<()>
         args.replace,
         &checked,
         &mut |t| {
-            sealed = Some(seal(t)?);
+            let (id, reply) = seal(t)?;
+            sealed = Some((id, reply, t.clone()));
             Ok(())
         },
     )
     .await;
-    let (id, reply) = match (registered, sealed) {
-        (Ok(id), Some((sealed_id, reply))) if id == sealed_id => (id, reply),
+    let (id, reply, unconfirmed) = match (registered, sealed) {
+        (Ok(id), Some((sealed_id, reply, _))) if id == sealed_id => (id, reply, None),
         (Ok(id), _) => {
             anyhow::bail!("internal error: key #{id} registered, but its reply was not sealed")
         }
-        (Err(e), _) => return Err(e),
+        // The update errored but may have landed (a broadcast that timed out, a node behind):
+        // a key that is on chain is handed over, or nobody would hold it.
+        (Err(e), Some((_, _, dfk1))) => {
+            let Some(landed) = landed_key(ctx, &client, &network, &dfk1).await else {
+                return Err(e);
+            };
+            let (id, reply) = seal(&landed)?;
+            (id, reply, Some(format!("{e:#}")))
+        }
+        (Err(e), None) => return Err(e),
     };
     ctx.emit(
         json!({
@@ -401,8 +465,12 @@ async fn add_for_browser(ctx: &Ctx, args: &AddArgs, request: &str) -> Result<()>
             "replacedKeyId": args.replace,
             "encryptionKeyId": encryption.as_ref().map(|e| e.key_id),
             "reply": reply,
+            "warning": unconfirmed,
         }),
         || {
+            if let Some(why) = &unconfirmed {
+                eprintln!("note: the update reported an error ({why}), but key #{id} is on chain");
+            }
             eprintln!("✓ limited key #{id} added for the browser");
             if let Some(old) = args.replace {
                 eprintln!("  key #{old} disabled");
@@ -414,6 +482,45 @@ async fn add_for_browser(ctx: &Ctx, args: &AddArgs, request: &str) -> Result<()>
         },
     );
     Ok(())
+}
+
+/// The key in `dfk1` under the id it is live with on chain (a `dfk1:` text again), if it landed.
+async fn landed_key(
+    ctx: &Ctx,
+    client: &forge_core::platform::PlatformClient,
+    network: &str,
+    dfk1: &forge_core::keystore::Secret,
+) -> Option<forge_core::keystore::Secret> {
+    let bridge = forge_core::keystore::BridgeIdentity::from_dfk1(dfk1.expose()).ok()?;
+    let wif = bridge.doc_op_key().ok()?.private_key_wif.clone();
+    let identity = client.fetch_identity(&bridge.identity_id).await.ok()?;
+    let id = identity.key_id_for(wif.expose(), ctx.network())?;
+    Some(forge_core::keystore::dfk1(
+        network,
+        &bridge.identity_id,
+        id,
+        wif.expose(),
+    ))
+}
+
+/// What else the update does (human mode): the key it disables, the encryption key it hands over.
+fn explain_handover(
+    ctx: &Ctx,
+    replace: Option<u32>,
+    encryption: Option<&forge_core::browser_key::EncryptionKey>,
+) {
+    if ctx.json {
+        return;
+    }
+    if let Some(old) = replace {
+        eprintln!("  key #{old} is disabled in the same update");
+    }
+    if let Some(e) = encryption {
+        eprintln!(
+            "  the browser also gets encryption key #{}: it opens your private repositories",
+            e.key_id
+        );
+    }
 }
 
 async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {

@@ -28,7 +28,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
-import { DgHandoffFlow } from '@/components/auth/dg-handoff-flow'
+import { DgHandoffFlow, type HandoffTarget } from '@/components/auth/dg-handoff-flow'
 import { KeyLifetimeSelect } from '@/components/auth/key-lifetime'
 import { PhraseWarning } from '@/components/auth/phrase-warning'
 import { StepFailed } from '@/components/auth/step-status'
@@ -69,7 +69,7 @@ export function LoginModal(): JSX.Element {
   const [view, setView] = useState<View | null>(null)
   const [unlockFor, setUnlockFor] = useState<string | null>(null)
   // The locked key a dg handoff replaces (Unlock → "Replace this key with dg").
-  const [dgReplace, setDgReplace] = useState<number | null>(null)
+  const [dgReplace, setDgReplace] = useState<HandoffTarget | null>(null)
   const hasVault = vaults.length > 0
 
   // Pick the view when the sheet opens: once the stored-key list has been read, so a returning
@@ -160,7 +160,7 @@ export function LoginModal(): JSX.Element {
           onOther={() => setView('choose')}
           onRenew={(v) => {
             // A key that came from dg is replaced with dg: the recovery phrase is not asked for.
-            setDgReplace(v?.fromDg === true ? v.keyId : null)
+            setDgReplace(v?.fromDg === true ? { identityId: v.identityId, keyId: v.keyId } : null)
             setView(v?.fromDg === true ? 'dg' : 'import')
           }}
         />
@@ -184,7 +184,7 @@ export function LoginModal(): JSX.Element {
           <NotDeployedState />
         )
       ) : null}
-      {view === 'dg' ? limitedKeys ? <DgHandoffFlow onDone={close} {...(dgReplace !== null ? { replaceKeyId: dgReplace } : {})} /> : <NotDeployedState /> : null}
+      {view === 'dg' ? limitedKeys ? <DgHandoffFlow onDone={close} {...(dgReplace !== null ? { target: dgReplace } : {})} /> : <NotDeployedState /> : null}
       {view === 'create' ? <CreateIdentityFlow onDone={close} /> : null}
       {view === 'wallet' ? <WalletConnectFlow onDone={close} /> : null}
       {view === 'grant' ? <WalletConnectFlow mode="grant" contractId={grantFor} onDone={close} /> : null}

@@ -962,6 +962,16 @@ export class AuthController {
       }
       this.requireFullUnlock(identityId)
       const sdk = await this.getSdk()
+      // A key this browser holds for the identity must be the one dg replaced: otherwise it
+      // would stay live on chain with nothing holding it. Checked before anything is stored.
+      const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
+      if (previous !== undefined && payload.replacedKeyId !== previous.keyId) {
+        throw new WriteAuthError(
+          `This browser already holds key #${previous.keyId} for ${shortId(identityId)}, and dg did not disable it. Nothing was stored. Disable the new key with "dg auth keys disable ${payload.keyId}", then renew from Settings (or Unlock → Replace this key with dg).`,
+        )
+      }
+      const blocker = previous !== undefined ? await this.handoffBlocker(identityId) : null
+      if (blocker !== null) throw new WriteAuthError(`${blocker} Nothing was stored; disable the new key with "dg auth keys disable ${payload.keyId}".`)
       this.step('Checking the key on Platform')
       let limits: KeyLimits
       try {
@@ -972,21 +982,43 @@ export class AuthController {
       this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
       const key: LimitedKey = { keyId: payload.keyId, wif: payload.wif, limits }
       const committed = await this.commitKey({ identityId, keyId: key.keyId, wif: key.wif }, protection, 'dg')
-      // A reply that brings the encryption key again: the copy the replacement could not carry over is not lost.
-      const session = await this.adopt(identityId, key, protection, payload.encryptionKey !== undefined ? { ...committed, encryptionKeyDropped: false } : committed)
       const core = NETWORKS[this.network].v2?.core
-      if (payload.encryptionKey !== undefined && core !== undefined) {
+      const bringsEncryption = payload.encryptionKey !== undefined && core !== undefined
+      // A reply that brings the encryption key again: the copy the replacement could not carry
+      // over is reported only if that one cannot be kept either (below).
+      const session = await this.adopt(identityId, key, protection, bringsEncryption ? { ...committed, encryptionKeyDropped: false } : committed)
+      if (bringsEncryption && payload.encryptionKey !== undefined && core !== undefined) {
         this.step('Enabling private repos')
         try {
           await adoptEncryptionKey(sdk, this.network, identityId, core, hexToBytes(payload.encryptionKey.privateKeyHex))
         } catch (e) {
-          this.setState({ notice: `Signed in, but private repos could not be enabled: ${errorMessage(e)}` })
+          const dropped = committed.encryptionKeyDropped ? ` ${ENCRYPTION_KEY_DROPPED}` : ''
+          this.setState({ notice: `Signed in, but private repos could not be enabled: ${errorMessage(e)}.${dropped}` })
         }
       }
       // Kept: the request is spent. Until then a failed check can be retried with the same reply.
       request.wipe()
       return session
     })
+  }
+
+  /**
+   * Why a key from dg can't replace the key this browser holds for `identityId`, or null: dg
+   * disables one Forge limited key by id, so wallet keys (the main key, or grants beside it)
+   * would stay live after this device forgets them. Those renew with the identity file or phrase.
+   */
+  async handoffBlocker(identityId: string): Promise<string | null> {
+    const stored = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
+    if (stored === undefined) return null
+    let wallet = await hasExtraKeys(this.network, identityId)
+    if (!wallet) {
+      const identity = await authSdk(await this.getSdk()).identities.fetch(identityId)
+      const k = identity?.publicKeys.find((x) => x.keyId === stored.keyId)
+      wallet = k !== undefined && k.disabledAt === undefined && !isForgeBrowserKey(k)
+    }
+    return wallet
+      ? 'This browser holds wallet keys for this identity, which a key from dg cannot disable. Replace them with your identity file or recovery phrase instead, so they are disabled in the same update.'
+      : null
   }
 
   /** Adopt a limited key obtained elsewhere (identity creation). */

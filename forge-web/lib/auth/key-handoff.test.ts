@@ -58,6 +58,7 @@ describe('key handoff', () => {
     expect(handoffCommand(r, { days: 365, budgetDash: 0.05, withEncryptionKey: true, replaceKeyId: 5 })).toBe(
       `dg auth keys add --network sakura --for-browser ${v.expected.request} --budget 0.05 --expires 365d --replace 5 --with-encryption-key`,
     )
+    expect(handoffCommand(r, { days: 90, budgetDash: 0.05, withEncryptionKey: false, identityId: 'AbC', replaceKeyId: 7 })).toContain('--for-identity AbC --budget 0.05 --expires 90d --replace 7')
     r.wipe()
     expect(r.secret.every((b) => b === 0)).toBe(true)
   })
