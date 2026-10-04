@@ -74,7 +74,7 @@ Original design brief: `../INIT.md`; reconciliation notes: [docs/init-reconcilia
 
 | Component | What it is |
 |---|---|
-| **forge protocol** | Data contracts. forge-v2 (Platform protocol 14): three shared contracts, forge-core, forge-collab and forge-community, in one contract group. Access control is membership documents checked at consensus ([forge-v2.md](docs/contracts/forge-v2.md)). |
+| **forge protocol** | Data contracts. forge-v2 (Dash Platform v5): three shared contracts, forge-core, forge-collab and forge-community, in one contract group. Access control is membership documents checked at consensus ([forge-v2.md](docs/contracts/forge-v2.md)). |
 | **git-remote-dash** | Git remote helper (Rust). `git clone dash://<owner>/project` and `git push` just work. jj-compatible. |
 | **dg** | `gh`-replacement CLI (Rust, same workspace): `auth` (identities, limited keys on the OS keychain, DPNS names), `init`, repos, forks, stars, issues, labels, PRs with real merges, releases with assets, members, storage profiles, webhooks, `import`, cost estimates, repack, reseed, doctor. |
 | **forge web** | Static SPA (TypeScript, wasm SDK, in-browser repo materialization) deployable to IPFS. Built: browsing, commit and PR diffs, issues, opening PRs, inline review comments and verdicts, forks, merges from the browser (fast-forward, squash, and merge commits when the two sides changed different paths; the merge's pack goes to your storage, or to Platform if you allow it), releases, members, the storage wizard, limited-key sign-in with an encrypted vault, in-browser identity creation, Dash Wallet sign-in, Explore and notifications. Not yet: rebase merges, a browser merge when both sides changed the same file (use `dg pr merge`), editing files in the browser, and searching file contents — see [PRD 03](docs/prd/03-web-app.md). |
@@ -107,7 +107,7 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 1. [Platform constraints & research findings](docs/research/platform-constraints.md) — verified limits/fees that shape the design.
 2. [INIT.md reconciliation](docs/init-reconciliation.md) — what was adopted from the original brief; constraint-forced deviations, flagged for review.
 3. [System architecture](docs/architecture.md) — components, contract topology, membership access control, storage backends, data flows, economics.
-4. [forge-v2 contracts](docs/contracts/forge-v2.md) — the protocol-14 shared contracts: types, gates, client rules, costs, deployment. [Data contracts design](docs/contracts/data-contracts.md) is the historical forge-v1 design (registry + per-repo contracts), no longer implemented.
+4. [forge-v2 contracts](docs/contracts/forge-v2.md) — the shared contracts on Dash Platform v5: types, gates, client rules, costs, deployment. [Data contracts design](docs/contracts/data-contracts.md) is the historical forge-v1 design (registry + per-repo contracts), no longer implemented.
 5. PRDs:
    - [01 Product overview & personas](docs/prd/01-product-overview.md)
    - [02 git-remote-dash & dg](docs/prd/02-git-remote-helper-cli.md)
@@ -129,7 +129,7 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Verification
 
-The web app at **https://forge.dashhq.org** (GitHub Pages) ran on devnet bonsia with the frozen RC1 contracts (tag `contracts-rc1-frozen`) from 2026-09-30, after devnet moutai was upgraded in place to Platform v4.2.0-beta.7 and its forge-v2 contracts were retired. Bonsia is gone; the app moves to devnet sakura (Platform v5.0.0-beta.1) once the RC2 contracts are registered there. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly ("Devnet Nightly", from master's workflow file); on this source they target sakura, and they fail until its contracts and read fixture exist. See [e2e/README.md](e2e/README.md).
+The web app at **https://forge.dashhq.org** (GitHub Pages) runs on devnet sakura (Dash Platform v5.0.0-beta.1); [Networks](docs/networks.md) has the earlier devnets. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against sakura ("Devnet Nightly", from master's workflow file). See [e2e/README.md](e2e/README.md).
 
 Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
 
