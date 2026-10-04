@@ -27,7 +27,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
-import { errorMessage } from '../utils'
+import { errorMessage, shortId } from '../utils'
 import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
@@ -56,7 +56,6 @@ import {
   readKeyLimits,
   registerLimitedKey,
   revokeLimitedKey,
-  shortId,
   topUpLimitedKey,
   withKnownRemaining,
   type HeldKey,

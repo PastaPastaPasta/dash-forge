@@ -15,7 +15,7 @@ import { cn, isIdentityId, shortId } from '@/lib/utils'
 
 export interface OidProps {
   value: string
-  /** Abbreviation length (default 7); a Platform id always shows its first 7 and last 5. */
+  /** Abbreviation length of a hash (default 7); a Platform id always shows its first 7 and last 5. */
   chars?: number
   /** Show the copy affordance (default true). */
   copyable?: boolean

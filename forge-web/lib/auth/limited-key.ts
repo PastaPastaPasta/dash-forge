@@ -48,9 +48,6 @@ export function defaultLimits(now = Date.now()): LimitedKeyRequest {
   }
 }
 
-/** An identity id as the key-mismatch copy names it (`lib/utils` {@link shortId}). */
-export { shortId }
-
 /**
  * The master key given is not a live MASTER key of the identity (QW3-028: the update was refused
  * as "that key is not this identity's master key", or by the SDK's "Signer does not have a

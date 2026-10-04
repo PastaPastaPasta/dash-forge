@@ -332,19 +332,19 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
           <DetailRow label="Repo id">
-            <Oid value={repo.repoId} chars={12} label="repo document id" />
+            <Oid value={repo.repoId} label="repo document id" />
           </DetailRow>
           <DetailRow label="Owner identity">
-            <Oid value={repo.ownerId} chars={12} label="owner identity id" />
+            <Oid value={repo.ownerId} label="owner identity id" />
           </DetailRow>
           <DetailRow label="forge-core">
-            <Oid value={repo.forge.core} chars={12} label="forge-core contract id" />
+            <Oid value={repo.forge.core} label="forge-core contract id" />
           </DetailRow>
           <DetailRow label="forge-collab">
-            <Oid value={repo.forge.collab} chars={12} label="forge-collab contract id" />
+            <Oid value={repo.forge.collab} label="forge-collab contract id" />
           </DetailRow>
           <DetailRow label="forge-community">
-            <Oid value={repo.forge.community} chars={12} label="forge-community contract id" />
+            <Oid value={repo.forge.community} label="forge-community contract id" />
           </DetailRow>
           <DetailRow label="Network">
             <NetworkBadge always />

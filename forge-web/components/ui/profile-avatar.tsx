@@ -6,7 +6,8 @@
  *
  * - none (or a value no convention reads): the identicon of the identity id, as every identity
  *   pill draws it;
- * - `identicon[:seed]`: the pattern of the seed (`lib/design/identicon.ts`);
+ * - `identicon[:seed]`: the pattern of the seed (`lib/design/identicon.ts`), except a seed shaped
+ *   like an identity id, which would borrow that identity's pattern: it draws its own;
  * - an https image link: the default until the viewer loads that host's images, as Markdown
  *   images in issues and comments (D-053): fetching it tells the host who looked and when.
  *   Nothing is hosted by Forge.
@@ -21,7 +22,7 @@ import { Identicon } from '@/components/ui/identicon'
 import { avatarSpec } from '@/lib/rules/profile'
 import { urlHostOf } from '@/lib/view/markdown-links'
 import { allowHost, useHostAllowed } from '@/hooks/use-image-hosts'
-import { cn } from '@/lib/utils'
+import { cn, isIdentityId } from '@/lib/utils'
 
 export interface ProfileAvatarProps {
   readonly identityId: string
@@ -43,7 +44,9 @@ export function ProfileAvatar({ identityId, config, size, className }: ProfileAv
   const [failed, setFailed] = useState<string | null>(null)
 
   let picture: JSX.Element
-  if (spec.kind === 'identicon') picture = <Identicon seed={spec.seed} />
+  // Every pill draws an identity's pattern from its id, so a seed that is another identity's id
+  // would borrow that identity's picture: it draws this identity's own pattern instead.
+  if (spec.kind === 'identicon') picture = <Identicon seed={isIdentityId(spec.seed) ? identityId : spec.seed} />
   else if (url !== null && allowed && failed !== url) {
     picture = (
       // eslint-disable-next-line @next/next/no-img-element

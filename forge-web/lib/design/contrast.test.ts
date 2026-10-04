@@ -314,13 +314,15 @@ describe('diff palettes meet WCAG AA on their row tints, in both themes', () => 
   })
 })
 
-describe('identity-pill avatar fills keep the white initial at AA', () => {
+describe('identicon fills stand out on their tile', () => {
   it('holds for every hue', () => {
     for (let hue = 0; hue < 360; hue++) {
       const m = /hsl\((\d+) (\d+)% (\d+)%\)/.exec(avatarFill(hue))
       expect(m).not.toBeNull()
       const rgbFill = hslToRgb(Number(m?.[1]), Number(m?.[2]) / 100, Number(m?.[3]) / 100)
       expect(whiteContrast(rgbFill), `hue ${hue}`).toBeGreaterThanOrEqual(AA_TEXT)
+      // The cells sit on the identicon's #f3f4f6 tile: WCAG's 3:1 for graphics.
+      expect(contrast(rgbFill, rgb('#f3f4f6')), `hue ${hue} on the tile`).toBeGreaterThanOrEqual(3)
     }
   })
 

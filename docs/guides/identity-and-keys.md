@@ -289,7 +289,7 @@ Both check the same rules before anything is signed: a name, company or location
 **Avatars.** Forge hosts no images. Your profile page shows one of:
 
 - **Your pattern** (the default, or `--avatar identicon`): a 5×5 pattern every browser draws from your identity id, so nothing is fetched;
-- **Another pattern** (`--avatar identicon:<seed>`): the pattern of a seed you choose;
+- **Another pattern** (`--avatar identicon:<seed>`): the pattern of a seed you choose (a seed that is another identity's id draws your own pattern, so no one can borrow someone else's);
 - **Image link** (`--avatar https://…`): a picture you host. Visitors see your pattern until they choose to load images from its host, as with images in issues and comments, because loading it tells that host their IP address.
 
 Everywhere else (beside your comments, repositories and reviews) Forge draws the pattern of your identity id with its first 7 and last 5 characters, whatever your profile says. Anyone can copy a picture or register a similar name, but not that pattern: it changes with every character of the id.

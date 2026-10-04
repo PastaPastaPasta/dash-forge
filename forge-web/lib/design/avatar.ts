@@ -1,6 +1,7 @@
 /**
  * The identicon's fill (`identicon.ts`): a hue from the seed's hash, darkened until it holds
- * WCAG AA against white (4.5:1), so the pattern stands out on its light tile.
+ * 4.5:1 against white. On the identicon's `#f3f4f6` tile that leaves it above the 3:1 WCAG
+ * asks of graphics (`lib/design/contrast.test.ts` checks both).
  *
  * A fixed `hsl(h 45% 45%)` failed for yellow-green hues (2.58:1 at hue 60): at equal HSL
  * lightness, yellows and greens are far brighter than blues. So the lightness starts at 45%

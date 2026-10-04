@@ -269,7 +269,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
         </div>
         <ProfileFacts fields={fields} />
         <p className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Identity <Oid value={identityId} chars={10} label="identity id" />
+          Identity <Oid value={identityId} label="identity id" />
         </p>
         {data.profile === 'unread' ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="profile-unread">
