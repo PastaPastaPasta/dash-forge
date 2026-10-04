@@ -89,6 +89,7 @@ pub struct Indexer {
     /// The forge-web origin, for links.
     pub web_url: String,
     repos: Mutex<HashMap<String, (Option<RepoInfo>, Instant)>>,
+    names: Mutex<HashMap<String, (Option<String>, Instant)>>,
 }
 
 fn repo_url(web: &str, r: &RepoInfo) -> String {
@@ -119,6 +120,7 @@ impl Indexer {
             limits,
             web_url,
             repos: Mutex::new(HashMap::new()),
+            names: Mutex::new(HashMap::new()),
         }
     }
 
@@ -146,8 +148,32 @@ impl Indexer {
         Ok(r)
     }
 
-    fn display(r: &RepoInfo) -> String {
-        format!("{}/{}", short(&r.owner), r.name)
+    /// An identity as a notice names it: its DPNS label (cached), else a short id.
+    async fn name(&self, id: &str) -> String {
+        let cached = self
+            .names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .filter(|(_, at)| at.elapsed() < REPO_TTL)
+            .map(|(n, _)| n.clone());
+        if let Some(label) = cached {
+            return label.unwrap_or_else(|| short(id));
+        }
+        let label = self.chain.dpns_label(id).await.unwrap_or(None);
+        let mut cache = self
+            .names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.len() > 20_000 {
+            cache.clear();
+        }
+        cache.insert(id.to_string(), (label.clone(), Instant::now()));
+        label.unwrap_or_else(|| short(id))
+    }
+
+    async fn display(&self, r: &RepoInfo) -> String {
+        format!("{}/{}", self.name(&r.owner).await, r.name)
     }
 
     /// Rebuild one subscriber's follows and label.
@@ -289,7 +315,7 @@ impl Indexer {
             } else {
                 format!("requested your review on {what} #{}", target.number)
             };
-            let who = short(&a.author);
+            let who = self.name(&a.author).await;
             let title = match (&target.title, repo.private) {
                 (Some(t), false) => format!(
                     "{who} {verb}: {}",
@@ -301,7 +327,7 @@ impl Indexer {
             let n = OutNotice {
                 id: format!("addressed:{}", a.doc_id),
                 repo_id: repo.id.clone(),
-                repo: Self::display(&repo),
+                repo: self.display(&repo).await,
                 title,
                 excerpt: String::new(),
                 url: format!(
@@ -357,7 +383,7 @@ impl Indexer {
             let n = OutNotice {
                 id: format!("private:{repo_id}:{latest}"),
                 repo_id: repo_id.clone(),
-                repo: Self::display(&repo),
+                repo: self.display(&repo).await,
                 title: "New activity in a private repository you belong to. Open Forge to read it."
                     .into(),
                 excerpt: String::new(),

@@ -272,11 +272,19 @@ impl ServeArgs {
             self.insecure_local,
         )?;
         let web_url = base_url("FORGE_NOTIFY_WEB_URL", &self.web_url, self.insecure_local)?;
-        let operator = match &self.operator {
-            Some(o) => o.trim().to_string(),
-            None => url::Url::parse(&public_url)
+        // By default the public URL's host (and port), as a browser's `URL.host` names it: the
+        // web app signs for the host it calls.
+        let operator = match self.operator.as_deref().map(str::trim) {
+            Some(o) if !o.is_empty() => o.to_string(),
+            _ => url::Url::parse(&public_url)
                 .ok()
-                .and_then(|u| u.host_str().map(str::to_string))
+                .and_then(|u| {
+                    let host = u.host_str()?;
+                    Some(
+                        u.port()
+                            .map_or_else(|| host.to_string(), |p| format!("{host}:{p}")),
+                    )
+                })
                 .unwrap_or_default(),
         };
         if operator.is_empty() || operator.len() > 100 || operator.contains(['\n', '\r']) {
@@ -428,5 +436,39 @@ mod tests {
         assert!(base_url("x", "https://u:p@notify.example.org", false).is_err());
         assert!(base_url("x", "https://notify.example.org/?a=1", false).is_err());
         assert_eq!(origin_of("https://a.example/sub"), "https://a.example");
+    }
+
+    #[test]
+    fn links_shown_to_users_are_http_s() {
+        assert!(web_link("x", "https://example.org/privacy?x#y", false).is_ok());
+        assert!(web_link("x", "javascript:alert(1)", false).is_err());
+        assert!(web_link("x", "data:text/html,x", false).is_err());
+        assert!(web_link("x", "http://example.org/privacy", false).is_err());
+    }
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        serve: ServeArgs,
+    }
+
+    fn resolve(vars: &[&str]) -> Config {
+        use clap::Parser as _;
+        let mut argv = vec!["serve", "--network", "testnet"];
+        argv.extend_from_slice(vars);
+        Cli::try_parse_from(argv).unwrap().serve.resolve().unwrap()
+    }
+
+    #[test]
+    fn the_operator_is_the_public_host_unless_named() {
+        let c = resolve(&["--public-url", "https://notify.example.org"]);
+        assert_eq!(c.operator, "notify.example.org");
+        let c = resolve(&["--public-url", "http://127.0.0.1:18200"]);
+        assert_eq!(
+            c.operator, "127.0.0.1:18200",
+            "as a browser's URL.host says it"
+        );
+        let c = resolve(&["--public-url", "https://n.example.org", "--operator", " "]);
+        assert_eq!(c.operator, "n.example.org", "blank means unset");
     }
 }

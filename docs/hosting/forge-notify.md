@@ -215,7 +215,7 @@ A subscriber chooses topics, channels and timing in Settings → Notifications.
 | Watching (on) | New issues and pull requests, comments, reviews, closes, reopens and merges in repositories they watch |
 | My repositories (on) | Treat repositories they own or are a member of as watched |
 | Releases (on) | Releases of those repositories |
-| Private activity (off) | "New activity in <repo>" for a private repository they belong to, at most every few minutes, with no title or text |
+| Private activity (off) | "New activity in <repo>" for a private repository they own or are a member of, checked every 5 minutes, with no title or text. It counts pushes, new issues and pull requests, state changes and member events. Comments and reviews have no per-repository index, so they are not seen. |
 
 - **Delivery:** instant, or one daily digest mail at `FORGE_NOTIFY_DIGEST_HOUR` UTC. A digest sends no push.
 - Nobody is told about their own actions. Each notice reaches an identity once.
