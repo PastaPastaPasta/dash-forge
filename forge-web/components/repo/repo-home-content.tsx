@@ -268,7 +268,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         repository&apos;s git config, so a later <span className="font-mono">git push</span> goes there.
       </p>
       <p className="mt-4 text-[12px] text-anvil-600 dark:text-anvil-300">
-        Storage: packs go to <span className="font-mono">{configured ? home.backend.label : 'Platform'}</span>
+        Storage: packs go to <span className="font-mono">{configured ? home.backend.kind : 'Platform'}</span>
         {configured
           ? ` (set by the owner) · Platform: manifest + refs only, ~${dashRange(PUSH_COST_DASH.byo)} DASH per push`
           : ` · a small push ≈ ${dashRange(PUSH_COST_DASH.platform)} DASH with packs on Platform (${dashRange(PUSH_COST_DASH.byo)} with your own storage)`}

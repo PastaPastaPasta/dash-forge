@@ -20,7 +20,7 @@ function iconFor(kind: ReturnType<typeof modeKind>): JSX.Element {
     case 'submodule':
       return <GitCommitHorizontal className="h-4 w-4 text-fg-muted" aria-hidden />
     case 'link':
-      return <Link2 className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+      return <Link2 className="h-4 w-4 text-fg-muted" aria-hidden />
     case 'exe':
       return <FileCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
     default:

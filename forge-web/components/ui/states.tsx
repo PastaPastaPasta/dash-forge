@@ -59,7 +59,7 @@ export function EmptyState({
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-anvil-300 px-6 py-12 text-center dark:border-anvil-700">
       {Icon ? (
-        <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-raised text-fg-muted">
+        <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-raised text-fg-muted ring-1 ring-inset ring-anvil-200 dark:ring-anvil-700">
           <Icon className="h-5 w-5" aria-hidden />
         </span>
       ) : null}

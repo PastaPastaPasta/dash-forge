@@ -204,7 +204,6 @@ describe('no component uses a light-theme text color that fails AA', () => {
   const ICON_ONLY = [
     /className="rounded p-0\.5 text-anvil-500 hover:text-danger dark:text-anvil-400"/, // gateway remove (X icon)
     /^\s*className="hover:text-danger"\s*$/, // issue label remove (X icon)
-    /rounded-full bg-forge-500\/10 text-forge-500">$/, // the empty-state icon badge
   ]
 
   it('finds none outside graphics', () => {
@@ -551,6 +550,12 @@ describe('theme tokens', () => {
     // A token with no dark value is the light one in both themes.
     expect(tokenHexes('state-open-fill')).toHaveLength(1)
     expect(tokenHexes('state-nope')).toBeUndefined()
+  })
+
+  it('muted text and icons (--fg-muted) meet AA on every surface, both themes', () => {
+    const [light, dark] = [TOKENS.light['fg-muted']!, TOKENS.dark['fg-muted']!]
+    for (const bg of LIGHT) expect(contrast(light, bg), `fg-muted on ${hexOf(bg)}`).toBeGreaterThanOrEqual(AA_TEXT)
+    for (const bg of DARK) expect(contrast(dark, bg), `dark fg-muted on ${hexOf(bg)}`).toBeGreaterThanOrEqual(AA_TEXT)
   })
 
   it('the focus ring is 3:1 or more against its offset and every surface (WCAG 1.4.11)', () => {
