@@ -14,7 +14,9 @@
  * verify the pack → upload → packManifest → browse index → ref update → merge event), and a
  * failure names what already exists and offers to resume.
  *
- * Review parity (M1, M2, M3, M7, F7): a method choice (the plan's merge, or Squash and merge), each
+ * Review parity (M1, M2, M3, M7, F7): a method choice (the plan's merge, Squash and merge, or Rebase
+ * and merge — the PR's commits replayed on the base as `git rebase` replays them, checked on its own
+ * since a rebase can stop where a merge would not), each
  * commit with an editable message (the merge commit's as `dg pr merge --message` writes it, the
  * squash's as `dg pr merge --squash`), limited to what the branch policy's
  * `mergeMethods` allows; the conflicting paths when the check finds overlaps; and "Delete the
@@ -72,8 +74,8 @@ function withMergeCommit(e: PackEstimate | null): PackEstimate | null {
 /** The method picker's name for a merge commit, the plan's or a --no-ff one alike. */
 const MERGE_COMMIT_OPTION = 'Create a merge commit'
 
-/** The merge methods: the plan's (fast-forward, or a merge commit), --no-ff, or a squash. */
-type Method = 'merge' | 'no-ff' | 'squash'
+/** The merge methods: the plan's (fast-forward, or a merge commit), --no-ff, a squash, or a rebase. */
+type Method = 'merge' | 'no-ff' | 'squash' | 'rebase'
 
 /**
  * "Close #12 after merging" (review-parity P8, QW-015): the open issues the PR's description
@@ -123,7 +125,7 @@ export function MergePanel({
   isMaintainer: boolean
   checkout: string
   onMerged: () => void
-  /** The policy's `mergeMethods` bitmask (1 ff, 2 merge commit, 4 squash; 0 any). */
+  /** The policy's `mergeMethods` bitmask (1 ff, 2 merge commit, 4 squash, 8 rebase; 0 any). */
   allowedMethods?: number
   /**
    * `Name <email>` of the PR's commit authors, oldest first (the squash's Co-authored-by), or
@@ -165,8 +167,15 @@ export function MergePanel({
   const { upload, question: storageQuestion, questionStep, choiceFor, begin, storageNeedsUnlock } = useMergeUpload(repo)
   // The check sizes the pack (an upper bound): the Storage row prices it before the merge starts.
   // With the method it was sized for (a squash packs none of the head's history): an estimate for
-  // another method is no price for this one, and is sized again.
-  const [sized, setSized] = useState<{ readonly estimate: PackEstimate | null; readonly method: Method } | null>(null)
+  // another method is no price for this one, and is sized again. A rebase's sizing check is also
+  // its verdict (it may stop where a merge does not): `check`, and why it cannot rebase.
+  const [sized, setSized] = useState<{
+    readonly estimate: PackEstimate | null
+    readonly method: Method
+    readonly check?: MergeCheck
+    readonly conflictPaths?: readonly string[]
+    readonly conflictReason?: string | null
+  } | null>(null)
   // "Allow storing on Platform": until the merger touches it, its default follows the policy.
   const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
@@ -190,10 +199,14 @@ export function MergePanel({
       ? 'merge'
       : policyAllows(2)
         ? 'no-ff'
-        : 'squash'
+        : policyAllows(4)
+          ? 'squash'
+          : 'rebase'
     : policyAllows(1) || policyAllows(2)
       ? 'merge'
-      : 'squash'
+      : policyAllows(4)
+        ? 'squash'
+        : 'rebase'
   // --no-ff where no fast-forward is possible is the plain merge commit.
   const method: Method = picked === 'no-ff' && !ffPossible ? 'merge' : picked ?? preferred
   const committer = `${prefs.mergeName.trim()} <${prefs.mergeEmail.trim()}>`
@@ -229,6 +242,7 @@ export function MergePanel({
       // The PR's author authors the squash; the merger commits it (QW4-008).
       ...(method === 'squash' ? { squash: { message: squashMsg, ...(squashByName !== null && squashByEmail !== null ? { author: { name: squashByName, email: squashByEmail } } : {}) } } : {}),
       ...(method === 'no-ff' ? { noFastForward: true as const } : {}),
+      ...(method === 'rebase' ? { rebase: true as const } : {}),
     }),
     [baseTipOid, pull.headOid, pull.number, sourceLabel, pull.title, mergeText, writesMergeCommit, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg, squashByName, squashByEmail],
   )
@@ -256,10 +270,11 @@ export function MergePanel({
     const abort = new AbortController()
     setCheck(null)
     setSized(null)
-    const sizing: Method = inputRef.current.squash !== undefined ? 'squash' : inputRef.current.noFastForward === true ? 'no-ff' : 'merge'
     // The check needs a name for the trial merge commit; the real one is written on click. The
-    // verdict (fast-forward or merge commit) is the history's, whatever the method.
-    const { noFastForward: _noFf, ...verdictInput } = inputRef.current
+    // verdict (fast-forward or merge commit) is the history's, whatever the method; a rebase is
+    // checked (and sized) on its own just after.
+    const { noFastForward: _noFf, rebase: _rebase, ...verdictInput } = inputRef.current
+    const sizing: Method = inputRef.current.squash !== undefined ? 'squash' : inputRef.current.noFastForward === true ? 'no-ff' : 'merge'
     checkMergeInWorker(reader, { ...verdictInput, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
       (c) => {
         if (abort.signal.aborted) return
@@ -282,9 +297,12 @@ export function MergePanel({
     const abort = new AbortController()
     checkMergeInWorker(reader, { ...inputRef.current, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
       (c) => {
-        if (!abort.signal.aborted) setSized({ estimate: c.packEstimate, method })
+        if (!abort.signal.aborted) setSized({ estimate: c.packEstimate, method, check: c.check, conflictPaths: c.conflictPaths, conflictReason: c.conflictReason })
       },
-      () => undefined,
+      (e: unknown) => {
+        // A rebase's check is its verdict: one that fails says so rather than waiting forever.
+        if (!abort.signal.aborted && method === 'rebase') setSized({ estimate: null, method, check: 'malformed', conflictPaths: [], conflictReason: e instanceof Error ? e.message : String(e) })
+      },
     )
     return () => abort.abort()
   }, [checkable, reader, method, sizedMethod])
@@ -342,12 +360,23 @@ export function MergePanel({
     ...closing.map(() => previewCreate('transition')),
     ...(gate.bypassing || bypassed !== null ? [previewCreate('event', { value: bypassValue(bypassed ?? unmetRules) })] : []),
   ])
-  // Only a merge commit is authored; a fast-forward writes no commit.
-  const identityOk = (button.kind !== 'merge-commit' && method === 'merge') || mergeIdentityValid(prefs)
-  // The plan's own method bit (ff 1, merge commit 2), or squash (4): what the policy is checked against.
-  const planBit = method === 'no-ff' ? 2 : button.kind === 'fast-forward' ? 1 : button.kind === 'merge-commit' ? 2 : 0
+  // The rebase's own verdict, once its check is in (null meanwhile).
+  const rebaseCheck = method === 'rebase' && sized?.method === 'rebase' ? (sized.check ?? null) : null
+  // Why a rebase cannot run here: still checking, or where and why it stops (null: it can).
+  const rebaseProblem =
+    method !== 'rebase'
+      ? null
+      : rebaseCheck === null
+        ? 'Checking the rebase…'
+        : rebaseCheck === 'fast-forward' || rebaseCheck === 'merge'
+          ? null
+          : `Can't rebase in the browser: ${sized?.conflictReason ?? (rebaseCheck === 'conflict' ? 'a commit does not apply cleanly' : rebaseCheck)}${sized?.conflictPaths?.length ? ` (${sized.conflictPaths.slice(0, 5).join(', ')}${sized.conflictPaths.length > 5 ? ', …' : ''})` : ''}. Rebase with \`dg pr merge --rebase\`, or pick another method.`
+  // Only a written commit is authored; a fast-forward (a rebase's included) writes none.
+  const identityOk = (button.kind !== 'merge-commit' && method === 'merge') || (method === 'rebase' && rebaseCheck === 'fast-forward') || mergeIdentityValid(prefs)
+  // The plan's own method bit (ff 1, merge commit 2), squash (4) or rebase (8): what the policy is checked against.
+  const planBit = method === 'rebase' ? 8 : method === 'no-ff' ? 2 : button.kind === 'fast-forward' ? 1 : button.kind === 'merge-commit' ? 2 : 0
   const mergeMsgProblem = writesMergeCommit && mergeMsg.trim() === '' ? 'Write a commit message to merge.' : null
-  const methodAllowed = method === 'squash' ? policyAllows(4) && squash.problem === null : (planBit === 0 || policyAllows(planBit)) && mergeMsgProblem === null
+  const methodAllowed = method === 'squash' ? policyAllows(4) && squash.problem === null : (planBit === 0 || policyAllows(planBit)) && mergeMsgProblem === null && rebaseProblem === null
   // Once this panel's merge has landed there is nothing left to merge: no method, button or cost.
   const mergeable = !mergedHere && (button.kind === 'fast-forward' || button.kind === 'merge-commit')
 
@@ -379,7 +408,7 @@ export function MergePanel({
     setBypassed(bypass)
     begin(preAgreedCredits)
     const digest = (text: string): string => bytesToHex(sha256(new TextEncoder().encode(text))).slice(0, 16)
-    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${digest(input.squash.message)}` : input.noFastForward ? ':no-ff' : ''}${input.message !== undefined ? `:msg:${digest(input.message)}` : ''}`
+    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${digest(input.squash.message)}` : input.rebase ? ':rebase' : input.noFastForward ? ':no-ff' : ''}${input.message !== undefined ? `:msg:${digest(input.message)}` : ''}`
     try {
       // The merge's writes are one action: one toast with their total (QW3-039). The merge panel is
       // not modal, so its own signer marks them; a branch delete or issue close after it is its own.
@@ -522,6 +551,9 @@ export function MergePanel({
                 <option value="squash" disabled={!policyAllows(4)}>
                   Squash and merge
                 </option>
+                <option value="rebase" disabled={!policyAllows(8)}>
+                  Rebase and merge
+                </option>
               </select>
               <Button
                 variant={gate.bypassing && failure === null ? 'danger' : 'primary'}
@@ -531,7 +563,7 @@ export function MergePanel({
                 aria-describedby={gate.reason !== null ? 'merge-gate-reason' : undefined}
                 data-testid="merge-submit"
               >
-                {unlockFirst ? 'Unlock to merge' : failure ? retryLabel(failure.step) : gate.bypassing ? (method === 'squash' ? 'Bypass rules and squash' : 'Bypass rules and merge') : method === 'squash' ? 'Squash and merge' : method === 'no-ff' ? 'Create merge commit and merge' : button.label}
+                {unlockFirst ? 'Unlock to merge' : failure ? retryLabel(failure.step) : gate.bypassing ? (method === 'squash' ? 'Bypass rules and squash' : method === 'rebase' ? 'Bypass rules and rebase' : 'Bypass rules and merge') : method === 'squash' ? 'Squash and merge' : method === 'rebase' ? 'Rebase and merge' : method === 'no-ff' ? 'Create merge commit and merge' : button.label}
               </Button>
             </>
           ) : button.kind === 'unavailable' ? (
@@ -598,6 +630,10 @@ export function MergePanel({
       ) : mergeable && mergeMsgProblem !== null ? (
         <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="merge-message-problem">
           {mergeMsgProblem}
+        </p>
+      ) : mergeable && rebaseProblem !== null && policyAllows(8) ? (
+        <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="rebase-problem">
+          {rebaseProblem}
         </p>
       ) : mergeable && !methodAllowed ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">The branch policy does not allow this merge method; pick another.</p>
@@ -682,6 +718,8 @@ export function MergePanel({
         <div className="mt-2" data-testid="merge-identity">
           {method === 'squash' ? (
             <CommitIdentityPrompt what="squash and merge" lead="A browser squash is committed with your name and email" />
+          ) : method === 'rebase' ? (
+            <CommitIdentityPrompt what="rebase and merge" lead="A browser rebase commits each of the PR's commits again with your name and email" />
           ) : (
             <CommitIdentityPrompt what="merge" lead="A browser merge commit is authored with your name and email" />
           )}
