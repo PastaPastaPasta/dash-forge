@@ -141,7 +141,7 @@ A private repository needs more than a signing key: its content is encrypted to 
 
 **This key can't sign that.** The key in use cannot sign this kind of operation. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key. Registering or disabling keys needs the MASTER key, and a DPNS name needs an unbound CRITICAL or HIGH key: a Forge limited key is bound to the forge contracts and cannot sign either. A CI runner key (`dg ci runner new`) is bound to the `checkRun` document type alone. Any other write it signs is refused with "Batch member is outside the contract bounds of key N" (consensus error 20014), before anything is broadcast.
 
-Fix: pass the identity file with `--master <file>`, or type the recovery words when asked. The master key is used for that one signature and not stored.
+Fix: pass the identity file with `--master <file>`, or type the recovery phrase when asked. The master key is used for that one signature and not stored.
 
 ## E303
 
@@ -181,7 +181,7 @@ Fix: register a fresh one with your master key (used once): `dg auth login <iden
 - "the key stored on this computer holds no encryption key": your identity usually has one (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), but the key source in use does not hold its private half: a limited key stored by an older `dg`, or with `--signing-only`, is a signing key only.
 - "`<member>` has no encryption key" (`dg collab add` to a private repository): the member you named has no enabled `ENCRYPTION` key on their identity.
 
-Fix: for the first, sign in again, replacing the key in use (`dg auth status` shows its id, and its `Private:` line prints the command): `dg auth login <identity file> --replace <key id>`, or `dg auth login --mnemonic --replace <key id>` with the 12 recovery words if you have no identity file (a `dg auth new` identity). It registers a new limited key, stores your encryption key beside it and disables the old key; the master key is used once and not stored. For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery words (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+Fix: for the first, sign in again, replacing the key in use (`dg auth status` shows its id, and its `Private:` line prints the command): `dg auth login <identity file> --replace <key id>`, or `dg auth login --mnemonic --replace <key id>` with the 12-word recovery phrase if you have no identity file (a `dg auth new` identity). It registers a new limited key, stores your encryption key beside it and disables the old key; the master key is used once and not stored. For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery phrase (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
 
 ## E307
 
@@ -370,7 +370,7 @@ Fix: if the message does not explain it, [open an issue](https://github.com/Past
 
 ## E606
 
-**Repository archived.** A maintainer marked the repository archived (`config.archived`, set with `dg repo archive` or Settings → Danger zone). Archiving is a client rule, not access control: consensus still admits a member's writes, so the tools refuse them instead. That covers `dg` issue, PR, comment, review, merge and release writes, and the push helper, each before signing or paying for anything.
+**Repository archived.** A maintainer marked the repository archived (`config.archived`, set with `dg repo archive` or Settings → Danger zone). Forge apps enforce archiving, not Platform: Platform still accepts a member's writes, so the tools refuse them instead. That covers `dg` issue, PR, comment, review, merge and release writes, and the push helper, each before signing or paying for anything.
 
 Fix: ask a maintainer to unarchive it (`dg repo unarchive <owner>/<repo>`). If you are sure, write anyway with `dg --allow-archived …` or push with `-o allow-archived`.
 
@@ -390,7 +390,7 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 ## E702
 
-**Dash Forge not deployed on this network.** The embedded `forge-contracts/deployments/<network>.json` records no registered forge-v2 contracts (forge-core, forge-collab, forge-community and their contract group), so there is nothing to read or write. The tools never fall back to another network's contracts. Forge targets devnet sakura, where forge-v2 (RC2, Platform v5.0.0-beta.1) is registered and live; testnet and mainnet follow once they run Platform protocol 14.
+**Dash Forge not deployed on this network.** The embedded `forge-contracts/deployments/<network>.json` records no registered forge-v2 contracts (forge-core, forge-collab, forge-community and their contract group), so there is nothing to read or write. The tools never fall back to another network's contracts. Forge runs on devnet sakura; testnet and mainnet follow once they run Dash Platform v5 ([Networks](networks.md)).
 
 Fix: use a network with a deployment. For `dg`, pass `--network devnet --devnet-name sakura` (`dg auth new` and `dg auth login` record it as the default). For `git clone` / `git push`, the helper takes the network from `DASH_FORGE_NETWORK`, then git config `dash.network` / `dash.devnetName`, then the network `dg` recorded, so set one of those: `git config --global dash.network devnet && git config --global dash.devnetName sakura`, or `git clone -c dash.network=devnet -c dash.devnetName=sakura dash://…` for one clone. See [the mainnet runbook](mainnet-runbook.md).
 
@@ -426,7 +426,7 @@ Fix: pass `--yes` once you have checked what the command will do. The `cause:` l
 
 ## E803
 
-**Cancelled.** You answered no at a confirmation prompt, or the input ended (Ctrl-D, a closed terminal) before an answer at one of `dg`'s own prompts, including the hidden ones: the recovery words, a word of `dg auth new`'s backup check, a secret pasted into `dg storage add`. Nothing was written. (A passphrase prompt that cannot be asked is [E303](#e303).)
+**Cancelled.** You answered no at a confirmation prompt, or the input ended (Ctrl-D, a closed terminal) before an answer at one of `dg`'s own prompts, including the hidden ones: the recovery phrase, a word of `dg auth new`'s backup check, a secret pasted into `dg storage add`. Nothing was written. (A passphrase prompt that cannot be asked is [E303](#e303).)
 
 ## E804
 
