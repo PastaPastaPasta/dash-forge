@@ -57,9 +57,8 @@ plan() {
             if [ -n "${INPUT_VERSION:-}" ]; then
                 method=release
             else
-                # No release pinned (none is published yet): build the pinned code instead. A
-                # release is never picked up behind the workflow's back; the commit that cuts
-                # one sets `version`.
+                # No release pinned: build the pinned code instead. A release is never picked
+                # up behind the workflow's back; the commit that cuts one sets `version`.
                 method=source
                 printf "::notice title=Dash Forge install::No Dash Forge release is pinned (version is empty), so this run builds %s from the Action's own source (the ref in uses:). The first build takes several minutes; later runs reuse the build cache.\n" "${BINARIES[*]}"
             fi
