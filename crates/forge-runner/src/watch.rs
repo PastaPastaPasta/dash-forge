@@ -181,6 +181,13 @@ pub struct RepoState {
     /// after it, so every member's open PR is read in turn.
     #[serde(default)]
     pub followed_to: u64,
+    /// CI re-run requests: the newest `$createdAt` handled (ms), and the requests handled at
+    /// exactly that time. `None` until the first poll, which records the runner's clock and runs
+    /// nothing older.
+    #[serde(default)]
+    pub reruns_since: Option<u64>,
+    #[serde(default)]
+    pub reruns_seen: std::collections::BTreeSet<String>,
 }
 
 impl RepoState {
@@ -197,6 +204,21 @@ impl RepoState {
                 member: member.unwrap_or(known),
             },
         );
+    }
+
+    /// Record re-run request `id` (written at `created_at`) as handled: the cursor moves to the
+    /// newest time handled, and remembers the ids handled at that time.
+    pub fn handled_rerun(&mut self, id: &str, created_at: u64) {
+        match self.reruns_since {
+            Some(t) if created_at < t => {}
+            Some(t) if created_at == t => {
+                self.reruns_seen.insert(id.to_string());
+            }
+            _ => {
+                self.reruns_since = Some(created_at);
+                self.reruns_seen = std::collections::BTreeSet::from([id.to_string()]);
+            }
+        }
     }
 
     /// The members' open PRs the listing did not include, at most `max`, taken in turn after
@@ -387,6 +409,31 @@ mod tests {
         assert_eq!(s.next_to_follow(&listed, 2), [4, 1], "in turn, wrapping");
         assert_eq!(s.next_to_follow(&listed, 9), [2, 4, 1]);
         assert!(s.next_to_follow(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn the_rerun_cursor_keeps_the_ids_at_its_time() {
+        let mut s = RepoState {
+            reruns_since: Some(100),
+            ..RepoState::default()
+        };
+        s.handled_rerun("a", 100);
+        s.handled_rerun("b", 100);
+        assert_eq!(s.reruns_seen.len(), 2);
+        s.handled_rerun("old", 50);
+        assert_eq!(
+            s.reruns_since,
+            Some(100),
+            "an older request never moves it back"
+        );
+        s.handled_rerun("c", 120);
+        assert_eq!(s.reruns_since, Some(120));
+        assert_eq!(s.reruns_seen.iter().collect::<Vec<_>>(), ["c"]);
+        let back: RepoState = serde_json::from_str("{\"tips\":{},\"primed\":true}").unwrap();
+        assert!(
+            back.reruns_since.is_none(),
+            "a state from before re-runs primes afresh"
+        );
     }
 
     #[test]

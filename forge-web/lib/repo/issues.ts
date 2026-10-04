@@ -31,6 +31,7 @@ import {
   type DocumentQuery,
   type PlainDocument,
 } from '../sdk'
+import { rerunRequest, type RerunRequest } from '../rules/ci-rerun'
 import { foldPrReviewV2, issueStateV2, mergeTransition, prStateV2, stateCode, statusOfCode, type PrReviewState } from '../rules/v2'
 import {
   asIdentifierString,
@@ -39,6 +40,7 @@ import {
   num,
   str,
   toEvent,
+  toRerunEvent,
   type RepoRef,
   repoKey,
 } from './contract'
@@ -289,6 +291,8 @@ export interface TargetLog {
   readonly hiddenValues?: number
   /** Private repos: member events whose value an older client wrote in plaintext. */
   readonly plaintextValues?: number
+  /** The target's well-formed CI re-run requests (event kind 26, `rules/ci-rerun.ts`), oldest first. */
+  readonly ciReruns?: readonly RerunRequest[]
 }
 
 /** A target with no state documents. */
@@ -476,7 +480,9 @@ export function toEvents(documents: readonly PlainDocument[]): Event[] {
  */
 export async function toLog(repo: RepoRef, events: readonly PlainDocument[], authorEvents: readonly PlainDocument[]): Promise<TargetLog> {
   const r = await readableEvents(repo, events)
-  return { events: toEvents(r.docs), authorEvents: toEvents(authorEvents), hiddenValues: r.hiddenValues, plaintextValues: r.plaintextValues }
+  // `readableEvents` keeps the order: a document sealed before it was opened is `events[i]`'s.
+  const ciReruns = r.docs.flatMap((d, i) => rerunRequest(repo.repoId, toRerunEvent(d, events[i]?.['enc'] !== undefined)) ?? [])
+  return { events: toEvents(r.docs), authorEvents: toEvents(authorEvents), hiddenValues: r.hiddenValues, plaintextValues: r.plaintextValues, ...(ciReruns.length > 0 ? { ciReruns } : {}) }
 }
 
 /** One target's complete {@link TargetLog} (see {@link readEvents} on completeness). */
