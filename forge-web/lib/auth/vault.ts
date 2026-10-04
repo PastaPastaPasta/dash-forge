@@ -345,7 +345,7 @@ export function passkeyFailure(e: unknown, kind: 'create' | 'get'): unknown {
     // deliberately does not say which (privacy).
     NotAllowedError:
       kind === 'get'
-        ? "The passkey didn't open. The prompt was closed or timed out, or this device has no passkey for this key (a passkey stays on the device, or in the password manager, that made it). Try again, or use another way in below."
+        ? "The passkey didn't open. The prompt was closed or timed out, or this device has no passkey for this key. Passkeys stay on the device or password manager that made them. Try again, or use another way in below."
         : 'No passkey was made: the prompt was closed or timed out',
     InvalidStateError: 'This security key or device already holds a passkey for this key',
     SecurityError: "Passkeys aren't available on this page: it has to be opened over https on the site's own address",

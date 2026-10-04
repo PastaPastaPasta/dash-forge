@@ -63,7 +63,7 @@ describe('WorkflowStep defaults (QW4-045)', () => {
     expect(yaml()).toContain("sync: 'code,releases'")
     expect(yaml()).not.toContain('pull_request_target')
     expect(yaml()).toContain("cost-cap: '0.1'")
-    expect(host.textContent).toMatch(/The Action's default is 0\.05 DASH; the cap suggested here leaves room for the first run/)
+    expect(host.textContent).toMatch(/above the Action's default of 0\.05 DASH because the first run copies everything/)
     await act(async () => collabBox().click())
     expect(yaml()).toContain("sync: 'code,releases,labels,issues,prs'")
     expect(yaml()).toContain('pull_request_target')

@@ -70,6 +70,7 @@ export function unknownMemberContracts(trust: GroupTrust, members: GroupMemberSe
 function describeUnknown(trust: GroupTrust, members: GroupMemberSet): string[] {
   const whole = members.contracts.filter((c) => !isKnown(trust, c)).sort()
   const parts = [
+    // copy-lint-ignore: names the exact contract part in a security warning for the maintainers
     ...members.documentTypes.map((d) => `${d.contractId} (document type ${d.documentTypeName})`),
     ...members.tokens.map((t) => `${t.contractId} (token ${t.tokenPosition})`),
   ].sort()
@@ -118,7 +119,7 @@ export function checkMembers(trust: GroupTrust, members: GroupMemberSet, owners:
     }
   }
   const extraParts = [...members.documentTypes, ...members.tokens].some((m) => isKnown(trust, m.contractId))
-  const what = extraParts ? 'additional group member(s)' : 'newer Forge contract revision(s)'
+  const what = extraParts ? 'additional group members' : 'newer Forge contract revisions'
   const skipped = unchecked.length ? ` (Could not read contract ${unchecked.join(', ')}; accepted because the group owner is pinned.)` : ''
   return {
     unknown,

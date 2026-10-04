@@ -43,7 +43,7 @@ export function planFragment(manifests: readonly PackManifest[], packHash: strin
     }
   }
   if (live.length >= MAX_LOCATOR_FRAGMENTS) {
-    return { kind: 'skip', reason: `${live.length} index fragments are live; the next CLI push or \`dg repack\` folds them`, retry: false }
+    return { kind: 'skip', reason: `${live.length} index fragments are live; the next CLI push or \`dg repack\` merges them`, retry: false }
   }
   return { kind: 'publish', packRef: idx }
 }

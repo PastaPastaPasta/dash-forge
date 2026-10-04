@@ -108,8 +108,8 @@ export class IdentityUpdateNotSentError extends Error {
   constructor(readonly causeError: unknown) {
     super(
       isQuorumMiss(causeError)
-        ? "Platform is switching to a new quorum and couldn't take this update yet. Nothing was sent and nothing was charged: try again in a minute."
-        : `Couldn't reach Platform for this update (${errorMessage(causeError)}). Nothing was sent and nothing was charged: try again in a moment.`,
+        ? "Platform is switching to a new quorum and couldn't take this update yet. Nothing was sent, and you weren't charged. Try again in a minute."
+        : `Couldn't reach Platform for this update (${errorMessage(causeError)}). Nothing was sent, and you weren't charged. Try again in a moment.`,
     )
     this.name = 'IdentityUpdateNotSentError'
   }
@@ -517,7 +517,7 @@ export async function topUpLimitedKey(
   const k = identity?.publicKeys.find((x) => x.keyId === params.keyId)
   if (!identity || !k) throw new Error(`key ${params.keyId} is not on identity ${params.identityId}`)
   if (k.disabledAt !== undefined) throw new Error(`key ${params.keyId} is disabled; renew instead`)
-  if (!isForgeBrowserKey(k)) throw new Error(`key ${params.keyId} is not a Forge browser key; refusing to change its limits here`)
+  if (!isForgeBrowserKey(k)) throw new Error(`key ${params.keyId} isn't a key Forge made for a browser; refusing to change its limits here`)
   const expiresAt = topUpExpiry(k.expiresAt === undefined ? null : Number(k.expiresAt), params.request.expiresAt)
   const addBudget = params.request.addCredits !== null && params.request.addCredits > 0n ? params.request.addCredits : null
   assertTopUp({ addCredits: addBudget, expiresAt })
@@ -590,7 +590,7 @@ export async function revokeLimitedKey(
   if (!identity || !k) throw new Error(`key ${params.keyId} is not on identity ${params.identityId}`)
   if (k.disabledAt !== undefined) return false
   if (!isForgeBrowserKey(k)) {
-    throw new Error(`key ${params.keyId} is not a Forge browser key; refusing to disable it here`)
+    throw new Error(`key ${params.keyId} isn't a key Forge made for a browser; refusing to disable it here`)
   }
   // Before anything is sent (QW3-028: wrong words surfaced as the SDK's own refusal).
   await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
