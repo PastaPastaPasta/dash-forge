@@ -711,7 +711,6 @@ fn key_of(t: &SrcTarget) -> (u8, u32) {
 /// before a merge's oid.
 const TRANSITION_BYTES: u64 = 90;
 
-/// Estimated bytes of a comment/review/issue document around `text`.
 /// Whether storing a long body's artifact (forge-v2.md §6.3) was refused for a reason no later
 /// run changes: the signer may not record artifacts here, or the text cannot be one.
 pub(crate) fn refused_for_good(e: &forge_core::Error) -> bool {
@@ -746,6 +745,7 @@ fn states_release(
                 == crate::model::legacy_release_notes(&r.notes, dropped, total, &r.source_url))
 }
 
+/// Estimated bytes of a comment/review/issue document around `text`.
 fn text_doc(text: &str) -> u64 {
     text.len() as u64 + 160
 }
