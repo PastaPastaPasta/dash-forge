@@ -442,7 +442,7 @@ export async function buildSuggestionCommit(
 
 /** Build the "Update branch" merge commit, or throw why it cannot be made in the browser. */
 export async function buildUpdateBranch(reader: ObjectReader, pull: PullView, baseTip: string, who: { name: string; email: string }): Promise<BranchCommit> {
-  const out = await updateBranchCommit(reader, pull.headOid, baseTip, pull.baseRefName, pull.sourceRefName ?? '', who)
+  const out = await updateBranchCommit(reader, pull.headOid, baseTip, pull.mergeBaseRefName, pull.sourceRefName ?? '', who)
   switch (out.plan.kind) {
     case 'merge':
       return out.commit as BranchCommit

@@ -22,6 +22,7 @@ mod issue;
 mod keys;
 mod label;
 mod maint;
+mod meta;
 mod milestone;
 mod pin;
 mod pr;
@@ -580,7 +581,9 @@ pub enum IssueCommand {
         #[arg(long, default_value = "")]
         body: String,
     },
-    /// Edit an issue's title and/or body (its author only).
+    /// Edit an issue: its title and body (its author only), labels, assignees and milestone
+    /// (maintainers, writers and triage members), as `gh issue edit` does. One confirmation for
+    /// every change.
     Edit {
         /// The repository (`owner/name`).
         repo: String,
@@ -595,6 +598,9 @@ pub enum IssueCommand {
         /// Read the new body from a file (`-` for stdin).
         #[arg(long, value_name = "FILE")]
         body_file: Option<PathBuf>,
+        /// Labels, assignees and milestone.
+        #[command(flatten)]
+        meta: MetaArgs,
     },
     /// Comment on an issue.
     Comment {
@@ -900,22 +906,10 @@ pub enum PrCommand {
     Review(Box<PrReviewArgs>),
     /// Post one comment: general, inline (`--file --line`), or a reply (`--reply-to`).
     Comment(Box<PrCommentArgs>),
-    /// Edit the title and/or description of your pull request.
-    Edit {
-        /// The repository (`owner/name`).
-        repo: String,
-        /// The PR number.
-        number: u64,
-        /// The new title.
-        #[arg(long)]
-        title: Option<String>,
-        /// The new description (an empty string removes it).
-        #[arg(long, conflicts_with = "body_file")]
-        body: Option<String>,
-        /// Read the new description from a file (`-` for stdin).
-        #[arg(long = "body-file")]
-        body_file: Option<PathBuf>,
-    },
+    /// Edit a pull request: its title and description (its author only), labels, assignees
+    /// and milestone (maintainers, writers and triage members), and its base branch (`--base`,
+    /// maintainers and writers), as `gh pr edit` does. One confirmation for every change.
+    Edit(Box<PrEditArgs>),
     /// Move the PR head to where its source branch points now (a `headUpdate`). `git push`
     /// does this for you when you push the branch of your own PR (unless
     /// `git config dash.prAutoSync false`).
@@ -1081,6 +1075,72 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
     },
+}
+
+/// The labels, assignees and milestone `dg issue edit` and `dg pr edit` change (gh's flags).
+/// Each change is one event; maintainers, writers and triage members only.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct MetaArgs {
+    /// Add labels the repository defines (comma-separated, or repeat the flag).
+    #[arg(long = "add-label", value_name = "NAME", value_delimiter = ',')]
+    pub add_label: Vec<String>,
+    /// Remove labels (comma-separated, or repeat the flag).
+    #[arg(long = "remove-label", value_name = "NAME", value_delimiter = ',')]
+    pub remove_label: Vec<String>,
+    /// Assign identities (ids, DPNS names, `@me`; comma-separated, or repeat the flag).
+    #[arg(long = "add-assignee", value_name = "WHO", value_delimiter = ',')]
+    pub add_assignee: Vec<String>,
+    /// Unassign identities (comma-separated, or repeat the flag).
+    #[arg(long = "remove-assignee", value_name = "WHO", value_delimiter = ',')]
+    pub remove_assignee: Vec<String>,
+    /// Put it in this open milestone (see `dg milestone list`).
+    #[arg(long, value_name = "TITLE", conflicts_with = "remove_milestone")]
+    pub milestone: Option<String>,
+    /// Take it out of its milestone.
+    #[arg(long = "remove-milestone")]
+    pub remove_milestone: bool,
+}
+
+impl MetaArgs {
+    /// The changes asked for.
+    pub fn edit(&self) -> meta::MetaEdit {
+        meta::MetaEdit {
+            add_labels: self.add_label.clone(),
+            remove_labels: self.remove_label.clone(),
+            add_assignees: self.add_assignee.clone(),
+            remove_assignees: self.remove_assignee.clone(),
+            milestone: if self.remove_milestone {
+                Some(meta::MilestoneChange::Clear)
+            } else {
+                self.milestone.clone().map(meta::MilestoneChange::Set)
+            },
+        }
+    }
+}
+
+/// `dg pr edit` arguments.
+#[derive(Debug, clap::Args)]
+pub struct PrEditArgs {
+    /// The repository (`owner/name`).
+    pub repo: String,
+    /// The PR number.
+    pub number: u64,
+    /// The new title.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// The new description (an empty string removes it).
+    #[arg(long, conflicts_with = "body_file")]
+    pub body: Option<String>,
+    /// Read the new description from a file (`-` for stdin).
+    #[arg(long = "body-file")]
+    pub body_file: Option<PathBuf>,
+    /// Retarget the PR: the branch of this repository it merges into (`main` or
+    /// `refs/heads/main`). An open PR only; maintainers and writers (one event, kind 8).
+    #[arg(long, short = 'B', value_name = "BRANCH")]
+    pub base: Option<String>,
+    /// Labels, assignees and milestone.
+    #[command(flatten)]
+    pub meta: MetaArgs,
 }
 
 /// `dg pr suggestion`.
@@ -1981,6 +2041,57 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// P1-5: `dg pr edit` / `dg issue edit` take gh's metadata flags, comma-separated or
+    /// repeated; `--milestone` and `--remove-milestone` exclude each other.
+    #[test]
+    fn edit_takes_ghs_metadata_flags() {
+        let cli = Cli::try_parse_from([
+            "dg",
+            "pr",
+            "edit",
+            "o/r",
+            "7",
+            "--add-label",
+            "bug,docs",
+            "--add-label",
+            "ui",
+            "--remove-assignee",
+            "@me",
+            "--base",
+            "dev",
+            "--remove-milestone",
+        ])
+        .unwrap();
+        let Command::Pr(PrCommand::Edit(a)) = cli.command else {
+            panic!("not pr edit");
+        };
+        let e = a.meta.edit();
+        assert_eq!(e.add_labels, ["bug", "docs", "ui"]);
+        assert_eq!(e.remove_assignees, ["@me"]);
+        assert_eq!(e.milestone, Some(meta::MilestoneChange::Clear));
+        assert_eq!(a.base.as_deref(), Some("dev"));
+        let cli =
+            Cli::try_parse_from(["dg", "issue", "edit", "o/r", "3", "--milestone", "v1"]).unwrap();
+        let Command::Issue(IssueCommand::Edit { meta, .. }) = cli.command else {
+            panic!("not issue edit");
+        };
+        assert_eq!(
+            meta.edit().milestone,
+            Some(meta::MilestoneChange::Set("v1".into()))
+        );
+        assert!(Cli::try_parse_from([
+            "dg",
+            "issue",
+            "edit",
+            "o/r",
+            "3",
+            "--milestone",
+            "v1",
+            "--remove-milestone"
+        ])
+        .is_err());
+    }
 
     /// QW2-086: an empty list names its state filter ("no open pull requests"), as `gh` does.
     #[test]

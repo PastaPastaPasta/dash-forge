@@ -1,0 +1,35 @@
+{
+  "name": "retarget_back_to_the_opened_base",
+  "description": "Retargeting back to the opened base counts as a retarget: the base must have been a branch from the retarget's time.",
+  "case": "pr_merge_base",
+  "rules": "v2",
+  "input": {
+    "baseRefName": "refs/heads/main",
+    "openedAt": 100,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/dev",
+        "oid": null,
+        "createdAt": 120
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/main",
+        "oid": null,
+        "createdAt": 140
+      }
+    ]
+  },
+  "expected": {
+    "refName": "refs/heads/main",
+    "since": 140,
+    "retargeted": true
+  }
+}

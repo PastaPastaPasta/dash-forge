@@ -30,7 +30,7 @@ async fn identity_of(ctx: &Ctx, client: &PlatformClient, who: Option<&str>) -> R
         Some(id) => Ok(id),
         None => Ok(ctx.load_bridge()?.identity_id),
     };
-    crate::issue::identity_arg(client, me, who.unwrap_or("me")).await
+    crate::meta::identity_arg(client, me, who.unwrap_or("me")).await
 }
 
 fn fields_json(f: &ProfileFields) -> Value {

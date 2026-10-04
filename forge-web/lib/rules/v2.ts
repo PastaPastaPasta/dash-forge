@@ -22,7 +22,7 @@ import {
   prStateOf,
   sorted,
 } from './fold'
-import { compareKey, compareStrings, refNameHashMatches } from './oid'
+import { compareKey, compareStrings, isLegalRefName, refNameHashMatches } from './oid'
 import { statusOfCode } from './transition'
 import type { Event, EventKind, IsAncestor, IssueState, Oid, PrState } from './types'
 
@@ -154,6 +154,38 @@ export function prStateV2(
   const mergeOnBase =
     !status.merged || mergeOid == null || mergeOid === '' ? null : baseTip === undefined ? false : isAncestor(mergeOid, baseTip)
   return { ...prStateOf(s), mergeOnBase }
+}
+
+/**
+ * The base a PR merges into and is judged against (Rust `MergeBase`): a ref name and the time
+ * from which it must have been a branch (`prBaseTips`' `openedAt`).
+ */
+export interface MergeBase {
+  readonly refName: string
+  /** The patch's `$createdAt`, or the counted retarget's (D-501). */
+  readonly since: number
+  /** Whether a retarget (event kind 8) chose it. */
+  readonly retargeted: boolean
+}
+
+/**
+ * The newest retarget (event kind 8) with a legal ref name, in `($createdAt, $id)` order, else
+ * the base the patch was opened with. A retarget after the merge (`mergedAt`, the merge
+ * transition's `$createdAt`) does not count; a reader without the merge transition passes
+ * `null` (every retarget counts). Parity: forge-core `pr_merge_base`.
+ */
+export function prMergeBase(
+  openedBase: string,
+  openedAt: number,
+  events: readonly Event[],
+  mergedAt: number | null,
+): MergeBase {
+  let base: MergeBase = { refName: openedBase, since: openedAt, retargeted: false }
+  for (const e of metaLog(events)) {
+    if (e.kind !== 'retarget' || (mergedAt !== null && e.createdAt > mergedAt)) continue
+    if (e.value != null && isLegalRefName(e.value)) base = { refName: e.value, since: e.createdAt, retargeted: true }
+  }
+  return base
 }
 
 /**

@@ -1,0 +1,44 @@
+{
+  "name": "newest_retarget_wins_by_created_at_then_id",
+  "description": "Of several retargets the newest by ($createdAt, $id) counts, whatever the input order; equal times are broken by $id.",
+  "case": "pr_merge_base",
+  "rules": "v2",
+  "input": {
+    "baseRefName": "refs/heads/main",
+    "openedAt": 100,
+    "events": [
+      {
+        "id": "e9",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/b",
+        "oid": null,
+        "createdAt": 200
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/c",
+        "oid": null,
+        "createdAt": 200
+      },
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/a",
+        "oid": null,
+        "createdAt": 120
+      }
+    ]
+  },
+  "expected": {
+    "refName": "refs/heads/b",
+    "since": 200,
+    "retargeted": true
+  }
+}

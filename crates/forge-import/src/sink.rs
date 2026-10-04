@@ -984,7 +984,8 @@ impl<'a, C: Chain> Sink<'a, C> {
     }
 
     /// The base tips a reader checks PR `target_id`'s merge against: the base it was opened
-    /// against, at its `$createdAt` ([`pr_base_tips`], as `Collab::patch_view` folds it). A PR
+    /// against, at its `$createdAt`, or the one a member retargeted it to, from the retarget's
+    /// time ([`pr_base_tips`] from `pr_merge_base`, as `Collab::patch_view` folds it). A PR
     /// this run has not read was opened now (after this run's push). None without a
     /// destination (a dry run of a repo not created yet).
     async fn base_tips(
@@ -1948,7 +1949,12 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// chain fact, D-9) and its labels as every reader folds them.
     async fn current(&self, target: &Target) -> Result<Current> {
         let repo = need(self.repo.as_ref())?;
-        Ok(self.chain.current(repo, target).await?)
+        let current = self.chain.current(repo, target).await?;
+        // A member retargeted the PR here: its merge is judged against the new base.
+        if let Some(b) = &current.retargeted {
+            self.caches().opened.insert(target.id.clone(), b.clone());
+        }
+        Ok(current)
     }
 
     /// The commit a merge transition for `t` names: a pushed base tip containing the source's
@@ -2600,6 +2606,7 @@ mod tests {
         let cur = Current {
             code: 0,
             labels: ["old".to_string()].into(),
+            ..Current::default()
         };
         assert_eq!(
             label_events(&t, &cur),
@@ -2612,7 +2619,8 @@ mod tests {
             &t,
             &Current {
                 code: 0,
-                labels: t.labels.clone()
+                labels: t.labels.clone(),
+                ..Current::default()
             }
         )
         .is_empty());

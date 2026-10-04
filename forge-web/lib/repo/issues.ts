@@ -32,7 +32,7 @@ import {
   type PlainDocument,
 } from '../sdk'
 import { rerunRequest, type RerunRequest } from '../rules/ci-rerun'
-import { foldPrReviewV2, issueStateV2, mergeTransition, prStateV2, stateCode, statusOfCode, type PrReviewState } from '../rules/v2'
+import { foldPrReviewV2, issueStateV2, mergeTransition, prMergeBase, prStateV2, stateCode, statusOfCode, type PrReviewState } from '../rules/v2'
 import {
   asIdentifierString,
   byteFieldToHex,
@@ -140,7 +140,14 @@ export interface PullView {
   readonly body: string
   readonly author: string
   readonly createdAt: number
+  /** The base the PR was opened against (`patch.baseRefName`, immutable). */
   readonly baseRefName: string
+  /**
+   * The base the PR merges into now: the newest retarget's (event kind 8), else
+   * {@link baseRefName} (`prMergeBase`). The base tips, `baseOidAtOpen` / `baseOidAtMerge` and
+   * {@link headOnBase} are this ref's.
+   */
+  readonly mergeBaseRefName: string
   /**
    * The base ref's newest non-deleted `newOid`, or `''` when it has none. This is the tip the
    * merge fold uses (parity with forge-core); it is taken from the raw update history, so a
@@ -763,33 +770,37 @@ export async function readPull(
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
   const createdAt = num(patchDoc, '$createdAt')
-  // A private patch indexes its base under an HMAC; once opened, its ref is keyed like every
-  // decrypted ref, by `sha256(baseRefName)` (`refs.ts`).
-  const baseName = str(patchDoc, 'baseRefName')
-  let baseKeyHex = byteFieldToHex(patchDoc, 'baseRefNameHash')
-  if (repo.visibility === 'private') baseKeyHex = baseName === '' ? '' : publicRefKey(baseName)
-  const baseRefNameHashRaw = /^[0-9a-f]{64}$/.test(baseKeyHex) ? hexToBase64(baseKeyHex) : ''
   const baseHeadOidRaw = patchDoc['headOid']
-
-  // Build the base ref's historical-tips set for the merge-reachability predicate.
-  let isAncestor: IsAncestor = () => false
-  let tips: BaseRefTips = { historical: [], tip: undefined, atOpen: undefined }
-  if (typeof baseRefNameHashRaw === 'string' && baseRefNameHashRaw.length > 0) {
-    const [updates, configs] = await Promise.all([
-      refUpdates ? refUpdates(baseRefNameHashRaw) : readRefUpdates(sdk, repo, baseRefNameHashRaw),
-      configHistory ? configHistory() : readConfigHistory(sdk, repo),
-    ])
-    tips = baseRefTips(updates, configs, baseKeyHex, createdAt)
-    isAncestor = historicalTipsPredicate(tips.historical)
-  }
-  const baseTip = tips.tip
 
   const [l, s] = await Promise.all([
     log ?? readTargetLog(sdk, repo, id),
     state ?? readTransitions(sdk, repo, id).then((transitions) => ({ transitions })),
   ])
   const code = 'code' in s ? s.code : stateCode(s.transitions)
-  const mergeOid = 'transitions' in s ? mergeTransition(s.transitions)?.oid ?? null : null
+  const merge = 'transitions' in s ? mergeTransition(s.transitions) : null
+  const mergeOid = merge?.oid ?? null
+  // The base the PR merges into: the newest retarget's (kind 8, before the merge), else the
+  // one it was opened with (`prMergeBase`, parity with forge-core `pr_merge_base`).
+  const base = prMergeBase(str(patchDoc, 'baseRefName'), createdAt, l.events, merge?.createdAt ?? null)
+  // A private patch indexes its base under an HMAC; once opened, its ref is keyed like every
+  // decrypted ref, by `sha256(baseRefName)` (`refs.ts`). A retarget names its base in plain
+  // (opened) text, keyed the same way.
+  let baseKeyHex = byteFieldToHex(patchDoc, 'baseRefNameHash')
+  if (repo.visibility === 'private' || base.retargeted) baseKeyHex = base.refName === '' ? '' : publicRefKey(base.refName)
+  const baseRefNameHashRaw = /^[0-9a-f]{64}$/.test(baseKeyHex) ? hexToBase64(baseKeyHex) : ''
+
+  // Build the base ref's historical-tips set for the merge-reachability predicate.
+  let isAncestor: IsAncestor = () => false
+  let tips: BaseRefTips = { historical: [], tip: undefined, atOpen: undefined }
+  if (baseRefNameHashRaw.length > 0) {
+    const [updates, configs] = await Promise.all([
+      refUpdates ? refUpdates(baseRefNameHashRaw) : readRefUpdates(sdk, repo, baseRefNameHashRaw),
+      configHistory ? configHistory() : readConfigHistory(sdk, repo),
+    ])
+    tips = baseRefTips(updates, configs, baseKeyHex, base.since)
+    isAncestor = historicalTipsPredicate(tips.historical)
+  }
+  const baseTip = tips.tip
   const prState: PrState = prStateV2(code, mergeOid, l.events, baseTip, isAncestor)
   let initialHeadOid = ''
   if (typeof baseHeadOidRaw === 'string' && baseHeadOidRaw.length > 0) {
@@ -811,6 +822,7 @@ export async function readPull(
     author,
     createdAt,
     baseRefName: str(patchDoc, 'baseRefName'),
+    mergeBaseRefName: base.refName,
     baseTipOid: baseTip ?? '',
     baseOidAtOpen: tips.atOpen ?? baseTip ?? '',
     baseOidAtMerge: mergeOid === null ? '' : tipBeforeMerge(tips.historical, mergeOid),
@@ -906,6 +918,7 @@ export function incompletePullView(doc: PlainDocument, code: number): PullView {
     author: str(doc, '$ownerId'),
     createdAt: num(doc, '$createdAt'),
     baseRefName: str(doc, 'baseRefName'),
+    mergeBaseRefName: str(doc, 'baseRefName'),
     // No ref history was read for this row, so there is no baseline to diff against.
     baseTipOid: '',
     baseOidAtOpen: '',

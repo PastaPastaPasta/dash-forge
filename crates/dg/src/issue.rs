@@ -14,11 +14,13 @@ use forge_core::rules::v2::{
     Transition,
 };
 use forge_core::rules::{Event, EventKind, IssueState};
-use forge_core::user_error::{codes, UserError};
 
 use crate::common::{number_arg, Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe, transition_phrase, transition_route_text, with_name};
+use crate::meta::{
+    changes, defined_labels, identity_arg, label_list, spelt_as_on as spelt_as_on_issue, trimmed,
+};
 use crate::{CloseReasonArg, HideReasonArg, IssueCommand, IssueListArgs};
 
 /// Dispatch an `issue` subcommand.
@@ -38,13 +40,22 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             title,
             body,
             body_file,
+            meta,
         } => {
             let body = match (body, body_file) {
                 (Some(b), _) => Some(b.clone()),
                 (None, Some(path)) => Some(read_body_file(path)?),
                 (None, None) => None,
             };
-            edit(ctx, repo, *number, title.as_deref(), body.as_deref()).await
+            edit(
+                ctx,
+                repo,
+                *number,
+                title.as_deref(),
+                body.as_deref(),
+                &meta.edit(),
+            )
+            .await
         }
         IssueCommand::Comment { repo, number, body } => comment(ctx, repo, *number, body).await,
         IssueCommand::EditComment {
@@ -143,21 +154,7 @@ async fn milestone(ctx: &Ctx, repo: &str, number: u64, title: Option<&str>) -> R
                 &format!("put issue #{number} in a milestone"),
             )
             .await?;
-        let defined = s.collab().milestones(&s.repo, &[]).await?;
-        match defined.iter().find(|m| m.title == t) {
-            Some(m) if !m.closed => {}
-            Some(_) => {
-                return Err(crate::errors::usage(format!(
-                    "milestone {t:?} is closed: reopen it first (`dg milestone close {repo} {t:?} --reopen`)"
-                )))
-            }
-            None => {
-                return Err(crate::errors::not_found(
-                    format!("no milestone {t:?} in {}", s.repo.display()),
-                    format!("`dg milestone list {repo}` lists them; `dg milestone create` defines one"),
-                ))
-            }
-        }
+        crate::meta::require_open_milestone(&s, t).await?;
     }
     let what = title.map_or_else(
         || format!("Take issue #{number} out of its milestone"),
@@ -260,11 +257,6 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
     Ok(())
 }
 
-/// Label names as the web writes them: trimmed (the fold compares them exactly).
-fn trimmed(names: &[String]) -> Vec<String> {
-    names.iter().map(|n| n.trim().to_string()).collect()
-}
-
 /// `add bug docs` / `remove bug`, or the older `--add bug` / `--remove bug`: exactly one form.
 fn label_args(
     words: &[String],
@@ -297,20 +289,6 @@ fn not_found(repo: &str, number: u64) -> anyhow::Error {
 
 fn labels_of(state: &IssueState) -> String {
     state.labels.iter().cloned().collect::<Vec<_>>().join(", ")
-}
-
-/// `me`, a DPNS name or an identity id (`who`), as a base58 identity id. The `me` closure
-/// gives the caller's own id; it is called only when `who` is `me`, so a read that names
-/// nobody never opens the key.
-pub(crate) async fn identity_arg(
-    client: &forge_core::platform::PlatformClient,
-    me: impl FnOnce() -> Result<String>,
-    who: &str,
-) -> Result<String> {
-    if who == "me" || who == "@me" {
-        return me();
-    }
-    Ok(forge_core::resolve::resolve_owner(client, who.trim_start_matches('@')).await?)
 }
 
 /// Whether `title` (or `#number`) holds every word of `search`, case-insensitively.
@@ -958,45 +936,46 @@ fn read_body_file(path: &std::path::Path) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("reading the body from {}: {e}", path.display()))
 }
 
+/// `dg issue edit`: the title and body (a replace, the author only) and the labels, assignees
+/// and milestone (events, members down to triage), confirmed once.
 async fn edit(
     ctx: &Ctx,
     repo: &str,
     number: u64,
     title: Option<&str>,
     body: Option<&str>,
+    meta: &crate::meta::MetaEdit,
 ) -> Result<()> {
-    if title.is_none() && body.is_none() {
+    if title.is_none() && body.is_none() && meta.is_empty() {
         return Err(crate::errors::usage(
-            "pass --title, --body or --body-file (or several)",
+            "pass --title, --body, --body-file, --add-label, --remove-label, --add-assignee, --remove-assignee, --milestone or --remove-milestone",
         ));
     }
-    let s = Session::open(ctx, repo).await?;
-    let target = target(&s, repo, number).await?;
-    ctx.confirm_or_cancel(&format!("Edit issue #{number}? (one document replace)"))?;
-    let before = s.balance().await;
-    let edited = s
+    let s = Session::open_for_write(ctx, repo, "issue not edited").await?;
+    let view = s
         .collab()
-        .update_target(&s.repo, &target, title, body)
-        .await?;
-    let spent = s.spent_since(before).await;
-    let price = ctx.usd_price();
-    ctx.emit(
-        json!({
-            "status": if edited { "edited" } else { "unchanged" },
-            "issue": number,
-            "title": title,
-            "bodyChanged": body.is_some(),
-            "cost": cost_json(spent, price),
-        }),
-        || {
-            if edited {
-                println!("✓ edited issue #{number} · {}", cost_line(spent, price));
-            } else {
-                println!("issue #{number} already reads that way; nothing was written");
-            }
-        },
+        .issue_view(&s.repo, number_arg(number)?)
+        .await?
+        .ok_or_else(|| not_found(repo, number))?;
+    let current = crate::meta::Current::of(
+        view.hidden_values == 0,
+        &view.state.labels,
+        &view.state.assignees,
+        forge_core::rules::v2::fold_thread_meta_v2(&view.log.events).milestone,
     );
-    Ok(())
+    let plan = crate::meta::plan(&s, meta, &current, &format!("issue #{number}")).await?;
+    let edit = crate::meta::Edit {
+        noun: "issue",
+        key: "issue",
+        number,
+        target: view.issue.target(),
+        title,
+        body,
+        replace_note: String::new(),
+        plan,
+        title_json: json!(title),
+    };
+    crate::meta::run_edit(ctx, &s, edit).await
 }
 
 async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
@@ -1326,99 +1305,6 @@ async fn target_and_state(
         .ok_or_else(|| not_found(repo, number))?;
     let state = (view.hidden_values == 0).then_some(view.state);
     Ok((view.issue.target(), state))
-}
-
-/// Split the `wanted` labels or assignees into those an add (or a removal) would change and
-/// those it would not, given what the issue has now (`current`; `None`: unknown, so every
-/// one is written). A name given twice is written once.
-fn changes(
-    wanted: &[String],
-    current: Option<&std::collections::BTreeSet<String>>,
-    add: bool,
-) -> (Vec<String>, Vec<String>) {
-    let mut write = Vec::new();
-    let mut unchanged = Vec::new();
-    for w in wanted {
-        if write.contains(w) || unchanged.contains(w) {
-            continue;
-        }
-        if current.is_some_and(|c| c.contains(w) == add) {
-            unchanged.push(w.clone());
-        } else {
-            write.push(w.clone());
-        }
-    }
-    (write, unchanged)
-}
-
-/// `wanted` as the repository's live (not retired) label definitions spell them, matched
-/// without regard to case as the web's picker does; E102 naming the ones it lacks, and the
-/// labels it has, before anything is signed (QW2-015; `gh issue edit --add-label` refuses a
-/// label that does not exist the same way).
-fn defined_labels(
-    wanted: &[String],
-    defined: &[forge_core::collab::Label],
-    repo: &str,
-) -> Result<Vec<String>> {
-    let live: Vec<&str> = defined
-        .iter()
-        .filter(|l| !l.retired)
-        .map(|l| l.name.as_str())
-        .collect();
-    let mut out = Vec::with_capacity(wanted.len());
-    let mut missing = Vec::new();
-    for w in wanted {
-        match live.iter().find(|d| d.eq_ignore_ascii_case(w)) {
-            Some(d) => out.push((*d).to_string()),
-            None => missing.push(w.clone()),
-        }
-    }
-    if missing.is_empty() {
-        return Ok(out);
-    }
-    let have = if live.is_empty() {
-        "it defines no labels".to_string()
-    } else {
-        format!("its labels: {}", safe(&live.join(", ")))
-    };
-    let first = crate::storage_wizard::shell_word(missing.first().map_or("", String::as_str));
-    Err(UserError::new(
-        codes::NOT_FOUND,
-        format!(
-            "label not changed: {} {} not defined in {repo}",
-            label_list(&missing),
-            if missing.len() == 1 { "is" } else { "are" }
-        ),
-    )
-    .cause(have)
-    .fix(format!(
-        "define it first: `dg label create {repo} {}`",
-        safe(&first)
-    ))
-    .note("checked before anything was signed; nothing was written or paid")
-    .into())
-}
-
-/// `names` spelt as the issue's `current` labels spell them, where one matches without
-/// regard to case (`None`: unknown, left as they are).
-fn spelt_as_on_issue(
-    names: &[String],
-    current: Option<&std::collections::BTreeSet<String>>,
-) -> Vec<String> {
-    names
-        .iter()
-        .map(|n| {
-            current
-                .and_then(|c| c.iter().find(|l| l.eq_ignore_ascii_case(n)))
-                .unwrap_or(n)
-                .clone()
-        })
-        .collect()
-}
-
-/// `bug` or `bug, docs` for a message, terminal-safe.
-fn label_list(names: &[String]) -> String {
-    safe(&names.join(", ")).to_string()
 }
 
 async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -> Result<()> {

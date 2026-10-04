@@ -464,13 +464,14 @@ describe('storeArtifact', () => {
       sdk: SDK,
       auth: AUTH,
       repo: priv,
-      pull: { id: 'P', number: 1, author: 'A', baseRefName: 'refs/heads/main', openedBaseRefName: 'refs/heads/main' },
+      pull: { id: 'P', number: 1, author: 'A', baseRefName: 'refs/heads/main' },
       input: { baseTip: base, headOid: head, prNumber: 1, sourceLabel: 'refs/heads/x', author: { name: 'n', email: 'e@x' }, headInBase: false },
       merge: async () => ({ kind: 'merge' as const, newTip: 'cc'.repeat(20), pack, packHash: 'dd'.repeat(32), objectCount: 1 }),
       upload,
       publishIndex: null,
       verifyPack: async () => [],
       readBaseTip: async () => base,
+      readBaseRef: async () => 'refs/heads/main',
       intent: 'merge:P',
     }
     await expect(runMergeSteps(deps, newRun({ baseTip: base, headOid: head }), () => undefined)).rejects.toThrow(/dg pr merge/)
