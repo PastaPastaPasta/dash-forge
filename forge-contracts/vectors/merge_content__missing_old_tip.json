@@ -1,0 +1,27 @@
+{
+  "name": "missing_old_tip",
+  "description": "A merge naming an old base tip: the head is not in it and it changes none of the PR's paths. The recorded merge does not contain the PR.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "5555555555555555555555555555555555555555"
+    ],
+    "headInMerge": false,
+    "tipBeforeInMerge": true,
+    "mergeChange": {
+      "CHANGELOG.md": "c4"
+    },
+    "prChange": {
+      "src/a.rs": "a1"
+    },
+    "baseChange": {}
+  },
+  "expected": {
+    "verdict": "missing",
+    "combined": []
+  }
+}

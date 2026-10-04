@@ -615,8 +615,8 @@ export function MergePanel({
         <div className="mt-3">
           <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="browser-merge-limit">
             {conflictPaths.length > 0
-              ? "These files can't be merged in the browser: both sides changed the same lines (or lines next to each other), or changed them in a way only git merges (a rename, a moved or removed directory, a binary or very large file, a .gitattributes merge rule). Check the PR out, merge it with the CLI, and push:"
-              : 'The two histories have more than one merge base, which only git merges. Check the PR out, merge it with the CLI, and push:'}
+              ? "These files conflict, or need a merge only git can do (a rename, a binary file, a .gitattributes rule). Check out the PR, merge it locally and push:"
+              : 'The two histories have more than one merge base, which only git can merge. Check out the PR, merge it locally and push:'}
           </p>
           {conflictPaths.length > 0 ? (
             <ul className="mb-2 list-disc pl-5 font-mono text-[12px] text-anvil-700 dark:text-anvil-200" aria-label="Conflicting paths" data-testid="conflict-paths">
@@ -765,7 +765,7 @@ export function MergePanel({
       ) : null}
       {newTip ? (
         <p className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
-          Base branch moved to <Oid value={newTip} chars={9} />. The PR shows as merged once the fold sees the merge event.
+          Merged. The base branch is now at <Oid value={newTip} chars={9} />, and the PR will show as merged in a few seconds.
         </p>
       ) : null}
       <Dialog
@@ -797,8 +797,7 @@ export function MergePanel({
           ))}
         </ul>
         <p className="mt-3 text-[12px] text-anvil-600 dark:text-anvil-400">
-          After the merge, an event on this PR records that you bypassed these rules, where every reader sees it and nobody can delete it. Branch rules are a client rule every Forge client applies;
-          consensus does not enforce them.
+          Your override will be shown on this PR, and it can&apos;t be deleted.
         </p>
       </Dialog>
       {closed !== null ? (

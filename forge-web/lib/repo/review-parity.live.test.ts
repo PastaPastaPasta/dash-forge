@@ -199,7 +199,7 @@ describe.skipIf(!LIVE)('live review parity (sakura)', () => {
       expect(countApprovals(rules, oracle, review.head, new Set(), CONTRIB.identityId)).toEqual({ approvers: [], changesRequested: [COLLAB.identityId] })
       const approvals = countApprovals(rules, oracle, review.head, dismissed, CONTRIB.identityId)
       expect(approvals).toEqual({ approvers: [], changesRequested: [] })
-      expect(meetsPolicy(approvals, oracle, { requiredApprovals: 1, approverRole: 0 })).toEqual({ met: false, have: 0, need: 1 })
+      expect(meetsPolicy(approvals, oracle, { requiredApprovals: 1, approverRole: 0 })).toEqual({ met: false, have: 0, need: 1, blockedBy: [] })
 
       // --- edits: CONTRIB edits the title and the reply ------------------------------------
       const edited = await updateTarget(sdk, CONTRIB, repo, { type: 'patch', id: pr.documentId, title: 'Greet by name (edited)' })

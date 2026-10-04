@@ -54,13 +54,13 @@ test('signed out: the Collaborators section of a private repo offers no Add or R
   const page = await (await browser.newContext()).newPage()
   await page.goto(`/repo/settings/?owner=${OWNER}&name=${repoName}`, { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
-  const members = page.getByRole('region', { name: 'Collaborators' })
+  const members = page.getByRole('region', { name: 'Members' })
   await expect(members).toBeVisible({ timeout: 90_000 })
   await expect(members.getByRole('button', { name: /^(add|remove)$/i })).toHaveCount(0)
 })
 
 async function noPlainPath(page: Page): Promise<void> {
-  const members = page.getByRole('region', { name: 'Collaborators' })
+  const members = page.getByRole('region', { name: 'Members' })
   await expect(members).toBeVisible({ timeout: 90_000 })
   // Either the private panel (key present) or the add-your-key note (no key): never the plain form.
   const privatePanel = page.getByTestId('private-members')

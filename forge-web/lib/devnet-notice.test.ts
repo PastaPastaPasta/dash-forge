@@ -69,7 +69,7 @@ describe('copy and dismissal', () => {
     const c = devnetNoticeCopy('moving', 'bonsia')
     expect(c.lead).toBe('Dash Forge moved to devnet sakura (Platform v5); bonsia was retired.')
     expect(c.body).toContain('Writing is paused here')
-    expect(c.body).toContain('re-push from your clone')
+    expect(c.body).toContain('re-push your own repos from your clones')
   })
 
   it('keeps a dismissal per mode', () => {

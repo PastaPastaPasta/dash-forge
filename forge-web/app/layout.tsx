@@ -7,7 +7,7 @@ import './globals.css'
 export const metadata: Metadata = {
   title: 'Dash Forge',
   description:
-    'Zero-backend git forge on Dash Platform. Browse code and collaborate on issues, with proof-checked reads.',
+    'Git hosting with no server, on Dash Platform. Your browser verifies every branch and file it shows.',
 }
 
 // CSP is delivered via <meta> so it survives static export (yappr pattern).

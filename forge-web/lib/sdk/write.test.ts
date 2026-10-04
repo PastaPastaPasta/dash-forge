@@ -24,8 +24,8 @@ describe('replace: an edit is made against the document’s own repo', () => {
     const R = '8rSFEyS7gidGdS4r8m22YtMEc519otpDNQ242Zw9c1Gb'
     expect(() => checkOwnRepo(R, R)).not.toThrow()
     expect(() => checkOwnRepo(R, undefined)).not.toThrow()
-    expect(() => checkOwnRepo('EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35', R)).toThrow(/another repo/)
-    expect(() => checkOwnRepo(undefined, R)).toThrow(/another repo/)
+    expect(() => checkOwnRepo('EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35', R)).toThrow(/different repo/)
+    expect(() => checkOwnRepo(undefined, R)).toThrow(/different repo/)
   })
 })
 
