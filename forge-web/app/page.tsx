@@ -112,7 +112,7 @@ export default function LandingPage(): JSX.Element {
         <Feature
           icon={<ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />}
           title="Can’t go down, can’t be taken down"
-          body="No company runs a server. Branches and history are proof-checked against Dash Platform, and this app is a static bundle anyone can host."
+          body="No company runs a server. Your browser verifies every branch and file against Dash Platform, and this app is a static bundle anyone can host."
           link={{ href: verifyGuideUrl(), label: 'Verify this build', external: true }}
         />
         <Feature
