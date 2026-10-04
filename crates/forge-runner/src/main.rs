@@ -1,7 +1,8 @@
 //! `forge-runner` — a self-hosted CI runner for Dash Forge, built on nektos/act.
 //!
 //! It watches repositories (`git ls-remote dash://…` every `interval_secs`, and at once when the
-//! owner's own relay wakes it, [`relay`]; cursors in the state dir), and on a push it checks the
+//! owner's own relay wakes it, [`relay`]; cursors in the state dir), and on a push, a pull
+//! request's activity or a member's CI re-run request (`dg ci reruns`, [`poll_reruns`]) it checks the
 //! commit out, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with
 //! [act](https://github.com/nektos/act) in Docker, and reports each job as a Forge check run
 //! through `dg ci report`, uploading the job's log to a storage profile with its SHA-256. It
@@ -78,6 +79,10 @@ enum Cmd {
         /// only if its head is a trusted branch here and its author the owner or a maintainer.
         #[arg(long, required_unless_present = "refname")]
         pr: Option<u64>,
+        /// Only the workflows that report this check, as it is named on the commit
+        /// (`CI / build`, `CI / build (pull_request)`).
+        #[arg(long, value_name = "NAME")]
+        check: Option<String>,
     },
 }
 
@@ -109,6 +114,7 @@ fn real_main(cli: &Cli) -> Result<()> {
             refname,
             sha,
             pr,
+            check,
         } => {
             let r = cfg
                 .repos
@@ -137,7 +143,11 @@ fn real_main(cli: &Cli) -> Result<()> {
                 }
                 _ => anyhow::bail!("give --ref and --sha, or --pr"),
             };
-            let ran = run_locked(&cfg, r, &trig)?;
+            let opts = run::RunOpts {
+                only: check.clone(),
+                requested_by: None,
+            };
+            let ran = run_locked(&cfg, r, &trig, &opts)?;
             for (name, conclusion) in &ran.checks {
                 println!("{name}\t{conclusion}");
             }
@@ -288,7 +298,12 @@ fn woken(cfg: &Config, w: &relay::Wake) -> Vec<usize> {
 /// Run one push or pull request in its own directory (`<repo dir>/runs/<n>`), holding the repo's
 /// lock so two runners on one state dir never share a checkout. The run directory is removed
 /// afterwards; the logs were uploaded.
-fn run_locked(cfg: &Config, repo: &config::RepoConfig, trig: &run::Trigger) -> Result<run::Ran> {
+fn run_locked(
+    cfg: &Config,
+    repo: &config::RepoConfig,
+    trig: &run::Trigger,
+    opts: &run::RunOpts,
+) -> Result<run::Ran> {
     let dir = run::repo_dir(cfg, repo);
     std::fs::create_dir_all(&dir)?;
     let lock_path = dir.join("lock");
@@ -306,15 +321,11 @@ fn run_locked(cfg: &Config, repo: &config::RepoConfig, trig: &run::Trigger) -> R
         )
     })?;
     run::reset_toolcache(cfg);
-    let run_dir = dir.join("runs").join(format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis())
-    ));
+    let run_dir = dir
+        .join("runs")
+        .join(format!("{}-{}", std::process::id(), run::now_ms()));
     std::fs::create_dir_all(&run_dir)?;
-    let result = run::run(cfg, repo, trig, &run_dir);
+    let result = run::run(cfg, repo, trig, opts, &run_dir);
     let _ = std::fs::remove_dir_all(&run_dir);
     drop(lock);
     result
@@ -341,7 +352,8 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
         state.tips = now;
         state.primed = true;
         state.save(&path)?;
-        return poll_pulls(cfg, repo, &mut state, &path);
+        let pulls = poll_pulls(cfg, repo, &mut state, &path);
+        return pulls.and(poll_reruns(cfg, repo, &mut state, &path));
     }
     for push in pushes(&state.tips, &now) {
         let key = format!("{} {}", push.refname, push.oid);
@@ -353,7 +365,8 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
                 push.refname,
                 &push.oid[..12]
             );
-            if let Err(e) = run_locked(cfg, repo, &run::Trigger::Push(push.clone())) {
+            let trig = run::Trigger::Push(push.clone());
+            if let Err(e) = run_locked(cfg, repo, &trig, &run::RunOpts::default()) {
                 let tries = state.failed.entry(key.clone()).or_insert(0);
                 *tries += 1;
                 eprintln!(
@@ -377,7 +390,10 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
                 .is_some_and(|(r, o)| now.get(r).is_some_and(|t| t == o))
     });
     state.save(&path)?;
-    poll_pulls(cfg, repo, &mut state, &path)
+    let pulls = poll_pulls(cfg, repo, &mut state, &path);
+    // Re-run requests are read even when the pull requests could not be.
+    let reruns = poll_reruns(cfg, repo, &mut state, &path);
+    pulls.and(reruns)
 }
 
 /// The pull-request half of a poll: list the newest [`PULL_LIMIT`] PRs, and run each one that
@@ -453,7 +469,7 @@ fn poll_pulls(
                 event: Box::new(ev.clone()),
                 author,
             };
-            if let Err(e) = run_locked(cfg, repo, &trig) {
+            if let Err(e) = run_locked(cfg, repo, &trig, &run::RunOpts::default()) {
                 let tries = state.failed.entry(key.clone()).or_insert(0);
                 *tries += 1;
                 eprintln!(
@@ -487,6 +503,184 @@ fn poll_pulls(
                 .any(|r| r.state == "open" && pull_key(r.number, &r.head_oid) == *k)
     });
     state.save(path)
+}
+
+/// The CI re-run half of a poll (`reruns = true`): read the requests written since the last
+/// poll (`dg ci reruns`, one query on the `addressee` index) and run each that counts, once per
+/// pull request, commit and check in a poll ([`rerun_trigger`] decides what runs). The first poll
+/// only records the runner's clock. A request is handled once, whatever came of it: a failed run
+/// is asked for again from the web or `dg ci rerun`.
+fn poll_reruns(
+    cfg: &Config,
+    repo: &config::RepoConfig,
+    state: &mut RepoState,
+    path: &std::path::Path,
+) -> Result<()> {
+    if !repo.reruns {
+        return Ok(());
+    }
+    let Some(since) = state.reruns_since else {
+        state.reruns_since = Some(run::now_ms());
+        return state.save(path);
+    };
+    let fresh: Vec<run::RerunRow> = run::list_reruns(cfg, repo, since)?
+        .into_iter()
+        .filter(|r| {
+            r.created_at > since || (r.created_at == since && !state.reruns_seen.contains(&r.id))
+        })
+        .collect();
+    let mut members: Option<run::Members> = None;
+    let mut done = std::collections::BTreeSet::new();
+    for req in fresh {
+        let what = format!(
+            "{} PR #{} re-run of {} on {} by {}",
+            repo.repo,
+            req.number,
+            req.check.as_deref().unwrap_or("every check"),
+            req.sha.get(..12).unwrap_or(&req.sha),
+            req.requester
+        );
+        if !req.counts {
+            eprintln!("forge-runner: {what} not run: the requester is not the owner, a maintainer or a writer");
+        } else if !done.insert((req.number, req.sha.to_ascii_lowercase(), req.check.clone())) {
+            eprintln!("forge-runner: {what}: the same as an earlier request in this poll");
+        } else {
+            match rerun_triggers(cfg, repo, state, &req, &mut members) {
+                Ok(triggers) => {
+                    eprintln!("forge-runner: {what}");
+                    let opts = run::RunOpts {
+                        only: req.check.clone(),
+                        requested_by: Some(req.requester.clone()),
+                    };
+                    for trig in &triggers {
+                        if let Err(e) = run_locked(cfg, repo, trig, &opts) {
+                            eprintln!("forge-runner: {what} ({}): {e:#}", trig.label());
+                        }
+                    }
+                }
+                Err(why) => eprintln!("forge-runner: {what} not run: {why}"),
+            }
+        }
+        state.handled_rerun(&req.id, req.created_at);
+        state.save(path)?;
+    }
+    Ok(())
+}
+
+/// What a counted re-run request runs, or why it runs nothing. Only the PR's current head
+/// runs, and only what a poll would run for it:
+///
+/// * a check of the PR's own runs (` (pull_request)` or ` (pull_request, non-member)`): the PR as
+///   `pull_request`, under the repository's `pull_requests` policy ([`skip_reason`]);
+/// * any other check (a push run's): the push of the branch at that commit, the PR's own source
+///   branch here first, then any watched branch of the repository that is at it;
+/// * every check (no name): both, each where it applies.
+fn rerun_triggers(
+    cfg: &Config,
+    repo: &config::RepoConfig,
+    state: &RepoState,
+    req: &run::RerunRow,
+    members: &mut Option<run::Members>,
+) -> std::result::Result<Vec<run::Trigger>, String> {
+    let sha = req.sha.to_ascii_lowercase();
+    let mut pr = run::view_pull(cfg, repo, req.number).map_err(|e| format!("{e:#}"))?;
+    pr.head_oid = pr.head_oid.to_ascii_lowercase();
+    if pr.state != "open" {
+        return Err(format!("the pull request is {}", pr.state));
+    }
+    if pr.head_oid != sha {
+        return Err(format!(
+            "its head moved to {} since (the new head runs by itself)",
+            &pr.head_oid[..12.min(pr.head_oid.len())]
+        ));
+    }
+    let (pull, push) = match req.check.as_deref() {
+        None => (true, true),
+        Some(c) => (is_pull_check(c), !is_pull_check(c)),
+    };
+    let mut out = Vec::new();
+    let mut why = Vec::new();
+    if push {
+        match branch_at(repo, state, &pr, &sha) {
+            Ok(refname) => out.push(run::Trigger::Push(watch::Push {
+                refname,
+                oid: sha.clone(),
+                before: None,
+            })),
+            Err(e) => why.push(e),
+        }
+    }
+    if pull {
+        match pull_rerun(cfg, repo, pr, members) {
+            Ok(t) => out.push(t),
+            Err(e) => why.push(e),
+        }
+    }
+    if out.is_empty() {
+        return Err(why.join("; "));
+    }
+    Ok(out)
+}
+
+/// The watched branch of the repository a push check on `sha` re-runs as: the PR's own source
+/// branch when it is here and at `sha`, else any branch at it.
+fn branch_at(
+    repo: &config::RepoConfig,
+    state: &RepoState,
+    pr: &watch::PullRow,
+    sha: &str,
+) -> std::result::Result<String, String> {
+    let at = |r: &str| {
+        r.starts_with("refs/heads/") && state.tips.get(r).is_some_and(|t| t == sha) && repo.runs(r)
+    };
+    let own = pr
+        .source_ref_name
+        .as_deref()
+        .filter(|r| !pr.is_fork() && at(r));
+    own.map(str::to_string)
+        .or_else(|| state.tips.keys().find(|r| at(r)).cloned())
+        .ok_or_else(|| {
+            format!(
+                "no watched branch of this repository is at {}",
+                &sha[..12.min(sha.len())]
+            )
+        })
+}
+
+/// The PR's re-run as `pull_request` (`opened`), when the repository's policy runs it.
+fn pull_rerun(
+    cfg: &Config,
+    repo: &config::RepoConfig,
+    pr: watch::PullRow,
+    members: &mut Option<run::Members>,
+) -> std::result::Result<run::Trigger, String> {
+    if repo.pull_requests == PullPolicy::Off {
+        return Err("this runner does not run pull requests (pull_requests = \"off\")".into());
+    }
+    if pr.source_ref_name.is_none() {
+        return Err("the pull request names no source branch (imported)".into());
+    }
+    let members = match members {
+        Some(m) => m,
+        None => members.insert(run::list_members(cfg, repo).map_err(|e| format!("{e:#}"))?),
+    };
+    let author = run::author_of(members, &pr.author);
+    if let Some(why) = skip_reason(repo.pull_requests, &pr, author) {
+        return Err(why);
+    }
+    Ok(run::Trigger::Pull {
+        author,
+        event: Box::new(watch::PullEvent {
+            action: "opened",
+            before: None,
+            pr,
+        }),
+    })
+}
+
+/// Whether a check name is a pull request run's ([`run::Trigger::check_name`]'s suffixes).
+fn is_pull_check(name: &str) -> bool {
+    name.ends_with(" (pull_request)") || name.ends_with(" (pull_request, non-member)")
 }
 
 /// Why a poll does not run a PR's activity, if it does not:
@@ -548,6 +742,14 @@ mod tests {
             skip_reason(PullPolicy::All, &row(false), Stranger).is_some(),
             "a stranger's PR from a branch here re-runs members' code under a stranger's event"
         );
+    }
+
+    #[test]
+    fn pull_request_checks_are_told_from_push_checks_by_their_suffix() {
+        assert!(is_pull_check("CI / build (pull_request)"));
+        assert!(is_pull_check("CI / build (pull_request, non-member)"));
+        assert!(!is_pull_check("CI / build"));
+        assert!(!is_pull_check("CI / build (schedule)"));
     }
 
     #[test]

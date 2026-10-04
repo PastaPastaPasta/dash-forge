@@ -1039,14 +1039,19 @@ impl RepoState {
         }
     }
 
+    /// Wake the repo's runners, if any long-poll the relay ([`crate::wake`]).
+    fn wake(&self, shared: &Shared) {
+        if let Some(hub) = &shared.wake {
+            hub.notify(&self.meta.repo_id);
+        }
+    }
+
     /// Enqueue `event` for the repo's hooks, and wake the repo's runners on a push or a pull
     /// request's activity.
     fn emit(&self, shared: &Shared, event: Option<crate::payload::WebhookEvent>) {
         if let Some(event) = event {
-            if let Some(hub) = &shared.wake {
-                if subscriptions::WAKE_EVENTS.contains(&event.event) {
-                    hub.notify(&self.meta.repo_id);
-                }
+            if subscriptions::WAKE_EVENTS.contains(&event.event) {
+                self.wake(shared);
             }
             shared.dispatcher.enqueue(&self.meta.repo_id, event);
         }
@@ -1264,6 +1269,13 @@ async fn poll_repo_rest(
                     note_transition(st, d);
                     ingest::translate_transition(&st.meta, d, &st.targets, on_base, &st.closed)
                 }
+                _ if is_rerun_request(doc_type, d) => {
+                    // A CI re-run request (event kind 26) has no GitHub webhook of its own: it
+                    // wakes the repository's runners, which read it themselves (`dg ci
+                    // reruns`), and is delivered to no hook.
+                    st.wake(shared);
+                    None
+                }
                 _ => {
                     note_activity(st, d);
                     // A head update that did not move the head (older, stranger's, malformed)
@@ -1281,6 +1293,12 @@ async fn poll_repo_rest(
         high = high.max(st.commit(r));
     }
     (high, true)
+}
+
+/// Whether `d`, read from the `doc_type` stream, is a CI re-run request: a member `event` of
+/// kind 26 (`forge_core::rules::ci_rerun`). Its runners judge it; the relay only wakes them.
+fn is_rerun_request(doc_type: &str, d: &FetchedDocument) -> bool {
+    doc_type == DOC_EVENT && d.field_u64("kind") == Some(forge_core::rules::ci_rerun::CI_RERUN_KIND)
 }
 
 /// The threads whose comment/review streams are read this cycle: the prioritized ones (open or
@@ -1836,6 +1854,26 @@ mod tests {
     /// Open / closed follows the transitions (which threads are read first): a close, a merge
     /// or a draft close closes the target; a reopen (either axis) opens it; a draft or ready
     /// leaves it open.
+    #[test]
+    fn a_ci_rerun_request_wakes_runners_and_nothing_else_does_by_itself() {
+        let ev = |kind: u64| FetchedDocument {
+            id: format!("e{kind}"),
+            owner_id: "M".into(),
+            created_at: Some(1),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([("kind".into(), FieldValue::integer(kind))]),
+        };
+        assert!(is_rerun_request(DOC_EVENT, &ev(26)));
+        assert!(!is_rerun_request(DOC_EVENT, &ev(4)));
+        assert!(
+            !is_rerun_request(DOC_AUTHOR_EVENT, &ev(26)),
+            "an author kind never is"
+        );
+        assert!(!is_rerun_request(DOC_TRANSITION, &ev(26)));
+    }
+
     #[test]
     fn transitions_open_and_close_their_target() {
         let mut st = state_with_threads(0);

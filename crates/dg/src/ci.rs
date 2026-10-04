@@ -18,6 +18,10 @@
 //!   id and log are left out with a warning (forge-community `privateNoText`), and no log is
 //!   uploaded.
 //! * `status` lists the newest run per name on a commit.
+//! * `rerun` asks the repository's runners to run a pull request's checks again: one member
+//!   `event` of kind 26 (`forge_core::rules::ci_rerun`, forge-v2.md §3.3) naming the PR head
+//!   and, optionally, one check. A maintainer or writer only. `reruns` lists the requests
+//!   written since a time, each with whether it counts: what forge-runner reads.
 
 use std::path::{Path, PathBuf};
 
@@ -107,6 +111,31 @@ pub enum CiCommand {
         /// The commit, as `dg ci report` takes it.
         #[arg(long = "sha", alias = "head", value_name = "SHA")]
         sha_flag: Option<String>,
+    },
+    /// Ask the repository's runners to run a pull request's checks again (maintainers and
+    /// writers).
+    Rerun {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The pull request's number.
+        pr: u64,
+        /// The check to run again, as its run is named (`dg pr checks` lists them). Without
+        /// it, every check of the pull request's own runs.
+        #[arg(long, value_name = "NAME")]
+        check: Option<String>,
+        /// The commit you expect to re-run: refused when the pull request's head is no longer
+        /// it (runners re-run the head only). Default: the head.
+        #[arg(long, value_name = "SHA")]
+        sha: Option<String>,
+    },
+    /// The repository's CI re-run requests since a time, and whether each counts (what
+    /// forge-runner reads).
+    Reruns {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Requests written at or after this time (ms since 1970). Default: the last hour.
+        #[arg(long, value_name = "MS")]
+        since: Option<u64>,
     },
 }
 
@@ -235,6 +264,8 @@ impl CiCommand {
             }
             CiCommand::Report(a) => ("check run not reported", Some(&a.repo)),
             CiCommand::Status { repo, .. } => ("could not read check runs", Some(repo)),
+            CiCommand::Rerun { repo, .. } => ("checks not re-run", Some(repo)),
+            CiCommand::Reruns { repo, .. } => ("could not read re-run requests", Some(repo)),
         }
     }
 }
@@ -262,7 +293,167 @@ pub async fn run(ctx: &Ctx, cmd: &CiCommand) -> Result<()> {
             let (repo, given) = status_target(repo, given, crate::storage::clone_repo())?;
             status(ctx, &repo, &resolve_commit(&repo, given.as_deref())?).await
         }
+        CiCommand::Rerun {
+            repo,
+            pr,
+            check,
+            sha,
+        } => rerun(ctx, repo, *pr, check.as_deref(), sha.as_deref()).await,
+        CiCommand::Reruns { repo, since } => {
+            let since = since.unwrap_or_else(|| {
+                forge_core::cache::now_ms().saturating_sub(RERUNS_DEFAULT_WINDOW_MS)
+            });
+            reruns(ctx, repo, since).await
+        }
     }
+}
+
+/// `dg ci reruns` without `--since`: the last hour.
+const RERUNS_DEFAULT_WINDOW_MS: u64 = 60 * 60 * 1000;
+
+/// `dg ci rerun`: one `event` of kind 26 on an open pull request, naming its head and, with
+/// `--check`, one of the checks reported on it. Refused before signing for a closed PR, a head
+/// that moved past `--sha`, a check nothing reported on the head, or a signer who is not a
+/// maintainer or writer.
+async fn rerun(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    check: Option<&str>,
+    sha: Option<&str>,
+) -> Result<()> {
+    let pr = crate::pr::open_pr(ctx, repo, number, "checks not re-run").await?;
+    let collab = pr.s.collab();
+    let head = pr.view.head.to_ascii_lowercase();
+    if !pr.view.state.open {
+        return Err(UserError::new(
+            codes::REJECTED,
+            format!("pull request #{number} is not open"),
+        )
+        .cause("runners run open pull requests only")
+        .into());
+    }
+    if let Some(want) = sha {
+        let want = want.to_ascii_lowercase();
+        if want != head && !(want.len() >= 7 && head.starts_with(&want)) {
+            return Err(UserError::new(
+                codes::REJECTED,
+                format!(
+                    "pull request #{number}'s head is {}, not {want}",
+                    crate::fmt::short(&head)
+                ),
+            )
+            .cause("runners re-run the checks of a pull request's current head")
+            .fix(format!(
+                "`dg ci rerun {repo} {number}` re-runs the head's checks"
+            ))
+            .into());
+        }
+    }
+    collab
+        .require_role(
+            &pr.s.repo,
+            forge_core::rules::v2::Role::Writer,
+            &format!("re-run checks on pull request #{number}"),
+        )
+        .await?;
+    if let Some(name) = check {
+        let runs = collab.check_runs(&pr.s.repo, &head).await?;
+        if !runs.iter().any(|r| r.name == name) {
+            let names: Vec<&str> = runs.iter().map(|r| r.name.as_str()).collect();
+            return Err(UserError::new(
+                codes::NOT_FOUND,
+                format!("no check named {name:?} on {}", crate::fmt::short(&head)),
+            )
+            .cause(if names.is_empty() {
+                "nothing has reported a check on the pull request's head yet".to_string()
+            } else {
+                format!("the head's checks: {}", names.join(", "))
+            })
+            .fix(format!(
+                "`dg pr checks {repo} {number}` lists them; without --check every check runs again"
+            ))
+            .into());
+        }
+    }
+    let what = check.map_or_else(|| "every check".to_string(), |c| format!("the check {c:?}"));
+    let est = crate::quote::event(
+        check.map_or(0, |c| c.len() as u64) + (head.len() / 2) as u64,
+        true,
+    );
+    ctx.confirm_or_cancel(&format!(
+        "Ask {}'s runners to re-run {what} on pull request #{number} (head {})? (one event, {})",
+        pr.s.repo.display(),
+        crate::fmt::short(&head),
+        cost_line(est, ctx.usd_price())
+    ))?;
+    let target = pr.view.patch.target();
+    let (id, spent) =
+        pr.s.metered(|| collab.request_rerun(&pr.s.repo, &target, &head, check))
+            .await?;
+    ctx.emit(
+        json!({
+            "status": "requested",
+            "pr": number,
+            "sha": head,
+            "check": check,
+            "eventId": id,
+            "cost": cost_json(spent, ctx.usd_price()),
+        }),
+        || {
+            println!(
+                "✓ re-run of {what} on pull request #{number} requested ({}) · {}",
+                crate::fmt::short(&head),
+                cost_line(spent, ctx.usd_price())
+            );
+            println!(
+                "  a forge-runner watching {} picks it up at its next poll, or within seconds \
+                 when its relay wakes it",
+                pr.s.repo.display()
+            );
+        },
+    );
+    Ok(())
+}
+
+/// `dg ci reruns`: the requests written at or after `since`, oldest first, each with whether it
+/// counts (`forge_core::rules::ci_rerun::rerun_counts`).
+async fn reruns(ctx: &Ctx, repo: &str, since: u64) -> Result<()> {
+    let r = Reader::open(ctx, repo).await?;
+    let requests = r.collab().rerun_requests(&r.repo, since).await?;
+    let rows: Vec<serde_json::Value> = requests
+        .iter()
+        .map(|(req, counts)| {
+            let mut v = serde_json::to_value(req).unwrap_or_default();
+            if let Some(o) = v.as_object_mut() {
+                o.insert("counts".into(), json!(counts));
+            }
+            v
+        })
+        .collect();
+    ctx.emit(
+        json!({ "since": since, "count": rows.len(), "requests": rows }),
+        || {
+            if requests.is_empty() {
+                println!("no re-run requests since {since}");
+            }
+            for (req, counts) in &requests {
+                println!(
+                    "#{}  {}  {}  by {}{}",
+                    req.number,
+                    crate::fmt::short(&req.sha),
+                    req.check.as_deref().unwrap_or("(every check)"),
+                    req.requester,
+                    if *counts {
+                        ""
+                    } else {
+                        "  (not counted: not a maintainer or writer)"
+                    }
+                );
+            }
+        },
+    );
+    Ok(())
 }
 
 /// The identity whose master key registers the runner key: `--runner <file>`, else your own.

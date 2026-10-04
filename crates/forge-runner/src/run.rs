@@ -416,6 +416,47 @@ pub fn author_of(members: &Members, id: &str) -> Author {
     members.get(id).copied().unwrap_or(Author::Stranger)
 }
 
+/// Keep in `plan` only what reports check `only` under `trig`: the workflows with a job of
+/// that check name (all their jobs run), and a broken file whose failure carries it.
+pub fn keep_check(plan: &mut workflow::Plan, trig: &Trigger, only: &str) {
+    plan.run.retain(|wf| {
+        wf.jobs
+            .iter()
+            .any(|j| trig.check_name(&j.check_name) == only)
+    });
+    plan.broken
+        .retain(|b| trig.check_name(&format!("{} (invalid workflow)", b.file.display())) == only);
+}
+
+/// One CI re-run request as `dg --json ci reruns` gives it.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RerunRow {
+    /// The request's event id.
+    pub id: String,
+    /// The pull request's number.
+    pub number: u64,
+    /// The commit (hex).
+    pub sha: String,
+    /// The check to run again; `None`: every check of the PR's own runs.
+    #[serde(default)]
+    pub check: Option<String>,
+    /// Who asked.
+    pub requester: String,
+    /// When (`$createdAt`, ms).
+    pub created_at: u64,
+    /// Whether it counts: the owner's, or a maintainer's or writer's at the time
+    /// (`forge_core::rules::ci_rerun::rerun_counts`, judged by dg).
+    pub counts: bool,
+}
+
+/// The repository's CI re-run requests written at or after `since` (ms), oldest first.
+pub fn list_reruns(cfg: &Config, repo: &RepoConfig, since: u64) -> Result<Vec<RerunRow>> {
+    let since = since.to_string();
+    let v = dg_read(cfg, &["ci", "reruns", &repo.repo, "--since", &since])?;
+    serde_json::from_value(v["requests"].clone()).context("dg ci reruns: unexpected rows")
+}
+
 /// The per-repo directory under the state dir.
 pub fn repo_dir(cfg: &Config, repo: &RepoConfig) -> PathBuf {
     cfg.state_dir
@@ -518,6 +559,24 @@ fn workflow_dir(cfg: &Config, checkout: &Path) -> Option<PathBuf> {
         .find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
 }
 
+/// The runner's clock, ms since 1970.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// What narrows or annotates one run.
+#[derive(Debug, Clone, Default)]
+pub struct RunOpts {
+    /// Only the workflows that report this check (a re-run of one check): every job of each
+    /// such workflow runs, as GitHub re-runs a workflow's jobs. `None`: every workflow.
+    pub only: Option<String>,
+    /// Who asked for this run (a CI re-run request's writer), named in each summary and in the
+    /// event (`forge.rerun_requested_by`).
+    pub requested_by: Option<String>,
+}
+
 /// What a run produced: each check name and its conclusion.
 #[derive(Debug, Default)]
 pub struct Ran {
@@ -577,6 +636,8 @@ struct RunCtx<'a> {
     logs: &'a Path,
     run_dir: &'a Path,
     deadline: Instant,
+    /// Appended to every summary (who asked for a re-run).
+    note: String,
     /// When this run started (ms since 1970): part of every job's run id ([`external_id`]).
     attempt: u64,
 }
@@ -688,10 +749,19 @@ fn fetch_run(
 /// in_progress → completed, one act run per file. Secrets go to act only when
 /// [`Trigger::trusted`]. `run_dir` is this run's own directory (checkout, event, logs, act's
 /// caches).
-pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> Result<Ran> {
+pub fn run(
+    cfg: &Config,
+    repo: &RepoConfig,
+    trig: &Trigger,
+    opts: &RunOpts,
+    run_dir: &Path,
+) -> Result<Ran> {
     let key = trig.key();
     let trusted = trig.trusted(repo);
-    let f = fetch_run(cfg, repo, trig, run_dir, trusted)?;
+    let mut f = fetch_run(cfg, repo, trig, run_dir, trusted)?;
+    if let Some(who) = &opts.requested_by {
+        f.event["forge"]["rerun_requested_by"] = json!(who);
+    }
     let co = run_dir.join("checkout");
     checkout(cfg, &f.cache, &key.oid, &co)?;
     let mut ran = Ran::default();
@@ -710,6 +780,7 @@ pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> R
             base,
             action: event.action,
             changed,
+            any_type: opts.requested_by.is_some(),
         }),
         _ => Facts::Push(PushFacts {
             refname: &key.refname,
@@ -718,7 +789,18 @@ pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> R
     };
     let labels: Vec<&str> = cfg.platforms.keys().map(String::as_str).collect();
     let allow = trig.allows_container_options(repo);
-    let plan = workflow::plan(&co, &wf_dir, &facts, allow, &labels);
+    let mut plan = workflow::plan(&co, &wf_dir, &facts, allow, &labels);
+    if let Some(only) = &opts.only {
+        keep_check(&mut plan, trig, only);
+        if plan.run.is_empty() && plan.broken.is_empty() {
+            eprintln!(
+                "forge-runner: {} {}: no workflow here reports the check {only:?}; nothing re-run",
+                repo.repo,
+                &key.oid[..12]
+            );
+            return Ok(ran);
+        }
+    }
     let event_path = run_dir.join("event.json");
     std::fs::write(&event_path, serde_json::to_vec(&f.event)?)?;
     let secrets = trusted.then(|| repo.secrets_file.clone()).flatten();
@@ -742,9 +824,11 @@ pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> R
         logs: &logs,
         run_dir,
         deadline,
-        attempt: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+        note: opts
+            .requested_by
+            .as_ref()
+            .map_or_else(String::new, |w| format!(", re-run requested by {w}")),
+        attempt: now_ms(),
     };
     for b in &plan.broken {
         let name = format!("{} (invalid workflow)", b.file.display());
@@ -841,7 +925,7 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
         };
         let (files, note) = uploads.remove(&j.id).unwrap_or_default();
         let summary = format!(
-            "forge-runner: {conclusion} on {} in {secs}s ({}){}{why}{note}",
+            "forge-runner: {conclusion} on {} in {secs}s ({}){}{}{why}{note}",
             c.trig.label(),
             wf.file.display(),
             if c.secrets.is_some() {
@@ -849,6 +933,7 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             } else {
                 ""
             },
+            c.note,
         );
         let r = Report {
             conclusion: Some(conclusion),
@@ -1156,6 +1241,75 @@ mod tests {
             oid: "ab".repeat(20),
             before: None,
         }
+    }
+
+    #[test]
+    fn a_rerun_of_one_check_keeps_the_workflows_that_report_it() {
+        let wf = |file: &str, name: &str, jobs: &[&str]| workflow::Workflow {
+            file: PathBuf::from(file),
+            name: name.into(),
+            jobs: jobs
+                .iter()
+                .map(|j| workflow::Job {
+                    id: (*j).into(),
+                    check_name: format!("{name} / {j}"),
+                    refused: None,
+                })
+                .collect(),
+            doc: serde_json::Value::Null,
+        };
+        let plan = || workflow::Plan {
+            run: vec![
+                wf("ci.yml", "CI", &["build", "test"]),
+                wf("lint.yml", "Lint", &["lint"]),
+            ],
+            broken: vec![workflow::Broken {
+                file: PathBuf::from(".forge/workflows/bad.yml"),
+                reason: "x".into(),
+            }],
+        };
+        let push = Trigger::Push(push());
+        let mut p = plan();
+        keep_check(&mut p, &push, "CI / test");
+        assert_eq!(p.run.len(), 1);
+        assert_eq!(
+            p.run[0].jobs.len(),
+            2,
+            "every job of the workflow runs again"
+        );
+        assert!(p.broken.is_empty());
+        let mut p = plan();
+        keep_check(&mut p, &push, ".forge/workflows/bad.yml (invalid workflow)");
+        assert!(p.run.is_empty() && p.broken.len() == 1);
+        let mut p = plan();
+        keep_check(&mut p, &push, "CI / test (pull_request)");
+        assert!(
+            p.run.is_empty(),
+            "a push run does not report a PR run's check"
+        );
+        let pr = Trigger::Pull {
+            event: Box::new(pull(false, "refs/heads/feature")),
+            author: Author::Writer,
+        };
+        let mut p = plan();
+        keep_check(&mut p, &pr, "Lint / lint (pull_request)");
+        assert_eq!(p.run.len(), 1);
+        assert_eq!(p.run[0].name, "Lint");
+    }
+
+    #[test]
+    fn rerun_requests_read_from_dg() {
+        let v = serde_json::json!([{
+            "id": "E1", "targetId": "T", "number": 4, "sha": "ab".repeat(20),
+            "check": null, "requester": "W", "createdAt": 5, "counts": true
+        }, {
+            "id": "E2", "targetId": "T", "number": 4, "sha": "ab".repeat(20),
+            "check": "CI / build", "requester": "X", "createdAt": 6, "counts": false
+        }]);
+        let rows: Vec<RerunRow> = serde_json::from_value(v).unwrap();
+        assert_eq!(rows[0].check, None);
+        assert!(rows[0].counts && !rows[1].counts);
+        assert_eq!(rows[1].check.as_deref(), Some("CI / build"));
     }
 
     /// Hiding is display only: the runner lists every PR, hidden ones too, so a hidden PR still

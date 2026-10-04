@@ -20,6 +20,10 @@
 #      as `pull_request` with GitHub's context and the secrets; a member's PR from a fork runs
 #      without them; a stranger's is skipped, then runs by hand (`run --pr`) without them; a
 #      moved head is a `synchronize`; a closed PR and a re-poll run nothing.
+#   9. CI re-run requests (a recording `dg ci reruns`): a member's request re-runs one PR check
+#      on the head, said in its summary; a duplicate in the same poll, an uncounted request and
+#      one for a head that moved run nothing; a push check re-runs as the push of the PR's
+#      branch; a re-poll runs nothing again.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -50,7 +54,8 @@ case " $* " in
   *" pr list "*" --include-hidden "*) cat "$FAKE_PRS" 2>/dev/null || echo '{"prs":[]}'; exit 0 ;;
   *" pr list "*) echo "fake dg: the runner must list hidden PRs too (--include-hidden)" >&2; exit 2 ;;
   *" pr view "*) python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
-  *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}],"ownerId":"OWNER"}'; exit 0 ;;
+  *" ci reruns "*) cat "$FAKE_RERUNS" 2>/dev/null || echo '{"requests":[]}'; exit 0 ;;
+  *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}],"roles":true,"ownerId":"OWNER"}'; exit 0 ;;
 esac
 python3 - "$@" >>"$FAKE_DG_LOG" <<'PY'
 import json, sys, os
@@ -75,6 +80,7 @@ EOF
 chmod +x "$W/bin/dg"
 export FAKE_DG_LOG="$W/reports.jsonl"; : >"$FAKE_DG_LOG"
 export FAKE_PRS="$W/prs.json"
+export FAKE_RERUNS="$W/reruns.json"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
@@ -289,6 +295,37 @@ check "v4: the job's zip is recorded as it was uploaded" test "$(art up4)" = "[[
 check "v3: the job's files are zipped" test "$(art up3)" = "[[{'c.txt': 'three\\n'}]]"
 check "a job that uploads nothing carries none" test "$(art none)" = "[[]]"
 check "the summary counts them" test "$(q "[('1 artifact' in r['summary']) for r in rs if r['status']=='completed' and r['name']=='art / up4']")" = "[True]"
+
+echo "== 9. CI re-run requests"
+: >"$FAKE_DG_LOG"
+FEAT=$(git -C "$R" rev-parse feature)
+prs "1,MEMBER,app,refs/heads/release/1,$H1B,open" "2,STRANGER,fork,refs/heads/evil,$HF,open" "4,MEMBER,app,refs/heads/feature,$FEAT,open"
+poll   # PR #4 opens: feature has push workflows only, so nothing runs
+: >"$FAKE_DG_LOG"
+NOW=$(python3 -c 'import time; print(int(time.time() * 1000))')
+python3 - "$NOW" "$H1" "$H1B" "$FEAT" >"$FAKE_RERUNS" <<'PY'
+import json, sys
+now, h1, h1b, feat = int(sys.argv[1]), *sys.argv[2:]
+def req(i, n, sha, check, who, counts, dt):
+    return {"id": f"E{i}", "targetId": f"T{n}", "number": n, "sha": sha, "check": check,
+            "requester": who, "createdAt": now + dt, "counts": counts}
+print(json.dumps({"requests": [
+    req(1, 1, h1b, "pr / check (pull_request)", "MEMBER", True, 1),
+    req(2, 1, h1b, "pr / check (pull_request)", "MEMBER", True, 2),
+    req(3, 1, h1b, None, "TRIAGE", False, 3),
+    req(4, 1, h1, None, "MEMBER", True, 4),
+    req(5, 4, feat, "ci / test", "MEMBER", True, 5),
+]}))
+PY
+poll
+check "the PR check re-ran once on the head" test "$(q "[r['sha'] for r in rs if r['status']=='completed' and r['name']=='pr / check (pull_request)']")" = "['$H1B']"
+check "…saying who asked" test "$(q "['re-run requested by MEMBER' in r['summary'] for r in rs if r['status']=='completed' and r['name']=='pr / check (pull_request)']")" = "[True]"
+check "a duplicate in the same poll is coalesced" grep -q "the same as an earlier request in this poll" "$W/runner.log"
+check "an uncounted request runs nothing" grep -q "by TRIAGE not run: the requester is not" "$W/runner.log"
+check "a request for a head that moved runs nothing" grep -q "not run: its head moved" "$W/runner.log"
+check "a push check re-runs its workflow as the branch's push" test "$(q "sorted(r['name'] for r in rs if r['status']=='completed' and r['sha']=='$FEAT')")" = "['ci / build', 'ci / escape', 'ci / nested', 'ci / test']"
+check "…and nothing else ran" test "$(q "len([r for r in rs if r['status']=='completed'])")" = 5
+check "a re-poll runs no request again" bash -c ": >'$FAKE_DG_LOG'; '$RUNNER' -c '$W/runner.toml' watch --once >>'$W/runner.log' 2>&1; test ! -s '$FAKE_DG_LOG'"
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 

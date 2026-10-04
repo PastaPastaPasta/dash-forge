@@ -12,17 +12,20 @@
  *   (RC1 R-08) names it ("from ci-bot"); a run by anyone else is "not from the required source",
  *   and a required check nothing reported yet is listed as "Expected". A run's artifacts are
  *   offered for download the way release assets are: streamed from the reporter's storage and
- *   saved only if they hash to the recorded SHA-256.
+ *   saved only if they hash to the recorded SHA-256. A maintainer or writer can ask the runners
+ *   to re-run one completed forge-runner check, or every check (a CI re-run request, event kind
+ *   26); a request no newer run answers yet is shown as requested, to everyone.
  */
 
 import Link from 'next/link'
 import { useState } from 'react'
-import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, XCircle } from 'lucide-react'
+import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, RefreshCw, XCircle } from 'lucide-react'
 
 import {
   checkOutcome,
   checksPhrase,
   fetchVerifiedLog,
+  isRerunnable,
   runCounts,
   runDuration,
   safeDetailsUrl,
@@ -43,6 +46,8 @@ import { Oid } from '@/components/ui/oid'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { AssetRow } from '@/components/repo/releases-content'
+import { Button } from '@/components/ui/button'
+import type { RerunRequest } from '@/lib/rules/ci-rerun'
 
 export function CommitsTab({
   commits,
@@ -176,6 +181,40 @@ function RunArtifacts({ run }: { run: CheckRun }): JSX.Element {
   )
 }
 
+/** The Checks tab's CI re-run controls (a PR's head only). */
+export interface RerunControls {
+  /** The repo's runners: which runs a request reaches ({@link isRerunnable}). */
+  readonly runners: ReadonlySet<string>
+  /** Counted requests on the head that no newer run answers yet, by check (null: every check). */
+  readonly pending: ReadonlyMap<string | null, RerunRequest>
+  /** The viewer may ask (a maintainer or writer, on an open PR). */
+  readonly canRequest: boolean
+  /** Ask for `check` (null: every check) again: the page confirms and signs. */
+  readonly onRerun: (check: string | null) => void
+}
+
+/**
+ * A request no newer run answered this long after it is taken for one no runner will answer (a
+ * runner polls every 2 minutes by default and handles a request once): Re-run is offered again.
+ */
+export const RERUN_STALE_MS = 10 * 60 * 1000
+
+/** Whether a pending request still holds back Re-run ({@link RERUN_STALE_MS}). */
+function holdsRerun(request: RerunRequest | undefined, now: number): boolean {
+  return request !== undefined && now - request.createdAt < RERUN_STALE_MS
+}
+
+/** "Re-run requested 2 minutes ago": a request no newer run answers yet ("no run yet" once stale). */
+function RerunRequested({ request, testId, now }: { request: RerunRequest; testId: string; now: number }): JSX.Element {
+  return (
+    <span className="flex items-center gap-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid={testId}>
+      <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+      Re-run requested {timeAgo(request.createdAt, now)}
+      {holdsRerun(request, now) ? '' : ', no run yet'}
+    </span>
+  )
+}
+
 /** One row of the Checks tab list: a run, or an expected check. */
 const CHECK_ROW = 'flex flex-wrap items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850'
 
@@ -187,6 +226,7 @@ export function ChecksTab({
   onRetry,
   subject = 'PR head',
   expected = [],
+  rerun = null,
 }: {
   runs: readonly CheckRun[] | null
   summary: ChecksSummary | null
@@ -197,6 +237,8 @@ export function ChecksTab({
   subject?: string
   /** Checks the branch policy requires that no run reports yet (`expectedChecks`). */
   expected?: readonly ExpectedCheck[]
+  /** CI re-runs, on a PR's head; null on a commit's checks. */
+  rerun?: RerunControls | null
 }): JSX.Element {
   if (error !== null) return <ErrorState message={error} onRetry={onRetry} />
   if (runs === null || summary === null) return <LoadingBlock label="Reading check runs" />
@@ -209,16 +251,33 @@ export function ChecksTab({
       />
     )
   }
+  const now = Date.now()
+  const rerunnable = (r: CheckRun): boolean => rerun !== null && isRerunnable(r, rerun.runners, now)
+  const allPending = rerun?.pending.get(null) ?? null
+  const allHeld = holdsRerun(allPending ?? undefined, now)
+  const rerunAll =
+    rerun?.canRequest === true && !allHeld && runs.some(rerunnable) ? (
+      <Button variant="outline" size="sm" onClick={() => rerun.onRerun(null)} data-testid="checks-rerun-all">
+        <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Re-run all checks
+      </Button>
+    ) : null
   return (
     <div data-testid="pr-checks">
-      <p className="mb-2 text-dense text-anvil-700 dark:text-anvil-200">
-        {checksPhrase(summary)} on <Oid value={headOid} chars={7} copyable={false} />
-      </p>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-dense text-anvil-700 dark:text-anvil-200">
+          {checksPhrase(summary)} on <Oid value={headOid} chars={7} copyable={false} />
+        </p>
+        <span className="flex flex-wrap items-center gap-2">
+          {allPending !== null ? <RerunRequested request={allPending} testId="checks-rerun-all-pending" now={now} /> : null}
+          {rerunAll}
+        </span>
+      </div>
       <ul className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         {runs.map((r) => {
           const url = safeDetailsUrl(r.detailsUrl)
           const state = r.status === 'completed' ? r.conclusion || 'completed' : r.status
           const duration = runDuration(r)
+          const asked = rerun?.pending.get(r.name)
           return (
             <li key={r.id} className={CHECK_ROW} data-testid="check-run" data-name={r.name} data-outcome={checkOutcome(r)}>
               <CheckIcon run={r} />
@@ -237,6 +296,18 @@ export function ChecksTab({
               <span className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                 by <Author identityId={r.reporter} link={false} /> · {timeAgo(r.createdAt)}
               </span>
+              {asked !== undefined ? <RerunRequested request={asked} testId="check-rerun-pending" now={now} /> : null}
+              {rerun !== null && rerun.canRequest && !allHeld && !holdsRerun(asked, now) && rerunnable(r) ? (
+                <button
+                  type="button"
+                  className="hit-area text-[12px] text-forge-700 underline underline-offset-2 dark:text-forge-400"
+                  aria-label={`Re-run ${r.name}`}
+                  data-testid="check-rerun"
+                  onClick={() => rerun.onRerun(r.name)}
+                >
+                  Re-run
+                </button>
+              ) : null}
               {url ? (
                 <a href={url} target="_blank" rel="noopener noreferrer" className="hit-area text-[12px] text-forge-700 underline underline-offset-2 dark:text-forge-400">
                   Details

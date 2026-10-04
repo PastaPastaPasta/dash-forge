@@ -1081,6 +1081,26 @@ pub fn event_from_doc(d: &FetchedDocument) -> Option<Event> {
     })
 }
 
+/// An `event` document as the CI re-run rule reads it ([`rules::ci_rerun::RerunEvent`]).
+fn rerun_event_of(d: &FetchedDocument) -> rules::ci_rerun::RerunEvent {
+    rules::ci_rerun::RerunEvent {
+        id: d.id.clone(),
+        repo_id: id_field(d, "repoId").unwrap_or_default(),
+        target_id: d
+            .field_bytes32("targetId")
+            .map(platform::encode_identifier)
+            .unwrap_or_default(),
+        target_number: d.field_u64("targetNumber").unwrap_or_default(),
+        kind: d.field_u64("kind").unwrap_or_default(),
+        ref_id: id_field(d, "refId"),
+        oid: d.field_hex("oid"),
+        value: d.field_str("value"),
+        value_hidden: false,
+        actor: d.owner_id.clone(),
+        created_at: d.created_at.unwrap_or_default(),
+    }
+}
+
 /// The §5 content view of a fetched document of `kind`.
 fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
     ContentDoc {
@@ -4732,6 +4752,105 @@ impl<'a> Collab<'a> {
         .await?;
         let community = self.community_contract(repo).await?;
         self.write(repo, &community, DOC_EVENT, props).await
+    }
+
+    /// Ask the repository's runners to run pull request `target`'s checks on `sha` (hex) again:
+    /// one member `event` of kind 26 ([`rules::ci_rerun`], forge-v2.md §3.3). `check` names one
+    /// check (as its run is named); `None` asks for every check of the PR's own runs.
+    ///
+    /// A maintainer or role-1 writer only: consensus admits a triage member's too, but no reader
+    /// counts it ([`rules::ci_rerun::rerun_counts`]), so it is refused before signing (unless
+    /// [`SKIP_PRECHECK_ENV`] is set), as is a request on an issue.
+    pub async fn request_rerun(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        sha: &str,
+        check: Option<&str>,
+    ) -> Result<String> {
+        if target.kind != TargetKind::Patch {
+            return Err(Error::Config(format!(
+                "#{} is an issue: checks are re-run on a pull request",
+                target.number
+            )));
+        }
+        let f = rules::ci_rerun::rerun_fields(repo.id(), sha, check).map_err(Error::Config)?;
+        self.require_role(
+            repo,
+            Role::Writer,
+            &format!("re-run checks on pull request #{}", target.number),
+        )
+        .await?;
+        let mut props = target_props(target)?;
+        props.insert("kind".to_string(), FieldValue::integer(f.kind));
+        props.insert(
+            "oid".to_string(),
+            FieldValue::bytes(hex::decode(&f.oid).map_err(|e| Error::Config(e.to_string()))?),
+        );
+        props.insert(
+            "refId".to_string(),
+            FieldValue::identifier(platform::decode_identifier(&f.ref_id)?),
+        );
+        if let Some(v) = &f.value {
+            props.insert("value".to_string(), FieldValue::text(v));
+        }
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_EVENT, props).await
+    }
+
+    /// The repository's CI re-run requests written at or after `since` (ms), oldest first, each
+    /// with whether it counts ([`rules::ci_rerun::rerun_counts`]): its `event`s whose `refId`
+    /// is the repository, read on the sparse `addressee (refId, $createdAt)` index, so the read
+    /// is the requests alone. A private repository's check names are opened with the reader's
+    /// keys (none: E306/E307, as for its pull requests). Malformed requests are left out.
+    pub async fn rerun_requests(
+        &self,
+        repo: &RepoRef,
+        since: u64,
+    ) -> Result<Vec<(rules::ci_rerun::RerunRequest, bool)>> {
+        let community = self.community_contract(repo).await?;
+        let docs = self
+            .client
+            .query_all_documents(
+                &community,
+                DOC_EVENT,
+                &[
+                    QueryFilter::eq(
+                        "refId",
+                        FieldValue::identifier(platform::decode_identifier(repo.id())?),
+                    ),
+                    QueryFilter::gte("$createdAt", FieldValue::uint64(since)),
+                ],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        // A sealed value that does not open here is no request ("every check" it is not).
+        let sealed: BTreeSet<String> = docs
+            .iter()
+            .filter(|d| d.fields.contains_key("enc"))
+            .map(|d| d.id.clone())
+            .collect();
+        let (docs, _, _) = self.readable_events(repo, docs).await?;
+        let mut requests: Vec<rules::ci_rerun::RerunRequest> = docs
+            .iter()
+            .filter_map(|d| {
+                let mut e = rerun_event_of(d);
+                e.value_hidden = sealed.contains(&d.id) && e.value.is_none();
+                rules::ci_rerun::rerun_request(repo.id(), &e)
+            })
+            .collect();
+        requests.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let oracle = self.member_oracle(repo).await?;
+        Ok(requests
+            .into_iter()
+            .map(|r| {
+                let counts = rules::ci_rerun::rerun_counts(&r, repo.owner_id(), &oracle);
+                (r, counts)
+            })
+            .collect())
     }
 
     /// Carry out `action` (close, reopen, merge, draft, ready) on `target`: one `transition`
