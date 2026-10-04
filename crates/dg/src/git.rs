@@ -569,6 +569,100 @@ pub fn merge_commit(
     commit_tree(dir, &tree, &[base, head], message, author).map(Some)
 }
 
+/// The `-c` settings [`rebase`] pins over the user's config.
+const REBASE_CONFIG: [&str; 8] = [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "commit.cleanup=verbatim",
+    "-c",
+    "advice.mergeConflict=false",
+];
+
+/// Where a [`rebase`] ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Rebased {
+    /// The rebased head (the head itself when it was already on the base with a linear history;
+    /// the base when every commit's change was already there).
+    Tip(String),
+    /// It stopped at `commit`, conflicting in `paths`; nothing was kept.
+    Stopped {
+        /// The commit that did not apply.
+        commit: String,
+        /// The conflicting paths.
+        paths: Vec<String>,
+    },
+}
+
+/// `git rebase --merge <onto>` of `head`, in a throwaway worktree of the bare repository `dir`,
+/// committed as `committer` (the `GIT_COMMITTER_*` pairs of a [`merge_author`] environment; each
+/// commit keeps its own author). The choices a user's config could change are pinned: the merge
+/// backend, patch-equivalent commits skipped, commits that become empty dropped, merges
+/// flattened, no autosquash or ref updates, verbatim messages, no hooks, no line-ending
+/// conversion and no LFS smudge — the rebase the browser replays (forge-web `rebase.ts`).
+pub fn rebase(
+    dir: &Path,
+    onto: &str,
+    head: &str,
+    committer: &[(String, String)],
+) -> Result<Rebased> {
+    let wt = tempfile::tempdir().context("creating a scratch worktree")?;
+    let wt_path = wt.path().to_string_lossy().to_string();
+    let lfs = [("GIT_LFS_SKIP_SMUDGE".to_string(), "1".to_string())];
+    let run = |cwd: &Path, args: &[&str], env: &[(String, String)]| {
+        let mut all: Vec<&str> = REBASE_CONFIG.to_vec();
+        all.extend_from_slice(args);
+        git(cwd, &all, env)
+    };
+    run(
+        dir,
+        &["worktree", "add", "-q", "--detach", &wt_path, head],
+        &lfs,
+    )?;
+    let mut env: Vec<(String, String)> = committer
+        .iter()
+        .filter(|(k, _)| k.starts_with("GIT_COMMITTER_"))
+        .cloned()
+        .collect();
+    env.extend(lfs.iter().cloned());
+    let result = (|| {
+        let rebased = run(
+            wt.path(),
+            &[
+                "rebase",
+                "--merge",
+                "--empty=drop",
+                "--no-reapply-cherry-picks",
+                "--no-rebase-merges",
+                "--no-autosquash",
+                "--no-update-refs",
+                "-q",
+                onto,
+            ],
+            &env,
+        );
+        if rebased.is_ok() {
+            return Ok(Rebased::Tip(git(wt.path(), &["rev-parse", "HEAD"], &[])?));
+        }
+        let Ok(commit) = git(
+            wt.path(),
+            &["rev-parse", "-q", "--verify", "REBASE_HEAD"],
+            &[],
+        ) else {
+            return rebased.map(|_| unreachable!("checked above"));
+        };
+        let paths = git(wt.path(), &["diff", "--name-only", "--diff-filter=U"], &[])
+            .map(|o| o.lines().map(str::to_string).collect())
+            .unwrap_or_default();
+        let _ = git(wt.path(), &["rebase", "--abort"], &[]);
+        Ok(Rebased::Stopped { commit, paths })
+    })();
+    let _ = git(dir, &["worktree", "remove", "--force", &wt_path], &[]);
+    result
+}
+
 /// The distinct `Name <email>` authors of the commits in `base..head` (oldest first), for
 /// `Co-authored-by` trailers.
 pub fn authors(dir: &Path, base: Option<&str>, head: &str) -> Result<Vec<String>> {
