@@ -445,6 +445,16 @@ impl std::fmt::Debug for LoadedIdentity {
     }
 }
 
+/// The Platform chain's height and block time, from a proof-verified response's metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainTip {
+    /// Platform block height.
+    pub height: u64,
+    /// Block time (ms since the Unix epoch).
+    pub time_ms: u64,
+}
+
 /// An rs-sdk-backed Platform client: a connected `Sdk` plus the network it targets and the
 /// forge-v2 contracts deployed there.
 ///
@@ -626,6 +636,19 @@ impl PlatformClient {
             .await
             .map_err(|e| Error::Platform(format!("proved protocol-version read failed: {e}")))?;
         Ok(metadata.protocol_version)
+    }
+
+    /// The Platform block height and block time (ms) from the metadata of a proof-verified
+    /// response (the current epoch): "as of" for a snapshot of reads, such as a mirror's
+    /// manifest. Fails when no proved response could be had.
+    pub async fn chain_tip(&self) -> Result<ChainTip> {
+        let (_epoch, metadata) = ExtendedEpochInfo::fetch_current_with_metadata(&self.sdk)
+            .await
+            .map_err(|e| Error::Platform(format!("proved chain-tip read failed: {e}")))?;
+        Ok(ChainTip {
+            height: metadata.height,
+            time_ms: metadata.time_ms,
+        })
     }
 
     /// The base58 ids of the contract groups `contract_id` belongs to as a whole
