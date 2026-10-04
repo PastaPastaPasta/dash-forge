@@ -512,6 +512,10 @@ fn explain_handover(
     if ctx.json {
         return;
     }
+    // Anyone can show a request: a look-alike page could ask for this command too.
+    eprintln!(
+        "  run this only for a Forge page you opened yourself: the key can write to Forge as you"
+    );
     if let Some(old) = replace {
         eprintln!("  key #{old} is disabled in the same update");
     }
