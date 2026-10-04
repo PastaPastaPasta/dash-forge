@@ -9,13 +9,13 @@
  * the source does not list yet sees how to add the file.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, ExternalLink, XCircle } from 'lucide-react'
 import { Time } from '@/components/repo/byline'
 import { Button } from '@/components/ui/button'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BACKLINK_FILE, backlinkFile } from '@/lib/rules/mirror-backlink'
-import { checkedClaim, checkMirrorClaim, githubRepoOf, newBacklinkUrl, type BacklinkCheck, type HeadCheck, type MirrorCheck } from '@/lib/view/mirror-check'
+import { backlinkPageUrl, checkedClaim, checkMirrorClaim, githubRepoOf, newBacklinkUrl, type BacklinkCheck, type HeadCheck, type MirrorCheck } from '@/lib/view/mirror-check'
 import { mirrorSourceOfRepo } from '@/lib/view/mirror-source'
 import type { RepoHome } from '@/lib/view'
 import { cn } from '@/lib/utils'
@@ -51,11 +51,11 @@ function backlinkLine(c: BacklinkCheck, label: string): { ok: boolean | null; te
 function headLine(c: HeadCheck, branch: string): { ok: boolean | null; text: string } {
   switch (c.kind) {
     case 'match':
-      return { ok: true, text: `${branch} matches GitHub at ${c.oid.slice(0, 7)}.` }
+      return { ok: true, text: `${branch} matches GitHub's default branch at ${c.oid.slice(0, 7)}.` }
     case 'differs':
-      return { ok: false, text: `${branch} differs: GitHub is at ${c.upstream.slice(0, 7)}.` }
-    case 'no-branch':
-      return { ok: null, text: `GitHub has no ${branch} branch.` }
+      return { ok: false, text: `${branch} differs from GitHub's default branch, which is at ${c.upstream.slice(0, 7)}.` }
+    case 'empty':
+      return { ok: null, text: 'The GitHub repository has no commits.' }
     case 'failed':
       return { ok: null, text: `Couldn't compare ${branch}. ${c.reason}` }
   }
@@ -85,25 +85,38 @@ export function MirrorClaim({ home }: { home: RepoHome }): JSX.Element | null {
   const { role } = useViewerRole(home.repo)
   const [check, setCheck] = useState<MirrorCheck | null>(null)
   const [pending, setPending] = useState(false)
+  // The claim on screen: an answer for another one (the viewer moved on) is dropped.
+  const claim = `${source?.label ?? ''}:${repoId}:${head?.branch ?? ''}:${head?.oid ?? ''}`
+  const current = useRef(claim)
+  current.current = claim
 
   // A claim already checked this session shows its answer without asking GitHub again.
   useEffect(() => {
     setCheck(null)
+    setPending(false)
     if (source === null) return
     let live = true
     void checkedClaim(source, repoId, head)?.then((c) => live && setCheck(c))
     return () => {
       live = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the claim is keyed by these values
-  }, [source?.label, repoId, head?.branch, head?.oid])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `claim` names everything it reads
+  }, [claim])
 
   if (source === null) return null
   const run = (): void => {
     const p = checkMirrorClaim(source, repoId, head)
     if (p === null) return
+    const asked = claim
     setPending(true)
-    void p.then(setCheck).finally(() => setPending(false))
+    void p.then(
+      (c) => {
+        if (current.current !== asked) return
+        setCheck(c)
+        setPending(false)
+      },
+      () => current.current === asked && setPending(false),
+    )
   }
   const vouched = check?.backlink.kind === 'listed'
   const updated = lastUpdated(home)
@@ -138,15 +151,26 @@ export function MirrorClaim({ home }: { home: RepoHome }): JSX.Element | null {
       {github !== null && role === 'maintainer' && !vouched ? (
         <p className="text-anvil-500 dark:text-anvil-400" data-testid="mirror-prove">
           Is this your mirror?{' '}
-          <a
-            href={newBacklinkUrl(github, head?.branch ?? home.defaultBranch, backlinkFile([repoId]))}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-medium text-forge-700 underline dark:text-forge-400"
-          >
-            Add {BACKLINK_FILE} to {source.label}
-          </a>{' '}
-          so readers can confirm it.
+          {check?.backlink.kind === 'not-listed' ? (
+            <>
+              <a href={backlinkPageUrl(github)} target="_blank" rel="noopener noreferrer" className="font-medium text-forge-700 underline dark:text-forge-400">
+                Add this repository to {BACKLINK_FILE}
+              </a>{' '}
+              in {source.label}: its id is <code className="break-all font-mono">{repoId}</code>.
+            </>
+          ) : (
+            <>
+              <a
+                href={newBacklinkUrl(github, home.defaultBranch, backlinkFile([repoId]))}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-forge-700 underline dark:text-forge-400"
+              >
+                Add {BACKLINK_FILE} to {source.label}
+              </a>{' '}
+              on its default branch so readers can confirm it.
+            </>
+          )}
         </p>
       ) : null}
     </div>

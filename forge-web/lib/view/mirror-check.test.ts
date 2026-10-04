@@ -15,7 +15,8 @@ function github(file: string | null, branchOid: string | null, status = 200): ty
       return file === null ? new Response('404: Not Found', { status: 404 }) : new Response(file, { status })
     }
     if (url.startsWith('https://api.github.com/')) {
-      return branchOid === null ? new Response('{}', { status: 404 }) : new Response(branchOid, { status })
+      expect(url).toMatch(/\/commits\/HEAD$/)
+      return branchOid === null ? new Response('{}', { status: 409 }) : new Response(branchOid, { status })
     }
     throw new Error(`unexpected ${url}`)
   }) as unknown as typeof fetch
@@ -31,8 +32,8 @@ describe('the source of a GitHub claim', () => {
 
   it('reads the file from the default branch and offers a prefilled new-file page', () => {
     expect(backlinkUrl({ owner: 'dashpay', name: 'dips' })).toBe('https://raw.githubusercontent.com/dashpay/dips/HEAD/.dash-forge.json')
-    const url = new URL(newBacklinkUrl({ owner: 'dashpay', name: 'dips' }, 'master', backlinkFile([REPO])))
-    expect(url.pathname).toBe('/dashpay/dips/new/master')
+    const url = new URL(newBacklinkUrl({ owner: 'dashpay', name: 'dips' }, 'refs/heads/release/1.0', backlinkFile([REPO])))
+    expect(url.pathname).toBe('/dashpay/dips/new/release/1.0')
     expect(url.searchParams.get('filename')).toBe('.dash-forge.json')
     expect(url.searchParams.get('value')).toBe(backlinkFile([REPO]))
   })
@@ -53,11 +54,11 @@ describe('checking a mirror claim', () => {
     expect((await checkMirrorClaim(SOURCE, REPO, null, github('not json', null)))?.backlink).toEqual({ kind: 'none' })
   })
 
-  it('says the branch differs, or that the source has none', async () => {
+  it('says the default branch differs, or that the source is empty', async () => {
     const other = 'b'.repeat(40)
     expect((await checkMirrorClaim(SOURCE, REPO, { branch: 'master', oid: OID }, github(null, other)))?.head).toEqual({ kind: 'differs', upstream: other })
     clearMirrorChecks()
-    expect((await checkMirrorClaim(SOURCE, REPO, { branch: 'master', oid: OID }, github(null, null)))?.head).toEqual({ kind: 'no-branch' })
+    expect((await checkMirrorClaim(SOURCE, REPO, { branch: 'master', oid: OID }, github(null, null)))?.head).toEqual({ kind: 'empty' })
   })
 
   it('never reads a failure as a match', async () => {
@@ -83,6 +84,19 @@ describe('checking a mirror claim', () => {
     await checkMirrorClaim(SOURCE, 'another', null, down)
     await Promise.resolve()
     expect(checkedClaim(SOURCE, 'another', null)).toBeNull()
+  })
+
+  it('reads a body that fails as a failed check, and asks again next time', async () => {
+    const broken = vi.fn(async () => ({ status: 200, ok: true, headers: new Headers(), text: async () => Promise.reject(new TypeError('network')) })) as unknown as typeof fetch
+    const c = await checkMirrorClaim(SOURCE, REPO, { branch: 'master', oid: OID }, broken)
+    expect(c?.backlink.kind).toBe('failed')
+    expect(c?.head?.kind).toBe('failed')
+    await Promise.resolve()
+    expect(checkedClaim(SOURCE, REPO, { branch: 'master', oid: OID })).toBeNull()
+  })
+
+  it('does not check a source it cannot name exactly', () => {
+    expect(githubRepoOf(mirrorSourceOfDescription('Mirror of github.com/dashpay/..', 'issue') as MirrorSource)).toBeNull()
   })
 
   it('does not check a source on another host', () => {

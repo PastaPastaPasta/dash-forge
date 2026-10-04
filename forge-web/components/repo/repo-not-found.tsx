@@ -9,7 +9,9 @@
  * and anyone can write it for the price of a repo (TS-01). So a claim never ranks a repo higher
  * and is shown as "says it mirrors", plainly. The viewer can check the claims with GitHub
  * (`lib/view/mirror-check.ts`): a repo the source's `.dash-forge.json` lists then reads "mirror
- * of", and comes first. Otherwise the order is stars, then age (the older first).
+ * of", and comes first when that source is the address asked for (`github.com/<owner>/<name>`);
+ * anyone can list their own repo in a look-alike source. Otherwise the order is stars, then age
+ * (the older first).
  */
 
 import Link from 'next/link'
@@ -28,27 +30,33 @@ import { mirrorSourceOfDescription, type MirrorSource } from '@/lib/view/mirror-
 /** Claims checked at most, per click: each is one request to GitHub. */
 const CHECK_MAX = 10
 
+const NO_CHECKS: ReadonlyMap<string, MirrorCheck> = new Map()
+
 export interface Suggestion {
   readonly repo: DiscoveredRepo
   readonly source: MirrorSource | null
   /** The source lists it (checked with GitHub). */
   readonly vouched: boolean
+  /** Vouched for by the very source the address names: these come first. */
+  readonly vouchedForAddress: boolean
 }
 
 /**
- * Repos named like the address, with the source each says it mirrors: the ones a checked
- * source lists first, then by stars, then the oldest. A claim alone moves nothing.
+ * Repos named like the address, with the source each says it mirrors: the ones the address's
+ * own GitHub repo lists first (once checked), then by stars, then the oldest. A claim alone, or
+ * a look-alike source that lists its own repo, moves nothing.
  */
-export function rankSuggestions(repos: readonly DiscoveredRepo[], checks: ReadonlyMap<string, MirrorCheck>): Suggestion[] {
+export function rankSuggestions(addr: RepoAddress, repos: readonly DiscoveredRepo[], checks: ReadonlyMap<string, MirrorCheck>): Suggestion[] {
+  const wanted = `github.com/${addr.owner}/${addr.name}`.toLowerCase()
   return repos
-    .map((repo) => ({
-      repo,
-      source: mirrorSourceOfDescription(repo.description, 'issue'),
-      vouched: checks.get(repo.key)?.backlink.kind === 'listed',
-    }))
+    .map((repo) => {
+      const source = mirrorSourceOfDescription(repo.description, 'issue')
+      const vouched = checks.get(repo.key)?.backlink.kind === 'listed'
+      return { repo, source, vouched, vouchedForAddress: vouched && source?.label.toLowerCase() === wanted }
+    })
     .sort(
       (a, b) =>
-        Number(b.vouched) - Number(a.vouched) ||
+        Number(b.vouchedForAddress) - Number(a.vouchedForAddress) ||
         (b.repo.stars ?? -1) - (a.repo.stars ?? -1) ||
         a.repo.createdAt - b.repo.createdAt ||
         a.repo.key.localeCompare(b.repo.key),
@@ -61,7 +69,7 @@ function ClaimText({ s, check }: { s: Suggestion; check: MirrorCheck | undefined
     return (
       <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400" data-testid="suggestion-claim" data-vouched="true">
         <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />
-        mirror of {s.source.label}, listed by GitHub
+        mirror of {s.source.label}, listed there
       </span>
     )
   }
@@ -78,20 +86,28 @@ export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
   const { sdk, ready, network } = useSdk()
   const name = addr.name.trim().toLowerCase()
   const found = useAsync(() => reposNamed(sdk!, name, { network }), [ready, name, network], { enabled: ready && sdk !== null && name !== '' })
-  const [checks, setChecks] = useState<ReadonlyMap<string, MirrorCheck>>(new Map())
+  // The answers for this address only: another missing address starts unchecked.
+  const [checked, setChecked] = useState<{ readonly name: string; readonly checks: ReadonlyMap<string, MirrorCheck> }>({ name, checks: new Map() })
+  const checks = checked.name === name ? checked.checks : NO_CHECKS
   const [checking, setChecking] = useState(false)
-  const suggestions = found.data ? rankSuggestions(found.data.repos, checks) : []
+  const suggestions = found.data ? rankSuggestions(addr, found.data.repos, checks) : []
   const claims = suggestions.filter((s) => s.source !== null && githubRepoOf(s.source) !== null).slice(0, CHECK_MAX)
+  // Offered until every claim has an answer: a failed check can be asked again.
+  const unanswered = claims.some((s) => {
+    const c = checks.get(s.repo.key)
+    return c === undefined || c.backlink.kind === 'failed'
+  })
 
   const checkClaims = (): void => {
+    const asked = name
     setChecking(true)
     void Promise.all(
       claims.map(async (s) => {
-        const c = await checkMirrorClaim(s.source as MirrorSource, s.repo.key, null)
-        return c === null ? null : ([s.repo.key, c] as const)
+        const c = await checkMirrorClaim(s.source as MirrorSource, s.repo.key, null)?.catch(() => null)
+        return c === null || c === undefined ? null : ([s.repo.key, c] as const)
       }),
     )
-      .then((done) => setChecks(new Map(done.filter((d) => d !== null))))
+      .then((done) => setChecked({ name: asked, checks: new Map(done.filter((d) => d !== null)) }))
       .finally(() => setChecking(false))
   }
 
@@ -132,7 +148,7 @@ export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
               </li>
             ))}
           </ul>
-          {claims.length > 0 && checks.size === 0 ? (
+          {unanswered ? (
             <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
               <Button variant="outline" size="sm" onClick={checkClaims} loading={checking} data-testid="suggestions-check">
                 Check mirror claims with GitHub

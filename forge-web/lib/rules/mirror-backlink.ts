@@ -22,9 +22,32 @@ export const BACKLINK_FILE = '.dash-forge.json'
 /** Larger files are not read: a list of mirrors fits easily, and a reader fetches it unasked. */
 export const BACKLINK_MAX_BYTES = 4096
 
+/**
+ * Deeper nesting is not read. JSON parsers differ in how deep they go (serde_json stops at
+ * 128), so both readers refuse a file nested deeper than this before parsing it.
+ */
+export const BACKLINK_MAX_DEPTH = 64
+
+/** How deeply `text`'s arrays and objects nest, brackets inside strings not counted. */
+function nesting(text: string): number {
+  let depth = 0
+  let deepest = 0
+  let inString = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      if (c === '\\') i++
+      else if (c === '"') inString = false
+    } else if (c === '"') inString = true
+    else if (c === '[' || c === '{') deepest = Math.max(deepest, ++depth)
+    else if (c === ']' || c === '}') depth--
+  }
+  return deepest
+}
+
 /** What a back-link file says about one repo. */
 export interface Backlink {
-  /** The file is a JSON object whose `mirrors` is a list, within {@link BACKLINK_MAX_BYTES}. */
+  /** The file is a JSON object whose `mirrors` is a list, within {@link BACKLINK_MAX_BYTES} and {@link BACKLINK_MAX_DEPTH}. */
   readonly valid: boolean
   /** It lists `repoId` (never true when the file is not valid). */
   readonly listed: boolean
@@ -33,7 +56,7 @@ export interface Backlink {
 /** Read a back-link file's text for `repoId`. */
 export function readBacklink(text: string, repoId: string): Backlink {
   const invalid = { valid: false, listed: false }
-  if (new TextEncoder().encode(text).length > BACKLINK_MAX_BYTES) return invalid
+  if (new TextEncoder().encode(text).length > BACKLINK_MAX_BYTES || nesting(text) > BACKLINK_MAX_DEPTH) return invalid
   let parsed: unknown
   try {
     parsed = JSON.parse(text)

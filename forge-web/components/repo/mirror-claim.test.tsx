@@ -85,7 +85,7 @@ describe('MirrorClaim', () => {
     await settle()
     expect(q('mirror-provenance')?.textContent).toMatch(/^Mirror of github\.com\/dashpay\/dips/)
     expect(q('mirror-check-backlink')?.dataset['ok']).toBe('true')
-    expect(q('mirror-check-head')?.textContent).toBe('master matches GitHub at a31fcf2.')
+    expect(q('mirror-check-head')?.textContent).toBe("master matches GitHub's default branch at a31fcf2.")
   })
 
   it('keeps the claim unconfirmed when the source lists another repo or moved on', async () => {
@@ -95,7 +95,23 @@ describe('MirrorClaim', () => {
     await settle()
     expect(q('mirror-provenance')?.textContent).toMatch(/^Says it mirrors/)
     expect(q('mirror-check-backlink')?.dataset['ok']).toBe('false')
-    expect(q('mirror-check-head')?.textContent).toBe('master differs: GitHub is at bbbbbbb.')
+    expect(q('mirror-check-head')?.textContent).toBe("master differs from GitHub's default branch, which is at bbbbbbb.")
+  })
+
+  it('drops an answer that arrives after the viewer moved to another repo', async () => {
+    const waiting: ((r: Response) => void)[] = []
+    const release = (): void => {
+      for (const [i, res] of waiting.entries()) res(new Response(i === 0 ? backlinkFile([REPO_ID]) : OID))
+    }
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((res) => waiting.push(res))))
+    act(() => root.render(<MirrorClaim home={home('Mirror of github.com/dashpay/dips')} />))
+    act(() => q('mirror-check')?.click())
+    act(() => root.render(<MirrorClaim home={home('Mirror of github.com/dashpay/dash')} />))
+    expect(waiting).toHaveLength(2)
+    release()
+    await settle()
+    expect(q('mirror-provenance')?.textContent).toMatch(/^Says it mirrors github\.com\/dashpay\/dash/)
+    expect(q('mirror-check-result')).toBeNull()
   })
 
   it('shows a maintainer of an unlisted mirror how to add the file', () => {
@@ -105,6 +121,16 @@ describe('MirrorClaim', () => {
     const url = new URL(String(link?.getAttribute('href')))
     expect(url.pathname).toBe('/dashpay/dips/new/master')
     expect(url.searchParams.get('value')).toBe(backlinkFile([REPO_ID]))
+  })
+
+  it('points a maintainer at the existing list when it names other mirrors', async () => {
+    role = 'maintainer'
+    stubGithub(backlinkFile(['someone-else']), OID)
+    act(() => root.render(<MirrorClaim home={home('Mirror of github.com/dashpay/dips')} />))
+    act(() => q('mirror-check')?.click())
+    await settle()
+    expect(q('mirror-prove')?.querySelector('a')?.getAttribute('href')).toBe('https://github.com/dashpay/dips/blob/HEAD/.dash-forge.json')
+    expect(q('mirror-prove')?.textContent).toContain(REPO_ID)
     role = 'writer'
     act(() => root.render(<MirrorClaim home={home('Mirror of github.com/dashpay/dips ')} />))
     expect(q('mirror-prove')).toBeNull()

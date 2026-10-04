@@ -21,10 +21,42 @@ pub const BACKLINK_FILE: &str = ".dash-forge.json";
 /// Larger files are not read: a list of mirrors fits easily, and a reader fetches it unasked.
 pub const BACKLINK_MAX_BYTES: usize = 4096;
 
+/// Deeper nesting is not read. JSON parsers differ in how deep they go (serde_json stops at
+/// 128), so both readers refuse a file nested deeper than this before parsing it.
+pub const BACKLINK_MAX_DEPTH: usize = 64;
+
+/// How deeply `text`'s arrays and objects nest, brackets inside strings not counted.
+fn nesting(text: &str) -> usize {
+    let (mut depth, mut deepest, mut in_string, mut escaped) = (0usize, 0usize, false, false);
+    for c in text.bytes() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+        } else {
+            match c {
+                b'"' => in_string = true,
+                b'[' | b'{' => {
+                    depth += 1;
+                    deepest = deepest.max(depth);
+                }
+                b']' | b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    deepest
+}
+
 /// What a back-link file says about one repo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Backlink {
-    /// The file is a JSON object whose `mirrors` is a list, within [`BACKLINK_MAX_BYTES`].
+    /// The file is a JSON object whose `mirrors` is a list, within [`BACKLINK_MAX_BYTES`] and
+    /// [`BACKLINK_MAX_DEPTH`].
     pub valid: bool,
     /// It lists the repo (never true when the file is not valid).
     pub listed: bool,
@@ -37,7 +69,7 @@ pub fn read_backlink(text: &str, repo_id: &str) -> Backlink {
         valid: false,
         listed: false,
     };
-    if text.len() > BACKLINK_MAX_BYTES {
+    if text.len() > BACKLINK_MAX_BYTES || nesting(text) > BACKLINK_MAX_DEPTH {
         return invalid;
     }
     let Ok(serde_json::Value::Object(file)) = serde_json::from_str::<serde_json::Value>(text)
