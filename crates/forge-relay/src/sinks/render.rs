@@ -65,17 +65,17 @@ pub fn short_id(id: &str) -> String {
     }
 }
 
-/// One line: control characters (newlines included) become spaces, runs of spaces collapse,
-/// and the result is cut to `max` characters with an ellipsis.
+/// One line: invisible format characters are dropped, control characters (newlines included)
+/// become spaces, runs of spaces collapse, and the result is cut to `max` characters with an
+/// ellipsis.
 pub fn clean_line(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(s.len().min(max * 4));
     let mut space = false;
     for c in s.chars() {
-        let c = if c.is_control() || is_bidi_control(c) {
-            ' '
-        } else {
-            c
-        };
+        if is_bidi_control(c) {
+            continue;
+        }
+        let c = if c.is_control() { ' ' } else { c };
         if c.is_whitespace() {
             if !space && !out.is_empty() {
                 out.push(' ');
@@ -95,6 +95,7 @@ pub fn clean_text(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(s.len().min(max * 4));
     let mut newlines = 0;
     for c in s.trim().chars() {
+        let c = if is_line_separator(c) { '\n' } else { c };
         if c == '\n' {
             newlines += 1;
             if newlines <= 2 {
@@ -111,9 +112,23 @@ pub fn clean_text(s: &str, max: usize) -> String {
     truncate(out.trim_end(), max)
 }
 
-/// Bidirectional overrides and isolates (Trojan Source): a title must read the way it shows.
+/// Bidirectional marks, overrides and isolates (Trojan Source), and invisible format
+/// characters (zero-width spaces and joiners, the BOM): a title must read the way it shows.
 fn is_bidi_control(c: char) -> bool {
-    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}')
+    matches!(
+        c,
+        '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{061C}'
+            | '\u{2060}'
+            | '\u{FEFF}'
+    )
+}
+
+/// Unicode line and paragraph separators: a newline for an excerpt, a space for a title.
+fn is_line_separator(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}' | '\u{0085}')
 }
 
 /// `s` cut to `max` characters, with an ellipsis when it was cut.
@@ -419,6 +434,15 @@ mod tests {
             "{}",
             n.title
         );
+        let e = pull_request_event(
+            &meta(),
+            "P",
+            "opened",
+            &pr("pay\u{200B}pal\u{061C}\u{FEFF} x\u{2028}y", false),
+        );
+        let n = render(&e, &names()).unwrap();
+        assert!(n.title.ends_with("paypal x y"), "{}", n.title);
+        assert_eq!(clean_text("a\u{2028}> b", 50), "a\n> b");
         let long = "x".repeat(1000);
         let e = pull_request_event(&meta(), "P", "opened", &pr(&long, false));
         let n = render(&e, &names()).unwrap();

@@ -93,6 +93,11 @@ fn smtp_and_matrix_and_ntfy_blocks() {
         "[[sink]]\nname = \"m\"\nkind = \"matrix\"\nhomeserver = \"https://matrix.org\"\nroom = \"#forge:matrix.org\"\naccess-token = \"env:FORGE_SINK_T3_TOK\"\n",
     );
     assert!(alias.unwrap_err().to_string().contains("room id"));
+    // Room version 12 ids have no server part.
+    let v12 = sink(
+        "[[sink]]\nname = \"m\"\nkind = \"matrix\"\nhomeserver = \"https://matrix.org\"\nroom = \"!31hneApxJ_1o-63DmFrpeqnkFfWppnzWso1JvH3ogLM\"\naccess-token = \"env:FORGE_SINK_T3_TOK\"\n",
+    );
+    assert!(v12.is_ok());
 
     let n =
         sink("[[sink]]\nname = \"n\"\nkind = \"ntfy\"\ntopic = \"forge-alerts\"\npriority = 4\n")

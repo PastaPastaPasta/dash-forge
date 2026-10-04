@@ -438,25 +438,36 @@ async fn resolve_identity(client: &PlatformClient, who: &str) -> Result<String> 
     })
 }
 
+/// The most watched repos read for `[watch] identity`; past this a warning says so.
+const MAX_WATCHED_REPOS: usize = 1000;
+
 /// The repos `identity` watches: its public forge-community `watch` documents (the `byOwner`
-/// index; the newest 100).
+/// index, every page up to [`MAX_WATCHED_REPOS`]), bounded by [`DISCOVERY_TIMEOUT`].
 async fn watched_repos(shared: &Shared, identity: &str) -> Result<BTreeSet<String>> {
-    let docs = shared
-        .client
-        .query_documents(
-            &shared.contracts.community,
-            forge_core::collab::v2::DOC_WATCH,
-            &[QueryFilter::eq(
-                "$ownerId",
-                FieldValue::identifier(decode_identifier(identity)?),
-            )],
-            &[],
-            100,
-            None,
-        )
-        .await?;
+    let filter = [QueryFilter::eq(
+        "$ownerId",
+        FieldValue::identifier(decode_identifier(identity)?),
+    )];
+    let read = shared.client.query_documents_up_to(
+        &shared.contracts.community,
+        forge_core::collab::v2::DOC_WATCH,
+        &filter,
+        &[],
+        MAX_WATCHED_REPOS,
+    );
+    let docs = tokio::time::timeout(DISCOVERY_TIMEOUT, read)
+        .await
+        .map_err(|_| RelayError::Config("reading the watched repos timed out".into()))??;
+    if docs.len() > MAX_WATCHED_REPOS {
+        tracing::warn!(
+            identity,
+            max = MAX_WATCHED_REPOS,
+            "[watch] identity watches more repos than the relay follows; the rest are skipped"
+        );
+    }
     Ok(docs
         .iter()
+        .take(MAX_WATCHED_REPOS)
         .filter_map(|d| d.field_bytes32("repoId"))
         .map(forge_core::platform::encode_identifier)
         .collect())
@@ -584,7 +595,9 @@ fn shared_refresh_interval(cfg: &RelayConfig) -> Duration {
 /// * Another relay holding the queue is always fatal (two relays would deliver the same
 ///   retries).
 fn open_queue(cfg: &RelayConfig, hooks_possible: bool) -> Result<RetryQueue> {
-    if !hooks_possible && cfg.state_dir.is_none() {
+    // Nothing is ever queued for a retry without a hook: a watch-only relay (or an embedder)
+    // must not take, and lock, the default state dir another relay of this user may own.
+    if !hooks_possible && !cfg.state_dir_explicit {
         return Ok(RetryQueue::in_memory(cfg.retry_schedule.clone()));
     }
     let not_durable = "the delivery queue is NOT durable: the default state dir cannot be used, \
@@ -690,6 +703,18 @@ struct Discovery {
     refused: BTreeSet<String>,
 }
 
+/// The union of two event filters, where empty (or `*`) means every event.
+fn union_events(a: &[String], b: &[String]) -> Vec<String> {
+    let all = |e: &[String]| e.is_empty() || e.iter().any(|x| x == "*");
+    if all(a) || all(b) {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = a.iter().chain(b).cloned().collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// The watch sets read at every discovery: `[watch] identity`'s watched repos and an
 /// embedder's feed.
 struct DynamicWatch {
@@ -740,9 +765,12 @@ impl DynamicWatch {
         }
         if let Some(feed) = &self.feed {
             for r in feed.borrow().iter() {
-                wanted
-                    .entry(r.clone())
-                    .or_insert_with(|| self.feed_events.clone());
+                match wanted.get_mut(r) {
+                    Some(events) => *events = union_events(events, &self.feed_events),
+                    None => {
+                        wanted.insert(r.clone(), self.feed_events.clone());
+                    }
+                }
             }
         }
         let now = now_ms();
@@ -767,7 +795,6 @@ impl Discovery {
         let shared = Arc::clone(&self.shared);
         let mut subs = self.statics.clone();
         subs.extend(self.watch.subscriptions(&shared, startup).await);
-        subs.retain(|s| !self.refused.contains(&s.repo_id));
         let mut failed = BTreeSet::new();
         if let Some(identity) = &self.identity {
             let found = tokio::time::timeout(
@@ -791,6 +818,8 @@ impl Discovery {
                 .filter(|s| failed.contains(&s.repo_id) && s.document_id.is_some())
                 .cloned(),
         );
+        // A private repo is refused for good, whichever subscription named it.
+        subs.retain(|s| !self.refused.contains(&s.repo_id));
         let wanted = subscriptions::repos_of(&subs);
 
         // Stop serving repos with no hook left, remembering where they stopped.
@@ -848,9 +877,10 @@ impl Discovery {
         // Wake-up and watch subscriptions only make a repo served; they are never delivered.
         let hooks: Vec<WebhookSub> = subs.iter().filter(|s| !s.is_internal()).cloned().collect();
         shared.dispatcher.sync(&hooks, &authoritative);
+        let hooked: BTreeSet<&str> = hooks.iter().map(|h| h.repo_id.as_str()).collect();
         shared.dispatcher.set_hookless(
             subs.iter()
-                .filter(|s| !hooks.iter().any(|h| h.repo_id == s.repo_id))
+                .filter(|s| !hooked.contains(s.repo_id.as_str()))
                 .map(|s| s.repo_id.clone())
                 .collect(),
         );
@@ -1905,6 +1935,17 @@ fn prune_heads(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watch_event_filters_union_with_empty_meaning_all() {
+        let v = |e: &[&str]| e.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(union_events(&v(&["push"]), &[]).is_empty());
+        assert!(union_events(&v(&["*"]), &v(&["push"])).is_empty());
+        assert_eq!(
+            union_events(&v(&["push", "issues"]), &v(&["release", "push"])),
+            v(&["issues", "push", "release"])
+        );
+    }
 
     #[test]
     fn an_unusable_default_state_dir_falls_back_to_memory_but_not_an_explicit_one() {

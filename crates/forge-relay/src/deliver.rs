@@ -636,6 +636,12 @@ impl Dispatcher {
         format!("{}:{}", sub.repo_id, sub.hook_id)
     }
 
+    /// The served repos that have no hook by design (wake-ups, sinks, watch mode): their
+    /// events reach no webhook, and that is not worth a warning.
+    pub fn set_hookless(&self, repos: std::collections::HashSet<String>) {
+        *lock_set(&self.hookless) = repos;
+    }
+
     /// Make the running workers exactly `subs`: start new hooks, update changed ones, cancel
     /// hooks that are gone (their in-memory events are dropped).
     ///
@@ -643,12 +649,6 @@ impl Dispatcher {
     /// such a repo that is gone was removed or disabled: its durable-queue entries are dropped
     /// at once (so a hook re-enabled later under the same id never gets them). Hooks of other
     /// repos keep their entries until their repo is read again.
-    /// The served repos that have no hook by design (wake-ups, sinks, watch mode): their
-    /// events reach no webhook, and that is not worth a warning.
-    pub fn set_hookless(&self, repos: std::collections::HashSet<String>) {
-        *lock_set(&self.hookless) = repos;
-    }
-
     pub fn sync(&self, subs: &[WebhookSub], authoritative: &std::collections::HashSet<String>) {
         let wanted: HashMap<String, &WebhookSub> = subs.iter().map(|s| (Self::key(s), s)).collect();
         let mut hooks = self

@@ -404,7 +404,14 @@ impl SinkFile {
                     .homeserver
                     .ok_or_else(|| config_err(&name, "needs homeserver"))?;
                 let room = self.room.ok_or_else(|| config_err(&name, "needs room"))?;
-                if !room.starts_with('!') || !room.contains(':') {
+                // `!opaque:server`, or `!opaque` alone from room version 12 on.
+                if room.len() < 2
+                    || room.len() > 255
+                    || !room.starts_with('!')
+                    || room
+                        .chars()
+                        .any(|c| c.is_whitespace() || c.is_control() || c == '/')
+                {
                     return Err(config_err(
                         &name,
                         "room must be a room id (!abc:example.org), not an alias",

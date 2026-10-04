@@ -227,11 +227,16 @@ to = ["me@example.org"]                 # 1 to 50 addresses
   per webhook), and retries a failure 3 times (2 s, 10 s, 30 s, or the receiver's `Retry-After`
   up to 2 min). A 4xx other than 408 and 429 is not retried. Sinks are not durable: notices
   still queued when the relay stops are lost (webhooks keep their retry queue).
-- **Watch mode** needs no relay identity and no state dir. `[watch] identity` is re-read at every
-  discovery (`--refresh-cycles`), so a repo the identity starts watching is picked up within a
-  minute and read from that moment on, not from its start.
+- **Email** goes as one plain-text message to every address in `to`, so the recipients see
+  each other's addresses: list only people who may, or use a list address.
+- **`--lookback` replays to sinks too**: with `lookback = n`, every start posts the last `n`
+  documents of each stream again. Leave it at 0 when sinks are configured.
+- **Watch mode** needs no relay identity and no state dir (a watch-only relay keeps nothing to
+  retry, so it does not lock the default state dir). `[watch] identity` is re-read at every
+  discovery (`--refresh-cycles`; up to 1,000 watched repos), so a repo the identity starts
+  watching is picked up within a minute and read from that moment on, not from its start.
 - **Private repositories are never served**: their content is encrypted to members, and the
-  relay is not one. A private repo in a watch set is logged once and skipped.
+  relay is not one. A private repo is logged once and skipped from then on.
 - **Logs** name the sink, its kind, the repo id and the event, never a URL, token, address or
   body.
 
