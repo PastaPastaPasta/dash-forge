@@ -389,6 +389,33 @@ A PR shows as merged only when **both** are true: the `merge` event exists (cons
 
 **Close without merging:** `dg pr close` / `dg pr reopen`. The author can close and reopen their own PR, as with issues.
 
+### Code owners
+
+A `CODEOWNERS` file names who owns which paths, in GitHub's format or GitLab's. Forge reads the first of these that exists on the PR's **base** branch: `.forge/CODEOWNERS`, `.github/CODEOWNERS`, `CODEOWNERS`, `docs/CODEOWNERS`, `.gitlab/CODEOWNERS`. A file over 3 MB is ignored, as on GitHub.
+
+```text
+# The last matching line wins.
+*            @alice
+/docs/       @bob 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB
+*.rs         @carol.dash
+```
+
+**Owners** are DPNS names (`@alice`, `@alice.dash`) or identity ids (bare, or after `@`). Teams (`@org/team`), e-mail addresses and GitLab roles (`@@maintainer`) are shown but never asked: Forge has no teams, and identities have no e-mail. In a repository mirrored from GitHub, `@login` is looked up as a DPNS name, which may belong to someone else; only members are ever asked (below), so a stranger with that name is not.
+
+**Patterns** follow GitHub: gitignore patterns, with the last matching line winning, except that `docs/*` owns only the files directly in `docs/`, and `[` `]` are plain characters (so `app/[slug]/` means that folder). A line starting with `!` or holding `***` is skipped. GitLab sections work too (`[Docs]`, `^[Optional]`, `[Backend][2] @default-owner`): in each section the last matching line counts, and the owners of all sections are combined. A section's approval count is read but not enforced.
+
+**When you open a PR,** on the web or with `dg pr create`, the owners of the files it changes (a renamed file counts under its old and new path) are asked for review, as GitHub does:
+
+- only current maintainers and writers are asked, never triage members, readers, non-members or you (GitHub likewise ignores a code owner without write access);
+- at most 15 reviewers;
+- each request is one more document, included in the cost shown before you sign. A member writes them as `event`s; anyone else, as the PR's author, as `authorEvent`s (both kind 13).
+
+The web form lists them under **Reviewers from code owners**, each with a box to leave them out, and "Show n not asked" says why the rest are not asked. `dg pr create` prints the same list before its confirm prompt, and `--json` reports it under `codeOwners`. `dg pr create --no-code-owners` skips it. `dg` reads the base and the head from the clone you run it in, or fetches them into a scratch repository when the clone lacks them.
+
+**The Files tab** marks each owned file with a shield (filled when you own it). Select it for the owners and the `CODEOWNERS` line that decided them.
+
+**Not supported:** "require review from code owners" as a branch rule. The `policy` document has no field for it, and adding one is a contract update (an optional `policy` property), so it is left for that update. A code owner's approval counts like any other member's.
+
 ---
 
 ## Releases

@@ -1,0 +1,40 @@
+{
+  "name": "brackets_are_literal",
+  "description": "`[` and `]` are literals (GitHub: Next.js route folders mean themselves); a bracketed line that does not end its brackets with whitespace or a line end, or whose approval count is not a number, is a rule, not a section header.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "[id]/page.tsx @route\napp/[slug]/ @slug\n[Bad][x] @z\n",
+    "paths": [
+      "[id]/page.tsx",
+      "app/[slug]/page.tsx",
+      "app/s/page.tsx",
+      "[Bad][x]"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "[id]/page.tsx": [
+        "@route"
+      ],
+      "app/[slug]/page.tsx": [
+        "@slug"
+      ],
+      "app/s/page.tsx": [],
+      "[Bad][x]": [
+        "@z"
+      ]
+    },
+    "all": [
+      "@z",
+      "@route",
+      "@slug"
+    ],
+    "kinds": {
+      "@z": "name",
+      "@route": "name",
+      "@slug": "name"
+    },
+    "errors": []
+  }
+}

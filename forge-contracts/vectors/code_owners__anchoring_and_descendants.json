@@ -1,0 +1,58 @@
+{
+  "name": "anchoring_and_descendants",
+  "description": "A pattern with no slash matches at any depth and owns everything under a directory of that name (logs, *.md even as a directory); a leading slash or a middle slash anchors at the root.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "logs @a\n*.md @b\n/root.txt @c\nsrc/*.rs @d\n",
+    "paths": [
+      "logs",
+      "x/logs/y.txt",
+      "deep/README.md",
+      "a.md/inner.txt",
+      "root.txt",
+      "x/root.txt",
+      "src/main.rs",
+      "src/bin/x.rs",
+      "lib/src/main.rs"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "logs": [
+        "@a"
+      ],
+      "x/logs/y.txt": [
+        "@a"
+      ],
+      "deep/README.md": [
+        "@b"
+      ],
+      "a.md/inner.txt": [
+        "@b"
+      ],
+      "root.txt": [
+        "@c"
+      ],
+      "x/root.txt": [],
+      "src/main.rs": [
+        "@d"
+      ],
+      "src/bin/x.rs": [],
+      "lib/src/main.rs": []
+    },
+    "all": [
+      "@b",
+      "@a",
+      "@c",
+      "@d"
+    ],
+    "kinds": {
+      "@a": "name",
+      "@b": "name",
+      "@c": "name",
+      "@d": "name"
+    },
+    "errors": []
+  }
+}

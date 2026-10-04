@@ -359,6 +359,7 @@ export function ComparisonDiff({
   wrap,
   onSides,
   onResult,
+  onError,
 }: {
   baseRepo: RepoRef
   sourceId: string
@@ -366,6 +367,8 @@ export function ComparisonDiff({
   noHead: string
   /** Told the comparison once it is computed (null while it is not). */
   onResult?: (comparison: PullComparison | null) => void
+  /** Told why the comparison failed (null while it has not). */
+  onError?: (error: string | null) => void
   wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
   /**
    * Told the readers the comparison uses (e.g. to read the head commit), and a key that changes
@@ -379,6 +382,10 @@ export function ComparisonDiff({
     onResult?.(state.data)
     return () => onResult?.(null)
   }, [onResult, state.data])
+  useEffect(() => {
+    onError?.(state.error)
+    return () => onError?.(null)
+  }, [onError, state.error])
   useEffect(() => {
     onSides?.(sides, sidesKey)
     // Taken back when they change or this comparison goes (another head picked): nothing may be

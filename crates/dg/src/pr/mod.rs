@@ -27,6 +27,7 @@
 
 pub mod branch;
 pub mod inline;
+pub mod owners;
 pub mod review;
 pub mod state;
 pub mod threads;
@@ -397,6 +398,20 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     if !s.collab().patch_create_pending(handle, &input, &journal)? {
         refuse_duplicate(&s, handle, &source, &head_ref, &base, args.draft).await?;
     }
+    // Once the PR may be created: the base's CODEOWNERS: whom to ask for review once the PR is open (GitHub's behaviour).
+    let base_tip = target_refs
+        .iter()
+        .find(|(n, _)| *n == base)
+        .and_then(|(_, st)| forge_core::rules::tip_of(st));
+    let owner_plan = match (&base_tip, args.no_code_owners) {
+        (Some(tip), false) => {
+            owners::plan(
+                ctx, &s, handle, &cwd, &base, tip, &source, &head_ref, &head_oid,
+            )
+            .await
+        }
+        _ => None,
+    };
     if !ctx.json {
         println!(
             "Open PR {title:?} in {}: {} {head_ref} ({}) → {base}",
@@ -412,16 +427,42 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         + input.source_ref_name.as_deref().map_or(0, str::len);
     let pr_quote = crate::quote::target_create(text as u64);
     let price = ctx.usd_price();
+    // Each code owner review request is one more event naming its reviewer.
+    let asked = owner_plan.as_ref().map_or(0, |p| p.requests.request.len());
+    let requests_quote = owner_plan.as_ref().map_or(0, |p| {
+        (event_estimate(p.route, 0) + crate::quote::ADDRESSEE_EXTRA) * asked as u64
+    });
+    if let (Some(plan), false) = (&owner_plan, ctx.json) {
+        owners::print_plan(plan);
+    }
+    let requests_text = match asked {
+        0 => String::new(),
+        1 => " and one code owner review request".to_string(),
+        n => format!(" and {n} code owner review requests"),
+    };
     ctx.confirm_or_cancel(&if args.draft {
         format!(
-            "Open it as a draft? (the PR and a draft transition: two documents, {})",
-            cost_line(pr_quote + crate::quote::TRANSITION, price)
+            "Open it as a draft? (the PR and a draft transition{requests_text}: {} documents, {})",
+            2 + asked,
+            cost_line(pr_quote + crate::quote::TRANSITION + requests_quote, price)
+        )
+    } else if asked > 0 {
+        format!(
+            "Open it? (the PR{requests_text}: {} documents, {})",
+            1 + asked,
+            cost_line(pr_quote + requests_quote, price)
         )
     } else {
         format!("Open it? (one document, {})", cost_line(pr_quote, price))
     })?;
     let before = s.balance().await;
     let created = s.collab().create_patch(handle, &input, &journal).await?;
+    let requested = match &owner_plan {
+        Some(plan) if !plan.requests.request.is_empty() => {
+            owners::request(&s, handle, created.number, &created.document_id, plan).await
+        }
+        _ => Vec::new(),
+    };
     let spent = s.spent_since(before).await;
     ctx.emit(
         json!({
@@ -438,6 +479,11 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             "draft": args.draft,
             "draftTransitionId": created.draft_transition,
             "resumed": created.resumed,
+            "codeOwners": owner_plan.as_ref().map(|p| json!({
+                "file": p.file,
+                "requested": requested,
+                "skipped": p.requests.skipped,
+            })),
             "cost": cost_json(spent, price),
         }),
         || {
@@ -453,6 +499,13 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
                 handle.display(),
                 cost_line(spent, price)
             );
+            let ok = requested.iter().filter(|r| r["requested"] == true).count();
+            if ok > 0 {
+                println!(
+                    "✓ asked {ok} code owner{} for review",
+                    if ok == 1 { "" } else { "s" }
+                );
+            }
         },
     );
     Ok(())
@@ -2601,7 +2654,7 @@ pub(crate) fn scratch_repo() -> Result<tempfile::TempDir> {
 /// The environment for fetching from a repository: the key is handed over only when it is
 /// `private`, whose content needs it (a private repository cannot be forked, so a PR's source
 /// repository is as private as its target). A public fetch never gets the key.
-fn read_env(ctx: &Ctx, private: bool) -> Result<git::DashEnv<'_>> {
+pub(crate) fn read_env(ctx: &Ctx, private: bool) -> Result<git::DashEnv<'_>> {
     if private {
         git::dash_env_signing(ctx)
     } else {
@@ -2632,31 +2685,49 @@ pub(crate) fn fetch_base_and_head(
     env: &git::DashEnv<'_>,
 ) -> Result<()> {
     require_git_safe(view)?;
-    let base_ref = &view.patch.base_ref_name;
-    let head = &view.head;
     if view.base_tip.is_some() {
-        git::git_dash(
-            dir,
-            &[
-                "fetch",
-                "-q",
-                &format!("dash://{}", handle.id()),
-                &format!("+{base_ref}:refs/remotes/base/tip"),
-            ],
-            env,
-        )
-        .context("fetching the base branch")?;
+        fetch_base(dir, handle, &view.patch.base_ref_name, env)?;
     }
+    fetch_pr_head(dir, &view.patch.source_repo_id, &view.head, env)
+}
+
+/// Fetch `base_ref` of `handle` (a checked branch name) into `dir` as `refs/remotes/base/tip`.
+pub(crate) fn fetch_base(
+    dir: &Path,
+    handle: &Repo,
+    base_ref: &str,
+    env: &git::DashEnv<'_>,
+) -> Result<()> {
+    git::git_dash(
+        dir,
+        &[
+            "fetch",
+            "-q",
+            &format!("dash://{}", handle.id()),
+            &format!("+{base_ref}:refs/remotes/base/tip"),
+        ],
+        env,
+    )
+    .context("fetching the base branch")?;
+    Ok(())
+}
+
+/// Fetch the PR head `head` from its source repository `source_id` into `dir`, unless `dir` has it.
+pub(crate) fn fetch_pr_head(
+    dir: &Path,
+    source_id: &str,
+    head: &str,
+    env: &git::DashEnv<'_>,
+) -> Result<()> {
     if !git::has_object(dir, head) {
-        let source_url = format!("dash://{}", view.patch.source_repo_id);
-        // Refspec fixed by us: the PR's `sourceRefName` is attacker-chosen and never used
-        // as a refspec. The helper downloads the repo's packs whatever is asked for.
+        // Refspec fixed by us: a PR's `sourceRefName` is attacker-chosen and never used as a
+        // refspec. The helper downloads the repo's packs whatever is asked for.
         git::git_dash(
             dir,
             &[
                 "fetch",
                 "-q",
-                &source_url,
+                &format!("dash://{source_id}"),
                 "+refs/heads/*:refs/remotes/source/*",
             ],
             env,

@@ -1,0 +1,165 @@
+{
+  "name": "capped_at_fifteen",
+  "description": "At most 15 reviewers are requested; the rest are left out as over the cap, in token order.",
+  "case": "code_owner_requests",
+  "rules": "v2",
+  "input": {
+    "tokens": [
+      "@u1",
+      "@u2",
+      "@u3",
+      "@u4",
+      "@u5",
+      "@u6",
+      "@u7",
+      "@u8",
+      "@u9",
+      "@u10",
+      "@u11",
+      "@u12",
+      "@u13",
+      "@u14",
+      "@u15",
+      "@u16",
+      "@u17"
+    ],
+    "resolved": {
+      "@u1": "U1",
+      "@u2": "U2",
+      "@u3": "U3",
+      "@u4": "U4",
+      "@u5": "U5",
+      "@u6": "U6",
+      "@u7": "U7",
+      "@u8": "U8",
+      "@u9": "U9",
+      "@u10": "U10",
+      "@u11": "U11",
+      "@u12": "U12",
+      "@u13": "U13",
+      "@u14": "U14",
+      "@u15": "U15",
+      "@u16": "U16",
+      "@u17": "U17"
+    },
+    "memberships": [
+      {
+        "identity": "U1",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U2",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U3",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U4",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U5",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U6",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U7",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U8",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U9",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U10",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U11",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U12",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U13",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U14",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U15",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U16",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "U17",
+        "role": "writer",
+        "createdAt": 1
+      }
+    ],
+    "author": "Z"
+  },
+  "expected": {
+    "request": [
+      "U1",
+      "U2",
+      "U3",
+      "U4",
+      "U5",
+      "U6",
+      "U7",
+      "U8",
+      "U9",
+      "U10",
+      "U11",
+      "U12",
+      "U13",
+      "U14",
+      "U15"
+    ],
+    "skipped": [
+      {
+        "token": "@u16",
+        "reason": "cap",
+        "identity": "U16"
+      },
+      {
+        "token": "@u17",
+        "reason": "cap",
+        "identity": "U17"
+      }
+    ]
+  }
+}

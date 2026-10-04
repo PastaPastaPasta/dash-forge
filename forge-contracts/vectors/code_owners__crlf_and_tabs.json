@@ -1,0 +1,35 @@
+{
+  "name": "crlf_and_tabs",
+  "description": "CRLF line ends and tab separators.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "*\t@a\r\n*.rs\t\t@b @c\r\n",
+    "paths": [
+      "y.txt",
+      "x.rs"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "y.txt": [
+        "@a"
+      ],
+      "x.rs": [
+        "@b",
+        "@c"
+      ]
+    },
+    "all": [
+      "@b",
+      "@c",
+      "@a"
+    ],
+    "kinds": {
+      "@b": "name",
+      "@c": "name",
+      "@a": "name"
+    },
+    "errors": []
+  }
+}

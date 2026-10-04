@@ -1,0 +1,80 @@
+{
+  "name": "github_documented_example",
+  "description": "GitHub's documented CODEOWNERS example: the last matching rule wins, an inline comment ends the owners, a later rule with no owners leaves a path unowned until an even later one owns it.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "# This is a comment.\n# Each line is a file pattern followed by one or more owners.\n*       @global-owner1 @global-owner2\n\n# Order is important; the last matching pattern takes the most precedence.\n*.js    @js-owner #This is an inline comment.\n*.go docs@example.com\n*.txt @octo-org/octocats\n/build/logs/ @doctocat\n\n# The `docs/*` pattern will match files like `docs/getting-started.md`.\ndocs/*  docs@example.com\napps/ @octocat\n/docs/ @doctocat\n/scripts/ @doctocat @octocat\n**/logs @octocat\n\n/apps/ @octocat\n/apps/github\n\n/apps/ @octocat\n/apps/github @doctocat\n",
+    "paths": [
+      "README.md",
+      "src/index.js",
+      "main.go",
+      "notes.txt",
+      "build/logs/2024/app.log",
+      "docs/getting-started.md",
+      "docs/build-app/troubleshooting.md",
+      "deep/apps/x.txt",
+      "apps/github/readme.md",
+      "scripts/deploy.sh",
+      "deeply/nested/logs/x"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "README.md": [
+        "@global-owner1",
+        "@global-owner2"
+      ],
+      "src/index.js": [
+        "@js-owner"
+      ],
+      "main.go": [
+        "docs@example.com"
+      ],
+      "notes.txt": [
+        "@octo-org/octocats"
+      ],
+      "build/logs/2024/app.log": [
+        "@octocat"
+      ],
+      "docs/getting-started.md": [
+        "@doctocat"
+      ],
+      "docs/build-app/troubleshooting.md": [
+        "@doctocat"
+      ],
+      "deep/apps/x.txt": [
+        "@octocat"
+      ],
+      "apps/github/readme.md": [
+        "@doctocat"
+      ],
+      "scripts/deploy.sh": [
+        "@doctocat",
+        "@octocat"
+      ],
+      "deeply/nested/logs/x": [
+        "@octocat"
+      ]
+    },
+    "all": [
+      "@global-owner1",
+      "@global-owner2",
+      "@doctocat",
+      "@octocat",
+      "docs@example.com",
+      "@octo-org/octocats",
+      "@js-owner"
+    ],
+    "kinds": {
+      "@global-owner1": "name",
+      "@global-owner2": "name",
+      "@doctocat": "name",
+      "@octocat": "name",
+      "docs@example.com": "email",
+      "@octo-org/octocats": "team",
+      "@js-owner": "name"
+    },
+    "errors": []
+  }
+}

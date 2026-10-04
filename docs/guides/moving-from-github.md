@@ -258,6 +258,7 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 | **Reactions** | None: each one would be a paid document | A comment, or a review approval |
 | **Verified commits** | Supported for Ed25519 SSH and Ed25519/ECDSA OpenPGP keys you publish on your profile; RSA keys don't fit | `dg profile key add` ([Signed commits](identity-and-keys.md#signed-commits-and-verified-badges)) |
 | **Assignees** | Not imported; you can assign on Forge (`dg issue assign`) | Re-assign open items after the import |
+| **CODEOWNERS** | Read from the base branch; new PRs ask the owners for review ([Code owners](collaborating.md#code-owners)). Teams and e-mail owners are not asked, `@login` is read as a DPNS name, and "require review from code owners" is not a branch rule | Name people by DPNS name or identity id; ask for the approvals with the branch policy's required approvals |
 | **Organizations and teams** | Repositories belong to one identity; members are per repository | A shared maintainer identity, or add each person to each repository |
 | **Transferring a repository** | Not possible: the owner is fixed | Create a repository under the new owner and push to it (history is unchanged) |
 | **Deleting a repository, issue or PR** | Not possible: they are permanent | Archive the repository (`dg repo archive`), close issues and PRs |
