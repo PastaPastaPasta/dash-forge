@@ -342,7 +342,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
                         "{}:{fork_branch} already has {target} ({}) and {} of its own; nothing to sync",
                         fork.display(),
                         short(&parent_tip),
-                        ahead.map_or_else(|| "commits".into(), |n| format!("{n} commit(s)"))
+                        ahead.map_or_else(|| "commits".into(), |n| crate::fmt::plural(n, "commit"))
                     );
                     println!(
                         "  propose them: dg pr create {} --head {fork_branch} --head-repo {}",
@@ -358,7 +358,9 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
             let behind = commits_between(dir, fork_tip, &parent_tip);
             let ahead = commits_between(dir, &parent_tip, fork_tip);
             let counts = match (ahead, behind) {
-                (Some(a), Some(b)) => format!(" ({a} commit(s) ahead, {b} behind)"),
+                (Some(a), Some(b)) => {
+                    format!(" ({} ahead, {b} behind)", crate::fmt::plural(a, "commit"))
+                }
                 _ => String::new(),
             };
             return Err(crate::errors::reported(
@@ -414,8 +416,8 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
         return Err(UserError::new(
             codes::PACKS_UNREADABLE,
             format!(
-                "fork not synced: {} pack(s) of {} have no copy a fork can reference",
-                plan.unreferenceable.len(),
+                "fork not synced: {} of {} have no copy a fork can reference",
+                crate::fmt::plural(plan.unreferenceable.len(), "pack"),
                 parent.display()
             ),
         )
@@ -442,12 +444,12 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     let price = ctx.usd_price();
     if !ctx.json {
         println!(
-            "Sync {}:{fork_branch} with {target}: fast-forward {} → {}{}\n  {} pack manifest(s) by reference, nothing re-uploaded, + 1 ref update   {}",
+            "Sync {}:{fork_branch} with {target}: fast-forward {} → {}{}\n  {} by reference, nothing re-uploaded, + 1 ref update   {}",
             fork.display(),
             fork_tip.as_deref().map_or_else(|| "(new branch)".into(), short),
             short(&parent_tip),
-            commits.map_or_else(String::new, |n| format!(" ({n} commit(s))")),
-            plan.manifests.len(),
+            commits.map_or_else(String::new, |n| format!(" ({})", crate::fmt::plural(n, "commit"))),
+            crate::fmt::plural(plan.manifests.len(), "pack"),
             cost_line(estimate, price)
         );
     }
@@ -480,7 +482,10 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
                 "✓ synced {}:{fork_branch} with {target}: now at {}{}",
                 fork.display(),
                 short(&parent_tip),
-                commits.map_or_else(String::new, |n| format!(" ({n} new commit(s))"))
+                commits.map_or_else(String::new, |n| format!(
+                    " ({})",
+                    crate::fmt::plural(n, "new commit")
+                ))
             );
             println!(
                 "  packs:   {} recorded by reference, nothing re-uploaded",

@@ -76,10 +76,12 @@ impl GroupCheck {
         if self.unknown.is_empty() {
             return None;
         }
-        let what = if self.extra_parts {
-            "additional group member(s)"
-        } else {
-            "newer Forge contract revision(s)"
+        let many = self.unknown.len() != 1;
+        let what = match (self.extra_parts, many) {
+            (true, true) => "additional group members",
+            (true, false) => "an additional group member",
+            (false, true) => "newer Forge contract revisions",
+            (false, false) => "a newer Forge contract revision",
         };
         let unchecked = if self.unchecked.is_empty() {
             String::new()
@@ -193,7 +195,7 @@ async fn run_check(
             "refusing to bind a key to the forge contract group",
         )
         .cause(format!(
-            "group {group} on {network} holds member(s) this dg does not know ({}), and strict \
+            "group {group} on {network} holds members this dg does not know ({}), and strict \
              group checking (--strict-group / {STRICT_ENV}=1) accepts only the known set",
             unknown.join(", ")
         ))
@@ -455,7 +457,7 @@ mod tests {
             .notice()
             .expect("a notice");
         assert!(
-            notice.contains("newer Forge contract revision(s) present"),
+            notice.contains("a newer Forge contract revision present"),
             "{notice}"
         );
         assert!(notice.contains("NEWCOLLAB"), "{notice}");
@@ -549,10 +551,7 @@ mod tests {
             .document_types
             .push(("TRENDING".into(), "trend".into()));
         let notice = check(&chain, false).await.unwrap().notice().unwrap();
-        assert!(
-            notice.starts_with("newer Forge contract revision(s)"),
-            "{notice}"
-        );
+        assert!(notice.contains("newer Forge contract revision"), "{notice}");
         assert!(
             notice.contains("TRENDING (document type trend)"),
             "{notice}"
@@ -567,7 +566,11 @@ mod tests {
         chain.members.tokens.push(("CORE".into(), 0));
         let r = check(&chain, false).await.unwrap();
         let notice = r.notice().unwrap();
-        assert!(notice.starts_with("additional group member(s)"), "{notice}");
+        assert!(
+            notice.starts_with("an additional group member")
+                || notice.starts_with("additional group members"),
+            "{notice}"
+        );
         assert!(notice.contains("CORE (token 0)"), "{notice}");
         assert!(
             chain.reads().is_empty(),

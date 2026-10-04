@@ -118,6 +118,46 @@ pub fn dash_amount(dash: f64) -> String {
     }
 }
 
+/// A price for copy: three significant figures, trailing zeros trimmed (`0.0102`, `0.000976`,
+/// `1.18`). Exact credits stay in `--json` and `dg cost`.
+pub fn dash_rounded(dash: f64) -> String {
+    if dash <= 0.0 || !dash.is_finite() {
+        return dash_amount(dash.max(0.0));
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let magnitude = dash.log10().floor() as i32;
+    let decimals = usize::try_from((2 - magnitude).clamp(0, 8)).unwrap_or(8);
+    let s = format!("{dash:.decimals$}");
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
+/// "1 asset" / "3 assets": a count and its noun, never "asset(s)". Nouns whose plural is not
+/// a bare `s` go through [`plural_with`].
+pub fn plural<N: Copy + std::fmt::Display + PartialEq + From<u8>>(n: N, one: &str) -> String {
+    if n == N::from(1) {
+        format!("1 {one}")
+    } else {
+        format!("{n} {one}s")
+    }
+}
+
+/// [`plural`] with an explicit plural form ("1 identity" / "2 identities").
+pub fn plural_with<N: Copy + std::fmt::Display + PartialEq + From<u8>>(
+    n: N,
+    one: &str,
+    many: &str,
+) -> String {
+    if n == N::from(1) {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
 /// Set once this process has shown a price ([`cost_line`]): a confirmation that cannot be
 /// asked then says to check that estimate, and otherwise to check what the command does
 /// (QW2-079: "check the estimate" where none was shown).
@@ -130,8 +170,8 @@ pub fn cost_line(credits: u64, price_usd: Option<f64>) -> String {
     ESTIMATE_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
     let dash = credits_to_dash(credits);
     match price_usd {
-        Some(price) => format!("~{} DASH ≈ ${:.2}", dash_amount(dash), dash * price),
-        None => format!("~{} DASH", dash_amount(dash)),
+        Some(price) => format!("~{} DASH ≈ ${:.2}", dash_rounded(dash), dash * price),
+        None => format!("~{} DASH", dash_rounded(dash)),
     }
 }
 
@@ -218,10 +258,11 @@ pub fn balance_json(identity_id: &str, credits: u64, network: &str) -> Value {
 pub fn hidden_note(repo: &forge_core::scope::RepoRef, hidden: usize) -> String {
     if repo.visibility == Visibility::Private {
         format!(
-            "({hidden} document(s) hidden: malformed, written after a key rotation, or not readable with your keys; `dg repo keys status` explains)"
+            "({} hidden: malformed, written after a key rotation, or not readable with your keys; `dg repo keys status` explains)",
+            plural(hidden, "item")
         )
     } else {
-        format!("({hidden} malformed document(s) hidden)")
+        format!("({} hidden)", plural(hidden, "malformed item"))
     }
 }
 
@@ -233,12 +274,14 @@ pub fn event_values_note(hidden: usize, plaintext: usize) -> Option<String> {
     let mut parts = Vec::new();
     if hidden > 0 {
         parts.push(format!(
-            "{hidden} event value(s) (labels, assignees, milestones) not readable with your keys"
+            "{} (labels, assignees, milestones) not readable with your keys",
+            plural(hidden, "event value")
         ));
     }
     if plaintext > 0 {
         parts.push(format!(
-            "{plaintext} event value(s) written by an older client, not encrypted"
+            "{} written by an older client, not encrypted",
+            plural(plaintext, "event value")
         ));
     }
     (!parts.is_empty()).then(|| format!("({})", parts.join("; ")))
@@ -559,7 +602,7 @@ mod tests {
         assert_eq!(event_values_note(0, 0), None);
         let n = event_values_note(2, 1).unwrap();
         assert!(
-            n.contains("2 event value(s)") && n.contains("1 event value(s)"),
+            n.contains("2 event values") && n.contains("1 event value "),
             "{n}"
         );
         assert!(n.contains("not encrypted"), "{n}");
@@ -627,6 +670,23 @@ mod tests {
         assert_eq!(usd_price(&Network::Mainnet), Some(FALLBACK_DASH_USD));
     }
 
+    /// Prices are shown to three significant figures, plurals are spelled out.
+    #[test]
+    fn prices_round_and_plurals_spell_out() {
+        assert_eq!(dash_rounded(0.010_178_12), "0.0102");
+        assert_eq!(dash_rounded(0.000_976), "0.000976");
+        assert_eq!(dash_rounded(0.005_174_99), "0.00517");
+        assert_eq!(dash_rounded(1.18), "1.18");
+        assert_eq!(dash_rounded(32.54), "32.5");
+        assert_eq!(dash_rounded(250.0), "250");
+        assert_eq!(dash_rounded(0.000_000_01), "0.00000001");
+        assert_eq!(dash_rounded(0.0), "0");
+        assert_eq!(plural(1u64, "asset"), "1 asset");
+        assert_eq!(plural(0u64, "asset"), "0 assets");
+        assert_eq!(plural(3usize, "asset"), "3 assets");
+        assert_eq!(plural_with(2u64, "identity", "identities"), "2 identities");
+    }
+
     /// QW2-075: devnet and testnet DASH has no cash value, so no dollar figure is shown for it,
     /// whatever `DASH_USD` says.
     #[test]
@@ -640,7 +700,7 @@ mod tests {
             assert_eq!(usd_price(&network), None, "{network:?}");
         }
         let line = cost_line(1_017_812_000, None);
-        assert_eq!(line, "~0.01017812 DASH");
+        assert_eq!(line, "~0.0102 DASH");
         let v = cost_json(1_017_812_000, None);
         assert!(v["usd"].is_null() && v["usdPrice"].is_null(), "{v}");
         assert_eq!(v["credits"].as_u64(), Some(1_017_812_000));

@@ -1,0 +1,41 @@
+Work with Dash Forge from the command line
+
+Usage: dg [OPTIONS] <COMMAND>
+
+Commands:
+  auth           Identities and keys: create, sign in, limited keys, DPNS names, export
+  repo           Repository lifecycle and configuration
+  issue          Issue tracking
+  pr             Pull requests
+  release        Releases
+  label          Label definitions (apply one with `dg issue label`)
+  milestone      Milestones (put an issue in one with `dg issue milestone`)
+  profile        Your public profile: display name, bio, avatar, links, location, company, signing keys
+  verify-commit  Check commits' signatures against the keys a repository's owner and members publish on their profiles: the web's Verified / Unverified badges, for a clone's commits
+  collab         Repository members (maintainers, writers, triage members and readers)
+  cost           Cost estimates and spend audits
+  repack         Consolidate a repo's packs into one superseding pack (deletes nothing on Platform)
+  reseed         Re-upload packs and record the new copies (maintainers and writers; --from-local writes nothing to Platform)
+  storage        Storage availability
+  webhook        Manage webhooks
+  ci             CI: runner keys and memberships, and check runs on commits
+  search         Search issues and pull requests (in one repository) and repositories, with the web search box's qualifiers (`is:open label:bug author:@me -label:wontfix`)
+  api            Raw Platform reads: a proved document query, printed as JSON (gh api)
+  import         Import or re-sync a GitHub or GitLab repo: code, issues, pull requests, releases
+  doctor         Diagnose the identity, network, contracts, storage, git config and toolchain
+  init           Publish this directory's git repo to Forge (creates it if needed, safe to re-run)
+  completions    Print a shell completion script to stdout [alias: completion]
+  help           Print this message or the help of the given subcommand(s)
+
+Options:
+      --json                    Emit machine-readable JSON instead of human output
+  -y, --yes                     Skip confirmation prompts (for automation/CI)
+      --network <NETWORK>       Target network (default: testnet, or the configured default) [possible values: testnet, mainnet, devnet]
+      --devnet-name <NAME>      Devnet name (e.g. `sakura`); implies `--network devnet`
+      --dapi-addresses <ADDRS>  Devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults to the built-in list for that devnet
+      --identity <FILE>         Override the identity file for this invocation
+      --allow-archived          Write to an archived repository anyway (issues, PRs, comments, reviews, merges, releases). Forge apps enforce archiving, not Platform
+  -h, --help                    Print help (see more with '--help')
+  -V, --version                 Print version
+
+Inside a dash:// clone, leave out <REPO> to use the clone's repository (`dg issue label 3 add bug`), or name one anywhere on the line with -R/--repo <REPO>, as with gh.

@@ -19,12 +19,14 @@ use forge_core::user_error::{codes, UserError};
 pub enum KeysCommand {
     /// List the identity's keys with purpose, level, limits and state.
     List,
-    /// Register a key: a limited key this computer then signs with (default: 0.25 DASH / 180
+    /// Register a limited key for this computer, or an encryption key.
+    ///
+    /// A limited key is what this computer then signs with (default: 0.25 DASH / 180
     /// days, bound to dash-forge; `--replace <id>` disables the old one in the same update), or
     /// with --encryption the ENCRYPTION key private repositories need. Needs the master key once.
     /// For a key to hand to CI use `dg auth export --new-key`.
     Add(AddArgs),
-    /// Disable a key on chain. Needs the master key once.
+    /// Disable a key on Platform. Needs the master key once.
     Disable {
         /// The key id (`dg auth keys list`).
         id: u32,
@@ -61,7 +63,7 @@ pub struct AddArgs {
     /// Disable this limited key in the same update (default: the one this computer signs with).
     #[arg(long, value_name = "KEY_ID")]
     pub replace: Option<u32>,
-    /// Keep the key this computer signs with now live on chain (it is no longer stored here).
+    /// Keep the key this computer signs with now valid on Platform (it is no longer stored here).
     #[arg(long, conflicts_with = "replace")]
     pub keep_current: bool,
     /// The identity file with the master key (else you are asked for the words).

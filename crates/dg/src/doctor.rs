@@ -251,7 +251,7 @@ pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
     }
     let mut err = UserError::new(
         codes::CHECKS_FAILED,
-        format!("{} check(s) failed", failing.len()),
+        format!("{} failed", crate::fmt::plural(failing.len(), "check")),
     )
     .cause(format!("failing: {}", failing.join(", ")))
     .fix("apply the fix shown next to each ✗ row, then run `dg doctor` again");
@@ -311,8 +311,12 @@ fn print_report(ctx: &Ctx, sections: &[Section], counts: &Counts, fix: bool) {
         "\n{}",
         match (counts.failed, counts.warned) {
             (0, 0) => "Everything checks out.".to_string(),
-            (0, w) => format!("{w} warning(s); nothing is broken."),
-            (f, w) => format!("{f} problem(s), {w} warning(s)."),
+            (0, w) => format!("{}. Nothing is broken.", crate::fmt::plural(w, "warning")),
+            (f, w) => format!(
+                "{}, {}.",
+                crate::fmt::plural(f, "problem"),
+                crate::fmt::plural(w, "warning")
+            ),
         }
     );
     if counts.fixable > 0 && !fix {

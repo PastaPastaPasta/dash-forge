@@ -701,7 +701,7 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         )
         .cause(format!("stopped after {fetched}: {reason}"))
         .fix("try again in a minute: a node served an incomplete page, and another node will be asked")
-        .note("nothing partial was used: an incomplete history is refused rather than folded"),
+        .note("stopped rather than show an incomplete history"),
         CoreError::NotFound => not_found(chain, ctx),
         CoreError::IdentityNotFound {
             identity_id,
@@ -1155,7 +1155,7 @@ fn missing_reference(
         .fix(format!(
             "ask a maintainer to do it, or the owner to make you one: `dg collab add {repo} <your identity id> --role maintainer`"
         ))
-        .note("refused at consensus: nothing was written");
+        .note("Platform refused the write, so nothing was written");
     }
     if path == "consentBy" {
         // RC1: a maintainer/writer enrolled by the owner names the member's own `consent`.
@@ -1202,7 +1202,7 @@ fn frozen_field(
     )
     .cause(detail)
     .fix(fix)
-    .note("refused at consensus: nothing was written")
+    .note("Platform refused the write, so nothing was written")
 }
 
 /// `(document type, property)` of a 40128 message: `property 'logUrl' of document … (type
@@ -1453,7 +1453,7 @@ fn role_refused(ctx: &ErrorContext<'_>, refusal: &RoleRefusal, detail: &str) -> 
     u.fix(format!(
         "`dg collab list {repo}` shows your role; ask the owner for the one this needs (`dg collab add {repo} <your identity id> --role {needs}`)"
     ))
-    .note("refused at consensus: nothing was written")
+    .note("Platform refused the write, so nothing was written")
 }
 
 /// The members of a role, for "… cannot make it".
@@ -1504,7 +1504,7 @@ fn not_deployed(ctx: &ErrorContext<'_>, network: &str) -> UserError {
         "forge-contracts/deployments/{network}.json records no forge-v2 contracts"
     ));
     let Some(there) = crate::network::suggested_v2_network() else {
-        return u.note("no network has a forge-v2 deployment in this build");
+        return u.note("Dash Forge isn't available on any network in this build");
     };
     if !ctx.via_git {
         return u.fix(format!("use a network where it is: `{}`", there.dg_flags()));

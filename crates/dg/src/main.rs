@@ -17,6 +17,8 @@ mod doctor;
 mod errors;
 mod fmt;
 mod git;
+#[cfg(test)]
+mod help_lint;
 mod import;
 mod infer;
 mod issue;
@@ -60,7 +62,7 @@ use forge_core::user_error::{codes, ErrorContext, UserError};
 #[command(
     name = "dg",
     version = env!("DASH_FORGE_VERSION"),
-    about = "Dash Forge CLI (gh-shaped)",
+    about = "Work with Dash Forge from the command line",
     after_help = "Inside a dash:// clone, leave out <REPO> to use the clone's repository \
                   (`dg issue label 3 add bug`), or name one anywhere on the line with \
                   -R/--repo <REPO>, as with gh."
@@ -83,7 +85,7 @@ pub struct Cli {
     pub devnet_name: Option<String>,
 
     /// Devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults
-    /// to the list in `forge-contracts/deployments/devnet-<name>.json`.
+    /// to the built-in list for that devnet.
     #[arg(long, global = true, value_name = "ADDRS")]
     pub dapi_addresses: Option<String>,
 
@@ -92,7 +94,7 @@ pub struct Cli {
     pub identity: Option<PathBuf>,
 
     /// Write to an archived repository anyway (issues, PRs, comments, reviews, merges,
-    /// releases). Archiving is a client rule; consensus still admits a member's writes.
+    /// releases). Forge apps enforce archiving, not Platform.
     #[arg(long, global = true)]
     pub allow_archived: bool,
 
@@ -133,7 +135,7 @@ pub enum Command {
     /// Issue tracking.
     #[command(subcommand)]
     Issue(IssueCommand),
-    /// Pull requests (patches).
+    /// Pull requests.
     #[command(subcommand)]
     Pr(PrCommand),
     /// Releases.
@@ -176,13 +178,13 @@ pub enum Command {
         /// env-configured targets (FORGE_S3_* / FORGE_IPFS_*); prefer --profile.
         #[arg(long, conflicts_with = "profile")]
         backend: Option<Backend>,
-        /// Storage profile(s) (from `dg storage add`, or `platform`) for the consolidated
+        /// Storage profiles (from `dg storage add`, or `platform`) for the consolidated
         /// pack; a comma-separated list stores it on each, and every one must confirm.
         #[arg(long)]
         profile: Option<String>,
     },
     /// Re-upload packs and record the new copies (maintainers and writers; --from-local
-    /// writes nothing on chain).
+    /// writes nothing to Platform).
     Reseed {
         /// The repository (`owner/name`).
         repo: Option<String>,
@@ -207,7 +209,7 @@ pub enum Command {
     /// Storage availability.
     #[command(subcommand)]
     Storage(StorageCommand),
-    /// Webhooks a relay delivers (forge-v2).
+    /// Manage webhooks.
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
     /// CI: runner keys and memberships, and check runs on commits.
@@ -220,7 +222,7 @@ pub enum Command {
     /// Raw Platform reads: a proved document query, printed as JSON (gh api).
     #[command(subcommand)]
     Api(ApiCommand),
-    /// Import (or re-sync) a GitHub repository or GitLab project into forge-v2: code, issues, PRs/MRs, releases.
+    /// Import or re-sync a GitHub or GitLab repo: code, issues, pull requests, releases.
     Import(Box<import::ImportArgs>),
     /// Diagnose the identity, network, contracts, storage, git config and toolchain.
     Doctor {
@@ -230,9 +232,10 @@ pub enum Command {
         #[arg(long)]
         fix: bool,
     },
-    /// Publish the git repository in the current directory: create its forge-v2 repo if
-    /// missing, add the remote and push the current branch (`repo create --push` for the
-    /// cwd; safe to re-run).
+    /// Publish this directory's git repo to Forge (creates it if needed, safe to re-run).
+    ///
+    /// Adds the remote and pushes the current branch: `repo create --push` for the current
+    /// directory.
     Init(Box<InitArgs>),
     /// Print a shell completion script to stdout.
     ///
@@ -270,7 +273,7 @@ pub struct CreateOptions {
     /// The git remote to add for the repo (default: origin). Pushing flows only.
     #[arg(long, value_name = "NAME")]
     pub remote: Option<String>,
-    /// Record the storage's public URL on chain even though it is not a public https
+    /// Record the storage's public URL on Platform even though it is not a public https
     /// address (loopback, LAN, plain http, a temporary tunnel). Without it the command stops
     /// before creating anything. `dg init` keeps it for the repository (git config
     /// `dash.allowPrivateUri`), so later plain `git push`es record it too.
@@ -293,7 +296,7 @@ impl CreateOptions {
 /// `dg repo create` arguments.
 #[derive(Debug, clap::Args)]
 pub struct RepoCreateArgs {
-    /// Repository name: the URL slug (a-z, 0-9, `.`, `_`, `-`; upper case is folded).
+    /// Repository name: the URL slug (a-z, 0-9, `.`, `_`, `-`; upper case becomes lower case).
     /// Default: this directory's name.
     pub name: Option<String>,
     /// Also add the remote (`--remote`, default origin) to the git repository here and push
@@ -316,8 +319,9 @@ pub struct InitArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum RepoCommand {
-    /// Create a forge-v2 repository (repo + your maintainer membership + initial config);
-    /// with --push, also add the remote and push the current branch.
+    /// Create a repo, with you as its maintainer.
+    ///
+    /// With --push, also add the remote and push the current branch.
     Create(Box<RepoCreateArgs>),
     /// Clone a repo (`owner/name`) with `git clone dash://…`, and record this network in the
     /// clone's git config so `git push` from it goes to the same place.
@@ -327,8 +331,9 @@ pub enum RepoCommand {
         /// Where to clone it (default: the repository's name).
         dir: Option<std::path::PathBuf>,
     },
-    /// Fork a repo: a new repo with `forkOf`, the parent's packs recorded by reference
-    /// (nothing re-uploaded) and its branches and tags copied.
+    /// Fork a repo (nothing is re-uploaded).
+    ///
+    /// The fork records the parent's packs by reference and copies its branches and tags.
     Fork {
         /// The repository (`owner/name`).
         repo: String,
@@ -340,9 +345,10 @@ pub enum RepoCommand {
         #[arg(long)]
         default_branch_only: bool,
     },
-    /// Sync a fork with the repository it was forked from (GitHub's "Sync fork"): fast-forward
-    /// its default branch to the parent's default branch, or `--branch` to the parent's branch
-    /// of the same name. The parent's new packs are recorded by reference (nothing uploaded),
+    /// Sync a fork with the repo it was forked from (GitHub's "Sync fork").
+    ///
+    /// Fast-forwards the fork's default branch to the parent's default branch, or `--branch`
+    /// to the parent's branch of the same name. The parent's new packs are recorded by reference (nothing uploaded),
     /// then one ref update moves the branch. A branch with commits of its own is never moved
     /// (E105 names the pull request that merges the parent's instead). Maintainers and writers
     /// of the fork; a protected branch, maintainers.
@@ -353,16 +359,15 @@ pub enum RepoCommand {
         #[arg(long)]
         branch: Option<String>,
     },
-    /// Star a repo. A new star also counts toward Trending (one more small document, up to
-    /// 0.00023 DASH) unless `--no-trending` or `trending = false` in config.toml. Where the
-    /// contract counts every star itself (RC2's fused star), there is no extra document, and
-    /// Trending leaves out stars on private repositories and an owner's star on a repository
-    /// less than a week old.
+    /// Star a repo. Stars count toward Trending on Explore.
+    ///
+    /// Trending leaves out stars on private repositories, and an owner's star on a repository
+    /// less than a week old. On a network with a Trending opt-out, `--no-trending` or
+    /// `trending = false` in config.toml leaves this star out too.
     Star {
         /// The repository (`owner/name`).
         repo: String,
-        /// Star without counting toward Trending (no `starBeat`; no effect where every star
-        /// counts).
+        /// Star without counting toward Trending, on a network that has the opt-out.
         #[arg(long)]
         no_trending: bool,
     },
@@ -419,18 +424,21 @@ pub enum RepoCommand {
     /// Protected branches: which refs only maintainers may update.
     #[command(subcommand)]
     Protect(RepoProtectCommand),
-    /// The branch policy (required approvals, approver role, merge methods): a client rule
-    /// every Forge client applies to its merge controls; consensus does not enforce it.
+    /// The branch policy: required approvals, approver role and merge methods.
+    ///
+    /// Forge apps enforce it, not Platform.
     #[command(subcommand)]
     Policy(RepoPolicyCommand),
-    /// Publish the browse index for stored packs that have none (a push that could not
+    /// Publish missing browse and history indexes.
+    ///
+    /// Publishes the browse index for stored packs that have none (a push that could not
     /// publish it), and the default branch's history index (last-commit column, exact commit
     /// count) when its tip has none. Reads the packs and uploads only the indexes: nothing is
     /// stored again.
     Reindex {
         /// The repository (`owner/name`).
         repo: String,
-        /// Storage profile(s) for the index (from `dg storage add`, or `platform`); every one
+        /// Storage profiles for the index (from `dg storage add`, or `platform`); every one
         /// must confirm. Default: Platform, when the packs are stored there. Required when they
         /// are not, and inside a clone of the repository whose dash.storage names your own
         /// storage.
@@ -441,8 +449,10 @@ pub enum RepoCommand {
         #[arg(long, value_name = "DIR")]
         git_dir: Option<std::path::PathBuf>,
     },
-    /// Mark a repo archived (maintainers): every Forge client refuses writes to it. A client
-    /// rule; consensus still admits a member's writes.
+    /// Archive a repo, making it read-only (maintainers).
+    ///
+    /// Forge apps refuse writes to it. Platform doesn't check this, so it still accepts a
+    /// member's writes from elsewhere.
     Archive {
         /// The repository (`owner/name`).
         repo: String,
@@ -666,7 +676,7 @@ pub enum IssueCommand {
         /// The repository (`owner/name`; inside a clone, the clone's).
         repo: String,
     },
-    /// List issues (every issue is read and folded; filters apply to the whole repo).
+    /// List issues (filters apply to the whole repo).
     List(Box<IssueListArgs>),
     /// View an issue.
     View {
@@ -837,6 +847,7 @@ pub enum IssueCommand {
         off: bool,
     },
     /// Hide a comment (`--comment`), or the whole issue, from readers (unhide with `--off`).
+    ///
     /// Maintainers only. Nothing is deleted: readers see a collapsed "hidden by" row they can
     /// expand, and the hide stays in the timeline as the record of who hid what.
     Hide {
@@ -1013,8 +1024,9 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
     },
-    /// Review a pull request on its current head: a verdict, a summary and inline comments,
-    /// written as one review plus one comment per `--file`. `--pending` keeps the inline
+    /// Review a pull request: a verdict, a summary and inline comments.
+    ///
+    /// Written on the PR's current head as one review plus one comment per `--file`. `--pending` keeps the inline
     /// comments in a local draft until a later run submits them with a verdict. An
     /// interrupted submit resumes when run again, and writes nothing twice.
     Review(Box<PrReviewArgs>),
@@ -1024,8 +1036,9 @@ pub enum PrCommand {
     /// and milestone (maintainers, writers and triage members), and its base branch (`--base`,
     /// maintainers and writers), as `gh pr edit` does. One confirmation for every change.
     Edit(Box<PrEditArgs>),
-    /// Move the PR head to where its source branch points now (a `headUpdate`). `git push`
-    /// does this for you when you push the branch of your own PR (unless
+    /// Update the PR to the latest commit on its branch.
+    ///
+    /// `git push` does this for you when you push the branch of your own PR (unless
     /// `git config dash.prAutoSync false`).
     Sync {
         /// The repository (`owner/name`).
@@ -1373,8 +1386,8 @@ pub struct PrMergeArgs {
     pub delete_branch: bool,
     /// Merge although the branch policy's approvals or checks are not met (maintainers only;
     /// "bypass rules"). The bypassed rules are recorded on the PR as a policy-bypass event,
-    /// which nobody can delete; the allowed merge methods still apply. The policy is a client rule every Forge client applies;
-    /// consensus does not enforce it.
+    /// which nobody can delete; the allowed merge methods still apply. Forge apps enforce the
+    /// policy, not Platform.
     #[arg(long = "override-policy")]
     pub override_policy: bool,
     /// Only post the merge event (the merge was pushed some other way).
@@ -1450,8 +1463,9 @@ pub enum ReleaseCommand {
         #[arg(long, short = 'D')]
         dir: Option<PathBuf>,
     },
-    /// Unpublish a live release (maintainers only): writes a revision with `delta` −1, so the
-    /// tag no longer shows as a release. The tag itself, and its previous revisions, are kept
+    /// Unpublish a live release (maintainers only).
+    ///
+    /// Writes a revision with `delta` −1, so the tag no longer shows as a release. The tag itself, and its previous revisions, are kept
     /// (a release is never deleted); publishing the tag again starts a fresh one.
     Unpublish {
         /// The repository (`owner/name`).
@@ -1600,7 +1614,7 @@ pub enum CostCommand {
         #[arg(long)]
         path: Option<PathBuf>,
         /// Price a private repository: its pack and indexes are stored sealed (a little
-        /// larger). Visibility is set on chain when the repository is created, so a local
+        /// larger). Visibility is set on Platform when the repository is created, so a local
         /// clone cannot tell.
         #[arg(long)]
         private: bool,
@@ -1665,7 +1679,7 @@ pub enum StorageCommand {
         #[arg(long)]
         global: bool,
     },
-    /// Advertise this repo's storage mode + public read URLs on-chain (config.backend).
+    /// Publish where this repo's files can be read.
     Advertise {
         /// The repository (`owner/name`).
         repo: String,
@@ -1749,7 +1763,7 @@ pub struct StorageAddArgs {
     /// pinning service: seconds to wait for `pinned`.
     #[arg(long)]
     pub pin_timeout_secs: Option<u64>,
-    /// Let pushes record this profile's public URL / public gateway on chain even though it
+    /// Let pushes record this profile's public URL or gateway on Platform even though it
     /// is not a public https address (loopback, LAN, plain http, a temporary tunnel): for a
     /// local test or a LAN-only mirror. Pushes refuse such an address otherwise.
     #[arg(long)]

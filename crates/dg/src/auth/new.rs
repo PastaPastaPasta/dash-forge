@@ -82,7 +82,7 @@ pub struct NewArgs {
 /// How `dg auth new` backs the identity up besides the words shown on screen.
 #[derive(Debug, clap::Args)]
 pub struct BackupArgs {
-    /// Write the full identity (recovery words and every key) to this new file (0600; an
+    /// Write the full identity (recovery phrase and every key) to this new file (0600; an
     /// existing file is refused), encrypted under a passphrase (DASH_FORGE_PASSPHRASE without a
     /// terminal or with --json). Required without a terminal (CI, pipes, --json): the words are
     /// then never printed, only this file's path.

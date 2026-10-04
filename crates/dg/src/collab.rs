@@ -589,7 +589,11 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             "roles": true,
         }),
         || {
-            println!("{} member(s) of {}:", members.len(), handle.display());
+            println!(
+                "{} of {}:",
+                crate::fmt::plural(members.len(), "member"),
+                handle.display()
+            );
             for m in &members {
                 println!(
                     "  {}  {}",

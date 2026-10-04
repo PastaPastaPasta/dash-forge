@@ -42,11 +42,15 @@ const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 /// `dg auth` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
-    /// Create an identity: recovery words, a deposit address to fund from any Dash wallet, then
-    /// the identity with a limited key for this computer (stored in the OS keychain).
+    /// Create an identity, funded from any Dash wallet.
+    ///
+    /// You get a recovery phrase and a deposit address. Once it is funded, dg creates the
+    /// identity with a limited key for this computer, stored in the OS keychain.
     New(new::NewArgs),
-    /// Sign in with an identity file or the recovery words: registers a limited key (the master
-    /// key is used once and not stored, unless --full-key).
+    /// Sign in with an identity file or recovery phrase.
+    ///
+    /// Registers a limited key for this computer. The master key is used once and not stored,
+    /// unless --full-key.
     Login(LoginArgs),
     /// Show the identity, its key, budget left, expiry, balance and where the key is stored.
     Status,
@@ -62,12 +66,12 @@ pub enum AuthCommand {
     /// bridge-format file (0600) or a `dfk1:` value for CI (`--format dfk1`). Sign in elsewhere
     /// with `dg auth login <file>`, or use the file as DASH_FORGE_KEY.
     Export(ExportArgs),
-    /// Forget the stored key on this computer (the key stays valid on chain until disabled).
+    /// Forget the stored key on this computer (it stays valid on Platform until disabled).
     Logout {
-        /// Also disable the key on chain (needs the master key once).
+        /// Also disable the key on Platform (needs the master key once).
         #[arg(long)]
         disable: bool,
-        /// The identity file or recovery words for --disable (see `dg auth login`).
+        /// The identity file or recovery phrase for --disable (see `dg auth login`).
         #[arg(long, value_name = "FILE", requires = "disable")]
         master: Option<PathBuf>,
     },
@@ -130,7 +134,7 @@ pub struct LoginArgs {
     /// The identity file (bridge export, `dg auth export`, or mint-identity output). Also
     /// accepted via --identity.
     pub file: Option<PathBuf>,
-    /// Type the 12 recovery words instead of giving a file (read without echo).
+    /// Type the 12-word recovery phrase instead of giving a file (read without echo).
     #[arg(long, conflicts_with = "file")]
     pub mnemonic: bool,
     /// Keep the full identity (master key included) instead of registering a limited key.
@@ -148,8 +152,10 @@ pub struct LoginArgs {
 /// `dg auth name` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum NameCommand {
-    /// Register a DPNS username (`alice` → alice.dash). Needs an unbound CRITICAL/HIGH key:
-    /// the identity file or recovery words (used once), not the limited key.
+    /// Register a DPNS username (`alice` → alice.dash).
+    ///
+    /// Needs an unbound CRITICAL or HIGH key: the identity file or recovery phrase (used once),
+    /// not the limited key.
     Register {
         /// The label (3–63 letters, digits, `-`).
         label: String,
@@ -180,7 +186,7 @@ pub struct ExportArgs {
     #[arg(long)]
     pub new_key: bool,
     /// With --new-key: the identity file holding the master key (without it you are asked for
-    /// the 12 recovery words).
+    /// the 12-word recovery phrase).
     #[arg(long, value_name = "FILE", requires = "new_key")]
     pub master: Option<PathBuf>,
     #[command(flatten)]
@@ -782,7 +788,7 @@ fn expiry_text(ms: u64) -> String {
         return "expired".into();
     }
     let days = (ms - now + DAY_MS / 2) / DAY_MS;
-    format!("in {days} day(s)")
+    format!("in {}", crate::fmt::plural(days, "day"))
 }
 
 // ---------------------------------------------------------------------------------------

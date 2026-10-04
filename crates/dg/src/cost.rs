@@ -586,9 +586,9 @@ fn print_audit(report: &AuditReport, price: Option<f64>) {
         println!("  since:  {} UTC", format_utc(since_ms));
     }
     println!(
-        "  total:  {} across {} document(s)",
+        "  total:  {} across {}",
         cost_line(report.total_credits, price),
-        report.document_count
+        crate::fmt::plural(report.document_count, "document")
     );
     println!("\n  by document type:");
     for t in &report.by_type {

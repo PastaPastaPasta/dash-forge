@@ -48,8 +48,8 @@ pub enum WebhookCommand {
 pub struct AddArgs {
     /// The repository (`owner/name`, a bare name of yours, or a repo id).
     repo: String,
-    /// Where to deliver: https:// to a DNS name, with an optional port (forge-community refuses
-    /// http, IP addresses, localhost and user:password@). The URL is stored publicly on chain.
+    /// Where to deliver: https:// to a DNS name, with an optional port (Platform refuses http,
+    /// IP addresses, localhost and user:password@). The URL is public on Platform.
     /// Public repositories only.
     #[arg(long)]
     url: String,
@@ -74,7 +74,7 @@ pub struct AddArgs {
     /// random hook id.
     #[arg(long)]
     name: Option<String>,
-    /// Accept a URL with a query string (it is public on chain).
+    /// Accept a URL with a query string (it is public on Platform).
     #[arg(long)]
     force: bool,
 }
@@ -352,7 +352,11 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             if hooks.is_empty() {
                 println!("no webhooks on {}", handle.display());
             } else {
-                println!("{} webhook(s) on {}:", hooks.len(), handle.display());
+                println!(
+                    "{} on {}:",
+                    crate::fmt::plural(hooks.len(), "webhook"),
+                    handle.display()
+                );
             }
             for h in &hooks {
                 let events = if h.events.is_empty() {
