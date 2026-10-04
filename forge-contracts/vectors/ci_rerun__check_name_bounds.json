@@ -1,0 +1,113 @@
+{
+  "name": "check_name_bounds",
+  "description": "A check name is 1 to 100 characters and at most 200 bytes, as checkRun.name: 100 ASCII characters and 100 two-byte characters are names; spaces are kept as given (a run may carry them).",
+  "case": "ci_rerun",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "events": [
+      {
+        "id": "e1",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100,
+        "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+        "id": "e2",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100,
+        "value": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+      },
+      {
+        "id": "e3",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100,
+        "value": " build "
+      }
+    ]
+  },
+  "expected": [
+    {
+      "request": {
+        "id": "e1",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "requester": "wri",
+        "createdAt": 100
+      },
+      "counts": true
+    },
+    {
+      "request": {
+        "id": "e2",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "requester": "wri",
+        "createdAt": 100
+      },
+      "counts": true
+    },
+    {
+      "request": {
+        "id": "e3",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": " build ",
+        "requester": "wri",
+        "createdAt": 100
+      },
+      "counts": true
+    }
+  ]
+}

@@ -19,6 +19,7 @@ import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import { isLegalRefName, isRc1OidHex } from '../rules'
 import { RoleRefusedError } from '../rules/roles'
+import { rerunFields } from '../rules/ci-rerun'
 import { isMemberGateRefusal } from './role-claim'
 import { anchorOf, groupReviewComments, isAuthorKind, type AnchorFields, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
@@ -671,6 +672,31 @@ export async function recordPolicyBypass(
   input: { target: WriteTarget; rules: readonly string[]; mergeOid: string; intent?: string },
 ): Promise<WriteResult> {
   return write(sdk, auth, repo, DOC.event, targetEventData(input.target, 'policyBypass', { value: bypassValue(input.rules), oidHex: input.mergeOid }), input.intent)
+}
+
+/**
+ * Ask the repository's runners to run PR `target`'s checks on `sha` (hex, its head) again: one
+ * member event of kind 26 (`rules/ci-rerun.ts`, forge-v2.md §3.3) naming the commit, the
+ * repository (`refId`, the runners' index) and `check`, or every check when it is null. A
+ * maintainer or writer only: consensus admits triage too, but no reader counts it, so
+ * `claimedRole` refuses it before signing. Parity: `dg ci rerun`.
+ */
+export async function requestRerun(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; sha: string; check: string | null; intent?: string },
+): Promise<WriteResult> {
+  const f = rerunFields(repo.repoId, input.sha, input.check)
+  const data: Record<string, unknown> = {
+    targetId: decodeIdentifier(input.target.id),
+    targetNumber: input.target.number,
+    kind: f.kind,
+    oid: hexToBytes(f.oid),
+    refId: decodeIdentifier(f.refId),
+  }
+  if (f.value !== undefined) data['value'] = f.value
+  return write(sdk, auth, repo, DOC.event, data, input.intent)
 }
 
 /** Put an issue or PR in milestone `title` (null: take it out). Members only at consensus. */

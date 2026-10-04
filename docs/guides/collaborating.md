@@ -22,8 +22,8 @@ There are four roles. Consensus enforces what each role can write: a write the r
 | Role | `--role` | Can | Closest GitHub role |
 |---|---|---|---|
 | Reader | `reader` (alias `read`); **private repositories only** | Read the repository (it receives the key). Otherwise what anyone can do: open issues and PRs, comment and review, and as an author close or reopen their own issues and PRs, mark their own PRs draft or ready, request reviews on them and resolve their threads. | Read |
-| Triage | `triage` | Close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, or post check runs. | Triage |
-| Writer | `writer` (default) | Everything triage can, plus push to unprotected branches, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, and post check runs. | Write |
+| Triage | `triage` | Close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, post check runs, or re-run checks. | Triage |
+| Writer | `writer` (default) | Everything triage can, plus push to unprotected branches, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, post check runs, and re-run checks. | Write |
 | Maintainer | `maintainer` | Everything a writer can, plus protected branches, releases, repository settings (`config`, branch policy), webhooks and hiding comments. | Maintain, and most of Admin |
 
 The repository owner alone adds and removes members, and edits the description and topics (GitHub's Admin). `--role write` and `--role maintain` are accepted as aliases.

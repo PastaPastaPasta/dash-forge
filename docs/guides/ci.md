@@ -76,6 +76,18 @@ dg ci report alice/project --sha "$SHA" --name build --status completed \
 
 For each name, the newest run by `($createdAt, $id)` among runs by current members and runners decides. A branch policy with `requireChecks` needs every such run on the head to pass (`success`, `neutral` or `skipped`), and at least one to exist; a policy that names required checks needs each named one to pass, `requireChecks` or not. To name the required checks from the command line, `dg repo policy set <owner>/<repo> --required-check build --required-check lint` (repeat it per check; `--required-check build=@ci-runner` pins a check to the runner or maintainer whose runs count, and then every check needs one). The web merge box and `dg pr merge` apply the same rule; a maintainer can bypass it ("bypass rules" in the web, `--override-policy` in `dg`), and the bypass is recorded on the PR as an event nobody can delete.
 
+## Re-run checks
+
+A maintainer or writer can ask the repository's runners to run a pull request's checks again, as GitHub's "Re-run" does:
+
+- **In the web app**, on the PR's **Checks** tab: **Re-run** beside a completed check reported by forge-runner, or **Re-run all checks**. The tab then shows "Re-run requested" until a newer run of that check is reported, to everyone, and reads the runs again every 30 seconds meanwhile. A request no run answers within 10 minutes (no runner took it: runners handle each request once) says "no run yet" and Re-run is offered again. A run left queued or in progress for 2 hours (its runner stopped mid-job) is offered too.
+- **From the command line**: `dg ci rerun alice/project 12` for every check, or `--check "ci / build (pull_request)"` for one (`dg pr checks` lists the names). `--sha <commit>` refuses the request if the PR's head is no longer that commit.
+
+A request is one `event` on the PR (kind 26, [forge-v2.md §3.3](../contracts/forge-v2.md#33-ci-re-run-requests-kind-26)), which no one can delete: 59,660,580 credits (about 0.0006 DASH) for one check on devnet sakura (2026-10-02, Platform 5.0.0-beta.1); `dg` and the web app show an upper bound before you sign. It names the PR's head, the repository (so runners find it with one query) and the check. [forge-runner](self-host-runner.md#re-runs) reads the requests on every poll, or within seconds when the owner's relay wakes it, and runs the workflow that reports the check again on the head; the new run replaces the one shown. `dg ci reruns alice/project [--since <ms>]` lists the requests and whether each counts.
+
+- **Who can ask.** The owner, maintainers and role-1 writers. Platform also admits a triage member's request (the contract's `t_triageKinds` does not name kind 26), but no reader counts it: `dg` and the web app refuse it before signing, and runners ignore one.
+- **What can be re-run.** An open PR's current head only: runners run nothing for a head that moved. Checks reported from elsewhere (the GitHub Action, a script) are re-run there; the web app offers Re-run only on forge-runner's runs.
+
 ## What it costs
 
 Measured on devnet bonsia (2026-09-30, drive 4.2.0-beta.7; 1 DASH = 10¹¹ credits):

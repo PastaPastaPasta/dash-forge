@@ -1,0 +1,133 @@
+{
+  "name": "roles_that_do_not_count",
+  "description": "Consensus admits kind 26 from triage (t_triageKinds is a deny-list), but the convention needs write access, as GitHub does: a triage member, a reader, a writer whose document is newer than the request (a re-added member) and a non-member do not count.",
+  "case": "ci_rerun",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "events": [
+      {
+        "id": "e1",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "tri",
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "rdr",
+        "createdAt": 100
+      },
+      {
+        "id": "e3",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "late",
+        "createdAt": 100
+      },
+      {
+        "id": "e4",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "nobody",
+        "createdAt": 100
+      }
+    ]
+  },
+  "expected": [
+    {
+      "request": {
+        "id": "e1",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": null,
+        "requester": "tri",
+        "createdAt": 100
+      },
+      "counts": false
+    },
+    {
+      "request": {
+        "id": "e2",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": null,
+        "requester": "rdr",
+        "createdAt": 100
+      },
+      "counts": false
+    },
+    {
+      "request": {
+        "id": "e3",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": null,
+        "requester": "late",
+        "createdAt": 100
+      },
+      "counts": false
+    },
+    {
+      "request": {
+        "id": "e4",
+        "targetId": "pr4",
+        "number": 4,
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "check": null,
+        "requester": "nobody",
+        "createdAt": 100
+      },
+      "counts": false
+    }
+  ]
+}

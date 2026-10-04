@@ -185,6 +185,12 @@ pub struct RepoConfig {
     /// `dash://{id}`; the local end-to-end test points it at a directory.
     #[serde(default)]
     pub fork_url: Option<String>,
+    /// Honour CI re-run requests (event kind 26 from the web's Checks tab or `dg ci rerun`;
+    /// `dg ci reruns` reads them) from the owner, maintainers and writers. On by default. A
+    /// request runs only what a poll would have run: the PR's current head, under the same
+    /// `pull_requests` policy and secrets rules.
+    #[serde(default = "default_true")]
+    pub reruns: bool,
 }
 
 /// Which pull requests a repository's runner runs. None ever gets the secrets unless its head
@@ -224,6 +230,9 @@ fn default_attempts() -> u32 {
 }
 fn default_refs() -> Vec<String> {
     vec!["refs/heads/**".into()]
+}
+fn default_true() -> bool {
+    true
 }
 fn default_dg() -> String {
     "dg".into()
