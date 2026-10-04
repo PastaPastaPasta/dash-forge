@@ -143,7 +143,7 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
 ```yaml
       - name: Report to Dash Forge
         if: always()
-        uses: PastaPastaPasta/dash-forge/check-action@master
+        uses: PastaPastaPasta/dash-forge/check-action@v0.1.0
         with:
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
@@ -153,4 +153,4 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
 ```
 
-No Dash Forge release is published yet, so the action builds `dg` from its own source, the ref after `@` in `uses:` (pin a commit you have reviewed). That works on Linux runners only, and takes a few minutes in every job that reports, even with a warm build cache: report from one Linux leg, or from one summary job that `needs:` the others. The [check action's README](../../check-action/README.md#quick-start) has the details. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.
+Pinned to a release tag, the action downloads that release's checksum-verified `dg` in seconds, on Linux and macOS runners. With `install: 'source'` it builds `dg` from its own source instead, the ref after `@` in `uses:`; that works on Linux runners only and takes a few minutes in every job that reports, so report from one Linux leg, or from one summary job that `needs:` the others. The [check action's README](../../check-action/README.md#quick-start) has the details. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.
