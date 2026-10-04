@@ -376,7 +376,7 @@ describe('diff palettes meet WCAG AA on their row tints, in both themes', () => 
     ] as const) {
       for (const [name, bg] of Object.entries(surfaces)) {
         for (const alpha of [0, 0.15, 0.25]) {
-          const under = over(TOKENS.light['line-highlight']!, rgb(bg!), alpha)
+          const under = over((syn['line-highlight'] ?? TOKENS.light['line-highlight'])!, rgb(bg!), alpha)
           for (const k of SYNTAX) expect(contrast(syn[k]!, under), `${k} on ${name} @${alpha}`).toBeGreaterThanOrEqual(AA_TEXT)
           expect(contrast(rgb(text.gutter), under), `gutter on ${name} @${alpha}`).toBeGreaterThanOrEqual(AA_TEXT)
         }

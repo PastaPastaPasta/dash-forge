@@ -11,6 +11,15 @@ describe('tokenize', () => {
     expect(tokenize('foo(a, b)')).toEqual(['foo', '(', 'a', ',', ' ', 'b', ')'])
     expect(tokenize('été_2')).toEqual(['été_2'])
   })
+
+  it('keeps combining marks and emoji sequences whole, so a mark never splits a character', () => {
+    expect(tokenize('cafe\u0301 x')).toEqual(['cafe\u0301', ' ', 'x'])
+    expect(tokenize('नमस्ते')).toEqual(['नमस्ते'])
+    const family = '\u{1F468}\u200d\u{1F469}\u200d\u{1F467}'
+    expect(tokenize(`a ${family}!`)).toEqual(['a', ' ', family, '!'])
+    const [a, b] = ['नमस्ते जी, आप कैसे हैं', 'नमस्कार जी, आप कैसे हैं']
+    expect(pick(a, wordDiff(a, b)!.a)).toEqual(['नमस्ते'])
+  })
 })
 
 describe('wordDiff', () => {
@@ -88,6 +97,14 @@ describe('pairWordDiffs', () => {
     const lines = [line('deleted', 'x = 1', 1), line('deleted', 'y = 2', 2), line('added', 'x = 10', 1), line('added', 'y = 20', 2)]
     expect(pairWordDiffs(lines, 25).size).toBe(2)
     expect(pairWordDiffs(lines, 24).size).toBe(0)
+  })
+
+  it('spends no budget on a pair too long to compare, so later pairs are still marked', () => {
+    const long = Array.from({ length: 500 }, (_, i) => `t${i}`).join(' ')
+    const lines = [line('deleted', long, 1), line('added', `${long} z`, 1), line('context', 'k', 2), line('deleted', 'x = 1', 3), line('added', 'x = 10', 3)]
+    const m = pairWordDiffs(lines, 25)
+    expect(m.has(lines[0]!)).toBe(false)
+    expect(pick('x = 10', m.get(lines[4]!)!)).toEqual(['10'])
   })
 })
 

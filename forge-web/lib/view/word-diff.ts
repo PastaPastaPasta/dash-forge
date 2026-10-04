@@ -26,8 +26,12 @@ export const WORD_DIFF_BUDGET = 4_000_000
  */
 const MIN_COMMON = 0.3
 
-/** Words (letters, digits, `_`), runs of whitespace, and single other characters. */
-const TOKEN = /[\p{L}\p{N}_]+|\s+|[^\p{L}\p{N}_\s]/gu
+/**
+ * Words (letters with their combining marks, digits, `_`), emoji (with their joiners and
+ * modifiers), runs of whitespace, and single other characters: a mark never splits a character
+ * from its accents.
+ */
+const TOKEN = /[\p{L}\p{M}\p{N}_]+|\p{Extended_Pictographic}(?:\p{M}|\u200d\p{Extended_Pictographic})*|\s+|[^\p{L}\p{M}\p{N}_\s]\p{M}*/gu
 
 export function tokenize(text: string): string[] {
   return text.match(TOKEN) ?? []
@@ -111,6 +115,8 @@ export function pairWordDiffs(lines: readonly TextDiffLine[], budget = WORD_DIFF
     for (let k = 0; k < Math.min(dels.length, adds.length); k++) {
       const [del, add] = [dels[k] as TextDiffLine, adds[k] as TextDiffLine]
       const [ta, tb] = [tokenize(del.text), tokenize(add.text)]
+      // A pair over the token cap is never compared, so it costs nothing.
+      if (ta.length > MAX_TOKENS || tb.length > MAX_TOKENS) continue
       left -= ta.length * tb.length
       if (left < 0) break
       const d = wordDiff(del.text, add.text, ta, tb)

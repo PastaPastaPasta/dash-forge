@@ -231,10 +231,10 @@
 .diff-del-edge {
   box-shadow: inset 2px 0 0 rgb(var(--diff-del-edge));
 }
+/* Square: one change that crosses syntax spans is several adjacent marks, which must read as one. */
 mark.diff-add-word,
 mark.diff-del-word {
   color: inherit;
-  border-radius: 2px;
 }
 mark.diff-add-word {
   background-color: rgb(var(--diff-add) / var(--diff-word-alpha));

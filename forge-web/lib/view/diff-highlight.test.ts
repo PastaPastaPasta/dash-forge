@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { diffSides, highlightDiff, lineHtml, wordsOnly } from './diff-highlight'
+import { DIFF_HIGHLIGHT_MAX, diffSides, highlightDiff, lineHtml, wordsOnly } from './diff-highlight'
 import { diffTextLines, type TextDiffLine } from './text-diff'
 
 const OLD = ['const a = 1', '/* a comment', 'still comment */', 'return a + b', 'gone()'].join('\n')
@@ -49,6 +49,19 @@ describe('lineHtml', () => {
     const h = await highlightDiff(wordsOnly(all), 'NOTES', 'NOTES')
     expect(h.old).toBeNull()
     expect(h.new).toBeNull()
+  })
+
+  it('leaves both sides plain when one is too long to colour', async () => {
+    const all: TextDiffLine[] = [
+      { kind: 'deleted', text: 'let a = 1', oldLine: 1, newLine: null },
+      { kind: 'added', text: 'let a = 2', oldLine: null, newLine: 1 },
+      { kind: 'added', text: `const s = '${'x'.repeat(DIFF_HIGHLIGHT_MAX)}'`, oldLine: null, newLine: 2 },
+    ]
+    const h = await highlightDiff(wordsOnly(all), 'x.ts', 'x.ts')
+    expect(h.old).toBeNull()
+    expect(h.new).toBeNull()
+    // The word marks are still there.
+    expect(lineHtml(h, find(all, 'added', 'let a = 2'), 'new')).toContain('<mark class="diff-add-word">2</mark>')
   })
 
   it('highlights only the side an added file has', async () => {
