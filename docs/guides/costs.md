@@ -114,8 +114,8 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 | Review | ~0.00035–0.0004 DASH |
 | Release (the document; assets go to your storage) | ~0.0007 DASH |
 | Add a member / remove one | ~0.0004 DASH / refunds ~0.0002 DASH |
-| Star / unstar | **~0.00046 DASH** (45.5 M credits, measured on devnet sakura), which includes the star's Trending count. The web app quotes it before you star. Unstarring refunds part of it |
-| Counting a star toward **Trending** | **Nothing extra.** The star's price includes it, and there is nothing to turn off: `--no-trending`, `trending = false` and the Settings toggle do nothing on sakura (`dg` says so) |
+| Star / unstar | **~0.00046 DASH** (45.5 M credits), or ~0.00057 DASH for a repository's first star (57.1 M), measured on devnet sakura. The price includes the star's Trending count. The web app quotes an upper bound before you star. Unstarring refunds part of it |
+| Counting a star toward **Trending** | **Nothing extra.** The star's price includes it, and there is nothing to turn off: the web app shows no Trending setting on sakura, and `--no-trending` and `trending = false` do nothing there (`dg` says so) |
 | Profile (display name, bio, avatar, links) | **~0.00037 DASH** for a first profile with about 120 bytes of text, as the identity's first forge-community write (devnet sakura, 2026-10-02); an edit ~0.00002 DASH. Deleting it refunds part of the deposit |
 | Webhook † | ~0.0008 DASH; removing it refunds all but ~0.00008 DASH |
 | Fork a repository † | **~0.01 DASH** for a small repository (8 packs, 5 branches: 0.0095 DASH), 0.03 DASH for 36 packs: one small manifest per pack and one ref update per branch. The parent's packs are referenced, never re-uploaded |

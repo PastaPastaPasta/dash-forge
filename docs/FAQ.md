@@ -58,7 +58,7 @@ After **Dash Platform v5** activates on mainnet and the project owner registers 
 | **Testnet** | Not deployed yet. Forge is registered there once testnet runs Dash Platform v5. |
 | **Mainnet** | Not deployed yet. After Dash Platform v5 activates, the owner registers Forge's contracts ([runbook](mainnet-runbook.md)). |
 
-Earlier devnets (bonsia and moutai) are gone. [Networks](networks.md) has their history.
+Forge has left the earlier devnets: bonsia was retired, and moutai was upgraded in place. [Networks](networks.md) has their history.
 
 An earlier version of Forge (forge-v1, one contract per repository) ran on testnet. It was removed on 2026-09-26 with no backwards compatibility, so its repositories cannot be read or migrated.
 

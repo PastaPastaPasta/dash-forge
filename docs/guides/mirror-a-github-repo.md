@@ -56,7 +56,7 @@ You need:
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.33 DASH/MiB ([Costs](costs.md)).
 
-> **Network.** A mirrored repository costs about **0.0016 DASH** to create. Forge runs on devnet sakura (`--network devnet --devnet-name sakura`), and comes to testnet and mainnet once Dash Platform v5 reaches them. See [Networks](../networks.md).
+> **Network.** Forge runs on devnet sakura (`--network devnet --devnet-name sakura`), and comes to testnet and mainnet once Dash Platform v5 reaches them. See [Networks](../networks.md).
 
 > **Cost.** A first import is mostly git data plus one document per issue, PR, comment and review. The Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost about **0.078 DASH**; a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. Re-runs pay only for what is new, and nothing when nothing changed. `--dry-run` prices your repository before you spend anything.
 
