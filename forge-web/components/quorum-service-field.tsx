@@ -3,22 +3,31 @@
 /**
  * Settings → Quorum service: where this browser fetches the quorum keys every proof is checked
  * against (`lib/quorum-url.ts`). The connection reads it once, so saving reloads the page. A
- * typed URL is asked for its quorum list first, so a typo can't stop every read.
+ * typed URL is asked for its quorum list first, and checked against a Platform node's, so a
+ * typo or another network's service can't stop every read.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ACTIVE_NETWORK, defaultQuorumEndpoint } from '@/lib/constants'
 import { normalizeQuorumUrl, setUserQuorumUrl, userQuorumUrl } from '@/lib/quorum-url'
-import { probeQuorumService } from '@/lib/view'
+import { probeQuorumService, QuorumProbeError } from '@/lib/view'
+
+const PROBE_FAILURE = {
+  'no-answer': "didn't answer with a list of quorum keys",
+  'other-network': 'lists the quorums of another network',
+  'keys-differ': 'gives keys that differ from a Platform node’s',
+} as const
 
 type Status = { kind: 'idle' } | { kind: 'checking' } | { kind: 'error'; message: string }
 
 export function QuorumServiceField({ reload = () => window.location.reload() }: { reload?: () => void }): JSX.Element {
   const networkKey = ACTIVE_NETWORK.key
   const fallback = defaultQuorumEndpoint(ACTIVE_NETWORK)
-  const [chosen] = useState(() => userQuorumUrl(networkKey))
+  // Read after mount: the prerendered page can't know this browser's choice.
+  const [chosen, setChosen] = useState<string | null>(null)
+  useEffect(() => setChosen(userQuorumUrl(networkKey)), [networkKey])
   const [draft, setDraft] = useState('')
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
 
@@ -31,12 +40,17 @@ export function QuorumServiceField({ reload = () => window.location.reload() }: 
     }
     setStatus({ kind: 'checking' })
     try {
-      await probeQuorumService(url)
-    } catch {
-      setStatus({ kind: 'error', message: `${url} didn't answer with a list of quorum keys. Nothing was changed.` })
+      await probeQuorumService(url, ACTIVE_NETWORK.dapiAddresses)
+    } catch (err) {
+      const why = PROBE_FAILURE[err instanceof QuorumProbeError ? err.reason : 'no-answer']
+      setStatus({ kind: 'error', message: `${url} ${why}. Nothing was changed.` })
       return
     }
     setUserQuorumUrl(networkKey, url)
+    if (userQuorumUrl(networkKey) !== url) {
+      setStatus({ kind: 'error', message: 'This browser blocks saved settings for this site, so the change can’t be kept.' })
+      return
+    }
     reload()
   }
   const useDefault = (): void => {

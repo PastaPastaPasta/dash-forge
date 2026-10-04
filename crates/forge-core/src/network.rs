@@ -566,12 +566,12 @@ impl NetworkTarget {
     /// The env vars that hand this exact target to a child process (`git` →
     /// git-remote-dash): [`Network::env_vars`].
     pub fn env_vars(&self) -> Vec<(&'static str, String)> {
+        // The exact quorum service, on every network: an empty value would let the child fall
+        // through to a git config layer this process never read (a global `dash.quorumUrl`).
         let mut vars = self.network.env_vars();
-        if let Some(url) = &self.quorum_url {
-            for (k, v) in &mut vars {
-                if *k == ENV_QUORUM_URL {
-                    v.clone_from(url);
-                }
+        for (k, v) in &mut vars {
+            if *k == ENV_QUORUM_URL {
+                *v = self.quorum_base_url();
             }
         }
         vars
@@ -823,10 +823,12 @@ impl NetworkSettings {
             (None, Some(_)) => "devnet",
             (None, None) => "testnet",
         };
+        // One form on every network: the SDK appends `/quorums` to it.
         let chosen_quorum = self
             .quorum_base_url
             .as_deref()
-            .map(|u| u.trim_end_matches('/').to_string());
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty());
         let (network, recorded) = match kind.to_ascii_lowercase().as_str() {
             "testnet" => (Network::Testnet, deployment("testnet")?),
             "mainnet" => (Network::Mainnet, deployment("mainnet")?),
@@ -847,8 +849,8 @@ impl NetworkSettings {
                         .map(|d| d.dapi_addresses.clone())
                         .unwrap_or_default(),
                 };
-                let quorum_base_url = self
-                    .quorum_base_url
+                let quorum_base_url = chosen_quorum
+                    .clone()
                     .or_else(|| recorded.as_ref().and_then(|d| d.quorum_base_url.clone()));
                 let network = Network::Devnet {
                     name,
@@ -1131,18 +1133,36 @@ mod tests {
         assert!(vars.contains(&(ENV_QUORUM_URL, "https://quorums.example.org".to_string())));
         assert!(vars.contains(&(ENV_NETWORK, "testnet".to_string())));
 
-        // Unset, testnet keeps Dash's service and hands the child an empty value.
+        // Unset, testnet keeps Dash's service and names it to the child, so the child can't
+        // pick up a service from a layer this process never read.
         let t = NetworkSettings {
             network: Some("testnet".into()),
             ..Default::default()
         }
         .resolve()
         .unwrap();
-        assert_eq!(
-            t.quorum_base_url(),
-            "https://quorums.testnet.networks.dash.org"
-        );
-        assert!(t.env_vars().contains(&(ENV_QUORUM_URL, String::new())));
+        let default = "https://quorums.testnet.networks.dash.org".to_string();
+        assert_eq!(t.quorum_base_url(), default);
+        assert!(t.env_vars().contains(&(ENV_QUORUM_URL, default)));
+
+        // Blank means unset; a devnet's trailing slash is trimmed like testnet's.
+        let t = NetworkSettings {
+            network: Some("testnet".into()),
+            quorum_base_url: Some("  ".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(t.quorum_url, None);
+        let t = NetworkSettings {
+            network: Some("devnet".into()),
+            devnet_name: Some("sakura".into()),
+            quorum_base_url: Some("https://q.example/".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(t.quorum_base_url(), "https://q.example");
     }
 
     #[test]

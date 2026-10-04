@@ -213,19 +213,6 @@ async function fetchServiceKeys(endpoint: string, deps: Required<Pick<CrossCheck
   return parseQuorumService(await resp.json())
 }
 
-/**
- * Whether `endpoint` answers as a quorum service: the quorum keys it lists now. Settings asks
- * before saving a quorum service the reader typed, so a typo can't stop every read.
- */
-export async function probeQuorumService(endpoint: string, deps: Pick<CrossCheckDeps, 'fetch' | 'timeoutMs'> = {}): Promise<QuorumKey[]> {
-  const keys = await fetchServiceKeys(endpoint, {
-    fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
-    timeoutMs: deps.timeoutMs ?? 8_000,
-  })
-  if (keys.length === 0) throw new Error('it lists no quorums')
-  return keys
-}
-
 async function fetchDapiKeys(address: string, deps: Required<CrossCheckDeps>): Promise<QuorumKey[]> {
   const resp = await deps.fetch(`${address.replace(/\/+$/, '')}/org.dash.platform.dapi.v0.Platform/getCurrentQuorumsInfo`, {
     method: 'POST',
@@ -263,6 +250,48 @@ async function secondSource(
     }
   }
   return null
+}
+
+/** Why a quorum service typed in Settings was not taken. */
+export type QuorumProbeFailure = 'no-answer' | 'other-network' | 'keys-differ'
+
+export class QuorumProbeError extends Error {
+  constructor(readonly reason: QuorumProbeFailure) {
+    super(`quorum service refused: ${reason}`)
+  }
+}
+
+/**
+ * Whether `endpoint` can serve this network's quorum keys. Settings asks before saving a
+ * quorum service the reader typed, so a typo or another network's service can't stop every
+ * read: it must list quorums, and when a Platform node from `dapiAddresses` answers, its keys
+ * must not contradict the node's and at least one quorum must be the node's (a quorum only one
+ * side lists is a rotation in flight). With no node answering, a service that lists quorums is
+ * taken: the default may be what is down.
+ */
+export async function probeQuorumService(
+  endpoint: string,
+  dapiAddresses: readonly string[],
+  deps: Pick<CrossCheckDeps, 'fetch' | 'timeoutMs' | 'random'> = {},
+): Promise<void> {
+  const full: Required<CrossCheckDeps> = {
+    fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
+    random: deps.random ?? Math.random,
+    timeoutMs: deps.timeoutMs ?? 8000,
+    rotationRetriesMs: [],
+  }
+  let keys: QuorumKey[]
+  try {
+    keys = await fetchServiceKeys(endpoint, full)
+  } catch {
+    throw new QuorumProbeError('no-answer')
+  }
+  if (keys.length === 0) throw new QuorumProbeError('no-answer')
+  const second = dapiAddresses.length > 0 ? await secondSource(dapiAddresses, full) : null
+  if (second === null) return
+  const verdict = compareQuorumKeys(keys, second.keys)
+  if (verdict.kind === 'mismatch') throw new QuorumProbeError('keys-differ')
+  if (verdict.kind === 'unconfirmed' && verdict.quorums.length === keys.length) throw new QuorumProbeError('other-network')
 }
 
 /** Run the cross-check for `config` (never rejects; the outcome says what happened). */

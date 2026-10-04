@@ -8,8 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { userQuorumUrl } from '@/lib/quorum-url'
 
-const probe = vi.fn<(url: string) => Promise<unknown>>()
-vi.mock('@/lib/view', () => ({ probeQuorumService: (url: string) => probe(url) }))
+const probe = vi.fn<(url: string) => Promise<void>>()
+class QuorumProbeError extends Error {
+  constructor(readonly reason: string) {
+    super(reason)
+  }
+}
+vi.mock('@/lib/view', () => ({ probeQuorumService: (url: string) => probe(url), QuorumProbeError }))
 
 const { QuorumServiceField } = await import('./quorum-service-field')
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -17,11 +22,12 @@ const { QuorumServiceField } = await import('./quorum-service-field')
 let host: HTMLDivElement
 let root: Root
 const reload = vi.fn()
-beforeEach(() => {
+beforeEach(async () => {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   act(() => root.render(<QuorumServiceField reload={reload} />))
+  await act(async () => {})
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -50,7 +56,7 @@ describe('QuorumServiceField', () => {
   })
 
   it('saves a service that answers, then reloads', async () => {
-    probe.mockResolvedValue([{ hash: 'a', key: 'b', height: 1 }])
+    probe.mockResolvedValue()
     await submit('https://quorums.example.org/')
     expect(probe).toHaveBeenCalledWith('https://quorums.example.org')
     expect(userQuorumUrl(ACTIVE_NETWORK.key)).toBe('https://quorums.example.org')
@@ -63,6 +69,24 @@ describe('QuorumServiceField', () => {
     expect(userQuorumUrl(ACTIVE_NETWORK.key)).toBeNull()
     expect(reload).not.toHaveBeenCalled()
     expect(host.querySelector('[role="alert"]')!.textContent).toContain("didn't answer")
+  })
+
+  it('names another network\'s service as such', async () => {
+    probe.mockRejectedValue(new QuorumProbeError('other-network'))
+    await submit('https://quorums.testnet.networks.dash.org')
+    expect(userQuorumUrl(ACTIVE_NETWORK.key)).toBeNull()
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain('another network')
+  })
+
+  it('says so when the browser will not keep the setting', async () => {
+    probe.mockResolvedValue()
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError')
+    })
+    await submit('https://quorums.example.org')
+    spy.mockRestore()
+    expect(reload).not.toHaveBeenCalled()
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain('blocks saved settings')
   })
 
   it('refuses a plain-http URL without asking it', async () => {

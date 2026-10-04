@@ -82,8 +82,9 @@ Use Platform's validator quorum type: `llmq_25_67` (type 6) on testnet, `llmq_10
 
 If the default endpoint is down or blocked where you are, every read stops: nothing can be checked without quorum keys. Point the tools at another quorum service, on any network:
 
-- **Web app:** Settings → **Quorum service**. The app asks the new service for its quorum list before saving it, keeps it in this browser only, and reloads to use it. Repository pages still compare its keys with a Platform node's.
-- **`dg` and `git-remote-dash`:** `--quorum-url <url>` for one command, or `DASH_FORGE_QUORUM_URL`, or `git config dash.quorumUrl` (git hands the setting to `git-remote-dash`).
+- **Web app:** Settings → **Quorum service**. The app keeps it in this browser only and reloads to use it. Repository pages still compare its keys with a Platform node's.
+- **`dg` and `git-remote-dash`:** `--quorum-url <url>` for one command, or `DASH_FORGE_QUORUM_URL`, or `git config dash.quorumUrl`. `dg` passes the service to every `git` it runs, and a clone made with `--quorum-url` keeps it in its own config. A setting that names no network applies to whichever network a command uses, so set it in the repository's config (`git config --local`) or next to `DASH_FORGE_NETWORK`. Another network's service fails safe: no proof checks against its keys, so every read stops.
+- **The web app** checks a typed service before saving it: it must list quorums, and when a Platform node answers, the keys must match the node's and be this network's.
 - **A self-built web app:** `NEXT_PUBLIC_QUORUM_URL` sets a devnet's default at build time.
 
 On testnet and mainnet the URL must be `https://`. The service must answer `GET <url>/quorums` and `GET <url>/previous` the way Dash's does: run [Dash's quorum list server](https://github.com/dashpay/quorum-list-server) next to a Dash Core node you trust.

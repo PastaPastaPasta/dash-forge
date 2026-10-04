@@ -49,6 +49,10 @@ export function userQuorumUrl(networkKey: string): string | null {
 /** Save (or, with null, clear) this browser's quorum service for `networkKey`. */
 export function setUserQuorumUrl(networkKey: string, url: string | null): void {
   const clean = url === null ? null : normalizeQuorumUrl(url)
-  if (clean === null) storage()?.removeItem(KEY_PREFIX + networkKey)
-  else storage()?.setItem(KEY_PREFIX + networkKey, clean)
+  try {
+    if (clean === null) storage()?.removeItem(KEY_PREFIX + networkKey)
+    else storage()?.setItem(KEY_PREFIX + networkKey, clean)
+  } catch {
+    // Storage full or blocked: nothing is kept, which the caller reads back.
+  }
 }
