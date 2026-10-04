@@ -149,6 +149,8 @@ interface VaultRecord {
    * when there was none (a first import). Finishing it replaces only that record.
    */
   readonly replaces?: number | null
+  /** The key came from `dg auth keys add --for-browser` (`./key-handoff`): renew it the same way. */
+  readonly origin?: 'dg'
 }
 
 /** What the UI may know about a stored vault (no secrets). */
@@ -164,6 +166,8 @@ export interface VaultInfo {
    * it first drops that blob (it cannot be opened), so the import form says so beforehand.
    */
   readonly encryptionKey?: true
+  /** The key came from `dg` (a key handoff): Renew offers `dg` first, not the recovery phrase. */
+  readonly fromDg?: true
 }
 
 const enc = new TextEncoder()
@@ -905,6 +909,8 @@ export async function storeInVault(
      * gave up, its key carried in `secret.extra`): it is never gone before its key is stored.
      */
     readonly dropStagedKeyId?: number
+    /** Where the key came from ({@link VaultRecord.origin}). */
+    readonly origin?: 'dg'
   } = {},
 ): Promise<StoreOutcome> {
   const lockMarkerAt = lockMarker()
@@ -926,7 +932,8 @@ export async function storeInVault(
   // The extra grants live in their own blob, so a later grant can be added without the data key.
   const { extra, ...main } = secret
   try {
-    const record = await sealRecord(network, main, protection, dataKey)
+    const sealed = await sealRecord(network, main, protection, dataKey)
+    const record: VaultRecord = options.origin ? { ...sealed, origin: options.origin } : sealed
     storageKey = await deriveStorageKey(dataKey, network, identityId)
     const blob = carried !== null ? await sealBlob(storageKey, network, identityId, carried) : undefined
     const extraBlob = extra?.length ? await sealBlob(storageKey, network, identityId, extra, 'extra') : undefined
@@ -1049,6 +1056,7 @@ export async function listVaults(network: Network): Promise<VaultInfo[]> {
     createdAt: r.createdAt,
     methods: r.slots.map((s) => s.kind),
     ...(withEnc.has(encryptionBlobKey(network, r.identityId)) ? { encryptionKey: true as const } : {}),
+    ...(r.origin === 'dg' ? { fromDg: true as const } : {}),
   }))
   // An identity with only a staged key (a first import whose tab closed after registering,
   // D-016) must still be offered for unlock, or the key it paid for is unreachable.

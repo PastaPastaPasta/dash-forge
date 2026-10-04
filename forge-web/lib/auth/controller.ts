@@ -48,12 +48,15 @@ import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
 import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
-import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
+import { PRIVATE_REPOS_FLOW, adoptEncryptionKey, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
+import { openHandoffReply, parseHandoffPayload, type HandoffRequest } from './key-handoff'
+import { hexToBytes } from '@noble/hashes/utils.js'
 import {
   WrongMasterKeyError,
   disableHeldKeys,
   isForgeBrowserKey,
   readKeyLimits,
+  verifyLimitedKey,
   registerLimitedKey,
   revokeLimitedKey,
   shortId,
@@ -744,9 +747,9 @@ export class AuthController {
    * Move a registered key into the vault's main record. Registered and staged (D-016) but not
    * moved: the key is safe on this device, and the next unlock finishes the move.
    */
-  private async commitKey(secret: VaultSecret, protection: Protection): Promise<StoreOutcome> {
+  private async commitKey(secret: VaultSecret, protection: Protection, origin?: 'dg'): Promise<StoreOutcome> {
     try {
-      return await storeInVault(this.network, secret, protection)
+      return await storeInVault(this.network, secret, protection, origin ? { origin } : {})
     } catch (e) {
       if (await hasStaged(this.network, secret.identityId).catch(() => false)) {
         throw new Error(`The new key is registered and saved on this device, but finishing sign-in failed (${errorMessage(e)}). Unlock to continue.`)
@@ -939,6 +942,51 @@ export class AuthController {
     if (!identityFileMatchesNetwork(networkKey, buildKey)) {
       throw new Error(`This identity file is for ${networkKey}, but this site is on ${buildKey}. Choose the file made for ${buildKey}.`)
     }
+  }
+
+  /**
+   * Adopt the limited key `dg auth keys add --for-browser` sealed to `request` (TS-06,
+   * `./key-handoff`): open the reply, check the key on chain (live, Forge-bound, limited, and
+   * controlled by the private key it carries) before anything is stored, then keep it in the
+   * vault like an imported key. Nothing is signed here: dg paid for and registered the key.
+   * Renewing (`renew`) takes only a key for the signed-in identity.
+   */
+  async adoptHandoffKey(reply: string, request: HandoffRequest, protection: Protection, options: { readonly renew?: boolean } = {}): Promise<AuthSession> {
+    return this.run(async () => {
+      const network = NETWORKS[this.network].key
+      const payload = parseHandoffPayload(await openHandoffReply(reply, network, request.secret), network)
+      const { identityId } = payload
+      const signedIn = this.state.session?.identityId ?? null
+      if (options.renew === true && signedIn !== null && identityId !== signedIn) {
+        throw new WriteAuthError(`dg made this key for ${shortId(identityId)}, but you are renewing the key of ${shortId(signedIn)}. Sign dg in as ${shortId(signedIn)} (or pass --master with its identity file) and run the command again.`)
+      }
+      this.requireFullUnlock(identityId)
+      const sdk = await this.getSdk()
+      this.step('Checking the key on Platform')
+      let limits: KeyLimits
+      try {
+        limits = await verifyLimitedKey(sdk, identityId, payload.keyId, this.group(), this.network, payload.wif)
+      } catch (e) {
+        throw new WriteAuthError(`This key can't be used here: ${errorMessage(e)}. Nothing was stored.`)
+      }
+      this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
+      const key: LimitedKey = { keyId: payload.keyId, wif: payload.wif, limits }
+      const committed = await this.commitKey({ identityId, keyId: key.keyId, wif: key.wif }, protection, 'dg')
+      // A reply that brings the encryption key again: the copy the replacement could not carry over is not lost.
+      const session = await this.adopt(identityId, key, protection, payload.encryptionKey !== undefined ? { ...committed, encryptionKeyDropped: false } : committed)
+      const core = NETWORKS[this.network].v2?.core
+      if (payload.encryptionKey !== undefined && core !== undefined) {
+        this.step('Enabling private repos')
+        try {
+          await adoptEncryptionKey(sdk, this.network, identityId, core, hexToBytes(payload.encryptionKey.privateKeyHex))
+        } catch (e) {
+          this.setState({ notice: `Signed in, but private repos could not be enabled: ${errorMessage(e)}` })
+        }
+      }
+      // Kept: the request is spent. Until then a failed check can be retried with the same reply.
+      request.wipe()
+      return session
+    })
   }
 
   /** Adopt a limited key obtained elsewhere (identity creation). */

@@ -38,6 +38,7 @@ import { Button } from '@/components/ui/button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { useConfirmAction } from '@/components/ui/confirm-action'
+import { PhraseWarning } from '@/components/auth/phrase-warning'
 
 type Mode = 'phrase' | 'file' | 'paste' | 'register'
 
@@ -228,6 +229,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
           </div>
           {mode === 'phrase' ? (
             <div className="space-y-2">
+              <PhraseWarning />
               <Field
                 label="Recovery phrase (12 or 24 words)"
                 htmlFor="enc-phrase"
@@ -273,6 +275,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
               <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
                 Only for an identity with no encryption key yet. If yours has one, use Recovery phrase above: it is free.
               </p>
+              <PhraseWarning />
               <Field
                 label="Recovery phrase (12 or 24 words)"
                 htmlFor="enc-phrase"

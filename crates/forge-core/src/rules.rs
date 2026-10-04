@@ -2484,23 +2484,7 @@ mod tests {
                 });
                 assert_eq!(got, v.expected, "vector `{ctx}`");
             }
-            "role_oracle" => {
-                let inp: RoleOracleInput = input(v);
-                let oracle = v2::RoleOracle::new(inp.memberships);
-                let got: Vec<serde_json::Value> = inp
-                    .queries
-                    .iter()
-                    .map(|q| {
-                        serde_json::json!({
-                            "roleAt": oracle.role_at(&q.identity, q.at),
-                            "memberAt": oracle.member_at(&q.identity, q.at),
-                            "currentRole": oracle.current_role(&q.identity),
-                            "approverAt": oracle.approver_at(&q.identity, q.at),
-                        })
-                    })
-                    .collect();
-                assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
-            }
+            "role_oracle" => run_role_oracle(v),
             "code_owners" | "code_owner_requests" => run_code_owners_case(v),
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
             | "linked_issues" => run_review_case(v),
@@ -2509,8 +2493,125 @@ mod tests {
             }
             "long_body" => run_long_body(v),
             "ci_rerun" | "ci_rerun_write" => run_ci_rerun_case(v),
+            "key_handoff" | "key_handoff_open" | "copy" => run_key_handoff_case(v),
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
+    }
+
+    fn run_role_oracle(v: &Vector) {
+        let inp: RoleOracleInput = input(v);
+        let oracle = v2::RoleOracle::new(inp.memberships);
+        let got: Vec<serde_json::Value> = inp
+            .queries
+            .iter()
+            .map(|q| {
+                serde_json::json!({
+                    "roleAt": oracle.role_at(&q.identity, q.at),
+                    "memberAt": oracle.member_at(&q.identity, q.at),
+                    "currentRole": oracle.current_role(&q.identity),
+                    "approverAt": oracle.approver_at(&q.identity, q.at),
+                })
+            })
+            .collect();
+        assert_eq!(
+            serde_json::Value::from(got),
+            v.expected,
+            "vector `{}`",
+            v.name
+        );
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields, rename_all = "camelCase")]
+    struct KeyHandoffInput {
+        network: String,
+        browser_secret: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ephemeral_secret: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plaintext: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply: Option<String>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct CopyInput {
+        id: String,
+    }
+
+    /// `key_handoff__*` (seal a reply for a request), `key_handoff_open__*` (open one) and
+    /// `copy__*` (fixed user-facing text): `crate::browser_key`.
+    fn run_key_handoff_case(v: &Vector) {
+        use crate::browser_key::{open, request_text, seal_bytes, OpenError, Request};
+        let ctx = &v.name;
+        if v.case == "copy" {
+            let inp: CopyInput = input(v);
+            let text = match inp.id.as_str() {
+                "recoveryPhraseWarning" => crate::browser_key::RECOVERY_PHRASE_WARNING,
+                other => panic!("vector `{ctx}`: unknown copy `{other}`"),
+            };
+            assert_eq!(
+                serde_json::json!({ "text": text }),
+                v.expected,
+                "vector `{ctx}`"
+            );
+            return;
+        }
+        let inp: KeyHandoffInput = input(v);
+        let h32 = |s: &str| -> [u8; 32] {
+            hex::decode(s)
+                .unwrap_or_else(|e| panic!("vector `{ctx}`: {e}"))
+                .try_into()
+                .unwrap_or_else(|_| panic!("vector `{ctx}`: not 32 bytes"))
+        };
+        let secret = h32(&inp.browser_secret);
+        let opened = |reply: &str| match open(reply, &inp.network, &secret) {
+            Ok(p) => serde_json::json!({ "plaintext": String::from_utf8(p.to_vec()).unwrap() }),
+            Err(e) => serde_json::json!({ "error": match e {
+                OpenError::Malformed => "malformed",
+                OpenError::Network => "network",
+                OpenError::Unreadable => "unreadable",
+            } }),
+        };
+        if v.case == "key_handoff_open" {
+            let reply = inp.reply.as_deref().expect("reply");
+            assert_eq!(opened(reply), v.expected, "vector `{ctx}`");
+            return;
+        }
+        let secp = secp256k1::Secp256k1::new();
+        let public_key = secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &secp256k1::SecretKey::from_slice(&secret).unwrap(),
+        );
+        let request = Request {
+            network: inp.network.clone(),
+            public_key,
+        };
+        let plaintext = inp.plaintext.as_deref().expect("plaintext");
+        let nonce: [u8; 12] = hex::decode(inp.nonce.as_deref().expect("nonce"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let reply = seal_bytes(
+            &request,
+            plaintext.as_bytes(),
+            &h32(inp.ephemeral_secret.as_deref().expect("ephemeralSecret")),
+            nonce,
+        )
+        .unwrap();
+        let got = serde_json::json!({
+            "request": request_text(&inp.network, &public_key),
+            "reply": reply,
+        });
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+        assert_eq!(
+            opened(&reply),
+            serde_json::json!({ "plaintext": plaintext }),
+            "vector `{ctx}`: round trip"
+        );
     }
 
     #[derive(Deserialize, Serialize)]

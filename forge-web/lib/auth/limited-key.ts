@@ -48,6 +48,19 @@ export function defaultLimits(now = Date.now()): LimitedKeyRequest {
   }
 }
 
+/** How long a new browser key may live, in days: renewals stay rare, and no key lives past a year (TS-06). */
+export const KEY_LIFETIME_DAYS = [30, 90, 180, 365] as const
+
+/** A lifetime as the picker words it. */
+export function lifetimeLabel(days: number): string {
+  return days === 365 ? '1 year' : days === 180 ? '6 months' : `${days} days`
+}
+
+/** The default budget for `days` from `now`. */
+export function limitsFor(days: number, now = Date.now()): LimitedKeyRequest {
+  return { ...defaultLimits(now), expiresAt: now + days * DAY_MS }
+}
+
 /** An identity id as the key-mismatch copy names it: `DhRR5hs…` ({@link abbreviate}'s 7 characters). */
 export function shortId(id: string): string {
   return id.length > 8 ? `${abbreviate(id)}…` : id

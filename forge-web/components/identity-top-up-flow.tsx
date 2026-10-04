@@ -27,6 +27,7 @@ import { isAbort } from '@/lib/sdk/facade'
 import { creditsAsDash } from '@/lib/view/format'
 import { recordSpend, TOP_UP_KIND } from '@/lib/spend'
 import { errorMessage } from '@/lib/utils'
+import { PhraseWarning } from '@/components/auth/phrase-warning'
 
 const STAGE_TEXT: Readonly<Record<TopUpStage, string>> = {
   'waiting-deposit': 'Watching for your deposit…',
@@ -229,6 +230,7 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
           finish it.
         </p>
       ) : null}
+      <PhraseWarning />
       <Field
         label="Recovery phrase"
         htmlFor="top-up-phrase"
