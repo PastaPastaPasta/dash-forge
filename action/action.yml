@@ -2,9 +2,11 @@
 # releases, labels) into a Dash Forge repository with forge-import. See action/README.md.
 #
 # `version` below is the Dash Forge release this action version pins. It is defined once,
-# as the input's default, and is empty until the commit that cuts the first release sets it:
-# until then `install: 'true'` builds the binaries from the Action's own source, and a pinned
-# commit never switches to downloaded binaries behind the workflow's back.
+# as the input's default, and the commit that cuts a release sets it to that release (a test
+# keeps it equal to the workspace version in Cargo.toml). At a release tag
+# (`uses: …/action@v0.1.0`), `install: 'true'` therefore downloads exactly the binaries built
+# from that tag. Between releases master still pins the latest release, so a workflow on
+# master's scripts that needs master's binaries sets `install: 'source'`.
 #
 # The network defaults to the devnet the hosted site (forge.dashhq.org) targets: Forge's
 # contracts are registered there, and not on mainnet yet (forge-contracts/deployments/).
@@ -71,8 +73,8 @@ inputs:
     description: "GitHub repository to mirror (owner/repo)."
     default: ${{ github.repository }}
   version:
-    description: "Dash Forge release to install (the release this action version pins). Empty: none is pinned yet, so install 'true' builds from source."
-    default: ""
+    description: "Dash Forge release to install (the release this action version pins). Empty: install 'true' builds from source."
+    default: "0.1.0"
   install:
     description: "true: install release `version`, or build the Action's own source (the ref in uses:) when `version` is empty. source: always build the Action's own source. false: use dg, git-remote-dash and forge-import already on PATH."
     default: "true"
