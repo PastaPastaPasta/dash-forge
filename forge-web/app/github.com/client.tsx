@@ -15,22 +15,25 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
+import { UnreachableBanner } from '@/components/ui/platform-status'
 import { useAsync } from '@/hooks/use-async'
 import { repoHref, useParam } from '@/hooks/use-query-param'
 import { useSdk } from '@/hooks/use-sdk'
-import { ACTIVE_NETWORK } from '@/lib/constants'
 import { BASE_PATH, shortRepoPath } from '@/lib/short-url'
-import { reposNamed, type DiscoveredRepo } from '@/lib/view/discovery'
-import { showcaseFor } from '@/lib/view/showcase'
-import { mirrorsOf, mirrorToOpen } from '@/lib/view/upstream-alias'
+import { NAMED_MAX, reposNamed, type DiscoveredRepo } from '@/lib/view/discovery'
+import { mapsToRepoPage, matchUpstream, SHOWCASE_IDS } from '@/lib/view/upstream-alias'
 
 /** The short-URL shim is not in the IPFS variant, so a GitHub sub-path opens the mirror's home there. */
 const SHIM = process.env.FORGE_IPFS_BUILD !== '1'
 
 function open(router: ReturnType<typeof useRouter>, repo: DiscoveredRepo, rest: string): void {
-  if (rest !== '' && SHIM) {
-    // The shim maps the GitHub-style rest (`issues/12`, `tree/main/src`) onto the mirror's page.
-    window.location.replace(`${BASE_PATH}${shortRepoPath({ owner: repo.ownerId, name: repo.slug })}/${rest}`)
+  if (rest !== '' && SHIM && mapsToRepoPage(rest)) {
+    // The shim maps the GitHub-style rest (`issues/12`, `tree/main/src`) onto the mirror's page,
+    // pinned to this repo, with the GitHub URL's own query (`?q=…`) and fragment (`#L120`).
+    const query = new URLSearchParams(window.location.search)
+    for (const k of ['owner', 'name', 'rest']) query.delete(k)
+    query.set('repo', repo.key)
+    window.location.replace(`${BASE_PATH}${shortRepoPath({ owner: repo.ownerId, name: repo.slug })}/${rest}?${query.toString()}${window.location.hash}`)
     return
   }
   router.replace(repoHref('/repo', { owner: repo.ownerId, name: repo.slug, repoId: repo.key }))
@@ -41,15 +44,15 @@ export function UpstreamAliasClient(): JSX.Element {
   const name = useParam('name').trim()
   const rest = useParam('rest').replace(/^\/+|\/+$/g, '')
   const router = useRouter()
-  const { sdk, ready, network } = useSdk()
+  const { sdk, ready, network, status, retry } = useSdk()
   const deployed = isForgeDeployed()
-  const showcase = new Set(showcaseFor(ACTIVE_NETWORK.key).map((e) => e.repoId))
   const valid = owner !== '' && name !== ''
   const found = useAsync(() => reposNamed(sdk!, name.toLowerCase(), { network }), [ready, name, network], {
     enabled: deployed && valid && ready && sdk !== null,
   })
-  const mirrors = found.data ? mirrorsOf(owner, name, found.data.repos, showcase) : null
-  const target = mirrors ? mirrorToOpen(mirrors, showcase) : null
+  const match = found.data ? matchUpstream(owner, name, found.data) : null
+  const mirrors = match?.mirrors ?? null
+  const target = match?.open ?? null
   const source = `github.com/${owner}/${name}`
 
   useEffect(() => {
@@ -76,8 +79,26 @@ export function UpstreamAliasClient(): JSX.Element {
     )
   }
   if (!deployed) return <NotDeployedState />
+  if (status.phase === 'error' && found.data === null) return <UnreachableBanner status={status} onRetry={retry} />
   if (found.error) return <ErrorState message={found.error} onRetry={found.reload} />
   if (mirrors === null || target !== null) return <LoadingBlock label={target !== null ? `Opening the mirror of ${source}` : `Looking for a mirror of ${source}`} />
+
+  if (mirrors.length === 0 && match?.partial) {
+    // More repos share the name than one read holds: a mirror could be among the rest.
+    return (
+      <EmptyState
+        icon={GitBranch}
+        heading="h1"
+        title={`No mirror of ${source} found yet`}
+        body={`None of the first ${NAMED_MAX} repos named ${name.toLowerCase()} mirrors it. Search to see the rest.`}
+        action={
+          <Link href={`/explore/?q=${encodeURIComponent(name.toLowerCase())}`}>
+            <Button variant="primary">Search repos named {name.toLowerCase()}</Button>
+          </Link>
+        }
+      />
+    )
+  }
 
   if (mirrors.length === 0) {
     return (
@@ -121,7 +142,7 @@ export function UpstreamAliasClient(): JSX.Element {
             >
               {m.slug}
             </Link>
-            {showcase.has(m.key) ? <span className="text-anvil-500 dark:text-anvil-400">featured on this site</span> : null}
+            {SHOWCASE_IDS.has(m.key) ? <span className="text-anvil-500 dark:text-anvil-400">featured on this site</span> : null}
           </li>
         ))}
       </ul>

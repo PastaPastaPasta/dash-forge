@@ -48,6 +48,15 @@ test.describe('GitHub addresses (CJ-3)', () => {
     await expect(page).toHaveURL(new RegExp(`/repo/issues/\\?owner=${mirror!.owner}&name=dash&repo=${mirror!.id}`), { timeout: 60_000 })
   })
 
+  test('ga-4. the rest of a GitHub path opens the same page of the mirror; an unknown one, its home', async ({ page }) => {
+    const mirror = await dashMirror()
+    test.skip(mirror === null, 'no single mirror of github.com/dashpay/dash on this devnet')
+    await page.goto('/github.com/dashpay/dash/pulls', { waitUntil: 'domcontentloaded' })
+    await expect(page).toHaveURL(new RegExp(`/repo/pulls/\\?owner=${mirror!.owner}&name=dash&repo=${mirror!.id}`), { timeout: 60_000 })
+    await page.goto('/github.com/dashpay/dash/actions', { waitUntil: 'domcontentloaded' })
+    await expect(page).toHaveURL(new RegExp(`/repo/\\?owner=${mirror!.owner}&name=dash&repo=${mirror!.id}`), { timeout: 60_000 })
+  })
+
   test('ga-3. a GitHub repo with no mirror says so and offers to mirror it', async ({ page }) => {
     await page.goto('/github.com/forge-e2e-nobody/no-such-repo-here', { waitUntil: 'domcontentloaded' })
     await expect(page.getByRole('heading', { name: 'github.com/forge-e2e-nobody/no-such-repo-here isn’t mirrored here yet' })).toBeVisible({ timeout: 60_000 })
