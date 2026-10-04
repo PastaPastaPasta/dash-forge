@@ -140,6 +140,7 @@ import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/v
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
+import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
@@ -289,7 +290,7 @@ export function PullContent({
   )
 
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
-  if (loading && !data) return <LoadingBlock label="Folding PR" />
+  if (loading && !data) return <LoadingBlock label="Loading pull request" />
   if (error && !data) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="pull" icon={GitPullRequest} title={`PR #${number} not found`} body="No pull request or issue with that number in this repo." />
   return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} reloadHome={reloadHome} />
@@ -2053,13 +2054,13 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         label: 'Sign & delete branch',
       }
     case 'define-label':
-      return { title: `Create label "${pending.name}"`, description: 'Two documents: the label definition (for the whole repo), then a label event on this PR.', label: 'Sign & create' }
+      return { title: `Create label "${pending.name}"`, description: 'Creates the label for this repo and adds it here.', label: 'Sign & create' }
     case 'edit-pull':
-      return { title: `Edit PR #${number}`, description: 'Replaces your PR document; you pay only for the changed bytes. Earlier versions stay readable on Platform.', label: 'Sign & save' }
+      return { title: `Edit PR #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'edit-comment':
-      return { title: 'Edit comment', description: 'Replaces your comment document; you pay only for the changed bytes.', label: 'Sign & save' }
+      return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'delete-comment':
-      return { title: 'Delete comment', description: 'Deletes your comment document (its storage fee is partly refunded). Replies to it stay.', label: 'Sign & delete' }
+      return { title: 'Delete comment', description: 'Part of its storage fee is refunded, and replies stay. The original stays in Platform history, so rotate any secret it held.', label: 'Sign & delete' }
     case 'resolve':
       return pending.resolve
         ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }
@@ -2067,7 +2068,7 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
     case 'rerun':
       return {
         title: pending.check === null ? `Re-run all checks on PR #${number}` : `Re-run ${pending.check}`,
-        description: `Appends a member event asking this repository's runners to run ${pending.check === null ? 'every check' : 'this check'} on ${head.slice(0, 9)} again. A forge-runner watching the repository picks it up at its next poll, or within seconds when its relay wakes it, and its new run replaces the one shown. If the PR's head moves first, nothing re-runs: the new head runs by itself.`,
+        description: `Asks this repo's runners to run ${pending.check === null ? 'every check' : 'this check'} on ${head.slice(0, 9)} again. The new run replaces the one shown. If the PR gets a new commit first, that commit runs instead.`,
         label: 'Sign & request re-run',
       }
     case 'lock':
@@ -2236,9 +2237,9 @@ function BranchRules({
         <p className="flex items-center gap-2" data-testid="protected-base">
           <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />
           <span>
-            <span className="font-mono">{short}</span> is protected: only maintainers can merge into it. Enforced by Platform (a writer&apos;s update of it is refused or
-            inert).
+            <span className="font-mono">{short}</span> is protected. Only maintainers can merge into it.
           </span>
+          <EnforcedBy by="platform" />
         </p>
       ) : null}
       {policy === 'unknown' || status === 'unknown' ? (
@@ -2267,9 +2268,9 @@ function BranchRules({
         </p>
       ) : null}
       {policy !== null ? (
-        <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-          Policy is a client rule; a maintainer can bypass it, and the bypass is recorded on the PR. The PR author&apos;s own approval never counts. Nothing at consensus requires
-          approvals.
+        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-600 dark:text-anvil-400">
+          <span>The author&apos;s own approval doesn&apos;t count. Maintainers can override, and the override is shown on the PR.</span>
+          <EnforcedBy by="apps" />
         </p>
       ) : null}
     </section>

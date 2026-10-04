@@ -89,7 +89,7 @@ export function PendingRenewal({ identityId }: { identityId: string }): JSX.Elem
       {discarding ? (
         <div className="space-y-2 border-t border-caution/30 pt-2" data-testid="pending-renewal-discard">
           <p>
-            With the renewal&apos;s passphrase or passkey, this browser keeps its key (never to sign) so your next renewal or &quot;Revoke on chain&quot;
+            With the renewal&apos;s passphrase or passkey, this browser keeps its key (never to sign) so your next renewal or &quot;Revoke on Platform&quot;
             disables it. Without it, a registered key stays valid on Platform, unused, until it expires.
           </p>
           {data.methods.includes('passphrase') ? (
