@@ -24,6 +24,8 @@ import { useFirstWrite } from '@/hooks/use-first-write'
 import { useStarShape } from '@/hooks/use-star-shape'
 import { useRelationToggle } from '@/hooks/use-relation-toggle'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { useDpnsName } from '@/hooks/use-dpns-name'
+import { useRememberAcquaintance } from '@/components/lookalike-note'
 import { Button } from '@/components/ui/button'
 import { beatAllowed, starBeatFirsts, starFirsts, starRelation, type RepoRef } from '@/lib/repo'
 import { trendingPref } from '@/lib/repo/trending'
@@ -55,6 +57,10 @@ export function StarButton({
   })
 
   const starred = star.on === true
+  // A starred repo and its named owner are remembered for the look-alike note (TS-24).
+  const ownerName = useDpnsName(repo.ownerId)
+  useRememberAcquaintance({ kind: 'repo', name: repo.name, identity: repo.ownerId, repoId: repo.repoId }, 'starred', starred)
+  useRememberAcquaintance(ownerName ? { kind: 'owner', name: ownerName, identity: repo.ownerId } : null, 'starred', starred)
   // Read which subtrees a star would create only once the viewer points at the button: a page
   // view costs no reads, and the price is an upper bound until then.
   const [interested, setInterested] = useState(false)

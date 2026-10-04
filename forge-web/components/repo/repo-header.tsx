@@ -19,7 +19,9 @@ import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 import { TabStrip } from '@/components/ui/tab-strip'
-import { bareRoute } from '@/lib/page-title'
+import { bareRoute, ownerLabel } from '@/lib/page-title'
+import { LookalikeNote } from '@/components/lookalike-note'
+import { useDpnsName } from '@/hooks/use-dpns-name'
 import { ForkButton } from '@/components/repo/fork-button'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
 import { CodeSearchBox } from '@/components/repo/code-search-box'
@@ -88,6 +90,13 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   const counts = useTargetCounts(home.repo)
   const { role } = useViewerRole(home.repo)
   const TitleTag = VIEWS_WITH_OWN_H1.includes(pathname) ? 'div' : 'h1'
+  // The owner pill reads the same name: no extra request. Look-alikes of known names (TS-24).
+  const ownerName = useDpnsName(home.repo.ownerId)
+  const repoName = home.repo.name || addr.name
+  const lookalikes = [
+    ownerName ? { kind: 'owner' as const, name: ownerName, identity: home.repo.ownerId } : null,
+    { kind: 'repo' as const, name: repoName, identity: home.repo.ownerId, repoId: home.repo.repoId, label: `${ownerLabel(home.repo.ownerId, ownerName)}/${repoName}` },
+  ]
   const tabs = [
     { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true, count: null },
     { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues },
@@ -130,6 +139,8 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       </div>
 
       {home.v2.forkOf ? <ForkedFrom home={home} /> : null}
+
+      <LookalikeNote subjects={lookalikes} className="mt-2" />
 
       {home.description ? (
         <p className="mt-2 max-w-3xl text-dense text-anvil-600 dark:text-anvil-300">{home.description}</p>

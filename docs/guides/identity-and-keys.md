@@ -30,6 +30,8 @@ Create one from the terminal with `dg auth new`, in the web app (**Sign in → C
 
 **Usernames.** Platform has a name service, DPNS. Register a username with `dg auth name register <label>` (it needs your identity file or the 12 words once) or in the bridge. Names of 3–19 characters made only of `a`–`z`, `0`, `1` and `-` are *contested*: they go to a masternode vote, and `dg` refuses them. The web app resolves usernames: `forge.dashhq.org/alice/project`, `@alice` in the header's jump box, and names on profiles and in the wallet sign-in confirmation. So does the CLI: `git clone dash://alice/project` and `dg … alice/project` resolve `alice` (or `alice.dash`) through DPNS, proof-verified. The identity id still works everywhere.
 
+**Look-alike names.** DPNS treats only `o`/`0` and `i`/`l`/`1` as the same letter, so `dash-pay`, `dashpay2` and `dashpаy` (with a Cyrillic `а`) are all names anyone can register. The web app remembers, in your browser only, the owners and repositories you visit, star or follow. When a profile or repository page has a name that looks like one of them but belongs to someone else, it says so: "Not to be confused with dashpay, which you starred." Compare the identity id before you trust the page. Clearing the site's data in your browser clears that list.
+
 ---
 
 ## The keys in an identity
