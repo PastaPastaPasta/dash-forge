@@ -53,13 +53,15 @@ export function mergeIdentityValid(p: Pick<Prefs, 'mergeName' | 'mergeEmail'>): 
 }
 
 /**
- * The classes and colors of a diff palette. Row tints are 10% of `tint` over the surface; the
- * text on them is the normal body text, and the `+`/`−` markers carry the color (both themes
- * checked against WCAG AA in `lib/design/contrast.test.ts`). The markers are always shown, so
- * color is never the only signal.
+ * The classes and colors of a diff palette. Rows are tinted by the `diff-add` / `diff-del` classes
+ * (app/globals.css: `tint` at `--diff-row-alpha`, with a 2px edge in the marker colour, and the
+ * changed words at `--diff-word-alpha` more); the table's `data-diff-palette` picks the palette.
+ * The text on them is the normal body text and syntax colours, and the `+`/`−` markers carry the
+ * colour (both themes checked against WCAG AA in `lib/design/contrast.test.ts`, which also checks
+ * that the CSS and these hexes agree). The markers are always shown, so colour is never the only
+ * signal.
  */
 export interface PaletteSide {
-  readonly row: string
   readonly marker: string
   /** The tint's base color and the marker colors, for the contrast test. */
   readonly tint: string
@@ -69,11 +71,11 @@ export interface PaletteSide {
 
 export const DIFF_PALETTES: Readonly<Record<DiffPalette, { readonly added: PaletteSide; readonly deleted: PaletteSide }>> = {
   standard: {
-    added: { row: 'bg-green-600/10', marker: 'text-green-800 dark:text-green-400', tint: '#16a34a', markerLight: '#166534', markerDark: '#4ade80' },
-    deleted: { row: 'bg-red-600/10', marker: 'text-red-700 dark:text-red-400', tint: '#dc2626', markerLight: '#b91c1c', markerDark: '#f87171' },
+    added: { marker: 'text-green-800 dark:text-green-400', tint: '#16a34a', markerLight: '#166534', markerDark: '#4ade80' },
+    deleted: { marker: 'text-red-700 dark:text-red-400', tint: '#dc2626', markerLight: '#b91c1c', markerDark: '#f87171' },
   },
   colorblind: {
-    added: { row: 'bg-blue-600/10', marker: 'text-blue-700 dark:text-blue-400', tint: '#2563eb', markerLight: '#1d4ed8', markerDark: '#60a5fa' },
-    deleted: { row: 'bg-orange-500/10', marker: 'text-orange-800 dark:text-orange-400', tint: '#f97316', markerLight: '#9a3412', markerDark: '#fb923c' },
+    added: { marker: 'text-blue-700 dark:text-blue-400', tint: '#2563eb', markerLight: '#1d4ed8', markerDark: '#60a5fa' },
+    deleted: { marker: 'text-orange-800 dark:text-orange-400', tint: '#f97316', markerLight: '#9a3412', markerDark: '#fb923c' },
   },
 }

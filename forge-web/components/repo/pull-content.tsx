@@ -1133,7 +1133,7 @@ function PullPage({
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4" data-testid="pull-page">
+    <div className="space-y-4" data-testid="pull-page">
       {/* Header */}
       <div>
         {editing ? (
@@ -2256,7 +2256,7 @@ function BranchRules({
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
         <p className="flex items-center gap-2" data-testid="protected-base">
-          <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />
+          <ShieldCheck className="h-4 w-4 text-fg-muted" aria-hidden />
           <span>
             <span className="font-mono">{short}</span> is protected. Only maintainers can merge into it.
           </span>

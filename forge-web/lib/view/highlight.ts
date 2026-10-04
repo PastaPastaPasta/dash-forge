@@ -123,20 +123,24 @@ function splitHighlightedLines(html: string): string[] {
 
 /**
  * Highlight a text blob, returning per-line HTML — or `null` to keep the plain rendering
- * (oversized file, unknown+unconfident language, or highlight.js unavailable).
+ * (oversized file, unknown+unconfident language, or highlight.js unavailable). `guess: false`
+ * highlights only a language the file's name gives (a diff's two sides must agree, and a guess
+ * on each could differ).
  */
-export async function highlightBlob(text: string, filename: string): Promise<HighlightedBlob | null> {
+export async function highlightBlob(text: string, filename: string, { guess = true }: { guess?: boolean } = {}): Promise<HighlightedBlob | null> {
   if (text.length > MAX_HIGHLIGHT_BYTES) return null
 
   try {
-    const hljs = (await import('highlight.js/lib/common')).default
     const wanted = languageForFilename(filename)
+    if (!guess && wanted === undefined) return null
+    const hljs = (await import('highlight.js/lib/common')).default
     let value: string
     let language: string | null
     if (wanted && hljs.getLanguage(wanted)) {
       value = hljs.highlight(text, { language: wanted, ignoreIllegals: true }).value
       language = wanted
     } else {
+      if (!guess) return null
       const auto = hljs.highlightAuto(text)
       // Auto-detection is noisy on prose/config; only trust a reasonably relevant match.
       if ((auto.relevance ?? 0) < 5) return null
