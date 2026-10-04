@@ -271,10 +271,6 @@ describe('no component renders text in the raw brand blue', () => {
   // non-text graphic, which WCAG 1.4.11 asks 3:1 of — the brand value meets that on every
   // dark surface.
   const ICON = /<[A-Z]\w*\s+className="[^"]*\btext-dash(?![-\w/])[^"]*"\s+aria-hidden\s*\/>/g
-  // Class strings that are applied only to an icon wrapper, checked by hand: the file and the
-  // line's code (not its number, which any edit above it moves).
-  const ICON_ONLY: readonly { file: string; code: string }[] = []
-  const iconOnly = (where: string, text: string): boolean => ICON_ONLY.some((o) => where.startsWith(o.file + ':') && text.includes(o.code))
 
   it('uses raw dash blue only on icons', () => {
     const offenders = ['app', 'components']
@@ -283,7 +279,7 @@ describe('no component renders text in the raw brand blue', () => {
         readFileSync(file, 'utf8')
           .split('\n')
           .map((text, i) => ({ where: `${file.slice(root.length + 1)}:${i + 1}`, text }))
-          .filter(({ where, text }) => RAW.test(text.replace(ICON, '')) && !iconOnly(where, text)),
+          .filter(({ text }) => RAW.test(text.replace(ICON, ''))),
       )
       .map(({ where }) => where)
     expect(offenders).toEqual([])
@@ -376,7 +372,7 @@ describe('diff palettes meet WCAG AA on their row tints, in both themes', () => 
     ] as const) {
       for (const [name, bg] of Object.entries(surfaces)) {
         for (const alpha of [0, 0.15, 0.25]) {
-          const under = over(TOKENS.light['line-highlight']!, rgb(bg!), alpha)
+          const under = over((syn['line-highlight'] ?? TOKENS.light['line-highlight'])!, rgb(bg!), alpha)
           for (const k of SYNTAX) expect(contrast(syn[k]!, under), `${k} on ${name} @${alpha}`).toBeGreaterThanOrEqual(AA_TEXT)
           expect(contrast(rgb(text.gutter), under), `gutter on ${name} @${alpha}`).toBeGreaterThanOrEqual(AA_TEXT)
         }
@@ -413,7 +409,7 @@ describe('white text on solid fills meets WCAG AA', () => {
   // behind the same white text), arbitrary values and `/NN` tints. The token captured is
   // what follows `bg-`; anything this test cannot resolve to a solid colour FAILS, so a new
   // shape of fill cannot slip past it unchecked.
-  const SOLID_BG = /(?<![\w-])(?:[a-z-]+:)*bg-([a-z]+(?:-\d+)?(?:\/\d+)?|\[[^\]]+\])(?![-\w])/g
+  const SOLID_BG = /(?<![\w-])(?:[a-z-]+:)*bg-([a-z]+(?:-[a-z]+)*(?:-\d+)?(?:\/\d+)?|\[[^\]]+\])(?![-\w])/g
 
   /**
    * Every solid background that can sit behind `text-white`: backgrounds on the same line as
@@ -500,6 +496,10 @@ describe('white text on solid fills meets WCAG AA', () => {
     expect(tokens('<b\n  className={cn(\n    \'rounded text-white\',\n    \'bg-dash\',\n  )}\n>')).toEqual(['dash'])
     expect(tokens('<b className="px-2\n  text-white\n  bg-verify">')).toEqual(['verify'])
     expect(tokens('<b className="text-anvil-700 bg-dash/10">')).toEqual([])
+    // A theme token's name has hyphens; both its values sit behind the white text.
+    expect(tokens('<b className="text-white bg-state-closed">')).toEqual(['state-closed'])
+    expect(tokens('<b className="text-white bg-state-open-fill">')).toEqual(['state-open-fill'])
+    expect(Math.min(...(tokenHexes('state-closed') as string[]).map((h) => contrast(rgb('#ffffff'), rgb(h))))).toBeLessThan(AA_TEXT)
   })
 })
 

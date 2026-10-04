@@ -220,16 +220,18 @@ export function longCommitBody(body: string): boolean {
 /**
  * The commit message's body, in mono (commit bodies are hard-wrapped at 72 columns). A long one (a
  * squash's list of commits, a release's changelog) starts at its first 3 lines with "Show full
- * message", so the diff is not screens away.
+ * message", so the diff is not screens away. Collapsed, the rest is not rendered at all (not just
+ * clipped), so its links take no keyboard focus and a screen reader reads what is shown.
  */
-function CommitBody({ body, links }: { body: string; links: ReturnType<typeof useRepoLinks> }): JSX.Element {
+export function CommitBody({ body, links }: { body: string; links: ReturnType<typeof useRepoLinks> }): JSX.Element {
   const [open, setOpen] = useState(false)
   const long = longCommitBody(body)
   const clamped = long && !open
+  const shown = clamped ? body.split('\n').slice(0, 3).join('\n') : body
   return (
     <div className="mt-2">
       <pre id="commit-body" className={cn('whitespace-pre-wrap font-mono text-[13px] leading-5 text-anvil-600 [overflow-wrap:anywhere] dark:text-anvil-300', clamped && 'line-clamp-3')} data-testid="commit-body" data-clamped={clamped || undefined}>
-        <LinkifiedText text={body} links={links} imported={sourceUrl(links)} />
+        <LinkifiedText text={shown} links={links} imported={sourceUrl(links)} />
       </pre>
       {long ? (
         <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-controls="commit-body" className="mt-1 text-[12px] font-medium text-forge-700 underline-offset-2 hover:underline coarse:min-h-11 dark:text-forge-400" data-testid="commit-body-toggle">

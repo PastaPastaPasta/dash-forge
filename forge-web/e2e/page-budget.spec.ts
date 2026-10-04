@@ -170,7 +170,7 @@ test.describe('page request budget (S-1)', () => {
     await issuesContext.close()
   })
 
-  test('pb-3. the About card shows no placeholder where no facts are worked out: a deep link to a file, the empty repo', async ({ page }) => {
+  test('pb-3. a deep link to a file has no rail; the empty repo\'s About card shows no placeholder', async ({ page }) => {
     // A deep link to a file: no rail (the code gets the width), so no About card and no facts to
     // work out; the Verification card leads the page instead.
     await page.goto(repoUrl('blob', '&path=README.md'), { waitUntil: 'domcontentloaded' })

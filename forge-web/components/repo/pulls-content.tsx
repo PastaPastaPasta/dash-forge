@@ -24,8 +24,8 @@ import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useState } from 'react'
 import { HiddenRowMark, HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
-import { GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, X } from 'lucide-react'
-import { STATE_TEXT } from '@/lib/design/state'
+import { GitMerge, GitPullRequest, GitPullRequestClosed, X } from 'lucide-react'
+import { pullStateView } from '@/components/repo/pull-state'
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, branchName } from '@/lib/view'
 import {
@@ -96,10 +96,8 @@ const PULL_GRAMMAR: ListGrammar<PullListQuery> = {
 
 function pullStatus(p: PullRow): { label: string; icon: JSX.Element; klass: string } {
   // State is the proved transition sum, even when the event feed (labels, assignees) was incomplete.
-  if (p.state.merged) return { label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, klass: STATE_TEXT.done }
-  if (!p.state.open) return { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, klass: STATE_TEXT.closed }
-  if (p.state.draft) return { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, klass: STATE_TEXT.draft }
-  return { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: STATE_TEXT.open }
+  const { label, Icon, klass } = pullStateView(p.state)
+  return { label, icon: <Icon className="h-4 w-4" aria-hidden />, klass }
 }
 
 export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {

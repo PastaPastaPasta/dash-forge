@@ -58,7 +58,7 @@ colors: {
 - Scale: 13px base for dense surfaces (file lists, commit log), 15px prose (README, issues); headings 1.25 ratio, semibold not bold.
 
 ### Layout & components
-- Max content width 1280px; repo pages: left = content, right 296px rail (metadata, verification panel, storage health). Code pages (file, blame, commit, compare, a PR's Files) have no rail: the code gets the full width, led by the Verification card collapsed to one line. Every repo tab starts at the repo header's left edge (no `mx-auto` columns), so switching tabs never moves the content; a narrow form may cap its width, left-aligned.
+- Max content width 1280px; repo pages: left = content, right 296px rail (metadata, verification panel, storage health). Code pages (file, blame, commit, compare, a pull request) have no rail: the code gets the full width. File, blame and commit pages lead with the Verification card of the code they show, collapsed to one line; compare shows the head's card once both refs resolve. Every repo tab starts at the repo header's left edge (no `mx-auto` columns), so switching tabs never moves the content; a narrow form may cap its width, left-aligned.
 - Radix primitives wrapped in `components/ui/` (yappr/shadcn conventions: `clsx` + `tailwind-merge` + CVA variants).
 - Density: tables/lists at 36px rows; generous only around prose.
 - Iconography: Lucide, 16px inline / 20px nav; git-specific glyphs (branch, tag, commit) used consistently.
