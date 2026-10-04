@@ -75,7 +75,7 @@ async function expectContractsMissing(page: Page): Promise<void> {
     await expect(STATE(page)).toContainText('devnet sakura')
   } else {
     await expect(STATE(page).getByRole('heading')).toHaveText(`Dash Forge isn't deployed on devnet ${E2E_DEVNET} right now`)
-    await expect(STATE(page)).toContainText('devnets are reset from time to time')
+    await expect(STATE(page)).toContainText('is a test network, and it was probably reset')
   }
   // Not the generic read failure, not the outage banner, and no endless retry.
   await expect(page.getByText('That read did not land')).toHaveCount(0)

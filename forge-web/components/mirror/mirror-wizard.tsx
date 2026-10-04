@@ -13,7 +13,7 @@
  *   6. waiting for the first run: Platform is polled until the mirror's refs appear.
  *
  * Resumable: each step's answer is kept in IndexedDB (`lib/mirror/progress.ts`), never a key.
- * A rail keeps what the wizard writes on chain, and its price, in view.
+ * A rail keeps what the wizard writes to Platform, and its price, in view.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -90,7 +90,7 @@ async function saveRunnerKeyFor(identityId: string, runnerKey: RunnerKeyRecord):
     const saved = (await loadMirrorProgress(ACTIVE_NETWORK.key, identityId)) ?? { ...EMPTY_PROGRESS, startedAt: Date.now() }
     await saveMirrorProgress(ACTIVE_NETWORK.key, identityId, withAnswer(saved, { runnerKey }))
   } catch {
-    /* as update(): the key is on chain either way; only the resume point is lost */
+    /* as update(): the key is on Platform either way; only the resume point is lost */
   }
 }
 
@@ -283,8 +283,8 @@ export function MirrorWizard(): JSX.Element {
             </StepCard>
           ))}
         </ol>
-        <aside aria-label="What this writes on chain" className="h-fit space-y-3 rounded-lg border border-anvil-200 bg-white p-3 text-dense dark:border-anvil-800 dark:bg-anvil-900 lg:sticky lg:top-20">
-          <h2 className="text-dense font-medium text-anvil-500 dark:text-anvil-400">On chain</h2>
+        <aside aria-label="What this writes to Platform" className="h-fit space-y-3 rounded-lg border border-anvil-200 bg-white p-3 text-dense dark:border-anvil-800 dark:bg-anvil-900 lg:sticky lg:top-20">
+          <h2 className="text-dense font-medium text-anvil-500 dark:text-anvil-400">On Platform</h2>
           <ul className="space-y-2">
             <RailItem label="Forge repository" note={done.repo ? 'done' : 'three documents'} />
             <RailItem label="Runner key" note={done.key ? 'done' : 'an identity update; its budget is a cap, not a charge'} />

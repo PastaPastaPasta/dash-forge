@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/ui/states'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { IdentityPill } from '@/components/ui/identity-pill'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 
 export default function LoginPage(): JSX.Element {
   const openLogin = useUiStore((s) => s.openLogin)
@@ -41,7 +41,7 @@ export default function LoginPage(): JSX.Element {
           title="Sign in to Dash Forge"
           body={
             ACTIVE_NETWORK.v2 === null
-              ? `Dash Forge is not deployed on ${ACTIVE_NETWORK.key}, so there is nothing to sign in to here. Read-only browsing of other networks needs their own build.`
+              ? `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
               : 'Sign in with a Dash wallet, an identity file or your recovery phrase, or create a new identity. Reading works without signing in.'
           }
           action={<Button variant="primary" onClick={() => openLogin()}>Open sign-in</Button>}

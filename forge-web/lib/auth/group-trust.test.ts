@@ -42,7 +42,7 @@ describe('group trust: members', () => {
   it('accepts an unknown member owned by the deployer, with a notice naming it', () => {
     const r = checkMembers(TRUST, members(['CORE', 'COLLAB', 'NEWCOLLAB']), new Map([['NEWCOLLAB', DEPLOYER]]))
     expect(r.unknown).toEqual(['NEWCOLLAB'])
-    expect(r.notice).toMatch(/newer Forge contract revision\(s\).*NEWCOLLAB/)
+    expect(r.notice).toMatch(/newer Forge contract revisions.*NEWCOLLAB/)
     expect(r.notice).not.toMatch(/could not read/i)
   })
 
@@ -81,7 +81,7 @@ describe('group trust: members', () => {
     const r = checkMembers(TRUST, members(['CORE', 'COLLAB'], { tokens: [{ contractId: 'CORE', tokenPosition: 0 }] }), new Map())
     expect(r.unknown).toEqual(['CORE (token 0)'])
     expect(r.unchecked).toEqual([])
-    expect(r.notice).toMatch(/additional group member\(s\)/)
+    expect(r.notice).toMatch(/additional group members/)
   })
 })
 

@@ -34,7 +34,7 @@ export const MERGE_STEPS: readonly { readonly id: MergeStepId; readonly label: s
   { id: 'merge', label: 'Merge' },
   { id: 'pack', label: 'Build pack' },
   { id: 'upload', label: 'Upload pack to storage' },
-  { id: 'manifest', label: 'Record the pack (packManifest)' },
+  { id: 'manifest', label: 'Record the upload' },
   { id: 'index', label: 'Publish the browse index' },
   { id: 'ref', label: 'Move the base branch (ref update)' },
   { id: 'event', label: 'Record the merge (merge transition)' },
@@ -299,7 +299,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
     // or the branch would move to objects nobody can fetch. Checked before anything is paid for.
     const missing = await attempt('pack', () => deps.verifyPack(built.pack, built.newTip))
     if (missing.length > 0) {
-      throw new MergeStopped(`the merge pack would leave ${missing.length} object(s) unfetchable (${missing.slice(0, 3).map((o) => o.slice(0, 9)).join(', ')}); nothing was written. Merge with \`dg pr merge\``)
+      throw new MergeStopped(`the merge pack would leave ${plural(missing.length, 'object')} unfetchable (${missing.slice(0, 3).map((o) => o.slice(0, 9)).join(', ')}); nothing was written. Merge with \`dg pr merge\``)
     }
     mark('pack', { result: built }, 'done', `${plural(built.objectCount, 'object')} · ${formatBytes(built.pack.length)} · verified complete`)
   }

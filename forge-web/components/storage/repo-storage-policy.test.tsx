@@ -51,7 +51,7 @@ describe('the repo Storage section of a tab that needs an unlock', () => {
   it('points to the unlock above instead of a second prompt', async () => {
     await render(true)
     expect(q('storage-unlock')).toBeNull()
-    expect(q('storage-unlock-above')?.textContent).toMatch(/the unlock under Collaborators opens them as well/)
+    expect(q('storage-unlock-above')?.textContent).toMatch(/the unlock under Members opens them as well/)
     expect(q('storage-unlock-above')?.querySelector('a')?.getAttribute('href')).toBe('#members-unlock')
   })
 

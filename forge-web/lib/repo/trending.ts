@@ -204,16 +204,16 @@ export function trendingWindowStart(span: TrendingWindow, nowMs: number, timeZon
  * being read (null), only what holds for both; without a clock (`nowMs` null), no start.
  */
 export function trendingNote(shape: StarShape | null, span: TrendingWindow, nowMs: number | null, timeZone?: string): string {
-  const ranked = 'Ranked by new stargazers in the window, proved by the network.'
+  // Style guide §C: one short sentence on what is ranked, one on what is left out.
+  const start = nowMs === null ? null : trendingWindowStart(span, nowMs, timeZone)
+  const ranked = `Most new stars ${span === 'today' ? 'today' : 'this week'}${start === null ? '' : ` (since ${start})`}.`
   const rules =
     shape === 'fused'
-      ? " Every star counts for the week it was made; there is nothing to turn off. Private repos never show, and an owner's star on their own repo is left out while the repo is newer than the window (under a week old for This week), so Trending can show fewer than Most starred. An unstar does not take a count back before its week ends."
+      ? " Private repos and owners' stars on new repos aren't counted. Unstarring doesn't undo a count."
       : shape === 'beat'
-        ? " A star counts toward Trending unless the starrer turned that off, and an owner's star on their own repo never counts (so Trending can show fewer than Most starred). An unstar does not take a count back before its week ends."
+        ? " Private repos, owners' own stars and stars from people who opted out aren't counted. Unstarring doesn't undo a count."
         : ''
-  const start = nowMs === null ? null : trendingWindowStart(span, nowMs, timeZone)
-  const when = start === null ? '' : ` ${span === 'today' ? 'Today' : 'This week'} began ${start}.`
-  return `${ranked}${rules}${when}`
+  return `${ranked}${rules}`
 }
 
 /**

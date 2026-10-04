@@ -84,7 +84,7 @@ export class ReplicationError extends Error {
     readonly platformWritten: boolean,
   ) {
     super(
-      `storage policy not met: ${confirmed.length} of ${required} required target(s) confirmed` +
+      `storage policy not met: ${confirmed.length} of ${required} required ${required === 1 ? 'target' : 'targets'} confirmed` +
         failures.map((f) => `; ${f.target}: ${f.reason}`).join('') +
         (platformWritten
           ? '. Some pack chunks were written to Platform before the push stopped; they are kept, and a retry does not pay for them again. No manifest or ref was written.'
@@ -246,11 +246,11 @@ export function orderUris(groups: readonly (readonly string[])[]): string[] {
  * Trim to the manifest's `uris` budget (8 × 300 bytes): private `s3://` locators go first
  * (readers without that profile cannot use them); then an error, never a silent truncation.
  * A URI no reader may fetch (plain http, this machine, a private network) is refused outright:
- * it would be published on chain for every reader's browser to request.
+ * it would be published on Platform for every reader's browser to request.
  */
 export function fitManifestUris(uris: readonly string[]): string[] {
   const bad = uris.find((u) => !isRecordableUri(u))
-  if (bad !== undefined) throw new Error(`refusing to record ${bad} on chain: only public https addresses can be read by others`)
+  if (bad !== undefined) throw new Error(`refusing to record ${bad} on Platform: only public https addresses can be read by others`)
   const fits = (list: readonly string[]): boolean => manifestUrisProblem(list) === null
   if (fits(uris)) return [...uris]
   const noS3 = uris.filter((u) => !u.startsWith('s3://'))
