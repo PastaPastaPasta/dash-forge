@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is the first build, or waiting for the network to confirm your identity.
 
-> **Which network?** This guide's commands target devnet **sakura** (Platform protocol 14, v5.0.0-beta.1). Its status: RC2 registered on Platform v5.0.0-beta.1 (2026-10-01), and the web app at forge.dashhq.org runs on sakura. Devnet bonsia, where the RC1 contracts ran, is gone, and moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts. The fees below were measured on sakura where they say so (2026-10-01), else on bonsia (Platform v4.2), and sakura's can differ: [Costs](costs.md) has both. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
+> **Which network?** The commands target devnet **sakura**, a test network, which forge.dashhq.org also uses. The fees below were measured on sakura where they say so (2026-10-01), else on the retired devnet bonsia; [Costs](costs.md) has both. Testnet and mainnet have no Forge deployment yet, and on a network without one the tools stop with a "not deployed" error ([E702](../errors.md#e702)). [Networks](../networks.md) has the details.
 
 ---
 

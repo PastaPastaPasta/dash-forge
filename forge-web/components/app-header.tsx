@@ -119,8 +119,14 @@ export function AppHeader(): JSX.Element {
           <span className="hidden text-prose font-semibold tracking-tight text-anvil-900 dark:text-anvil-50 lg:inline">Dash Forge</span>
         </Link>
 
-        {/* A devnet (resettable, test funds only) is flagged at every width. */}
-        <NetworkBadge compact className={ACTIVE_NETWORK.network === 'devnet' ? undefined : 'hidden sm:inline'} />
+        {/* A devnet (resettable, test funds only) is flagged at every width; it opens the Networks page. */}
+        <Link
+          href="/networks/"
+          data-testid="network-link"
+          className={cn('shrink-0 rounded hover:opacity-80 coarse:flex coarse:min-h-11 coarse:items-center', ACTIVE_NETWORK.network === 'devnet' ? undefined : 'hidden sm:inline')}
+        >
+          <NetworkBadge compact />
+        </Link>
 
         <div className={cn('ml-1 hidden min-w-0 max-w-xs flex-1', signedIn ? 'xl:block' : 'sm:block')}>
           <Suspense fallback={null}>
