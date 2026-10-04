@@ -31,6 +31,9 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   'api',
   'explore',
   'favicon.ico',
+  // `/github.com/<owner>/<repo>` and `/gh/<owner>/<repo>`: the Forge mirror of a GitHub repo (CJ-3).
+  'gh',
+  'github.com',
   'index',
   // The IPFS variant reads `/ipfs/<cid>/` and `/ipns/<name>/` as its base path (scripts/ipfs-base.cjs).
   'ipfs',
@@ -45,6 +48,19 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   'start',
   'u',
 ]
+
+/** A GitHub owner or repo segment the alias accepts (GitHub's own characters). */
+const GITHUB_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/**
+ * The page that opens a GitHub repo's Forge mirror (`app/github.com`), for `owner/name` and an
+ * optional rest of a GitHub path (`issues/12`), which opens the same view of the mirror.
+ */
+export function upstreamAliasPath(owner: string, name: string, rest = ''): string {
+  const q = new URLSearchParams({ owner, name })
+  if (rest !== '') q.set('rest', rest)
+  return `/github.com/?${q.toString()}`
+}
 
 export type ShortTarget =
   | { readonly kind: 'home' }
@@ -211,6 +227,14 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   var dec = function (s) { try { return decodeURIComponent(s); } catch (e) { return null; } };
   var owner = dec(parts[0]), name = dec(parts[1]);
   if (owner === null || name === null) return null;
+  // \`/github.com/<owner>/<repo>[/<rest>]\` (or \`/gh/…\`): the page that finds that repo's Forge mirror.
+  var host = owner.toLowerCase();
+  if ((host === 'github.com' || host === 'gh') && parts.length >= 3) {
+    var ghRepo = dec(parts[2]);
+    if (ghRepo === null || !${GITHUB_SEGMENT}.test(name) || !${GITHUB_SEGMENT}.test(ghRepo)) return null;
+    var ghRest = parts.slice(3).join('/');
+    return base + '/github.com/?owner=' + encodeURIComponent(name) + '&name=' + encodeURIComponent(ghRepo.replace(/\\.git$/, '')) + (ghRest ? '&rest=' + encodeURIComponent(ghRest) : '');
+  }
   if (reserved.indexOf(owner.toLowerCase()) >= 0) return null;
   if (!${OWNER_SEGMENT}.test(owner) || !${NAME_SEGMENT}.test(name)) return null;
   var q = function (route, extra) {

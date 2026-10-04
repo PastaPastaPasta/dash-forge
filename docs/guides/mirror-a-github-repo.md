@@ -316,6 +316,8 @@ dg storage status <owner>/<repo>              # does every recorded copy of ever
 
 On the web: `https://forge.dashhq.org/<owner>/<repo>`. Each imported issue and PR opens with a line naming its GitHub original and author.
 
+Visitors can also put the GitHub address after the site's: `https://forge.dashhq.org/github.com/<github owner>/<github repo>` (or `/gh/…`) opens the mirror, and the rest of a GitHub path opens the same page of it (`…/issues/12`, `…/tree/main/src`). So does `https://forge.dashhq.org/<github owner>/<github repo>` when no Forge repo has that address. The web app finds the mirror by its description (`… (mirror of github.com/<owner>/<repo>)`, which the import writes). When several repos claim to mirror the same GitHub repo, it lists them and lets the visitor choose, unless exactly one of them is featured on the site; with none, it offers to set one up.
+
 If the page says **Not indexed for browsing yet**, the import stored the code but not its browse index; the import's summary says so as a warning. The repository still clones. To publish the index without storing the code again, run:
 
 ```sh

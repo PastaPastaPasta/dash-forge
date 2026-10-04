@@ -83,6 +83,15 @@ export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; on
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [found, setFound] = useState<GithubRepo | null>(initial)
+  // `/mirror/?repo=owner/name` (from a GitHub address with no mirror yet) fills the box in, after
+  // hydration so the static page and the first client render agree.
+  useEffect(() => {
+    if (initial !== null) return
+    const wanted = new URLSearchParams(window.location.search).get('repo')
+    if (wanted) setText((t) => (t === '' ? wanted : t))
+    // Once, on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const check = async (): Promise<void> => {
     setError(null)
