@@ -26,8 +26,8 @@ function Required(): JSX.Element {
 function Description({ id, text }: { id: string; text: string }): JSX.Element | null {
   if (text.trim() === '') return null
   return (
-    <div id={id} className={cn(hintClass, '[&_p]:my-0')}>
-      <MarkdownView source={text} />
+    <div id={id} className="[&_p]:my-0">
+      <MarkdownView source={text} className={hintClass} />
     </div>
   )
 }
