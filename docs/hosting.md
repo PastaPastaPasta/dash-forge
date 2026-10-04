@@ -1,6 +1,6 @@
-# Hosting the web app: cache and compression settings
+# Hosting the web app
 
-The web app is a static export (`forge-web/out`). forge.dashhq.org is deployed by `.github/workflows/pages.yml` to GitHub Pages, behind Cloudflare. GitHub Pages sets its own headers and cannot be configured. Cloudflare in front of it can override them. These are the settings to apply there, and what each fixes.
+The web app is a static export (`forge-web/out`). forge.dashhq.org is deployed by `.github/workflows/pages.yml` to GitHub Pages, behind Cloudflare. GitHub Pages sets its own headers and cannot be configured. Cloudflare in front of it can override them. These are the settings to apply there, and what each fixes: caching and compression (sections 1 to 4), and the security headers and CAA records that protect the keys people unlock in the app (sections 7 and 8).
 
 ## What is served today (measured 2026-09-29)
 
@@ -94,9 +94,72 @@ curl -s -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' https://forge.dashhq
 
 Expect `0`. `pages.yml` runs the same check after each deploy and prints a warning (it does not fail the deploy) when the beacon is back, so a zone setting that drifts shows up in the workflow run.
 
+### 7. Security headers
+
+The app keeps keys in the browser, so the page that holds them must not be framed, downgraded to plain HTTP, or reinterpreted. GitHub Pages sends none of these headers today (`curl -sI https://forge.dashhq.org/`, 2026-10-04). The app's `<meta>` CSP cannot carry `frame-ancestors`: browsers ignore it there.
+
+**HSTS.** SSL/TLS → **Edge Certificates** → **HTTP Strict Transport Security (HSTS)** → Enable:
+- **Max Age:** 12 months
+- **Apply HSTS policy to subdomains (includeSubDomains):** on
+- **Preload:** off for now (see below)
+- **No-Sniff header:** on (this sends `X-Content-Type-Options: nosniff`)
+
+Also turn on SSL/TLS → Edge Certificates → **Always Use HTTPS**, so a first plain-HTTP request is redirected before any browser has cached HSTS.
+
+**The other headers.** Rules → **Transform Rules** → **Modify Response Header** → Create rule:
+- **Rule name:** Forge security headers
+- **When:** Hostname equals `forge.dashhq.org`
+- **Then**, one **Set static** row per header:
+
+| Header | Value | What it stops |
+|---|---|---|
+| `Content-Security-Policy` | `frame-ancestors 'none'` | Another site framing the app to trick a click on a write (clickjacking). The browser applies it together with the page's `<meta>` CSP, so nothing else changes |
+| `X-Frame-Options` | `DENY` | The same, in browsers without `frame-ancestors` |
+| `Referrer-Policy` | `no-referrer` | Repository and issue URLs leaking to the sites that READMEs and comments link to |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=()` | An injected script asking for hardware the app never uses. Passkeys stay allowed: the policy names none of the `publickey-credentials-*` features |
+| `X-Content-Type-Options` | `nosniff` | Only needed if you left HSTS's No-Sniff option off |
+
+Leave `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` unset on Pages (section 5).
+
+**Check it:**
+
+```sh
+curl -sI https://forge.dashhq.org/ | grep -i -E 'strict-transport|content-security|x-frame|referrer-policy|permissions-policy|x-content-type'
+curl -sI http://forge.dashhq.org/ | grep -i -E '^(HTTP|location)'   # expect a 301 to https://
+```
+
+Expect all six headers, and the plain-HTTP request redirected.
+
+**Preload.** The browsers' HSTS preload list (hstspreload.org) takes only a registrable domain. For Forge that means `dashhq.org` with `includeSubDomains`, which makes every subdomain of dashhq.org HTTPS-only in every browser, for good. That is a decision for the owner of dashhq.org. Once every subdomain serves HTTPS, turn HSTS on for `dashhq.org` itself with includeSubDomains, Preload on and a max age of at least a year, then submit `dashhq.org` at hstspreload.org.
+
+### 8. CAA records
+
+CAA records name the certificate authorities allowed to issue a certificate for the domain, so a mis-issued certificate for forge.dashhq.org is harder to get. DNS → Records → Add record, in the `dashhq.org` zone:
+
+| Type | Name | Flags | Tag | CA domain name |
+|---|---|---|---|---|
+| CAA | `forge` | 0 | Only allow specific hostnames (`issue`) | `letsencrypt.org` |
+| CAA | `forge` | 0 | Only allow wildcards (`issuewild`) | `;` |
+| CAA | `forge` | 0 | Send violation reports to URL (`iodef`) | `mailto:` and the address that should get reports |
+
+- **`letsencrypt.org`** is the CA GitHub Pages uses for the origin's certificate. Without it, GitHub can't renew the certificate behind Cloudflare.
+- **Cloudflare's own CAs** (Let's Encrypt, Google Trust Services, SSL.com and Sectigo) are added for Universal SSL automatically, as soon as the zone has any CAA record. They don't appear in the dashboard, but `dig` shows them ([Cloudflare: Add CAA records](https://developers.cloudflare.com/ssl/edge-certificates/caa-records/)).
+- **`issuewild ;`** refuses wildcard certificates for forge.dashhq.org.
+
+To cover every subdomain instead, put the same records on `dashhq.org` itself (Name `@`), if that suits the zone's other hosts.
+
+**Check it:**
+
+```sh
+dig +short CAA forge.dashhq.org
+```
+
+Expect your records and Cloudflare's. Then confirm Universal SSL still shows **Active** under SSL/TLS → Edge Certificates.
+
 ## Other static hosts (IPFS gateways, S3, nginx)
 
 The same rules apply:
+- the security headers of section 7 on every response;
 - `/_next/static/**` → `Cache-Control: public, max-age=31536000, immutable`
 - brotli (or gzip) for `.js`, `.css`, `.wasm`
 - `application/wasm` as the wasm MIME type, which the browser needs to compile while streaming
@@ -108,11 +171,18 @@ For nginx. `add_header` in a `location` replaces every `add_header` inherited fr
 server {
   add_header Cross-Origin-Opener-Policy "same-origin" always;
   add_header Cross-Origin-Embedder-Policy "credentialless" always;
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header Content-Security-Policy "frame-ancestors 'none'" always;
+  add_header X-Frame-Options "DENY" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "no-referrer" always;
 
   location /_next/static/ {
     # Repeated here: this location's add_header replaces the server's.
     add_header Cross-Origin-Opener-Policy "same-origin" always;
     add_header Cross-Origin-Embedder-Policy "credentialless" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
     add_header Cache-Control "public, max-age=31536000, immutable";
     brotli_static on;   # ngx_brotli; serves .br files built next to the originals
     gzip_static on;
