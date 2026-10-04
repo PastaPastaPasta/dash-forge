@@ -46,7 +46,7 @@ describe('issue templates', () => {
     expect(parseTemplateFile('Bug.md', '## Summary')).toMatchObject({ name: 'Bug', body: '## Summary' })
   })
 
-  it('reads config.yml: blank issues and web contact links only', () => {
+  it('reads config.yml: blank issues and https contact links only', () => {
     expect(parseChooserConfig('')).toEqual({ blankIssuesEnabled: true, contactLinks: [] })
     expect(
       parseChooserConfig(
@@ -60,13 +60,15 @@ describe('issue templates', () => {
           '    url: javascript:alert(1)',
           '  - name: No about',
           '    url: http://example.org',
+          '  - name: Secure',
+          '    url: https://example.org/chat',
         ].join('\n'),
       ),
     ).toEqual({
       blankIssuesEnabled: false,
       contactLinks: [
         { name: 'Forum', url: 'https://forum.example.org', about: 'Ask here' },
-        { name: 'No about', url: 'http://example.org', about: '' },
+        { name: 'Secure', url: 'https://example.org/chat', about: '' },
       ],
     })
     expect(parseChooserConfig('{ broken')).toEqual({ blankIssuesEnabled: true, contactLinks: [] })

@@ -12,7 +12,7 @@ import { load } from 'js-yaml'
 
 import { MODE_GITLINK, MODE_TREE, type BrowseReader } from '../browse'
 import { decodeTextBlob, type TreeEntry } from './git-objects'
-import { parseIssueForm, type IssueForm } from './issue-forms'
+import { isRecord, parseIssueForm, type IssueForm } from './issue-forms'
 import { commitRootTree, readBlob, readTree } from './tree-nav'
 
 /** One issue template. */
@@ -47,8 +47,8 @@ export interface IssueChooser {
 /** The directories searched, in order: the first that holds templates (or a config) wins. */
 const TEMPLATE_DIRS = ['.forge/ISSUE_TEMPLATE', '.github/ISSUE_TEMPLATE', '.gitlab/issue_templates'] as const
 
-/** Most templates read, and the size of one (a template is a short form). */
-const MAX_TEMPLATES = 20
+/** Most templates read, and the size of one (a template is a short form). Shared with PR templates. */
+export const MAX_TEMPLATES = 20
 const MAX_TEMPLATE_BYTES = 64 * 1024
 
 /** A YAML scalar: quotes stripped. */
@@ -105,16 +105,22 @@ export function parseIssueTemplate(file: string, text: string): IssueTemplate {
 /** Whether a file name is a chooser config (`config.yml`), never a template. */
 const isConfig = (name: string): boolean => /^config\.(ya?ml|md)$/i.test(name)
 
+/** Whether an entry is a file (not a directory or a submodule). */
+export const isFileEntry = (e: TreeEntry): boolean => e.mode !== MODE_TREE && e.mode !== MODE_GITLINK
+
+/** Entries in name order (code-unit order, as git sorts them). */
+export const byEntryName = (a: TreeEntry, b: TreeEntry): number => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+
 /** The template files of a directory listing (Markdown and YAML forms), in name order. */
 export function templateFiles(entries: readonly TreeEntry[]): TreeEntry[] {
   return entries
-    .filter((e) => e.mode !== MODE_TREE && e.mode !== MODE_GITLINK && /\.(md|markdown|ya?ml)$/i.test(e.name) && !isConfig(e.name))
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .filter((e) => isFileEntry(e) && /\.(md|markdown|ya?ml)$/i.test(e.name) && !isConfig(e.name))
+    .sort(byEntryName)
     .slice(0, MAX_TEMPLATES)
 }
 
 /** A template file's text, or null when it is too large or not text. */
-async function templateText(reader: BrowseReader, oid: string): Promise<string | null> {
+export async function templateText(reader: BrowseReader, oid: string): Promise<string | null> {
   const bytes = await readBlob(reader, oid)
   return bytes.length > MAX_TEMPLATE_BYTES ? null : decodeTextBlob(bytes)
 }
@@ -134,15 +140,15 @@ export function parseChooserConfig(text: string): Pick<IssueChooser, 'blankIssue
   } catch {
     doc = null
   }
-  const rec = typeof doc === 'object' && doc !== null && !Array.isArray(doc) ? (doc as Record<string, unknown>) : {}
+  const rec = isRecord(doc) ? doc : {}
   const links = Array.isArray(rec['contact_links']) ? rec['contact_links'] : []
   return {
     blankIssuesEnabled: rec['blank_issues_enabled'] !== false,
     contactLinks: links.flatMap((l): ContactLink[] => {
-      if (typeof l !== 'object' || l === null) return []
-      const { name, url, about } = l as Record<string, unknown>
-      // Only web links: a `javascript:` URL in someone's repo must never become a link here.
-      if (typeof name !== 'string' || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return []
+      if (!isRecord(l)) return []
+      const { name, url, about } = l
+      // `https` links only: a `javascript:` (or plain-HTTP) URL in someone's repo never becomes a link here.
+      if (typeof name !== 'string' || typeof url !== 'string' || !/^https:\/\//i.test(url)) return []
       return [{ name, url, about: typeof about === 'string' ? about : '' }]
     }),
   }
@@ -159,27 +165,34 @@ export async function dirAt(reader: BrowseReader, tree: string, path: string): P
   return readTree(reader, oid)
 }
 
-/** What "Open an issue" offers at `tipOid` (the default branch's tip): no templates when it has none. */
+/**
+ * What "Open an issue" offers at `tipOid` (the default branch's tip): the templates of the first
+ * directory that holds any, with that directory's `config.yml` (else the first one found before
+ * it, so a `.forge/` config alone can add contact links to `.github/`'s templates).
+ */
 export async function readIssueChooser(reader: BrowseReader, tipOid: string): Promise<IssueChooser> {
   const { tree } = await commitRootTree(reader, tipOid)
+  let config: TreeEntry | undefined
+  let templates: IssueTemplate[] = []
   for (const dir of TEMPLATE_DIRS) {
     const entries = await dirAt(reader, tree, dir)
     if (entries === null) continue
-    const config = entries.find((e) => e.mode !== MODE_TREE && e.mode !== MODE_GITLINK && /^config\.ya?ml$/i.test(e.name))
+    const own = entries.find((e) => isFileEntry(e) && /^config\.ya?ml$/i.test(e.name))
+    if (own !== undefined && (config === undefined || templateFiles(entries).length > 0)) config = own
     const files = templateFiles(entries)
-    if (files.length === 0 && config === undefined) continue
-    const templates: IssueTemplate[] = []
-    for (const f of files) {
+    if (files.length === 0) continue
+    // Read together (a slow store pays for the slowest file, not their sum), kept in name order.
+    const read = await Promise.all(files.map(async (f) => {
       const text = await templateText(reader, f.oid)
-      const t = text === null ? null : parseTemplateFile(f.name, text)
-      if (t !== null) templates.push(t)
-    }
-    const configText = config === undefined ? null : await templateText(reader, config.oid)
-    const settings = configText === null ? { blankIssuesEnabled: true, contactLinks: [] } : parseChooserConfig(configText)
-    // Blank issues stay on when no template is usable: nobody may be left unable to open one.
-    return { templates, ...settings, blankIssuesEnabled: settings.blankIssuesEnabled || templates.length === 0 }
+      return text === null ? null : parseTemplateFile(f.name, text)
+    }))
+    templates = read.filter((t): t is IssueTemplate => t !== null)
+    break
   }
-  return { templates: [], blankIssuesEnabled: true, contactLinks: [] }
+  const configText = config === undefined ? null : await templateText(reader, config.oid)
+  const settings = configText === null ? { blankIssuesEnabled: true, contactLinks: [] } : parseChooserConfig(configText)
+  // Blank issues stay on when no template is usable: nobody may be left unable to open one.
+  return { templates, ...settings, blankIssuesEnabled: settings.blankIssuesEnabled || templates.length === 0 }
 }
 
 /**

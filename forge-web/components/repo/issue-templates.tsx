@@ -17,25 +17,25 @@ import type { BrowseReader } from '@/lib/browse'
 import { cn } from '@/lib/utils'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
-/** The default branch's tip and a reader for it (null until both are known). */
-function useDefaultBranchReader(home: RepoHome): { readonly tip: string | null; readonly reader: BrowseReader | null } {
+/** The default branch's tip and a reader for it (null until both are known, or while not `enabled`: nothing is loaded then). */
+function useDefaultBranchReader(home: RepoHome, enabled: boolean): { readonly tip: string | null; readonly reader: BrowseReader | null } {
   const tip = tipOidOf(selectRef(home.branches, home.tags, home.defaultBranch, '').ref) || null
-  const browse = useBrowse(tip ? home.repo : null)
+  const browse = useBrowse(enabled && tip ? home.repo : null)
   return { tip, reader: browse.data?.kind === 'ready' ? browse.data.context.reader : null }
 }
 
 /** What "Open an issue" offers (null while it is read, or when nothing could be). */
 export function useIssueChooser(home: RepoHome, enabled: boolean): IssueChooser | null {
-  const { tip, reader } = useDefaultBranchReader(home)
+  const { tip, reader } = useDefaultBranchReader(home, enabled)
   const { data } = useAsync<IssueChooser | null>(() => readIssueChooser(reader!, tip!).catch(() => null), [tip ?? '', reader === null ? 0 : 1], {
-    enabled: enabled && reader !== null && tip !== null,
+    enabled: reader !== null && tip !== null,
   })
   return data
 }
 
 /** The PR templates of the default branch (null while they are read, or when they cannot be). */
 export function usePullTemplates(home: RepoHome): PullTemplates | null {
-  const { tip, reader } = useDefaultBranchReader(home)
+  const { tip, reader } = useDefaultBranchReader(home, true)
   const { data } = useAsync<PullTemplates | null>(() => readPullTemplates(reader!, tip!).catch(() => null), [tip ?? '', reader === null ? 0 : 1], {
     enabled: reader !== null && tip !== null,
   })

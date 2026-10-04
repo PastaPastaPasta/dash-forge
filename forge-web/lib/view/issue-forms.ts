@@ -4,8 +4,8 @@
  * field's label as a `###` heading, then its answer (`_No response_` when empty); `markdown`
  * elements only guide the person filling it in and are left out.
  *
- * Only the keys GitHub defines are read (`name`, `description`, `title`, `labels`, `assignees`,
- * `body`); `projects` and `type` have no Forge counterpart and are ignored. A file that is not
+ * Only the keys GitHub defines are read (`name`, `description`, `title`, `labels`, `body`);
+ * `assignees`, `projects` and `type` are not applied. A file that is not
  * a valid form (no name, no body, an element without its label) is not offered, as GitHub
  * lists it with an error instead of using it.
  */
@@ -43,11 +43,11 @@ export interface ParsedForm {
   readonly about: string
   readonly title: string
   readonly labels: readonly string[]
-  readonly assignees: readonly string[]
   readonly form: IssueForm
 }
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+/** A YAML mapping (not a list, a scalar or null). */
+export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const str = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '')
 
 /** `labels: [a, b]` or `labels: a, b`. */
@@ -121,7 +121,6 @@ export function parseIssueForm(source: string): ParsedForm | null {
     about: str(doc['description']).trim(),
     title: str(doc['title']),
     labels: stringList(doc['labels']),
-    assignees: stringList(doc['assignees']).map((a) => a.replace(/^@/, '')),
     form: { elements },
   }
 }

@@ -74,7 +74,6 @@ describe('YAML issue forms', () => {
     expect(f!.about).toBe('File a bug report.')
     expect(f!.title).toBe('[Bug]: ')
     expect(f!.labels).toEqual(['bug', 'triage'])
-    expect(f!.assignees).toEqual(['octocat'])
     expect(f!.form.elements.map((e) => `${e.type}:${e.key}`)).toEqual([
       'markdown:field-0',
       'input:contact',

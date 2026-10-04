@@ -89,8 +89,13 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   useEffect(() => {
     if (templateSeeded || pullTemplates === null) return
     setTemplateSeeded(true)
+    // A kept description that is a template's untouched text still counts as that template.
+    if (body.trim() !== '') {
+      setPullTemplate(pullTemplates.templates.find((x) => x.body === body) ?? null)
+      return
+    }
     const t = namedTemplate(pullTemplates.templates, templateParam) ?? pullTemplates.templates.find((x) => x.file === pullTemplates.defaultFile) ?? null
-    if (t === null || body.trim() !== '') return
+    if (t === null) return
     setBody(t.body)
     setPullTemplate(t)
   }, [templateSeeded, pullTemplates, templateParam, body])
@@ -394,7 +399,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             placeholder="What does this change?"
           />
         </Field>
-        {pullTemplates !== null && pullTemplates.templates.length > 1 ? (
+        {/* Offered whenever there is a template besides the one filled in by default. */}
+        {pullTemplates !== null && pullTemplates.templates.some((t) => t.file !== pullTemplates.defaultFile) ? (
           <TemplatePicker templates={pullTemplates.templates} selected={pullTemplate} onPick={pickTemplate} blank="No template" label="Pull request template" />
         ) : null}
         <div>

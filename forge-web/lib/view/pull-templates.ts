@@ -10,10 +10,10 @@
  *   when there is no GitHub one.
  */
 
-import { MODE_GITLINK, MODE_TREE, type BrowseReader } from '../browse'
-import { decodeTextBlob, type TreeEntry } from './git-objects'
-import { dirAt } from './issue-templates'
-import { commitRootTree, readBlob, readTree } from './tree-nav'
+import { MODE_TREE, type BrowseReader } from '../browse'
+import type { TreeEntry } from './git-objects'
+import { MAX_TEMPLATES, byEntryName, dirAt, isFileEntry as isFile, templateText } from './issue-templates'
+import { commitRootTree, readTree } from './tree-nav'
 
 export interface PullTemplate {
   /** Its path in the repository (stable key). */
@@ -31,11 +31,7 @@ export interface PullTemplates {
 /** Where GitHub looks, in order. */
 const GITHUB_DIRS = ['.forge', '.github', '', 'docs'] as const
 const GITLAB_DIR = '.gitlab/merge_request_templates'
-const MAX_TEMPLATES = 20
-const MAX_TEMPLATE_BYTES = 64 * 1024
 
-const isFile = (e: TreeEntry): boolean => e.mode !== MODE_TREE && e.mode !== MODE_GITLINK
-const byName = (a: TreeEntry, b: TreeEntry): number => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
 const join = (dir: string, name: string): string => (dir === '' ? name : `${dir}/${name}`)
 
 /**
@@ -58,11 +54,11 @@ export async function locatePullTemplates(entriesOf: (dir: string) => Promise<re
     if (many !== undefined && manyFrom === null) manyFrom = join(dir, many.name)
   }
   if (manyFrom !== null) {
-    for (const e of [...((await entriesOf(manyFrom)) ?? [])].sort(byName)) {
+    for (const e of [...((await entriesOf(manyFrom)) ?? [])].sort(byEntryName)) {
       if (isFile(e) && /\.md$/i.test(e.name)) files.push({ path: join(manyFrom, e.name), oid: e.oid })
     }
   }
-  for (const e of [...((await entriesOf(GITLAB_DIR)) ?? [])].sort(byName)) {
+  for (const e of [...((await entriesOf(GITLAB_DIR)) ?? [])].sort(byEntryName)) {
     if (!isFile(e) || !/\.md$/i.test(e.name)) continue
     const path = join(GITLAB_DIR, e.name)
     files.push({ path, oid: e.oid })
@@ -93,12 +89,14 @@ export async function readPullTemplates(reader: BrowseReader, tipOid: string): P
     return p
   }
   const { files, defaultPath } = await locatePullTemplates(entriesOf)
-  const templates: PullTemplate[] = []
-  for (const f of files) {
-    const bytes = await readBlob(reader, f.oid)
-    const text = bytes.length > MAX_TEMPLATE_BYTES ? null : decodeTextBlob(bytes)
-    if (text !== null) templates.push({ file: f.path, name: templateName(f.path, f.path === defaultPath), body: text.replace(/\r\n?/g, '\n').trim() })
-  }
+  // Read together, kept in the order offered.
+  const read = await Promise.all(
+    files.map(async (f): Promise<PullTemplate | null> => {
+      const text = await templateText(reader, f.oid)
+      return text === null ? null : { file: f.path, name: templateName(f.path, f.path === defaultPath), body: text.replace(/\r\n?/g, '\n').trim() }
+    }),
+  )
+  const templates = read.filter((t): t is PullTemplate => t !== null)
   const defaultFile = templates.some((t) => t.file === defaultPath) ? defaultPath : null
   return { templates, defaultFile }
 }
