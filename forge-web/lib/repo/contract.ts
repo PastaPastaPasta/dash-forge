@@ -55,7 +55,7 @@ export const DOC = {
 export { withVis } from '../layout'
 
 /** `event.kind` integer → FORGE_RULES {@link EventKind} (`forge-v2.md` §3). */
-const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {
+export const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {
   1: 'close',
   2: 'reopen',
   3: 'merge',

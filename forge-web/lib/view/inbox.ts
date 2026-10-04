@@ -36,10 +36,11 @@ import { z } from 'zod'
 import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { idbBatch, idbDelete, idbEntries, idbGet, idbPut } from '../idb'
-import { DOC } from '../repo/contract'
+import { DOC, EVENT_KIND_BY_INT } from '../repo/contract'
 import { contractHasIndex, contractHasProperty } from '../repo/contract-shape'
 import type { Event } from '../rules'
 import { hiddenItems } from '../rules/moderation'
+import { EVENT_AS_MAINTAINER } from '../repo/moderation-fold'
 import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
@@ -113,6 +114,8 @@ export interface ThreadSub {
   readonly since: number
   /** The PR's author, not a member, asked me for a review (an `authorEvent`): its author events are read. */
   readonly viaAuthor?: boolean
+  /** Its writer (an earlier build stored none): whose thread a hide is about. */
+  readonly author?: string
 }
 
 /** Whether I follow `t` for any of `rs` (a thread an earlier build stored has only `reason`). */
@@ -592,7 +595,7 @@ export async function reviewIndexes(sdk: EvoSDK, forge: ForgeIds): Promise<Revie
 const EMPTY_PAGE: { rows: never[]; more: boolean } = { rows: [], more: false }
 
 function threadOf(t: TargetRow, repo: RepoLite, reason: ThreadSub['reason'], since: number): ThreadSub {
-  return { id: t.id, kind: t.kind, number: t.number, title: t.title, repo, reason, since }
+  return { id: t.id, kind: t.kind, number: t.number, title: t.title, repo, reason, since, author: t.author }
 }
 
 /**
@@ -752,44 +755,68 @@ export async function computeSubscriptions(
 // Hides (maintainer moderation): the inbox leaves out what lists leave out
 // ---------------------------------------------------------------------------
 
-const HIDE_KIND = 24
-const UNHIDE_KIND = 25
+/** At most this many watched repos have their events read for hides only ({@link hideWatchRepos}). */
+export const HIDE_WATCH_MAX = 5
+/** At most this many threads' hides are kept (the newest). */
+export const MAX_HIDE_THREADS = 500
+
+/** One thread's hides and unhides, with what {@link visibleItems} needs to fold them. */
+export interface ThreadHides {
+  /** The repo's owner: its decision stands over a maintainer's. */
+  readonly owner: string
+  /** The thread's {@link threadKey}, when the feed that read the hides followed it. */
+  readonly key?: string
+  /** The thread's writer, when known: only the owner hides what the owner wrote. */
+  readonly author?: string
+  readonly events: readonly Event[]
+}
 
 /**
  * The hides and unhides the repos' event feeds have read, by thread (any thread of the repo, not
- * only those followed), with the repo's owner: what {@link visibleItems} folds.
+ * only those followed): what {@link visibleItems} folds.
  */
 export interface InboxHides {
   /** Whether forge-community proves a hide's maintainer: then every hide counts, else the owner's only. */
   readonly proved: boolean
-  readonly threads: Readonly<Record<string, { readonly owner: string; readonly events: readonly Event[] }>>
+  readonly threads: Readonly<Record<string, ThreadHides>>
 }
 
 export const NO_HIDES: InboxHides = { proved: false, threads: {} }
 
-/** The hides and unhides in a page of `repo`'s `event` documents, added to `prev` (each once, by id). */
-export function withHides(prev: InboxHides, repo: RepoLite, docs: readonly PlainDocument[], proved: boolean): InboxHides {
-  const found = parseDocs(addressedEventDoc, docs).filter((d) => d.kind === HIDE_KIND || d.kind === UNHIDE_KIND)
+/**
+ * The hides and unhides in a page of the event feed `f` (any thread of its repo), added to `prev`
+ * (each once, by id). A thread the feed follows is recorded with its key and writer.
+ */
+export function withHides(prev: InboxHides, f: Extract<Feed, { kind: 'state' }>, docs: readonly PlainDocument[], proved: boolean): InboxHides {
+  const found = parseDocs(addressedEventDoc, docs).filter((d) => EVENT_KIND_BY_INT[d.kind] === 'hide' || EVENT_KIND_BY_INT[d.kind] === 'unhide')
   if (found.length === 0 && prev.proved === proved) return prev
-  const threads: Record<string, { owner: string; events: readonly Event[] }> = { ...prev.threads }
+  const followed = new Map(f.threads.map((t) => [t.id, t]))
+  const threads: Record<string, ThreadHides> = { ...prev.threads }
   for (const d of found) {
-    const was = threads[d.targetId]?.events ?? []
-    if (was.some((e) => e.id === d.$id)) continue
-    const e: Event = { id: d.$id, targetId: d.targetId, kind: d.kind === HIDE_KIND ? 'hide' : 'unhide', actor: d.$ownerId, refId: d.refId ?? null, createdAt: d.$createdAt }
-    threads[d.targetId] = { owner: repo.ownerId, events: [...was, e] }
+    const was = threads[d.targetId]
+    if (was?.events.some((e) => e.id === d.$id)) continue
+    const t = followed.get(d.targetId)
+    const e: Event = { id: d.$id, targetId: d.targetId, kind: EVENT_KIND_BY_INT[d.kind]!, actor: d.$ownerId, refId: d.refId ?? null, createdAt: d.$createdAt }
+    threads[d.targetId] = {
+      owner: f.repo.ownerId,
+      ...(t !== undefined ? { key: `${t.repo.id}:${t.kind}:${t.number}` } : was?.key !== undefined ? { key: was.key } : {}),
+      ...(t?.author !== undefined ? { author: t.author } : was?.author !== undefined ? { author: was.author } : {}),
+      events: [...(was?.events ?? []), e],
+    }
   }
   return { proved, threads }
 }
 
 /**
- * The watched repos whose events are read for hides only: those with a new issue or PR in the
- * inbox (by `items`), each from the oldest such item, so a hide written before the feed's first
- * read still counts.
+ * The watched repos whose events are read for hides only: those with a new issue or PR from the
+ * last week in the inbox (`items`, at `now`), the {@link HIDE_WATCH_MAX} most recent, each from its
+ * oldest such item, so a hide written before the feed's first read still counts.
  */
-export function hideWatchRepos(items: readonly InboxItem[]): Map<string, number> {
+export function hideWatchRepos(items: readonly InboxItem[], now: number): Map<string, number> {
+  const recent = items.filter((i) => (i.kind === 'issue' || i.kind === 'pull') && i.at >= now - BACKFILL_MS).sort((a, b) => b.at - a.at)
   const out = new Map<string, number>()
-  for (const i of items) {
-    if (i.kind !== 'issue' && i.kind !== 'pull') continue
+  for (const i of recent) {
+    if (!out.has(i.repo.id) && out.size >= HIDE_WATCH_MAX) continue
     out.set(i.repo.id, Math.min(out.get(i.repo.id) ?? i.at, i.at))
   }
   return out
@@ -798,45 +825,48 @@ export function hideWatchRepos(items: readonly InboxItem[]): Map<string, number>
 /**
  * `items` without what a maintainer hid, as the issue and PR lists leave it out: every item of a
  * hidden issue or PR, and a hidden comment or review (shared reader rule {@link hiddenItems}). A
- * thread is matched to its items by the followed threads in `subs` and by the new-issue and new-PR
- * items, whose id is the thread's. Without the contract's proof only the repo owner's hides count
- * (the inbox does not read the members).
+ * thread is matched to its items by the key its feed recorded, the followed threads in `subs`, or
+ * the new-issue and new-PR items, whose id is the thread's. Without the contract's proof only the
+ * repo owner's hides count (the inbox does not read the members).
  */
 export function visibleItems(items: readonly InboxItem[], hides: InboxHides, subs: Subscriptions | null): InboxItem[] {
   const ids = Object.keys(hides.threads)
   if (ids.length === 0) return [...items]
-  const keyOf = new Map<string, string>()
-  for (const t of subs?.threads ?? []) keyOf.set(t.id, `${t.repo.id}:${t.kind}:${t.number}`)
-  const authorOf = new Map<string, string>()
+  const followed = new Map((subs?.threads ?? []).map((t) => [t.id, t]))
+  const opened = new Map(items.filter((i) => i.kind === 'issue' || i.kind === 'pull').map((i) => [i.id, i]))
+  const byKey = new Map<string, InboxItem[]>()
   for (const i of items) {
-    if (i.kind !== 'issue' && i.kind !== 'pull') continue
-    keyOf.set(i.id, threadKey(i))
-    authorOf.set(i.id, i.actor)
+    const k = threadKey(i)
+    byKey.set(k, [...(byKey.get(k) ?? []), i])
   }
   const hiddenThreads = new Set<string>()
   const hiddenIds = new Set<string>()
   for (const id of ids) {
-    const key = keyOf.get(id)
-    const { owner, events } = hides.threads[id]!
+    const h = hides.threads[id]!
+    const t = followed.get(id)
+    const o = opened.get(id)
+    const key = h.key ?? (t !== undefined ? `${t.repo.id}:${t.kind}:${t.number}` : o !== undefined ? threadKey(o) : undefined)
     if (key === undefined) continue
-    const ofThread = items.filter((i) => threadKey(i) === key)
+    const ofThread = byKey.get(key) ?? []
     const comments = ofThread.filter((i) => i.kind === 'comment').map((i) => ({ id: i.id, author: i.actor }))
     const reviews = ofThread.filter((i) => i.kind === 'review').map((i) => ({ id: i.id, author: i.actor }))
-    // An unknown author is taken as not the owner's: a maintainer cannot hide the owner's thread,
-    // and the page never offers it.
-    const scope = { threadId: id, threadAuthor: authorOf.get(id) ?? '', owner, proved: hides.proved }
-    const folded = hiddenItems(events, scope, comments, reviews)
+    // An unknown writer (a thread an earlier build followed) is taken as not the owner: a
+    // maintainer cannot hide the owner's thread, and the page never offers it.
+    const author = h.author ?? t?.author ?? o?.actor ?? ''
+    const folded = hiddenItems(h.events, { threadId: id, threadAuthor: author, owner: h.owner, proved: hides.proved }, comments, reviews)
     if (folded.thread !== null) hiddenThreads.add(key)
     for (const item of Object.keys(folded.items)) hiddenIds.add(item)
   }
   return items.filter((i) => !hiddenThreads.has(threadKey(i)) && !hiddenIds.has(i.id))
 }
 
-/** `hides` of the threads the inbox can still show: followed, or with an item stored. */
-export function pruneHides(hides: InboxHides, subs: Subscriptions, items: readonly InboxItem[]): InboxHides {
-  const keep = new Set([...subs.threads.map((t) => t.id), ...items.map((i) => i.id)])
-  const threads = Object.fromEntries(Object.entries(hides.threads).filter(([id]) => keep.has(id)))
-  return { proved: hides.proved, threads }
+/** `hides` of the {@link MAX_HIDE_THREADS} threads with the newest hide or unhide. */
+export function pruneHides(hides: InboxHides, max = MAX_HIDE_THREADS): InboxHides {
+  const entries = Object.entries(hides.threads)
+  if (entries.length <= max) return hides
+  const newest = (h: ThreadHides): number => Math.max(...h.events.map((e) => e.createdAt))
+  const kept = entries.sort(([, a], [, b]) => newest(b) - newest(a)).slice(0, max)
+  return { proved: hides.proved, threads: Object.fromEntries(kept) }
 }
 
 export async function loadHides(network: Network, me: string): Promise<InboxHides> {
@@ -941,7 +971,8 @@ export async function pollOnce(
     if (stopped()) return { added: 0, feedsRead: 0, feedsTotal: 0, failed: 0, subs }
     await idbPut('inbox', `${p}subs`, subs)
   }
-  const hideWatch = hideWatchRepos(await loadItems(network, me))
+  const stored = await loadItems(network, me)
+  const hideWatch = hideWatchRepos(stored, now)
   const feeds = planFeeds(subs, prefs, me, new Set(hideWatch.keys()))
   // When each feed was first watched (planned, not first read: a round may reach it minutes
   // later). One record for all feeds; only feeds still watched are kept. A repo's events read
@@ -957,15 +988,16 @@ export async function pollOnce(
   const { round, next } = pickRound(feeds, roundOffsets.get(p) ?? 0)
   roundOffsets.set(p, next)
 
-  const existing = new Set((await loadItems(network, me)).map((i) => i.id))
+  const existing = new Set(stored.map((i) => i.id))
   // The hides the event feeds read, kept across polls ({@link visibleItems}).
   const hidesBefore = await loadHides(network, me)
   let hides = hidesBefore
   let proved: boolean | null = null
   const noteHides = async (f: Feed, docs: readonly PlainDocument[]): Promise<void> => {
     if (f.kind !== 'state' || f.type !== 'event') return
-    if (proved === null) proved = await contractHasProperty(sdk, forge.community, DOC.event, 'asMaintainer').catch(() => false)
-    hides = withHides(hides, f.repo, docs, proved)
+    // A failed read keeps what the last one found.
+    if (proved === null) proved = await contractHasProperty(sdk, forge.community, DOC.event, EVENT_AS_MAINTAINER).catch(() => hidesBefore.proved)
+    hides = withHides(hides, f, docs, proved)
   }
   let added = 0
   let failed = 0
@@ -1007,7 +1039,9 @@ export async function pollOnce(
       // the feed passed its events, is not backfilled (as before this fix).
       const record = await idbGet<Record<string, number>>('inbox', coverKey)
       const covered: Record<string, number> = record ?? (cursor === start ? {} : Object.fromEntries(f.threads.map((t) => [t.id, 0])))
-      let changed = record === undefined && Object.keys(covered).length > 0
+      // Written even empty: a feed read for hides only (no threads) that later gains a thread
+      // backfills it, rather than taking it as covered by an earlier build.
+      let changed = record === undefined
       for (const t of f.threads) {
         if (covered[t.id] === undefined || covered[t.id]! < 0) {
           // Null when the feed has not read past the thread's start (always so before its
@@ -1065,7 +1099,7 @@ export async function pollOnce(
   if (added > 0 && !stopped()) {
     for (const id of itemsToDrop(await loadItems(network, me))) await idbDelete('inbox', `${p}item:${id}`)
   }
-  if (hides !== hidesBefore && !stopped()) await idbPut('inbox', `${p}hides`, pruneHides(hides, subs, await loadItems(network, me)))
+  if (hides !== hidesBefore && !stopped()) await idbPut('inbox', `${p}hides`, pruneHides(hides))
   // A thread joined by a mention is followed at once (QW3-050): the stored subscriptions say so
   // now, as the Mentioned filter does, instead of after the next recompute.
   if (joined.length > 0 && !stopped()) {
@@ -1090,7 +1124,7 @@ export function followMentions(subs: Subscriptions, items: readonly InboxItem[])
       const reasons = prev.reasons ?? [prev.reason]
       threads[i] = { ...prev, since: Math.min(prev.since, it.at - 1), reasons: reasons.includes('mentioned') ? reasons : [...reasons, 'mentioned'] }
     } else {
-      threads.push({ id: it.id, kind: it.target.kind, number: it.target.number, title: it.target.title, repo: it.repo, reason: 'mentioned', reasons: ['mentioned'], since: it.at - 1 })
+      threads.push({ id: it.id, kind: it.target.kind, number: it.target.number, title: it.target.title, repo: it.repo, reason: 'mentioned', reasons: ['mentioned'], since: it.at - 1, author: it.actor })
     }
   }
   threads.sort((a, b) => b.since - a.since)
