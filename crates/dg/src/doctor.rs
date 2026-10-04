@@ -781,7 +781,7 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
             if dapi_addresses.is_empty() {
                 "discovered from the quorum service at connect".to_string()
             } else {
-                format!("{} address(es)", dapi_addresses.len())
+                crate::fmt::plural_with(dapi_addresses.len(), "address", "addresses")
             },
             network.quorum_base_url()
         ),

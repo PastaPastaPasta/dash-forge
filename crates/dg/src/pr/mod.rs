@@ -2422,7 +2422,9 @@ fn policy_refusal(
         u.fix(format!("get the missing approvals (`dg pr review {repo} {number} --approve` by a member other than the PR author)"))
             .fix("a maintainer can merge anyway with `--override-policy` (recorded on the PR)")
     };
-    Some(u.note("nothing was merged. Forge apps enforce the branch policy, not Platform"))
+    Some(u.note(
+        "nothing was pushed and no merge event was posted. Forge apps enforce the branch policy, not Platform",
+    ))
 }
 
 /// The PR's standing against a read policy: its approvals status and its required checks.

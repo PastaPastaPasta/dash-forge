@@ -76,7 +76,18 @@ impl GroupCheck {
         if self.unknown.is_empty() {
             return None;
         }
-        let many = self.unknown.len() != 1;
+        // Members are counted one by one; revisions by contract (one revision can add several
+        // members: `CONTRACT (document type t)`, `CONTRACT (token n)`).
+        let many = if self.extra_parts {
+            self.unknown.len() != 1
+        } else {
+            self.unknown
+                .iter()
+                .map(|u| u.split(' ').next().unwrap_or(u))
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != 1
+        };
         let what = match (self.extra_parts, many) {
             (true, true) => "additional group members",
             (true, false) => "an additional group member",

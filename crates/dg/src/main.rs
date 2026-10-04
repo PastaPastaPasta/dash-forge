@@ -1699,7 +1699,7 @@ pub enum ProfileKindArg {
     IpfsKubo,
     /// kubo add + an IPFS Pinning Service API pin.
     IpfsPinningService,
-    /// On-chain Platform chunk documents.
+    /// Dash Platform itself: packs stored as chunks on Platform.
     Platform,
 }
 

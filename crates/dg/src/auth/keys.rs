@@ -207,14 +207,14 @@ async fn add_encryption(
             codes::KEY_CANNOT_SIGN,
             "the ENCRYPTION key cannot be derived from what was given",
         )
-        .cause("the key must come from the identity's recovery words, so that they alone recover it; the source given does not reproduce the identity's keys from its words")
-        .fix("run it again and type the recovery words when asked, or pass --master <identity file> with the words")
+        .cause("the key must come from the identity's recovery phrase, so that it alone recovers the key; the source given does not reproduce the identity's keys from its phrase")
+        .fix("run it again and type the recovery phrase when asked, or pass --master <identity file> with the phrase")
         .note("nothing was sent")
     })?;
     let price = ctx.usd_price();
     if !ctx.json {
         println!(
-            "Add ENCRYPTION key #{key_id} to {} (derived from the recovery words), {}",
+            "Add ENCRYPTION key #{key_id} to {} (derived from the recovery phrase), {}",
             master.identity_id,
             crate::fmt::cost_line(identity_keys::ADD_KEY_ESTIMATE_CREDITS, price)
         );
@@ -233,7 +233,7 @@ async fn add_encryption(
             "derived": true,
         }),
         || {
-            println!("✓ added ENCRYPTION key #{added}; the recovery words re-derive it");
+            println!("✓ added ENCRYPTION key #{added}; the recovery phrase re-derives it");
             println!("  to use it from this computer: `dg auth login <identity file>` (or --mnemonic) stores it beside a limited key");
         },
     );

@@ -12,7 +12,8 @@ use forge_core::storage::human_bytes;
 use forge_import::budget::{collab_doc_credits, CollabDoc};
 
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, REPO_CREATE_ESTIMATE_CREDITS};
+// `dg cost` shows exact amounts, so its rows add up to its totals.
+use crate::fmt::{cost_json, cost_line_exact as cost_line, REPO_CREATE_ESTIMATE_CREDITS};
 use crate::quote::FIRST_OF_KIND_EXTRA;
 use crate::{Backend, CostCommand};
 

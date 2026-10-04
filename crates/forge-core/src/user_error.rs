@@ -2545,7 +2545,7 @@ mod tests {
                 u.note
                     .as_deref()
                     .unwrap_or("")
-                    .contains("no network has a forge-v2 deployment"),
+                    .contains("isn't available on any network in this build"),
                 "{u:?}"
             ),
         }
@@ -2641,7 +2641,7 @@ mod tests {
                 u.note
                     .as_deref()
                     .unwrap_or("")
-                    .contains("no network has a forge-v2 deployment"),
+                    .contains("isn't available on any network in this build"),
                 "{u:?}"
             ),
         }

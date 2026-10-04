@@ -3,8 +3,8 @@
 //! `docs/design/style-guide.md`. Agents write most help text, so this test is what keeps
 //! protocol jargon out of `--help`.
 //!
-//! - Every command's `about` (the line `dg <group> --help` lists) and every flag's short help
-//!   is checked against the banned list. A command's `about` is also kept short.
+//! - Every command's summary and details, and every flag's help and value help, is checked
+//!   against the banned list. A command's summary is also kept short.
 //! - `dg --help` is compared with `tests/snapshots/dg-help.txt`. Run with
 //!   `DG_UPDATE_SNAPSHOTS=1` to rewrite it after an intended change.
 
@@ -77,12 +77,27 @@ fn walk(cmd: &Command, path: &str, out: &mut Vec<String>) {
             ));
         }
     }
+    if let Some(long) = cmd.get_long_about() {
+        let long = long.to_string();
+        for why in hits(&long) {
+            out.push(format!("{path}: long about: {why}: {long}"));
+        }
+    }
     for arg in cmd.get_arguments() {
         if arg.is_hide_set() {
             continue;
         }
-        if let Some(help) = arg.get_help() {
-            let help = help.to_string();
+        let texts = arg
+            .get_help()
+            .into_iter()
+            .chain(arg.get_long_help())
+            .map(ToString::to_string)
+            .chain(
+                arg.get_possible_values()
+                    .into_iter()
+                    .filter_map(|v| v.get_help().map(ToString::to_string)),
+            );
+        for help in texts {
             for why in hits(&help) {
                 out.push(format!("{path} --{}: help: {why}: {help}", arg.get_id()));
             }

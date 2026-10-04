@@ -118,16 +118,10 @@ pub fn dash_amount(dash: f64) -> String {
     }
 }
 
-/// A price for copy: three significant figures, trailing zeros trimmed (`0.0102`, `0.000976`,
-/// `1.18`). Exact credits stay in `--json` and `dg cost`.
-pub fn dash_rounded(dash: f64) -> String {
-    if dash <= 0.0 || !dash.is_finite() {
-        return dash_amount(dash.max(0.0));
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    let magnitude = dash.log10().floor() as i32;
-    let decimals = usize::try_from((2 - magnitude).clamp(0, 8)).unwrap_or(8);
-    let s = format!("{dash:.decimals$}");
+/// A price for copy: `forge_core::user_error::dash`, three significant figures that never
+/// round a fee to 0 (`0.0102`, `0.000976`). `dg cost` and `--json` keep exact amounts.
+pub fn dash_rounded(credits: u64) -> String {
+    let s = forge_core::user_error::dash(credits);
     if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
     } else {
@@ -138,11 +132,7 @@ pub fn dash_rounded(dash: f64) -> String {
 /// "1 asset" / "3 assets": a count and its noun, never "asset(s)". Nouns whose plural is not
 /// a bare `s` go through [`plural_with`].
 pub fn plural<N: Copy + std::fmt::Display + PartialEq + From<u8>>(n: N, one: &str) -> String {
-    if n == N::from(1) {
-        format!("1 {one}")
-    } else {
-        format!("{n} {one}s")
-    }
+    plural_with(n, one, &format!("{one}s"))
 }
 
 /// [`plural`] with an explicit plural form ("1 identity" / "2 identities").
@@ -170,8 +160,18 @@ pub fn cost_line(credits: u64, price_usd: Option<f64>) -> String {
     ESTIMATE_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
     let dash = credits_to_dash(credits);
     match price_usd {
-        Some(price) => format!("~{} DASH ≈ ${:.2}", dash_rounded(dash), dash * price),
-        None => format!("~{} DASH", dash_rounded(dash)),
+        Some(price) => format!("~{} DASH ≈ ${:.2}", dash_rounded(credits), dash * price),
+        None => format!("~{} DASH", dash_rounded(credits)),
+    }
+}
+
+/// [`cost_line`] with the exact amount (eight decimals), for `dg cost`, whose rows must add up.
+pub fn cost_line_exact(credits: u64, price_usd: Option<f64>) -> String {
+    ESTIMATE_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+    let dash = credits_to_dash(credits);
+    match price_usd {
+        Some(price) => format!("~{} DASH ≈ ${:.2}", dash_amount(dash), dash * price),
+        None => format!("~{} DASH", dash_amount(dash)),
     }
 }
 
@@ -673,14 +673,12 @@ mod tests {
     /// Prices are shown to three significant figures, plurals are spelled out.
     #[test]
     fn prices_round_and_plurals_spell_out() {
-        assert_eq!(dash_rounded(0.010_178_12), "0.0102");
-        assert_eq!(dash_rounded(0.000_976), "0.000976");
-        assert_eq!(dash_rounded(0.005_174_99), "0.00517");
-        assert_eq!(dash_rounded(1.18), "1.18");
-        assert_eq!(dash_rounded(32.54), "32.5");
-        assert_eq!(dash_rounded(250.0), "250");
-        assert_eq!(dash_rounded(0.000_000_01), "0.00000001");
-        assert_eq!(dash_rounded(0.0), "0");
+        assert_eq!(cost_line(1_017_812_000, None), "~0.0102 DASH");
+        assert_eq!(cost_line(97_600_000, None), "~0.000976 DASH");
+        // A fee too small for eight decimals still shows, never as ~0.
+        assert_eq!(cost_line(400, None), "~0.000000004 DASH");
+        assert_eq!(cost_line(0, None), "~0 DASH");
+        assert_eq!(cost_line(50_000_000_000, None), "~0.5 DASH");
         assert_eq!(plural(1u64, "asset"), "1 asset");
         assert_eq!(plural(0u64, "asset"), "0 assets");
         assert_eq!(plural(3usize, "asset"), "3 assets");
