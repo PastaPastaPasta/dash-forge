@@ -39,12 +39,11 @@ function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }
       <div>
         <p>
           {plural(n, 'pack')} could not be fetched from {n === 1 ? 'its' : 'their'} storage; some
-          objects may be missing. Everything shown was still hash-checked.
+          objects may be missing. Everything shown was still verified.
         </p>
         {corrupt > 0 ? (
           <p className="mt-1 font-medium text-danger-700 dark:text-danger-400">
-            {corrupt === 1 ? 'A mirror' : 'Mirrors'} served bad data for {plural(corrupt, 'pack')}: bytes that do not match the sha256 in the proof-checked
-            manifest. They were refused.
+            {corrupt === 1 ? 'A mirror' : 'Mirrors'} served bad data for {plural(corrupt, 'pack')}. It didn&apos;t match the verified checksum, so it was refused.
           </p>
         ) : null}
         <ul className="mt-1 space-y-0.5 font-mono text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -178,9 +177,9 @@ export function BrowseBoundary({
           title={state.behind ? 'Browse index is behind' : 'Not indexed for browsing yet'}
           body={`${
             state.behind
-              ? "This repo's published index does not cover every stored pack, so reading through it would miss recent objects."
-              : 'This repo has not published an objectLocator.'
-          } Its raw packs are fully readable. Load them here to browse in your browser (about ${formatBytes(state.sizeBytes)}), or clone via dash:// to read it locally.`}
+              ? "This repo's browse index is missing recent pushes."
+              : "This repo can't be browsed page by page yet."
+          } Load it into this browser (about ${formatBytes(state.sizeBytes)}), or clone it.`}
           action={
             <Button variant="primary" onClick={state.start}>
               <HardDriveDownload className="h-4 w-4" aria-hidden />

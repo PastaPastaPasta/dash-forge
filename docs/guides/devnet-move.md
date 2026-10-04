@@ -26,7 +26,7 @@ Nothing on bonsia can be recovered: sakura starts empty. If a pull request or is
 
 - **Your git clone.** A repository you pushed is still complete on your computer: every commit, branch and tag. This is why the move costs you a re-push, not your history.
 - **The contents of your storage bucket** (R2, B2, S3, Storj, a NAS, an IPFS node). Forge never held those bytes, and the wipe does not touch them. They stay where they are, but nothing on the new chain points at them until you push again.
-- **Your recovery words and identity file**, as files. They describe an identity on the old chain, so they are no use on the new one for anything but keeping a record.
+- **Your recovery phrase and identity file**, as files. They describe an identity on the old chain, so they are no use on the new one for anything but keeping a record.
 - **Your `dg` storage profiles** (`~/.config/dash-forge/storage.toml`).
 
 ## What happens to mirrors

@@ -28,7 +28,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
-import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK, DEFAULT_NETWORK, networkName } from '@/lib/constants'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -55,7 +55,7 @@ import { errorMessage } from '@/lib/utils'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
 const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: string }[] = [
-  { step: 'repo', label: 'Repository document' },
+  { step: 'repo', label: 'The repo' },
   { step: 'maintainer', label: 'You, as its first maintainer' },
   { step: 'config', label: 'Initial config (default branch)', privateLabel: 'Your repo key and the sealed config (default branch)' },
 ]
@@ -207,8 +207,8 @@ export default function NewRepoPage(): JSX.Element {
         <EmptyState
           heading="h1"
           icon={Lock}
-          title="Sign in to forge a repo"
-          body="Creating a repo writes three small documents signed by your identity."
+          title="Sign in to create a repo"
+          body="Creating a repo costs a small fee, shown before you confirm."
           action={<SignInButton />}
         />
       </AppShell>
@@ -225,7 +225,7 @@ export default function NewRepoPage(): JSX.Element {
           <div>
             <h1 className="text-xl">Forge a new repo</h1>
             <p className="text-dense text-anvil-500 dark:text-anvil-400">
-              {isPrivate ? 'Four' : 'Three'} documents on {ACTIVE_NETWORK.key}, owned by your identity.
+              On {networkName()}, owned by your identity.
             </p>
           </div>
         </div>
@@ -383,8 +383,8 @@ export default function NewRepoPage(): JSX.Element {
         title={confirm ? `Create ${confirm.name}?` : 'Create repository?'}
         description={
           confirm?.visibility === 'private'
-            ? `Writes the repo document, makes you its first maintainer, and records your repo key and its sealed config. ${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. Repos cannot be deleted (archive instead); the name and visibility are permanent.`
-            : 'Writes the repo document, makes you its first maintainer, and records its config. Repos cannot be deleted (archive instead), and the name is permanent.'
+            ? `You'll be its maintainer. ${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. The name and visibility are permanent, and repos can be archived but not deleted.`
+            : "You'll be its maintainer. The name is permanent, and repos can be archived but not deleted."
         }
         cost={confirm ? costOf(confirm) : cost}
         confirmLabel="Sign & create"

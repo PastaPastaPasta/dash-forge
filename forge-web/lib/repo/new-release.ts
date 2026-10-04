@@ -245,7 +245,7 @@ export class ReleaseWriteError extends Error {
     /** How many files this attempt uploaded (never the kept ones, nor a retry's reused ones). */
     readonly assetsStored: number,
   ) {
-    super('the release document was not written')
+    super('the release was not saved')
     this.name = 'ReleaseWriteError'
   }
 
