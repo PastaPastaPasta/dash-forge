@@ -250,7 +250,7 @@ export function RefDeletedState({
     <EmptyState
       icon={GitBranch}
       title={isDefault ? 'The default branch was deleted' : 'This ref was deleted'}
-      body={`${name} no longer points at a commit — it was deleted, though its push history remains on-chain.`}
+      body={`${name} no longer points at a commit — it was deleted, though its push history remains on Platform.`}
       action={
         <Link href={repoHref(isDefault ? '/repo/branches' : '/repo', addr)}>
           <Button variant="primary">{isDefault ? 'View branches' : `Back to ${defaultBranch}`}</Button>

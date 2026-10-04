@@ -230,7 +230,7 @@ export async function importEncryptionKey(
 export class EncryptionKeyExistsError extends Error {
   constructor(readonly keyId: number) {
     super(
-      `This identity already has a usable encryption key (key ${keyId}). Add that key here from your identity file or by pasting it: a new key would lock you out of the private repos whose keys went to key ${keyId} until a maintainer repairs them.`,
+      `This identity already has an encryption key (key ${keyId}). Add it from your identity file or paste it. A new key would lock you out of your private repos until a maintainer repairs them.`,
     )
     this.name = 'EncryptionKeyExistsError'
   }
@@ -270,7 +270,7 @@ export async function registerEncryptionKey(
   if (!identity) throw new Error(`identity ${identityId} not found`)
   const masterWif = identityIndex === 0 ? (await deriveMasterKey(mnemonic, network)).wif : (await deriveAt(mnemonic, identityKeyPath(network, 0, identityIndex), network)).wif
   await assertMasterKeyOf(identity, identityId, masterWif, network).catch((e: unknown) => {
-    throw e instanceof WrongMasterKeyError ? new WrongMasterKeyError(identityId, `These recovery words don't belong to identity ${shortId(identityId)} (the one signed in here). Check the words.`) : e
+    throw e instanceof WrongMasterKeyError ? new WrongMasterKeyError(identityId, `This recovery phrase doesn't belong to identity ${shortId(identityId)} (the one signed in here). Check the phrase.`) : e
   })
   const master = PrivateKey.fromWIF(masterWif)
   const keyId = Math.max(...identity.publicKeys.map((k) => k.keyId)) + 1

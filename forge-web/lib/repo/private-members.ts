@@ -84,6 +84,8 @@ export class PrivateMembersError extends Error {
     readonly code?: string,
     /** A rotation that ended without its anchor in effect: another maintainer's key is the repo's. */
     readonly outcome?: 'lost' | 'preempted' | 'mismatch',
+    /** The key epochs the change would hand to another key (kept out of the message). */
+    readonly epochs?: readonly number[],
   ) {
     super(message)
     this.name = 'PrivateMembersError'
@@ -928,8 +930,10 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
     const changed = [...new Set([...(await anchorChanges(s, new IdSet([...maintainersOf(s), id]))), ...above])].sort((a, b) => a - b)
     if (changed.length > 0) {
       throw new PrivateMembersError(
-        `making ${short(memberId)} a maintainer would change the key of epoch ${changed.join(', ')} (an earlier config of theirs would come first), so that identity can't be a maintainer of this repo again; add them as a writer, or make a new identity of theirs the maintainer`,
+        `${short(memberId)} can't be made a maintainer of this repo again, because an earlier key of theirs would take over. Add them as a writer, or make another identity of theirs the maintainer.`,
         'E310',
+        undefined,
+        changed,
       )
     }
   })
@@ -1056,8 +1060,10 @@ export async function removePrivateMember(
       if (changed.length > 0) {
         const by = takenOverBy(s, memberId, changed)
         throw new PrivateMembersError(
-          `${by.length > 0 ? by.map(short).join(', ') : "another maintainer"}'s config for key epoch ${changed.join(', ')} comes first and does not match its anchor, so removing this maintainer would change that epoch's key; nothing was removed. It can't be removed from here until that maintainer is removed first or the key is rotated past it.`,
+          `Removing this maintainer would let ${by.length > 0 ? by.map(short).join(', ') : 'another maintainer'}'s older key take over, so nothing was removed. Remove that maintainer first, or rotate the repo key.`,
           'E310',
+          undefined,
+          changed,
         )
       }
     }
@@ -1267,10 +1273,12 @@ const SURVIVE_POLLS = 4
 
 /** The refusal when a maintainer's removal would change an epoch's key (nothing was removed). */
 function anchorsWouldChange(changed: readonly number[], by: readonly string[]): PrivateMembersError {
-  const who = by.length > 0 ? `a config by ${by.map(short).join(', ')} comes first` : 'another config comes first'
+  const who = by.length > 0 ? `${by.map(short).join(', ')}'s older key` : 'another maintainer\'s older key'
   return new PrivateMembersError(
-    `removing this maintainer would change the key of epoch ${changed.join(', ')} (${who}, or the re-anchor is not visible yet); nothing was removed. Try again in a moment, or ask that maintainer about their configs for that epoch.`,
+    `Removing this maintainer would let ${who} take over, or the new key isn't visible yet, so nothing was removed. Try again in a moment.`,
     'E310',
+    undefined,
+    changed,
   )
 }
 

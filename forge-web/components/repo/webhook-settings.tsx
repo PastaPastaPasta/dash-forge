@@ -123,8 +123,8 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
     <Section id="webhooks" title="Webhooks" icon={<WebhookIcon className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="webhooks">
         <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          A relay (forge-relay) watches this repo on Platform and POSTs GitHub-shaped events to a URL, signed with a secret only it can read. The
-          URL and events are public on chain.
+          A relay watches this repo and sends GitHub-style events to your URL, signed with a secret only the relay can read. The URL and events
+          are public on Platform.
         </p>
         {!isPublic ? (
           <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="webhooks-private">
@@ -214,7 +214,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
           ) : sealer.data?.kind === 'ready' ? (
             <div className="space-y-3 border-t border-anvil-100 pt-3 dark:border-anvil-850">
               <h3 className="text-dense font-medium">Add a webhook</h3>
-              <Field label="Payload URL" htmlFor="webhook-url" hint="https:// to a DNS name. Public on chain: no tokens in it.">
+              <Field label="Payload URL" htmlFor="webhook-url" hint="https:// to a DNS name. Public on Platform: no tokens in it.">
                 <Input id="webhook-url" className="font-mono" spellCheck={false} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://ci.example.com/forge-hook" />
               </Field>
               {urlProblem ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{urlProblem}</p> : null}
@@ -269,13 +269,13 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
         ) : isPublic && identity !== null ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Only maintainers can add or remove webhooks.</p>
         ) : null}
-        {hooks.length > 0 ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{plural(hooks.length, 'webhook')} · the newest document of each hook is the one a relay follows.</p> : null}
+        {hooks.length > 0 ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{plural(hooks.length, 'webhook')}</p> : null}
       </div>
       <ConfirmDialog
         open={adding}
         onClose={() => setAdding(false)}
         title="Add a webhook"
-        description={`Writes a webhook document: ${pending?.url ?? ''} for ${pending === null || pending.events.length === 0 ? 'every event' : pending.events.join(', ')}, delivered by ${shortId(pending?.relay ?? '')}. The URL and events are public; the secret is encrypted to the relay.`}
+        description={`Sends ${pending === null || pending.events.length === 0 ? 'every event' : pending.events.join(', ')} to ${pending?.url ?? ''} through relay ${shortId(pending?.relay ?? '')}. The URL and events are public. The secret is encrypted to the relay.`}
         cost={cost}
         confirmLabel="Sign & add"
         onConfirm={add}

@@ -120,8 +120,7 @@ export function ProfilePublicNote({ className }: { className?: string }): JSX.El
     >
       <Globe className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
       <span>
-        Your profile is public. It is a Dash Platform document anyone can read, and it is never encrypted: it shows the same beside your private repositories as
-        beside public ones. Leave out anything you would not post publicly.
+        Your profile is public, even next to private repos. Don&apos;t add anything you want to keep private.
       </span>
     </p>
   )
@@ -341,7 +340,7 @@ function ProfileForm({
             Delete profile
           </h2>
           <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
-            Removes the profile document (name, bio, avatar, links and signing keys) and refunds part of its storage fee. Your identity, username and repos stay.
+            Deletes your name, bio, avatar, links and signing keys, and refunds part of their storage fee. Your identity, username and repos stay.
           </p>
           <Button className="mt-3" size="sm" variant="danger" disabled={!ready} onClick={() => guard.check(0, 'community', 'delete your profile') && setConfirm('delete')}>
             Delete profile
@@ -353,7 +352,7 @@ function ProfileForm({
         open={confirm === 'save'}
         onClose={() => setConfirm(null)}
         title={stored === null ? 'Create your profile?' : 'Save your profile?'}
-        description="Your profile is a public document on Platform, signed by this browser's key. Anyone can read it."
+        description="Your profile is public. Anyone can read it."
         cost={cost}
         confirmLabel="Sign & save"
         toast={{ running: 'Saving your profile…', done: 'Profile saved' }}
@@ -363,7 +362,7 @@ function ProfileForm({
         open={confirm === 'delete'}
         onClose={() => setConfirm(null)}
         title="Delete your profile?"
-        description="Removes your profile document from Platform and returns part of its storage fee."
+        description="Deletes your profile and refunds part of its storage fee. Your identity, username and repos stay."
         cost={refund}
         refund
         confirmLabel="Sign & delete"

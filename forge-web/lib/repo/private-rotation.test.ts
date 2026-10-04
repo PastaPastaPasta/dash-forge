@@ -513,7 +513,7 @@ describe('burn and contiguity review', () => {
     // CAROL pre-posts a config under the same key: same commitment, another flag or chain pair.
     const prevEpochKey = 'other' in extra ? new Uint8Array(32).fill(0x13) : new Uint8Array(K0)
     await anchor(CAROL, k1, 'burned' in extra ? { defaultBranch: 'main', prevEpoch: 0, burned: true } : { defaultBranch: 'main', prevEpoch: 0, prevEpochKey })
-    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/would change/)
+    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/older key take over/)
     expect(isMaintainerNow(BOB)).toBe(true)
   })
 
@@ -558,7 +558,7 @@ describe('burn and contiguity review', () => {
     // CAROL (a maintainer back then) pre-posted a config for epoch 2; she is a writer now.
     const evil = new Uint8Array(32).fill(0x67)
     await anchor(CAROL, await EpochKeys.import(REPO, 2, evil), { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(32).fill(1) })
-    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-2')).rejects.toThrow(/epoch 2/)
+    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-2')).rejects.toMatchObject({ epochs: [2], message: /can't be made a maintainer of this repo again/ })
     expect(isMaintainerNow(CAROL)).toBe(false)
   })
 
@@ -585,7 +585,7 @@ describe('burn and contiguity review', () => {
     const evil = new Uint8Array(32).fill(0x66)
     await anchor(CAROL, await EpochKeys.import(REPO, 1, evil), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
     await expect(rotateRepoKey(ctx, [], 'r1')).resolves.toBe(1)
-    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant')).rejects.toThrow(/epoch 1/)
+    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant')).rejects.toMatchObject({ epochs: [1] })
     expect(isMaintainerNow(CAROL)).toBe(false)
   })
 
@@ -655,7 +655,7 @@ describe('correctness review of the burn fixes', () => {
     await anchor(CAROL, k1, { defaultBranch: 'main', prevEpoch: 0, burned: true })
     const configs = (chain['config'] ?? []).length
     const wraps = (chain['repoKey'] ?? []).length
-    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/comes first/)
+    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/older key take over, so nothing was removed/)
     expect((chain['config'] ?? []).length).toBe(configs)
     expect((chain['repoKey'] ?? []).length).toBe(wraps)
   })
@@ -720,7 +720,7 @@ describe('correctness review of the burn fixes', () => {
   it('M1 a refused re-grant says to grant writer or use a new identity', async () => {
     await anchor(CAROL, await EpochKeys.import(REPO, 1, new Uint8Array(32).fill(0x62)), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
     await expect(rotateRepoKey(ctx, [], 'r-m1')).resolves.toBe(1)
-    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-m1')).rejects.toThrow(/as a writer.*new identity|new identity.*as a writer/)
+    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-m1')).rejects.toThrow(/as a writer, or make another identity of theirs the maintainer/)
   })
 
   it('M3 re-running a removal while the current epoch is burned rotates past it', async () => {
