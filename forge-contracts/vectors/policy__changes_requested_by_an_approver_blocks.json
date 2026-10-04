@@ -1,6 +1,6 @@
 {
-  "name": "any_member_counts_writer",
-  "description": "Policy: 2 approvals, any member. A maintainer and a writer approve: met.",
+  "name": "changes_requested_by_an_approver_blocks",
+  "description": "Policy: 1 approval. A maintainer approves, another requests changes: the approval count is met, but the standing request for changes blocks the merge, as on GitHub.",
   "case": "policy",
   "rules": "v2",
   "input": {
@@ -14,8 +14,8 @@
       },
       {
         "id": "r2",
-        "reviewer": "writ",
-        "verdict": 1,
+        "reviewer": "maint2",
+        "verdict": 2,
         "commitOid": "H",
         "createdAt": 110
       }
@@ -27,23 +27,36 @@
         "createdAt": 10
       },
       {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
         "identity": "writ",
         "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
         "createdAt": 10
       }
     ],
     "headOid": "H",
+    "prAuthor": "auth",
     "policy": {
-      "requiredApprovals": 2,
+      "requiredApprovals": 1,
       "approverRole": 0,
       "requireChecks": false,
       "mergeMethods": 0
     }
   },
   "expected": {
-    "met": true,
-    "have": 2,
-    "need": 2,
-    "blockedBy": []
+    "met": false,
+    "have": 1,
+    "need": 1,
+    "blockedBy": [
+      "maint2"
+    ]
   }
 }

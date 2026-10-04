@@ -1,6 +1,6 @@
 {
-  "name": "any_member_counts_writer",
-  "description": "Policy: 2 approvals, any member. A maintainer and a writer approve: met.",
+  "name": "dismissed_changes_request_unblocks",
+  "description": "A request for changes that was dismissed no longer blocks.",
   "case": "policy",
   "rules": "v2",
   "input": {
@@ -14,8 +14,8 @@
       },
       {
         "id": "r2",
-        "reviewer": "writ",
-        "verdict": 1,
+        "reviewer": "maint2",
+        "verdict": 2,
         "commitOid": "H",
         "createdAt": 110
       }
@@ -27,14 +27,28 @@
         "createdAt": 10
       },
       {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
         "identity": "writ",
         "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
         "createdAt": 10
       }
     ],
     "headOid": "H",
+    "dismissed": [
+      "r2"
+    ],
+    "prAuthor": "auth",
     "policy": {
-      "requiredApprovals": 2,
+      "requiredApprovals": 1,
       "approverRole": 0,
       "requireChecks": false,
       "mergeMethods": 0
@@ -42,8 +56,8 @@
   },
   "expected": {
     "met": true,
-    "have": 2,
-    "need": 2,
+    "have": 1,
+    "need": 1,
     "blockedBy": []
   }
 }

@@ -1029,6 +1029,15 @@ pub enum PrCommand {
         #[arg(long)]
         show_hidden: bool,
     },
+    /// Check that a merged pull request's recorded merge contains it: fetches the base branch
+    /// and the PR head, then says whether the merge commit contains the PR's commits, is a
+    /// squash or a rebase of them, or does not contain them. Writes nothing.
+    Verify {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+    },
     /// Check out a pull request as branch `pr/<n>`, fetching its head from the source repo,
     /// and switch to it (left for `git switch` when there are uncommitted changes).
     Checkout {
