@@ -555,6 +555,11 @@ function runCaseV2(v: Vector): void {
       expect(v2.prMergeBase(inp.baseRefName, inp.openedAt, inp.events, inp.mergedAt ?? null)).toEqual(v.expected)
       break
     }
+    case 'merge_content': {
+      onlyKeys(v, ['headOid', 'mergeOid', 'tipBefore', 'mergeParents', 'headInMerge', 'tipBeforeInMerge', 'mergeChange', 'prChange', 'baseChange'])
+      expect(v2.mergeContent(v.input as v2.MergeFacts)).toEqual(v.expected)
+      break
+    }
     case 'ref_name_hashes': {
       onlyKeys(v, ['doc', 'refKey'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly refKey?: string }

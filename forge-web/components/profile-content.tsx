@@ -42,6 +42,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { IdentityPill } from '@/components/ui/identity-pill'
 import { Oid } from '@/components/ui/oid'
 import { ProfileAvatar } from '@/components/ui/profile-avatar'
+import { LookalikeNote, useRememberAcquaintance } from '@/components/lookalike-note'
 import { RepoCard } from '@/components/repo-card'
 import { Button, buttonClass } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -165,6 +166,9 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
   })
 
   const following = follow.on === true
+  // A named identity is remembered for the look-alike note (TS-24): followed, or visited below.
+  const named = data?.name ? { kind: 'owner' as const, name: data.name, identity: identityId } : null
+  useRememberAcquaintance([named], 'followed', isSelf ? null : follow.on)
   const first = useFirstWrite(
     () => followFirsts(sdk!, forge!.community, identity!, identityId, data?.followers),
     [identity ?? '', network, identityId],
@@ -222,6 +226,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
             </h1>
           </div>
         </div>
+        {isSelf ? null : <LookalikeNote subjects={[named]} />}
         {/* Your own profile, with no username: how to get one (QW3-035). */}
         {isSelf && data.name === null && ownName === null ? <UsernameHint className="border-t border-anvil-100 pt-3 dark:border-anvil-850" /> : null}
         {fields.bio ? (
