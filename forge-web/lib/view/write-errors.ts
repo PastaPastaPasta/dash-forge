@@ -6,6 +6,10 @@
  * - the identity's balance does not cover the write: the top-up sheet;
  * - anything Platform refused otherwise: a plain sentence, never "sent";
  * - only a write that really may still land says "Sent, not yet visible".
+ *
+ * Every message has the style guide's three beats (§C rule 8): what happened, whether you were
+ * charged, what to do next. Platform's error code appears only where no sentence explains the
+ * refusal, as the last words, so a bug report can quote it.
  */
 
 import {
@@ -66,50 +70,54 @@ const CHECK_SET_ONCE: ReadonlySet<string> = new Set(['startedAt', 'completedAt',
 
 /** Why a replace was refused as changing an immutable property (40128), naming it when Platform did. */
 function frozenField({ property, documentType }: ConsensusRefusal['figures']): string {
-  if (!property) return 'that field cannot be changed once written.'
+  if (!property) return "That field can't be changed once it's set."
   if (documentType === 'checkRun' && CHECK_EVIDENCE.has(property)) {
-    return `this check run has completed, so its evidence is frozen: "${property}" can no longer be changed.`
+    return `This check run has finished, so its "${property}" can't change.`
   }
   if (documentType === 'checkRun' && CHECK_SET_ONCE.has(property)) {
-    return `this check run's "${property}" is already set, and it cannot be changed once set.`
+    return `This check run's "${property}" is already set and can't change.`
   }
-  return `its "${property}" field cannot be changed once written.`
+  return `Its "${property}" can't be changed once it's set.`
+}
+
+/** "You weren't charged." or what was: the second beat of every refusal. */
+export function chargedSentence(feeCharged: boolean | null | undefined): string {
+  return feeCharged === true ? 'You paid a small processing fee.' : feeCharged === false ? "You weren't charged." : 'Check Settings → Spend for any fee.'
 }
 
 /** A plain sentence for a consensus refusal that no sheet fixes. */
 function refusalSentence(r: ConsensusRefusal): string {
-  const charged =
-    r.feeCharged === true ? 'Its processing fee was charged.' : r.feeCharged === false ? 'Nothing was charged.' : 'Check Settings → Spend for any fee.'
+  const charged = chargedSentence(r.feeCharged)
   switch (r.code) {
     case GATE_REFUSED_CODE:
-      return `Platform refused it: this write needs you to be a member of the repo (or the author). ${charged}`
+      return `Only members of this repo, or the author, can do this. ${charged}`
     case DUPLICATE_UNIQUE_CODE:
-      return `Platform refused it: that slot is already taken (someone else wrote the same number or name first). ${charged}`
+      return `Someone else took that number or name first. ${charged} Reload and try again.`
     case INVALID_REVISION_CODE:
-      return `Platform refused it: this was changed since you opened it. Reload and try again. ${charged}`
+      return `Someone changed this while you were editing. ${charged} Reload and try again.`
     case INVALID_NONCE_CODE:
-      return 'Platform refused it: another write from this identity (another tab, device or the CLI) went first. Try again. Nothing was charged.'
+      return `Another change from your identity (another tab, device or the CLI) went first. ${chargedSentence(false)} Try again.`
     case 40127:
-      return `Platform refused it: it points at a document from another repo or author. ${charged}`
+      return `This belongs to a different repo or author than this page. ${charged} Reload the page and try again.`
     case 40128:
-      return `Platform refused it: ${frozenField(r.figures)} ${charged}`
+      return `${frozenField(r.figures)} ${charged}`
     case 10417:
     case 10421:
-      return `Platform refused it: a field is longer than the contract allows. Shorten it and try again. ${charged}`
+      return `That text is too long. ${charged} Shorten it and try again.`
     case 10422:
-      return `Platform refused it: it breaks one of the contract's rules for this kind of document (for example a sealed field sent in plain text, or a status without the field it needs). ${charged}`
+      return `Forge couldn't save this. ${charged} Reload to get the latest version of the app, then try again. Error code 10422.`
     case 20014:
-      return `Platform refused it: this browser's key is not allowed to sign for this contract. ${charged}`
+      return `This browser's key isn't allowed to make this kind of change. ${charged} Error code 20014.`
     case UNREADABLE_REFUSAL_CODE:
-      return `Platform refused it, but this app could not read the reason (its Platform SDK is older than the network's). ${charged} Reload to pick up the current app version; if it still fails, report it.`
+      return `Platform refused this, and this version of the app can't read why. ${charged} Reload to get the latest version. If it still fails, report it.`
     case MALFORMED_TRANSITION_CODE:
-      return 'Platform could not read this write, so it was discarded. Nothing was charged. Try again to re-sign it; if it fails again, reload the page to pick up the current app version.'
+      return `Platform couldn't read this change, so it was discarded. ${chargedSentence(false)} Try again. If it fails again, reload to get the latest version of the app.`
     case DOCUMENT_EXPIRED_CODE:
-      return `Platform refused it: this document has expired (its time to live ran out), so it can no longer be changed. Platform removes it shortly. ${charged}`
+      return `This has expired and can't be changed any more. Platform removes it shortly. ${charged}`
     case CONTEST_FULL_CODE:
-      return `Platform refused it: that contest already has the most contenders it accepts, so this cannot join it. ${charged}`
+      return `This contest is full and accepts no more entries. ${charged}`
     default:
-      return `Platform refused it (consensus error ${r.code}). ${charged}`
+      return `Platform refused this change. ${charged} Error code ${r.code}.`
   }
 }
 
@@ -122,7 +130,7 @@ function sheetFor(blocker: TopUpReason['blocker'], has: bigint | undefined, requ
 /** `what` (a sentence start naming `has`), then what Platform needs; '' when a figure is missing. */
 function neededDetail(what: (has: string) => string, has: bigint | undefined, required: bigint | undefined): string {
   if (has === undefined || required === undefined) return ''
-  return ` ${what(creditsAsDash(Number(has)))}; Platform needs ${creditsAsDash(Number(required))} DASH available for this write.`
+  return ` ${what(creditsAsDash(Number(has)))}, and this change needs ${creditsAsDash(Number(required))} DASH.`
 }
 
 export function writeFailure(e: unknown): WriteFailure {
@@ -135,18 +143,18 @@ export function writeFailure(e: unknown): WriteFailure {
   if (e instanceof ConsensusRefusal) {
     const { remaining, balance, required } = e.figures
     if (e.isKeyLimit) {
-      if (EXPIRY_CODES.has(e.code)) return out("This browser's key has expired, so Platform refused the write. Nothing was charged. Renew the key to continue.", { blocker: 'key-expiry' })
-      if (DISABLED_CODES.has(e.code)) return out("This browser's key was disabled on Platform. Nothing was charged. Renew the key to continue.", { blocker: 'key-disabled' })
+      if (EXPIRY_CODES.has(e.code)) return out("This browser's key has expired. You weren't charged. Renew the key to continue.", { blocker: 'key-expiry' })
+      if (DISABLED_CODES.has(e.code)) return out("This browser's key was disabled. You weren't charged. Renew the key to continue.", { blocker: 'key-disabled' })
       // Only a budget exceeded by this write names a shortfall; an exhausted budget has none.
       const detail = neededDetail((dash) => `It has ${dash} DASH left`, remaining, required)
       return out(
-        `This browser's key does not have enough budget left, so Platform refused the write. Nothing was charged.${detail}`,
+        `This browser's key doesn't have enough budget left. You weren't charged.${detail}`,
         sheetFor('key-budget', e.code === BUDGET_EXCEEDED_CODE ? remaining : undefined, required),
       )
     }
     if (e.isBalance) {
       const detail = neededDetail((dash) => `Your balance is ${dash} DASH`, balance, required)
-      return out(`Your identity's balance is too low, so Platform refused the write. Nothing was charged.${detail}`, sheetFor('balance', balance, required))
+      return out(`Your balance is too low for this change. You weren't charged.${detail}`, sheetFor('balance', balance, required))
     }
     return out(refusalSentence(e))
   }

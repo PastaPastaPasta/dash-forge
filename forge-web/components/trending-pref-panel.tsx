@@ -24,9 +24,7 @@ export function TrendingPrefPanel(): JSX.Element {
   if (useStarShape(ACTIVE_NETWORK.v2) === 'fused') {
     return (
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="trending-pref">
-        Your stars count toward Trending on Explore for the week they were made. On this network a star carries that week itself, so there is
-        nothing to turn off; unstarring takes the star away, but not the week it already counted in. Trending leaves out private repos, and
-        your star on a repo of your own while the repo is new: under a week old for This week on Explore, created today (UTC) for Today.
+        Your stars count toward Trending on Explore. There&apos;s nothing to turn off.
       </p>
     )
   }
@@ -45,9 +43,8 @@ export function TrendingPrefPanel(): JSX.Element {
         Count my stars toward Trending
       </label>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Each new star also writes one small document (about {creditsAsDash(beat.credits)} DASH) that Trending on Explore counts for a week. It
-        is not refunded, and unstarring does not remove it; starring the same repo again writes no second one. A star on a repo of your own
-        never counts toward Trending, so it writes none.
+        Each new star adds about {creditsAsDash(beat.credits)} DASH so Trending can count it for a week. It isn&apos;t refunded, and stars on
+        your own repos never count.
       </p>
     </div>
   )

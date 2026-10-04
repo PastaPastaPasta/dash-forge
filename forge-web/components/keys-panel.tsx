@@ -28,7 +28,7 @@ import { useConfirmAction, type ConfirmActionOptions } from '@/components/ui/con
 /** Shown before deleting a stored key: for a wallet-granted key this is the only copy. */
 export const FORGET_CONFIRM: ConfirmActionOptions = {
   title: "Forget this browser's key?",
-  body: `This deletes the key from this device. It does not revoke it: the key stays valid on chain until it expires, and a wallet key never expires (use "Revoke on chain" or "Disable key on chain" for that). You will need your identity file, recovery phrase or wallet to sign in here again. ${FORGET_DELETES}`,
+  body: `This deletes the key from this device but doesn't revoke it. It stays valid until it expires, and a wallet key never does: use "Revoke on Platform" for that. ${FORGET_DELETES}`,
   confirmLabel: 'Forget key',
 }
 
@@ -104,15 +104,14 @@ export function KeysPanel(): JSX.Element {
       {heldOnly.length > 0 ? (
         <p className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="held-only-keys" data-key-ids={heldOnly.join(',')}>
           Also held, never used to sign: key{heldOnly.length > 1 ? 's' : ''} {heldOnly.map((k) => `#${k}`).join(', ')}, from a key renewal you gave up.
-          Your next renewal or &quot;Revoke on chain&quot; disables {heldOnly.length > 1 ? 'them' : 'it'}.
+          Your next renewal or &quot;Revoke on Platform&quot; disables {heldOnly.length > 1 ? 'them' : 'it'}.
         </p>
       ) : null}
       {storage === 'vault' && unlimitedKey ? (
         <div className="space-y-2">
           <UnlimitedKeyWarning unbounded={unboundedKey} />
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            Platform cannot add limits to a key that was registered without them. Replace it with a limited key (your identity file or recovery phrase,
-            once: the wallet keys this browser holds are disabled in the same update), or disable it on chain.
+            Limits can&apos;t be added to this key. Replace it with a limited key using your identity file or recovery phrase, or disable it.
           </p>
         </div>
       ) : null}
@@ -160,15 +159,14 @@ export function KeysPanel(): JSX.Element {
         {storage === 'vault' ? (
           <>
             <Button variant="danger" size="sm" loading={isLoading} onClick={() => setRevokeOpen(true)} data-testid="key-revoke">
-              <ShieldOff className="h-3.5 w-3.5" aria-hidden /> {unlimitedKey ? 'Disable key on chain' : 'Revoke on chain'}
+              <ShieldOff className="h-3.5 w-3.5" aria-hidden /> {unlimitedKey ? 'Disable key on Platform' : 'Revoke on Platform'}
             </Button>
           </>
         ) : null}
       </div>
       {pasted ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-          Importing your identity file or recovery phrase gives this browser its own key, limited to Forge, a budget and an expiry. The pasted key
-          is left as it is: Forge did not register it, so it does not renew or revoke it.
+          Import your identity file or recovery phrase to give this browser its own limited key. Forge doesn&apos;t renew or revoke the pasted key.
         </p>
       ) : (
         <>
@@ -179,7 +177,7 @@ export function KeysPanel(): JSX.Element {
             </p>
           )}
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file or recovery phrase once).
+            Forgetting deletes the key from this device only. Revoking disables it on Platform (needs your identity file or recovery phrase once).
           </p>
         </>
       )}

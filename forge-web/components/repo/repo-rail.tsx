@@ -12,7 +12,7 @@
 import { Time } from '@/components/repo/byline'
 import { useEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { GitBranch, HardDrive, Rocket, Scale, Star, Tag, Users } from 'lucide-react'
+import { GitBranch, HardDrive, Rocket, Scale, Star, Tag } from 'lucide-react'
 import {
   isLive,
   prefetchDpnsNames,
@@ -267,9 +267,6 @@ function Members({ repo }: { repo: RepoRef }): JSX.Element {
           ))}
         </ul>
       )}
-      <p className="mt-2 flex items-center gap-1 text-[11px] text-anvil-500 dark:text-anvil-400">
-        <Users className="h-3 w-3" aria-hidden /> From the repo&apos;s membership documents.
-      </p>
     </Card>
   )
 }

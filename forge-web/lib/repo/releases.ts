@@ -178,7 +178,7 @@ export function assetVerifiable(asset: { readonly sha256: string }): boolean {
  * missing hash.
  */
 export const UNVERIFIABLE_ASSET =
-  'no SHA-256 is recorded for this asset, so this page can’t verify a copy of it and won’t link to one it can’t vouch for. A maintainer fixes this by re-running the import with a current forge-import (it hashes each asset) or by publishing the release again with the file.'
+  'this asset has no recorded checksum, so this page can’t verify it and won’t link to it. A maintainer can fix this by importing again with a current forge-import, or by publishing the release again with the file.'
 
 /**
  * Whether `url` is a release download on the forge an import copies from (GitHub's
