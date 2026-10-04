@@ -1,6 +1,6 @@
 {
-  "name": "any_member_counts_writer",
-  "description": "Policy: 2 approvals, any member. A maintainer and a writer approve: met.",
+  "name": "no_required_approvals_no_block",
+  "description": "Policy: no approvals required. A request for changes blocks only when the policy requires approvals.",
   "case": "policy",
   "rules": "v2",
   "input": {
@@ -8,16 +8,9 @@
       {
         "id": "r1",
         "reviewer": "maint",
-        "verdict": 1,
+        "verdict": 2,
         "commitOid": "H",
         "createdAt": 100
-      },
-      {
-        "id": "r2",
-        "reviewer": "writ",
-        "verdict": 1,
-        "commitOid": "H",
-        "createdAt": 110
       }
     ],
     "memberships": [
@@ -27,14 +20,25 @@
         "createdAt": 10
       },
       {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
         "identity": "writ",
         "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
         "createdAt": 10
       }
     ],
     "headOid": "H",
+    "prAuthor": "auth",
     "policy": {
-      "requiredApprovals": 2,
+      "requiredApprovals": 0,
       "approverRole": 0,
       "requireChecks": false,
       "mergeMethods": 0
@@ -42,8 +46,8 @@
   },
   "expected": {
     "met": true,
-    "have": 2,
-    "need": 2,
+    "have": 0,
+    "need": 0,
     "blockedBy": []
   }
 }
