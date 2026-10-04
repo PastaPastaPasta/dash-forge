@@ -32,6 +32,8 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
     (page) => page.locator('section').filter({ hasText: 'Recent repos' }).first().locator('a[href*="/repo"], [data-testid="show-all-recent"]').first(),
   ],
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
+  ['private', '/private/', (page) => page.getByRole('heading', { name: 'Private repositories', exact: true })],
+  ['networks', '/networks/', (page) => page.getByRole('heading', { name: 'All networks' })],
   ['login', '/login/', (page) => page.getByRole('main')],
   ['new', '/new/', (page) => page.getByRole('main')],
   ['notifications', '/notifications/', (page) => page.getByRole('main')],
