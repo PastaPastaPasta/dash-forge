@@ -3,7 +3,7 @@
 //! `docs/design/style-guide.md`. Agents write most help text, so this test is what keeps
 //! protocol jargon out of `--help`.
 //!
-//! - Every command's summary and details, and every flag's help and value help, is checked
+//! - Every command's summary, details and after-help, and every flag's help and value help, is checked
 //!   against the banned list. A command's summary is also kept short.
 //! - `dg --help` is compared with `tests/snapshots/dg-help.txt`. Run with
 //!   `DG_UPDATE_SNAPSHOTS=1` to rewrite it after an intended change.
@@ -77,17 +77,33 @@ fn walk(cmd: &Command, path: &str, out: &mut Vec<String>) {
             ));
         }
     }
-    if let Some(long) = cmd.get_long_about() {
-        let long = long.to_string();
-        for why in hits(&long) {
-            out.push(format!("{path}: long about: {why}: {long}"));
+    // The details and after-help paragraphs. clap's long about repeats the summary, so that
+    // part is left to the check above and each problem is reported once.
+    let about = cmd.get_about().map(ToString::to_string).unwrap_or_default();
+    let details = [
+        cmd.get_long_about(),
+        cmd.get_after_help(),
+        cmd.get_after_long_help(),
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for text in details.into_iter().flatten().map(ToString::to_string) {
+        let text = text
+            .strip_prefix(about.as_str())
+            .unwrap_or(&text)
+            .trim()
+            .to_string();
+        if text.is_empty() || !seen.insert(text.clone()) {
+            continue;
+        }
+        for why in hits(&text) {
+            out.push(format!("{path}: details: {why}: {text}"));
         }
     }
     for arg in cmd.get_arguments() {
         if arg.is_hide_set() {
             continue;
         }
-        let texts = arg
+        let texts: std::collections::BTreeSet<String> = arg
             .get_help()
             .into_iter()
             .chain(arg.get_long_help())
@@ -96,7 +112,8 @@ fn walk(cmd: &Command, path: &str, out: &mut Vec<String>) {
                 arg.get_possible_values()
                     .into_iter()
                     .filter_map(|v| v.get_help().map(ToString::to_string)),
-            );
+            )
+            .collect();
         for help in texts {
             for why in hits(&help) {
                 out.push(format!("{path} --{}: help: {why}: {help}", arg.get_id()));

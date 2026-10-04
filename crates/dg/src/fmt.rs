@@ -127,15 +127,34 @@ pub fn dash_amount(dash: f64) -> String {
     }
 }
 
-/// A price for copy: `forge_core::user_error::dash`, three significant figures that never
-/// round a fee to 0 (`0.0102`, `0.000976`). `dg cost` and `--json` keep exact amounts.
+/// A price for copy: three significant figures, never rounding a fee to 0 (`0.0102`,
+/// `0.000976`, `32.5`). `dg cost` ([`dash_exact`]) and `--json` keep exact amounts.
 pub fn dash_rounded(credits: u64) -> String {
-    let s = forge_core::user_error::dash(credits);
+    if credits == 0 {
+        return "0".into();
+    }
+    let d = credits_to_dash(credits);
+    // Decimals so that three significant digits show: 0.00517 needs 5, 32.5 needs 1.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let decimals = (2.0 - d.log10().floor()).max(0.0) as usize;
+    let s = format!("{d:.decimals$}");
     if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
     } else {
         s
     }
+}
+
+/// A DASH amount to the credit (11 decimals, trailing zeros trimmed), so rows add up to
+/// their total: `0.00000000003` for 3 credits, `1.5` for 150_000_000_000.
+pub fn dash_exact(credits: u64) -> String {
+    let whole = credits / CREDITS_PER_DASH;
+    let frac = credits % CREDITS_PER_DASH;
+    if frac == 0 {
+        return whole.to_string();
+    }
+    let frac = format!("{frac:011}");
+    format!("{whole}.{}", frac.trim_end_matches('0'))
 }
 
 /// "1 asset" / "3 assets": a count and its noun, never "asset(s)". Nouns whose plural is not
@@ -166,21 +185,19 @@ pub static ESTIMATE_SHOWN: std::sync::atomic::AtomicBool =
 /// A one-line cost display: DASH primary, USD secondary on mainnet, e.g.
 /// `~0.0003 DASH ≈ $0.01` (`~0.0003 DASH` where [`usd_price`] is `None`).
 pub fn cost_line(credits: u64, price_usd: Option<f64>) -> String {
-    ESTIMATE_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
-    let dash = credits_to_dash(credits);
-    match price_usd {
-        Some(price) => format!("~{} DASH ≈ ${:.2}", dash_rounded(credits), dash * price),
-        None => format!("~{} DASH", dash_rounded(credits)),
-    }
+    priced(credits, price_usd, &dash_rounded(credits))
 }
 
-/// [`cost_line`] with the exact amount (eight decimals), for `dg cost`, whose rows must add up.
+/// [`cost_line`] to the credit ([`dash_exact`]), for `dg cost`, whose rows must add up.
 pub fn cost_line_exact(credits: u64, price_usd: Option<f64>) -> String {
+    priced(credits, price_usd, &dash_exact(credits))
+}
+
+fn priced(credits: u64, price_usd: Option<f64>, amount: &str) -> String {
     ESTIMATE_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
-    let dash = credits_to_dash(credits);
     match price_usd {
-        Some(price) => format!("~{} DASH ≈ ${:.2}", dash_amount(dash), dash * price),
-        None => format!("~{} DASH", dash_amount(dash)),
+        Some(price) => format!("~{amount} DASH ≈ ${:.2}", credits_to_dash(credits) * price),
+        None => format!("~{amount} DASH"),
     }
 }
 
@@ -434,14 +451,14 @@ mod tests {
     fn triage_lines_show_what_is_set() {
         let lines = triage_lines(
             &["bug", "docs"],
-            &["A (alice.dash)".into(), "B".into()],
+            &["alice.dash (A1b2c3d4…)".into(), "B".into()],
             Some("v1.0"),
         );
         assert_eq!(
             lines,
             vec![
                 "labels: bug, docs",
-                "assignees: A (alice.dash), B",
+                "assignees: alice.dash (A1b2c3d4…), B",
                 "milestone: v1.0"
             ]
         );
@@ -694,6 +711,17 @@ mod tests {
         assert_eq!(cost_line(400, None), "~0.000000004 DASH");
         assert_eq!(cost_line(0, None), "~0 DASH");
         assert_eq!(cost_line(50_000_000_000, None), "~0.5 DASH");
+        assert_eq!(cost_line(517_499_000, None), "~0.00517 DASH");
+        assert_eq!(cost_line(104_000_000, None), "~0.00104 DASH");
+        assert_eq!(cost_line(3_254_000_000_000, None), "~32.5 DASH");
+        assert_eq!(cost_line(12_345_000_000_000, None), "~123 DASH");
+        // `dg cost` keeps every credit, so its rows add up to the total.
+        assert_eq!(dash_exact(1_500), "0.000000015");
+        assert_eq!(dash_exact(3), "0.00000000003");
+        assert_eq!(dash_exact(150_000_000_000), "1.5");
+        assert_eq!(dash_exact(200_000_000_000), "2");
+        assert_eq!(dash_exact(0), "0");
+        assert_eq!(cost_line_exact(1_017_812_000, None), "~0.01017812 DASH");
         assert_eq!(plural(1u64, "asset"), "1 asset");
         assert_eq!(plural(0u64, "asset"), "0 assets");
         assert_eq!(plural(3usize, "asset"), "3 assets");

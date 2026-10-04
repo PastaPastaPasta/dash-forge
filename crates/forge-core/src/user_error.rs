@@ -790,7 +790,7 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
 /// keeps the identity's encryption key beside the limited signing key (QW2-004), from its file
 /// or from the recovery words (QW-040). A key stored by an older `dg`, or with
 /// `--signing-only`, is a signing key only: signing in again fixes it.
-pub const FIX_FULL_KEY_LOGIN: &str = "`dg auth login <identity file> --replace <key id>` (the key `dg auth status` shows), or `dg auth login --mnemonic --replace <key id>` with your 12 recovery words: it stores a new limited key with your encryption key beside it (never the master key) and disables the old one";
+pub const FIX_FULL_KEY_LOGIN: &str = "`dg auth login <identity file> --replace <key id>` (the key `dg auth status` shows), or `dg auth login --mnemonic --replace <key id>` with your 12-word recovery phrase: it stores a new limited key with your encryption key beside it (never the master key) and disables the old one";
 
 /// The E601 way in: the owner's add, and before it, for someone not a member yet, their own
 /// consent (`member_consent`: a `member` document naming the add is refused without it, E604;

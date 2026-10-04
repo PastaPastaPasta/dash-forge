@@ -291,7 +291,7 @@ pub use group::check_group;
 pub fn read_mnemonic() -> Result<Secret> {
     if !forge_core::sealed::prompts_allowed() {
         return Err(
-            UserError::new(codes::USAGE, "the recovery words could not be read")
+            UserError::new(codes::USAGE, "the recovery phrase could not be read")
                 .cause("this command does not prompt (--json)")
                 .fix("pass the identity file with --master <file> (or as the login file) instead")
                 .into(),
@@ -303,7 +303,7 @@ pub fn read_mnemonic() -> Result<Secret> {
             if crate::prompt::left_the_prompt(&e) {
                 return crate::prompt::input_closed();
             }
-            UserError::new(codes::USAGE, "the recovery words could not be read")
+            UserError::new(codes::USAGE, "the recovery phrase could not be read")
                 .cause(format!("no terminal to ask on ({e})"))
                 .fix("run it in a terminal, or pass the identity file instead")
                 .into()
@@ -317,7 +317,7 @@ pub fn read_mnemonic() -> Result<Secret> {
 /// (L-34).
 const MASTER_PROMPT: &str =
     "This needs your master key once. It is used for this one signature and not stored.\n\
-     Type your 12 recovery words below, or press Ctrl-C and run the command again with \
+     Type your 12-word recovery phrase below, or press Ctrl-C and run the command again with \
      --master <identity file> (the file from the bridge, or a `dg auth new --backup-file`).";
 
 /// The master identity for a ceremony: `--master <file>` (or the file given to login), else the
@@ -352,7 +352,7 @@ pub fn master_identity(
     if bridge.master_key().is_none() {
         return Err(UserError::new(codes::KEY_CANNOT_SIGN, "no master key given")
             .cause("this needs the identity's MASTER key; the source given has none (a limited key cannot register or disable keys)")
-            .fix("pass the identity file with --master <file>, or type the recovery words when asked")
+            .fix("pass the identity file with --master <file>, or type the recovery phrase when asked")
             .into());
     }
     Ok(bridge)
@@ -631,7 +631,7 @@ pub(crate) fn private_line(
     if !access.on_identity {
         return Some(
             "your identity has no encryption key; `dg auth keys add --encryption` adds one \
-             (from the recovery words)"
+             (from the recovery phrase)"
                 .into(),
         );
     }
@@ -1651,7 +1651,7 @@ mod tests {
     #[test]
     fn the_master_key_prompt_offers_master_file() {
         assert!(MASTER_PROMPT.contains("--master <identity file>"));
-        assert!(MASTER_PROMPT.contains("recovery words"));
+        assert!(MASTER_PROMPT.contains("recovery phrase"));
     }
 
     fn moutai(dapi: Option<&str>) -> forge_core::platform::Network {

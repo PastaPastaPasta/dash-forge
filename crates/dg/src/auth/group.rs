@@ -84,7 +84,7 @@ impl GroupCheck {
             self.unknown
                 .iter()
                 .map(|u| u.split(' ').next().unwrap_or(u))
-                .collect::<std::collections::HashSet<_>>()
+                .collect::<BTreeSet<_>>()
                 .len()
                 != 1
         };
@@ -476,6 +476,26 @@ mod tests {
         assert!(!notice.contains('\n'), "one line: {notice}");
         assert!(!notice.contains("could not read"), "{notice}");
         assert_eq!(chain.reads(), vec!["NEWCOLLAB".to_string()]);
+    }
+
+    /// Revisions are counted by contract: one new contract revision that adds a document type
+    /// is still "a revision"; two contracts are "revisions".
+    #[test]
+    fn the_notice_counts_revisions_by_contract() {
+        let notice = |unknown: &[&str]| {
+            GroupCheck {
+                group: "GROUP".into(),
+                unknown: unknown.iter().map(ToString::to_string).collect(),
+                unchecked: Vec::new(),
+                extra_parts: false,
+            }
+            .notice()
+            .expect("a notice")
+        };
+        let one = notice(&["X", "X (document type t)"]);
+        assert!(one.contains("a newer Forge contract revision "), "{one}");
+        let two = notice(&["X", "Y"]);
+        assert!(two.contains("newer Forge contract revisions"), "{two}");
     }
 
     #[tokio::test]
