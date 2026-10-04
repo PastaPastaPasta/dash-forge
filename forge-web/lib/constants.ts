@@ -72,13 +72,22 @@ export interface NetworkEnv {
   readonly quorumBaseUrl?: string
 }
 
-/** Thrown by reads/writes on a network where forge-v2 is not deployed ({@link NetworkConfig.v2} null). */
+/**
+ * How copy names a network: `devnet sakura`, `testnet`, `mainnet` (style guide glossary). The
+ * deployment key (`devnet-sakura`) stays for file names, commands and settings.
+ */
+export function networkName(config: Pick<NetworkConfig, 'network' | 'devnetName' | 'key'> = ACTIVE_NETWORK): string {
+  return config.network === 'devnet' && config.devnetName !== null ? `devnet ${config.devnetName}` : config.key
+}
+
+/**
+ * Thrown by reads/writes on a network where Forge's contracts are not deployed
+ * ({@link NetworkConfig.v2} null): a network is deployed once
+ * `forge-contracts/deployments/<key>.json` records them (`docs/contracts/forge-v2.md` §8).
+ */
 export class NotDeployedError extends Error {
   constructor(readonly networkKey: string) {
-    super(
-      `forge-v2 is not deployed on ${networkKey}; see docs/contracts/forge-v2.md §8 ` +
-        `(a network is deployed once forge-contracts/deployments/${networkKey}.json records it)`,
-    )
+    super(`Dash Forge isn't available on ${networkKey.replace(/^devnet-/, 'devnet ')} yet`)
     this.name = 'NotDeployedError'
   }
 }

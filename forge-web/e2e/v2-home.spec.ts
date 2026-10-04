@@ -160,8 +160,6 @@ test.describe('repo home launch UX (moutai fixture)', () => {
       box.getByText(`git clone -c dash.network=devnet -c dash.devnetName=${E2E_DEVNET} dash://${OWNER}/${NAME}`, { exact: true }),
     ).toBeVisible()
     await expect(box.getByText(`dg repo clone ${OWNER}/${NAME} --network devnet --devnet-name ${E2E_DEVNET}`, { exact: true })).toBeVisible()
-    await expect(box.getByTestId('clone-network')).toContainText(`devnet-${E2E_DEVNET}`)
-    await expect(box.getByText(/No https clone URL/)).toBeVisible()
 
     await box.getByRole('button', { name: 'install' }).click()
     const sheet = page.getByRole('dialog', { name: /Install git-remote-dash/ })

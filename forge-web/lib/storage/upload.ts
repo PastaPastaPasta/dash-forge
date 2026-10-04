@@ -84,7 +84,7 @@ export class ReplicationError extends Error {
     readonly platformWritten: boolean,
   ) {
     super(
-      `storage policy not met: ${confirmed.length} of ${required} required target(s) confirmed` +
+      `storage policy not met: ${confirmed.length} of ${required} required ${required === 1 ? 'target' : 'targets'} confirmed` +
         failures.map((f) => `; ${f.target}: ${f.reason}`).join('') +
         (platformWritten
           ? '. Some pack chunks were written to Platform before the push stopped; they are kept, and a retry does not pay for them again. No manifest or ref was written.'

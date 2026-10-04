@@ -92,7 +92,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('link', { name: 'main.rs' }).first())
     await page.getByRole('link', { name: 'main.rs' }).first().click()
-    await expect(page.getByText('reads are proof-checked').first()).toBeVisible({ timeout: 45_000 })
+    await expect(page.getByText('Your browser verifies what it shows').first()).toBeVisible({ timeout: 45_000 })
     await shot(page, 'v2-03-blob')
   })
 
@@ -145,8 +145,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   test('v2-7. settings list members from membership documents', async ({ page }) => {
     await page.goto(url('settings'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    // Settings → Collaborators (#66 renamed the old "Members" section, GitHub-style).
-    const collaborators = page.getByRole('region', { name: 'Collaborators' })
+    // Settings → Members (the glossary's term for people with a role; #66 had called it Collaborators).
+    const collaborators = page.getByRole('region', { name: 'Members' })
     await expectLanded(page, collaborators.getByText('WRITER', { exact: true }))
     await expect(collaborators.getByText('MAINTAINER', { exact: true })).toHaveCount(2)
     await expect(collaborators.getByText('owner', { exact: true })).toBeVisible()

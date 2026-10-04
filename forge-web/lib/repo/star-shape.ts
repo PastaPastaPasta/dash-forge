@@ -47,6 +47,28 @@ export function starShape(sdk: EvoSDK, forge: ForgeIds): Promise<StarShape> {
   return read
 }
 
+/** How a star click is priced and labelled. */
+export interface StarTerms {
+  /** The click also writes a Trending beat (a beat-shaped contract, with Trending on). */
+  readonly beats: boolean
+  /** The price includes a beat: written, or the upper bound of a shape not yet known. */
+  readonly priceBeat: boolean
+  /** Appended to the button's price ('' when nothing is promised). */
+  readonly trendingNote: string
+}
+
+/**
+ * The star's terms for `shape` (null while it is read, or when the read failed), the viewer's
+ * Trending preference, and whether a beat is allowed on this repo for this viewer. An unknown
+ * shape is priced as the larger one and promises nothing about Trending, so a signed-out
+ * viewer is never told to turn off something the network has no switch for.
+ */
+export function starTerms(shape: StarShape | null, trending: boolean, beatAllowedHere: boolean): StarTerms {
+  const beats = shape === 'beat' && trending && beatAllowedHere
+  const trendingNote = shape === 'fused' ? ' · counts toward Trending' : beats ? ' · counts toward Trending (turn off in Settings)' : ''
+  return { beats, priceBeat: beats || shape !== 'beat', trendingNote }
+}
+
 /** Forget every cached shape (tests). */
 export function resetStarShapes(): void {
   shapes.clear()

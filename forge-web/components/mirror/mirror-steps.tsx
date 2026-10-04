@@ -143,7 +143,7 @@ export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; on
 // ---------------------------------------------------------------------------
 
 const CREATE_STEPS: readonly [CreateRepoStep, string][] = [
-  ['repo', 'Repository document'],
+  ['repo', 'The repo'],
   ['maintainer', 'You, as its first maintainer'],
   ['config', 'Config (default branch)'],
 ]
@@ -235,7 +235,7 @@ export function RepoStep({
             <dd className="font-mono">{github.defaultBranch}</dd>
           </dl>
           <CostPreview cost={cost} />
-          <Hint>One-time: the repo, you as its maintainer, and its config (three documents). The web reads the source back from the description.</Hint>
+          <Hint>Paid once: the repo, you as its maintainer, and its settings. The description names the GitHub source.</Hint>
           {progress ? (
             <ol aria-label="Creation steps" className="space-y-1 text-dense">
               {CREATE_STEPS.map(([step, label]) => (
@@ -466,7 +466,7 @@ export function KeyStep({
   return (
     <>
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
-        The Action signs with its own key. If it leaks, an attacker can spend at most its budget, only on Forge, only until it expires, and Platform enforces that at consensus. The key belongs to your identity, the repository&apos;s owner, so the Action needs no other membership.
+        The Action signs with its own key. If it leaks, it can spend at most its budget, only on Forge, and only until it expires. Dash Platform enforces those limits.
       </p>
       {record && record.keyId >= 0 ? (
         <Hint tone="caution">
@@ -621,7 +621,7 @@ export function WorkflowStep({
               label="Cost cap per run (DASH)"
               htmlFor="mirror-cost-cap"
               // Why it is above the Action's own default (QW4-045).
-              hint={`A run that would spend more stops before writing. The Action's default is ${ACTION_COST_CAP} DASH; the cap suggested here leaves room for the first run, which writes every branch, tag and release (and every issue and PR, if mirrored). Lower it once the mirror is up.`}
+              hint={`A run that would spend more stops first. This is above the Action's default of ${ACTION_COST_CAP} DASH because the first run copies everything. Lower it once the mirror is up.`}
             >
               <Input id="mirror-cost-cap" inputMode="decimal" value={costCap} onChange={(e) => setCostCap(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={capError !== null} />
             </Field>
@@ -643,7 +643,7 @@ export function WorkflowStep({
           <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={collab} onChange={(e) => setCollab(e.target.checked)} />
           <span>
             Mirror issues and pull requests too
-            <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Anyone who can open one can make a run spend, up to the cap, until the key&apos;s budget runs out. On a busy repository, leave this off: code and releases still sync on every push and daily.</span>
+            <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Anyone who opens one makes a run spend, up to the cap. Leave this off for a busy repo. Code and releases still sync.</span>
           </span>
         </label>
         {yaml.error ? <Hint tone="danger">{yaml.error}</Hint> : null}

@@ -1047,7 +1047,7 @@ export class PrivateMembershipError extends Error {
  */
 export class ConsentMissingError extends Error {
   constructor(readonly memberId: string) {
-    super("they haven't accepted the invitation yet: send them this repo's invite link (Settings → Collaborators) to accept, then add them")
+    super("they haven't accepted the invitation yet: send them this repo's invite link (Settings → Members) to accept, then add them")
     this.name = 'ConsentMissingError'
   }
 }
@@ -1469,7 +1469,7 @@ export async function createRepo(
       if (repoId === null) throw e
     }
   })
-  if (repoId === null) throw new Error('the repo document did not land; try again')
+  if (repoId === null) throw new Error("the repo wasn't created; try again")
   journal.repoId = repoId
   await save()
   const R = decodeIdentifier(repoId)

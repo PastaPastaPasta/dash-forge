@@ -70,9 +70,9 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
     <Dialog open onClose={onClose} title={unlimited ? 'Disable key on chain' : 'Revoke this key on chain'} description={`Disables ${noun} everywhere, then forgets it here.`}>
       <div className="space-y-4 text-dense">
         <p className="text-anvil-600 dark:text-anvil-300">
-          Your master key signs one identity update that disables {noun}
-          {keyId !== null ? ` (key #${keyId})` : ''} on Platform, so it can sign nothing anywhere, even where it was copied. This browser then
-          forgets it, and signs nothing until you sign in again. The master key is used once and is not stored.
+          Your master key disables {noun}
+          {keyId !== null ? ` (key #${keyId})` : ''} on Platform, so no copy of it can sign anything. This browser then forgets it until you sign
+          in again. The master key is used once and isn&apos;t stored.
         </p>
         {/* The revoke forgets too, so it deletes what a forget does (QW4-021): said here, not under the alternative. */}
         <p className="text-anvil-600 dark:text-anvil-300" data-testid="revoke-forget-deletes">

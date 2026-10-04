@@ -163,7 +163,7 @@ export function ProfileForm({
         <div role="note" className="flex items-start gap-2 rounded-md border border-caution/40 bg-caution/5 p-3 text-[12px] text-anvil-700 dark:text-anvil-200 sm:col-span-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
           <span>
-            kubo’s RPC API is the node’s <span className="font-medium">admin</span> interface. Letting this web app call it means trusting this site with your node, unless kubo limits the token it uses. Create a token restricted to add, pin-check, unpin and id (kubo <span className="font-mono">API.Authorizations</span> with <span className="font-mono">AllowedPaths</span>; the test prints the commands if the node refuses this origin) and paste it as the API Authorization header.
+            kubo’s RPC API is the node’s <span className="font-medium">admin</span> interface. Give this site a token limited to add, pin-check, unpin and id (kubo <span className="font-mono">API.Authorizations</span> with <span className="font-mono">AllowedPaths</span>), and paste it as the API Authorization header. The test prints the commands.
           </span>
         </div>
       ) : null}

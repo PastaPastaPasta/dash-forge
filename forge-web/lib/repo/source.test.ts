@@ -39,7 +39,7 @@ describe('which contract holds a type', () => {
   })
 
   it('refuses a type no contract holds (manifestPart is gone in RC1)', () => {
-    expect(() => three.repoQuery('manifestPart')).toThrow(/no forge-v2 contract/)
+    expect(() => three.repoQuery('manifestPart')).toThrow(/no Forge contract/)
   })
 
   it.each([

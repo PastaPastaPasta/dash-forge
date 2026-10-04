@@ -10,14 +10,10 @@ export function AppFooter(): JSX.Element {
     <footer className="mt-16 border-t border-anvil-200 dark:border-anvil-800">
       <div className="mx-auto flex max-w-[1280px] flex-col gap-2 px-4 py-6 text-[12px] text-anvil-500 dark:text-anvil-400 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div className="flex flex-col gap-1">
-          <p>
-            Dash Forge — a git forge with no server to trust. Zero backend; Platform reads are
-            proof-checked and file contents hash-checked.
-          </p>
+          <p>Dash Forge: git hosting with no server. Your browser verifies what it shows.</p>
           <BuildInfo />
         </div>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-          <span className="font-mono">trust-minimized</span>
           <Link href="/start/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Getting started
           </Link>

@@ -28,7 +28,7 @@ import { useConfirmAction, type ConfirmActionOptions } from '@/components/ui/con
 /** Shown before deleting a stored key: for a wallet-granted key this is the only copy. */
 export const FORGET_CONFIRM: ConfirmActionOptions = {
   title: "Forget this browser's key?",
-  body: `This deletes the key from this device. It does not revoke it: the key stays valid on chain until it expires, and a wallet key never expires (use "Revoke on chain" or "Disable key on chain" for that). You will need your identity file, recovery phrase or wallet to sign in here again. ${FORGET_DELETES}`,
+  body: `This deletes the key from this device but doesn't revoke it. It stays valid until it expires, and a wallet key never does: use "Revoke on chain" for that. ${FORGET_DELETES}`,
   confirmLabel: 'Forget key',
 }
 
@@ -111,8 +111,7 @@ export function KeysPanel(): JSX.Element {
         <div className="space-y-2">
           <UnlimitedKeyWarning unbounded={unboundedKey} />
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            Platform cannot add limits to a key that was registered without them. Replace it with a limited key (your identity file or recovery phrase,
-            once: the wallet keys this browser holds are disabled in the same update), or disable it on chain.
+            Limits can&apos;t be added to this key. Replace it with a limited key using your identity file or recovery phrase, or disable it.
           </p>
         </div>
       ) : null}
@@ -167,8 +166,7 @@ export function KeysPanel(): JSX.Element {
       </div>
       {pasted ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-          Importing your identity file or recovery phrase gives this browser its own key, limited to Forge, a budget and an expiry. The pasted key
-          is left as it is: Forge did not register it, so it does not renew or revoke it.
+          Import your identity file or recovery phrase to give this browser its own limited key. Forge doesn&apos;t renew or revoke the pasted key.
         </p>
       ) : (
         <>

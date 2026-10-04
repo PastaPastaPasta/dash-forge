@@ -203,7 +203,7 @@ function checkUrl(field: string, value: string, use: UrlUse, opts: { originOnly?
   } catch {
     return `${field} is not a URL`
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') return `${field} must be an http(s) URL`
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return `${field} must be an http or https URL`
   if (url.username || url.password) return `${field} must not carry a user name or password`
   if (url.search || url.hash) return `${field} must not carry a query or fragment`
   if (opts.originOnly && url.pathname !== '/' && url.pathname !== '') return `${field} must be an origin (scheme://host[:port]) with no path`
@@ -298,7 +298,7 @@ export function publishProblem(p: StorageProfile): string | null {
   } catch {
     /* keep the raw value */
   }
-  return `${host} is only reachable from this machine or its network, so other people cannot read what is stored there. The public address is recorded on chain for everyone: use a public https URL (a bucket domain, a CDN, or a tunnel).`
+  return `${host} is only reachable from your own network, so other people can't read from it. Use a public https URL, such as a bucket domain, a CDN or a tunnel.`
 }
 
 /** The key prefix normalized: '' or ending in exactly one `/` (parity with forge-core). */

@@ -268,13 +268,13 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
         ) : isPublic && identity !== null ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Only maintainers can add or remove webhooks.</p>
         ) : null}
-        {hooks.length > 0 ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{plural(hooks.length, 'webhook')} · the newest document of each hook is the one a relay follows.</p> : null}
+        {hooks.length > 0 ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{plural(hooks.length, 'webhook')}</p> : null}
       </div>
       <ConfirmDialog
         open={adding}
         onClose={() => setAdding(false)}
         title="Add a webhook"
-        description={`Writes a webhook document: ${pending?.url ?? ''} for ${pending === null || pending.events.length === 0 ? 'every event' : pending.events.join(', ')}, delivered by ${pending?.relay.slice(0, 8) ?? ''}…. The URL and events are public; the secret is encrypted to the relay.`}
+        description={`Sends ${pending === null || pending.events.length === 0 ? 'every event' : pending.events.join(', ')} to ${pending?.url ?? ''} through relay ${pending?.relay.slice(0, 8) ?? ''}…. The URL and events are public. The secret is encrypted to the relay.`}
         cost={cost}
         confirmLabel="Sign & add"
         onConfirm={add}

@@ -579,7 +579,7 @@ function ComposeIssueDialog({
                 : labelDefs.error !== null
                   ? `The repository's labels could not be read, so this template's labels (${template.labels.join(', ')}) are not applied.`
                   : labelsToApply.length > 0
-                    ? `The labels ${labelsToApply.join(', ')} are applied with the issue: one more document each.`
+                    ? `The labels ${labelsToApply.join(', ')} are applied with the issue, each for a small extra fee.`
                     : `This template's labels (${template.labels.join(', ')}) are not defined in this repository, so none is applied.`
               : `This template suggests the labels ${template.labels.join(', ')}. Labels are applied after the issue is opened, by ${whoCan('canLabel', 'one')}.`}
           </p>

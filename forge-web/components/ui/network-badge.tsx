@@ -10,7 +10,7 @@
  */
 
 import { AlertTriangle } from 'lucide-react'
-import { ACTIVE_NETWORK, NotDeployedError, type NetworkConfig } from '@/lib/constants'
+import { ACTIVE_NETWORK, NotDeployedError, networkName, type NetworkConfig } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
 /** Whether Dash Forge (the forge-v2 contracts) is deployed on the network. */
@@ -41,12 +41,9 @@ export function NetworkBadge({
   if (config.network === 'mainnet' && !always) return null
   const deployed = isForgeDeployed(config)
   const devnet = config.network === 'devnet'
-  const where = devnet
-    ? `Connected to devnet ${config.devnetName ?? ''}, a development network that can be reset at any time; its funds are test funds only.`
-    : `Connected to ${config.key}.`
-  const title = deployed
-    ? `${where} forge-core ${config.v2?.core}, forge-collab ${config.v2?.collab}, forge-community ${config.v2?.community}.`
-    : `${where} Dash Forge is not deployed on this network.`
+  // Contract ids live on a repo's Settings → Platform details, not in the header.
+  const where = devnet ? `${networkName(config)}: a test network. Its DASH is free and it can be reset.` : `Connected to ${config.key}.`
+  const title = deployed ? where : `${where} Dash Forge isn't available here yet.`
   return (
     <span
       title={title}
@@ -85,9 +82,7 @@ export function NotDeployedState({ config = ACTIVE_NETWORK }: { config?: Network
         <AlertTriangle className="h-5 w-5" aria-hidden />
       </span>
       <h3 className="text-prose text-anvil-900 dark:text-anvil-50">
-        {mainnet
-          ? "Dash Forge isn't on mainnet yet (waiting for Platform v14)."
-          : `Dash Forge isn't deployed on ${config.key} yet.`}
+        {mainnet ? "Dash Forge isn't on mainnet yet." : `${new NotDeployedError(config.key).message}.`}
       </h3>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
         {mainnet ? (
@@ -97,7 +92,7 @@ export function NotDeployedState({ config = ACTIVE_NETWORK }: { config?: Network
             </a>
           </>
         ) : (
-          <>{new NotDeployedError(config.key).message}. Nothing here is read from another network.</>
+          <>Nothing here is read from another network.</>
         )}
       </p>
     </div>

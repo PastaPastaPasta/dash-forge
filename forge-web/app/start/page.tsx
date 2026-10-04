@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button'
 import { faucetUrl } from '@/components/top-up-sheet'
 import { useAuth } from '@/contexts/auth-context'
 import { BROWSER_KEY_DEFAULTS } from '@/lib/auth'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
@@ -52,17 +52,15 @@ export default function GettingStartedPage(): JSX.Element {
         <div>
           <h1 className="text-2xl">Getting started</h1>
           <p className="mt-2 text-prose text-anvil-600 dark:text-anvil-300">
-            Dash Forge hosts git repositories, issues, pull requests and releases, much like GitHub. The difference: there is no company server.
-            Everything lives on Dash Platform, a public network, and in storage the repository owner chooses, and your browser checks what it
-            shows against the network&apos;s proofs.
+            Dash Forge hosts git repositories, issues, pull requests and releases, much like GitHub, but with no company server. Everything
+            lives on Dash Platform and in storage the owner chooses. Your browser verifies what it shows.
           </p>
         </div>
 
         <Section icon={<UserRound className="h-4 w-4 text-forge-500" aria-hidden />} title="Your identity is your account">
           <p>
-            Instead of a username and a password you have a <strong>Dash Platform identity</strong>, made from <strong>12 recovery words</strong>.
-            Write them down and keep them offline: they are the identity, and nobody (not Forge, not anyone) can reset them for you. A readable
-            name is optional (a DPNS username).
+            Instead of a username and password, you have a <strong>Dash Platform identity</strong> made from a <strong>12-word recovery phrase</strong>.
+            Keep it offline. Nobody can reset it for you. You can add a username later.
           </p>
           <p>
             Make one in the browser (<strong>Sign in → Create a new identity</strong>) or in a terminal with <code className="font-mono">dg auth new</code>. Browsing and cloning need no identity at all.
@@ -71,14 +69,14 @@ export default function GettingStartedPage(): JSX.Element {
 
         <Section icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />} title="Writes cost a little; reading is free">
           <p>
-            Every write (a repository, an issue, a comment, a push) is stored on Dash Platform and pays a small fee from your identity&apos;s{' '}
-            <strong>credits</strong>: about {creditsAsDash(typicalIssueCredits())} DASH for an issue, and {pushCostPhrase()}. Each
-            write shows its price before you confirm, and Settings → Spend keeps the record.
+            Every write (a repo, an issue, a comment, a push) is stored on Dash Platform for a small fee from your identity&apos;s{' '}
+            <strong>balance</strong>: about {creditsAsDash(typicalIssueCredits())} DASH for an issue, and {pushCostPhrase()}. You see the
+            price before you confirm.
           </p>
           <p>You add credits by sending DASH to your identity: a new identity is funded when it is made, and Settings → Top up adds more later.</p>
           {devnet ? (
             <p className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-caution-800 dark:text-caution-300" data-testid="start-devnet">
-              This site runs on <strong>{ACTIVE_NETWORK.key}</strong>, a test network. Its DASH is free test money with no value
+              This site runs on <strong>{networkName()}</strong>, a test network. Its DASH is free test money with no value
               {faucet ? (
                 <>
                   , from the <Guide href={faucet}>faucet</Guide>
@@ -91,9 +89,8 @@ export default function GettingStartedPage(): JSX.Element {
 
         <Section icon={<KeyRound className="h-4 w-4 text-forge-500" aria-hidden />} title="Signing in gives this browser a limited key">
           <p>
-            Your identity&apos;s master key is used once, to give this browser its own key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH,
-            only on Forge, for {BROWSER_KEY_DEFAULTS.days} days. It is kept encrypted with a passkey or a passphrase; the master key and the 12
-            words are never stored.
+            Your master key is used once, to give this browser a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on
+            Forge, for {BROWSER_KEY_DEFAULTS.days} days. A passkey or passphrase protects it. The master key and recovery phrase are never stored.
           </p>
         </Section>
 
