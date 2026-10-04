@@ -1521,11 +1521,15 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let mut view = collab.patch_view(handle, p).await?;
     // The description as readers show it (a long body's full text, forge-v2.md §6.3): the
     // issues it closes and a squash commit's message come from all of it, never its trailer.
-    view.patch.body = collab
-        .read_long_body(handle, &view.patch.body)
-        .await
-        .text()
-        .to_string();
+    // When only its first part can be read, the merge goes on with that part, and says so.
+    let read = collab.read_long_body(handle, &view.patch.body).await;
+    if let Some(why) = read.incomplete() {
+        eprintln!(
+            "warning: only the first part of the description could be read ({why}): the issues \
+             it closes and a squash commit's message come from that part only"
+        );
+    }
+    view.patch.body = read.text().to_string();
     if view.state.merged {
         ctx.emit(
             json!({ "status": "already_merged", "pr": number, "merged": true }),
