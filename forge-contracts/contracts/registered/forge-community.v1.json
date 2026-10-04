@@ -106,44 +106,6 @@
             "maxBytes": 300
           },
           "position": 6
-        },
-        "keyProofs": {
-          "type": "array",
-          "maxItems": 4,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512,
-            "pattern": "^[A-Za-z0-9+/]+={0,2}$"
-          },
-          "position": 7
-        },
-        "bot": {
-          "type": "object",
-          "properties": {
-            "operator": {
-              "type": "array",
-              "byteArray": true,
-              "minItems": 32,
-              "maxItems": 32,
-              "contentMediaType": "application/x.dash.dpp.identifier",
-              "position": 0
-            },
-            "operates": {
-              "type": "array",
-              "maxItems": 8,
-              "items": {
-                "type": "array",
-                "byteArray": true,
-                "minItems": 32,
-                "maxItems": 32,
-                "contentMediaType": "application/x.dash.dpp.identifier"
-              },
-              "position": 1
-            }
-          },
-          "additionalProperties": false,
-          "position": 8
         }
       },
       "indices": [
@@ -1110,10 +1072,6 @@
             }
           },
           "position": 6
-        },
-        "requireCodeOwners": {
-          "type": "boolean",
-          "position": 7
         }
       },
       "indices": [
@@ -1586,8 +1544,7 @@
             12,
             13,
             14,
-            16,
-            8
+            16
           ],
           "position": 3
         },
@@ -1602,13 +1559,6 @@
         "oid": {
           "$ref": "#/$defs/oid",
           "position": 5
-        },
-        "value": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 120,
-          "maxBytes": 480,
-          "position": 6
         }
       },
       "indices": [

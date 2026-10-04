@@ -932,6 +932,14 @@
         "vis": {
           "$ref": "#/$defs/vis",
           "position": 7
+        },
+        "movedTo": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 8
         }
       },
       "indices": [
@@ -1530,6 +1538,10 @@
           "minimum": -1,
           "maximum": 1,
           "position": 11
+        },
+        "targetOid": {
+          "$ref": "#/$defs/oid",
+          "position": 12
         }
       },
       "indices": [
@@ -1916,6 +1928,82 @@
       "required": [
         "$createdAt",
         "repoId"
+      ],
+      "additionalProperties": false
+    },
+    "packMirror": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": true,
+      "properties": {
+        "repoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "documentType": "repo"
+          },
+          "position": 0
+        },
+        "packHash": {
+          "$ref": "#/$defs/hid",
+          "position": 1
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255,
+          "position": 2
+        },
+        "uris": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "position": 3
+        }
+      },
+      "indices": [
+        {
+          "name": "byHash",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "packHash": "asc"
+            },
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "byOwner",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "packHash",
+        "kind",
+        "uris"
       ],
       "additionalProperties": false
     }

@@ -738,6 +738,81 @@ else:
     no('ROLES', 'no role property', 'writer', 'additionalProperties', role=1)
     no('ROLES', 'no r property', 'transition', 'additionalProperties', r=1)
 
+# ---------------- UPDATE-1 (roadmap D4; design/v5/CONTRACT-UPDATE-1.md) ----------------
+# Optional properties and new types only: no rule reads them, so only their shapes refuse. What a
+# reader makes of them (a moved tag, a stranger's mirror, a ban from an ex-maintainer) is a reader
+# rule. References (packMirror.repoId, ban's maintainer gate) are judged on chain (rc1-live.mjs
+# group update1).
+if F['release_target_oid']:
+    ok('U1', 'a release naming its commit (20 B)', 'release', targetOid=b(1, 20))
+    ok('U1', 'a release naming its commit (32 B)', 'release', targetOid=b(1, 32))
+    ok('U1', 'a release without targetOid (an installed client)', 'release')
+    no('U1', 'a release targetOid of 19 bytes', 'release', 'minItems', targetOid=b(1, 19))
+else:
+    no('U1', 'no release targetOid property', 'release', 'additionalProperties', targetOid=b(1, 20))
+if F['config_moved_to']:
+    ok('U1', 'a config naming its successor repo', 'config', movedTo=i(9))
+    no('U1', 'a movedTo of 31 bytes', 'config', 'minItems', movedTo=b(9, 31))
+else:
+    no('U1', 'no config movedTo property', 'config', 'additionalProperties', movedTo=i(9))
+CONTRACT_OF.update(packMirror='forge-core', ban='forge-collab')
+if F['pack_mirror']:
+    BASE['packMirror'] = {"repoId": i(1), "packHash": i(4), "kind": 1, "uris": ["https://mirror.example.com/p/abc.pack"]}
+    ok('base', 'packMirror ok', 'packMirror')
+    ok('U1', 'a stranger records an ipfs copy', 'packMirror', signer=9, kind=2, uris=['ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'])
+    ok('U1', 'four uris', 'packMirror', uris=[f'https://m{n}.example.com/p' for n in range(4)])
+    no('U1', 'a mirror with no uri', 'packMirror', 'minItems', uris=[])
+    no('U1', 'five uris', 'packMirror', 'maxItems', uris=[f'https://m{n}.example.com/p' for n in range(5)])
+    no('U1', 'a mirror of kind 0', 'packMirror', 'minimum', kind=0)
+    no('U1', 'a mirror without a kind', 'packMirror', 'required', kind=DROP)
+    no('U1', 'a mirror uri over 300 characters', 'packMirror', 'maxLength', uris=['https://m.example.com/' + 'p' * 290])
+    index('U1', 'mirrors of one pack, one per writer', 'packMirror', 'byHash', True,
+          properties=['repoId', 'packHash', '$ownerId'], unique=True)
+    index('U1', 'what one mirror recorded', 'packMirror', 'byOwner', True, properties=['$ownerId', '$createdAt'])
+else:
+    index('U1', 'no packMirror type', 'packMirror', None, False)
+if F['transition_closed_by_pr']:
+    ok('U1', 'an issue closed by PR #12', 'transition', closedByPr=12)
+    no('U1', 'closedByPr 0', 'transition', 'minimum', closedByPr=0)
+else:
+    no('U1', 'no closedByPr property', 'transition', 'additionalProperties', closedByPr=12)
+KEY_PROOF = 'U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTk='
+if F['profile_key_proofs']:
+    ok('U1', 'a profile with a key and its proof', 'profile', pubkeys=['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA a@b'], keyProofs=[KEY_PROOF])
+    no('U1', 'five key proofs', 'profile', 'maxItems', keyProofs=[KEY_PROOF] * 5)
+    no('U1', 'a key proof that is not base64', 'profile', 'pattern', keyProofs=['-----BEGIN SSH SIGNATURE-----'])
+    no('U1', 'a key proof over 512 characters', 'profile', 'maxLength', keyProofs=['A' * 516])
+else:
+    no('U1', 'no keyProofs property', 'profile', 'additionalProperties', keyProofs=[KEY_PROOF])
+if F['profile_bot']:
+    ok('U1', 'a bot names its operator', 'profile', bot={"operator": i(9)})
+    ok('U1', 'an operator lists its bots', 'profile', bot={"operates": [i(10), i(11)]})
+    no('U1', 'a bot field outside the shape', 'profile', 'additionalProperties', bot={"operator": i(9), "name": "x"})
+    no('U1', 'an operator of nine bots', 'profile', 'maxItems', bot={"operates": [i(10)] * 9})
+else:
+    no('U1', 'no bot property', 'profile', 'additionalProperties', bot={"operator": i(9)})
+if F['author_retarget']:
+    ok('U1', 'the author retargets its PR (kind 8)', 'authorEvent', kind=8, refId=DROP, value='refs/heads/dev')
+    ok('U1', 'an author kind 8 without a value (readers ignore it)', 'authorEvent', kind=8, refId=DROP)
+    no('U1', 'an author kind 9', 'authorEvent', 'enum', kind=9, refId=DROP)
+    no('U1', 'a value over 120 characters', 'authorEvent', 'maxLength', kind=8, refId=DROP, value='x' * 121)
+else:
+    no('U1', 'no author kind 8', 'authorEvent', 'enum', kind=8, refId=DROP)
+if F['policy_code_owners']:
+    ok('U1', 'a policy requiring code owners', 'policy', requireCodeOwners=True)
+else:
+    no('U1', 'no requireCodeOwners property', 'policy', 'additionalProperties', requireCodeOwners=True)
+if F['repo_ban']:
+    BASE['ban'] = {"repoId": i(1), "identityId": i(9), "reason": 1}
+    ok('base', 'ban ok', 'ban')
+    ok('U1', 'a ban without a reason', 'ban', reason=DROP)
+    no('U1', 'a ban without an identity', 'ban', 'required', identityId=DROP)
+    no('U1', 'a ban reason over 255', 'ban', 'maximum', reason=256)
+    index('U1', 'every ban of a repo, one per maintainer and identity', 'ban', 'byRepo', True,
+          properties=['repoId', 'identityId', '$ownerId'], unique=True)
+else:
+    index('U1', 'no ban type', 'ban', None, False)
+
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
              ('transition', 'c3_mergedAfter'), ('transition', 'c4_draftAfter'), ('transition', 'c5_draftClosedAfter'),

@@ -3787,5 +3787,280 @@
    "kind": 30,
    "r": 2
   }
+ },
+ {
+  "item": "U1",
+  "name": "a profile with a key and its proof",
+  "type": "profile",
+  "expect": "ok",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "https://a.dev",
+    "https://github.com/al"
+   ],
+   "pubkeys": [
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA a@b"
+   ],
+   "keyProofs": [
+    "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTk="
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "five key proofs",
+  "type": "profile",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "https://a.dev",
+    "https://github.com/al"
+   ],
+   "keyProofs": [
+    "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTk=",
+    "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTk=",
+    "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTk=",
+    "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTk=",
+    "U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTk="
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a key proof that is not base64",
+  "type": "profile",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "https://a.dev",
+    "https://github.com/al"
+   ],
+   "keyProofs": [
+    "-----BEGIN SSH SIGNATURE-----"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a key proof over 512 characters",
+  "type": "profile",
+  "expect": "refused",
+  "why": "maxLength",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "https://a.dev",
+    "https://github.com/al"
+   ],
+   "keyProofs": [
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a bot names its operator",
+  "type": "profile",
+  "expect": "ok",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "https://a.dev",
+    "https://github.com/al"
+   ],
+   "bot": {
+    "operator": {
+     "$id": 9
+    }
+   }
+  }
+ },
+ {
+  "item": "U1",
+  "name": "an operator lists its bots",
+  "type": "profile",
+  "expect": "ok",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "https://a.dev",
+    "https://github.com/al"
+   ],
+   "bot": {
+    "operates": [
+     {
+      "$id": 10
+     },
+     {
+      "$id": 11
+     }
+    ]
+   }
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a bot field outside the shape",
+  "type": "profile",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "https://a.dev",
+    "https://github.com/al"
+   ],
+   "bot": {
+    "operator": {
+     "$id": 9
+    },
+    "name": "x"
+   }
+  }
+ },
+ {
+  "item": "U1",
+  "name": "an operator of nine bots",
+  "type": "profile",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "https://a.dev",
+    "https://github.com/al"
+   ],
+   "bot": {
+    "operates": [
+     {
+      "$id": 10
+     },
+     {
+      "$id": 10
+     },
+     {
+      "$id": 10
+     },
+     {
+      "$id": 10
+     },
+     {
+      "$id": 10
+     },
+     {
+      "$id": 10
+     },
+     {
+      "$id": 10
+     },
+     {
+      "$id": 10
+     },
+     {
+      "$id": 10
+     }
+    ]
+   }
+  }
+ },
+ {
+  "item": "U1",
+  "name": "the author retargets its PR (kind 8)",
+  "type": "authorEvent",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 8,
+   "value": "refs/heads/dev"
+  }
+ },
+ {
+  "item": "U1",
+  "name": "an author kind 8 without a value (readers ignore it)",
+  "type": "authorEvent",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 8
+  }
+ },
+ {
+  "item": "U1",
+  "name": "an author kind 9",
+  "type": "authorEvent",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 9
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a value over 120 characters",
+  "type": "authorEvent",
+  "expect": "refused",
+  "why": "maxLength",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 8,
+   "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a policy requiring code owners",
+  "type": "policy",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 15,
+   "requiredChecks": [
+    "build",
+    "lint"
+   ],
+   "requiredCheckSources": [
+    {
+     "$id": 12
+    },
+    {
+     "$id": 7
+    }
+   ],
+   "requireCodeOwners": true
+  }
  }
 ]

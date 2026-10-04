@@ -28,8 +28,8 @@ pub enum ForgeContract {
     Community,
 }
 
-/// forge-core's document types (RC1).
-pub const CORE_TYPES: [&str; 12] = [
+/// forge-core's document types (RC1; `packMirror` added by UPDATE-1).
+pub const CORE_TYPES: [&str; 13] = [
     "repo",
     "maintainer",
     "writer",
@@ -42,16 +42,18 @@ pub const CORE_TYPES: [&str; 12] = [
     "release",
     "label",
     "topic",
+    "packMirror",
 ];
 
-/// forge-collab's document types (RC1; `repoKey` moved in from core).
-pub const COLLAB_TYPES: [&str; 6] = [
+/// forge-collab's document types (RC1; `repoKey` moved in from core; `ban` added by UPDATE-1).
+pub const COLLAB_TYPES: [&str; 7] = [
     "issue",
     "patch",
     "transition",
     "comment",
     "review",
     "repoKey",
+    "ban",
 ];
 
 /// forge-community's document types (RC1; `event`, `authorEvent`, `milestone` and `runner`
