@@ -9,6 +9,7 @@
  */
 
 import { REPO_URL } from './build-info'
+import { GITHUB_API } from './mirror/wizard'
 import { BASE_PATH } from './short-url'
 
 export type BuildCheck = 'published' | 'unpublished' | 'unknown'
@@ -40,7 +41,7 @@ export async function checkBuild(root: string, fetchImpl: typeof fetch = fetch):
   }
   try {
     const digest = hex(await crypto.subtle.digest('SHA-256', manifest))
-    const res = await fetchImpl(`https://api.github.com/repos/${REPO}/attestations/sha256:${digest}`, { headers: { Accept: 'application/vnd.github+json' } })
+    const res = await fetchImpl(`${GITHUB_API}/repos/${REPO}/attestations/sha256:${digest}`, { headers: { Accept: 'application/vnd.github+json' } })
     if (res.status === 404) return 'unpublished'
     if (!res.ok) return 'unknown'
     const body = (await res.json()) as { attestations?: unknown[] }
@@ -52,8 +53,11 @@ export async function checkBuild(root: string, fetchImpl: typeof fetch = fetch):
 
 let once: Promise<BuildCheck> | null = null
 
-/** {@link checkBuild} of the page's own build, once per page load. */
+/** {@link checkBuild} of the page's own build, once per page load; asked again after an `unknown`. */
 export function checkThisBuild(): Promise<BuildCheck> {
-  once ??= checkBuild(siteRoot(document, location))
-  return once
+  const run = (once ??= checkBuild(siteRoot(document, location)))
+  void run.then((r) => {
+    if (r === 'unknown' && once === run) once = null
+  })
+  return run
 }

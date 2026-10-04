@@ -22,8 +22,8 @@ use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
+use forge_core::backends::sigv4::sha256_hex;
 use forge_core::user_error::{codes, UserError};
 
 use crate::context::Ctx;
@@ -76,6 +76,10 @@ pub struct VerifyAppArgs {
     /// `dg release download`.
     #[arg(long, value_name = "FILE|URL")]
     pub manifest: Option<String>,
+    /// Also require the build to be this commit (7 characters or more): otherwise any build
+    /// this repository ever published passes, an older one included.
+    #[arg(long, value_name = "SHA")]
+    pub commit: Option<String>,
 }
 
 /// The site's root URL with a trailing slash, so file paths join under it.
@@ -125,13 +129,12 @@ pub fn file_url(root: &reqwest::Url, path: &str) -> Result<reqwest::Url> {
         .with_context(|| format!("joining {path} to {root}"))
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
 async fn get(client: &reqwest::Client, url: reqwest::Url) -> Result<Option<Vec<u8>>> {
+    // Asked as a browser asks: a host or CDN that rewrites pages only for browsers (an injected
+    // script) must not serve this check something else.
     let resp = client
         .get(url.clone())
+        .header("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
         .send()
         .await
         .with_context(|| format!("fetching {url}"))?;
@@ -309,7 +312,7 @@ async fn fetch_all(
     }
     if let Some(first) = failures.first() {
         return Err(
-            UserError::new(codes::UNREACHABLE, "could not fetch the site's files")
+            UserError::new(codes::INTEGRITY, "could not fetch the site's files")
                 .cause(format!(
                     "{} of {} failed; first: {first}",
                     failures.len(),
@@ -326,13 +329,26 @@ async fn fetch_all(
 pub async fn run(ctx: &Ctx, args: &VerifyAppArgs) -> Result<()> {
     let root = site_root(&args.url)?;
     let client = reqwest::Client::builder()
-        .user_agent(concat!("dg/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!(
+            "Mozilla/5.0 (compatible; dg-verify-app/",
+            env!("CARGO_PKG_VERSION"),
+            ")"
+        ))
         .timeout(std::time::Duration::from_secs(60))
         .build()?;
     let manifest_url = file_url(&root, MANIFEST_NAME)?;
     let served_bytes = get(&client, manifest_url.clone()).await?;
     let (trusted, source) =
         trusted_manifest(&client, args, served_bytes.as_deref(), &manifest_url).await?;
+    if let Some(want) = args.commit.as_deref() {
+        let got = trusted.commit.as_deref().unwrap_or("");
+        if want.len() < 7 || !got.starts_with(&want.to_ascii_lowercase()) {
+            return Err(UserError::new(codes::INTEGRITY, "the site serves another build")
+                .cause(format!("it is commit {}, not {want}", if got.is_empty() { "unknown" } else { got }))
+                .fix("an older published build can still have bugs fixed since; pass at least 7 characters of the commit you expect")
+                .into());
+        }
+    }
     let result = compare(&trusted, fetch_all(&client, &root, &trusted).await?);
     // With --manifest, the site's own manifest should agree with it too.
     let manifest_agrees = served_bytes
@@ -343,7 +359,11 @@ pub async fn run(ctx: &Ctx, args: &VerifyAppArgs) -> Result<()> {
     let body = json!({
         "url": root.as_str(),
         "manifest": {
-            "source": if args.manifest.is_some() { "file" } else { "attestation" },
+            "source": match args.manifest.as_deref() {
+                None => "attestation",
+                Some(m) if m.starts_with("https://") || m.starts_with("http://") => "url",
+                Some(_) => "file",
+            },
             "commit": trusted.commit,
             "network": trusted.network,
             "variant": trusted.variant,

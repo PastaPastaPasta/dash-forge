@@ -339,4 +339,11 @@ jobs:
         env:
           # GitHub's attestation lookup, past the shared runners' anonymous rate limit.
           GITHUB_TOKEN: ${{ github.token }}
-        run: target/debug/dg verify-app https://forge.dashhq.org
+        # Once more after 5 minutes: right after a deploy the CDN can serve old and new files
+        # side by side.
+        run: |
+          target/debug/dg verify-app https://forge.dashhq.org || {
+            echo "::warning::verify-app failed; retrying in 5 minutes in case a deploy was propagating"
+            sleep 300
+            target/debug/dg verify-app https://forge.dashhq.org
+          }

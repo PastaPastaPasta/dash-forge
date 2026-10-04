@@ -25,8 +25,6 @@ serde = { workspace = true }
 serde_json.workspace = true
 toml = "0.8"
 hex = "0.4"
-# `dg verify-app` hashes every file a deployed web app serves.
-sha2 = "0.10"
 # `dg auth new` shows the deposit address as a terminal QR code (text renderer only).
 qrcode = { version = "0.14", default-features = false }
 zeroize = "1"

@@ -25,12 +25,10 @@ on:
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
+# Per job (below): the build runs third-party npm code, so it gets no token that can deploy or
+# attest.
 permissions:
   contents: read
-  pages: write
-  id-token: write
-  # The build manifest's provenance attestation (below).
-  attestations: write
 
 concurrency:
   group: pages
@@ -63,13 +61,13 @@ jobs:
           FORGE_BUILD_COMMIT: ${{ github.sha }}
         run: pnpm build
       # `pnpm build` wrote out/forge-manifest.json: every file of this build with its SHA-256
-      # (the previous builds' chunks merged in below are not in it). The attestation is what
-      # `dg verify-app` and the app's own check look up: a manifest GitHub never attested is
-      # not a build of this repository (docs/guides/verify-the-app.md).
-      - name: Attest the build manifest
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      # (the previous builds' chunks merged in below are not in it). The attest job signs it.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          subject-path: forge-web/out/forge-manifest.json
+          name: forge-manifest
+          path: forge-web/out/forge-manifest.json
+          if-no-files-found: error
+          retention-days: 7
       # Deploy skew: a tab opened before this deploy still runs the previous build and lazily
       # loads that build's chunks (the Platform SDK, the sign-in flows). Those files must stay
       # up or the tab breaks mid-session. So the chunks of the last two builds are merged into
@@ -157,9 +155,32 @@ jobs:
         with:
           path: forge-web/out
 
+  # The build manifest's provenance attestation: what `dg verify-app` and the app's own check
+  # look up (a manifest GitHub never attested is not a build of this repository,
+  # docs/guides/verify-the-app.md). In its own job, which runs no build tooling, and only for
+  # master: a build dispatched from another branch is never attested.
+  attest:
+    needs: build
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Sigstore OIDC token for the attestation
+      attestations: write # store it in this repository
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: forge-manifest
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: forge-manifest.json
+
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
