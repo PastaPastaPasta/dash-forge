@@ -11,6 +11,7 @@
 import { Byline, Time } from '@/components/repo/byline'
 import { importedVerdictOf, searchableBody, trustedOrigin, type Origin } from '@/lib/repo/provenance'
 import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, EyeOff, GitBranch, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { STATE_TEXT } from '@/lib/design/state'
 import type { CommentView, TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
@@ -55,13 +56,15 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
   switch (kind) {
     // A padlock means the conversation was locked, never a state change (QW2-045).
     case 'close':
-      return { text: 'closed this', icon: <CheckCircle2 className={CLOSED_ICON} aria-hidden /> }
+      // An event of the old shape, from an issue or a PR alike: no state colour, which would claim
+      // "completed" (or "merged") for a pull request closed unmerged.
+      return { text: 'closed this', icon: <CheckCircle2 className={muted} aria-hidden /> }
     case 'reopen':
       return { text: 'reopened this', icon: <CircleDot className={OPEN_ICON} aria-hidden /> }
     case 'merge':
       // The event records a claim; whether the PR folds as merged depends on who signed it
       // and whether the oid reached the base branch, so say what the event is.
-      return { text: 'marked this as merged', icon: <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden /> }
+      return { text: 'marked this as merged', icon: <GitMerge className={DONE_ICON} aria-hidden /> }
     case 'labelAdd':
       return { text: `added the ${value ?? ''} label`, icon: <Tag className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> }
     case 'labelRemove':
@@ -140,10 +143,11 @@ export function bypassPhrase(value: string | null | undefined, ofMerge: boolean)
   return ofMerge ? `merged by bypassing the branch rules${rules}` : `recorded a branch-rules bypass${rules} naming a commit this PR was not merged at`
 }
 
-/** Open and closed, in the colours of the issue and PR state badges. */
-const OPEN_ICON = 'h-3.5 w-3.5 text-verify-700 dark:text-verify-400'
-const CLOSED_ICON = 'h-3.5 w-3.5 text-forge-700 dark:text-forge-400'
-const PR_CLOSED_ICON = 'h-3.5 w-3.5 text-danger-700 dark:text-danger-400'
+/** Open, closed and merged, in the colours of the issue and PR state badges. */
+const OPEN_ICON = `h-3.5 w-3.5 ${STATE_TEXT.open}`
+const DONE_ICON = `h-3.5 w-3.5 ${STATE_TEXT.done}`
+const PR_CLOSED_ICON = `h-3.5 w-3.5 ${STATE_TEXT.closed}`
+const SKIPPED_ICON = `h-3.5 w-3.5 ${STATE_TEXT.skipped}`
 
 /**
  * The icon of a state change, as GitHub draws them (QW2-045): an issue closes with a check circle
@@ -154,9 +158,9 @@ export function transitionIcon(kind: number): JSX.Element {
   const muted = 'h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400'
   switch (kind) {
     case PR_MERGE:
-      return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
+      return <GitMerge className={DONE_ICON} aria-hidden />
     case ISSUE_CLOSE:
-      return <CheckCircle2 className={CLOSED_ICON} aria-hidden data-icon="closed" />
+      return <CheckCircle2 className={DONE_ICON} aria-hidden data-icon="closed" />
     case ISSUE_REOPEN:
       return <CircleDot className={OPEN_ICON} aria-hidden data-icon="reopened" />
     case PR_CLOSE:
@@ -268,7 +272,7 @@ type ExtraRow =
 function crossRefIcon(state: CrossRefItem['state']): JSX.Element {
   switch (state) {
     case 'merged':
-      return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
+      return <GitMerge className={DONE_ICON} aria-hidden />
     case 'closed':
       return <GitPullRequestClosed className={PR_CLOSED_ICON} aria-hidden />
     case 'draft':
@@ -561,7 +565,7 @@ export function Timeline({
       const sourced = imported !== null && d.imported === true && d.actor === imported.signer
       rows.push(
         <div key={`d-${d.id}`} className={EVENT_ROW} data-testid="timeline-event" data-kind="marked-duplicate">
-          <span className={EVENT_ICON}><CircleSlash className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /></span>
+          <span className={EVENT_ICON}><CircleSlash className={SKIPPED_ICON} aria-hidden /></span>
           <p className={EVENT_TEXT}>
             {sourced ? 'Marked' : <><Author identityId={d.actor} link={false} className="align-middle" /> marked</>} <RefLink to={d} /> as a duplicate of this issue
             {sourced ? <> on {imported.origin.host || 'the source'}</> : <span className="whitespace-nowrap"> · {timeAgo(d.at)}</span>}
@@ -720,7 +724,7 @@ export function Timeline({
           const age = source !== null ? <OnSource origin={source} at={t.createdAt} /> : <span className="whitespace-nowrap"> · {timeAgo(t.createdAt)}</span>
           return (
             <div key={`t-${t.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={`transition-${t.kind}`} {...(source !== null ? { 'data-imported': 'true' } : {})}>
-              <span className={EVENT_ICON}>{why?.skipped ? <CircleSlash className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden data-icon="closed-skipped" /> : transitionIcon(t.kind)}</span>
+              <span className={EVENT_ICON}>{why?.skipped ? <CircleSlash className={SKIPPED_ICON} aria-hidden data-icon="closed-skipped" /> : transitionIcon(t.kind)}</span>
               {/* One sentence that wraps as text (QW-070): the age never breaks onto a line of its own. */}
               <p className={EVENT_TEXT}>
                 {source === null ? <><Author identityId={t.actor} link={false} className="align-middle" />{' '}</> : null}
