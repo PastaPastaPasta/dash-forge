@@ -158,7 +158,7 @@ Work:
 
 ### Phase 5 — Daily-driver parity (L) · *gate: a maintainer runs a real project from the web app for a month*
 - [x] Line-level commit/PR diffs, inline review comments, approve/request-changes, re-review on new heads.
-- [x] Real merges from the browser, pushed to the user's bucket, respecting protected refs. Forge has its own merge engine (`forge-web/lib/merge/engine.ts`): fast-forward, a merge commit when the two sides changed different paths, and squash. It never merges file contents, so a PR whose two sides touched the same path is merged with `dg pr merge`. There is no rebase merge yet.
+- [x] Real merges from the browser, pushed to the user's bucket, respecting protected refs. Forge has its own merge engine (`forge-web/lib/merge/engine.ts`): fast-forward, a merge commit, and squash. A file both sides changed is merged line by line with a port of git's xdiff (`merge3.ts`, `xdiff.ts`), byte for byte git's result (proven against `git merge-file` and `git merge-tree` by the parity suites); what git would conflict on, and renames or moved directories, go to `dg pr merge`. There is no rebase merge yet.
 - [x] Open a PR from the browser; forks (`dg repo fork` = a few documents on forge-v2).
 - [x] Releases page with assets in the user's bucket; labels and assignees UI; history pagination, blame; a poll-based notification inbox (local state).
 - [ ] Web editing (CodeMirror → commit → push). *Not started.*
