@@ -115,9 +115,6 @@ export interface TrustInputs {
   readonly gateways?: readonly string[]
 }
 
-/** The rules that fold a repo's refs. */
-const RULES = 'FORGE_RULES_V2'
-
 /**
  * Severity order. `pending` ranks below `verified` so a page that has only read refs so far
  * (nothing to hash yet) reads as verified for what it showed, while any weaker row wins.
@@ -227,7 +224,7 @@ function deriveTip(input: TrustInputs): TipLink {
     return {
       ...tip,
       state: 'unverified',
-      note: `Its proof was checked against the quorum keys that a second source disputes (see Chain data), so it proves nothing. Folded by ${RULES} from that update log.`,
+      note: 'Not verified: a second source disagrees with the quorum keys used to check this proof. See Chain data.',
     }
   }
   // Offline: the tip was proven when it was read, but a newer push may exist.
@@ -254,7 +251,7 @@ function deriveTipNow(input: TrustInputs): TipLink {
       name: shortOid(tip.pinned),
       heads: [],
       state: 'partial',
-      detail: `Commit \`${shortOid(tip.pinned)}\`, opened by its id. Its objects are hash-checked, but no branch or tag was checked to point at it.`,
+      detail: `Commit \`${shortOid(tip.pinned)}\`, opened by its id. Its files are verified, but no branch or tag was checked to point at it.`,
     }
   }
   const heads: readonly RefHead[] =
@@ -281,14 +278,14 @@ function deriveTipNow(input: TrustInputs): TipLink {
       detail: h ? signed(h) : `${shown} has no commit.`,
       note:
         input.connection === 'clock'
-          ? `Folded by ${RULES} from the update log as read earlier; not re-read while this device's clock is off.`
-          : `Folded by ${RULES} from an update log that was read without proofs.`,
+          ? "From the history read earlier. It won't be re-read while this device's clock is off."
+          : 'From history that was read without proofs.',
     }
   }
   const note =
     input.connection === 'offline'
-      ? `Folded by ${RULES} from the proof-checked update log as read earlier in this tab; not re-checked while Platform is unreachable.`
-      : `Folded by ${RULES} from the append-only, proof-checked update log.`
+      ? 'From the history read earlier in this tab. It will be re-checked when Platform is reachable.'
+      : "Built from the repo's update history, checked against Platform proofs."
   if (tip === 'missing') {
     return { ...base, state: 'verified', detail: `No ref named ${shown} exists.`, note }
   }
@@ -338,7 +335,7 @@ function deriveContent(checks: ContentChecks): TrustLink {
 function deriveReadContent(checks: ContentChecks): TrustLink {
   const packs =
     checks.packsVerified > 0
-      ? `${plural(checks.packsVerified, 'pack')} downloaded whole matched the sha256 in ${checks.packsVerified === 1 ? 'its' : 'their'} proof-checked manifest.`
+      ? `${plural(checks.packsVerified, 'pack')} downloaded whole matched ${checks.packsVerified === 1 ? 'its' : 'their'} verified checksum.`
       : undefined
   const failed = checks.objectsFailed + checks.packsFailed
   if (failed > 0) {
@@ -376,7 +373,7 @@ function deriveReadContent(checks: ContentChecks): TrustLink {
 /** A source name as the card says it. */
 function sourceName(source: string): string {
   if (source === 'platform') return 'Dash Platform (permanent)'
-  if (source === 'browser cache') return "this browser's cache (hash-checked when saved)"
+  if (source === 'browser cache') return "this browser's cache (verified when saved)"
   return source
 }
 
