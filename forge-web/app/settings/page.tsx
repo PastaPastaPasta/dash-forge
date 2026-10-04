@@ -24,6 +24,7 @@ import { TrendingPrefPanel } from '@/components/trending-pref-panel'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashValueNote } from '@/lib/view/format'
 import { ACTIVE_NETWORK } from '@/lib/constants'
+import { NOTIFY_URL } from '@/lib/notify/config'
 
 export default function SettingsPage(): JSX.Element {
   const { identity, balance, locked } = useAuth()
@@ -114,6 +115,16 @@ export default function SettingsPage(): JSX.Element {
           </p>
           <Link href="/settings/storage/" className="hit-area mt-2 inline-block text-dense text-forge-700 underline dark:text-forge-400">
             Storage settings →
+          </Link>
+        </section>
+
+        <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+          <h2 className="mb-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">Notifications</h2>
+          <p className="text-dense text-anvil-600 dark:text-anvil-300">
+            The inbox this browser reads from the chain{NOTIFY_URL ? ', and optional email and push from a notification service' : ''}.
+          </p>
+          <Link href="/settings/notifications/" className="hit-area mt-2 inline-block text-dense text-forge-700 underline dark:text-forge-400" data-testid="settings-notifications-link">
+            Notification settings →
           </Link>
         </section>
 
