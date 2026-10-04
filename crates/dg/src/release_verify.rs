@@ -141,7 +141,7 @@ fn print_human(p: &ReleaseProvenance, tag: &str, repo: &str, sig: &LocalSignatur
             println!("  recorded    {} (the release's own record)", short(&b.oid));
         } else {
             println!(
-                "  {} {} pushed by {} at {}",
+                "  {:<11} {} pushed by {} at {}",
                 if p.late_tag {
                     "first push"
                 } else {
