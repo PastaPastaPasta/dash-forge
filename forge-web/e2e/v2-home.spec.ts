@@ -96,7 +96,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expect(card.getByText(new RegExp(`quorums\\.${E2E_DEVNET}\\.networks\\.dash\\.org and .*\\(a DAPI node\\); both agreed on every one of the \\d+ quorums used`))).toBeVisible()
     await expect(card.getByText(/fetched the key list again to compare/)).toBeVisible()
     await expect(card.getByText(/^`?main`? =|main =/).first()).toBeVisible()
-    await expect(card.getByText(/FORGE_RULES_V2/)).toBeVisible()
+    await expect(card.getByText(/checked against Platform proofs/)).toBeVisible()
     await expect(card.getByText(/of [\d,]+ objects? read this session matched their git hash/)).toBeVisible({ timeout: 45_000 })
     await expect(card.getByText(/This app's code comes from/)).toBeVisible()
     await expect(card).toHaveAttribute('data-state', 'verified')

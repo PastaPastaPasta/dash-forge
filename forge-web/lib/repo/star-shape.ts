@@ -8,8 +8,11 @@
  *   index (`byWeek`, `outlivesDelete`, Platform v5), and there is no `starBeat`. Every star then
  *   counts toward Trending; there is no opt-out, and an unstar leaves its window entry.
  *
- * Read from the contract itself (seeded or fetched once), not from a build flag, so a build
- * reads whichever contract the deployment registered.
+ * Read from the contract itself, not from a build flag, so a build reads whichever contract the
+ * deployment registered: from the bundled snapshot when there is one (no request, so a
+ * signed-out page that labels its Star button stays within its request budget), else fetched
+ * once. A contract update cannot change a document type's indexes, so a snapshot's shape stays
+ * right after the network moves on.
  *
  * What a fused star gives up (the owner's C1 trade-off, PLAN.md §2): the Trending opt-out, and
  * RC1's beat rules (O-08: one per identity and repo, ever; public repos of others only) as
@@ -21,9 +24,10 @@
  * (rs-dpp `document_index_only_delete_transition/v0/from_document.rs:33-51`).
  */
 
-import type { EvoSDK } from '@dashevo/evo-sdk'
+import type { DataContract, EvoSDK } from '@dashevo/evo-sdk'
 
 import type { ForgeIds } from '../deployments'
+import { loadContractSnapshots, SNAPSHOT_KEYS, type ContractSnapshots } from '../sdk/contract-seed'
 import { DOC } from './contract'
 
 export type StarShape = 'beat' | 'fused'
@@ -35,7 +39,7 @@ export function starShape(sdk: EvoSDK, forge: ForgeIds): Promise<StarShape> {
   const cached = shapes.get(forge.community)
   if (cached) return cached
   const read = (async (): Promise<StarShape> => {
-    const contract = await sdk.contracts.fetch(forge.community)
+    const contract = (await snapshotContract(forge.community)) ?? (await sdk.contracts.fetch(forge.community))
     if (!contract) throw new Error(`forge-community ${forge.community} was not found`)
     // Fused when the star itself carries a time-window index (C1's `byWeek`), whether or not a
     // `starBeat` type is still declared.
@@ -45,6 +49,21 @@ export function starShape(sdk: EvoSDK, forge: ForgeIds): Promise<StarShape> {
   shapes.set(forge.community, read)
   read.catch(() => shapes.delete(forge.community))
   return read
+}
+
+/** `id` decoded from a bundled contract snapshot (`contract-seed.ts`), or undefined. */
+async function snapshotContract(id: string): Promise<DataContract | undefined> {
+  for (const key of SNAPSHOT_KEYS) {
+    const snapshot = (await loadContractSnapshots(key).catch(() => ({}) as ContractSnapshots))[id]
+    if (snapshot === undefined) continue
+    try {
+      const { DataContract } = await import('@dashevo/evo-sdk')
+      return DataContract.fromBase64(snapshot.bytes, false, snapshot.platformVersion)
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
 }
 
 /** How a star click is priced and labelled. */

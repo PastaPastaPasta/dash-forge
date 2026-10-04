@@ -80,9 +80,9 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expect(page.getByText(/code, issues and pull requests in the shared contracts/i).first()).toBeVisible()
     await expect(page.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     await expect(page.getByText(/\bmain\b/).first()).toBeVisible()
-    // The Verification card attests the ref by FORGE_RULES_V2.
+    // The Verification card says the ref was built from proof-checked history.
     await page.getByRole('button', { name: /verification/i }).click()
-    await expect(page.getByText(/FORGE_RULES_V2/).first()).toBeVisible()
+    await expect(page.getByText(/checked against Platform proofs/).first()).toBeVisible()
     await shot(page, 'v2-02-repo-home')
     expect(errors, errors.join('\n')).toEqual([])
   })

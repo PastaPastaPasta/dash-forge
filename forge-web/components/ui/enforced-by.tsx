@@ -39,7 +39,7 @@ export function EnforcedBy({ by, className }: { by: Enforcer; className?: string
       title={detail}
       data-testid={`enforced-by-${by}`}
       className={cn(
-        'inline-flex w-fit items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium no-underline',
+        'hit-area inline-flex w-fit items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium no-underline',
         'border-anvil-200 bg-anvil-50 text-anvil-700 hover:border-anvil-300 hover:bg-anvil-100',
         'dark:border-anvil-700 dark:bg-anvil-850 dark:text-anvil-200 dark:hover:border-anvil-600 dark:hover:bg-anvil-800',
         className,

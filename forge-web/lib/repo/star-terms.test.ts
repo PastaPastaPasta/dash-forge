@@ -4,9 +4,11 @@
  * have, because the shape was only read once signed in.
  */
 
-import { describe, expect, it } from 'vitest'
+import type { EvoSDK } from '@dashevo/evo-sdk'
+import { beforeAll, describe, expect, it } from 'vitest'
 
-import { starTerms } from './star-shape'
+import { DEPLOYMENTS, forgeV2Ids } from '../deployments'
+import { starShape, starTerms } from './star-shape'
 
 describe('starTerms', () => {
   it('fused: every star counts and there is nothing to turn off', () => {
@@ -39,5 +41,28 @@ describe('starTerms', () => {
     // Signed out, or a repo that takes no beat: nothing promised.
     expect(starTerms(null, true, false)).toEqual({ beats: false, priceBeat: true, trendingNote: '' })
     expect(starTerms(null, false, true)).toEqual({ beats: false, priceBeat: true, trendingNote: '' })
+  })
+})
+
+describe('starShape', () => {
+  beforeAll(async () => {
+    const evo = await import('@dashevo/evo-sdk')
+    await evo.EvoSDK.getLatestVersionNumber()
+  })
+
+  it('reads a bundled snapshot without a request, so a signed-out page stays in budget', async () => {
+    const forge = forgeV2Ids(DEPLOYMENTS['devnet-sakura'])
+    expect(forge).not.toBeNull()
+    let fetched = 0
+    const sdk = {
+      contracts: {
+        fetch: async () => {
+          fetched += 1
+          return undefined
+        },
+      },
+    } as unknown as EvoSDK
+    expect(await starShape(sdk, forge!)).toBe('fused')
+    expect(fetched).toBe(0)
   })
 })
