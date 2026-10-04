@@ -75,8 +75,10 @@ pub const COMMUNITY_TYPES: [&str; 12] = [
 
 /// The listed types a contract build may leave out: RC2's fused star (C1, a `build.py` flag)
 /// drops `starBeat`, whose count the star's own `byWeek` index takes over. Clients read the
-/// shape from the loaded contract (`Collab::fused_star`), so both builds work.
-pub const OPTIONAL_TYPES: [&str; 1] = ["starBeat"];
+/// shape from the loaded contract (`Collab::fused_star`), so both builds work. `packMirror` and
+/// `ban` arrive with UPDATE-1 (an in-place update, roadmap D4): a contract still at its first
+/// version, or one built with those flags off, has neither.
+pub const OPTIONAL_TYPES: [&str; 3] = ["starBeat", "packMirror", "ban"];
 
 impl ForgeContract {
     /// The contract that holds `doc_type`, or `None` for a type RC1 does not define (such as

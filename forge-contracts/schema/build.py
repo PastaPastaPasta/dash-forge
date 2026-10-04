@@ -738,14 +738,17 @@ def build(flags):
         # against packHash, so a mirror can only fail to serve; readers take mirrors only for hashes
         # in the members' pack list, members' first, strangers last and capped (RECUT-B §5). The
         # writer pays, and may delete its own record. `kind` names how `uris` are read (1 https or
-        # a public s3 URL, 2 ipfs://<cid>); readers skip a kind they do not know.
+        # a public s3 URL, 2 ipfs://<cid>); readers skip a kind they do not know. Only https:// and
+        # ipfs:// URIs (no file:, javascript: or credentials in the URL): a pattern can never be
+        # added by a later update.
         pm = {"type": "object", "documentsMutable": False, "canBeDeleted": True,
               "properties": {
                   "repoId": ident(refersTo={"type": "permanentDocument", "documentType": "repo"}, position=0),
                   "packHash": {"$ref": "#/$defs/hid", "position": 1},
                   "kind": {"type": "integer", "minimum": 1, "maximum": 255, "position": 2},
                   "uris": {"type": "array", "minItems": 1, "maxItems": 4,
-                           "items": {"type": "string", "minLength": 1, "maxLength": 300}, "position": 3}},
+                           "items": {"type": "string", "minLength": 1, "maxLength": 300, "pattern": LOG_URL},
+                           "position": 3}},
               "indices": [
                   # The mirrors of one pack (repoId, packHash) and of a whole repo (repoId alone);
                   # unique per writer, so one record per (repo, pack, mirror)
@@ -756,7 +759,8 @@ def build(flags):
               "required": ["$createdAt", "repoId", "packHash", "kind", "uris"], "additionalProperties": False}
         if up['mainnet_mirror_public']:
             pm['properties']['repoId']['refersTo']['where'] = {"visibility": "vis"}
-            pm['properties']['vis'] = {"$ref": "#/$defs/vis", "position": 4}
+            # public-only, as on topic and starBeat: the where proves it equals the repo's
+            pm['properties']['vis'] = {"type": "string", "enum": ["public"], "maxLength": 6, "position": 4}
             pm['required'].append('vis')
         cd['packMirror'] = pm
     if up['transition_closed_by_pr']:
@@ -768,9 +772,11 @@ def build(flags):
         # keyProofs[i] proves possession of pubkeys[i]: base64 of an SSH signature (sshsig, namespace
         # `dash-forge`) or a binary OpenPGP signature over `dash-forge-key:v1:<identity id>:<pubkeys[i]
         # key part>`. Consensus cannot check either; the shared reader rule does, and a proven
-        # listing outranks an unproven one (client-rules #5).
+        # listing outranks an unproven one (client-rules #5). An empty string is "no proof" for that
+        # key. 1,200 characters (900 bytes) holds an RSA-3072 sshsig or an RSA-4096 OpenPGP
+        # signature; four of them stay under max_field_value_size (5,120 B).
         add_prop(md['profile'], 'keyProofs', {"type": "array", "maxItems": 4, "items": {
-            "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z0-9+/]+={0,2}$"}})
+            "type": "string", "minLength": 0, "maxLength": 1200, "pattern": "^[A-Za-z0-9+/]*={0,2}$"}})
     if up['profile_bot']:
         # A bot's profile names its operator; the operator's profile lists the bots it runs. Readers
         # show a "bot" badge only when both sides agree (DX-15): neither claim alone proves anything.

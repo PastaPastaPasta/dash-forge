@@ -493,15 +493,22 @@ async function main() {
       delete rec.pendingUpdate;
       record();
     };
-    if (rec.schemaHash === hash) {
-      log(`${key}: ${rec.contractId} is already at the current schema (version ${chainVersion}); nothing to update`);
-      return { key, ...rec, resumed: true };
-    }
+    // An earlier run's broadcast is settled first, and only for the schema it broadcast: with the
+    // schema edited since, or the chain past the version it named, the record cannot say what is
+    // on chain, so the run stops rather than broadcast another version or mark the wrong one done.
     const pending = rec.pendingUpdate;
-    if (pending && pending.schemaHash === hash && chainVersion >= pending.version) {
-      // An earlier run broadcast this update and it landed; finish the record.
-      complete(pending, BigInt(pending.balanceBefore) - (await balance()), { confirmedAt: new Date().toISOString(), costNote: 'balance delta since the recorded pre-broadcast balance' });
-      log(`${key}: found version ${chainVersion} on chain; record completed`);
+    if (pending) {
+      if (pending.schemaHash !== hash) throw new Error(`${key}: an earlier --update broadcast version ${pending.version} of schema ${pending.schemaHash.slice(0, 12)}…, not the current one; check the chain and settle v2.${key}.pendingUpdate by hand`);
+      if (chainVersion > pending.version) throw new Error(`${key}: the chain is at version ${chainVersion}, past the pending update's ${pending.version}; settle v2.${key}.pendingUpdate by hand`);
+      if (chainVersion === pending.version) {
+        // It landed; finish the record.
+        complete(pending, BigInt(pending.balanceBefore) - (await balance()), { confirmedAt: new Date().toISOString(), costNote: 'balance delta since the recorded pre-broadcast balance' });
+        log(`${key}: found version ${chainVersion} on chain; record completed`);
+        return { key, ...rec, resumed: true };
+      }
+      log(`${key}: the pending update to version ${pending.version} did not land; broadcasting it again`);
+    } else if (rec.schemaHash === hash) {
+      log(`${key}: ${rec.contractId} is already at the current schema (version ${chainVersion}); nothing to update`);
       return { key, ...rec, resumed: true };
     }
     const version = chainVersion + 1;

@@ -766,6 +766,9 @@ if F['pack_mirror']:
     no('U1', 'a mirror of kind 0', 'packMirror', 'minimum', kind=0)
     no('U1', 'a mirror without a kind', 'packMirror', 'required', kind=DROP)
     no('U1', 'a mirror uri over 300 characters', 'packMirror', 'maxLength', uris=['https://m.example.com/' + 'p' * 290])
+    no('U1', 'a file: mirror uri', 'packMirror', 'pattern', uris=['file:///etc/passwd'])
+    no('U1', 'a plain http mirror uri', 'packMirror', 'pattern', uris=['http://169.254.169.254/latest/meta-data'])
+    no('U1', 'a mirror uri with credentials', 'packMirror', 'pattern', uris=['https://user:pw@m.example.com/p'])
     index('U1', 'mirrors of one pack, one per writer', 'packMirror', 'byHash', True,
           properties=['repoId', 'packHash', '$ownerId'], unique=True)
     index('U1', 'what one mirror recorded', 'packMirror', 'byOwner', True, properties=['$ownerId', '$createdAt'])
@@ -781,7 +784,9 @@ if F['profile_key_proofs']:
     ok('U1', 'a profile with a key and its proof', 'profile', pubkeys=['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA a@b'], keyProofs=[KEY_PROOF])
     no('U1', 'five key proofs', 'profile', 'maxItems', keyProofs=[KEY_PROOF] * 5)
     no('U1', 'a key proof that is not base64', 'profile', 'pattern', keyProofs=['-----BEGIN SSH SIGNATURE-----'])
-    no('U1', 'a key proof over 512 characters', 'profile', 'maxLength', keyProofs=['A' * 516])
+    no('U1', 'a key proof over 1,200 characters', 'profile', 'maxLength', keyProofs=['A' * 1204])
+    ok('U1', 'an RSA-4096 OpenPGP-sized key proof (1,200 characters)', 'profile', keyProofs=['A' * 1200])
+    ok('U1', 'no proof for the first key, one for the second (empty string)', 'profile', pubkeys=['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA a@b', 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB c@d'], keyProofs=['', KEY_PROOF])
 else:
     no('U1', 'no keyProofs property', 'profile', 'additionalProperties', keyProofs=[KEY_PROOF])
 if F['profile_bot']:

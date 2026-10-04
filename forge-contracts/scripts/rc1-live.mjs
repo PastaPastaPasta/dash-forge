@@ -46,7 +46,7 @@
 //             gate is computed; these confirm it against forge-v2.md §7's per-write table)
 //   update1   with UPDATE-1 (dash-forge-qa design/v5/CONTRACT-UPDATE-1.md), on a repo of its own:
 //             release.targetOid (and a release without one), config.movedTo, packMirror (anyone,
-//             unique per writer, only for a repo that exists), ban (maintainer only, unique),
+//             unique per writer, https/ipfs uris only, only for a repo that exists), ban (maintainer only, unique),
 //             policy.requireCodeOwners, profile.keyProofs and profile.bot, transition.closedByPr,
 //             and the PR author's retarget (authorEvent kind 8 + value); with their fees
 //
@@ -770,6 +770,7 @@ if (want('update1') && UPDATE1) {
   await ok('U1', "a stranger records a copy of the repo's pack (packMirror)", S, CORE, 'packMirror', { repoId: U, packHash: ph, kind: 1, uris: ['https://mirror.example.com/p/abc.pack'] }, 'packMirror');
   await ok('U1', 'a second mirror of the same pack, by another identity', M, CORE, 'packMirror', { repoId: U, packHash: ph, kind: 2, uris: ['ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'] });
   await no('U1', 'the same writer mirrors the same pack twice (unique byHash)', S, CORE, 'packMirror', { repoId: U, packHash: ph, kind: 2, uris: ['https://other.example.com/abc.pack'] }, [40105]);
+  await no('U1', 'a file: mirror uri (https:// or ipfs:// only)', S, CORE, 'packMirror', { repoId: U, packHash: bytes(32, 13), kind: 1, uris: ['file:///etc/passwd'] }, [10101, 10403]);
   await no('U1', 'a mirror of a repo that does not exist', S, CORE, 'packMirror', { repoId: bytes(32, 12), packHash: ph, kind: 1, uris: ['https://mirror.example.com/x.pack'] }, [40120]);
   // ban: a maintainer's per-repo ban list (readers apply it)
   await ok('U1', 'a maintainer bans an identity from the repo', O, COLLAB, 'ban', { repoId: U, identityId: id(S.id), reason: 1 }, 'ban');
@@ -778,9 +779,27 @@ if (want('update1') && UPDATE1) {
   await no('U1', 'a stranger bans', S, COLLAB, 'ban', { repoId: U, identityId: id(M.id) }, [40120]);
   // policy.requireCodeOwners
   await ok('U1', 'a merge policy requiring code-owner approval', O, COMM, 'policy', { repoId: U, requiredApprovals: 1, requireCodeOwners: true }, 'policy: requireCodeOwners');
-  // profile.keyProofs and profile.bot (fresh identities: no profile yet)
-  await ok('U1', 'a profile with a key and its possession proof (keyProofs)', M, COMM, 'profile', { displayName: 'member', pubkeys: ['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7vQ5q0 member'], keyProofs: ['U1NIU0lHAAAAAQ=='] }, 'profile: keyProofs');
-  await ok('U1', "a bot's profile naming its operator (bot.operator)", RN, COMM, 'profile', { displayName: 'ci bot', bot: { operator: id(O.id) } }, 'profile: bot');
+  // profile.keyProofs and profile.bot. A profile is one per identity (unique $ownerId), so an
+  // identity that already has one (a rerun) replaces it with the new fields instead.
+  const profile = async (label, who, data, fee) => {
+    let mine = null;
+    try {
+      const q = await sdk.documents.queryWithProof({ dataContractId: COMM, documentTypeName: 'profile', where: [['$ownerId', '==', who.id]], orderBy: [['$ownerId', 'asc']], limit: 1 });
+      mine = [...(q.data ?? q).values()].filter(Boolean)[0] ?? null;
+    } catch (e) {
+      return noVerdict('U1', label, new InfraError(String(e?.message ?? e).slice(0, 300)));
+    }
+    if (!mine) return ok('U1', label, who, COMM, 'profile', data, fee);
+    try {
+      const { credits } = await priced(who, () => sdk.documents.replace({ document: revised(mine, data), ...ownOps(who) }));
+      if (credits !== null) (fees[`${fee} (replace)`] ??= []).push(credits);
+      record({ item: 'U1', label: `${label} (replacing its profile)`, expect: 'ok', got: `ok ${credits ?? 'unmeasured'} credits`, pass: true });
+    } catch (e) {
+      record({ item: 'U1', label: `${label} (replacing its profile)`, expect: 'ok', got: `refused ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
+    }
+  };
+  await profile('a profile with a key and its possession proof (keyProofs)', M, { displayName: 'member', pubkeys: ['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7vQ5q0 member'], keyProofs: ['U1NIU0lHAAAAAQ=='] }, 'profile: keyProofs');
+  await profile("a bot's profile naming its operator (bot.operator)", RN, { displayName: 'ci bot', bot: { operator: id(O.id) } }, 'profile: bot');
   await no('U1', 'a key proof that is not base64', S, COMM, 'profile', { displayName: 'x', pubkeys: ['ssh-ed25519 AAAA x'], keyProofs: ['not base64!'] }, [10101, 10403]);
   // transition.closedByPr and authorEvent kind 8 (the author retargets its PR)
   const ui = await ok('U1', 'issue #1', S, COLLAB, 'issue', { repoId: U, number: 1, tk: 0, title: 'bug', vis: 'public' });

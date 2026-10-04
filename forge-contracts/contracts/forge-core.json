@@ -1965,7 +1965,8 @@
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 300
+            "maxLength": 300,
+            "pattern": "^(https://[^[:space:]/?#@]+|ipfs://[A-Za-z0-9]+)([/?#][^[:space:]]*)?$"
           },
           "position": 3
         }

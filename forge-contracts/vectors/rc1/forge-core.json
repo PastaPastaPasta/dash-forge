@@ -4571,5 +4571,62 @@
     "https://m.example.com/pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
    ]
   }
+ },
+ {
+  "item": "U1",
+  "name": "a file: mirror uri",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "file:///etc/passwd"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a plain http mirror uri",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "http://169.254.169.254/latest/meta-data"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a mirror uri with credentials",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "https://user:pw@m.example.com/p"
+   ]
+  }
  }
 ]
