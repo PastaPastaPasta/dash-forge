@@ -1597,7 +1597,7 @@ export class AuthController {
     return this.run(async () => {
       const session = this.state.session
       if (session === null) throw new Error('sign in first')
-      if (this.browserKeyIds().includes(keyId)) throw new WriteAuthError('This browser holds that key: use Revoke on chain in Settings, which also forgets it here.')
+      if (this.browserKeyIds().includes(keyId)) throw new WriteAuthError('This browser holds that key: use Revoke on Platform in Settings, which also forgets it here.')
       const forge = NETWORKS[this.network].v2
       if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
       const { identityId } = session

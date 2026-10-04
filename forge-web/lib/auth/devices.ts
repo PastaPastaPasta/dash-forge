@@ -76,14 +76,14 @@ export function keyRows(keys: readonly WasmKey[], budgets: ReadonlyMap<number, b
 /**
  * Why this page can't disable `row`, or null when it can. The master key can't be disabled at
  * all; this browser's own keys go through Revoke (which also forgets them here); the encryption
- * key is replaced, not disabled; unbounded signing keys (a wallet's), transfer and other apps'
+ * key is never disabled here (private repos open with it); unbounded signing keys (a wallet's), transfer and other apps'
  * keys are left to `dg auth keys disable --force`, where their effect is spelled out.
  */
 export function disableRefusal(row: KeyRow): string | null {
   if (row.disabledAt !== null) return 'Already disabled.'
   if (row.role === 'master') return "The master key can't be disabled."
-  if (row.thisBrowser) return 'This browser holds it: use Revoke on chain in Settings.'
-  if (row.role === 'encryption') return 'Replace it from Settings → Private repos, so your private repos keep working.'
+  if (row.thisBrowser) return 'This browser holds it: use Revoke on Platform in Settings.'
+  if (row.role === 'encryption') return 'Your private repos open with it, so it is not disabled here.'
   if (!DISABLEABLE.has(row.role)) return `Not a Forge key: other apps may rely on it. Use dg auth keys disable ${row.keyId} --force.`
   return null
 }
