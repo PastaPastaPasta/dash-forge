@@ -136,6 +136,8 @@ export function gitMergeTrees(dir: string, pairs: readonly (readonly [string, st
   if (!HAVE_GIT) return null
   const r = spawnSync('git', ['merge-tree', '--stdin', '--name-only', '--no-messages', '-z'], {
     cwd: dir,
+    // No user configuration: a `merge.renames` or `merge.directoryRenames` would change answers.
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
     input: pairs.map(([o, t]) => `${o} ${t}\n`).join(''),
     maxBuffer: 1 << 26,
   })
