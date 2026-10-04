@@ -68,10 +68,15 @@ export function checkKeys(network: Network, identityId: string, keys: readonly W
   return added
 }
 
-/** The user has seen these keys (or disabled them): stop telling. */
-export function acknowledgeKeys(network: Network, identityId: string, keys: readonly WatchedKey[], now = Date.now()): void {
+/**
+ * The user has seen these keys, disabled them, or this device added them: stop telling. Never
+ * starts a snapshot: one holding only these ids would make the next first look name every other
+ * key (the master key included) as new.
+ */
+export function acknowledgeKeys(network: Network, identityId: string, keyIds: readonly number[], now = Date.now()): void {
   const prev = read(network, identityId)
-  write(network, identityId, [...new Set([...(prev?.ids ?? []), ...keys.map((k) => k.keyId)])], now)
+  if (prev === null) return
+  write(network, identityId, [...new Set([...prev.ids, ...keyIds])], now)
 }
 
 /** Forget the snapshot (sign out and forget). */

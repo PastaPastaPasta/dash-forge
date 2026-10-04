@@ -23,6 +23,7 @@ describe('Devices & keys', () => {
     expect(keyRole(key(4, { purposeNumber: 1, securityLevelNumber: 3 }), forge)).toBe('encryption')
     expect(keyRole(key(3, { purposeNumber: 3, securityLevelNumber: 1 }), forge)).toBe('transfer')
     expect(keyRole(key(5, { bounds: { $type: 'contractGroup', id: 'G' } }), forge)).toBe('forge')
+    expect(keyRole(key(8, { bounds: { $type: 'contractGroup', id: 'OTHER' } }), forge)).toBe('other')
     expect(keyRole(key(6, { bounds: { $type: 'singleContract', id: 'L' } }), forge)).toBe('forge-contract')
     expect(keyRole(key(7, { bounds: { $type: 'singleContract', id: 'X' } }), forge)).toBe('other')
     expect(keyRole(key(1), forge)).toBe('signing')
@@ -33,7 +34,7 @@ describe('Devices & keys', () => {
       [key(1), key(5, { totalBudget: 100n, expiresAt: 9n, disabledAt: 3n }), key(6, { totalBudget: 100n, expiresAt: 9n })],
       new Map([[6, 40n]]),
       forge,
-      6,
+      [6],
     )
     expect(rows.map((r) => r.keyId)).toEqual([6, 1, 5])
     expect(rows[0]).toMatchObject({ budgetLeft: 40n, budgetTotal: 100n, thisBrowser: true })
@@ -41,14 +42,18 @@ describe('Devices & keys', () => {
   })
 
   it('disables only what is safe to disable from here', () => {
-    const [mine, other, master, enc, gone] = keyRows(
-      [key(9), key(8), key(0, { securityLevelNumber: 0 }), key(4, { purposeNumber: 1 }), key(2, { disabledAt: 1n })],
+    const g = { bounds: { $type: 'contractGroup', id: 'G' } }
+    const order = [9, 7, 8, 1, 0, 4, 2]
+    const [mine, grant, other, wallet, master, enc, gone] = keyRows(
+      [key(9, g), key(7, { bounds: { $type: 'singleContract', id: 'L' } }), key(8, g), key(1), key(0, { securityLevelNumber: 0 }), key(4, { purposeNumber: 1 }), key(2, { ...g, disabledAt: 1n })],
       new Map(),
       forge,
-      9,
-    ).sort((a, b) => [9, 8, 0, 4, 2].indexOf(a.keyId) - [9, 8, 0, 4, 2].indexOf(b.keyId))
+      [9, 7],
+    ).sort((a, b) => order.indexOf(a.keyId) - order.indexOf(b.keyId))
     expect(disableRefusal(mine!)).toMatch(/Revoke/)
+    expect(disableRefusal(grant!)).toMatch(/Revoke/)
     expect(disableRefusal(other!)).toBeNull()
+    expect(disableRefusal(wallet!)).toMatch(/--force/)
     expect(disableRefusal(master!)).toMatch(/master/)
     expect(disableRefusal(enc!)).toMatch(/Private repos/)
     expect(disableRefusal(gone!)).toMatch(/Already/)

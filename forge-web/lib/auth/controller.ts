@@ -51,7 +51,7 @@ import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, ty
 import { PRIVATE_REPOS_FLOW, adoptEncryptionKey, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import { openHandoffReply, parseHandoffPayload, type HandoffRequest } from './key-handoff'
 import { acknowledgeKeys, checkKeys, forgetKeySnapshot, type WatchedKey } from './key-watch'
-import { keyRows, type KeyRow } from './devices'
+import { DISABLEABLE, keyRole, keyRows, type KeyRow } from './devices'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import {
   WrongMasterKeyError,
@@ -557,7 +557,14 @@ export class AuthController {
    * Open a session for an unlocked secret: re-verify the key on chain, load balance + limits.
    * On failure the unlocked key is dropped again, so no key sits in memory without a session.
    */
-  private async open(secret: VaultSecret, storage: AuthSession['storage'], knownLimits?: KeyLimits, releaseOnFailure = true): Promise<AuthSession> {
+  private async open(
+    secret: VaultSecret,
+    storage: AuthSession['storage'],
+    knownLimits?: KeyLimits,
+    releaseOnFailure = true,
+    /** Keys a wallet just registered for this browser: each came with its encryption key. */
+    walletKeys: readonly number[] = [],
+  ): Promise<AuthSession> {
     const generation = vaultLockGeneration()
     try {
       const sdk = await this.getSdk()
@@ -591,7 +598,9 @@ export class AuthController {
       // Locked (here or in another tab) while this ran: the lock wins.
       if (generation !== vaultLockGeneration()) throw new VaultLockedError('this browser locked while signing in — unlock to continue')
       // The identity just read is compared with what this device saw last: no read of its own.
-      const own = [match.keyId, ...(secret.extra ?? []).map((e) => e.keyId)]
+      // A wallet registers its encryption key in the same update, right after the auth key.
+      const companions = walletKeys.filter((id) => identity.publicKeys.some((k) => k.keyId === id + 1 && k.purposeNumber === 1)).map((id) => id + 1)
+      const own = [match.keyId, ...(secret.extra ?? []).map((e) => e.keyId), ...companions]
       const newKeys = storage === 'vault' ? checkKeys(this.network, secret.identityId, identity.publicKeys.map(watched), own) : []
       this.setState({ session, scope: unlockScope(this.network, secret.identityId), newKeys })
       if (storage === 'vault') void this.keep(session).catch(() => undefined)
@@ -1114,7 +1123,7 @@ export class AuthController {
       'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
     )
     try {
-      return await this.open(secret, 'vault', main.limits ?? undefined)
+      return await this.open(secret, 'vault', main.limits ?? undefined, true, [main.keyId, ...rest.map((k) => k.keyId)])
     } catch (e) {
       throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
     }
@@ -1137,7 +1146,7 @@ export class AuthController {
       const secret = unlockedSecret(this.network, identityId)
       if (!secret) throw new VaultLockedError('unlock to continue')
       try {
-        const opened = await this.open(secret, 'vault', session.keyLimits ?? undefined, false)
+        const opened = await this.open(secret, 'vault', session.keyLimits ?? undefined, false, [key.keyId])
         const want = contractKind(forge, requested)
         if (want === null || !opened.grants?.[want]) throw new Error('the granted key is not live on the identity yet')
         return opened
@@ -1569,7 +1578,14 @@ export class AuthController {
     if (!identity) throw new Error(`identity ${session.identityId} not found on ${NETWORKS[this.network].key}`)
     const budgeted = identity.publicKeys.filter((k) => k.totalBudget !== undefined).map((k) => k.keyId)
     const budgets = budgeted.length ? await withPlatformRead(authSdk(sdk).identities.keysRemainingBudgets(session.identityId, budgeted), 'Reading key budgets') : new Map<number, bigint | null>()
-    return keyRows(identity.publicKeys, budgets, NETWORKS[this.network].v2 ?? undefined, session.keyId ?? null)
+    return keyRows(identity.publicKeys, budgets, NETWORKS[this.network].v2 ?? undefined, this.browserKeyIds())
+  }
+
+  /** The keys this browser holds for the signed-in identity: its signing key and wallet grants. */
+  private browserKeyIds(): number[] {
+    const session = this.state.session
+    if (session === null) return []
+    return [...(session.keyId !== undefined ? [session.keyId] : []), ...this.heldKeys(session.identityId).map((k) => k.keyId)]
   }
 
   /**
@@ -1581,12 +1597,14 @@ export class AuthController {
     return this.run(async () => {
       const session = this.state.session
       if (session === null) throw new Error('sign in first')
-      if (keyId === session.keyId) throw new WriteAuthError('This browser signs with that key: use Revoke on chain in Settings, which also forgets it here.')
+      if (this.browserKeyIds().includes(keyId)) throw new WriteAuthError('This browser holds that key: use Revoke on chain in Settings, which also forgets it here.')
+      const forge = NETWORKS[this.network].v2
+      if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
       const { identityId } = session
       const masterWif = await this.masterWifFor(identityId, input)
       const sdk = await this.getSdk()
       const sent = await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
-        this.charged(identityId, 'key:revoke', () => keyId, () => disableIdentityKeys(sdk, { network: this.network, identityId, masterWif, keyIds: [keyId] })),
+        this.charged(identityId, 'key:revoke', () => keyId, () => disableIdentityKeys(sdk, { network: this.network, identityId, masterWif, keyIds: [keyId], allowed: (k) => DISABLEABLE.has(keyRole(k, forge)) })),
       )
       if (this.state.newKeys?.some((k) => k.keyId === keyId)) this.setState({ newKeys: this.state.newKeys.filter((k) => k.keyId !== keyId) })
       return sent
@@ -1597,13 +1615,13 @@ export class AuthController {
   acknowledgeNewKeys(): void {
     const session = this.state.session
     if (session === null || !this.state.newKeys?.length) return
-    acknowledgeKeys(this.network, session.identityId, this.state.newKeys)
+    acknowledgeKeys(this.network, session.identityId, this.state.newKeys.map((k) => k.keyId))
     this.setState({ newKeys: [] })
   }
 
   /** A key this browser registered itself (a CI runner key, an encryption key): no alert for it. */
   noteOwnKey(identityId: string, keyId: number): void {
-    acknowledgeKeys(this.network, identityId, [{ keyId, purpose: 0, level: 0, disabled: false }])
+    acknowledgeKeys(this.network, identityId, [keyId])
   }
 
   /**

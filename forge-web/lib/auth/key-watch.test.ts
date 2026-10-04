@@ -19,7 +19,7 @@ describe('new-key alert', () => {
     expect(checkKeys('devnet', 'id', keys, [5]).map((x) => x.keyId)).toEqual([6])
     // Still there after a reload: the snapshot only moves on once seen.
     expect(checkKeys('devnet', 'id', keys, [5]).map((x) => x.keyId)).toEqual([6])
-    acknowledgeKeys('devnet', 'id', [k(6)])
+    acknowledgeKeys('devnet', 'id', [6])
     expect(checkKeys('devnet', 'id', keys, [5])).toEqual([])
   })
 
@@ -30,6 +30,12 @@ describe('new-key alert', () => {
     expect(checkKeys('devnet', 'other', [k(9)], [])).toEqual([])
     forgetKeySnapshot('devnet', 'id')
     expect(checkKeys('devnet', 'id', [k(5), k(10)], [])).toEqual([])
+  })
+
+  it('never starts a snapshot from an acknowledgement', () => {
+    acknowledgeKeys('devnet', 'id', [9])
+    expect(checkKeys('devnet', 'id', [k(0, { level: 0 }), k(5), k(9)], [9])).toEqual([])
+    expect(checkKeys('devnet', 'id', [k(0, { level: 0 }), k(5), k(9)], [9])).toEqual([])
   })
 
   it('compares against nothing when there is no snapshot', () => {

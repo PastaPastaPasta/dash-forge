@@ -46,18 +46,6 @@ export function DevicesKeys(): JSX.Element {
   if (identity === null) return <></>
   return (
     <div className="space-y-5" data-testid="devices-keys">
-      {newKeys.length > 0 ? (
-        <div role="alert" className="space-y-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-dense" data-testid="devices-new-keys">
-          <p>
-            {newKeys.length === 1 ? 'A key was' : `${newKeys.length} keys were`} added since this device last checked:{' '}
-            {newKeys.map((k) => `#${k.keyId} (${keyKind(k)})`).join(', ')}. Disable any you didn&apos;t add. If a new master key appears, someone else may control your
-            identity.
-          </p>
-          <Button size="sm" variant="outline" onClick={() => controller.acknowledgeNewKeys()}>
-            I added {newKeys.length === 1 ? 'it' : 'them'}
-          </Button>
-        </div>
-      ) : null}
       {error !== null ? <StepFailed error={`Couldn't read your keys: ${error}`} onRetry={load} /> : null}
       {rows === null && error === null ? <Spinner label="Reading your keys" /> : null}
       {rows !== null ? (

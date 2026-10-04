@@ -10,6 +10,7 @@
 import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import type { WasmKey } from '../sdk/facade'
+import { keyScope } from './key-registration'
 
 /** What a key is, in the words Devices & keys uses. */
 export type KeyRole = 'master' | 'forge' | 'forge-contract' | 'signing' | 'encryption' | 'transfer' | 'other'
@@ -24,35 +25,39 @@ export interface KeyRow {
   readonly budgetTotal: bigint | null
   readonly budgetLeft: bigint | null
   readonly expiresAt: number | null
-  /** The key this browser signs with. */
+  /** A key this browser holds (its signing key, a wallet grant, a key held to be disabled). */
   readonly thisBrowser: boolean
 }
 
-/** Classify a chain key for the page. */
+/** Classify a chain key for the page (Forge's bounds as `keyScope` reads them). */
 export function keyRole(k: Pick<WasmKey, 'purposeNumber' | 'securityLevelNumber' | 'contractBounds'>, forge: ForgeIds | undefined): KeyRole {
   if (k.securityLevelNumber === 0) return 'master'
   if (k.purposeNumber === 1) return 'encryption'
   if (k.purposeNumber === 3) return 'transfer'
   if (k.purposeNumber !== 0) return 'other'
-  const bounds = k.contractBounds?.toJSON()
-  if (bounds === undefined || bounds === null) return 'signing'
-  if (bounds.$type === 'contractGroup') return 'forge'
-  return forge !== undefined && [forge.core, forge.collab, forge.community].includes(bounds.id) ? 'forge-contract' : 'other'
+  if (forge === undefined) return 'other'
+  const scope = keyScope(k, forge)
+  if (scope === null) return 'other'
+  if (scope.unbounded) return 'signing'
+  return scope.core && scope.collab && scope.community ? 'forge' : 'forge-contract'
 }
+
+/** Roles Devices & keys may disable: keys bound to Forge, which nothing else signs with. */
+export const DISABLEABLE: ReadonlySet<KeyRole> = new Set(['forge', 'forge-contract'])
 
 /** One line on what a key is for. */
 export const ROLE_TEXT: Readonly<Record<KeyRole, string>> = {
   master: 'Master key. Adds and disables keys; never used to sign here.',
   forge: 'Forge key with a budget and an expiry: a browser, dg or a CI runner.',
   'forge-contract': 'Key for one Forge contract (a wallet sign-in or a CI runner).',
-  signing: 'Signing key with no contract limits.',
+  signing: 'Signing key with no contract limits: your wallet and other apps may sign with it.',
   encryption: 'Encryption key for private repos.',
   transfer: 'Transfer key. Moves credits out of the identity.',
   other: 'Key for another app or contract.',
 }
 
 /** The rows for an identity's keys, newest first, live before disabled. */
-export function keyRows(keys: readonly WasmKey[], budgets: ReadonlyMap<number, bigint | null>, forge: ForgeIds | undefined, thisBrowser: number | null): KeyRow[] {
+export function keyRows(keys: readonly WasmKey[], budgets: ReadonlyMap<number, bigint | null>, forge: ForgeIds | undefined, held: readonly number[]): KeyRow[] {
   return keys
     .map((k) => ({
       keyId: k.keyId,
@@ -63,23 +68,23 @@ export function keyRows(keys: readonly WasmKey[], budgets: ReadonlyMap<number, b
       budgetTotal: k.totalBudget ?? null,
       budgetLeft: k.totalBudget === undefined ? null : (budgets.get(k.keyId) ?? null),
       expiresAt: k.expiresAt === undefined ? null : Number(k.expiresAt),
-      thisBrowser: k.keyId === thisBrowser,
+      thisBrowser: held.includes(k.keyId),
     }))
     .sort((a, b) => Number(a.disabledAt !== null) - Number(b.disabledAt !== null) || b.keyId - a.keyId)
 }
 
 /**
  * Why this page can't disable `row`, or null when it can. The master key can't be disabled at
- * all; this browser's own key goes through Revoke (which also forgets it here); encryption,
- * transfer and other apps' keys are left to `dg auth keys disable --force`, where their effect
- * is spelled out.
+ * all; this browser's own keys go through Revoke (which also forgets them here); the encryption
+ * key is replaced, not disabled; unbounded signing keys (a wallet's), transfer and other apps'
+ * keys are left to `dg auth keys disable --force`, where their effect is spelled out.
  */
 export function disableRefusal(row: KeyRow): string | null {
   if (row.disabledAt !== null) return 'Already disabled.'
   if (row.role === 'master') return "The master key can't be disabled."
-  if (row.thisBrowser) return 'This browser signs with it: use Revoke on chain in Settings.'
+  if (row.thisBrowser) return 'This browser holds it: use Revoke on chain in Settings.'
   if (row.role === 'encryption') return 'Replace it from Settings → Private repos, so your private repos keep working.'
-  if (row.role === 'transfer' || row.role === 'other') return `Use dg auth keys disable ${row.keyId} --force.`
+  if (!DISABLEABLE.has(row.role)) return `Not a Forge key: other apps may rely on it. Use dg auth keys disable ${row.keyId} --force.`
   return null
 }
 
