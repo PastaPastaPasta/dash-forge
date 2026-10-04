@@ -2,7 +2,7 @@
 
 Devnets are development networks, and their operators replace them from time to time. Devnet bonsia (Platform 4.2.0-beta.7) was retired, and **everything on it is gone**. Dash Forge moved to a new devnet, **sakura** (Platform v5.0.0-beta.1), where it is registered with new contracts (RC2, registered 2026-10-01). This page says what that costs you, what you keep, and what to do.
 
-It only concerns **devnet bonsia**, which forge.dashhq.org and the guides used until the move. Nothing on testnet or mainnet is affected, because Forge is not deployed on either yet ([network status](../../README.md#status)).
+It only concerns **devnet bonsia**, which forge.dashhq.org and the guides used until the move. Nothing on testnet or mainnet is affected, because Forge is not deployed on either yet ([network status](../networks.md)).
 
 ## When
 
@@ -35,7 +35,7 @@ Mirrors of public GitHub and GitLab repositories are wiped with everything else,
 
 ## After the move: re-push your repository
 
-Wait until Forge's contracts are registered on sakura ([network status](../../README.md#status)) and forge.dashhq.org no longer shows the notice, and make sure `dg` is current. A `dg` built for bonsia (Platform 4.2.0-beta.7) does not work on sakura, so reinstall it from the current source ([Quick start](quick-start.md#1-install); the `dg` and `git-remote-dash` you build must be the ones from the current `master`).
+Wait until Forge's contracts are registered on sakura ([network status](../networks.md)) and forge.dashhq.org no longer shows the notice, and make sure `dg` is current. A `dg` built for bonsia (Platform 4.2.0-beta.7) does not work on sakura, so reinstall it from the current source ([Quick start](quick-start.md#1-install); the `dg` and `git-remote-dash` you build must be the ones from the current `master`).
 
 1. **Create a new identity on sakura.** It is a different account: its id is different, so repository addresses (`dash://<identity id>/<name>`) change with it. Follow [Get an identity](quick-start.md#2-get-an-identity), from the terminal (`dg auth new --network devnet --devnet-name sakura`) or from the web app (**Sign in → Create a new identity**). Fund it from the [sakura faucet](https://faucet.sakura.networks.dash.org). The old identity cannot be brought over.
 2. **Sign in and set up storage** ([Sign in](quick-start.md#3-sign-in)). Your storage profiles are kept; run `dg storage test <profile>` to check that the bucket still answers.
@@ -69,4 +69,4 @@ Anyone who cloned a repository of yours keeps their clone. Tell them the new add
 ## Still questions?
 
 - [Quick start](quick-start.md), [Identity and keys](identity-and-keys.md), [Bring your own storage](bring-your-own-storage.md), [FAQ](../FAQ.md).
-- Why a devnet can be wiped: [the network status table](../../README.md#status).
+- Why a devnet can be wiped: [Networks](../networks.md).

@@ -47,6 +47,8 @@ const ROUTES: [label: string, href: Href, ready: (page: Page) => ReturnType<Page
   ['issues', repoUrl('issues'), (page) => page.getByRole('list', { name: 'Issues', exact: true }).getByRole('link', { name: 'README should explain the event split' })],
   ['pull', () => repoUrl('pull', `&number=${loadSeedPulls().approved}&tab=files`), (page) => page.getByRole('heading', { name: /Files changed/ })],
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
+  ['private', '/private/', (page) => page.getByRole('heading', { name: 'Private repositories', exact: true })],
+  ['networks', '/networks/', (page) => page.getByRole('heading', { name: 'All networks' })],
   ['repo settings', repoUrl('settings'), (page) => page.getByRole('navigation', { name: 'Settings sections' })],
 ]
 
