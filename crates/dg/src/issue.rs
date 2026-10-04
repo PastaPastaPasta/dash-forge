@@ -506,14 +506,22 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
         .await?;
     // Long bodies (forge-v2.md §6.3): the full text each field's trailer names, fetched and
     // checked; a text whose rest cannot be read keeps its first part and says why.
-    let reads = {
-        let texts: Vec<&str> = std::iter::once(view.issue.body.as_str())
-            .chain(comments.iter().map(|c| c.body.as_str()))
-            .collect();
-        crate::long_body::read_all(&collab, &s.repo, &texts).await
-    };
-    let incomplete = crate::long_body::apply_to_comments(&mut comments, &reads[1..]);
-    let (body, body_incomplete) = crate::long_body::json(&reads[0]);
+    let mut body = view.issue.body.clone();
+    let mut why = crate::long_body::read_in_place(
+        &collab,
+        &s.repo,
+        std::iter::once(&mut body)
+            .chain(comments.iter_mut().map(|c| &mut c.body))
+            .collect(),
+    )
+    .await
+    .into_iter();
+    let body_incomplete = why.next().flatten();
+    let incomplete: std::collections::BTreeMap<String, String> = comments
+        .iter()
+        .zip(why)
+        .filter_map(|(c, w)| w.map(|w| (c.document_id.clone(), w)))
+        .collect();
     // RC2 MOD: what maintainers hid (collapsed below unless --show-hidden)
     let moderation = collab
         .hidden_items(&s.repo, &view.issue.target(), &view.log, &comments, &[])

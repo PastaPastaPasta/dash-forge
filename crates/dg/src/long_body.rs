@@ -6,7 +6,7 @@
 //! (`rules::long_body`, `collab::long_body`).
 
 use anyhow::Result;
-use forge_core::collab::long_body::{BodyField, BodyRead, BodyStore};
+use forge_core::collab::long_body::{BodyField, BodyStore};
 use forge_core::collab::v2::Collab;
 use forge_core::collab::Imported;
 use forge_core::rules::v2::Visibility;
@@ -181,24 +181,15 @@ impl<'f> Planned<'f> {
     }
 }
 
-/// The texts as a reader shows them, in order: each field with no trailer as it is, each
-/// continued one fetched and checked (the repository's manifests and members read once).
-pub async fn read_all(collab: &Collab<'_>, repo: &RepoRef, texts: &[&str]) -> Vec<BodyRead> {
-    collab.read_long_bodies(repo, texts).await
-}
-
 /// The line printed under a text of which only the first part could be read.
 pub fn partial_line(why: &str) -> String {
     format!("[only the first part is shown: {why}]")
 }
 
-/// A text for `--json`: the text, and why only its first part is there (or `None`).
-pub fn json(r: &BodyRead) -> (String, Option<String>) {
-    (r.text().to_string(), r.incomplete().map(str::to_string))
-}
-
-/// Read every text in `texts` ([`read_all`]) and put it in place of its field; returns, in
-/// order, why only the first part of a text could be read (`None` for a whole one).
+/// Read every text in `texts` (each field with no trailer as it is, each continued one fetched
+/// and checked; the repository's manifests and members read once) and put it in place of its
+/// field; returns, in order, why only the first part of a text could be read (`None` for a
+/// whole one).
 pub async fn read_in_place(
     collab: &Collab<'_>,
     repo: &RepoRef,
@@ -206,7 +197,7 @@ pub async fn read_in_place(
 ) -> Vec<Option<String>> {
     let reads = {
         let refs: Vec<&str> = texts.iter().map(|t| t.as_str()).collect();
-        read_all(collab, repo, &refs).await
+        collab.read_long_bodies(repo, &refs).await
     };
     texts
         .into_iter()
@@ -216,20 +207,4 @@ pub async fn read_in_place(
             r.incomplete().map(str::to_string)
         })
         .collect()
-}
-
-/// Put each comment's text as read (`reads`, in the same order) in place of its field, and
-/// return why, by comment id, for those of which only the first part could be read.
-pub fn apply_to_comments(
-    comments: &mut [forge_core::collab::v2::Comment],
-    reads: &[BodyRead],
-) -> std::collections::BTreeMap<String, String> {
-    let mut incomplete = std::collections::BTreeMap::new();
-    for (c, r) in comments.iter_mut().zip(reads) {
-        c.body = r.text().to_string();
-        if let Some(why) = r.incomplete() {
-            incomplete.insert(c.document_id.clone(), why.to_string());
-        }
-    }
-    incomplete
 }
