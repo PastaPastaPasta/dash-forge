@@ -55,6 +55,7 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
@@ -101,7 +102,7 @@ import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { pendingReruns, rerunCounts } from '@/lib/rules/ci-rerun'
-import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { firstPushers, headUpdatePhrases, sourceBranchEvents, type HeadUpdatePhrase } from '@/lib/view/head-updates'
@@ -580,7 +581,8 @@ function PullPage({
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
-  const [comment, setComment] = useState('')
+  // The unsent comment survives a reload (never stored for a private repo).
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity))
   const commentIntent = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -767,17 +769,24 @@ function PullPage({
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
+    // Until the outcome is known, a reload must not bring the text back to be posted again.
+    holdDraft(true, comment)
     try {
       const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent, post: postContext })
       setComment('')
+      holdDraft(false, '')
       commentIntent.renew()
       refresh((t) => t.comments.some((c) => c.id === r.documentId))
     } catch (e) {
       // Another tab of this identity wrote it: the composer's text is on chain, clear it.
       if (e instanceof SupersededWriteError) {
         setComment('')
+        holdDraft(false, '')
         commentIntent.renew()
         refresh()
+      } else if (!(e instanceof UnconfirmedWriteError)) {
+        // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays held.)
+        holdDraft(false, comment)
       }
       setCommentError(guard.failed(e))
     } finally {
@@ -1567,7 +1576,7 @@ function PullPage({
                     <PrivateComposeNote reason={composeBlock} />
                   ) : (
                     <>
-                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} />
                       <SealedLimit repo={repo} kind="comment" text={comment.trim()} long={commentLong} />
                       <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} />
                     </>
