@@ -26,7 +26,6 @@ import {
   configData,
   descriptionProblem,
   fullPattern,
-  missingDefaultProtection,
   newestPolicy,
   parseTopics,
   matchList,
@@ -138,17 +137,6 @@ describe('config changes', () => {
   it('add several patterns in one config', () => {
     expect(applyConfigChange(NOW, { addPatterns: ['refs/heads/main', 'refs/tags/**'] }).protectedPatterns).toEqual(['refs/heads/main', 'refs/tags/**'])
     expect(changeHolds({ ...NOW, protectedPatterns: ['refs/heads/main'] }, { addPatterns: ['refs/heads/main', 'refs/tags/**'] })).toBe(false)
-  })
-
-  it('offer the default protection a repo is missing', () => {
-    const cfg = (defaultBranch: string, protectedPatterns: string[]): RepoConfig => ({ ...NOW, defaultBranch, protectedPatterns })
-    expect(missingDefaultProtection(cfg('main', []))).toEqual(['refs/heads/main', 'refs/tags/**'])
-    expect(missingDefaultProtection(cfg('trunk', ['refs/heads/main']))).toEqual(['refs/heads/trunk', 'refs/tags/**'])
-    expect(missingDefaultProtection(cfg('main', ['refs/heads/*']))).toEqual(['refs/tags/**'])
-    // Top-level tags only: nested ones stay movable.
-    expect(missingDefaultProtection(cfg('main', ['refs/heads/main', 'refs/tags/*']))).toEqual(['refs/tags/**'])
-    expect(missingDefaultProtection(cfg('main', ['refs/heads/main', 'refs/tags/**']))).toEqual([])
-    expect(missingDefaultProtection(cfg('main', ['**']))).toEqual([])
   })
 
   it('return null without signing when nothing changes', async () => {

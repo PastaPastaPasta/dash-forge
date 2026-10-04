@@ -199,12 +199,16 @@ export function previewRepoCreate(
   i: { readonly name: string; readonly description?: string; readonly defaultBranch?: string; readonly visibility?: 'public' | 'private'; readonly protect?: boolean },
   firsts: RepoCreationFirsts,
 ): CostPreview {
+  const patterns = i.protect === true ? defaultProtectedPatterns(i.defaultBranch ?? 'main') : []
   if (i.visibility === 'private') {
+    // The sealed anchor's `enc`: about 80 bytes for the branch and the seal, plus each pattern
+    // with its length prefix.
+    const encBytes = 80 + patterns.reduce((n, p) => n + new TextEncoder().encode(p).length + 2, 0)
     return sumPreviews([
       previewCreate('repo', { name: i.name, visibility: 'private', ...(i.description ? { description: i.description } : {}) }, firsts.first),
       previewCreate('maintainer', {}, firsts.rest),
       previewCreate('repoKey'),
-      previewCreate('config', { enc: new Uint8Array(80), epoch: 0, backend: { mode: 0 } }, { ...firsts.rest, repo: true }),
+      previewCreate('config', { enc: new Uint8Array(encBytes), epoch: 0, backend: { mode: 0 } }, { ...firsts.rest, repo: true }),
     ])
   }
   return sumPreviews([
@@ -213,7 +217,7 @@ export function previewRepoCreate(
     // A new repo's first config builds its config subtree (QW3-037).
     previewCreate(
       'config',
-      { defaultBranch: i.defaultBranch ?? 'main', ...(i.protect === true ? { protectedPatterns: defaultProtectedPatterns(i.defaultBranch ?? 'main') } : {}) },
+      { defaultBranch: i.defaultBranch ?? 'main', ...(patterns.length > 0 ? { protectedPatterns: patterns } : {}) },
       { ...firsts.rest, repo: true },
     ),
   ])

@@ -860,19 +860,56 @@ pub fn default_protected_patterns(default_branch: &str) -> Vec<String> {
     vec![format!("refs/heads/{short}"), ALL_TAGS_PATTERN.to_string()]
 }
 
+/// Whether a public ref update is written as the maintainer-gated `protectedRefUpdate` (a client
+/// rule, `docs/contracts/forge-v2.md` §6): when the config in force protects `ref_name`; and when
+/// no config is readable yet (`patterns` is `None`) and the pusher owns the repository. Every
+/// client writes a config at create, and a new repository protects its default branch and tags
+/// by default, so the owner's push right after the create (`dg init`) would otherwise go out as
+/// a plain update that config makes inert, and the ref would never appear; consensus admits the
+/// protected type from the owner, who self-enrols as maintainer at create. Anyone else's update
+/// stays plain: nothing they could see protects the ref. Parity: `refUpdateType` in
+/// `forge-web/lib/repo/push.ts` (vectors `ref_update_route__*`).
+#[must_use]
+pub fn routes_protected(
+    ref_name: &str,
+    patterns: Option<&[String]>,
+    pusher_is_owner: bool,
+) -> bool {
+    match patterns {
+        Some(p) => matches_protected(ref_name, p),
+        None => pusher_is_owner,
+    }
+}
+
+/// Tag names unlike each other in their first character, shape and depth: one pattern that
+/// matches all of them is taken to cover every tag ([`missing_default_protection`]).
+const TAG_PROBES: [&str; 5] = [
+    "refs/tags/v1.0.0",
+    "refs/tags/1.0",
+    "refs/tags/release-2",
+    "refs/tags/Z_9",
+    "refs/tags/a/b/c",
+];
+
 /// What of the default protection `patterns` leave uncovered on a repository whose default
 /// branch is `default_branch`: the default patterns still needed, empty when existing patterns
-/// cover both the branch and every tag (`refs/tags/*` covers top-level tags only, so it is not
-/// enough). Parity: `missingDefaultProtection` in `forge-web/lib/rules/matchesProtected.ts`
-/// (vectors `missing_default_protection__*`).
+/// cover both the branch and every tag. Every tag counts as covered only when one pattern matches
+/// a set of unlike tag names (`refs/tags/**`, `refs/**`): `refs/tags/*` misses nested tags and
+/// `refs/tags/v*` misses `1.0`, so either still needs `refs/tags/**`. Parity:
+/// `missingDefaultProtection` in `forge-web/lib/rules/matchesProtected.ts` (vectors
+/// `missing_default_protection__*`).
 #[must_use]
 pub fn missing_default_protection(default_branch: &str, patterns: &[String]) -> Vec<String> {
+    let all_tags = patterns.iter().any(|p| {
+        TAG_PROBES
+            .iter()
+            .all(|t| matches_protected(t, std::slice::from_ref(p)))
+    });
     default_protected_patterns(default_branch)
         .into_iter()
         .filter(|d| {
             if d == ALL_TAGS_PATTERN {
-                !(matches_protected("refs/tags/v1", patterns)
-                    && matches_protected("refs/tags/a/v1", patterns))
+                !all_tags
             } else {
                 !matches_protected(d, patterns)
             }
@@ -1277,8 +1314,8 @@ mod tests {
     use super::{
         ci_rerun, codeowners, default_protected_patterns, display_ref_name, is_legal_ref_name,
         long_body, matches_protected, merge_base_tips, missing_default_protection, overlay_tree,
-        pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event, EventKind, FlatIndex,
-        IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
+        pr_base_tips, resolve_ref, routes_protected, v2, Ancestry, ConfigDoc, Event, EventKind,
+        FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
@@ -1508,6 +1545,24 @@ mod tests {
                 let got = matches_protected(&inp.ref_name, &inp.patterns);
                 let want: bool =
                     serde_json::from_value(v.expected.clone()).expect("matches_protected expected");
+                assert_eq!(got, want, "vector `{ctx}`");
+            }
+            "ref_update_route" => {
+                let name = v.input["refName"]
+                    .as_str()
+                    .expect("ref_update_route input: refName");
+                let patterns: Option<Vec<String>> =
+                    serde_json::from_value(v.input["patterns"].clone())
+                        .expect("ref_update_route input: patterns");
+                let owner = v.input["pusherIsOwner"]
+                    .as_bool()
+                    .expect("ref_update_route input: pusherIsOwner");
+                let want = v.expected.as_str().expect("ref_update_route expected");
+                let got = if routes_protected(name, patterns.as_deref(), owner) {
+                    "protectedRefUpdate"
+                } else {
+                    "refUpdate"
+                };
                 assert_eq!(got, want, "vector `{ctx}`");
             }
             "missing_default_protection" => {

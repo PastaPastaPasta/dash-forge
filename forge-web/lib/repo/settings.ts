@@ -17,7 +17,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { decodeIdentifier } from '../auth/base58'
-import { compareKey, isRc1BranchName, isRc1RefName, matchesProtected, missingDefaultProtection as missingDefaultFor } from '../rules'
+import { compareKey, isRc1BranchName, isRc1RefName, matchesProtected } from '../rules'
 import type { Policy } from '../rules/v2'
 import { branchName } from '../view/format'
 import {
@@ -102,11 +102,6 @@ export function branchProblem(name: string): string | null {
     return 'Not a branch name git accepts: no spaces, control characters or any of ~ ^ : ? * [ \\; no leading - or .; no .. or @{; not ending in /, . or .lock; at most 244 bytes.'
   }
   return null
-}
-
-/** What of the new-repository default protection `config` leaves uncovered (settings' one-click offer). */
-export function missingDefaultProtection(config: RepoConfig): string[] {
-  return missingDefaultFor(config.defaultBranch, config.protectedPatterns)
 }
 
 /** Why `patterns` would be refused by the `config` schema, or null. */

@@ -30,7 +30,6 @@ import {
   descriptionProblem,
   editRepoDoc,
   fullPattern,
-  missingDefaultProtection,
   parseTopics,
   matchList,
   patternMatches,
@@ -51,6 +50,8 @@ import {
   type RepoDocEdit,
 } from '@/lib/repo'
 import { MAX_TOPICS } from '@/lib/repo/settings'
+import { missingDefaultProtection } from '@/lib/rules'
+import { mirrorSourceOfRepo } from '@/lib/view/mirror-source'
 import { readRunnersCached } from '@/lib/repo/checks'
 import {
   CHECK_NAME_MAX_CHARS,
@@ -532,22 +533,34 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
   )
 }
 
+/** Where a maintainer's "not now" on the protection suggestion is kept, per repo and browser. */
+const PROTECTION_DISMISSED = (repoId: string): string => `forge:protection-suggestion-dismissed:${repoId}`
+
 /**
  * The one-click offer to complete the new-repository default (the default branch and every tag)
- * on a repo created before it, or one whose maintainers dropped it. Hidden once both are covered.
+ * on a repo created before it, or one whose maintainers dropped it. Not offered on a fork or a
+ * mirror (they follow their source, so they start unprotected), before the repo's config is
+ * readable (its patterns are unknown), or once a maintainer dismissed it in this browser.
  */
 function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: ReturnType<typeof useConfigWrite> }): JSX.Element | null {
-  const missing = missingDefaultProtection(cfg.current)
-  if (missing.length === 0) return null
+  const key = PROTECTION_DISMISSED(home.repo.repoId)
+  const [dismissed, setDismissed] = useState(() => typeof window !== 'undefined' && window.localStorage.getItem(key) !== null)
+  const missing = home.config === null ? [] : missingDefaultProtection(cfg.current.defaultBranch, cfg.current.protectedPatterns)
+  if (missing.length === 0 || dismissed || home.v2.forkOf !== null || mirrorSourceOfRepo(home.v2, 'issue') !== null) return null
   const branch = missing.find((p) => p.startsWith('refs/heads/'))?.slice('refs/heads/'.length) ?? null
   const tags = missing.some((p) => p.startsWith('refs/tags/'))
-  const what = branch !== null && tags ? `${branch} and tags` : branch ?? 'tags'
+  const what = branch !== null && tags ? `${branch} and tags` : (branch ?? 'tags')
   const exposure =
     branch !== null && tags
       ? `Any writer can push to ${branch} and create or move tags, including the tags your releases point to.`
       : branch !== null
         ? `Any writer can push to ${branch}.`
         : 'Any writer can create or move tags, including the tags your releases point to.'
+  const tooMany = patternsProblem([...cfg.current.protectedPatterns, ...missing])
+  const dismiss = (): void => {
+    window.localStorage.setItem(key, '1')
+    setDismissed(true)
+  }
   return (
     <div
       role="status"
@@ -556,31 +569,36 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
     >
       <p className="flex-1 text-dense text-anvil-700 dark:text-anvil-200">
         {exposure} New repositories protect the default branch and every tag.
+        {tooMany !== null ? ` ${tooMany} Remove one to make room.` : null}
       </p>
-      {cfg.sealed ? (
-        <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
-          Run <span className="break-all font-mono">dg repo protect defaults {home.repo.ownerId}/{home.repo.name}</span>
-        </p>
-      ) : (
-        <Button
-          size="sm"
-          variant="primary"
-          className="shrink-0"
-          disabled={cfg.disabledReason !== null}
-          onClick={() =>
-            cfg.ask({
-              title: `Protect ${what}`,
-              description: `Appends a config adding ${missing.join(' and ')}. From then on only maintainers can ${
-                branch !== null && tags ? `push to ${branch} or create and move tags` : branch !== null ? `push to ${branch}` : 'create and move tags'
-              }; a writer's push there is refused.`,
-              change: { addPatterns: missing },
-              confirmLabel: 'Sign & protect',
-            })
-          }
-        >
-          <ShieldCheck className="h-3.5 w-3.5" aria-hidden /> Protect {what}
+      <div className="flex shrink-0 items-center gap-1.5">
+        {cfg.sealed ? (
+          <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
+            Run <span className="break-all font-mono">dg repo protect defaults {home.repo.ownerId}/{home.repo.name}</span>
+          </p>
+        ) : tooMany === null ? (
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={cfg.disabledReason !== null}
+            onClick={() =>
+              cfg.ask({
+                title: `Protect ${what}`,
+                description: `Appends a config adding ${missing.join(' and ')}. From then on only maintainers can ${
+                  branch !== null && tags ? `push to ${branch} or create and move tags` : branch !== null ? `push to ${branch}` : 'create and move tags'
+                }; a writer's push there is refused.`,
+                change: { addPatterns: missing },
+                confirmLabel: 'Sign & protect',
+              })
+            }
+          >
+            <ShieldCheck className="h-3.5 w-3.5" aria-hidden /> Protect {what}
+          </Button>
+        ) : null}
+        <Button size="sm" variant="ghost" onClick={dismiss}>
+          Not now
         </Button>
-      )}
+      </div>
     </div>
   )
 }

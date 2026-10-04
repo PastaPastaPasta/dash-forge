@@ -1,0 +1,11 @@
+{
+  "name": "no_config_owner",
+  "description": "No config readable yet (a push right after the create): the owner's update is protectedRefUpdate, so a default-protected ref is never written inert.",
+  "case": "ref_update_route",
+  "input": {
+    "refName": "refs/heads/main",
+    "patterns": null,
+    "pusherIsOwner": true
+  },
+  "expected": "protectedRefUpdate"
+}

@@ -343,7 +343,6 @@ export {
   descriptionProblem,
   editRepoDoc,
   fullPattern,
-  missingDefaultProtection,
   newestPolicy,
   policyFromDocs,
   parseTopics,

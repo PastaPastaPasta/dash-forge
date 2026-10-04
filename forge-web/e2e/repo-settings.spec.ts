@@ -135,7 +135,7 @@ test('s1b. the one-click suggestion completes the default: every tag', async ({ 
 
 test("s2. the writer's CLI push to main is refused (E601), at consensus too", () => {
   const listed = dg('COLLAB', 'repo', 'protect', 'list', SLUG)
-  expect(listed['protectedPatterns']).toEqual(['refs/heads/main'])
+  expect(listed['protectedPatterns']).toEqual(['refs/heads/main', 'refs/tags/**'])
   writeFileSync(join(SRC, 'writer.txt'), 'a writer change\n')
   execFileSync('git', ['add', 'writer.txt'], { cwd: SRC })
   execFileSync('git', ['commit', '-q', '-m', 'writer change'], { cwd: SRC })

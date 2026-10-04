@@ -35,6 +35,7 @@ import {
   v2,
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
+import { refUpdateType } from '../repo/push'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
@@ -160,6 +161,11 @@ function runCaseBase(v: Vector): void {
     case 'matches_protected': {
       const inp = v.input as MatchesProtectedInput
       expect(matchesProtected(inp.refName, inp.patterns)).toEqual(v.expected)
+      break
+    }
+    case 'ref_update_route': {
+      const inp = v.input as { readonly refName: string; readonly patterns: readonly string[] | null; readonly pusherIsOwner: boolean }
+      expect(refUpdateType(inp.refName, inp.patterns, inp.pusherIsOwner)).toEqual(v.expected)
       break
     }
     case 'missing_default_protection': {

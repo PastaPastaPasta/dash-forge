@@ -1508,9 +1508,10 @@ export async function createRepo(
   // 3. the first config (append-only; one is enough). A private repo's is its epoch-0 anchor,
   // after the owner's self-wrap of a fresh key (§5.3).
   await step('config', async () => {
+    const patterns = createPatterns(input)
     if (visibility === 'private') {
       const p = privateCreate as PrivateCreate
-      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key, createPatterns(input))
+      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key, patterns)
       return
     }
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
@@ -1523,7 +1524,7 @@ export async function createRepo(
         defaultBranch: input.defaultBranch ?? 'main',
         backend: { mode: 0 },
         // An empty list is the same as none, and omitting it keeps the document small.
-        ...(createPatterns(input).length > 0 ? { protectedPatterns: createPatterns(input) } : {}),
+        ...(patterns.length > 0 ? { protectedPatterns: patterns } : {}),
       }),
       intent: `${key}:config`,
     })

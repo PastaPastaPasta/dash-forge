@@ -1,0 +1,11 @@
+{
+  "name": "no_config_member",
+  "description": "No config readable: anyone else's update stays a plain refUpdate.",
+  "case": "ref_update_route",
+  "input": {
+    "refName": "refs/heads/main",
+    "patterns": null,
+    "pusherIsOwner": false
+  },
+  "expected": "refUpdate"
+}
