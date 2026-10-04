@@ -21,11 +21,9 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(false)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
-    let cfg = Arc::new(Config::parse());
-    if cfg.cache_max_bytes < cfg.repo_max_bytes {
-        anyhow::bail!("GATEWAY_CACHE_MAX must be at least GATEWAY_REPO_MAX");
-    }
+    let cfg = Arc::new(Config::parse().checked().map_err(anyhow::Error::msg)?);
     std::fs::create_dir_all(&cfg.data_dir)
         .with_context(|| format!("creating {}", cfg.data_dir.display()))?;
 
@@ -64,7 +62,7 @@ async fn main() -> Result<()> {
         "forge-gateway starting"
     );
 
-    for spec in cfg.repos.iter().filter(|s| !s.trim().is_empty()) {
+    for spec in &cfg.repos {
         spawn_listed(spec.trim().to_string(), &state, &mirrors, &upstream);
     }
     spawn_poller(

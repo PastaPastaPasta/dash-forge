@@ -2,9 +2,12 @@
 
 /**
  * Clone box (`ux-dx-spec.md` §5.4): the `dash://owner/name` remote with copy, the git and dg
- * commands, and a .zip of the shown ref built in the browser. There is deliberately no https
- * clone URL: it would need a git server, and Forge runs none. On mobile only the remote and
+ * commands, and a .zip of the shown ref built in the browser. On mobile only the remote and
  * the zip show.
+ *
+ * An HTTPS clone URL shows only when the build names an optional forge-gateway
+ * (`NEXT_PUBLIC_GATEWAY_URL`, `lib/gateway.ts`): `dash://` stays first, the HTTPS URL is labelled
+ * with who runs it, and "verify" checks the gateway's refs against the ones this page proved.
  */
 
 import { useRef, useState } from 'react'
@@ -18,6 +21,7 @@ import type { RepoAddress } from '@/hooks/use-query-param'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { saveBytes } from '@/lib/view/release-download'
+import { GATEWAY, gatewayCloneUrl, verifyGateway, type GatewayCheck, type GatewayConfig, type ProvedRef } from '@/lib/gateway'
 import { formatBytes, plural, selectedTip, tipOidOf, type RepoHome, type SelectedRef } from '@/lib/view'
 import { repoCommands } from '@/lib/view/repo-commands'
 import { resolveTip } from '@/lib/view/tip'
@@ -62,6 +66,7 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
             </button>
           </p>
           <CopyRow text={cmd.dgClone} label="Copy dg repo clone command" />
+          {GATEWAY !== null && home.repo.visibility === 'public' ? <GatewayRow gateway={GATEWAY} home={home} addr={addr} /> : null}
           <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="clone-network">
             The repository is on <span className="font-mono">{ACTIVE_NETWORK.key}</span>; both commands record that in the clone.
           </p>
@@ -70,13 +75,123 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
           A clone checks out <span className="font-mono">{home.defaultBranch}</span>, the default branch.
         </p>
         <ZipDownload home={home} addr={addr} selected={selected} />
-        <p className="mt-2 hidden text-[11px] leading-snug text-anvil-500 dark:text-anvil-400 sm:block">
-          No https clone URL: that needs a git server, and Forge runs none. git talks to the chain and your storage
-          directly through the helper.
-        </p>
+        {GATEWAY === null ? (
+          <p className="mt-2 hidden text-[11px] leading-snug text-anvil-500 dark:text-anvil-400 sm:block">
+            No https clone URL: that needs a git server, and this build names none. git talks to the chain and your
+            storage directly through the helper.
+          </p>
+        ) : null}
       </div>
       <InstallSheet open={installing} onClose={() => setInstalling(false)} />
     </section>
+  )
+}
+
+/** The refs this page proved, as {@link verifyGateway} compares them. */
+export function provedRefs(home: RepoHome): ProvedRef[] {
+  return [...home.branches, ...home.tags].flatMap((r) => {
+    const oid = tipOidOf(r)
+    if (oid === null) return []
+    const s = r.state
+    const changedAt = s.state === 'resolved' ? s.createdAt : s.state === 'diverged' ? (s.heads[0]?.createdAt ?? null) : null
+    return [{ name: r.refName, oid, changedAt }]
+  })
+}
+
+type VerifyState = { kind: 'idle' } | { kind: 'checking' } | { kind: 'done'; check: GatewayCheck } | { kind: 'error'; message: string }
+
+const short = (oid: string | null): string => (oid === null ? '-' : oid.slice(0, 10))
+
+/**
+ * The HTTPS clone URL of the build's gateway, and "verify": the gateway's served refs and
+ * manifest against the refs this page proved. A gateway that is down only fails the check.
+ */
+export function GatewayRow({ gateway, home, addr }: { gateway: GatewayConfig; home: RepoHome; addr: RepoAddress }): JSX.Element {
+  const url = gatewayCloneUrl(gateway, addr.owner, addr.name)
+  const [state, setState] = useState<VerifyState>({ kind: 'idle' })
+  const verify = async (): Promise<void> => {
+    setState({ kind: 'checking' })
+    const proved = provedRefs(home)
+    // A home that resolved only the default branch judges only the refs it proved.
+    const names = new Set(proved.map((p) => p.name))
+    const inScope = home.refsPartial === true ? (n: string) => names.has(n) : undefined
+    try {
+      const check = await verifyGateway(url, proved, { repoId: home.repo.repoId, network: ACTIVE_NETWORK.key }, { inScope })
+      setState({ kind: 'done', check })
+    } catch (e) {
+      setState({ kind: 'error', message: errorMessage(e) })
+    }
+  }
+  const link = 'hit-area underline hover:text-forge-800 dark:hover:text-forge-400'
+  return (
+    <div data-testid="gateway-clone">
+      <CopyRow text={`git clone ${url}`} label="Copy HTTPS clone command" />
+      <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">
+        HTTPS via {gateway.label} · plain git, read only, an optional mirror ·{' '}
+        <button type="button" onClick={() => void verify()} disabled={state.kind === 'checking'} className={link} data-testid="gateway-verify">
+          verify
+        </button>
+      </p>
+      <GatewayVerdict state={state} />
+    </div>
+  )
+}
+
+function GatewayVerdict({ state }: { state: VerifyState }): JSX.Element | null {
+  if (state.kind === 'idle') return null
+  const base = 'mb-1.5 text-[11px] leading-snug'
+  if (state.kind === 'checking') {
+    return (
+      <p role="status" className={`${base} text-anvil-500 dark:text-anvil-400`}>
+        Checking the gateway against Dash Platform…
+      </p>
+    )
+  }
+  if (state.kind === 'error') {
+    return (
+      <p role="status" className={`${base} text-caution-700 dark:text-caution-400`} data-testid="gateway-verdict">
+        The gateway could not be checked ({state.message}). dash:// above does not need it.
+      </p>
+    )
+  }
+  const { check } = state
+  const counts = (v: string) => check.refs.filter((r) => r.verdict === v).length
+  const asOf = check.manifest !== null ? ` Its snapshot is from Platform block ${check.manifest.platformHeight}.` : ''
+  const odd = check.refs.filter((r) => r.verdict !== 'match').slice(0, 5)
+  const tone =
+    check.verdict === 'match'
+      ? 'text-verify-700 dark:text-verify-400'
+      : check.verdict === 'stale'
+        ? 'text-caution-700 dark:text-caution-400'
+        : 'text-danger-700 dark:text-danger-400'
+  const headline =
+    check.verdict === 'match'
+      ? `Matches Dash Platform: ${plural(counts('match'), 'ref')} checked.`
+      : check.verdict === 'stale'
+        ? `Behind Dash Platform: ${counts('stale')} of ${plural(check.refs.length, 'ref')} not refreshed yet.`
+        : 'Does not match Dash Platform: clone with dash:// instead.'
+  return (
+    <div role="status" className={`${base} ${tone}`} data-testid="gateway-verdict">
+      <p>
+        {headline}
+        {asOf}
+      </p>
+      {check.problems.map((p) => (
+        <p key={p}>{p}</p>
+      ))}
+      {odd.length > 0 ? (
+        <ul className="mt-0.5 font-mono">
+          {odd.map((r) => (
+            <li key={r.name}>
+              {r.verdict} {r.name.replace(/^refs\/(heads|tags)\//, '')} {short(r.served)} (Platform {short(r.proved)}): {r.why}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="text-anvil-500 dark:text-anvil-400">
+        Full check: <span className="font-mono">dg verify-mirror {'<url>'}</span>
+      </p>
+    </div>
   )
 }
 

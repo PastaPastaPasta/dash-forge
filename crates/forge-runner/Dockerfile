@@ -29,6 +29,8 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY build-support build-support
 COPY crates crates
+# Every workspace member must be present for cargo to read the workspace.
+COPY services services
 COPY docs/errors.md docs/errors.md
 COPY forge-contracts/deployments forge-contracts/deployments
 COPY forge-contracts/config forge-contracts/config

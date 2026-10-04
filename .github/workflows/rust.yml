@@ -1,6 +1,7 @@
 name: Rust
 
-# The Rust workspace (forge-core, git-remote-dash, dg, forge-relay, forge-import) builds
+# The Rust workspace (forge-core, git-remote-dash, dg, forge-relay, forge-import, forge-runner,
+# services/forge-gateway) builds
 # against a PINNED, IMMUTABLE Dash Platform tag declared in the root Cargo.toml — cargo
 # fetches it, so there is no sibling `../platform` checkout to arrange and no branch that
 # can move underneath a green build. Cargo.lock pins the exact revision.
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - 'crates/**'
+      - 'services/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rustfmt.toml'
@@ -27,6 +29,7 @@ on:
     branches: [master]
     paths:
       - 'crates/**'
+      - 'services/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rustfmt.toml'

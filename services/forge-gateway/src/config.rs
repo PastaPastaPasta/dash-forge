@@ -77,7 +77,7 @@ pub struct Config {
     pub warm_hours: u64,
 
     /// A forge-relay whose `[wake]` stream announces pushes (`http(s)://host:port`).
-    #[arg(long, env = "GATEWAY_WAKE_URL", requires = "wake_secret_file")]
+    #[arg(long, env = "GATEWAY_WAKE_URL")]
     pub wake_url: Option<String>,
 
     /// The relay's `[wake]` shared secret, in a file (32–96 printable ASCII characters).
@@ -142,6 +142,38 @@ pub struct Config {
 }
 
 impl Config {
+    /// Settings as given, with empty values (an unset variable in a compose file is `""`) read
+    /// as absent, and checked: a wake URL needs its secret, the cache must hold one repository.
+    pub fn checked(mut self) -> Result<Self, String> {
+        fn some(s: Option<String>) -> Option<String> {
+            s.filter(|v| !v.trim().is_empty())
+        }
+        fn some_path(p: Option<PathBuf>) -> Option<PathBuf> {
+            p.filter(|v| !v.as_os_str().is_empty())
+        }
+        self.public_url = some(self.public_url);
+        self.wake_url = some(self.wake_url);
+        self.wake_secret_file = some_path(self.wake_secret_file);
+        self.helper_dir = some_path(self.helper_dir);
+        self.font_dir = some_path(self.font_dir);
+        self.repos.retain(|r| !r.trim().is_empty());
+        if self.wake_url.is_some() && self.wake_secret_file.is_none() {
+            return Err(
+                "GATEWAY_WAKE_URL needs GATEWAY_WAKE_SECRET_FILE (the relay's [wake] secret)"
+                    .into(),
+            );
+        }
+        if self.cache_max_bytes < self.repo_max_bytes {
+            return Err("GATEWAY_CACHE_MAX must be at least GATEWAY_REPO_MAX".into());
+        }
+        if let Some(u) = &self.public_url {
+            if !(u.starts_with("https://") || u.starts_with("http://")) {
+                return Err("GATEWAY_PUBLIC_URL must be an http(s) URL".into());
+            }
+        }
+        Ok(self)
+    }
+
     /// The public base URL, without a trailing slash.
     pub fn public_base(&self) -> String {
         self.public_url
@@ -199,6 +231,25 @@ mod tests {
         assert_eq!(parse_size("1048576").unwrap(), 1 << 20);
         assert!(parse_size("lots").is_err());
         assert!(parse_size("99999999999T").is_err());
+    }
+
+    #[test]
+    fn empty_values_are_absent() {
+        let mut c = Config::parse_from(["forge-gateway"]);
+        c.wake_url = Some(String::new());
+        c.public_url = Some(" ".into());
+        c.repos = vec![String::new()];
+        let c = c.checked().unwrap();
+        assert!(c.wake_url.is_none() && c.public_url.is_none() && c.repos.is_empty());
+        let mut c = Config::parse_from(["forge-gateway"]);
+        c.wake_url = Some("http://relay:8787".into());
+        assert!(c
+            .checked()
+            .unwrap_err()
+            .contains("GATEWAY_WAKE_SECRET_FILE"));
+        let mut c = Config::parse_from(["forge-gateway"]);
+        c.cache_max_bytes = 1;
+        assert!(c.checked().is_err());
     }
 
     #[test]

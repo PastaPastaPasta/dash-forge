@@ -325,6 +325,24 @@ impl Mirrors {
         });
     }
 
+    /// Refresh `slot` (or join the refresh under way) and wait for it to end: `None` when it
+    /// succeeded, else why it failed.
+    pub async fn refresh_wait(self: &Arc<Self>, slot: &Arc<Slot>) -> Option<Unavailable> {
+        self.trigger(slot);
+        loop {
+            let notified = slot.done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let s = slot.state();
+                if !s.refreshing {
+                    return s.last_err.clone();
+                }
+            }
+            notified.await;
+        }
+    }
+
     /// Whether `slot` is due a refresh (never refreshed by this process, or longer ago than
     /// the poll interval).
     pub fn stale(&self, slot: &Slot) -> bool {

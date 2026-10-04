@@ -42,6 +42,7 @@ mod signing;
 mod status;
 mod storage;
 mod storage_wizard;
+mod verify_mirror;
 mod webhook;
 
 use std::path::PathBuf;
@@ -161,6 +162,15 @@ pub enum Command {
         /// Also trust this identity's keys (a pull request's author; id or DPNS name; repeatable).
         #[arg(long = "author", value_name = "IDENTITY")]
         author: Vec<String>,
+    },
+    /// Check a plain-git mirror of a repository (a gateway's https clone URL) against Dash
+    /// Platform: each ref it serves is a match, stale (behind) or a MISMATCH.
+    VerifyMirror {
+        /// The mirror's clone URL, `https://<gateway>/<owner>/<name>.git`.
+        url: String,
+        /// Fail on a stale ref too, not only on a mismatch.
+        #[arg(long)]
+        strict: bool,
     },
     /// Repository members (maintainers, writers, triage members and readers).
     #[command(subcommand)]
@@ -2113,6 +2123,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::VerifyCommit { repo, revs, author } => {
             signing::verify_commits(ctx, repo.as_deref(), revs, author).await
         }
+        Command::VerifyMirror { url, strict } => verify_mirror::run(ctx, url, *strict).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
