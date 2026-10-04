@@ -1,6 +1,9 @@
 'use client'
 
-/** `/settings` — account settings: identity, network, balance, the local spend ledger, sign out. */
+/**
+ * `/settings` — account settings: identity, network, balance, the local spend ledger, sign out.
+ * Appearance and the IPFS gateways are this browser's own, so they show signed out too.
+ */
 
 import Link from 'next/link'
 import { Lock, Wallet } from 'lucide-react'
@@ -20,6 +23,7 @@ import { EncryptionKeyPanel } from '@/components/encryption-key-panel'
 import { SecurityPanel } from '@/components/security-panel'
 import { GatewaysField } from '@/components/gateways-field'
 import { DisplayPrefsPanel } from '@/components/display-prefs-panel'
+import { AppearancePanel } from '@/components/appearance-panel'
 import { TrendingPrefPanel } from '@/components/trending-pref-panel'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashValueNote } from '@/lib/view/format'
@@ -40,6 +44,15 @@ export default function SettingsPage(): JSX.Element {
     </section>
   )
 
+  const appearance = (
+    <section aria-labelledby="appearance-title" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+      <h2 id="appearance-title" className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">
+        Appearance
+      </h2>
+      <AppearancePanel />
+    </section>
+  )
+
   if (!identity) {
     return (
       <AppShell>
@@ -55,6 +68,7 @@ export default function SettingsPage(): JSX.Element {
             }
             action={<SignInButton />}
           />
+          {appearance}
           {gateways}
         </div>
       </AppShell>
@@ -118,9 +132,11 @@ export default function SettingsPage(): JSX.Element {
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Diffs and merges</h2>
+          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Merge commits</h2>
           <DisplayPrefsPanel />
         </section>
+
+        {appearance}
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Stars</h2>

@@ -9,6 +9,7 @@
 
 import { useRef, useState } from 'react'
 import { CheckCircle2, ChevronDown, CircleSlash, Copy } from 'lucide-react'
+import { STATE_TEXT } from '@/lib/design/state'
 
 import type { ClosedAs, CloseReason } from '@/lib/rules/transition'
 import { Button } from '@/components/ui/button'
@@ -94,7 +95,7 @@ export function CloseIssueButton({
   return (
     <div className="relative inline-flex" ref={ref} data-testid="close-issue">
       <Button variant="outline" className="rounded-r-none" onClick={() => onClose({ reason: 'completed', duplicateOf: null })} disabled={disabled} title={title} data-testid="issue-state-toggle">
-        <CheckCircle2 className="h-3.5 w-3.5 text-forge-700 dark:text-forge-400" aria-hidden />
+        <CheckCircle2 className={`h-3.5 w-3.5 ${STATE_TEXT.done}`} aria-hidden />
         {label}
       </Button>
       <Button
@@ -121,9 +122,9 @@ export function CloseIssueButton({
               data-reason={c.reason}
             >
               {c.reason === 'completed' ? (
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
+                <CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${STATE_TEXT.done}`} aria-hidden />
               ) : c.reason === 'not_planned' ? (
-                <CircleSlash className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
+                <CircleSlash className={`mt-0.5 h-4 w-4 shrink-0 ${STATE_TEXT.skipped}`} aria-hidden />
               ) : (
                 <Copy className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
               )}

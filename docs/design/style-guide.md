@@ -47,6 +47,8 @@ colors: {
 - **White text sits on `-700` fills**: `bg-dash-700`, `bg-verify-700`, `bg-forge-700`, and a hover darkens (`hover:bg-forge-800`) rather than brightens. The base `dash` (3.54:1) and `verify` (3.3:1) values and `forge-600` (3.56:1) fail AA behind white. The same test checks every `bg-*` (hover:/dark: variants included) behind `text-white`, and fails on any fill it cannot resolve. The identity pill's avatar fill is darkened per hue until its white initial clears 4.5:1 (`lib/design/avatar.ts`).
 - **Dark mode is the primary theme** (class-based, `next-themes`); light mode fully supported. Backgrounds: `anvil-950/900/850` layered surfaces (dark), `anvil-50/white` (light).
 - Semantic colors are *meaningful*, never decorative: green = cryptographically verified, amber = availability risk, red = destructive/unverified, dash-blue = platform identity & credits. Don't repurpose.
+- **Theme tokens.** New colour roles are CSS variables in `forge-web/app/globals.css` (`:root` for light, `.dark` for dark), exposed to Tailwind as `rgb(var(--name) / <alpha-value>)`, so one class serves both themes with no `dark:` twin. The contrast test reads both blocks and checks every pair. Today: `--focus` and `--state-*`.
+- **Issue and PR states are not trust colours.** Use `STATE_TEXT` / `STATE_FILL` from `forge-web/lib/design/state.ts`: open green, merged and completed violet, closed PR red, draft and not planned grey, as on GitHub. Never `verify`, `danger`, `dash` or the ember accent for a state. Each state also has its own icon.
 
 ### Typography
 - UI: system stack (`-apple-system, Segoe UI, Roboto, …`) — fast, no font payload.
@@ -54,7 +56,7 @@ colors: {
 - Scale: 13px base for dense surfaces (file lists, commit log), 15px prose (README, issues); headings 1.25 ratio, semibold not bold.
 
 ### Layout & components
-- Max content width 1280px; repo pages: left = content, right 296px rail (metadata, verification panel, storage health).
+- Max content width 1280px; repo pages: left = content, right 296px rail (metadata, verification panel, storage health). Code pages (file, blame, commit, compare, a PR's Files) have no rail: the code gets the full width, led by the Verification card collapsed to one line.
 - Radix primitives wrapped in `components/ui/` (yappr/shadcn conventions: `clsx` + `tailwind-merge` + CVA variants).
 - Density: tables/lists at 36px rows; generous only around prose.
 - Iconography: Lucide, 16px inline / 20px nav; git-specific glyphs (branch, tag, commit) used consistently.
@@ -67,9 +69,9 @@ colors: {
 4. **Backend badge** — `⛓ platform` / `🌐 ipfs|s3|https` / `⛓+🌐 mixed` on repo headers and clone box.
 
 ### Accessibility
-- WCAG 2.1 AA contrast in **both** themes (validate ember-on-dark combos); all interactive elements keyboard-reachable with visible `:focus-visible` ring (`forge-400`); diff colors pass for color-blind users (blue/orange diff option, which also recolors the A/D file letters); `prefers-reduced-motion` kills all animation.
+- WCAG 2.1 AA contrast in **both** themes (validate ember-on-dark combos); all interactive elements keyboard-reachable with visible `:focus-visible` ring (the `--focus` token: forge-700 on light, forge-400 on dark, 3:1 or more on every surface); diff colors pass for color-blind users (blue/orange diff option, which also recolors the A/D file letters); `prefers-reduced-motion` kills all animation.
 - Keyboard: a "Skip to content" link is the first Tab stop; `/` focuses the jump box; modals (`components/ui/dialog.tsx`) move focus to their `autoFocus` field, trap Tab/Shift+Tab, answer Escape, and return focus to the opener. Scroll containers (code, diffs, wide tables) use `ScrollRegion`, which joins the Tab order only while it overflows.
-- Theme: one toggle cycles dark → light → system, persisted (`localStorage.theme`) and applied before first paint. Test the light theme by setting that key, not by emulating `prefers-color-scheme` (the default is dark, so emulation alone renders dark). `e2e/a11y.spec.ts` runs axe on every route in both themes.
+- Theme: the header toggle cycles system → dark → light; Settings → Appearance (signed out too) offers the same three plus the diff choices. Persisted (`localStorage.theme`) and applied before first paint. Test the light theme by setting that key, not by emulating `prefers-color-scheme`. `e2e/a11y.spec.ts` runs axe on every route in both themes.
 
 ## B. Engineering conventions
 
