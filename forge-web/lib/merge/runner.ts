@@ -73,8 +73,10 @@ export interface MergeRun {
   readonly noFastForward?: true
   /** The merge commit's edited message this run built with (M2): a different one is a new run. */
   readonly message?: string
+  /** Built as a rebase (M1): another method is a new run. */
+  readonly rebase?: true
   readonly done: readonly MergeStepId[]
-  readonly result?: Extract<MergeResult, { kind: 'fast-forward' | 'merge' | 'squash' }>
+  readonly result?: Extract<MergeResult, { kind: 'fast-forward' | 'merge' | 'squash' | 'rebase' }>
   readonly stored?: StoredPack
   readonly manifestId?: string
   readonly refDocumentId?: string
@@ -83,19 +85,20 @@ export interface MergeRun {
 }
 
 /** A fresh run for `input`. */
-export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message'>): MergeRun {
+export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message' | 'rebase'>): MergeRun {
   return {
     baseTip: input.baseTip,
     headOid: input.headOid,
     ...(input.squash ? { squash: input.squash.message } : {}),
     ...(input.noFastForward === true && !input.squash ? { noFastForward: true as const } : {}),
     ...(input.message !== undefined && !input.squash ? { message: input.message } : {}),
+    ...(input.rebase === true && !input.squash ? { rebase: true as const } : {}),
     done: [],
   }
 }
 
 /** `run` when it is for `input`'s base tip, head, method and message, else a fresh run. */
-export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message'>): MergeRun {
+export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message' | 'rebase'>): MergeRun {
   const noFf = input.noFastForward === true && !input.squash
   const message = input.squash ? undefined : input.message
   return run !== null &&
@@ -103,7 +106,8 @@ export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' |
     run.headOid === input.headOid &&
     run.squash === input.squash?.message &&
     (run.noFastForward === true) === noFf &&
-    run.message === message
+    run.message === message &&
+    (run.rebase === true) === (input.rebase === true && !input.squash)
     ? run
     : newRun(input)
 }

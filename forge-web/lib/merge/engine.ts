@@ -11,6 +11,8 @@
  *    refused as a conflict, and `dg pr merge` does it. The merge commit is authored and
  *    committed by the merger, message `Merge pull request #<n> from <source>` (or the
  *    merger's own, review-parity M2).
+ *  - A **rebase** (`rebase.ts`): the PR's commits replayed on the base tip as `git rebase`
+ *    replays them, each authored as before and committed by the merger.
  *  - The **pack**: every object reachable from the new tip that the base repo does not hold,
  *    as a non-thin pack (see `objects.ts`, `pack-writer.ts`).
  *
@@ -28,6 +30,7 @@ import type { ObjectReader } from '../view/tree-nav'
 import { isLegalRefName } from '../rules'
 import { newCommits, objectsToPack, UnsupportedChangeError, WalkLimitError } from './objects'
 import { merge3, MERGE3_MAX_BYTES } from './merge3'
+import { rebaseCommits } from './rebase'
 import { writePack } from './pack-writer'
 import type { PackEstimate } from '../storage/merge-choice'
 
@@ -77,6 +80,13 @@ export interface MergeInput {
    * head, instead of a fast-forward. Ignored with {@link squash}, and on an empty base.
    */
   readonly noFastForward?: true
+  /**
+   * Rebase and merge (review-parity M1, `dg pr merge --rebase`): the PR's commits replayed on the
+   * base tip ({@link rebaseCommits}), authors kept, the merger ({@link MergeInput.author})
+   * committing each. A head on the base tip with a linear history fast-forwards, as git leaves
+   * it. Ignored with {@link squash}.
+   */
+  readonly rebase?: true
 }
 
 /** A merge the engine can make, before its pack is built. */
@@ -87,7 +97,7 @@ export type MergePlan =
    * git would conflict, or only git merges it (renames, a moved directory, binary or very large
    * files; or the history has several merge bases): `paths` says where, when known.
    */
-  | { readonly kind: 'conflict'; readonly paths: readonly string[] }
+  | { readonly kind: 'conflict'; readonly paths: readonly string[]; readonly reason?: string }
   /** A commit or tree fsck would refuse, or a change only the CLI merges: nothing is merged in the browser. */
   | { readonly kind: 'malformed'; readonly reason: string }
   /** Past a walk or read limit: too large to merge in a tab. */
@@ -97,7 +107,7 @@ export type MergePlan =
 
 /** A merge ready to push. */
 export interface MergeOutcome {
-  readonly kind: 'fast-forward' | 'merge' | 'squash'
+  readonly kind: 'fast-forward' | 'merge' | 'squash' | 'rebase'
   readonly newTip: string
   readonly pack: Uint8Array
   readonly packHash: string
@@ -306,7 +316,7 @@ export async function mergeTrees(
 const STRICT_IDENT = /^[^<>\n]* <[^<>\n]*> (0|[1-9]\d{0,17}) [+-]\d{4}$/
 
 /** `Name <email> <seconds> <±hhmm>` for a git commit header. */
-function identLine(who: MergeIdentity): string {
+export function identLine(who: MergeIdentity): string {
   const when = who.timestamp ?? Math.floor(Date.now() / 1000)
   // The offset in force at that moment (daylight saving differs across the year).
   const offset = who.timezoneOffset ?? new Date(when * 1000).getTimezoneOffset()
@@ -499,6 +509,8 @@ export type MergeCheck = MergePlan['kind']
 export interface MergeCheckResult {
   readonly check: MergeCheck
   readonly conflictPaths: readonly string[]
+  /** Why it conflicts, when the paths do not say it (a rebase's refusals); else null. */
+  readonly conflictReason: string | null
   /**
    * An upper bound on the pack the merge will store: its objects' raw bytes (a pack is zlib-
    * compressed, so never larger in practice) plus the pack framing, and its object count. The
@@ -524,9 +536,11 @@ export function packSizeBound(objects: readonly { readonly bytes: Uint8Array }[]
 /** {@link checkMerge} with the conflicting paths (the merge box lists them, review-parity F7). */
 export async function checkMergeDetailed(raw: ObjectReader, input: MergeInput, budget = MERGE_READ_BUDGET): Promise<MergeCheckResult> {
   const out = await refusing(() => build(strictReader(raw, budget), input, false))
-  if (out.kind === 'checked') return { check: out.check, conflictPaths: [], packEstimate: out.packEstimate }
-  if (out.kind === 'squash' || out.kind === 'fast-forward' || out.kind === 'merge') return { check: out.kind === 'squash' ? 'merge' : out.kind, conflictPaths: [], packEstimate: { bytes: out.pack.length, objectCount: out.objectCount } }
-  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [], packEstimate: null }
+  if (out.kind === 'checked') return { check: out.check, conflictPaths: [], conflictReason: null, packEstimate: out.packEstimate }
+  if (out.kind === 'squash' || out.kind === 'rebase' || out.kind === 'fast-forward' || out.kind === 'merge') {
+    return { check: out.kind === 'fast-forward' ? 'fast-forward' : 'merge', conflictPaths: [], conflictReason: null, packEstimate: { bytes: out.pack.length, objectCount: out.objectCount } }
+  }
+  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [], conflictReason: out.kind === 'conflict' ? (out.reason ?? null) : null, packEstimate: null }
 }
 
 /**
@@ -570,9 +584,20 @@ async function build(
   if (plan.kind === 'up-to-date' || plan.kind === 'unrelated' || plan.kind === 'conflict') return plan
   let tip: string
   let source = reader
-  // What the base gains: a fast-forward, unless --no-ff makes it a merge commit.
-  let kind: 'fast-forward' | 'merge' = plan.kind
-  if (input.squash !== undefined) {
+  // What the base gains: a fast-forward, unless --no-ff makes it a merge commit (or a rebase
+  // rewrites the PR's commits).
+  let kind: 'fast-forward' | 'merge' | 'rebase' = plan.kind
+  if (input.rebase === true && input.squash === undefined && input.baseTip !== '') {
+    onProgress?.('merge')
+    const rebased = await rebaseCommits(reader, input.baseTip, input.headOid, plan.kind === 'merge' ? plan.mergeBase : null, identLine(input.author), mergeTrees)
+    if (rebased.kind === 'conflict') return rebased
+    if (rebased.kind === 'fast-forward') tip = input.headOid
+    else {
+      tip = rebased.tip
+      source = rebased.reader
+      kind = 'rebase'
+    }
+  } else if (input.squash !== undefined) {
     // One commit on the base tip with the merged tree (the head's own when it descends).
     onProgress?.('merge')
     let tree: string
@@ -615,11 +640,11 @@ async function build(
   let objects = await objectsToPack(source, await newCommits(source, tip, baseHave))
   // The check sizes what it walked: at least what the merge packs (a same-repo head's history is
   // then left out of the pack), so an upper bound.
-  if (!pack) return { kind: 'checked', check: kind, packEstimate: { bytes: packSizeBound(objects), objectCount: objects.length } }
-  // A squash commit's only parent is the base tip: nothing of the head's history is pushed.
-  // What the base repo's packs already hold is not packed again: for a same-repo PR the head's
-  // history (a fast-forward to it packs nothing).
-  if (input.headInBase && input.squash === undefined) objects = await objectsToPack(source, await newCommits(source, tip, [...baseHave, input.headOid]))
+  if (!pack) return { kind: 'checked', check: kind === 'fast-forward' ? 'fast-forward' : 'merge', packEstimate: { bytes: packSizeBound(objects), objectCount: objects.length } }
+  // A squash commit's only parent is the base tip, and a rebase's commits are new: nothing of the
+  // head's history is pushed. What the base repo's packs already hold is not packed again: for a
+  // same-repo PR the head's history (a fast-forward to it packs nothing).
+  if (input.headInBase && input.squash === undefined && kind !== 'rebase') objects = await objectsToPack(source, await newCommits(source, tip, [...baseHave, input.headOid]))
   const built = writePack(objects)
   onProgress?.('pack', plural(built.objectCount, 'object'))
   return { kind: input.squash !== undefined ? 'squash' : kind, newTip: tip, pack: built.bytes, packHash: built.packHash, objectCount: built.objectCount }

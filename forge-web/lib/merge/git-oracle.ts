@@ -52,7 +52,7 @@ export function writeBatched(dir: string, objects: Iterable<GitObject>): void {
     else list.push(file)
   }
   for (const [type, files] of byType) {
-    const r = spawnSync('git', ['hash-object', '-w', '-t', type, '--stdin-paths'], { cwd: dir, input: files.join('\n'), maxBuffer: 1 << 28 })
+    const r = spawnSync('git', ['hash-object', '-w', '--no-filters', '-t', type, '--stdin-paths'], { cwd: dir, input: files.join('\n'), maxBuffer: 1 << 28 })
     if (r.status !== 0) throw new Error(`git hash-object failed: ${r.error?.message ?? r.stderr.toString()}`)
     for (const f of files) rmSync(f)
   }
