@@ -183,6 +183,14 @@ impl Collab<'_> {
             .fix("shorten it, or split it into comments")
             .into());
         }
+        // The field must hold the trailer, whose length does not depend on the hash: checked
+        // before anything is stored and paid for.
+        let no_room = || {
+            Error::Config(format!(
+                "a field of {room} bytes cannot hold the trailer naming the full text"
+            ))
+        };
+        long_body::stored_text(full, room, &[0; 32]).ok_or_else(no_room)?;
         self.require_role(
             repo,
             Role::Writer,
@@ -203,11 +211,7 @@ impl Collab<'_> {
                 store.required,
             )
             .await?;
-        long_body::stored_text(full, room, &hash).ok_or_else(|| {
-            Error::Config(format!(
-                "a field of {room} bytes cannot hold the trailer naming the full text"
-            ))
-        })
+        long_body::stored_text(full, room, &hash).ok_or_else(no_room)
     }
 
     /// `stored` (a field as read: decrypted, in a private repository) as a reader shows it:
