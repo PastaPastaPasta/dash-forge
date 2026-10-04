@@ -33,12 +33,16 @@ import {
   v2,
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
+import { avatarSpec, checkProfile, type ProfileInput } from './profile'
+import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
+import { planRefs, syncDecision } from '../repo/fork'
 import type {
   ConfigDoc,
   Event,
   FlatIndex,
   IsAncestor,
   MergeBaseTips,
+  RefState,
   RefUpdate,
   TreeDiff,
 } from './types'
@@ -304,6 +308,22 @@ function runCaseV2(v: Vector): void {
       expect(v2.trustedUpstreamNumber(inp.upstreamNumber, inp.author, inp.repoOwner, new v2.RoleOracle(inp.memberships))).toEqual(v.expected)
       break
     }
+    case 'fork_sync': {
+      onlyKeys(v, ['forkTip', 'parentTip', 'forkInParent', 'parentInFork'])
+      const i = v.input as { forkTip: string | null; parentTip: string | null; forkInParent: boolean; parentInFork: boolean }
+      expect(syncDecision(i.forkTip, i.parentTip, i.forkInParent, i.parentInFork)).toEqual(v.expected)
+      break
+    }
+    case 'fork_refs': {
+      onlyKeys(v, ['parent', 'fork', 'onlyBranch'], { parent: ['refName', 'state'], fork: ['refName', 'state'] })
+      const i = v.input as {
+        parent: readonly { refName: string; state: RefState }[]
+        fork: readonly { refName: string; state: RefState }[]
+        onlyBranch: string | null
+      }
+      expect(planRefs(i.parent, i.fork, i.onlyBranch ?? undefined)).toEqual(v.expected)
+      break
+    }
     case 'pack_copies': {
       onlyKeys(v, ['copies'])
       const { copies } = v.input as { readonly copies: readonly v2.PackCopy[] }
@@ -489,6 +509,17 @@ function runCaseV2(v: Vector): void {
       expect(v2.refNameHashesAgree(inp.doc, inp.refKey ?? null)).toEqual(v.expected)
       break
     }
+    case 'profile_input': {
+      onlyKeys(v, ['displayName', 'bio', 'avatarConfig', 'links', 'location', 'company'])
+      expect(checkProfile(v.input as ProfileInput)).toEqual(v.expected)
+      break
+    }
+    case 'avatar_config': {
+      onlyKeys(v, ['config', 'identityId'])
+      const inp = v.input as { readonly config: string | null; readonly identityId: string }
+      expect(avatarSpec(inp.config, inp.identityId)).toEqual(v.expected)
+      break
+    }
     case 'repo_name': {
       onlyKeys(v, ['name'])
       const { name } = v.input as { readonly name: string }
@@ -555,6 +586,20 @@ function stateOf(v: Vector, inp: StateInput): [number, string | null] {
   return [inp.sum as number, inp.mergeOid ?? null]
 }
 
+/** The signature cases (`./signature`): asynchronous, since OpenPGP.js is. */
+const SIGNATURE_CASES: ReadonlySet<string> = new Set(['pubkey_entry', 'commit_signature'])
+
+async function runSignatureVector(v: Vector): Promise<void> {
+  if (v.case === 'pubkey_entry') {
+    onlyKeys(v, ['entry'])
+    expect(await readPubkeyEntry((v.input as { readonly entry: string }).entry)).toEqual(v.expected)
+    return
+  }
+  onlyKeys(v, ['commit', 'signers'], {})
+  const inp = v.input as { readonly commit: string; readonly signers: readonly Signer[] }
+  expect(await verifyCommitSignature(new TextEncoder().encode(inp.commit), inp.signers)).toEqual(v.expected)
+}
+
 describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
   const base = vectors.filter((v) => v.rules === undefined)
@@ -587,8 +632,9 @@ describe('FORGE_RULES conformance vectors', () => {
     })
   }
   for (const v of v2Vectors) {
-    it(`v2 ${v.case} :: ${v.name}`, () => {
-      runVector(v)
+    it(`v2 ${v.case} :: ${v.name}`, async () => {
+      if (SIGNATURE_CASES.has(v.case)) await runSignatureVector(v)
+      else runVector(v)
     })
   }
 })

@@ -1,0 +1,14 @@
+{
+  "name": "gpg_short_fingerprint",
+  "description": "A fingerprint is 40 or 64 hex digits (a key id is not enough).",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "gpg:C209DB5A73261B84"
+  },
+  "expected": {
+    "kind": "invalid",
+    "fingerprint": null,
+    "verifiable": false
+  }
+}

@@ -73,7 +73,7 @@ export function repoRefOf(forge: ForgeIds, repo: RepoDoc): RepoRef {
 }
 
 /** Whether `s` is a base58 identity / document id (32 bytes). */
-function isIdentifier(s: string): boolean {
+export function isIdentifier(s: string): boolean {
   try {
     return base58Decode(s).length === 32
   } catch {

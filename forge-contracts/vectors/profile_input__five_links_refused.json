@@ -1,0 +1,22 @@
+{
+  "name": "five_links_refused",
+  "description": "At most four links.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "links": [
+      "https://a.dev",
+      "https://b.dev",
+      "https://c.dev",
+      "https://d.dev",
+      "https://e.dev"
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "links"
+    ],
+    "normalized": null
+  }
+}

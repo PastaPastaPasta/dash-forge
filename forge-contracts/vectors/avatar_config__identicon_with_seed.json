@@ -1,0 +1,14 @@
+{
+  "name": "identicon_with_seed",
+  "description": "`identicon:<seed>` is seeded with its seed.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "identicon:re-roll.2",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "identicon",
+    "seed": "re-roll.2"
+  }
+}

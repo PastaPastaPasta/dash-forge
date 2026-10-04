@@ -1,0 +1,16 @@
+{
+  "name": "bom_is_not_trimmed",
+  "description": "U+FEFF is not White_Space (JavaScript's trim strips it; the shared rule does not).",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "displayName": "﻿Alice"
+  },
+  "expected": {
+    "valid": true,
+    "invalid": [],
+    "normalized": {
+      "displayName": "﻿Alice"
+    }
+  }
+}

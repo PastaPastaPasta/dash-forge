@@ -1,0 +1,16 @@
+{
+  "name": "display_name_61_chars",
+  "description": "A display name holds at most 60 characters.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "displayName": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "displayName"
+    ],
+    "normalized": null
+  }
+}

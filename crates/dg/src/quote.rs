@@ -120,6 +120,16 @@ pub fn replace(bytes: u64) -> u64 {
     20_000_000 + 27_500 * bytes
 }
 
+/// What a `profile` pays beyond its bytes: its one unique index (`$ownerId`) and, as the
+/// signer's first forge-community write, its contract nonce. Charged on sakura (Platform
+/// 5.0.0-beta.1, P1-7): 36.8M-37.2M for a first profile with ~120 bytes of text.
+const PROFILE_INDEX_OVERHEAD: u64 = 40_000_000;
+
+/// A new `profile` carrying `text_bytes` of text: an upper bound.
+pub fn profile(text_bytes: u64) -> u64 {
+    forge_core::cost::estimate(text_bytes + 64).total() + PROFILE_INDEX_OVERHEAD
+}
+
 /// A member's `consent` (`dg collab accept`): 30.8M on bonsia, 30.6M on sakura (QW4-049).
 pub const CONSENT: u64 = 33_000_000;
 

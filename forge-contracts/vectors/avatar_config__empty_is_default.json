@@ -1,0 +1,13 @@
+{
+  "name": "empty_is_default",
+  "description": "An empty avatarConfig: the default avatar.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "default"
+  }
+}

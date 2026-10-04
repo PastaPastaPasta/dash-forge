@@ -1,0 +1,24 @@
+{
+  "name": "gpg_rsa_not_verifiable",
+  "description": "An RSA signature never verifies here: its key entry is not verifiable.",
+  "case": "commit_signature",
+  "rules": "v2",
+  "input": {
+    "commit": "tree 645c53adadcc0d317416961a086daf04ea87716d\nparent 6978207ede76ef6e099fe5f7d82e80eead4c0a54\nauthor Sig Test <sig@sig.test> 1790942400 +0000\ncommitter Sig Test <sig@sig.test> 1790942400 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iQFPBAABCAA5FiEE7PAL/62YLXSPbFCynfPRpYU0nD0FAmq/auQbFIAAAAAABAAO\n bWFudTIsMi41KzEuMTIsMCwzAAoJEJ3z0aWFNJw9mlAH/Av/2jO13PTCr4p/Bq4h\n pPu5sGC671rSD7x+KggbvYOBSlryDyOT0y/B3gEwge35/UK300E9F5xIk7Hnyxst\n qVNcopkkG/fTDyap1GZv1cbEf1vuzmqPffuvkN1K4pqGTNVfHI+HVDzrkes1G7WA\n WB4zAcD8HHjP/Wr9/NvwnB2Q53TwzOSUI6x8NNkEB369x0Nta8H2f+Gg475FmYHZ\n 8EITQoi8mYchItYwN6pZHjYl2UkHXNq7fNW7WN/g/9aaAcmSvbC/1Vf/bukJAe4G\n oA3WlXscN+e8MheDrDmKz5gMzVdqMsl7Pjkx+Pdottc+U66VTm+vhmDWEAolx/Kn\n pUk=\n =b+nW\n -----END PGP SIGNATURE-----\n\ngpg-c-rsa commit\n\nBody line for gpg-c-rsa.\n",
+    "signers": [
+      {
+        "identity": "J9AeWAQUx5JKWBbZ3oiB82di8DmhoswkwfoYJL8eJwJ6",
+        "pubkeys": [
+          "gpg:ECF00BFFAD982D748F6C50B29DF3D1A585349C3D xsBNBGq/auQBCACuOe4Ez1Z8WlFRVeRHgf2MpS1G7UgElC1hXAniIjdE2LoSAF4ywSyN+bnAxEQWxNallM5pp9SA+UjZdmAzbMM+RY8xKO2w1rJhSeSRJ1d/a1XeSIXq7aLudoaxYeapgJ313/K0oHA2Flj0p7B8x7gEjVYhWz6FtgHCEG0+h/bE+M48WCMJRO61VNLzrREJK1I5Q5u/z1NPscgHX1ss7jYZmQsjC1lGuLlhWUNi5jKMeySo+soQdEIj5NHI2+4242t0YyMzFY8VvYWj4vpwUEIgmIgybRoqPULAtEB6GGOIJU8hTeqGSYFiFNhDNZMjWTG4w16gHlh9O/KsdNz/o9XtABEBAAE="
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "unverified",
+    "reason": "unknown_key",
+    "format": "openpgp",
+    "key": "ECF00BFFAD982D748F6C50B29DF3D1A585349C3D",
+    "signer": null
+  }
+}

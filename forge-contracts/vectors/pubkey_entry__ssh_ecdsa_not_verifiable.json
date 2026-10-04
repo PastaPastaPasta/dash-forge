@@ -1,0 +1,14 @@
+{
+  "name": "ssh_ecdsa_not_verifiable",
+  "description": "Another SSH key type reads, with its fingerprint, but never verifies.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBL9flukvA7JKZTNXsJ3mJSXgckztvOgnTO6KCJjfwB6M5ROYw5SY020EmjOB4uiggA4TJ/xNBcv8ev5Nm6nhkKc= sig-test-f"
+  },
+  "expected": {
+    "kind": "ssh",
+    "fingerprint": "SHA256:NE3X68BCSK6CWY2wjxyAb/FPN/FO1UwvZUul2xUt2L4",
+    "verifiable": false
+  }
+}

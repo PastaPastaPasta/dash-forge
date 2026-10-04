@@ -1,0 +1,13 @@
+{
+  "name": "identicon_seed_space_invalid",
+  "description": "A seed is A-Z, a-z, 0-9, `.`, `_`, `-` only.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "identicon:a b",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "invalid"
+  }
+}

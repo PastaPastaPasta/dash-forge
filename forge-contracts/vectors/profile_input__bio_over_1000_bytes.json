@@ -1,0 +1,16 @@
+{
+  "name": "bio_over_1000_bytes",
+  "description": "A bio of 251 four-byte characters is within 500 characters but over its 1000 bytes.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "bio": "𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸"
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "bio"
+    ],
+    "normalized": null
+  }
+}

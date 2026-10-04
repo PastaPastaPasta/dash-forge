@@ -1,0 +1,16 @@
+{
+  "name": "display_name_60_astral_chars",
+  "description": "60 characters of 4 UTF-8 bytes each are 240 bytes, within maxBytes.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "displayName": "𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸"
+  },
+  "expected": {
+    "valid": true,
+    "invalid": [],
+    "normalized": {
+      "displayName": "𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸𝔸"
+    }
+  }
+}

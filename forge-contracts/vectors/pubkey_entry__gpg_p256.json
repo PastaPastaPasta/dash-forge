@@ -1,0 +1,14 @@
+{
+  "name": "gpg_p256",
+  "description": "An ECDSA P-256 key packet: verifiable.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "gpg:A418340A0669BE2611293CCF29662153852F6819 xlIEar9q5BMIKoZIzj0DAQcCAwSh0yLSKaCLcrWFhlIR+fW/rR4MA2yyzCKI3OOQadLjXxQd+/4YUfwYeeSgbbR1c62dhAREuiJcbRX+A6y+8yKC"
+  },
+  "expected": {
+    "kind": "openpgp",
+    "fingerprint": "A418340A0669BE2611293CCF29662153852F6819",
+    "verifiable": true
+  }
+}
