@@ -1,13 +1,17 @@
 # Dash Forge mirror for GitLab CI: keeps a Forge repository (on Dash Platform) in step with
 # this GitLab project. Guide: docs/guides/mirror-a-gitlab-project.md.
 #
-# Use it from the project's .gitlab-ci.yml (pin a commit of dash-forge you have reviewed):
+# Use it from the project's .gitlab-ci.yml, pinned to a Dash Forge release (its tag, and its
+# version in FORGE_VERSION):
 #
 #   include:
-#     - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/<commit>/integrations/gitlab/dash-forge-mirror.yml
+#     - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/v0.1.0/integrations/gitlab/dash-forge-mirror.yml
 #   variables:
 #     FORGE_REPO: dash://<owner identity id>/<repo name>
-#     FORGE_SOURCE_REF: <the same commit>
+#     FORGE_VERSION: "0.1.0"
+#
+# Or pin a commit of dash-forge you have reviewed in the URL, and build it from source with
+# FORGE_SOURCE_REF: <the same commit> instead of FORGE_VERSION.
 #
 # GitLab's push mirroring cannot target Forge: "The repository must be accessible over
 # http://, https://, ssh://, or git://" (docs.gitlab.com/user/project/repository/mirror/).
@@ -45,8 +49,8 @@ variables:
   #   FORGE_VERSION     a published Dash Forge release (e.g. 0.1.0), checked against its
   #                     SHA256SUMS by the install.sh of that release's tag;
   #   FORGE_SOURCE_REF  a full dash-forge commit id you have reviewed, built from source
-  #                     (no release is published yet). The helper runs with your key, so
-  #                     never a branch name.
+  #                     (for code that is not in a release). The helper runs with your key,
+  #                     so never a branch name.
   # Both set: the release, else the commit.
   FORGE_VERSION: ""
   FORGE_SOURCE_REF: ""

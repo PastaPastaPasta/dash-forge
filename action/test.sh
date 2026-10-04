@@ -262,7 +262,7 @@ if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_STORAGE_KIND=s3; then fail "accepted
 expect log 'S3_SECRET_ACCESS_KEY'
 
 # action.yml's defaults: a network Forge is deployed on (the hosted site's devnet), and the
-# install mode that works without a published release.
+# release cut from this commit (the workspace version), which install 'true' downloads.
 case="action.yml defaults"
 default_of() {
     awk -v want="  $1:" '$0 == want { found = 1; next } found && /^    default:/ { sub(/^    default: */, ""); gsub(/"/, ""); print; exit }' "$here/action.yml"
@@ -272,7 +272,10 @@ devnet_default=$(default_of devnet-name)
 [ -f "$here/../forge-contracts/deployments/devnet-$devnet_default.json" ] ||
     fail "no deployment for the default devnet '$devnet_default'"
 [ "$(default_of install)" = true ] || fail "install defaults to '$(default_of install)'"
-[ -z "$(default_of version)" ] || fail "version defaults to '$(default_of version)' (a release must be pinned on purpose)"
+# The release this Action version pins is the one cut from this commit: the workspace version.
+workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml")
+[[ -n "$workspace_version" && "$(default_of version)" == "$workspace_version" ]] ||
+    fail "version defaults to '$(default_of version)', not the workspace version '$workspace_version' (bump both when cutting a release)"
 [ "$(default_of build-cache)" = true ] || fail "build-cache defaults to '$(default_of build-cache)'"
 # The defaults pass validation as they are.
 good INPUT_NETWORK="$(default_of network)" INPUT_DEVNET_NAME="$devnet_default" INPUT_VERSION="$(default_of version)"

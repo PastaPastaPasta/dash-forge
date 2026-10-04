@@ -171,15 +171,16 @@ test.describe('page request budget (S-1)', () => {
   })
 
   test('pb-3. the About card shows no placeholder where no facts are worked out: a deep link to a file, the empty repo', async ({ page }) => {
-    // A deep link to a file: the rail is there, but only the home works the facts out.
+    // A deep link to a file: no rail (the code gets the width), so no About card and no facts to
+    // work out; the Verification card leads the page instead.
     await page.goto(repoUrl('blob', '&path=README.md'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    const about = page.getByRole('region', { name: 'About' })
-    await about.scrollIntoViewIfNeeded({ timeout: 60_000 })
     await expect(page.locator('main').getByText(/forge|README/i).first()).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId('verification-card')).toBeVisible({ timeout: 60_000 })
     await page.waitForTimeout(3_000)
+    await expect(page.getByRole('region', { name: 'About' })).toHaveCount(0)
     await expect(page.getByTestId('facts-skeleton')).toHaveCount(0)
-    await shot(page, 'pb-05-blob-deep-link-rail')
+    await shot(page, 'pb-05-blob-deep-link-no-rail')
 
     // The empty repo: no tip, nothing to work out.
     await page.goto(repoUrl('', '', EMPTY), { waitUntil: 'domcontentloaded' })
