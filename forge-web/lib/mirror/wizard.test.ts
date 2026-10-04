@@ -236,7 +236,7 @@ describe('workflowYaml', () => {
   it('pins the Action, and the build it makes, to one commit and fills in every input', () => {
     const y = workflowYaml(OPTIONS)
     expect(y).toContain(`uses: PastaPastaPasta/dash-forge/action@${SHA}`)
-    // The Action builds the binaries from that same commit: no release is published yet.
+    // The Action builds the binaries from that same commit, not the latest release's.
     expect(y).toContain("install: 'source'")
     expect(y).toContain(`repo: 'dash://${ID}/project'`)
     // Written out though it is the Action's default today, so a later default cannot move it.
