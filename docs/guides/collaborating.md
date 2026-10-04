@@ -93,7 +93,7 @@ A collaborator is a `writer` or `maintainer` document in Forge's shared forge-co
 
 Forge has no organization accounts, and membership is never delegated: only a repository's owner can add or remove its members. A team that wants one shared owner uses an **organization identity**:
 
-1. Create an identity for the organization (`dg auth new`, or the web app's sign-up) and keep its identity file or recovery words offline. It owns the organization's repositories (`dg repo create`), so their URLs are `<org>/<repo>`; register a DPNS name for it.
+1. Create an identity for the organization (`dg auth new`, or the web app's sign-up) and keep its identity file or recovery phrase offline. It owns the organization's repositories (`dg repo create`), so their URLs are `<org>/<repo>`; register a DPNS name for it.
 2. Add each admin's **personal** identity as a maintainer of each repository (`dg collab add <org>/<repo> <admin> --role maintainer`). Pushes, merges, reviews and releases stay signed by the person who made them.
 3. Give each admin a **limited key of the organization identity** for the owner-only writes: adding and removing members, the description and topics. The key can do everything the organization can on Forge (it is the owner and a maintainer of every organization repository: protected pushes, settings, policy, webhooks, new repositories), but never spend more than its budget, never outlive its expiry, and never touch another contract. The organization's master key registers it:
 
