@@ -179,7 +179,7 @@ const ROLE_PLURAL: Readonly<Record<Role, string>> = {
 }
 
 /** "a, b and c" / "a, b or c". */
-function listOf(words: readonly string[], joiner: 'and' | 'or'): string {
+export function listOf(words: readonly string[], joiner: 'and' | 'or'): string {
   if (words.length <= 1) return words[0] ?? ''
   return `${words.slice(0, -1).join(', ')} ${joiner} ${words[words.length - 1]}`
 }

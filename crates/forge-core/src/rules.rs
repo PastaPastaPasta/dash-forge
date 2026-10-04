@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod codeowners;
 pub mod moderation;
 pub mod parity;
 pub mod review;
@@ -1233,9 +1234,9 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        display_ref_name, is_legal_ref_name, matches_protected, merge_base_tips, overlay_tree,
-        pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event, EventKind, FlatIndex,
-        IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
+        codeowners, display_ref_name, is_legal_ref_name, matches_protected, merge_base_tips,
+        overlay_tree, pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event, EventKind,
+        FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
@@ -1729,6 +1730,22 @@ mod tests {
 
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
+    struct CodeOwnersInput {
+        file: String,
+        paths: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct CodeOwnerRequestsInput {
+        tokens: Vec<String>,
+        resolved: std::collections::BTreeMap<String, Option<String>>,
+        memberships: Vec<v2::Membership>,
+        author: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
     struct RoleOracleInput {
         memberships: Vec<v2::Membership>,
         queries: Vec<RoleQuery>,
@@ -2115,6 +2132,49 @@ mod tests {
         }
     }
 
+    /// The code owners cases (`code_owners__*`, `code_owner_requests__*`).
+    fn run_code_owners_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "code_owners" => {
+                let inp: CodeOwnersInput = input(v);
+                let parsed = codeowners::parse_code_owners(&inp.file);
+                let all = parsed.owners_of_paths(&inp.paths);
+                let owners: serde_json::Map<String, serde_json::Value> = inp
+                    .paths
+                    .iter()
+                    .map(|p| (p.clone(), serde_json::json!(parsed.owners_of(p))))
+                    .collect();
+                let kinds: serde_json::Map<String, serde_json::Value> = all
+                    .iter()
+                    .map(|t| (t.clone(), serde_json::json!(codeowners::owner_kind(t))))
+                    .collect();
+                let got = serde_json::json!({
+                    "owners": owners,
+                    "all": all,
+                    "kinds": kinds,
+                    "errors": parsed.errors,
+                });
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
+            "code_owner_requests" => {
+                let inp: CodeOwnerRequestsInput = input(v);
+                let got = codeowners::code_owner_requests(
+                    &inp.tokens,
+                    &inp.resolved,
+                    &v2::RoleOracle::new(inp.memberships),
+                    &inp.author,
+                );
+                assert_eq!(
+                    got,
+                    expected::<codeowners::OwnerRequests>(v),
+                    "vector `{ctx}`"
+                );
+            }
+            other => panic!("vector `{ctx}`: not a code owners case `{other}`"),
+        }
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2192,6 +2252,7 @@ mod tests {
                     .collect();
                 assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
             }
+            "code_owners" | "code_owner_requests" => run_code_owners_case(v),
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
             | "linked_issues" => run_review_case(v),
             "checks" | "thread_meta" | "pinned" | "milestones" | "trending" | "hidden_items" => {

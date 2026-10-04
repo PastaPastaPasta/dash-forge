@@ -114,6 +114,23 @@ test.describe('PR request budget (L-77)', () => {
     await detail.close()
   })
 
+  /**
+   * P1-6: the Files tab looks up the base's CODEOWNERS (the five places, then the file) through the
+   * browse reader the diff already holds, so the lookup adds no Platform document reads: measured
+   * on sakura (2026-10-02) at 25 before and after on a Platform-stored repo with a CODEOWNERS, and
+   * the signed-out "Open a pull request" form at 10 before and after (it asks nobody until someone
+   * signs in; then one DPNS read for the owners' names, the members read being the role check's).
+   */
+  test('prb-3. the fixture: a PR’s Files tab, cold, ≤ 25 with the code owners lookup', async ({ browser }) => {
+    const merged = loadSeedPulls().merged
+    const files = await cold(browser, `fixture PR #${merged} files`, repoUrl('pull', `&number=${merged}&tab=files`), async (page) => {
+      await expect(page.getByText(/\d+ files? changed/).first()).toBeVisible({ timeout: 90_000 })
+    })
+    expect(files.rows.length, summary(files.rows)).toBeLessThanOrEqual(COLD_BUDGET)
+    await shot(files.page, 'prb-05-fixture-pull-files-cold')
+    await files.close()
+  })
+
   test.describe('showcase repos', () => {
     /**
      * QW2-002: every tab of the largest PR list on the chain, cold, within the budget however many

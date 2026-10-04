@@ -227,6 +227,83 @@ export async function resolveDpnsId(sdk: EvoSDK, name: string, network: Network)
   return lookup
 }
 
+/**
+ * Whether two names (`label`, `@label`, `label.parent`) are the same DPNS domain, as the contract
+ * normalizes them (case and homographs: `Alice` and `a1ice` are `alice`).
+ */
+export function sameDpnsName(a: string, b: string): boolean {
+  const x = splitDpnsName(a)
+  const y = splitDpnsName(b)
+  return homographSafe(x.label) === homographSafe(y.label) && homographSafe(x.parent) === homographSafe(y.parent)
+}
+
+/**
+ * Forward-resolve many names at once ({@link resolveDpnsId} for each, but one
+ * `normalizedLabel in [...]` query per parent domain and 100 names instead of one per name). A
+ * name not shaped like one, or whose batch failed, maps to null; the batch answers seed the
+ * per-name cache, so a later {@link resolveDpnsId} costs nothing.
+ */
+export async function resolveDpnsIds(sdk: EvoSDK, names: readonly string[], network: Network): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>()
+  // Per parent: the normalized labels still to look up, and the names that asked for each.
+  const todo = new Map<string, Map<string, string[]>>()
+  for (const name of new Set(names)) {
+    const { label, parent } = splitDpnsName(name)
+    if (!LABEL_SHAPE.test(label)) {
+      out.set(name, null)
+      continue
+    }
+    const normalizedLabel = homographSafe(label)
+    const normalizedParent = homographSafe(parent)
+    const known = idLookups.get(keyOf(network, `${normalizedLabel}.${normalizedParent}`))
+    if (known !== undefined) {
+      out.set(name, await known)
+      continue
+    }
+    const labels = todo.get(normalizedParent) ?? new Map<string, string[]>()
+    labels.set(normalizedLabel, [...(labels.get(normalizedLabel) ?? []), name])
+    todo.set(normalizedParent, labels)
+  }
+  const reads: Promise<void>[] = []
+  for (const [parent, labels] of todo) {
+    const all = [...labels.keys()]
+    for (let i = 0; i < all.length; i += 100) {
+      const batch = all.slice(i, i + 100)
+      reads.push(
+        queryDocuments(sdk, {
+          dataContractId: NETWORKS[network].dpnsContractId,
+          documentTypeName: 'domain',
+          where: [
+            ['normalizedParentDomainName', '==', parent],
+            ['normalizedLabel', 'in', batch],
+          ],
+          orderBy: [['normalizedLabel', 'asc']],
+          limit: 100,
+        }).then(
+          (docs) => {
+            const found = new Map<string, Record<string, unknown>>()
+            for (const d of docs) if (typeof d['normalizedLabel'] === 'string') found.set(d['normalizedLabel'], d)
+            for (const label of batch) {
+              const doc = found.get(label)
+              const id = identityOf(doc)
+              // A whole answer (each label is unique, so at most 100 docs for 100 labels) proves
+              // absence: cached like a single lookup's.
+              idLookups.set(keyOf(network, `${label}.${parent}`), Promise.resolve(id))
+              if (id !== null && doc !== undefined && !cache.has(keyOf(network, id))) cache.set(keyOf(network, id), nameOf(doc))
+              for (const name of labels.get(label) ?? []) out.set(name, id)
+            }
+          },
+          () => {
+            for (const label of batch) for (const name of labels.get(label) ?? []) out.set(name, null)
+          },
+        ),
+      )
+    }
+  }
+  await Promise.all(reads)
+  return out
+}
+
 /** A cached name: undefined when unknown, null when proven nameless (tests, views). */
 export function cachedDpnsName(network: Network, id: string): string | null | undefined {
   return cache.get(keyOf(network, id))

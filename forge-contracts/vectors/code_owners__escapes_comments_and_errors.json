@@ -1,0 +1,51 @@
+{
+  "name": "escapes_comments_and_errors",
+  "description": "Comments and blank lines are skipped; `\\ ` escapes a space and `\\#` a leading hash; a `#` token ends the owners; a negation or `***` is reported and skipped; `/` alone owns nothing.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "# comment\n  \n!secret @a\na/***/b @b\nmy\\ file.txt @space   # owners end here\n\\#notes @hash\nok.txt @x #not-an-owner @y\n/ @root\n",
+    "paths": [
+      "my file.txt",
+      "#notes",
+      "ok.txt",
+      "secret",
+      "a/x/b"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "my file.txt": [
+        "@space"
+      ],
+      "#notes": [
+        "@hash"
+      ],
+      "ok.txt": [
+        "@x"
+      ],
+      "secret": [],
+      "a/x/b": []
+    },
+    "all": [
+      "@hash",
+      "@space",
+      "@x"
+    ],
+    "kinds": {
+      "@hash": "name",
+      "@space": "name",
+      "@x": "name"
+    },
+    "errors": [
+      {
+        "line": 3,
+        "error": "negation"
+      },
+      {
+        "line": 4,
+        "error": "pattern"
+      }
+    ]
+  }
+}

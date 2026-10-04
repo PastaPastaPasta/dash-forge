@@ -1,0 +1,54 @@
+{
+  "name": "gitlab_sections",
+  "description": "GitLab sections: each section's last matching rule, sections joined in order; a rule with no owners takes its section header's default owners; a repeated section name (any case) is the same section.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "* @all\n[Documentation] @docs-team\n*.md\n/docs/ @writer\n^[Backend][2] @backend-lead\n/src/\n[DOCUMENTATION]\nREADME.md @readme-owner\n",
+    "paths": [
+      "README.md",
+      "guide.md",
+      "docs/api.md",
+      "src/main.rs",
+      "Makefile"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "README.md": [
+        "@all",
+        "@readme-owner"
+      ],
+      "guide.md": [
+        "@all",
+        "@docs-team"
+      ],
+      "docs/api.md": [
+        "@all",
+        "@writer"
+      ],
+      "src/main.rs": [
+        "@all",
+        "@backend-lead"
+      ],
+      "Makefile": [
+        "@all"
+      ]
+    },
+    "all": [
+      "@all",
+      "@readme-owner",
+      "@writer",
+      "@docs-team",
+      "@backend-lead"
+    ],
+    "kinds": {
+      "@all": "name",
+      "@readme-owner": "name",
+      "@writer": "name",
+      "@docs-team": "name",
+      "@backend-lead": "name"
+    },
+    "errors": []
+  }
+}

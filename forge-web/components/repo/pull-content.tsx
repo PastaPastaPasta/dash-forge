@@ -130,6 +130,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
+import { CodeOwnersProvider } from '@/components/repo/code-owners'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/view/upstream'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
@@ -1658,7 +1659,10 @@ function PullPage({
                   suggestions={suggest.actions}
                   {...(identity !== null && open && !writeBlocked && reviewDraft.pending ? { pending: reviewDraft.pending } : {})}
                 >
-                  {diff}
+                  {/* Code owners from the base branch's file, as GitHub reads them. */}
+                  <CodeOwnersProvider reader={c.sides.base} readerKey={comparison.sidesKey} commitOid={comparison.spec.baseTipOid || c.comparedBaseOid || ''}>
+                    {diff}
+                  </CodeOwnersProvider>
                 </InlineCommentsProvider>
               )}
             />

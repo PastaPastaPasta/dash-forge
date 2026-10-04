@@ -42,6 +42,7 @@ import { Spinner } from '@/components/ui/states'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn } from '@/lib/utils'
 import { gutterKey, gutterKeys, gutterTabStop, nextRovingIndex } from '@/lib/view/gutter-rove'
+import { FileOwnersButton, FileOwnersLine } from '@/components/repo/code-owners'
 
 /**
  * Inline comments on a diff (the PR view provides this; a commit diff has none): what to show
@@ -383,6 +384,8 @@ function FilePatchView({
 }): JSX.Element {
   // Deleted files start collapsed: their patch is the whole old file in red.
   const [open, setOpen] = useState(change.status !== 'deleted')
+  // The code owners line under the header (a PR's Files tab provides the owners).
+  const [ownersOpen, setOwnersOpen] = useState(false)
   const [{ palette }] = usePrefs()
   const meta = statusMeta(change.status, palette)
   const modeChanged =
@@ -418,7 +421,9 @@ function FilePatchView({
           </span>
         ) : null}
         {patch !== undefined && patch.added !== undefined && patch.deleted !== undefined ? <DiffStat added={patch.added} deleted={patch.deleted} /> : null}
+        <FileOwnersButton path={change.path} open={ownersOpen} onToggle={() => setOwnersOpen((o) => !o)} />
       </div>
+      {ownersOpen ? <FileOwnersLine path={change.path} /> : null}
       {open ? (
         <div className="border-t border-anvil-200 dark:border-anvil-800">
           {patch === undefined ? (

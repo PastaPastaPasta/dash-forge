@@ -1,0 +1,56 @@
+{
+  "name": "token_kinds",
+  "description": "Every kind of owner token, kept in written order: DPNS names under dash (any case of the suffix; another parent domain is invalid), identity ids (bare or after @), teams, e-mail, GitLab roles, and invalid tokens.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "* @alice @alice.dash @org/team user@example.com @@maintainer bob 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB @8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB @bad!name @Alice.DASH @alice.example\n",
+    "paths": [
+      "x"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "x": [
+        "@alice",
+        "@alice.dash",
+        "@org/team",
+        "user@example.com",
+        "@@maintainer",
+        "bob",
+        "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "@8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "@bad!name",
+        "@Alice.DASH",
+        "@alice.example"
+      ]
+    },
+    "all": [
+      "@alice",
+      "@alice.dash",
+      "@org/team",
+      "user@example.com",
+      "@@maintainer",
+      "bob",
+      "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+      "@8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+      "@bad!name",
+      "@Alice.DASH",
+      "@alice.example"
+    ],
+    "kinds": {
+      "@alice": "name",
+      "@alice.dash": "name",
+      "@org/team": "team",
+      "user@example.com": "email",
+      "@@maintainer": "role",
+      "bob": "invalid",
+      "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB": "identity",
+      "@8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB": "identity",
+      "@bad!name": "invalid",
+      "@Alice.DASH": "name",
+      "@alice.example": "invalid"
+    },
+    "errors": []
+  }
+}

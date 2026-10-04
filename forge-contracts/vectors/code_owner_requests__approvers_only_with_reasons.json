@@ -1,0 +1,114 @@
+{
+  "name": "approvers_only_with_reasons",
+  "description": "Only current maintainers and role-1 writers are asked; the author, triage members, readers, teams, e-mail, roles, invalid and unresolved tokens and repeats are left out with a reason.",
+  "case": "code_owner_requests",
+  "rules": "v2",
+  "input": {
+    "tokens": [
+      "@alice",
+      "@bob",
+      "@carol",
+      "@dave",
+      "@org/team",
+      "dev@example.com",
+      "@@maintainer",
+      "nope",
+      "@ghost",
+      "@author",
+      "@alice2",
+      "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+      "@8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+    ],
+    "resolved": {
+      "@alice": "A",
+      "@bob": "B",
+      "@carol": "C",
+      "@dave": "D",
+      "@ghost": null,
+      "@author": "P",
+      "@alice2": "A"
+    },
+    "memberships": [
+      {
+        "identity": "A",
+        "role": "maintainer",
+        "createdAt": 1
+      },
+      {
+        "identity": "B",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "C",
+        "role": "triage",
+        "createdAt": 1
+      },
+      {
+        "identity": "D",
+        "role": "reader",
+        "createdAt": 1
+      },
+      {
+        "identity": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "role": "writer",
+        "createdAt": 1
+      }
+    ],
+    "author": "P"
+  },
+  "expected": {
+    "request": [
+      "A",
+      "B",
+      "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+    ],
+    "skipped": [
+      {
+        "token": "@carol",
+        "reason": "notApprover",
+        "identity": "C"
+      },
+      {
+        "token": "@dave",
+        "reason": "notApprover",
+        "identity": "D"
+      },
+      {
+        "token": "@org/team",
+        "reason": "team"
+      },
+      {
+        "token": "dev@example.com",
+        "reason": "email"
+      },
+      {
+        "token": "@@maintainer",
+        "reason": "role"
+      },
+      {
+        "token": "nope",
+        "reason": "invalid"
+      },
+      {
+        "token": "@ghost",
+        "reason": "unresolved"
+      },
+      {
+        "token": "@author",
+        "reason": "author",
+        "identity": "P"
+      },
+      {
+        "token": "@alice2",
+        "reason": "duplicate",
+        "identity": "A"
+      },
+      {
+        "token": "@8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "reason": "duplicate",
+        "identity": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+      }
+    ]
+  }
+}

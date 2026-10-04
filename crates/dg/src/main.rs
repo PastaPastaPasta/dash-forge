@@ -1154,6 +1154,11 @@ pub struct PrCreateArgs {
     /// Open it as a draft (`dg pr ready` marks it ready for review).
     #[arg(long)]
     pub draft: bool,
+    /// Do not ask the code owners of the changed files for review. By default the base
+    /// branch's CODEOWNERS (`.forge/`, `.github/`, the root, `docs/` or `.gitlab/`) is read and
+    /// each owner who is a maintainer or writer is asked, one event each.
+    #[arg(long)]
+    pub no_code_owners: bool,
 }
 
 #[derive(Debug, Subcommand)]

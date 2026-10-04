@@ -16,7 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
-import { DraftMarkError, createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
+import { DraftMarkError, createPatch, findForks, postTargetEvent, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { ARCHIVED_REASON, branchName, forkSourcePrefix, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { shortIdentity } from '@/lib/view/format'
 import { preferring, type PullComparison } from '@/lib/view/pull-diff'
@@ -28,7 +28,11 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
-import { SupersededWriteError } from '@/lib/sdk'
+import { SupersededWriteError, previewCreate, sumPreviews, withAddressee } from '@/lib/sdk'
+import { memberMayWriteEvent } from '@/lib/rules/roles'
+import { useViewerRole } from '@/hooks/use-repo-chrome'
+import { toast } from '@/hooks/use-toasts'
+import { CodeOwnerReviewers, useOwnerRequests } from '@/components/repo/code-owners'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { ComparisonDiff } from '@/components/repo/pull-diff'
 import { MarkdownView } from '@/components/markdown-view'
@@ -190,32 +194,74 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     head === null
       ? null
       : { title: title.trim(), body, baseRefName: base, sourceRepoId: head.repo.repoId, sourceRefName: head.refName, headOid: head.oid }
-  const cost = composeCost(repo, 'patch', input ?? { title: title.trim(), body })
+  // Code owners of the changed files (the base's CODEOWNERS), asked for review once the PR is
+  // open: a member's `event`, or the author's own `authorEvent` (kind 13 either way).
+  const owners = useOwnerRequests({
+    repo,
+    reader: sides?.sides.base ?? null,
+    readerKey: sides?.key ?? '',
+    baseOid: baseTip,
+    changes: head !== null && comparison !== null && comparison.upToDate !== true ? comparison.changes : null,
+    author: identity,
+  })
+  const [skipOwners, setSkipOwners] = useState<ReadonlySet<string>>(() => new Set())
+  const ownerRequests = (owners.requests?.request ?? []).filter((id) => !skipOwners.has(id))
+  const viewerRole = useViewerRole(repo).role
+  const requestAs = memberMayWriteEvent(viewerRole, 13) ? 'event' : 'authorEvent'
+  const cost = sumPreviews([composeCost(repo, 'patch', input ?? { title: title.trim(), body }), ...ownerRequests.map(() => withAddressee(previewCreate(requestAs)))])
   // An archived repo is read-only (QW3-017): no pull request opens there, from any link.
   const composeBlock = home.config?.archived === true ? ARCHIVED_REASON : privateComposeBlock(home)
   const tooLong = composeTooLong(repo, 'patch', input ?? { title: title.trim(), body })
   const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null || tooLong
 
+  // The PR is open whatever happens here: a request that fails is reported, and can be made again
+  // from the PR's Reviewers card.
+  const requestOwners = async (auth: NonNullable<typeof signer>, pr: { readonly documentId: string; readonly number: number }, ids: readonly string[]): Promise<void> => {
+    if (!sdk || identity === null) return
+    let failed = 0
+    for (const id of ids) {
+      try {
+        await postTargetEvent(sdk, auth, repo, {
+          target: { id: pr.documentId, number: pr.number },
+          kind: 'reviewRequest',
+          author: identity,
+          isMember: requestAs === 'event',
+          payload: { refId: id },
+          intent: `${draftIntent.intent}:owner:${id}`,
+        })
+      } catch {
+        failed++
+      }
+    }
+    if (failed > 0) {
+      toast({ title: `${failed} code owner review ${failed === 1 ? 'request' : 'requests'} failed`, tone: 'warn', detail: 'Request them again from the Reviewers card on the pull request.' })
+    }
+  }
+
   const submit = async (): Promise<void> => {
-    if (pending || blocked || input === null) return
+    if (pending || blocked || owners.loading || input === null) return
     if (!guard.check(cost, 'collab', 'open a pull request')) return
     if (!sdk || !signer) return
     setPending(true)
     setError(null)
     setNote(null)
     try {
-      // The PR and its draft mark are one action: one toast with their total (QW3-039).
-      const created = await spendAction({ running: 'Opening the pull request…', done: 'Pull request opened' }, (tag) =>
-        createPatch(sdk, tag(signer), repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
+      // The PR, its draft mark and its code owners' review requests are one action: one toast
+      // with their total (QW3-039).
+      const created = await spendAction({ running: 'Opening the pull request…', done: 'Pull request opened' }, async (tag) => {
+        const pr = await createPatch(sdk, tag(signer), repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
           setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
-        ),
-      )
+        )
+        await requestOwners(tag(signer), pr, ownerRequests)
+        return pr
+      })
       dropPrDraft(repo)
       router.push(repoHref('/repo/pull', addr, { number: String(created.number), created: '1' }))
     } catch (e) {
       if (e instanceof DraftMarkError) {
         // The PR itself landed: never post it again. Open it; its page offers "Convert to draft".
         dropPrDraft(repo)
+        await requestOwners(signer, e.created, ownerRequests)
         draftIntent.renew()
         router.push(repoHref('/repo/pull', addr, { number: String(e.created.number), created: '1' }))
         return
@@ -372,6 +418,19 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           <BodyCounter repo={home.repo} text={body} field="description" />
           <SealedLimit repo={home.repo} kind="patch" text={title.trim() + body + (input?.baseRefName ?? '') + (input?.sourceRefName ?? '')} />
         </div>
+        <CodeOwnerReviewers
+          owners={owners}
+          partial={comparison?.truncated === true}
+          skip={skipOwners}
+          onToggle={(id, on) =>
+            setSkipOwners((prev) => {
+              const next = new Set(prev)
+              if (on) next.delete(id)
+              else next.add(id)
+              return next
+            })
+          }
+        />
         {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CostPreview cost={cost} />
@@ -384,8 +443,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               variant="primary"
               onClick={submit}
               loading={pending}
-              disabled={blocked || guard.disabledReason !== null}
-              title={guard.disabledReason ?? undefined}
+              disabled={blocked || owners.loading || guard.disabledReason !== null}
+              title={guard.disabledReason ?? (owners.loading ? 'Reading the code owners of these changes' : undefined)}
             >
               {identity ? (asDraft ? 'Create draft pull request' : 'Create pull request') : locked ? 'Unlock to create' : 'Sign in to create'}
             </Button>

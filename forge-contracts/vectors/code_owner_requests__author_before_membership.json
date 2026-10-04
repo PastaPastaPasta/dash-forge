@@ -1,0 +1,31 @@
+{
+  "name": "author_before_membership",
+  "description": "The PR's author is never asked, member or not; a name missing from the resolved map is unresolved.",
+  "case": "code_owner_requests",
+  "rules": "v2",
+  "input": {
+    "tokens": [
+      "@me",
+      "@unknown"
+    ],
+    "resolved": {
+      "@me": "P"
+    },
+    "memberships": [],
+    "author": "P"
+  },
+  "expected": {
+    "request": [],
+    "skipped": [
+      {
+        "token": "@me",
+        "reason": "author",
+        "identity": "P"
+      },
+      {
+        "token": "@unknown",
+        "reason": "unresolved"
+      }
+    ]
+  }
+}
