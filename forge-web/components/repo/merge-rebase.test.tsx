@@ -116,11 +116,23 @@ describe('rebase and merge (review-parity M1)', () => {
     await act(async () => choose('rebase'))
     await act(async () => undefined)
     expect(submit().disabled).toBe(true)
+    // git's rebase stops at the same commit: the box does not send the merger to dg for it.
     expect(host.querySelector('[data-testid="rebase-problem"]')?.textContent).toBe(
-      "Can't rebase in the browser: commit 1234567 does not apply cleanly on the base branch (src/a.rs). Rebase with `dg pr merge --rebase`, or pick another method.",
+      "Can't rebase: commit 1234567 does not apply cleanly on the base branch (src/a.rs). git's rebase stops there too: pick another method, or rebase the PR's branch yourself (`dg pr checkout`).",
     )
     // The merge commit is still offered.
     await act(async () => choose('merge'))
     expect(submit().disabled).toBe(false)
+  })
+
+  it('sends a refusal only the browser makes (no conflict) to `dg pr merge --rebase`', async () => {
+    verdict.rebase = { check: 'conflict', conflictPaths: [], reason: "the PR's history holds a merge commit (abcdef1), which only git's rebase flattens" }
+    await render()
+    await act(async () => choose('rebase'))
+    await act(async () => undefined)
+    expect(submit().disabled).toBe(true)
+    expect(host.querySelector('[data-testid="rebase-problem"]')?.textContent).toBe(
+      "Can't rebase in the browser: the PR's history holds a merge commit (abcdef1), which only git's rebase flattens. Rebase with `dg pr merge --rebase`, or pick another method.",
+    )
   })
 })

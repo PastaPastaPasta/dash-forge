@@ -370,7 +370,10 @@ export function MergePanel({
         ? 'Checking the rebase…'
         : rebaseCheck === 'fast-forward' || rebaseCheck === 'merge'
           ? null
-          : `Can't rebase in the browser: ${sized?.reason ?? (rebaseCheck === 'conflict' ? 'a commit does not apply cleanly' : rebaseCheck)}${sized?.conflictPaths?.length ? ` (${sized.conflictPaths.slice(0, 5).join(', ')}${sized.conflictPaths.length > 5 ? ', …' : ''})` : ''}. Rebase with \`dg pr merge --rebase\`, or pick another method.`
+          : sized?.conflictPaths?.length
+            ? // A commit conflicts: git's rebase stops at the same commit, so dg is no way out.
+              `Can't rebase: ${sized.reason ?? 'a commit does not apply cleanly'} (${sized.conflictPaths.slice(0, 5).join(', ')}${sized.conflictPaths.length > 5 ? ', …' : ''}). git's rebase stops there too: pick another method, or rebase the PR's branch yourself (\`dg pr checkout\`).`
+            : `Can't rebase in the browser: ${sized?.reason ?? rebaseCheck}. Rebase with \`dg pr merge --rebase\`, or pick another method.`
   // Only a written commit is authored; a fast-forward (a rebase's included) writes none.
   const identityOk = (button.kind !== 'merge-commit' && method === 'merge') || (method === 'rebase' && rebaseCheck === 'fast-forward') || mergeIdentityValid(prefs)
   // The plan's own method bit (ff 1, merge commit 2), squash (4) or rebase (8): what the policy is checked against.
