@@ -47,7 +47,7 @@ export function EditBase({
       <Button
         variant="ghost"
         size="sm"
-        className="h-6 px-1.5"
+        className="ml-1 h-6 px-1.5"
         aria-label="Change the base branch"
         title={disabledReason ?? 'Change the base branch'}
         disabled={disabledReason !== null}
@@ -62,7 +62,7 @@ export function EditBase({
     )
   }
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5">
+    <span className="ml-1.5 inline-flex flex-wrap items-center gap-1.5">
       <label htmlFor="pr-base-select" className="sr-only">
         New base branch
       </label>
