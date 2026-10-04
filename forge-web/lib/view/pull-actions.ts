@@ -361,7 +361,7 @@ export function verdictSummary(
     return {
       ...countHeadline(chain.approvals, chain.changesRequested > 0),
       detail: null,
-      onChain: `${verdictCounts(chain.approvals, chain.changesRequested)} on chain. The members couldn't be read, so this is an upper bound: re-reviews, dismissed reviews and members removed since all count.`,
+      onChain: `${verdictCounts(chain.approvals, chain.changesRequested)} on Platform. The members couldn't be read, so this is an upper bound: re-reviews, dismissed reviews and members removed since all count.`,
       proved: false,
     }
   }
@@ -374,7 +374,7 @@ export function verdictSummary(
   // upper bound, so it is not shown.
   const covers = chain !== null && chain.approvals >= a && chain.changesRequested >= c
   const base = {
-    onChain: chain !== null && !agrees && covers ?`${verdictCounts(chain.approvals, chain.changesRequested)} on chain (an upper bound: re-reviews, dismissed reviews and members removed since count there, not here)` : null,
+    onChain: chain !== null && !agrees && covers ?`${verdictCounts(chain.approvals, chain.changesRequested)} on Platform (an upper bound: re-reviews, dismissed reviews and members removed since count there, not here)` : null,
     proved: agrees,
   }
   if (c > 0) {

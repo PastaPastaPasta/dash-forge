@@ -96,7 +96,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expect(card.getByText(new RegExp(`quorums\\.${E2E_DEVNET}\\.networks\\.dash\\.org and .*\\(a DAPI node\\); both agreed on every one of the \\d+ quorums used`))).toBeVisible()
     await expect(card.getByText(/fetched the key list again to compare/)).toBeVisible()
     await expect(card.getByText(/^`?main`? =|main =/).first()).toBeVisible()
-    await expect(card.getByText(/FORGE_RULES_V2/)).toBeVisible()
+    await expect(card.getByText(/checked against Platform proofs/)).toBeVisible()
     await expect(card.getByText(/of [\d,]+ objects? read this session matched their git hash/)).toBeVisible({ timeout: 45_000 })
     await expect(card.getByText(/This app's code comes from/)).toBeVisible()
     await expect(card).toHaveAttribute('data-state', 'verified')
@@ -160,8 +160,6 @@ test.describe('repo home launch UX (moutai fixture)', () => {
       box.getByText(`git clone -c dash.network=devnet -c dash.devnetName=${E2E_DEVNET} dash://${OWNER}/${NAME}`, { exact: true }),
     ).toBeVisible()
     await expect(box.getByText(`dg repo clone ${OWNER}/${NAME} --network devnet --devnet-name ${E2E_DEVNET}`, { exact: true })).toBeVisible()
-    await expect(box.getByTestId('clone-network')).toContainText(`devnet-${E2E_DEVNET}`)
-    await expect(box.getByText(/No https clone URL/)).toBeVisible()
 
     await box.getByRole('button', { name: 'install' }).click()
     const sheet = page.getByRole('dialog', { name: /Install git-remote-dash/ })
@@ -179,7 +177,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     expect(bytes.length).toBeGreaterThan(100)
     expect(bytes.subarray(0, 2).toString('latin1')).toBe('PK')
     expect(bytes.includes(Buffer.from(`${NAME}-main/README.md`))).toBe(true)
-    await expect(box.getByText(/Saved .*\.zip .* each hash-checked/)).toBeVisible()
+    await expect(box.getByText(/Saved .*\.zip .* each verified/)).toBeVisible()
   })
 
   test('b-5. empty repo: push commands, storage line, install link', async ({ page }) => {

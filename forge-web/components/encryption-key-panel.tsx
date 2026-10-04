@@ -131,7 +131,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
       if (id !== null) return id
       const existing = usableEncryptionKey((await fetchIdentityKeys(sdk!, identity)) ?? [], core)
       if (existing !== null) {
-        throw new Error(`These recovery words don't open this identity's encryption key (key ${existing.keyId}). Check the words, or use your identity file.`)
+        throw new Error(`This recovery phrase doesn't open this identity's encryption key (key ${existing.keyId}). Check the phrase, or use your identity file.`)
       }
       return null
     })

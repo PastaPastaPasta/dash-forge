@@ -151,7 +151,7 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
   const discard = async (): Promise<void> => {
     const ok = await confirm({
       title: 'Give up this top-up?',
-      body: "Only when it can't finish (the network never confirmed the lock, or Platform keeps refusing it). If the deposit was locked, those credits can't be added any more; anything still unspent at the address goes into your next top-up, which uses the same address.",
+      body: "Only do this if it can't finish. A locked deposit can't be added any more. Anything still unspent at the address goes into your next top-up.",
       confirmLabel: 'Give up',
     })
     if (!ok) return
