@@ -148,7 +148,7 @@ The copy lint (`forge-web/scripts/copy-lint.mjs`, run in CI as `pnpm lint:copy`)
 - **Tracker ids:** QW…, D-…, P1-…, §.
 - **Code identifiers:** `FORGE_RULES_V2`, `objectLocator`, `packManifest`, `starBeat`, `headUpdate`, `forkOf`, `asMember`, `asMaintainer`, `authorEvent`.
 - **Protocol jargon:** fold, consensus, client rule, Forge clients, document.
-- **Banned phrases:** "Platform refused it", "Nothing was charged", proof-checked, hash-checked, recovery words, browser key, seamless, leverage, simply.
+- **Banned phrases:** "Platform refused it", "Nothing was charged", proof-checked, hash-checked, recovery words, browser key, on chain, on-chain, seamless, leverage, simply.
 - **Repository paths:** `docs/….md`, `forge-contracts/`.
 - **Formatting tells:** `(s)` plurals, and any string over 40 words.
 
