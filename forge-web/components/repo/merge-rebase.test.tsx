@@ -29,10 +29,10 @@ vi.mock('@/hooks/use-prefs', () => ({
 vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: { profiles: [], policies: [] }, usable: { profiles: [], policies: [] }, needsUnlock: false, sealed: false, error: null, storedSince: async () => false }) }))
 vi.mock('@/lib/storage', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/storage')>()), policyForRepo: () => null }))
 // The check: the two sides diverged and merge cleanly; the rebase's verdict is set per test.
-const verdict = vi.hoisted(() => ({ rebase: { check: 'merge', conflictPaths: [] as string[], conflictReason: null as string | null } }))
+const verdict = vi.hoisted(() => ({ rebase: { check: 'merge', conflictPaths: [] as string[], reason: null as string | null } }))
 vi.mock('@/lib/merge/client', () => ({
   checkMergeInWorker: async (_r: unknown, input: { rebase?: true }) =>
-    input.rebase ? { ...verdict.rebase, packEstimate: verdict.rebase.check === 'merge' ? { bytes: 5000, objectCount: 6 } : null } : { check: 'merge', conflictPaths: [] as string[], conflictReason: null, packEstimate: { bytes: 4000, objectCount: 4 } },
+    input.rebase ? { ...verdict.rebase, packEstimate: verdict.rebase.check === 'merge' ? { bytes: 5000, objectCount: 6 } : null } : { check: 'merge', conflictPaths: [] as string[], reason: null, packEstimate: { bytes: 4000, objectCount: 4 } },
   runMergeInWorker: vi.fn(),
 }))
 // The run: records the merge input it was started with.
@@ -74,7 +74,7 @@ let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
   started.length = 0
-  verdict.rebase = { check: 'merge', conflictPaths: [], conflictReason: null }
+  verdict.rebase = { check: 'merge', conflictPaths: [], reason: null }
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -111,7 +111,7 @@ describe('rebase and merge (review-parity M1)', () => {
   })
 
   it('says why it cannot rebase, and where, when the rebase stops although the merge is clean', async () => {
-    verdict.rebase = { check: 'conflict', conflictPaths: ['src/a.rs'], conflictReason: 'commit 1234567 does not apply cleanly on the base branch' }
+    verdict.rebase = { check: 'conflict', conflictPaths: ['src/a.rs'], reason: 'commit 1234567 does not apply cleanly on the base branch' }
     await render()
     await act(async () => choose('rebase'))
     await act(async () => undefined)

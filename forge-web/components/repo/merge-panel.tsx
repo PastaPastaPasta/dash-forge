@@ -174,7 +174,7 @@ export function MergePanel({
     readonly method: Method
     readonly check?: MergeCheck
     readonly conflictPaths?: readonly string[]
-    readonly conflictReason?: string | null
+    readonly reason?: string | null
   } | null>(null)
   // "Allow storing on Platform": until the merger touches it, its default follows the policy.
   const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
@@ -297,11 +297,11 @@ export function MergePanel({
     const abort = new AbortController()
     checkMergeInWorker(reader, { ...inputRef.current, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
       (c) => {
-        if (!abort.signal.aborted) setSized({ estimate: c.packEstimate, method, check: c.check, conflictPaths: c.conflictPaths, conflictReason: c.conflictReason })
+        if (!abort.signal.aborted) setSized({ estimate: c.packEstimate, method, check: c.check, conflictPaths: c.conflictPaths, reason: c.reason })
       },
       (e: unknown) => {
         // A rebase's check is its verdict: one that fails says so rather than waiting forever.
-        if (!abort.signal.aborted && method === 'rebase') setSized({ estimate: null, method, check: 'malformed', conflictPaths: [], conflictReason: e instanceof Error ? e.message : String(e) })
+        if (!abort.signal.aborted && method === 'rebase') setSized({ estimate: null, method, check: 'malformed', conflictPaths: [], reason: e instanceof Error ? e.message : String(e) })
       },
     )
     return () => abort.abort()
@@ -370,7 +370,7 @@ export function MergePanel({
         ? 'Checking the rebase…'
         : rebaseCheck === 'fast-forward' || rebaseCheck === 'merge'
           ? null
-          : `Can't rebase in the browser: ${sized?.conflictReason ?? (rebaseCheck === 'conflict' ? 'a commit does not apply cleanly' : rebaseCheck)}${sized?.conflictPaths?.length ? ` (${sized.conflictPaths.slice(0, 5).join(', ')}${sized.conflictPaths.length > 5 ? ', …' : ''})` : ''}. Rebase with \`dg pr merge --rebase\`, or pick another method.`
+          : `Can't rebase in the browser: ${sized?.reason ?? (rebaseCheck === 'conflict' ? 'a commit does not apply cleanly' : rebaseCheck)}${sized?.conflictPaths?.length ? ` (${sized.conflictPaths.slice(0, 5).join(', ')}${sized.conflictPaths.length > 5 ? ', …' : ''})` : ''}. Rebase with \`dg pr merge --rebase\`, or pick another method.`
   // Only a written commit is authored; a fast-forward (a rebase's included) writes none.
   const identityOk = (button.kind !== 'merge-commit' && method === 'merge') || (method === 'rebase' && rebaseCheck === 'fast-forward') || mergeIdentityValid(prefs)
   // The plan's own method bit (ff 1, merge commit 2), squash (4) or rebase (8): what the policy is checked against.

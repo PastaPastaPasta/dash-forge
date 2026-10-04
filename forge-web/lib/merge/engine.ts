@@ -509,8 +509,8 @@ export type MergeCheck = MergePlan['kind']
 export interface MergeCheckResult {
   readonly check: MergeCheck
   readonly conflictPaths: readonly string[]
-  /** Why it conflicts, when the paths do not say it (a rebase's refusals); else null. */
-  readonly conflictReason: string | null
+  /** Why it cannot merge, when the kind does not say it (a rebase's refusals, a malformed or too-large history); else null. */
+  readonly reason: string | null
   /**
    * An upper bound on the pack the merge will store: its objects' raw bytes (a pack is zlib-
    * compressed, so never larger in practice) plus the pack framing, and its object count. The
@@ -536,11 +536,12 @@ export function packSizeBound(objects: readonly { readonly bytes: Uint8Array }[]
 /** {@link checkMerge} with the conflicting paths (the merge box lists them, review-parity F7). */
 export async function checkMergeDetailed(raw: ObjectReader, input: MergeInput, budget = MERGE_READ_BUDGET): Promise<MergeCheckResult> {
   const out = await refusing(() => build(strictReader(raw, budget), input, false))
-  if (out.kind === 'checked') return { check: out.check, conflictPaths: [], conflictReason: null, packEstimate: out.packEstimate }
+  if (out.kind === 'checked') return { check: out.check, conflictPaths: [], reason: null, packEstimate: out.packEstimate }
   if (out.kind === 'squash' || out.kind === 'rebase' || out.kind === 'fast-forward' || out.kind === 'merge') {
-    return { check: out.kind === 'fast-forward' ? 'fast-forward' : 'merge', conflictPaths: [], conflictReason: null, packEstimate: { bytes: out.pack.length, objectCount: out.objectCount } }
+    return { check: out.kind === 'fast-forward' ? 'fast-forward' : 'merge', conflictPaths: [], reason: null, packEstimate: { bytes: out.pack.length, objectCount: out.objectCount } }
   }
-  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [], conflictReason: out.kind === 'conflict' ? (out.reason ?? null) : null, packEstimate: null }
+  const reason = out.kind === 'conflict' || out.kind === 'malformed' || out.kind === 'too-large' ? (out.reason ?? null) : null
+  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [], reason, packEstimate: null }
 }
 
 /**

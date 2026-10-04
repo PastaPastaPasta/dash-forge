@@ -95,6 +95,13 @@ describe('merge step runner', () => {
     expect(calls).toEqual([])
   })
 
+  it('refuses to resume a run made as a merge for a rebase, or with another message', async () => {
+    const d = deps()
+    await expect(runMergeSteps({ ...d, input: { ...d.input, rebase: true } }, newRun({ baseTip: BASE, headOid: HEAD }), () => undefined)).rejects.toThrow(MergeStopped)
+    await expect(runMergeSteps({ ...d, input: { ...d.input, message: 'new' } }, newRun({ baseTip: BASE, headOid: HEAD, message: 'old' }), () => undefined)).rejects.toThrow(MergeStopped)
+    expect(calls).toEqual([])
+  })
+
   it('runs every step in order and writes the pack, the protected ref and the merge event', async () => {
     const events: StepEvent[] = []
     const run = await runMergeSteps(deps(), newRun({ baseTip: BASE, headOid: HEAD }), (e) => events.push(e))

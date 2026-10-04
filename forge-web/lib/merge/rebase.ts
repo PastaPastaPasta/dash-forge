@@ -15,7 +15,8 @@
  *
  * Refused, so `dg pr merge --rebase` (real git) does it instead: a merge commit in the PR's
  * history (git linearises it), a conflict or anything {@link mergeTrees} leaves to git, a commit
- * with an `encoding` header (git re-encodes its message), more than {@link REBASE_MAX_COMMITS}
+ * with an `encoding` header or an author line or message that is not UTF-8 git accepts (git
+ * re-encodes those, `verify_utf8`), more than {@link REBASE_MAX_COMMITS}
  * commits, and a PR commit whose change may already be on the base: git skips a commit whose
  * patch-id matches one of the base's, and the browser does not compute patch-ids, so any base
  * commit that changes the same files with the same lines (whitespace aside) is a refusal.
@@ -26,7 +27,7 @@ import { concat } from '../private/bytes'
 import { checkCommit, MalformedObjectError, MAX_TREE_DEPTH, parseCommit, parseTree, treeTooDeep, type TreeEntry } from '../view/git-objects'
 import type { ObjectReader } from '../view/tree-nav'
 import { MERGE3_MAX_BYTES } from './merge3'
-import { newCommits, WalkLimitError } from './objects'
+import { newCommits, WALK_COMMIT_CAP, WalkLimitError } from './objects'
 
 /** The most commits a browser rebase replays; past it, `dg pr merge --rebase`. */
 export const REBASE_MAX_COMMITS = 250
@@ -68,6 +69,26 @@ interface PickedCommit {
   /** The message from its first non-blank line (`skip_blank_lines`), raw bytes. */
   readonly message: Uint8Array
   readonly encoding: boolean
+}
+
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+
+/**
+ * Whether git's `verify_utf8` (commit.c) leaves `bytes` as they are: valid UTF-8 without the
+ * noncharacters it also rewrites (U+FDD0..U+FDEF, and U+xFFFE/U+xFFFF of any plane).
+ */
+function gitUtf8(bytes: Uint8Array): boolean {
+  let text: string
+  try {
+    text = strictUtf8.decode(bytes)
+  } catch {
+    return false
+  }
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) as number
+    if ((cp >= 0xfdd0 && cp <= 0xfdef) || (cp & 0xfffe) === 0xfffe) return false
+  }
+  return true
 }
 
 /** git's `isspace` (`sane_ctype`): tab, LF, CR and space only. */
@@ -190,7 +211,10 @@ async function lineFingerprint(reader: ObjectReader, changes: Changes): Promise<
       throw err
     })
     if (obj === null || obj.bytes.length > MERGE3_MAX_BYTES) return null
-    return latin1.decode(obj.bytes).split('\n')
+    // `\ No newline at end of file` is not hashed, so a final newline counts for nothing.
+    const text = latin1.decode(obj.bytes)
+    if (text === '') return []
+    return (text.endsWith('\n') ? text.slice(0, -1) : text).split('\n')
   }
   const parts: string[] = []
   for (const [path, c] of [...changes].sort(([a], [b]) => (a < b ? -1 : 1))) {
@@ -224,11 +248,20 @@ async function alreadyUpstream(reader: ObjectReader, picks: readonly { oid: stri
     if (p === undefined) prints.set(oid, (p = lineFingerprint(reader, changes)))
     return p
   }
-  for (const u of upstream) {
-    const c = parseCommit((await reader.readObject(u)).bytes)
+  // Commits' trees, each read once (an upstream commit's parent is usually upstream too).
+  const trees = new Map<string, string>()
+  const treeOf = async (oid: string): Promise<{ tree: string; parents: readonly string[] }> => {
+    const c = parseCommit((await reader.readObject(oid)).bytes)
+    trees.set(oid, c.tree)
+    return c
+  }
+  // Oldest first, so a commit's parent was usually read just before it.
+  for (const u of [...upstream].reverse()) {
+    const c = await treeOf(u)
     // The sequencer's walk skips merges (`max_parents = 1`) on both sides.
     if (c.parents.length > 1) continue
-    const parentTree = c.parents[0] === undefined ? undefined : parseCommit((await reader.readObject(c.parents[0])).bytes).tree
+    const parent = c.parents[0]
+    const parentTree = parent === undefined ? undefined : (trees.get(parent) ?? (await treeOf(parent)).tree)
     const changes = await treeChanges(reader, parentTree, c.tree, within)
     if (changes === null || changes.size === 0) continue
     const same = byShape.get(shapeOf(changes))
@@ -255,10 +288,12 @@ export async function rebaseCommits(
   mergeTrees: MergeTreesFn,
 ): Promise<RebaseResult> {
   const stop = mergeBase ?? baseTip
+  // Only a replay is capped tightly; checking that a fast-forward is linear just reads commits.
+  const cap = mergeBase === null ? WALK_COMMIT_CAP : REBASE_MAX_COMMITS
   // The PR's commits, newest first: a linear run from the head down to `stop`.
   const chain: (PickedCommit & { readonly parents: readonly string[] })[] = []
   for (let at = headOid; at !== stop; ) {
-    if (chain.length >= REBASE_MAX_COMMITS) throw new WalkLimitError(REBASE_MAX_COMMITS)
+    if (chain.length >= cap) throw new WalkLimitError(cap)
     const obj = await reader.readObject(at)
     if (obj.type !== 'commit') throw new MalformedObjectError(at, `a ${obj.type} where a commit was expected`)
     const c = splitCommit(at, obj.bytes)
@@ -276,12 +311,17 @@ export async function rebaseCommits(
   const picks = chain.reverse()
   const encoded = picks.find((p) => p.encoding)
   if (encoded !== undefined) return { kind: 'conflict', paths: [], reason: `commit ${short(encoded.oid)} names a message encoding, which git's rebase converts` }
+  const notUtf8 = picks.find((p) => !gitUtf8(p.author) || !gitUtf8(p.message))
+  if (notUtf8 !== undefined) return { kind: 'conflict', paths: [], reason: `commit ${short(notUtf8.oid)} has an author or message that is not UTF-8, which git's rebase converts` }
 
-  // Each commit's change, against its own parent (a commit that started empty has none).
+  // Each commit's parent tree: the previous pick's, the first's the merge base's.
   const treeOf = async (commit: string): Promise<string> => parseCommit((await reader.readObject(commit)).bytes).tree
+  const mergeBaseTree = await treeOf(mergeBase)
+  const parentTrees = picks.map((p, i) => (i === 0 ? mergeBaseTree : (picks[i - 1] as PickedCommit).tree))
+  // Each commit's change, against its own parent (a commit that started empty has none).
   const changed: { oid: string; changes: Changes }[] = []
-  for (const p of picks) {
-    const parentTree = await treeOf(p.parent)
+  for (const [i, p] of picks.entries()) {
+    const parentTree = parentTrees[i] as string
     if (parentTree === p.tree) continue
     changed.push({ oid: p.oid, changes: (await treeChanges(reader, parentTree, p.tree, null)) as Changes })
   }
@@ -297,8 +337,8 @@ export async function rebaseCommits(
   const enc = new TextEncoder()
   let tip = baseTip
   let tipTree = await treeOf(baseTip)
-  for (const p of picks) {
-    const parentTree = await treeOf(p.parent)
+  for (const [i, p] of picks.entries()) {
+    const parentTree = parentTrees[i] as string
     let tree = tipTree
     if (parentTree !== p.tree) {
       const merged = await mergeTrees(over, parentTree, tipTree, p.tree)
