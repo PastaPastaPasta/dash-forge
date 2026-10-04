@@ -8,8 +8,7 @@
  */
 
 import Link from 'next/link'
-import { GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft } from 'lucide-react'
-import { pullState, STATE_TEXT } from '@/lib/design/state'
+import { pullStateView } from '@/components/repo/pull-state'
 import { pullsLinking, readTransitions, repoContractIds, repoKey, type LinkingPulls, type PullRow } from '@/lib/repo'
 import { PR_MERGE } from '@/lib/rules/transition'
 import type { ClosingMerge } from '@/lib/view/cross-refs'
@@ -22,11 +21,8 @@ import { mirrorRepo, pullHref } from '@/components/repo/target-href'
 import { importedHost } from '@/lib/view/ref-targets'
 
 function stateOf(p: PullRow): { label: string; icon: JSX.Element } {
-  const klass = `h-3.5 w-3.5 shrink-0 ${STATE_TEXT[pullState(p.state)]}`
-  if (p.state.merged) return { label: 'merged', icon: <GitMerge className={klass} aria-hidden /> }
-  if (!p.state.open) return { label: 'closed', icon: <GitPullRequestClosed className={klass} aria-hidden /> }
-  if (p.state.draft) return { label: 'draft', icon: <GitPullRequestDraft className={klass} aria-hidden /> }
-  return { label: 'open', icon: <GitPullRequest className={klass} aria-hidden /> }
+  const { label, Icon, klass } = pullStateView(p.state)
+  return { label: label.toLowerCase(), icon: <Icon className={`h-3.5 w-3.5 shrink-0 ${klass}`} aria-hidden /> }
 }
 
 /** An issue's backlinks, and the merges of those that close it (for "closed this in #3"). */

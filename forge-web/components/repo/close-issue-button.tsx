@@ -126,7 +126,7 @@ export function CloseIssueButton({
               ) : c.reason === 'not_planned' ? (
                 <CircleSlash className={`mt-0.5 h-4 w-4 shrink-0 ${STATE_TEXT.skipped}`} aria-hidden />
               ) : (
-                <Copy className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
+                <Copy className={`mt-0.5 h-4 w-4 shrink-0 ${STATE_TEXT.skipped}`} aria-hidden />
               )}
               <span>
                 <span className="block text-dense font-medium">{c.label}</span>

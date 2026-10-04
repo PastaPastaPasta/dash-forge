@@ -1571,7 +1571,7 @@ function PullPage({
                         title={reopenBlocked ?? undefined}
                         data-testid="pull-state-toggle"
                       >
-                        {open ? <GitPullRequestClosed className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden /> : <GitPullRequest className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />}
+                        {open ? <GitPullRequestClosed className={`h-3.5 w-3.5 ${STATE_TEXT.closed}`} aria-hidden /> : <GitPullRequest className={`h-3.5 w-3.5 ${STATE_TEXT.open}`} aria-hidden />}
                         {stateToggleLabel(open, withComment !== null, 'pull request')}
                       </Button>
                     ) : null}
