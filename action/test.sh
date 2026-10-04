@@ -274,7 +274,7 @@ devnet_default=$(default_of devnet-name)
 [ "$(default_of install)" = true ] || fail "install defaults to '$(default_of install)'"
 # The release this Action version pins is the one cut from this commit: the workspace version.
 workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml")
-[ -n "$workspace_version" ] && [ "$(default_of version)" = "$workspace_version" ] ||
+[[ -n "$workspace_version" && "$(default_of version)" == "$workspace_version" ]] ||
     fail "version defaults to '$(default_of version)', not the workspace version '$workspace_version' (bump both when cutting a release)"
 [ "$(default_of build-cache)" = true ] || fail "build-cache defaults to '$(default_of build-cache)'"
 # The defaults pass validation as they are.
