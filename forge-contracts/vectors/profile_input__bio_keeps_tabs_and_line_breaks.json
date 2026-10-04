@@ -1,0 +1,16 @@
+{
+  "name": "bio_keeps_tabs_and_line_breaks",
+  "description": "A bio may hold line breaks and tabs.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "bio": "line one\n\tline two"
+  },
+  "expected": {
+    "valid": true,
+    "invalid": [],
+    "normalized": {
+      "bio": "line one\n\tline two"
+    }
+  }
+}

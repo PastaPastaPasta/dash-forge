@@ -112,6 +112,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Repo(Rp::Clone { repo, .. }) => ("repository not cloned", Some(repo)),
         Command::Repo(Rp::View { repo }) => ("could not show the repository", Some(repo)),
         Command::Repo(Rp::Fork { repo, .. }) => ("repository not forked", Some(repo)),
+        Command::Repo(Rp::Sync { repo, .. }) => ("fork not synced", Some(repo)),
         Command::Repo(Rp::Reindex { repo, .. }) => ("browse index not published", Some(repo)),
         Command::Repo(Rp::Star { repo, .. }) => ("repository not starred", Some(repo)),
         Command::Repo(Rp::Unstar { repo }) => ("star not removed", Some(repo)),
@@ -230,6 +231,16 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Webhook(w) => w.context(),
         Command::Ci(c) => c.context(),
         Command::Import(a) => ("import failed", a.repo.as_ref()),
+        Command::Profile(crate::ProfileCommand::Show { .. }) => {
+            ("could not read the profile", None)
+        }
+        Command::Profile(crate::ProfileCommand::Set(_)) => ("profile not changed", None),
+        Command::Profile(crate::ProfileCommand::Delete) => ("profile not deleted", None),
+        Command::Profile(crate::ProfileCommand::Key(crate::ProfileKeyCommand::List)) => {
+            ("could not read your signing keys", None)
+        }
+        Command::Profile(crate::ProfileCommand::Key(_)) => ("signing keys not changed", None),
+        Command::VerifyCommit { repo, .. } => ("could not verify the commits", repo.as_ref()),
         Command::Doctor { .. } => ("doctor found problems", None),
         Command::Completions { .. } => ("could not print completions", None),
     };

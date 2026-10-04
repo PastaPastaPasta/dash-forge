@@ -255,6 +255,7 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 | **Projects / boards** | None | Labels, and `dg issue list --label … --assignee …` filters |
 | **Milestones** | Supported (`dg milestone`, and **Issues → Milestones** on the web), but the importer does not bring them over | Re-create the ones you need ([Milestones](collaborating.md#milestones)) and set them with `dg issue milestone` |
 | **Reactions** | None: each one would be a paid document | A comment, or a review approval |
+| **Verified commits** | Supported for Ed25519 SSH and Ed25519/ECDSA OpenPGP keys you publish on your profile; RSA keys don't fit | `dg profile key add` ([Signed commits](identity-and-keys.md#signed-commits-and-verified-badges)) |
 | **Assignees** | Not imported; you can assign on Forge (`dg issue assign`) | Re-assign open items after the import |
 | **Organizations and teams** | Repositories belong to one identity; members are per repository | A shared maintainer identity, or add each person to each repository |
 | **Transferring a repository** | Not possible: the owner is fixed | Create a repository under the new owner and push to it (history is unchanged) |
@@ -262,7 +263,8 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 | **Git LFS** | Not supported | Keep large binaries out of git; attach them to releases, which go to your storage |
 | **`https://` clone URLs, shallow clones** | `dash://` only (needs `git-remote-dash`); no `--depth` ([E205](../errors.md#e205)) | `git clone --filter=blob:none` for a light clone; the web app offers a zip of any branch |
 | **Email notifications** | None: there is no server to send them | The web app's **Notifications**, or a webhook to your own notifier |
-| **Secret scanning, Dependabot, code search** | None | Run those tools locally or in your own CI |
+| **Code search** | Within one repository, in the web app: built in your browser from the repository's files, the default branch only for a large repository ([Search the code](quick-start.md#search-the-code)). No search across repositories: that needs an indexer, and Forge runs none | `git grep` in a clone |
+| **Secret scanning, Dependabot** | None | Run those tools locally or in your own CI |
 | **Private repositories in the web app** | The web app reads private repositories and writes their issues, PRs and reviews, but can't merge PRs or commit to branches in them yet | Use `dg` for those |
 
 The [FAQ](../FAQ.md) has more on what Forge is and isn't.

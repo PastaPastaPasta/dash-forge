@@ -1,0 +1,18 @@
+{
+  "name": "unsigned",
+  "description": "An unsigned commit has no verdict.",
+  "case": "commit_signature",
+  "rules": "v2",
+  "input": {
+    "commit": "tree 998928012f262e89898286c20a8722d6d6f7fa8b\nauthor Sig Test <sig@sig.test> 1790942400 +0000\ncommitter Sig Test <sig@sig.test> 1790942400 +0000\n\nunsigned commit\n\nBody line for unsigned.\n",
+    "signers": [
+      {
+        "identity": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "pubkeys": [
+          "gpg:059E65EABA27E46FF4FCC211C209DB5A73261B84 xjMEar9q4xYJKwYBBAHaRw8BAQdAmGsyG5QnBNlTV9rdWGDWvO8EL4giPvjVi5+0qE02qtg="
+        ]
+      }
+    ]
+  },
+  "expected": null
+}

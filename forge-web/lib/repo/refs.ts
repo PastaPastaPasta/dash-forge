@@ -371,10 +371,11 @@ export function publicRefKey(refName: string): string {
  * by that name and lets the public resolver fold it unchanged (protected routing uses the
  * decrypted config timeline). Nothing is readable without a session.
  */
-async function readPrivateRefUpdates(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, RefUpdate[]>> {
+async function readPrivateRefUpdates(sdk: EvoSDK, repo: RepoRef, { fresh = false }: { readonly fresh?: boolean } = {}): Promise<Map<string, RefUpdate[]>> {
   const session = repo.session
   if (session === undefined) return new Map()
-  return session.refUpdates(async () => {
+  // `fresh`: read the chain now, past the session's once-per-session copy (a write's pre-check).
+  const read = async (): Promise<Map<string, RefUpdate[]>> => {
     const byKey = new Map<string, RefUpdate[]>()
     for (const [type, isProtected] of REF_UPDATE_TYPES) {
       const rows = dedupeById(await queryAllDocuments(sdk, repoSource(repo).repoQuery(type, { orderBy: [['$createdAt', 'asc']] })))
@@ -389,7 +390,8 @@ async function readPrivateRefUpdates(sdk: EvoSDK, repo: RepoRef): Promise<Map<st
       }
     }
     return byKey
-  })
+  }
+  return fresh ? read() : session.refUpdates(read)
 }
 
 /**
@@ -444,9 +446,10 @@ export async function readRefUpdates(
   sdk: EvoSDK,
   repo: RepoRef,
   refNameHashB64: string,
+  options: { readonly fresh?: boolean } = {},
 ): Promise<RefUpdate[]> {
   // Private: the argument is the public key `sha256(name)` of a decrypted name.
-  if (repo.visibility === 'private') return (await readPrivateRefUpdates(sdk, repo)).get(base64ToHex(refNameHashB64)) ?? []
+  if (repo.visibility === 'private') return (await readPrivateRefUpdates(sdk, repo, options)).get(base64ToHex(refNameHashB64)) ?? []
   const [plain, prot] = await Promise.all([
     readOneRef(sdk, repo, DOC.refUpdate, refNameHashB64),
     readOneRef(sdk, repo, DOC.protectedRefUpdate, refNameHashB64),
@@ -496,8 +499,10 @@ export async function resolveRefByHash(
   refNameHashB64: string,
   configHistory: readonly ConfigDoc[],
   isAncestor: IsAncestor = NO_ANCESTRY,
+  /** Read a private repo's refs from the chain now, not the session's copy. */
+  options: { readonly fresh?: boolean } = {},
 ): Promise<ResolvedRef | null> {
-  const updates = await readRefUpdates(sdk, repo, refNameHashB64)
+  const updates = await readRefUpdates(sdk, repo, refNameHashB64, options)
   if (updates.length === 0) return null
   return toResolvedRef(updates, configHistory, base64ToHex(refNameHashB64), isAncestor)
 }

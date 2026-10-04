@@ -1,0 +1,14 @@
+{
+  "name": "identicon_seed_64",
+  "description": "A seed holds at most 64 characters.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "identicon:ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "identicon",
+    "seed": "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
+  }
+}

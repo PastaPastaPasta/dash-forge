@@ -1,0 +1,17 @@
+{
+  "name": "gpg_bad_armor_malformed",
+  "description": "An OpenPGP armor that does not parse: malformed.",
+  "case": "commit_signature",
+  "rules": "v2",
+  "input": {
+    "commit": "tree ec1cc7289b3750800883e539f2ef7fefc3394774\nparent f48c6942ad5e09be79f2d7811e06346b99194d81\nauthor Sig Test <sig@sig.test> 1790942400 +0000\ncommitter Sig Test <sig@sig.test> 1790942400 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n ####\n YW51MiwyLjUrMS4xMiwwLDMACgkQwgnbWnMmG4TOTwEAn1gt1czceiJuIiByOfbD\n 02/pwXCHaDaXwZ6K45ve+LYBAMXbnUHpJTZN34n5YPNh3SMKC1EuyrD+mOLVekWk\n I0gA\n =/q3n\n -----END PGP SIGNATURE-----\n\ngpg-a commit\n\nBody line for gpg-a.\n",
+    "signers": []
+  },
+  "expected": {
+    "status": "unverified",
+    "reason": "malformed",
+    "format": "openpgp",
+    "key": null,
+    "signer": null
+  }
+}

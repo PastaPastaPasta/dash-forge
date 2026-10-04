@@ -1,0 +1,16 @@
+{
+  "name": "company_c1_control",
+  "description": "C1 controls (U+0080-U+009F) are control characters too.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "company": "AcmeCorp"
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "company"
+    ],
+    "normalized": null
+  }
+}

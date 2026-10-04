@@ -1,0 +1,16 @@
+{
+  "name": "location_line_break",
+  "description": "A one-line field refuses a line break inside it.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "location": "Lisbon\nPortugal"
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "location"
+    ],
+    "normalized": null
+  }
+}

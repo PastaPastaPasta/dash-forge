@@ -5,6 +5,10 @@
  * repo home view-model (zero extra Platform reads); each tip oid links to its commit page.
  * Deleted refs (null-oid updates — the name persists in append-only Platform history) are
  * folded behind a disclosure so the main list shows only what can be browsed.
+ *
+ * The branches list adds GitHub's branch administration for maintainers and writers (P1-4,
+ * `branch-admin.tsx`): "New branch", a delete button per branch, and "Restore" for a branch
+ * deleted from this page.
  */
 
 import { useCallback, useMemo, useState } from 'react'
@@ -12,12 +16,13 @@ import Link from 'next/link'
 import { GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
-import { compareRefNames, compareTagNames, type ResolvedRef } from '@/lib/repo'
+import { compareRefNames, compareTagNames, repoKey, type ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
 import { RefDate, TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
 import { Input } from '@/components/ui/input'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { DeleteBranchButton, NewBranchButton, RestoreBranchButton, useBranchAdmin, useDeletedHere } from '@/components/repo/branch-admin'
 
 const KIND = {
   branches: { prefix: 'refs/heads/', icon: GitBranch, empty: 'No branches yet', noun: 'a branch', single: 'branch' },
@@ -38,12 +43,20 @@ export function RefListContent({
   home,
   addr,
   kind,
+  reload,
 }: {
   home: RepoHome
   addr: RepoAddress
   kind: keyof typeof KIND
+  /** Re-read the repo home (after a branch is created, deleted or restored here). */
+  reload?: () => void
 }): JSX.Element {
   const { prefix, icon: Icon, empty, noun, single } = KIND[kind]
+  const admin = useBranchAdmin(home)
+  const branchAdmin = kind === 'branches'
+  // Branches deleted from this page, with the tip each had: "Restore" puts one back there.
+  const [deletedHere, setDeletedHere] = useDeletedHere(repoKey(home.repo))
+  const changed = (): void => reload?.()
   // Tags are peeled for their commit chips, and every row's tip is read for its date (QW2-023):
   // both through the published browse index, a row at a time as it scrolls into view.
   const peeler = useTagPeeler(home.repo, { readAhead: kind === 'tags' })
@@ -120,6 +133,7 @@ export function RefListContent({
           <option value="name">Name</option>
           <option value="version">Version</option>
         </select>
+        {branchAdmin ? <NewBranchButton home={home} admin={admin} onCreated={changed} /> : null}
       </div>
 
       {live.length > 0 ? (
@@ -164,6 +178,17 @@ export function RefListContent({
                   </Link>
                 ) : null}
                 {tip ? tipChip(tip) : null}
+                {branchAdmin ? (
+                  <DeleteBranchButton
+                    home={home}
+                    admin={admin}
+                    branch={ref}
+                    onDeleted={(at) => {
+                      setDeletedHere((m) => void m.set(ref.refName, at))
+                      changed()
+                    }}
+                  />
+                ) : null}
               </div>
             )
           })}
@@ -184,7 +209,8 @@ export function RefListContent({
       )}
 
       {deleted.length > 0 ? (
-        <details className="rounded-lg border border-anvil-200 dark:border-anvil-800">
+        // Open while it holds a branch deleted from this page: its Restore is in it.
+        <details className="rounded-lg border border-anvil-200 dark:border-anvil-800" open={deleted.some((r) => deletedHere.has(r.refName)) || undefined}>
           <summary className="cursor-pointer select-none px-4 py-2.5 text-dense coarse:py-3 text-anvil-500 hover:text-anvil-700 dark:text-anvil-400 dark:hover:text-anvil-200">
             {plural(deleted.length, `deleted ${single}`, `deleted ${kind}`)}
           </summary>
@@ -201,6 +227,18 @@ export function RefListContent({
                 <span className="rounded-full border border-anvil-200 px-2 py-0.5 text-[11px] text-anvil-500 dark:text-anvil-400 dark:border-anvil-700">
                   deleted
                 </span>
+                {branchAdmin && deletedHere.has(ref.refName) ? (
+                  <RestoreBranchButton
+                    home={home}
+                    admin={admin}
+                    refName={ref.refName}
+                    tip={deletedHere.get(ref.refName) as string}
+                    onRestored={() => {
+                      setDeletedHere((m) => void m.delete(ref.refName))
+                      changed()
+                    }}
+                  />
+                ) : null}
               </div>
             ))}
           </div>

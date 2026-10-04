@@ -1,7 +1,7 @@
 import { QueryPage } from '@/components/route-loading'
 import { ProfileClient } from './client'
 
-/** `/u?name=` — identity profile (repos, followers, follow). `name` is an identity id. */
+/** `/u?id=` (an identity id) or `/u?name=` (a DPNS name) — an identity's profile, follows and repos (D-222). */
 export default function ProfilePage(): JSX.Element {
   return (
     <QueryPage>

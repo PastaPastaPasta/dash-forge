@@ -18,7 +18,7 @@
  */
 
 import Link from 'next/link'
-import { createContext, Fragment, memo, useContext, useEffect, useId, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { createContext, Fragment, memo, useContext, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import { ImageOff, Info, Lightbulb, MessageSquareWarning, OctagonAlert, TriangleAlert, Workflow } from 'lucide-react'
 import {
   formatBytes,
@@ -37,7 +37,8 @@ import { highlightFence } from '@/lib/view/highlight'
 import { importedHost, refTarget, type ForgeRepo, type RefContext, type RefTarget } from '@/lib/view/ref-targets'
 import { MODE_TREE } from '@/lib/browse'
 import { imagePreviewType } from '@/lib/view/blob-view'
-import { IMAGE_HOSTS_KEY, parseImageHosts, resolveRepoPath, splitHref, upgradeHttp, urlHostOf } from '@/lib/view/markdown-links'
+import { resolveRepoPath, splitHref, upgradeHttp, urlHostOf } from '@/lib/view/markdown-links'
+import { allowHost, useHostAllowed } from '@/hooks/use-image-hosts'
 import { readBlob, commitRootTree, treeAtPath, findEntry, knownMinSize } from '@/lib/view/tree-nav'
 import type { BrowseReader } from '@/lib/browse'
 import { bytesToBase64 } from '@/lib/sdk/query'
@@ -362,65 +363,6 @@ function decodeURIComponentSafe(s: string): string {
 // ---------------------------------------------------------------------------
 // Images
 // ---------------------------------------------------------------------------
-
-const EMPTY_HOSTS: readonly string[] = []
-const hostListeners = new Set<() => void>()
-let hostsRaw: string | null | undefined
-let hostsCached: readonly string[] = EMPTY_HOSTS
-/** Hosts loaded this session (one click), shared by every image on the page. */
-const sessionHosts = new Set<string>()
-
-function readHosts(): readonly string[] {
-  let raw: string | null = null
-  try {
-    raw = window.localStorage.getItem(IMAGE_HOSTS_KEY)
-  } catch {
-    raw = null
-  }
-  if (raw !== hostsRaw) {
-    hostsRaw = raw
-    hostsCached = parseImageHosts(raw)
-  }
-  return hostsCached
-}
-
-const notifyHosts = (): void => {
-  for (const l of hostListeners) l()
-}
-const onHostsStorage = (e: StorageEvent): void => {
-  if (e.key === IMAGE_HOSTS_KEY) notifyHosts()
-}
-
-/** One `storage` listener for the page (another tab's "Always allow"), however many images subscribe. */
-function subscribeHosts(l: () => void): () => void {
-  if (hostListeners.size === 0) window.addEventListener('storage', onHostsStorage)
-  hostListeners.add(l)
-  return () => {
-    hostListeners.delete(l)
-    if (hostListeners.size === 0) window.removeEventListener('storage', onHostsStorage)
-  }
-}
-
-function allowHost(host: string, always: boolean): void {
-  sessionHosts.add(host)
-  if (always) {
-    const next = [...new Set([...readHosts(), host])]
-    try {
-      window.localStorage.setItem(IMAGE_HOSTS_KEY, JSON.stringify(next))
-    } catch {
-      /* private mode: this session only */
-    }
-  }
-  notifyHosts()
-}
-
-function useHostAllowed(host: string | null): boolean {
-  return useSyncExternalStore(
-    subscribeHosts,
-    () => host !== null && (sessionHosts.has(host) || readHosts().includes(host)),
-    () => false,
-  )
-}
 
 const IMG = 'my-2 inline-block max-w-full rounded align-middle'
 

@@ -288,7 +288,21 @@ Open the link from the push's last line. Short links work too: `https://forge.da
 
 The web app has no server behind it. Your browser reads the repository straight from Dash Platform, checks the Platform proofs, and re-hashes every file it shows. The **Verification** card in the right-hand rail says what was checked, including whether the quorum keys the proofs rest on agreed with a second source. [Verify Forge](verify-forge.md) explains it.
 
-Browsing, cloning and downloading a branch as a zip (up to 100 MB, built in your browser) are free and need no sign-in. To file an issue, review a pull request or star a repository from the browser, choose **Sign in**. The web app registers a limited key for this browser (0.05 DASH budget, 90 days, usable only on Forge) and keeps it encrypted; your master key is used once and not stored. [Identity and keys](identity-and-keys.md#limited-keys) explains the options.
+Browsing, cloning and downloading a branch as a zip (up to 100 MB, built in your browser) are free and need no sign-in. So is [code search](#search-the-code).
+
+### Search the code
+
+Every repository page has a **Search code** box (press `/` inside a repository). It searches the content and paths of the files on the branch or tag you are viewing, with GitHub's code search syntax: `word other` (every word), `"exact phrase"`, `/regular expression/`, `NOT word` or `-word`, `path:src/net` or `path:*.cpp`, `language:cpp`, `content:word` (content only) and `case:yes`. Qualifiers that need more than one repository (`repo:`, `org:`) and `OR` are reported as not applied.
+
+There is no search server. The first search of a branch reads each of its text files once from the repository's storage, checks each against its id, and keeps them in your browser (IndexedDB). After that, every search runs in your browser and sends no request; a later commit re-reads only the files that changed. A small repository is indexed at once. A larger one shows how much it will read and asks first. The page lists what the index leaves out:
+
+- binary files, symlinks and submodules;
+- files over 384 KiB;
+- anything past 100 MiB of text (clone the repository and use `git grep` instead).
+
+A **large repository** (over 2,000 files, or 16 MiB stored) is indexed on its default branch only, and one index is kept. For `dashpay/dash`, indexing `develop` reads about 25 MiB (4,398 files, 45 MiB of text) and takes about 35 seconds. A private repository's index is kept in memory for the tab only, never on disk. Your browser keeps up to 256 MiB of indexes across repositories and drops the least recently used first.
+
+To file an issue, review a pull request or star a repository from the browser, choose **Sign in**. The web app registers a limited key for this browser (0.05 DASH budget, 90 days, usable only on Forge) and keeps it encrypted; your master key is used once and not stored. [Identity and keys](identity-and-keys.md#limited-keys) explains the options.
 
 ---
 

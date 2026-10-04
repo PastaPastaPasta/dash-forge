@@ -214,7 +214,7 @@ test('g5. Stargazers has a heading, and no repo tab is lit', async ({ page }) =>
   const { errors } = collectPageErrors(page)
   await page.goto(repoUrl('stargazers'), { waitUntil: 'domcontentloaded' })
   await expect(page.getByRole('heading', { level: 1, name: /Stargazers/ })).toBeVisible({ timeout: 60_000 })
-  await expect(page.locator('main [href*="/u/?name="], main [data-empty], main :text("No stargazers yet")').first()).toBeVisible({ timeout: 60_000 })
+  await expect(page.locator('main [href*="/u/?id="], main [data-empty], main :text("No stargazers yet")').first()).toBeVisible({ timeout: 60_000 })
   const tabs = page.locator('a[aria-current="page"]')
   await expect(tabs.filter({ hasText: 'Code' })).toHaveCount(0)
   await shot(page, 'g14-stargazers')

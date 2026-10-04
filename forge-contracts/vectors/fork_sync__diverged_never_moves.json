@@ -1,0 +1,13 @@
+{
+  "name": "diverged_never_moves",
+  "description": "Both sides have commits of their own (or no shared history): no fast-forward, the fork's commits are never dropped.",
+  "case": "fork_sync",
+  "rules": "v2",
+  "input": {
+    "forkTip": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parentTip": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "forkInParent": false,
+    "parentInFork": false
+  },
+  "expected": "diverged"
+}
