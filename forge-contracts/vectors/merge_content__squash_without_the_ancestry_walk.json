@@ -1,0 +1,27 @@
+{
+  "name": "squash_without_the_ancestry_walk",
+  "description": "The ancestry walk did not finish, but the change is exactly the PR's: a squash.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "3333333333333333333333333333333333333333"
+    ],
+    "headInMerge": null,
+    "tipBeforeInMerge": true,
+    "mergeChange": {
+      "src/a.rs": "a1"
+    },
+    "prChange": {
+      "src/a.rs": "a1"
+    },
+    "baseChange": {}
+  },
+  "expected": {
+    "verdict": "squash",
+    "combined": []
+  }
+}
