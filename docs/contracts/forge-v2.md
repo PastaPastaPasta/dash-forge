@@ -477,6 +477,24 @@ The trailer is an HTML comment, which GitHub-flavoured renderers (forge-web's am
 
 **Why not a chain of comments.** The other design considered stores the rest of a text in further `comment` documents (anyone may write one, and no storage is needed). It was not taken: releases have no comments, so the release notes this item is about could not use it; the parts would count in every proved comment count (§6.1) and interleave with other people's comments in a paged thread; each part is a deletable document of its own, refused on a locked thread to non-members; and an edit would rewrite all of them. The artifact keeps one mechanism for every field, uses the storage and reader rule artifacts already have, and costs the reads above only where the text is shown. Its limit is the gate: a non-member's text stays within the field. A later attribute naming another repository the writer may store in (a PR's fork, say) would lift that; readers of this version treat an unknown attribute as unsupported, never as another meaning. An optional pointer property on the document types was also possible by a contract update, and is not needed.
 
+### 6.4 Mirror back-links: a source vouches for its mirrors (client convention, TS-01)
+
+**The problem.** forge-import writes a mirror's source into its `repo` description (`Mirror of github.com/o/r`), and readers have shown that as the repo's provenance. It is the mirror owner's own word: anyone can create a repo named `dash` described as a mirror of `github.com/dashpay/dash` for the price of a repo. Readers therefore show a description's claim as **"says it mirrors github.com/o/r"**, never in bold and never ranked higher for it (the not-found page orders repos with the same name by proved star count, then age).
+
+**The convention (no contract change).** A source vouches for its mirrors with a file only its own maintainers can write: `.dash-forge.json` at the root of its default branch, a JSON object whose `mirrors` lists Forge repo ids.
+
+```json
+{"mirrors":["<repo document id>"]}
+```
+
+| | Rule |
+|---|---|
+| **Reading** | At most 4,096 bytes (UTF-8); a JSON object with a `mirrors` list, else the file is **invalid** and lists nothing. Other keys and entries of `mirrors` that are not strings are ignored, so later versions can add some. A repo is **listed** when an entry equals its id exactly (case-sensitive base58). Shared by forge-core (`rules::mirror`) and forge-web (`lib/rules/mirror-backlink.ts`), pinned by the `mirror_backlink__*` vectors. |
+| **Writing** | Compact JSON and a final newline (`backlink_file`, vectors `mirror_backlink_file__*`). forge-import prints the file after it creates a GitHub mirror; the web rail gives a maintainer of an unlisted mirror a link to GitHub's new-file page with the file filled in. |
+| **Checking** | From the viewer's browser, only when they ask: `https://raw.githubusercontent.com/<o>/<r>/HEAD/.dash-forge.json` (served with `access-control-allow-origin: *`). A listed repo reads "Mirror of github.com/o/r" with the confirmation shown; the not-found page then ranks it first. The same check compares the source's branch with the mirror's proved default-branch tip (GitHub's `commits/<branch>` API, anonymous: 60 requests an hour per address). An unchecked claim shows "not checked" and nothing green; a failed request is "couldn't check", never a match. |
+
+**What it does not prove.** The file proves that someone who can push to the source named this repo. It says nothing about whether the mirror's content is current: the branch comparison does that, and only for the branch it compares. A source's maintainers can list several mirrors, and take one off the list. Only GitHub sources are checked; GitLab claims stay "says it mirrors". The check tells github.com the viewer's address, which is why it is a button.
+
 ## 7. Measured size and cost
 
 From `tools/contract-validate` (rs-dpp v5.0.0-beta.1, `PlatformVersion` 14) on the RC2 build with every flag on. The signed-shape transitions carry a 65-byte recoverable signature and the contract group fields.

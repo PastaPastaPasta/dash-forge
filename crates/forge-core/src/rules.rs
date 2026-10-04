@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 pub mod ci_rerun;
 pub mod codeowners;
 pub mod long_body;
+pub mod mirror;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
@@ -2354,6 +2355,31 @@ mod tests {
         assert_eq!(got.expect("serialize"), v.expected, "vector `{ctx}`");
     }
 
+    /// `mirror_backlink` and `mirror_backlink_file`: the mirror back-link ([`super::mirror`]).
+    fn run_mirror_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct BacklinkInput {
+            file: String,
+            repo_id: String,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct BacklinkFileInput {
+            repo_ids: Vec<String>,
+        }
+        let ctx = &v.name;
+        let got = if v.case == "mirror_backlink" {
+            let inp: BacklinkInput = input(v);
+            serde_json::to_value(super::mirror::read_backlink(&inp.file, &inp.repo_id))
+                .expect("serialises")
+        } else {
+            let inp: BacklinkFileInput = input(v);
+            serde_json::json!({ "file": super::mirror::backlink_file(&inp.repo_ids) })
+        };
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+    }
+
     /// `profile_input` and `avatar_config`: the profile rules ([`super::profile`]).
     fn run_profile_case(v: &Vector) {
         #[derive(Deserialize, Serialize)]
@@ -2475,6 +2501,7 @@ mod tests {
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "profile_input" | "avatar_config" => run_profile_case(v),
+            "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
             "pubkey_entry" | "commit_signature" => run_signature_case(v),
             "repo_name" => {
                 let inp: RepoNameInput = input(v);

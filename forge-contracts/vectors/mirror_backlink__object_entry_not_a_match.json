@@ -1,0 +1,14 @@
+{
+  "name": "object_entry_not_a_match",
+  "description": "An object naming the id is not an entry.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "{\"mirrors\": [{\"id\": \"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"}]}",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": true,
+    "listed": false
+  }
+}

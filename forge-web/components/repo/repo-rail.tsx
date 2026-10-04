@@ -12,7 +12,7 @@
 import { Time } from '@/components/repo/byline'
 import { useEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { ExternalLink, GitBranch, HardDrive, Rocket, Scale, Star, Tag, Users } from 'lucide-react'
+import { GitBranch, HardDrive, Rocket, Scale, Star, Tag, Users } from 'lucide-react'
 import {
   isLive,
   prefetchDpnsNames,
@@ -21,7 +21,7 @@ import {
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
-import { mirrorSourceOfRepo } from '@/lib/view/mirror-source'
+import { MirrorClaim } from '@/components/repo/mirror-claim'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
@@ -88,7 +88,7 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
   return (
     <Card title="About">
       {home.description ? <p className="mb-2 text-anvil-700 dark:text-anvil-200">{home.description}</p> : null}
-      <MirrorProvenance home={home} />
+      <MirrorClaim home={home} />
       {home.v2.topics.length > 0 ? (
         <ul className="mb-2 flex flex-wrap gap-1.5" aria-label="Topics" data-testid="repo-topics">
           {home.v2.topics.map((t) => (
@@ -234,31 +234,6 @@ function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
         />
       ) : null}
     </div>
-  )
-}
-
-/**
- * A mirror's source as a link, and when a ref last moved (L-84). The source is what the owner
- * wrote in the repo description when forge-import created it (`mirrorSourceOfDescription`): no
- * read beyond the home's. The time is the newest signed ref update: when the mirror last
- * changed, not when a sync last ran (a sync that found nothing new writes nothing).
- */
-function MirrorProvenance({ home }: { home: RepoHome }): JSX.Element | null {
-  // A fork of a mirror carries the mirror's description, not its provenance (QW3-011).
-  const source = mirrorSourceOfRepo(home.v2, 'issue')
-  if (source === null) return null
-  const updated = [...home.branches, ...home.tags].reduce((newest, r) => {
-    const at = r.state.state === 'resolved' ? r.state.createdAt : r.state.state === 'diverged' ? Math.max(...r.state.heads.map((h) => h.createdAt)) : 0
-    return Math.max(newest, at)
-  }, 0)
-  return (
-    <p className="mb-2 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="mirror-provenance">
-      Mirror of{' '}
-      <a href={`https://${source.label}`} target="_blank" rel="noopener noreferrer" className="hit-area inline-flex items-center gap-0.5 font-medium text-forge-700 hover:underline dark:text-forge-400">
-        {source.label} <ExternalLink className="h-3 w-3" aria-hidden />
-      </a>
-      {updated > 0 ? <> · <Time ms={updated} prefix="last updated " /></> : null}
-    </p>
   )
 }
 
