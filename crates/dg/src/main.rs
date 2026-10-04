@@ -281,6 +281,11 @@ pub struct CreateOptions {
     /// (`dg auth keys add --encryption`). Visibility cannot be changed later.
     #[arg(long)]
     pub private: bool,
+    /// Leave the default branch and tags unprotected. By default a new repository protects
+    /// both, so only maintainers can push to the default branch or create and move tags;
+    /// writers propose changes with pull requests. Change it later with `dg repo protect`.
+    #[arg(long)]
+    pub no_protect: bool,
 }
 
 impl CreateOptions {
@@ -484,6 +489,12 @@ pub enum RepoProtectCommand {
         repo: String,
         /// The branch or glob.
         pattern: String,
+    },
+    /// Protect the default branch and every tag, as a new repository does: only maintainers
+    /// can then push to the default branch or create and move tags. Adds only what is missing.
+    Defaults {
+        /// The repository (`owner/name`).
+        repo: String,
     },
     /// Stop protecting a pattern.
     Remove {

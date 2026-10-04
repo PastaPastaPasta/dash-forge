@@ -30,6 +30,7 @@ import {
   descriptionProblem,
   editRepoDoc,
   fullPattern,
+  missingDefaultProtection,
   parseTopics,
   patternMatches,
   patternsProblem,
@@ -422,15 +423,16 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
     <Section id="branches" title="Branches" icon={<GitBranch className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="flex items-center gap-2 text-dense font-medium">
-          <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden /> Protected branches
+          <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden /> Protected branches and tags
         </h3>
         <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
-          Only maintainers can update a protected branch. Platform enforces it: such a ref moves only through a
+          Only maintainers can update a protected branch or tag. Platform enforces it: such a ref moves only through a
           maintainer-only document, and a writer&apos;s plain update of it is ignored by every reader.
         </p>
+        {maintainer ? <DefaultProtectionSuggestion home={home} cfg={cfg} /> : null}
         <ul aria-label="Protected patterns" className="mt-3 divide-y divide-anvil-100 overflow-hidden rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
           {patterns.length === 0 ? (
-            <li className="px-3 py-2 text-dense text-anvil-500 dark:text-anvil-400">No protected branches: every writer can update every branch.</li>
+            <li className="px-3 py-2 text-dense text-anvil-500 dark:text-anvil-400">Nothing is protected: every writer can update every branch and tag.</li>
           ) : (
             patterns.map((p) => {
               const hits = patternMatches(p, branches)
@@ -486,7 +488,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                   cfg.ask({
                     title: `Protect ${candidate}`,
                     description: `Appends a config adding ${candidate}. From then on only maintainers can update ${preview.length > 0 ? preview.join(', ') : 'the branches it matches'}; a writer's push there is refused.`,
-                    change: { addPattern: candidate },
+                    change: { addPatterns: [candidate] },
                     confirmLabel: 'Sign & protect',
                     // QW-072: a protected pattern leaves the field, not "already protected" under it.
                     onDone: () => setEntry(''),
@@ -503,7 +505,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                   <span className="font-mono">{candidate}</span>{' '}
                   {preview.length === 0 ? 'matches no current branch' : `protects ${preview.join(', ')}`}
                 </p>
-                <CostPreview cost={cfg.cost({ addPattern: candidate })} />
+                <CostPreview cost={cfg.cost({ addPatterns: [candidate] })} />
               </div>
             ) : null}
             <p className="mt-2 flex gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -512,7 +514,8 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                 A bare name means <span className="font-mono">refs/heads/&lt;name&gt;</span>. <span className="font-mono">*</span> matches within one
                 path segment (<span className="font-mono">release/*</span> matches <span className="font-mono">release/1.x</span>, not{' '}
                 <span className="font-mono">release/1.x/rc</span>); <span className="font-mono">**</span> crosses segments;{' '}
-                <span className="font-mono">?</span> and <span className="font-mono">[a-z]</span> work as in git. Up to {MAX_PROTECTED_PATTERNS} patterns.
+                <span className="font-mono">?</span> and <span className="font-mono">[a-z]</span> work as in git. <span className="font-mono">refs/tags/**</span> covers every
+                tag. Up to {MAX_PROTECTED_PATTERNS} patterns.
               </span>
             </p>
           </div>
@@ -525,6 +528,59 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
       <PolicyEditor home={home} maintainer={maintainer} />
       {cfg.dialog}
     </Section>
+  )
+}
+
+/**
+ * The one-click offer to complete the new-repository default (the default branch and every tag)
+ * on a repo created before it, or one whose maintainers dropped it. Hidden once both are covered.
+ */
+function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: ReturnType<typeof useConfigWrite> }): JSX.Element | null {
+  const missing = missingDefaultProtection(cfg.current)
+  if (missing.length === 0) return null
+  const branch = missing.find((p) => p.startsWith('refs/heads/'))?.slice('refs/heads/'.length) ?? null
+  const tags = missing.some((p) => p.startsWith('refs/tags/'))
+  const what = branch !== null && tags ? `${branch} and tags` : branch ?? 'tags'
+  const exposure =
+    branch !== null && tags
+      ? `Any writer can push to ${branch} and create or move tags, including the tags your releases point to.`
+      : branch !== null
+        ? `Any writer can push to ${branch}.`
+        : 'Any writer can create or move tags, including the tags your releases point to.'
+  return (
+    <div
+      role="status"
+      data-testid="protection-suggestion"
+      className="mt-3 flex flex-col gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 sm:flex-row sm:items-center"
+    >
+      <p className="flex-1 text-dense text-anvil-700 dark:text-anvil-200">
+        {exposure} New repositories protect the default branch and every tag.
+      </p>
+      {cfg.sealed ? (
+        <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
+          Run <span className="break-all font-mono">dg repo protect defaults {home.repo.ownerId}/{home.repo.name}</span>
+        </p>
+      ) : (
+        <Button
+          size="sm"
+          variant="primary"
+          className="shrink-0"
+          disabled={cfg.disabledReason !== null}
+          onClick={() =>
+            cfg.ask({
+              title: `Protect ${what}`,
+              description: `Appends a config adding ${missing.join(' and ')}. From then on only maintainers can ${
+                branch !== null && tags ? `push to ${branch} or create and move tags` : branch !== null ? `push to ${branch}` : 'create and move tags'
+              }; a writer's push there is refused.`,
+              change: { addPatterns: missing },
+              confirmLabel: 'Sign & protect',
+            })
+          }
+        >
+          <ShieldCheck className="h-3.5 w-3.5" aria-hidden /> Protect {what}
+        </Button>
+      )}
+    </div>
   )
 }
 

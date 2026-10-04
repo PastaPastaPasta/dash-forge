@@ -1,0 +1,15 @@
+{
+  "name": "top_level_tags_only",
+  "description": "refs/tags/* leaves nested tags movable, so every-tag protection is still needed.",
+  "case": "missing_default_protection",
+  "input": {
+    "defaultBranch": "main",
+    "patterns": [
+      "refs/heads/main",
+      "refs/tags/*"
+    ]
+  },
+  "expected": [
+    "refs/tags/**"
+  ]
+}

@@ -93,7 +93,7 @@ test.beforeAll(() => {
   writeFileSync(join(src, 'README.md'), `# ${REPO}\n`)
   g('add', '.')
   g('commit', '-q', '-m', 'base')
-  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform')
+  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--no-protect')
   git('OWNER', src, ['push', '-q', `dash://${SLUG}`, 'main:refs/heads/main'])
   dg('CONTRIB', 'repo', 'fork', SLUG, '--name', FORK)
   const w = join(WORK, 'fork')

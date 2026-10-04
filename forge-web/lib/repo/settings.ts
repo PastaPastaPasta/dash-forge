@@ -17,7 +17,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { decodeIdentifier } from '../auth/base58'
-import { compareKey, isRc1BranchName, isRc1RefName, matchesProtected } from '../rules'
+import { compareKey, isRc1BranchName, isRc1RefName, matchesProtected, missingDefaultProtection as missingDefaultFor } from '../rules'
 import type { Policy } from '../rules/v2'
 import { branchName } from '../view/format'
 import {
@@ -65,14 +65,14 @@ export const MAX_TOPIC_CHARS = 30
 export const DESCRIPTION_LIMITS = { chars: 500, bytes: 1000 } as const
 
 /**
- * A change to a repo's config, as a delta: set the default branch, add or remove one protected
- * pattern, set the archived flag. Every other field carries over from the config it is applied
+ * A change to a repo's config, as a delta: set the default branch, add protected patterns or
+ * remove one, set the archived flag. Every other field carries over from the config it is applied
  * to, which {@link updateConfig} reads fresh at write time, so a change made elsewhere since the
  * page loaded (another pattern, the storage backend) is kept, not overwritten.
  */
 export interface ConfigChange {
   readonly defaultBranch?: string
-  readonly addPattern?: string
+  readonly addPatterns?: readonly string[]
   readonly removePattern?: string
   readonly archived?: boolean
 }
@@ -104,6 +104,11 @@ export function branchProblem(name: string): string | null {
   return null
 }
 
+/** What of the new-repository default protection `config` leaves uncovered (settings' one-click offer). */
+export function missingDefaultProtection(config: RepoConfig): string[] {
+  return missingDefaultFor(config.defaultBranch, config.protectedPatterns)
+}
+
 /** Why `patterns` would be refused by the `config` schema, or null. */
 export function patternsProblem(patterns: readonly string[]): string | null {
   if (patterns.length > MAX_PROTECTED_PATTERNS) return `A repo holds at most ${MAX_PROTECTED_PATTERNS} protected patterns.`
@@ -122,7 +127,7 @@ export function patternsProblem(patterns: readonly string[]): string | null {
 /** `current` with `change` applied (the next config). */
 export function applyConfigChange(current: RepoConfig, change: ConfigChange): RepoConfig {
   let patterns = [...current.protectedPatterns]
-  if (change.addPattern !== undefined && !patterns.includes(change.addPattern)) patterns.push(change.addPattern)
+  for (const p of change.addPatterns ?? []) if (!patterns.includes(p)) patterns.push(p)
   if (change.removePattern !== undefined) patterns = patterns.filter((p) => p !== change.removePattern)
   return {
     ...current,
@@ -140,7 +145,7 @@ export function changeHolds(config: RepoConfig, change: ConfigChange): boolean {
   return (
     (change.defaultBranch === undefined || config.defaultBranch === shortBranch(change.defaultBranch.trim())) &&
     (change.archived === undefined || config.archived === change.archived) &&
-    (change.addPattern === undefined || config.protectedPatterns.includes(change.addPattern)) &&
+    (change.addPatterns ?? []).every((p) => config.protectedPatterns.includes(p)) &&
     (change.removePattern === undefined || !config.protectedPatterns.includes(change.removePattern))
   )
 }
@@ -159,7 +164,7 @@ export function staleProblem(seen: RepoConfig, fresh: RepoConfig, change: Config
   const moved =
     (change.defaultBranch !== undefined && seen.defaultBranch !== fresh.defaultBranch) ||
     (change.archived !== undefined && seen.archived !== fresh.archived) ||
-    ((change.addPattern !== undefined || change.removePattern !== undefined) && patternsMoved)
+    ((change.addPatterns !== undefined || change.removePattern !== undefined) && patternsMoved)
   return moved ? STALE_SETTINGS : null
 }
 

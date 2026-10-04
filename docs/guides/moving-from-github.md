@@ -215,7 +215,7 @@ dg pr create <your id>/project --body "Fixes the README"
 To replace GitHub's branch protection:
 
 ```sh
-dg repo protect add <your id>/project main                        # only maintainers move main (Platform enforces it)
+dg repo protect defaults <your id>/project                        # only maintainers move main and tags (Platform enforces it; new repositories start this way)
 dg repo policy set <your id>/project --required-approvals 1       # Forge clients hold the merge until approved
 ```
 

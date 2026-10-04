@@ -81,7 +81,7 @@ check "reindex finds nothing to do" assert_eq "indexed" "$(jq_py "$LOG-1r.json" 
 
 step "2. a push whose manifest reads lag says it left the index behind"
 LAG="$(printf 'e2e-idx-lag-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
-dg_read_retry "$ID" "$LOG-2c.json" "$LOG-2c.err" --yes --json repo create "$LAG" --storage platform \
+dg_read_retry "$ID" "$LOG-2c.json" "$LOG-2c.err" --yes --json repo create "$LAG" --no-protect --storage platform \
   || { cat "$LOG-2c.err" >&2; bad "repo create failed"; finish_scenario; }
 SRC="$WORKROOT/s33-src"
 seed_tiny_repo "$SRC" main >/dev/null
@@ -114,7 +114,7 @@ step "4. a push that stops before its refs still leaves an index (or says so); t
 # retry finds the pack recorded and stores nothing again, so this push is the one that must
 # have indexed it, or said it did not.
 FB="$(printf 'e2e-idx-fb-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
-dg_read_retry "$ID" "$LOG-4c.json" "$LOG-4c.err" --yes --json repo create "$FB" --storage platform \
+dg_read_retry "$ID" "$LOG-4c.json" "$LOG-4c.err" --yes --json repo create "$FB" --no-protect --storage platform \
   || { cat "$LOG-4c.err" >&2; bad "repo create failed"; finish_scenario; }
 SRC4="$WORKROOT/s33-src4"
 seed_tiny_repo "$SRC4" main >/dev/null

@@ -25,6 +25,34 @@ export function matchesProtected(refName: string, patterns: readonly string[]): 
   return patterns.some((p) => wildmatch(neutralizeWildmatch(p), refName))
 }
 
+/** Every tag, nested ones included (`refs/tags/v1`, `refs/tags/tools/v1`): `**` crosses `/`. */
+export const ALL_TAGS_PATTERN = 'refs/tags/**'
+
+/**
+ * The protected patterns a new repository starts with unless its creator opts out (a client
+ * convention, `forge-v2.md` §6): its default branch and every tag, so only maintainers can move
+ * what people build and install from. `defaultBranch` is the short name (`main`) or the full ref.
+ * Parity: forge-core `rules::default_protected_patterns` (vectors `default_protection__*`).
+ */
+export function defaultProtectedPatterns(defaultBranch: string): string[] {
+  const short = defaultBranch.startsWith('refs/heads/') ? defaultBranch.slice('refs/heads/'.length) : defaultBranch
+  return [`refs/heads/${short}`, ALL_TAGS_PATTERN]
+}
+
+/**
+ * What of the default protection `patterns` leave uncovered on a repo whose default branch is
+ * `defaultBranch`: the default patterns still needed, empty when existing patterns cover both
+ * the branch and every tag (`refs/tags/*` covers top-level tags only, so it is not enough).
+ * Parity: forge-core `rules::missing_default_protection` (vectors `missing_default_protection__*`).
+ */
+export function missingDefaultProtection(defaultBranch: string, patterns: readonly string[]): string[] {
+  return defaultProtectedPatterns(defaultBranch).filter((d) =>
+    d === ALL_TAGS_PATTERN
+      ? !(matchesProtected('refs/tags/v1', patterns) && matchesProtected('refs/tags/a/v1', patterns))
+      : !matchesProtected(d, patterns),
+  )
+}
+
 /**
  * Escape the two constructs git `wildmatch` treats as literals but the backing crate
  * would interpret: a leading run of `!` (negation) and every `{`/`}` (alternation).

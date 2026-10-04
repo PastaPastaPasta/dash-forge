@@ -1,0 +1,13 @@
+{
+  "name": "none",
+  "description": "An unprotected repository needs both its default branch and every tag.",
+  "case": "missing_default_protection",
+  "input": {
+    "defaultBranch": "main",
+    "patterns": []
+  },
+  "expected": [
+    "refs/heads/main",
+    "refs/tags/**"
+  ]
+}

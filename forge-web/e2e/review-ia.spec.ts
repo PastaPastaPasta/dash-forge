@@ -110,7 +110,7 @@ test.beforeAll(() => {
   writeFileSync(join(src, 'README.md'), `# ${REPO}\n`)
   g('add', '.')
   g('commit', '-q', '-m', 'base: greet')
-  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform')
+  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--no-protect')
   git('OWNER', src, ['push', '-q', `dash://${SLUG}`, 'main:refs/heads/main'])
   // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
   // node that has not seen the consent yet).

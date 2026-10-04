@@ -844,6 +844,42 @@ pub fn matches_protected(ref_name: &str, patterns: &[String]) -> bool {
         .any(|p| glob_match::glob_match(&neutralize_wildmatch(p), ref_name))
 }
 
+/// Every tag, nested ones included (`refs/tags/v1`, `refs/tags/tools/v1`): `**` crosses `/`.
+pub const ALL_TAGS_PATTERN: &str = "refs/tags/**";
+
+/// The protected patterns a new repository starts with unless its creator opts out (a client
+/// convention, `docs/contracts/forge-v2.md` §6): its default branch and every tag, so only
+/// maintainers can move what people build and install from. `default_branch` is the short
+/// name (`main`) or the full ref. Parity: `defaultProtectedPatterns` in
+/// `forge-web/lib/rules/matchesProtected.ts` (vectors `default_protection__*`).
+#[must_use]
+pub fn default_protected_patterns(default_branch: &str) -> Vec<String> {
+    let short = default_branch
+        .strip_prefix("refs/heads/")
+        .unwrap_or(default_branch);
+    vec![format!("refs/heads/{short}"), ALL_TAGS_PATTERN.to_string()]
+}
+
+/// What of the default protection `patterns` leave uncovered on a repository whose default
+/// branch is `default_branch`: the default patterns still needed, empty when existing patterns
+/// cover both the branch and every tag (`refs/tags/*` covers top-level tags only, so it is not
+/// enough). Parity: `missingDefaultProtection` in `forge-web/lib/rules/matchesProtected.ts`
+/// (vectors `missing_default_protection__*`).
+#[must_use]
+pub fn missing_default_protection(default_branch: &str, patterns: &[String]) -> Vec<String> {
+    default_protected_patterns(default_branch)
+        .into_iter()
+        .filter(|d| {
+            if d == ALL_TAGS_PATTERN {
+                !(matches_protected("refs/tags/v1", patterns)
+                    && matches_protected("refs/tags/a/v1", patterns))
+            } else {
+                !matches_protected(d, patterns)
+            }
+        })
+        .collect()
+}
+
 /// Escape the two constructs the backing glob crate supports but git `wildmatch` does
 /// not — a leading run of `!` (negation) and every `{`/`}` (brace alternation) — so
 /// they are matched as literals. Preserves UTF-8 (ref names are UTF-8, data-contracts
@@ -1239,10 +1275,10 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        ci_rerun, codeowners, display_ref_name, is_legal_ref_name, long_body, matches_protected,
-        merge_base_tips, overlay_tree, pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event,
-        EventKind, FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff,
-        Verdict,
+        ci_rerun, codeowners, default_protected_patterns, display_ref_name, is_legal_ref_name,
+        long_body, matches_protected, merge_base_tips, missing_default_protection, overlay_tree,
+        pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event, EventKind, FlatIndex,
+        IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
@@ -1473,6 +1509,28 @@ mod tests {
                 let want: bool =
                     serde_json::from_value(v.expected.clone()).expect("matches_protected expected");
                 assert_eq!(got, want, "vector `{ctx}`");
+            }
+            "missing_default_protection" => {
+                let branch = v.input["defaultBranch"]
+                    .as_str()
+                    .expect("missing_default_protection input: defaultBranch");
+                let patterns: Vec<String> = serde_json::from_value(v.input["patterns"].clone())
+                    .expect("missing_default_protection input: patterns");
+                let want: Vec<String> = serde_json::from_value(v.expected.clone())
+                    .expect("missing_default_protection expected");
+                assert_eq!(
+                    missing_default_protection(branch, &patterns),
+                    want,
+                    "vector `{ctx}`"
+                );
+            }
+            "default_protection" => {
+                let branch = v.input["defaultBranch"]
+                    .as_str()
+                    .expect("default_protection input: defaultBranch");
+                let want: Vec<String> = serde_json::from_value(v.expected.clone())
+                    .expect("default_protection expected");
+                assert_eq!(default_protected_patterns(branch), want, "vector `{ctx}`");
             }
             "overlay" => {
                 let inp: OverlayInput =

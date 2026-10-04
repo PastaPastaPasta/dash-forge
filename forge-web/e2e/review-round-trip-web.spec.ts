@@ -111,7 +111,7 @@ test.beforeAll(() => {
   writeFileSync(join(src, FILE), 'fn main() {\n    let name = "world";\n    let greeting = "hello";\n    let punct = "!";\n    let sep = ", ";\n    println!("{greeting}{sep}{name}{punct}");\n}\n')
   g('add', '.')
   g('commit', '-q', '-m', 'base: greet')
-  repoId = String(dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform')['repoId'])
+  repoId = String(dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--no-protect')['repoId'])
   git('OWNER', src, ['push', '-q', `dash://${SLUG}`, 'main:refs/heads/main'])
   dg('CONTRIB', 'repo', 'fork', SLUG, '--name', FORK)
   const w = join(WORK, 'fork')

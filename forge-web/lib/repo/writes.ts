@@ -49,7 +49,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, asIdentifierString, withVis, type RepoRef } from './contract'
-import { isRc1BranchName, isRc1OidHex, isRc1TagName } from '../rules'
+import { defaultProtectedPatterns, isRc1BranchName, isRc1OidHex, isRc1TagName } from '../rules'
 import { invalidateMembers, memberDocOf, readMemberships, roleOfMemberDoc } from './members'
 import { contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
@@ -1271,6 +1271,16 @@ export interface CreateRepoInput {
   readonly forkOf?: string
   /** Set at creation only (immutable). A private repo needs the owner's encryption key. */
   readonly visibility?: Visibility
+  /**
+   * Protect the default branch and every tag from the first config on
+   * ({@link defaultProtectedPatterns}): the New repository form's default. A fork leaves it off.
+   */
+  readonly protect?: boolean
+}
+
+/** The protected patterns a create's first config carries: none, or the default set. */
+export function createPatterns(input: CreateRepoInput): string[] {
+  return input.protect === true ? defaultProtectedPatterns(input.defaultBranch ?? 'main') : []
 }
 
 /** The steps of a repo creation, in order. */
@@ -1283,7 +1293,12 @@ export type CreateRepoStep = 'repo' | 'maintainer' | 'config'
  */
 export interface PrivateCreate {
   readonly ops: EncryptionOps
-  readonly epochZero: (c: { sdk: EvoSDK; auth: WriteAuth; repo: RepoRef; network: Network; ops: EncryptionOps }, defaultBranch: string, intent: string) => Promise<boolean>
+  readonly epochZero: (
+    c: { sdk: EvoSDK; auth: WriteAuth; repo: RepoRef; network: Network; ops: EncryptionOps },
+    defaultBranch: string,
+    intent: string,
+    protectedPatterns: readonly string[],
+  ) => Promise<boolean>
 }
 
 /** A repo creation's journal entry (IndexedDB), kept until all three documents exist. */
@@ -1495,7 +1510,7 @@ export async function createRepo(
   await step('config', async () => {
     if (visibility === 'private') {
       const p = privateCreate as PrivateCreate
-      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key)
+      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key, createPatterns(input))
       return
     }
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
@@ -1503,7 +1518,13 @@ export async function createRepo(
     await createDocumentIdempotent(sdk, auth, {
       contractId: forge.core,
       documentType: DOC.config,
-      data: withVis(visibility, DOC.config, { repoId: R, defaultBranch: input.defaultBranch ?? 'main', backend: { mode: 0 } }),
+      data: withVis(visibility, DOC.config, {
+        repoId: R,
+        defaultBranch: input.defaultBranch ?? 'main',
+        backend: { mode: 0 },
+        // An empty list is the same as none, and omitting it keeps the document small.
+        ...(createPatterns(input).length > 0 ? { protectedPatterns: createPatterns(input) } : {}),
+      }),
       intent: `${key}:config`,
     })
   })

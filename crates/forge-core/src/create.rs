@@ -70,6 +70,11 @@ pub struct CreateRepoOpts {
     pub visibility: Visibility,
     /// The parent repository's id when this is a fork (`repo.forkOf`, immutable).
     pub fork_of: Option<[u8; 32]>,
+    /// Protect the default branch and every tag from the first config on
+    /// ([`crate::rules::default_protected_patterns`]): only maintainers can move them. The
+    /// clients' create flows turn it on unless the user opts out; a fork leaves it off, as
+    /// GitHub's forks carry no branch protection.
+    pub protect: bool,
 }
 
 impl CreateRepoOpts {
@@ -84,6 +89,16 @@ impl CreateRepoOpts {
             backend_uris: Vec::new(),
             visibility: Visibility::Public,
             fork_of: None,
+            protect: false,
+        }
+    }
+
+    /// The protected patterns the first config carries: none, or the default set.
+    pub fn protected_patterns(&self) -> Vec<String> {
+        if self.protect {
+            crate::rules::default_protected_patterns(&self.default_branch)
+        } else {
+            Vec::new()
         }
     }
 }
@@ -250,15 +265,20 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     p
 }
 
-/// The initial `config` document's properties of a PUBLIC repository (no protected patterns:
-/// an empty list is the same as none, and omitting it keeps the document small). A private
-/// repository's first config is its sealed anchor (`private_epoch_zero`).
+/// The initial `config` document's properties of a PUBLIC repository: the protected patterns
+/// only when [`CreateRepoOpts::protect`] asks for them (an empty list is the same as none, and
+/// omitting it keeps the document small). A private repository's first config is its sealed
+/// anchor (`private_epoch_zero`).
 pub(crate) fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     let mut p = BTreeMap::new();
     p.insert(
         "defaultBranch".into(),
         FieldValue::text(&opts.default_branch),
     );
+    let patterns = opts.protected_patterns();
+    if !patterns.is_empty() {
+        p.insert("protectedPatterns".into(), FieldValue::text_list(patterns));
+    }
     p.insert("backend".into(), backend_props(opts));
     p.insert("archived".into(), FieldValue::boolean(false));
     layout::stamp_public(&mut p);
@@ -478,6 +498,7 @@ async fn private_epoch_zero(
         &signer,
         repo,
         &opts.default_branch,
+        &opts.protected_patterns(),
         backend_props(opts),
     )
     .await?;
@@ -723,6 +744,15 @@ mod tests {
         let c = config_props(&opts);
         assert!(!c.contains_key("repoId"), "the scope adds repoId");
         assert!(!c.contains_key("protectedPatterns"));
+        opts.protect = true;
+        opts.default_branch = "trunk".into();
+        assert_eq!(
+            config_props(&opts).get("protectedPatterns"),
+            Some(&FieldValue::text_list(["refs/heads/trunk", "refs/tags/**"])),
+            "the default set: the default branch and every tag"
+        );
+        opts.protect = false;
+        opts.default_branch = "main".into();
         assert!(matches!(c.get("backend"), Some(FieldValue::Object(b))
             if b.contains_key("mode") && !b.contains_key("uris")));
         opts.backend_mode = 2;
