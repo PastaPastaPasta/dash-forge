@@ -587,7 +587,7 @@ pub enum Rebased {
     /// The rebased head (the head itself when it was already on the base with a linear history;
     /// the base when every commit's change was already there).
     Tip(String),
-    /// It stopped at `commit`, conflicting in `paths`; nothing was kept.
+    /// It stopped at `commit`, conflicting in `paths` (never empty); nothing was kept.
     Stopped {
         /// The commit that did not apply.
         commit: String,
@@ -601,7 +601,9 @@ pub enum Rebased {
 /// commit keeps its own author). The choices a user's config could change are pinned: the merge
 /// backend, patch-equivalent commits skipped, commits that become empty dropped, merges
 /// flattened, no autosquash or ref updates, verbatim messages, no hooks, no line-ending
-/// conversion and no LFS smudge — the rebase the browser replays (forge-web `rebase.ts`).
+/// conversion and no LFS smudge — the rebase the browser replays (forge-web `rebase.ts`). Like
+/// dg's other merge commits, signing follows the user's `commit.gpgSign` (the browser cannot
+/// sign, so a signed rebase differs from the browser's only by its signatures).
 pub fn rebase(
     dir: &Path,
     onto: &str,
@@ -643,20 +645,25 @@ pub fn rebase(
             ],
             &env,
         );
-        if rebased.is_ok() {
+        let Err(failed) = rebased else {
             return Ok(Rebased::Tip(git(wt.path(), &["rev-parse", "HEAD"], &[])?));
-        }
+        };
+        // Stopped on a conflict (REBASE_HEAD names the commit), or failed outright.
         let Ok(commit) = git(
             wt.path(),
             &["rev-parse", "-q", "--verify", "REBASE_HEAD"],
             &[],
         ) else {
-            return rebased.map(|_| unreachable!("checked above"));
+            return Err(failed);
         };
-        let paths = git(wt.path(), &["diff", "--name-only", "--diff-filter=U"], &[])
+        let paths: Vec<String> = git(wt.path(), &["diff", "--name-only", "--diff-filter=U"], &[])
             .map(|o| o.lines().map(str::to_string).collect())
             .unwrap_or_default();
         let _ = git(wt.path(), &["rebase", "--abort"], &[]);
+        // Stopped with nothing unmerged (a signing failure, say): git's own error, not a conflict.
+        if paths.is_empty() {
+            return Err(failed);
+        }
         Ok(Rebased::Stopped { commit, paths })
     })();
     let _ = git(dir, &["worktree", "remove", "--force", &wt_path], &[]);
