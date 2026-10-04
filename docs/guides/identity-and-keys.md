@@ -165,7 +165,7 @@ dg auth keys rotate --encryption [--master <identity file>] [--keep-old]
 
 It runs the rekey of [private-repos.md §5.2](../security/private-repos.md#52-encryption-keys-derivation-custody-blast-radius-rekey), in this order, and prints the plan and its cost before anything is signed:
 
-1. Adds a new ENCRYPTION key, derived from the recovery words at the next key id, so the words alone recover it (one identity update, signed by the MASTER key).
+1. Adds a new ENCRYPTION key, derived from the recovery phrase at the next key id, so the words alone recover it (one identity update, signed by the MASTER key).
 2. Rotates the key of every private repository you **maintain**: a new key epoch, wrapped to every member, you first, to your new key. Each costs one wrap per member plus one anchor.
 3. Names the private repositories where you are only a writer, triage or reader. You cannot rotate those. A maintainer's next visit (or `dg repo keys repair <repo>`) wraps the current key to your new one. Until then, new content there is sealed for the old key.
 4. Disables the old key, unless `--keep-old` is given or a repository failed to rotate. A disabled key still opens what was sealed for it, so nothing you could read is lost. Whoever holds the old key keeps what was sealed before, but nothing sealed from now on.
