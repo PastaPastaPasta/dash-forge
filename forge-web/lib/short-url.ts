@@ -40,6 +40,8 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   'networks',
   'new',
   'notifications',
+  // Web Push for the optional notification service (public/notify-sw.js).
+  'notify-sw.js',
   'private',
   'repo',
   'robots.txt',
