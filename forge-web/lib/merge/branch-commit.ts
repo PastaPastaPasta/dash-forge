@@ -11,8 +11,9 @@
  *   trees on each changed path, and writes a commit with parent = head and the message
  *   `Apply suggestions from code review` + `Co-authored-by:` per reviewer + `Forge-Suggestion:`
  *   per comment — byte-for-byte the message `dg` writes (parity: `branch::suggestion_message`).
- * - {@link updateBranchCommit} merges the base tip into the head (disjoint changes only, as the
- *   browser merge), message `Merge branch '<base>' into <branch>`.
+ * - {@link updateBranchCommit} merges the base tip into the head (with the browser merge's
+ *   three-way tree and line merge, git's result or a conflict), message
+ *   `Merge branch '<base>' into <branch>`.
  */
 
 import { gitOidHex, MODE_TREE, type GitObject } from '../browse'
@@ -305,8 +306,8 @@ export type UpdateBranchPlan =
 
 /**
  * Merge the base tip into the head (M6), as `dg pr update-branch`: nothing when the head already
- * contains the base; a merge commit (parents head, base) when both changed disjoint paths;
- * conflicts otherwise (the browser never merges file contents). A head behind the base (it
+ * contains the base; a merge commit (parents head, base) when the two merge cleanly, a file both
+ * changed merged line by line as git does; conflicts otherwise. A head behind the base (it
  * contains nothing new) is not fast-forwarded: that would drop the PR's changes.
  */
 export async function updateBranchCommit(

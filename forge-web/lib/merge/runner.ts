@@ -71,6 +71,8 @@ export interface MergeRun {
   readonly squash?: string
   /** Built as a merge commit where a fast-forward was possible (--no-ff): the other choice is a new run. */
   readonly noFastForward?: true
+  /** The merge commit's edited message this run built with (M2): a different one is a new run. */
+  readonly message?: string
   readonly done: readonly MergeStepId[]
   readonly result?: Extract<MergeResult, { kind: 'fast-forward' | 'merge' | 'squash' }>
   readonly stored?: StoredPack
@@ -81,20 +83,27 @@ export interface MergeRun {
 }
 
 /** A fresh run for `input`. */
-export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward'>): MergeRun {
+export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message'>): MergeRun {
   return {
     baseTip: input.baseTip,
     headOid: input.headOid,
     ...(input.squash ? { squash: input.squash.message } : {}),
     ...(input.noFastForward === true && !input.squash ? { noFastForward: true as const } : {}),
+    ...(input.message !== undefined && !input.squash ? { message: input.message } : {}),
     done: [],
   }
 }
 
-/** `run` when it is for `input`'s base tip, head and method, else a fresh run. */
-export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward'>): MergeRun {
+/** `run` when it is for `input`'s base tip, head, method and message, else a fresh run. */
+export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message'>): MergeRun {
   const noFf = input.noFastForward === true && !input.squash
-  return run !== null && run.baseTip === input.baseTip && run.headOid === input.headOid && run.squash === input.squash?.message && (run.noFastForward === true) === noFf
+  const message = input.squash ? undefined : input.message
+  return run !== null &&
+    run.baseTip === input.baseTip &&
+    run.headOid === input.headOid &&
+    run.squash === input.squash?.message &&
+    (run.noFastForward === true) === noFf &&
+    run.message === message
     ? run
     : newRun(input)
 }
@@ -256,7 +265,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
       throw new MergeStepError(phase, reasonOf(e), run)
     }
     if (result.kind === 'conflict') {
-      throw new MergeStopped(`both sides changed the same paths${result.paths.length ? ` (${result.paths.slice(0, 5).join(', ')})` : ''}; merge with \`dg pr merge\``)
+      throw new MergeStopped(`the merge conflicts${result.paths.length ? ` in ${result.paths.slice(0, 5).join(', ')}` : ' (more than one merge base)'}, or changes them in a way only git merges; merge with \`dg pr merge\``)
     }
     if (result.kind === 'malformed' || result.kind === 'too-large') throw new MergeStopped(`${result.reason}; it is not merged in the browser`)
     if (result.kind === 'up-to-date') throw new MergeStopped('the base branch already contains this head')

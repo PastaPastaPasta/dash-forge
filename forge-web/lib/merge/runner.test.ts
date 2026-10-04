@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RepoRef } from '../repo'
 import type { WriteAuth } from '../sdk'
-import { failureMessage, MergeStepError, mergeSteps, MergeStopped, newRun, runFor, runMergeSteps, type MergeRunDeps, type StepEvent } from './runner'
+import { failureMessage, MergeStepError, mergeSteps, MergeStopped, newRun, runFor, runMergeSteps, type MergeRun, type MergeRunDeps, type StepEvent } from './runner'
 
 const calls: string[] = []
 const fail = new Set<string>()
@@ -195,7 +195,7 @@ describe('merge step runner', () => {
   it('stops, without retry, on conflicts', async () => {
     await expect(
       runMergeSteps(deps({ merge: async () => ({ kind: 'conflict', paths: ['a.txt'] }) }), newRun({ baseTip: BASE, headOid: HEAD }), () => undefined),
-    ).rejects.toThrow(/both sides changed the same paths \(a\.txt\); merge with `dg pr merge`/)
+    ).rejects.toThrow(/the merge conflicts in a\.txt, or changes them in a way only git merges; merge with `dg pr merge`/)
   })
 
   it('never builds on a stale run: a changed base tip or head starts over, and a moved branch stops before the ref', async () => {
@@ -211,6 +211,11 @@ describe('merge step runner', () => {
     const moved = 'ab'.repeat(20)
     expect(runFor(partial?.run ?? null, { baseTip: moved, headOid: HEAD }).done).toEqual([])
     expect(runFor(partial?.run ?? null, { baseTip: BASE, headOid: HEAD }).result?.newTip).toBe(TIP)
+    // An edited merge-commit message (M2) is a different commit: a retry with another starts over.
+    const edited = { ...(partial?.run as MergeRun), message: 'Ship it' }
+    expect(runFor(edited, { baseTip: BASE, headOid: HEAD, message: 'Ship it' }).result?.newTip).toBe(TIP)
+    expect(runFor(edited, { baseTip: BASE, headOid: HEAD, message: 'Ship it now' }).done).toEqual([])
+    expect(runFor(edited, { baseTip: BASE, headOid: HEAD }).done).toEqual([])
     // Resuming a run with inputs that changed underneath it is refused outright.
     await expect(runMergeSteps(deps({ input: { ...deps().input, baseTip: moved } }), partial!.run, () => undefined)).rejects.toBeInstanceOf(MergeStopped)
     // The branch moved on chain after the pack was built: stop before writing the ref.

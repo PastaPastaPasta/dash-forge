@@ -4,18 +4,19 @@
  * MergePanel — the browser merge (`ux-dx-spec.md` §5.7), for a PR's maintainers and writers.
  *
  * The button says what it will do, decided in the merge worker before anything is offered:
- * `Merge (fast-forward)`, `Create merge commit and merge` (only when the two sides changed
- * disjoint paths; file contents are never merged in the browser), or a disabled
- * `Can't merge in the browser — merge with \`dg pr merge\`` with the paths both sides changed
- * (the browser never merges a file's contents, so git may still merge them cleanly) and the
+ * `Merge (fast-forward)`, `Create merge commit and merge` (when the two sides merge cleanly: a
+ * file both changed is merged line by line exactly as git merges it, QW3-016), or a disabled
+ * `Can't merge in the browser — merge with \`dg pr merge\`` with the paths that conflict (or that
+ * only git merges: renames, a moved directory, binary or very large files) and the
  * `dg pr checkout` line. A writer on a
  * protected base branch sees `Protected branch — maintainers only`; a narrow screen, "Use a
  * desktop browser for this step". The click runs the step list (fetch → merge → build and
  * verify the pack → upload → packManifest → browse index → ref update → merge event), and a
  * failure names what already exists and offers to resume.
  *
- * Review parity (M1, M2, M3, M7, F7): a method choice (the plan's merge, or Squash and merge with
- * an editable message, as `dg pr merge --squash` writes it), limited to what the branch policy's
+ * Review parity (M1, M2, M3, M7, F7): a method choice (the plan's merge, or Squash and merge), each
+ * commit with an editable message (the merge commit's as `dg pr merge --message` writes it, the
+ * squash's as `dg pr merge --squash`), limited to what the branch policy's
  * `mergeMethods` allows; the conflicting paths when the check finds overlaps; and "Delete the
  * branch after merging" when the merger can write to the PR's source repo.
  *
@@ -33,7 +34,7 @@ import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type R
 import { matchesProtected } from '@/lib/rules'
 import { EXISTING, bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
 import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
-import { mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
+import { mergeMessage, mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
 import { MergeStepError, mergeSteps, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
 import { bypassValue, mergeButton, mergeGate, mergeRefProblem } from '@/lib/view/pull-actions'
@@ -202,6 +203,13 @@ export function MergePanel({
   // The squash commit's author, as strings (the merge input below is memoized on them).
   const squashByName = squash.author?.name ?? null
   const squashByEmail = squash.author?.email ?? null
+  // The merge commit's message (review-parity M2): the default until the merger edits it.
+  const sourceLabel = mergeSourceLabel(pull.sourceRefName, pull.headOid)
+  const [mergeText, setMergeText] = useState<string | null>(null)
+  const mergeMsg = mergeText ?? mergeMessage(pull.number, sourceLabel, pull.title).replace(/\n$/, '')
+  // A merge commit is written (the plan's, or --no-ff; a fast-forward writes none): its message
+  // box shows, and its edited message is passed.
+  const writesMergeCommit = method === 'no-ff' || (method === 'merge' && check === 'merge')
   const [alsoDelete, setAlsoDelete] = useState(true)
   // Linked issues the merger unticked (every other one offered is closed after the merge).
   const [keepOpen, setKeepOpen] = useState<ReadonlySet<number>>(() => new Set())
@@ -212,21 +220,23 @@ export function MergePanel({
       baseTip: baseTipOid,
       headOid: pull.headOid,
       prNumber: pull.number,
-      sourceLabel: mergeSourceLabel(pull.sourceRefName, pull.headOid),
+      sourceLabel,
       title: pull.title,
+      // Only an edited message: the default is the engine's own (the same bytes).
+      ...(mergeText !== null && writesMergeCommit ? { message: mergeText } : {}),
       author: { name: prefs.mergeName.trim(), email: prefs.mergeEmail.trim() },
       headInBase: sameRepo,
       // The PR's author authors the squash; the merger commits it (QW4-008).
       ...(method === 'squash' ? { squash: { message: squashMsg, ...(squashByName !== null && squashByEmail !== null ? { author: { name: squashByName, email: squashByEmail } } : {}) } } : {}),
       ...(method === 'no-ff' ? { noFastForward: true as const } : {}),
     }),
-    [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg, squashByName, squashByEmail],
+    [baseTipOid, pull.headOid, pull.number, sourceLabel, pull.title, mergeText, writesMergeCommit, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg, squashByName, squashByEmail],
   )
   // Widened for the real commit's identity (author and committer) and the squash message as it
   // is now: the check used a placeholder identity and the message of the moment.
   const packEstimate = sized !== null && sized.method === method ? sized.estimate : null
   const authorIdent = input.squash?.author ?? input.author
-  const storage = choiceFor(widenEstimate(packEstimate, `${input.author.name}${input.author.email}${authorIdent.name}${authorIdent.email}${input.squash?.message ?? ''}`))
+  const storage = choiceFor(widenEstimate(packEstimate, `${input.author.name}${input.author.email}${authorIdent.name}${authorIdent.email}${input.squash?.message ?? input.message ?? ''}`))
   const allowPlatform = allowTouched ?? storage?.allowByDefault ?? false
   // The pre-answer the run starts with: credits allowed on Platform (null: none, it asks).
   const preAgreedCredits = allowPlatform ? (storage?.platformCredits ?? null) : null
@@ -336,7 +346,8 @@ export function MergePanel({
   const identityOk = (button.kind !== 'merge-commit' && method === 'merge') || mergeIdentityValid(prefs)
   // The plan's own method bit (ff 1, merge commit 2), or squash (4): what the policy is checked against.
   const planBit = method === 'no-ff' ? 2 : button.kind === 'fast-forward' ? 1 : button.kind === 'merge-commit' ? 2 : 0
-  const methodAllowed = method === 'squash' ? policyAllows(4) && squash.problem === null : planBit === 0 || policyAllows(planBit)
+  const mergeMsgProblem = writesMergeCommit && mergeMsg.trim() === '' ? 'Write a commit message to merge.' : null
+  const methodAllowed = method === 'squash' ? policyAllows(4) && squash.problem === null : (planBit === 0 || policyAllows(planBit)) && mergeMsgProblem === null
   // Once this panel's merge has landed there is nothing left to merge: no method, button or cost.
   const mergeable = !mergedHere && (button.kind === 'fast-forward' || button.kind === 'merge-commit')
 
@@ -367,7 +378,8 @@ export function MergePanel({
     // The run starts: its bypass (if any) is what its retries record.
     setBypassed(bypass)
     begin(preAgreedCredits)
-    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : input.noFastForward ? ':no-ff' : ''}`
+    const digest = (text: string): string => bytesToHex(sha256(new TextEncoder().encode(text))).slice(0, 16)
+    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${digest(input.squash.message)}` : input.noFastForward ? ':no-ff' : ''}${input.message !== undefined ? `:msg:${digest(input.message)}` : ''}`
     try {
       // The merge's writes are one action: one toast with their total (QW3-039). The merge panel is
       // not modal, so its own signer marks them; a branch delete or issue close after it is its own.
@@ -565,7 +577,7 @@ export function MergePanel({
         <div className="mt-3">
           <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="browser-merge-limit">
             {conflictPaths.length > 0
-              ? 'Both sides changed these files since the PR branched. The browser merges only changes to different files and never merges the contents of one, so this is not necessarily a conflict: git may merge it cleanly. Check the PR out, merge it with the CLI, and push:'
+              ? "These files can't be merged in the browser: both sides changed the same lines (or lines next to each other), or changed them in a way only git merges (a rename, a moved or removed directory, a binary or very large file, a .gitattributes merge rule). Check the PR out, merge it with the CLI, and push:"
               : 'The two histories have more than one merge base, which only git merges. Check the PR out, merge it with the CLI, and push:'}
           </p>
           {conflictPaths.length > 0 ? (
@@ -583,8 +595,20 @@ export function MergePanel({
         <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="squash-problem">
           {squash.problem}
         </p>
+      ) : mergeable && mergeMsgProblem !== null ? (
+        <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="merge-message-problem">
+          {mergeMsgProblem}
+        </p>
       ) : mergeable && !methodAllowed ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">The branch policy does not allow this merge method; pick another.</p>
+      ) : null}
+      {mergeable && writesMergeCommit && newTip === null ? (
+        <div className="mt-3">
+          <label htmlFor="merge-message" className="mb-1 block text-[12px] font-medium text-anvil-700 dark:text-anvil-200">
+            Commit message
+          </label>
+          <Textarea id="merge-message" value={mergeMsg} onChange={(e) => setMergeText(e.target.value)} className="min-h-[72px] font-mono text-[12px]" disabled={busy} data-testid="merge-message" />
+        </div>
       ) : null}
       {mergeable && method === 'squash' && newTip === null ? (
         <div className="mt-3">

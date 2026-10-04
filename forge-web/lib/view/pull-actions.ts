@@ -267,8 +267,8 @@ export function mergeButton(i: MergeButtonInputs): MergeButton {
     case 'merge':
       return { kind: 'merge-commit', label: 'Create merge commit and merge' }
     case 'conflict':
-      // The browser merges only disjoint changes; anything both sides touched is the CLI's. It
-      // never merges a file's contents, so this is no conflict verdict: git may merge it cleanly (QW3-016).
+      // Lines both sides changed (git conflicts too), or a shape only git merges — renames, a moved
+      // directory, binary or very large files, a .gitattributes merge rule (QW3-016).
       return { kind: 'conflicts', label: "Can't merge in the browser — merge with `dg pr merge`", checkout: i.checkout }
     case 'malformed':
       return {

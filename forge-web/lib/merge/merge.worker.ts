@@ -4,7 +4,7 @@
  * from the page (see `protocol.ts`), so the worker needs no SDK and no network access.
  */
 
-import type { GitObject } from '../browse'
+import { ObjectTooLargeError, type GitObject } from '../browse'
 import type { ObjectReader } from '../view/tree-nav'
 import { checkMergeDetailed, runMerge } from './engine'
 import type { FromWorker, ToWorker } from './protocol'
@@ -16,11 +16,11 @@ let nextReq = 0
 const post = (m: FromWorker, transfer: Transferable[] = []): void => scope.postMessage(m, transfer)
 
 const reader: ObjectReader = {
-  readObject: (oid) =>
+  readObject: (oid, options) =>
     new Promise<GitObject>((resolve, reject) => {
       const req = nextReq++
       pending.set(req, { resolve, reject })
-      post({ type: 'read', req, oid })
+      post({ type: 'read', req, oid, ...(options?.maxBytes !== undefined ? { maxBytes: options.maxBytes } : {}) })
     }),
 }
 
@@ -31,6 +31,8 @@ scope.onmessage = (e: MessageEvent<ToWorker>) => {
     pending.delete(m.req)
     if (p === undefined) return
     if (m.object) p.resolve(m.object)
+    // A read the page refused as over its size bound comes back as that refusal.
+    else if (m.tooLarge !== undefined) p.reject(new ObjectTooLargeError(m.tooLarge.size, m.tooLarge.max))
     else p.reject(new Error(m.error ?? 'object read failed'))
     return
   }
