@@ -9,7 +9,7 @@ export function BlameClient(): JSX.Element {
   const path = useParam('path')
   const refParam = useParam('ref')
   return (
-    <RepoScaffold addr={addr} browse refParam={refParam} rail={false}>
+    <RepoScaffold addr={addr} browse refParam={refParam} rail={false} verification>
       {(home) => <BlameContent home={home} addr={addr} path={path} refParam={refParam} />}
     </RepoScaffold>
   )
