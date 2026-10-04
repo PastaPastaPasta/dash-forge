@@ -1,0 +1,29 @@
+{
+  "name": "missing_different_content",
+  "description": "The merge writes different content to a path only the PR changed (the base did not touch it): it does not contain the PR.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "3333333333333333333333333333333333333333"
+    ],
+    "headInMerge": false,
+    "tipBeforeInMerge": true,
+    "mergeChange": {
+      "src/a.rs": "a9"
+    },
+    "prChange": {
+      "src/a.rs": "a1"
+    },
+    "baseChange": {
+      "README.md": "r2"
+    }
+  },
+  "expected": {
+    "verdict": "missing",
+    "combined": []
+  }
+}

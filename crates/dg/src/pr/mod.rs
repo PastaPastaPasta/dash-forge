@@ -31,6 +31,7 @@ pub mod owners;
 pub mod review;
 pub mod state;
 pub mod threads;
+pub(crate) mod verify;
 
 use std::path::{Path, PathBuf};
 
@@ -93,6 +94,7 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
             comments,
             show_hidden,
         } => view(ctx, repo, *number, *comments, *show_hidden).await,
+        PrCommand::Verify { repo, number } => verify::run(ctx, repo, *number).await,
         PrCommand::Checkout { repo, number } => checkout(ctx, repo, *number).await,
         PrCommand::Review(a) => review::review(ctx, a).await,
         PrCommand::Comment(a) => review::comment(ctx, a).await,
@@ -1136,7 +1138,20 @@ async fn view(
 
     let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed, &incomplete);
     let unresolved = conv.threads.iter().filter(|t| !t.resolved).count();
+    // Merge integrity: whether the recorded merge contains the PR, checked here only when the
+    // current repository already holds the commits (`dg pr verify` fetches them).
+    let merge_check = verify::checkable_merge(&v).map(|oid| {
+        let local = std::env::current_dir()
+            .ok()
+            .filter(|d| verify::has_merge_objects(d, &v))
+            .and_then(|d| verify::merged_content(&d, &v))
+            .filter(|c| c.verdict != forge_core::rules::merge_check::MergeVerdict::Unknown);
+        (oid, local)
+    });
     let standing = json!({
+        // Whether the recorded merge contains the PR (`null`: not merged, or the commits are not
+        // in the current repository; `dg pr verify` fetches them).
+        "mergeContent": merge_check.as_ref().and_then(|(oid, c)| c.as_ref().map(|c| verify::content_json(oid, c))),
         // Each required check's run on the head (the names are `policy.requiredChecks`).
         "requiredCheckRuns": checks.as_ref().ok().cloned().flatten(),
         "requiredCheckRunsError": checks.as_ref().err(),
@@ -1184,7 +1199,7 @@ async fn view(
             "sinceYourReview": since,
             // The shape `dg repo policy show --json` prints (QW4-060: raw integers here).
             "policy": policy.as_ref().map(crate::repo_settings::policy_json),
-            "approvals": policy_status.as_ref().map(|s| json!({ "have": s.have, "need": s.need })),
+            "approvals": policy_status.as_ref().map(|s| json!({ "have": s.have, "need": s.need, "blockedBy": s.blocked_by })),
             "reviews": reviews_json,
             "threads": conv.threads,
             "generalComments": conv.general,
@@ -1241,6 +1256,14 @@ async fn view(
             );
             if v.merge_base.ref_name != v.patch.base_ref_name {
                 println!("retargeted from {}", safe(&v.patch.base_ref_name));
+            }
+            match &merge_check {
+                Some((oid, Some(c))) => println!("{}", verify::merge_line(oid, c)),
+                Some((oid, None)) => println!(
+                    "merged as {} (`dg pr verify {repo} {number}` checks that it contains this PR)",
+                    short(oid)
+                ),
+                None => {}
             }
             let labels: Vec<&str> = v.state.labels.iter().map(String::as_str).collect();
             let assignees: Vec<String> = v.state.assignees.iter().map(|a| who(a)).collect();
@@ -1631,15 +1654,12 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         Method::Rebase => Some(METHOD_REBASE),
         Method::Merge => None,
     };
-    let MergeRights { policy, bypassed } = require_merge_rights(
-        &s,
-        handle,
-        &view,
-        !event_only,
-        method_bit,
-        a.override_policy,
-    )
-    .await?;
+    let MergeRights { policy, bypassed } =
+        require_merge_rights(&s, handle, &view, method_bit, a.override_policy).await?;
+    // A recorded merge is permanent: `--event-only` names a commit that must contain the PR.
+    if let Some(oid) = &merge_oid {
+        require_merge_contains_pr(ctx, handle, &view, oid)?;
+    }
     // `--delete-branch` needs write access to the source repo: refuse before merging rather
     // than after.
     let delete = if a.delete_branch {
@@ -2183,6 +2203,44 @@ fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<
     Ok(oid)
 }
 
+/// `--event-only` records a merge nobody can undo, so the commit it names must contain the PR:
+/// its head is that commit or an ancestor of it, or the commit is a squash or a rebase of the PR
+/// on the base (the shared reader rule `merge_check`, which `dg pr verify` and the web apply to
+/// every recorded merge). Fetches the base and the head unless the commit is the head itself.
+fn require_merge_contains_pr(ctx: &Ctx, handle: &Repo, view: &PatchView, oid: &str) -> Result<()> {
+    use forge_core::rules::merge_check::{merge_content, MergeVerdict};
+    if oid == view.head {
+        return Ok(());
+    }
+    let number = view.patch.number;
+    let scratch = verify::scratch_for_check(ctx, handle, view, &view.head)?;
+    let facts = verify::merge_facts(scratch.path(), &view.head, oid, &view.tip_before(oid));
+    let (headline, cause) = match merge_content(&facts).verdict {
+        MergeVerdict::Contains | MergeVerdict::Squash | MergeVerdict::Rebase => return Ok(()),
+        MergeVerdict::Missing => (
+            format!("{} does not contain PR #{number}", short(oid)),
+            format!(
+                "the PR head {} is not in it, and it does not make the PR's changes",
+                short(&view.head)
+            ),
+        ),
+        MergeVerdict::Unknown => (
+            format!("could not check that {} contains PR #{number}", short(oid)),
+            "the commits needed for the check could not be fetched".to_string(),
+        ),
+    };
+    Err(UserError::new(
+        codes::USAGE,
+        format!("merge event not posted: {headline}"),
+    )
+    .cause(cause)
+    .fix(format!(
+        "name the commit that merged the PR with --merge-oid, or run `dg pr merge` without --event-only to merge PR #{number}"
+    ))
+    .note("a merge event cannot be deleted, and readers label a merge that does not contain its PR. Nothing was written")
+    .into())
+}
+
 /// What [`require_merge_rights`] found: the policy in force (its merge methods are checked once
 /// the merge is planned) and, under a maintainer's `--override-policy`, the rules the merge
 /// bypasses (empty: none, the policy is met or there is none).
@@ -2197,13 +2255,13 @@ struct MergeRights {
 /// never count) and required checks, and `method` (a merge-method bit) when known; an unreadable
 /// policy fails closed. A maintainer's `override_policy` is the explicit bypass (GitHub's "bypass
 /// rules"): the unmet rules are returned, to be recorded on the PR, and the allowed merge methods
-/// still apply. When the merge `pushes` to the base, a writer cannot move a protected one (only a
-/// maintainer's `protectedRefUpdate` can).
+/// still apply. A writer cannot merge into a protected base (only a maintainer's
+/// `protectedRefUpdate` can move it), and that holds for `--event-only` too: recording a merge
+/// into a branch the writer could not have pushed is the same claim.
 async fn require_merge_rights(
     s: &Session,
     handle: &Repo,
     view: &PatchView,
-    pushes: bool,
     method: Option<u8>,
     override_policy: bool,
 ) -> Result<MergeRights> {
@@ -2256,7 +2314,7 @@ async fn require_merge_rights(
     let rights = judge_policy(read, override_policy, method, &handle.display(), number)?;
     // DASH_FORGE_SKIP_WRITE_PRECHECK skips only the consensus-backed protected-branch check (so
     // consensus can be seen refusing it); the policy is a client rule nothing else enforces.
-    if maintainer || !pushes || !forge_core::collab::v2::precheck_enabled() {
+    if maintainer || !forge_core::collab::v2::precheck_enabled() {
         return Ok(rights);
     }
     let base = view.merge_base.ref_name.as_str();
@@ -2396,6 +2454,12 @@ fn policy_refusal(
     }
     let cause = if status.met {
         "the branch policy does not allow this merge method".to_string()
+    } else if !status.short() {
+        format!(
+            "{} ({})",
+            changes_requested_rule(status.blocked_by.len()),
+            status.blocked_by.join(", ")
+        )
     } else {
         format!(
             "{} of {}{}",
@@ -2419,8 +2483,17 @@ fn policy_refusal(
             "choose an allowed merge method (`dg repo policy show {repo}` lists them); `--override-policy` does not lift it"
         ))
     } else {
-        u.fix(format!("get the missing approvals (`dg pr review {repo} {number} --approve` by a member other than the PR author)"))
-            .fix("a maintainer can merge anyway with `--override-policy` (recorded on the PR)")
+        let u = if status.short() {
+            u.fix(format!("get the missing approvals (`dg pr review {repo} {number} --approve` by a member other than the PR author)"))
+        } else {
+            u
+        };
+        let u = if status.blocked_by.is_empty() {
+            u
+        } else {
+            u.fix("make the requested changes and ask the reviewer to approve, or have a maintainer or writer dismiss the review (`dg pr dismiss-review`)")
+        };
+        u.fix("a maintainer can merge anyway with `--override-policy` (recorded on the PR)")
     };
     Some(u.note(
         "nothing was pushed and no merge event was posted. Forge apps enforce the branch policy, not Platform",
@@ -2458,11 +2531,7 @@ fn judge_policy(
         Ok(Some((policy, standing))) if override_policy => {
             // The bypass lifts approvals and checks; the allowed merge methods still apply (as
             // GitHub's repository merge settings do).
-            let met = forge_core::rules::review::PolicyStatus {
-                met: true,
-                have: 0,
-                need: 0,
-            };
+            let met = forge_core::rules::review::PolicyStatus::nothing_required();
             if let Some(u) = policy_refusal(&policy, &met, method, repo, number) {
                 return Err(u.into());
             }
@@ -2549,6 +2618,15 @@ const STANDING_UNREAD: &str = "required approvals and checks: could not be read"
 /// The bypass record's line for a policy that could not be read.
 const POLICY_UNREAD: &str = "the branch policy could not be read";
 
+/// The branch-rule line for standing requests for changes that block a merge. The web merge box
+/// writes the same (`changesRequestedRule`).
+fn changes_requested_rule(n: usize) -> String {
+    format!(
+        "changes requested by {n} reviewer{}",
+        if n == 1 { "" } else { "s" }
+    )
+}
+
 /// The branch rules `status` and `checks` leave unmet, one line each ("required approvals: 0 of
 /// 1 (maintainers only)", "required check `build`: missing"); empty when all are met. The web
 /// merge box names the same rules (`unmetRules`).
@@ -2559,7 +2637,7 @@ fn unmet_rules(
 ) -> Vec<String> {
     use forge_core::rules::v2::CheckState;
     let mut out = Vec::new();
-    if !status.met {
+    if status.short() {
         out.push(format!(
             "required approvals: {} of {}{}",
             status.have,
@@ -2570,6 +2648,9 @@ fn unmet_rules(
                 ""
             }
         ));
+    }
+    if !status.blocked_by.is_empty() {
+        out.push(changes_requested_rule(status.blocked_by.len()));
     }
     if let Some(c) = checks.filter(|c| !c.met) {
         if c.required.is_empty() {
@@ -2962,11 +3043,7 @@ fn build_merge(
         (MergePlan::MergeCommit { .. }, Method::Merge) => Some(METHOD_MERGE),
     };
     if let (Some(policy), Some(m)) = (how.policy, method) {
-        let met = forge_core::rules::review::PolicyStatus {
-            met: true,
-            have: 0,
-            need: 0,
-        };
+        let met = forge_core::rules::review::PolicyStatus::nothing_required();
         if let Some(u) = policy_refusal(
             policy,
             &met,
@@ -3538,6 +3615,7 @@ pub(crate) mod tests {
             base_tip: Some("1".repeat(40)),
             head_on_base: false,
             base_tips: std::collections::BTreeSet::new(),
+            base_history: Vec::new(),
             log: forge_core::collab::v2::TargetLog::default(),
             patch,
         }
@@ -3892,6 +3970,7 @@ pub(crate) mod tests {
             met: have >= need,
             have,
             need,
+            blocked_by: Vec::new(),
         }
     }
 
@@ -4303,6 +4382,7 @@ pub(crate) mod tests {
             met: false,
             have: 0,
             need: 1,
+            blocked_by: Vec::new(),
         };
         let checks = ChecksState {
             required: vec![RequiredCheck {

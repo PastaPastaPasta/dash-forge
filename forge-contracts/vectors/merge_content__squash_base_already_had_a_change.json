@@ -1,0 +1,30 @@
+{
+  "name": "squash_base_already_had_a_change",
+  "description": "The base already holds the PR's change to src/a.rs (a cherry-pick, or the same fix landed separately), so a squash of the PR leaves that path alone: it still makes the PR's changes, and the path is not listed as combined.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "3333333333333333333333333333333333333333"
+    ],
+    "headInMerge": false,
+    "tipBeforeInMerge": true,
+    "mergeChange": {
+      "src/b.rs": "b1"
+    },
+    "prChange": {
+      "src/a.rs": "a1",
+      "src/b.rs": "b1"
+    },
+    "baseChange": {
+      "src/a.rs": "a1"
+    }
+  },
+  "expected": {
+    "verdict": "squash",
+    "combined": []
+  }
+}
