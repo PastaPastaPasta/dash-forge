@@ -32,10 +32,10 @@ These guides describe what is on `master` today. Features that are specified but
 
 - editing files in the browser, and browser merges for private repositories (the CLI has them).
 
-Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at Forge's key-exchange contract on sakura (deployed with the RC2 registration) (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
+Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at Forge's key-exchange contract on sakura (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 
 ## Which network
 
-The guides use **devnet sakura** (Platform protocol 14, v5.0.0-beta.1) throughout. Its status: RC2 registered on Platform v5.0.0-beta.1 (2026-10-01), and [forge.dashhq.org](https://forge.dashhq.org) runs on sakura. Devnet bonsia, where the RC1 contracts were registered on 2026-09-29 (tag `contracts-rc1-frozen`), is gone. Moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts; moutai commands stop with a "not deployed" error. Fees quoted as measured on bonsia or moutai are from those devnets. Testnet and mainnet run protocol 13 and have no Forge deployment: forge-v2 is registered on testnet when protocol 14 reaches it, and on mainnet after protocol 14 activates there and the owner registers the contracts. See [the network status table](../../README.md#status).
+The guides use **devnet sakura**, a test network, throughout; [forge.dashhq.org](https://forge.dashhq.org) runs on it too. Fees quoted as measured on bonsia or moutai are from those retired devnets. Testnet and mainnet have no Forge deployment yet. [Networks](../networks.md) has the details and the history.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

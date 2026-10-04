@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is waiting for the network to confirm your identity (or, if you build from source, the first build).
 
-> **Which network?** This guide's commands target devnet **sakura** (Platform protocol 14, v5.0.0-beta.1). Its status: Forge's contracts are registered on Platform v5.0.0-beta.1 (2026-10-01), and the web app at forge.dashhq.org runs on sakura. Devnet bonsia, where the RC1 contracts ran, is gone, and moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts. The fees below were measured on sakura where they say so (2026-10-01), else on bonsia (Platform v4.2), and sakura's can differ: [Costs](costs.md) has both. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
+> **Which network?** The commands target devnet **sakura**, a test network, which forge.dashhq.org also uses. The fees below were measured on sakura where they say so (2026-10-01), else on the retired devnet bonsia; [Costs](costs.md) has both. Testnet and mainnet have no Forge deployment yet, and on a network without one the tools stop with a "not deployed" error ([E702](../errors.md#e702)). [Networks](../networks.md) has the details.
 
 ---
 
@@ -70,7 +70,7 @@ A Dash Platform **identity** is your account on Forge. It holds your keys and yo
 dg auth new --network devnet --devnet-name sakura
 ```
 
-1. `dg` shows **12 recovery words**. Write them down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
+1. `dg` shows a **12-word recovery phrase**. Write the words down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
 2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet sakura use the faucet at <https://faucet.sakura.networks.dash.org>, which sends 10 test DASH, far more than you need. A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: the faucet's 10 test DASH all become credits (a balance of about 9.998 DASH), where the sample below sent 0.05.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
@@ -137,7 +137,7 @@ dg doctor --fix     # free, local fixes only: file modes, and a cost guard for g
 
 `dg doctor --fix` sets `git config --global dash.costWarnThreshold 0.05` if you have no threshold yet, so that a push asks before spending more than 0.05 DASH: a small push goes through (one with its packs on Platform is quoted about 0.012 DASH on bonsia), a megabyte of packs on Platform asks. It never spends anything.
 
-Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. It needs your identity's master key once, so pass the identity file with `--master <file>` or type the 12 recovery words when asked; the limited key `dg auth login` stored cannot sign it. A name with a digit other than 0 or 1 cost about 0.0007 DASH on bonsia (`dg` quotes an upper bound of 0.001). Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
+Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. It needs your identity's master key once, so pass the identity file with `--master <file>` or type the 12-word recovery phrase when asked; the limited key `dg auth login` stored cannot sign it. A name with a digit other than 0 or 1 cost about 0.0007 DASH on bonsia (`dg` quotes an upper bound of 0.001). Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
 
 ---
 
