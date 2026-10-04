@@ -594,6 +594,10 @@ pub struct SearchArgs {
     /// At most this many results.
     #[arg(long, short = 'L', default_value_t = 30)]
     pub limit: u32,
+    /// Also show (marked) the threads maintainers hid, which a search leaves out as `dg issue
+    /// list` and `dg pr list` do. In `--json`, `hiddenOmitted` counts those left out.
+    #[arg(long)]
+    pub include_hidden: bool,
 }
 
 /// `dg search repos` arguments.
@@ -643,7 +647,8 @@ pub struct ApiQueryArgs {
     /// Start after this document id (the next page).
     #[arg(long, value_name = "ID", conflicts_with = "all")]
     pub start_after: Option<String>,
-    /// Read every matching row, page after page (at most 10,000).
+    /// Read every matching row, page after page: reading stops past 10,000 and the first
+    /// 10,000 are printed.
     #[arg(long, conflicts_with = "count")]
     pub all: bool,
     /// Print the proved count of matching documents instead (the clauses must match a

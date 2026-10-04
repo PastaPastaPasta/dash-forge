@@ -312,7 +312,17 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     // the fork as its source, as `gh pr create` does (QW2-014). Naming the fork opens it
     // there.
     let fork = if crate::infer::repo_from_clone() {
-        into_fork_parent(&mut s).await?
+        let fork = into_fork_parent(&s.client, &mut s.repo, "the PR goes to the fork").await?;
+        if let Some(fork) = &fork {
+            // stderr, with --json too: where the PR goes is worth saying either way
+            eprintln!(
+                "{} is a fork of {}: the PR goes there (`dg pr create {} …` opens it in the fork)",
+                fork.display(),
+                s.repo.display(),
+                fork.display()
+            );
+        }
+        fork
     } else {
         None
     };
@@ -496,35 +506,31 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     Ok(())
 }
 
-/// When the session's repository is a fork, point the session at the fork's parent and
-/// return the fork; `None` (the session unchanged) when it is not one, or its parent is gone.
-async fn into_fork_parent(s: &mut Session) -> Result<Option<Repo>> {
-    let Some(parent_id) = forge_core::resolve::fork_parent(&s.client, &s.repo)
+/// When `repo` is a fork, point it at the fork's parent and return the fork; `None` (`repo`
+/// unchanged) when it is not one, or its parent is gone (a note then ends with `gone`).
+pub(crate) async fn into_fork_parent(
+    client: &forge_core::platform::PlatformClient,
+    repo: &mut Repo,
+    gone: &str,
+) -> Result<Option<Repo>> {
+    let Some(parent_id) = forge_core::resolve::fork_parent(client, repo)
         .await
         .context("reading whether this clone's repository is a fork")?
     else {
         return Ok(None);
     };
-    let parent = match forge_core::resolve::resolve_id(&s.client, &parent_id).await {
+    let parent = match forge_core::resolve::resolve_id(client, &parent_id).await {
         Ok(p) => p,
         Err(forge_core::Error::NotFound) => {
             eprintln!(
-                "note: {} is a fork of {parent_id}, which no longer exists; the PR goes to the fork",
-                s.repo.display()
+                "note: {} is a fork of {parent_id}, which no longer exists; {gone}",
+                repo.display()
             );
             return Ok(None);
         }
         Err(e) => return Err(e).context("resolving the fork's parent"),
     };
-    let fork = std::mem::replace(&mut s.repo, parent);
-    // stderr, with --json too: where the PR goes is worth saying either way
-    eprintln!(
-        "{} is a fork of {}: the PR goes there (`dg pr create {} …` opens it in the fork)",
-        fork.display(),
-        s.repo.display(),
-        fork.display()
-    );
-    Ok(Some(fork))
+    Ok(Some(std::mem::replace(repo, parent)))
 }
 
 /// The PR's source repository, branch and head commit. The branch is `--head` (else the

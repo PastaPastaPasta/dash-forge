@@ -18,7 +18,7 @@ use forge_core::rules::search::{
     matches_text, mentions, parse_issue_search, parse_pull_search, tokens, IssueQuery, Parsed,
     PullQuery,
 };
-use forge_core::rules::v2::{fold_thread_meta_v2, CloseReason, Role, RoleOracle};
+use forge_core::rules::v2::{fold_thread_meta_v2, Role, RoleOracle};
 use forge_core::user_error::codes;
 
 use crate::common::Reader;
@@ -29,8 +29,8 @@ use crate::SearchCommand;
 /// Dispatch a `search` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &SearchCommand) -> Result<()> {
     match cmd {
-        SearchCommand::Issues(a) => issues(ctx, a).await,
-        SearchCommand::Prs(a) => prs(ctx, a).await,
+        SearchCommand::Issues(a) => Box::pin(issues(ctx, a)).await,
+        SearchCommand::Prs(a) => Box::pin(prs(ctx, a)).await,
         SearchCommand::Repos(a) => repos(ctx, a).await,
     }
 }
@@ -41,61 +41,58 @@ fn text_of(words: &[String]) -> String {
 }
 
 /// `text` with every `author:` / `assignee:` / `review-requested:` value that names a DPNS
-/// name rewritten to its identity id (the web's `resolveSearchNames`); a name DPNS does not
-/// know is left as typed, as on the web (an `author:` login then matches mirrored items). A
-/// lookup that fails for any other reason stops the search rather than match nothing.
+/// name rewritten to its identity id (the web's `resolveSearchNames`), the lookups made
+/// together. A name DPNS does not know, or a value no DPNS name could be (`"bob smith"`), is
+/// left as typed, as on the web (an `author:` login then matches mirrored items). A lookup
+/// that fails for any other reason stops the search rather than match nothing.
 async fn resolve_names(
     client: &forge_core::platform::PlatformClient,
     text: &str,
 ) -> Result<String> {
-    let mut out = Vec::new();
-    for tok in tokens(text) {
+    let resolve = |tok: String| async move {
         let Some((key, value)) = tok.split_once(':') else {
-            out.push(tok);
-            continue;
+            return Ok(tok);
         };
         let k = key.to_lowercase();
         let name = value.replace('"', "");
         let name = name.trim_start_matches('@');
         let person = matches!(k.as_str(), "author" | "assignee" | "review-requested");
         let keyword = matches!(name.to_lowercase().as_str(), "me" | "none" | "");
-        if !person || keyword || forge_core::resolve::looks_like_identity_id(name) {
-            out.push(tok);
-            continue;
+        if !person
+            || keyword
+            || forge_core::resolve::looks_like_identity_id(name)
+            || forge_core::resolve::dpns_label(name).is_none()
+        {
+            return Ok(tok);
         }
         match forge_core::resolve::resolve_owner(client, name).await {
-            Ok(id) => out.push(format!("{k}:{id}")),
-            Err(forge_core::Error::User(u)) if u.code == codes::NOT_FOUND => out.push(tok),
-            Err(e) => return Err(e.into()),
+            Ok(id) => Ok(format!("{k}:{id}")),
+            Err(forge_core::Error::User(u)) if u.code == codes::NOT_FOUND => Ok(tok),
+            Err(e) => Err(anyhow::Error::from(e)),
         }
-    }
+    };
+    let out = futures::future::try_join_all(tokens(text).into_iter().map(resolve)).await?;
     Ok(out.join(" "))
 }
 
 /// The repository a search looks in and its query words. Inside a clone, a first word that
-/// does not name a repository (`is:open`, `crash`; anything but an `owner/name` or the clone's
-/// own) is the query's, and the clone's repository is searched, as `gh search` does: clap
-/// reads the first of several words as the repository.
+/// does not name a repository (`is:open`, `crash`, `feat/login`: anything `dg` reads as an
+/// argument rather than a repository, [`crate::infer::names_a_repo`]) is the query's, and the
+/// clone's repository is searched, as `gh search` does: clap reads the first of several words
+/// as the repository. Another repository is named there as `@bob/other`, `bob.dash/other` or
+/// with the owner's id, as everywhere in `dg`.
 fn target(a: &crate::SearchArgs) -> Result<(String, Vec<String>)> {
     if a.limit == 0 {
         return Err(crate::errors::usage("--limit is at least 1"));
     }
     let mut query = a.query.clone();
     if let Some(here) = crate::storage::clone_repo() {
-        if !search_names_repo(&a.repo, &here) {
+        if !crate::infer::names_a_repo(&a.repo, &here) {
             query.insert(0, a.repo.clone());
             return Ok((here, query));
         }
     }
     Ok((a.repo.clone(), query))
-}
-
-/// Whether `word`, first after `dg search issues|prs` inside a clone of `here`, names the
-/// repository to search: the clone's own, or any `owner/name` (a qualifier or a quoted phrase
-/// never is).
-fn search_names_repo(word: &str, here: &str) -> bool {
-    crate::infer::names_a_repo(word, here)
-        || (word.contains('/') && !word.contains(':') && !word.contains('"'))
 }
 
 /// `me` as the reader's id; any other value as it is.
@@ -107,15 +104,6 @@ fn me_or(v: Option<&String>, me: Option<&str>) -> Option<String> {
             w.clone()
         }
     })
-}
-
-/// The stored spelling of a close reason (`reason:`'s value).
-fn reason_word(r: CloseReason) -> &'static str {
-    match r {
-        CloseReason::Completed => "completed",
-        CloseReason::NotPlanned => "not_planned",
-        CloseReason::Duplicate => "duplicate",
-    }
 }
 
 /// What a row offers the shared filters.
@@ -237,6 +225,13 @@ async fn mirror_trust(s: &Reader, q: &IssueQuery) -> Result<Option<RoleOracle>> 
     })
 }
 
+/// How many matches maintainers hid, and the flag that shows them (nothing when none).
+fn print_hidden_omitted(omitted: usize) {
+    if omitted > 0 {
+        println!("({omitted} hidden by maintainers; --include-hidden shows them)");
+    }
+}
+
 fn print_not_applied(ctx: &Ctx, skipped: &[String]) {
     if !ctx.json && !skipped.is_empty() {
         eprintln!(
@@ -274,12 +269,18 @@ async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
     let needs_me =
         q.author.as_deref() == Some("me") || q.assignee.as_deref() == Some("me") || q.mentions;
     let me = if needs_me { Some(s.me(ctx)?) } else { None };
-    let my_name = match (&me, q.mentions) {
-        (Some(id), true) => s.client.dpns_first_names([id.as_str()]).await.remove(id),
-        _ => None,
+    let my_name = async {
+        match (&me, q.mentions) {
+            (Some(id), true) => s.client.dpns_first_names([id.as_str()]).await.remove(id),
+            _ => None,
+        }
     };
-    let (all, hidden) = s.collab().issues_with_state(&s.repo).await?;
-    let oracle = mirror_trust(&s, &q).await?;
+    let issues = async { Ok::<_, anyhow::Error>(s.collab().issues_with_state(&s.repo).await?) };
+    let (my_name, reads) = futures::join!(
+        my_name,
+        futures::future::try_join(issues, mirror_trust(&s, &q))
+    );
+    let ((all, hidden), oracle) = reads?;
     let f = Filters::of(
         &q,
         me.as_deref(),
@@ -310,20 +311,35 @@ async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
         .filter(|(v, _)| {
             q.reason.as_deref().is_none_or(|want| {
                 forge_core::rules::v2::current_close_reason(&v.log.transitions, v.issue.number)
-                    .is_some_and(|c| reason_word(c.reason) == want)
+                    .is_some_and(|c| c.reason.as_str() == want)
             })
         })
         .collect();
     sort_by_created(&mut rows, &q.sort, |(v, _)| v.issue.created_at);
+    // RC2 MOD: the matches a maintainer hid, from the events already read (`dg issue list`'s).
+    let threads: Vec<_> = rows
+        .iter()
+        .map(|(v, _)| (v.issue.target(), v.log.events.as_slice()))
+        .collect();
+    let hides = s.collab().hidden_threads(&s.repo, &threads).await;
+    let (mut rows, omitted) = crate::fmt::split_hidden(
+        rows,
+        &hides,
+        |(v, _)| v.issue.document_id.as_str(),
+        a.include_hidden,
+    );
     let total = rows.len();
     rows.truncate(a.limit as usize);
     let skipped = not_applied(unresolved, &q);
-    let names = names_of(
-        ctx,
-        &s.client,
-        rows.iter().map(|(v, _)| v.issue.author.as_str()),
-    )
-    .await;
+    let (names, hider_names) = futures::join!(
+        names_of(
+            ctx,
+            &s.client,
+            rows.iter().map(|((v, _), _)| v.issue.author.as_str()),
+        ),
+        crate::common::hider_names(ctx, &s.client, rows.iter().filter_map(|(_, h)| *h))
+    );
+    let who = |id: &str| crate::fmt::with_name(id, &hider_names);
     ctx.emit(
         json!({
             "repo": s.repo.display(),
@@ -332,7 +348,8 @@ async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
             "total": total,
             "count": rows.len(),
             "hidden": hidden,
-            "issues": rows.iter().map(|(v, m)| json!({
+            "hiddenOmitted": omitted,
+            "issues": rows.iter().map(|((v, m), h)| crate::fmt::with_hidden_by(json!({
                 "number": v.issue.number,
                 "title": v.issue.title,
                 "state": if v.state.open { "open" } else { "closed" },
@@ -341,26 +358,29 @@ async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
                 "assignees": v.state.assignees,
                 "milestone": m,
                 "createdAt": v.issue.created_at,
-            })).collect::<Vec<_>>(),
+            }), *h)).collect::<Vec<_>>(),
         }),
         || {
             print_not_applied(ctx, &skipped);
             if rows.is_empty() {
                 println!("no issues match in {}", s.repo.display());
             }
-            for (v, _) in &rows {
+            for ((v, _), h) in &rows {
                 println!(
-                    "#{:<5} {:<6} {}{}  by {}",
+                    "#{:<5} {:<6} {}{}  by {}{}",
                     v.issue.number,
                     if v.state.open { "open" } else { "closed" },
                     safe(&v.issue.title),
                     labels_suffix(&v.state.labels),
-                    crate::fmt::with_name(&v.issue.author, &names)
+                    crate::fmt::with_name(&v.issue.author, &names),
+                    h.map(|h| crate::fmt::hidden_row_mark(h, &who))
+                        .unwrap_or_default()
                 );
             }
             if total > rows.len() {
                 println!("({} of {total} shown; --limit for more)", rows.len());
             }
+            print_hidden_omitted(omitted);
         },
     );
     Ok(())
@@ -409,9 +429,9 @@ async fn prs(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
         .any(|v| v.as_deref() == Some("me"));
     let me = if needs_me { Some(s.me(ctx)?) } else { None };
     // The newest page of PRs (100), folded with their state in a fixed number of reads.
-    let page = s.collab().list_patch_views(&s.repo, 100).await?;
     let iq = q.issue_part();
-    let oracle = mirror_trust(&s, &iq).await?;
+    let page = async { Ok::<_, anyhow::Error>(s.collab().list_patch_views(&s.repo, 100).await?) };
+    let (page, oracle) = Box::pin(futures::future::try_join(page, mirror_trust(&s, &iq))).await?;
     let f = Filters::of(&iq, me.as_deref(), None, oracle.as_ref(), s.repo.owner_id());
     let requested = me_or(q.review_requested.as_ref(), me.as_deref());
     let mut rows: Vec<&PatchView> = page
@@ -442,10 +462,30 @@ async fn prs(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
         })
         .collect();
     sort_by_created(&mut rows, &q.sort, |v| v.patch.created_at);
+    // RC2 MOD: the matches a maintainer hid, from the events already read (`dg pr list`'s).
+    let threads: Vec<_> = rows
+        .iter()
+        .map(|v| (v.patch.target(), v.log.events.as_slice()))
+        .collect();
+    let hides = s.collab().hidden_threads(&s.repo, &threads).await;
+    let (mut rows, omitted) = crate::fmt::split_hidden(
+        rows,
+        &hides,
+        |v| v.patch.document_id.as_str(),
+        a.include_hidden,
+    );
     let total = rows.len();
     rows.truncate(a.limit as usize);
     let skipped = not_applied(unresolved, &iq);
-    let names = names_of(ctx, &s.client, rows.iter().map(|v| v.patch.author.as_str())).await;
+    let (names, hider_names) = futures::join!(
+        names_of(
+            ctx,
+            &s.client,
+            rows.iter().map(|(v, _)| v.patch.author.as_str())
+        ),
+        crate::common::hider_names(ctx, &s.client, rows.iter().filter_map(|(_, h)| *h))
+    );
+    let who = |id: &str| crate::fmt::with_name(id, &hider_names);
     ctx.emit(
         json!({
             "repo": s.repo.display(),
@@ -455,7 +495,8 @@ async fn prs(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
             "count": rows.len(),
             "searchedNewest": page.rows.len(),
             "truncated": page.more,
-            "prs": rows.iter().map(|v| json!({
+            "hiddenOmitted": omitted,
+            "prs": rows.iter().map(|(v, h)| crate::fmt::with_hidden_by(json!({
                 "number": v.patch.number,
                 "title": v.patch.title,
                 "state": crate::pr::state_field(v),
@@ -467,26 +508,29 @@ async fn prs(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
                 "baseRefName": v.merge_base.ref_name,
                 "headRefName": v.patch.source_ref_name,
                 "createdAt": v.patch.created_at,
-            })).collect::<Vec<_>>(),
+            }), *h)).collect::<Vec<_>>(),
         }),
         || {
             print_not_applied(ctx, &skipped);
             if rows.is_empty() {
                 println!("no pull requests match in {}", s.repo.display());
             }
-            for v in &rows {
+            for (v, h) in &rows {
                 println!(
-                    "#{:<5} {:<6} {}{}  by {}",
+                    "#{:<5} {:<6} {}{}  by {}{}",
                     v.patch.number,
                     crate::pr::state_label(v),
                     safe(&v.patch.title),
                     labels_suffix(&v.state.labels),
-                    crate::fmt::with_name(&v.patch.author, &names)
+                    crate::fmt::with_name(&v.patch.author, &names),
+                    h.map(|h| crate::fmt::hidden_row_mark(h, &who))
+                        .unwrap_or_default()
                 );
             }
             if total > rows.len() {
                 println!("({} of {total} shown; --limit for more)", rows.len());
             }
+            print_hidden_omitted(omitted);
             if page.more {
                 println!("(searched the newest {} pull requests)", page.rows.len());
             }
@@ -693,13 +737,17 @@ mod tests {
     /// repository (clap reads it as one).
     #[test]
     fn inside_a_clone_a_qualifier_is_no_repository() {
-        use super::search_names_repo;
+        use crate::infer::names_a_repo;
         let here = "alice/project";
-        assert!(!search_names_repo("is:open", here));
-        assert!(!search_names_repo("crash", here));
-        assert!(search_names_repo("project", here));
-        assert!(search_names_repo("bob/other", here));
-        assert!(!search_names_repo("label:a/b", here));
+        assert!(!names_a_repo("is:open", here));
+        assert!(!names_a_repo("crash", here));
+        assert!(!names_a_repo("label:a/b", here));
+        // A path or a branch is a query word, as for every other command.
+        assert!(!names_a_repo("feat/login", here));
+        assert!(!names_a_repo("src/main.rs", here));
+        assert!(names_a_repo("project", here));
+        assert!(names_a_repo("@bob/other", here));
+        assert!(names_a_repo("bob.dash/other", here));
     }
 
     /// The web's `searchPrefix`: the name part, lowercased; nothing a name cannot start with.

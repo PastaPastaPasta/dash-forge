@@ -148,13 +148,18 @@ fn orders(json: &str) -> Result<Vec<QueryOrder>> {
         .collect()
 }
 
-/// A field value as JSON: identifiers base58, bytes hex, objects and lists recursively.
-fn value_json(kind: Option<PropertyKind>, v: &FieldValue) -> Value {
+/// The field at `path` (dotted for a nested one, `records.identity`) as JSON, typed by the
+/// schema (`kind_of` a path's kind): identifiers base58, bytes hex, objects and lists
+/// recursively. A byte string where the schema has an array (an empty list, or one of small
+/// integers, comes back as bytes) prints as the array.
+fn value_json(kind_of: &dyn Fn(&str) -> Option<PropertyKind>, path: &str, v: &FieldValue) -> Value {
+    let kind = || kind_of(path);
     match v {
         FieldValue::Identifier(b) => json!(encode_identifier(*b)),
-        FieldValue::Bytes32(b) if kind == Some(PropertyKind::Identifier) => {
+        FieldValue::Bytes32(b) if kind() == Some(PropertyKind::Identifier) => {
             json!(encode_identifier(*b))
         }
+        FieldValue::Bytes(b) if kind() == Some(PropertyKind::Other) => json!(b),
         FieldValue::Bytes32(b) => json!(hex::encode(b)),
         FieldValue::Bytes(b) => json!(hex::encode(b)),
         FieldValue::Integer(n) | FieldValue::Uint64(n) => json!(n),
@@ -163,11 +168,11 @@ fn value_json(kind: Option<PropertyKind>, v: &FieldValue) -> Value {
         FieldValue::Bool(b) => json!(b),
         FieldValue::Object(m) => Value::Object(
             m.iter()
-                .map(|(k, v)| (k.clone(), value_json(None, v)))
+                .map(|(k, v)| (k.clone(), value_json(kind_of, &format!("{path}.{k}"), v)))
                 .collect(),
         ),
         FieldValue::List(items) => {
-            Value::Array(items.iter().map(|i| value_json(kind, i)).collect())
+            Value::Array(items.iter().map(|i| value_json(kind_of, path, i)).collect())
         }
     }
 }
@@ -189,11 +194,9 @@ fn doc_json(contract: &LoadedContract, doc_type: &str, d: &FetchedDocument) -> V
     if let Some(r) = d.revision {
         m.insert("$revision".into(), json!(r));
     }
+    let kind_of = |path: &str| contract.property_kind(doc_type, path);
     for (k, v) in &d.fields {
-        m.insert(
-            k.clone(),
-            value_json(contract.property_kind(doc_type, k), v),
-        );
+        m.insert(k.clone(), value_json(&kind_of, k, v));
     }
     Value::Object(m)
 }
@@ -236,12 +239,11 @@ async fn query(ctx: &Ctx, a: &crate::ApiQueryArgs) -> Result<()> {
     let order = orders(a.order.as_deref().unwrap_or("[]"))?;
     let docs = if a.all {
         let mut all = client
-            .query_all_documents(&contract, &a.doc_type, &filters, &order)
+            .query_documents_up_to(&contract, &a.doc_type, &filters, &order, ALL_MAX)
             .await?;
         if all.len() > ALL_MAX {
             eprintln!(
-                "note: {} rows match; the first {ALL_MAX} are printed (narrow the clauses, or page with --start-after)",
-                all.len()
+                "note: more than {ALL_MAX} rows match; the first {ALL_MAX} are printed (narrow the clauses, or page with --start-after)"
             );
             all.truncate(ALL_MAX);
         }
@@ -303,16 +305,31 @@ mod tests {
         assert_eq!(op_of("!="), None);
         assert!(orders(r#"[["name","asc"],["$createdAt","desc"]]"#).is_ok());
         assert!(orders(r#"[["name","up"]]"#).is_err());
+        // The schema types each path, nested ones included.
+        let kind_of = |path: &str| match path {
+            "records.identity" | "ownerId" => Some(PropertyKind::Identifier),
+            "tags" => Some(PropertyKind::Other),
+            _ => None,
+        };
+        let id = forge_core::platform::encode_identifier([1; 32]);
         assert_eq!(
-            value_json(
-                Some(PropertyKind::Identifier),
-                &FieldValue::bytes32([1; 32])
-            ),
-            json!(forge_core::platform::encode_identifier([1; 32]))
+            value_json(&kind_of, "ownerId", &FieldValue::bytes32([1; 32])),
+            json!(id)
+        );
+        let records =
+            FieldValue::Object([("identity".to_string(), FieldValue::bytes32([1; 32]))].into());
+        assert_eq!(
+            value_json(&kind_of, "records", &records),
+            json!({ "identity": id })
         );
         assert_eq!(
-            value_json(None, &FieldValue::bytes(vec![0xab])),
+            value_json(&kind_of, "h", &FieldValue::bytes(vec![0xab])),
             json!("ab")
+        );
+        // An empty list came back as bytes: it prints as the array the schema declares.
+        assert_eq!(
+            value_json(&kind_of, "tags", &FieldValue::bytes(vec![])),
+            json!([])
         );
     }
 }

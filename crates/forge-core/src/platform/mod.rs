@@ -1017,6 +1017,22 @@ impl PlatformClient {
         filters: &[QueryFilter],
         order: &[QueryOrder],
     ) -> Result<Vec<FetchedDocument>> {
+        self.query_documents_up_to(contract, document_type, filters, order, usize::MAX)
+            .await
+    }
+
+    /// [`Self::query_all_documents`], stopping once more than `max` rows are held: the rows in
+    /// `order`, at least `max + 1` of them when more match (the caller truncates and says so).
+    /// A descending read that is paged ascending and reversed (see [`ascending_equivalent`])
+    /// cannot stop early (its first rows are the last read), so it reads every match.
+    pub async fn query_documents_up_to(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        order: &[QueryOrder],
+        max: usize,
+    ) -> Result<Vec<FetchedDocument>> {
         // Page a descending read in ascending order and reverse it (see
         // [`ascending_equivalent`]): the rs-sdk 4.2 verifier rejects the proof a protocol-13
         // node returns for a descending page that starts after a cursor, so every read past
@@ -1026,9 +1042,10 @@ impl PlatformClient {
         // See [`tie_probe_allowed`]: when the index ends in `$createdAt`, every page boundary
         // is followed by a read of the boundary timestamp, so same-block rows are not lost.
         let tie_safe = tie_probe_allowed(filters, order);
+        let max = if ascending.is_some() { usize::MAX } else { max };
         // `async move` so the futures own their inputs; returning a future that borrows the
         // closure's parameter would not outlive the call.
-        let mut documents = page_to_exhaustion(
+        let mut documents = page_until(
             document_type,
             |start_after: Option<String>| async move {
                 self.query_page(
@@ -1050,6 +1067,7 @@ impl PlatformClient {
                 self.query_page(contract, document_type, &tie, order, PAGE_SIZE, None)
                     .await
             }),
+            max,
         )
         .await?;
         if ascending.is_some() {
@@ -3153,10 +3171,28 @@ fn tie_probe_allowed(filters: &[QueryFilter], order: &[QueryOrder]) -> bool {
 /// than a partial answer — forge-web throws at the same two points, because failing at
 /// different points on identical data would itself be the cross-client divergence these
 /// reads exist to prevent.
+#[cfg(test)]
 async fn page_to_exhaustion<F, Fut, P, PFut>(
+    document_type: &str,
+    fetch: F,
+    tie_probe: Option<P>,
+) -> Result<Vec<FetchedDocument>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<FetchedDocument>>>,
+    P: FnMut(u64) -> PFut,
+    PFut: std::future::Future<Output = Result<Vec<FetchedDocument>>>,
+{
+    page_until(document_type, fetch, tie_probe, usize::MAX).await
+}
+
+/// [`page_to_exhaustion`] that also stops, successfully, once more than `max` rows are held
+/// (a capped read: the caller knows more may match).
+async fn page_until<F, Fut, P, PFut>(
     document_type: &str,
     mut fetch: F,
     mut tie_probe: Option<P>,
+    max: usize,
 ) -> Result<Vec<FetchedDocument>>
 where
     F: FnMut(Option<String>) -> Fut,
@@ -3184,7 +3220,7 @@ where
         let n = page.len();
         let last = page.last().map(|d| (d.id.clone(), d.created_at));
         take(&mut out, page);
-        if n < PAGE_SIZE as usize {
+        if n < PAGE_SIZE as usize || out.len() > max {
             return Ok(out);
         }
         let Some((mut cursor, created_at)) = last else {
@@ -4513,9 +4549,9 @@ impl PushJournal {
 mod tests {
     use super::{
         ascending_equivalent, is_contract_missing, is_transient_node_error, page_to_exhaustion,
-        retry_with_backoff, tie_probe_allowed, FetchedDocument, FieldValue, JournalStore,
-        PushJournal, QueryFilter, QueryOrder, SignedTransition, WriteIntent, WriteOp, MAX_PAGES,
-        MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
+        page_until, retry_with_backoff, tie_probe_allowed, FetchedDocument, FieldValue,
+        JournalStore, PushJournal, QueryFilter, QueryOrder, SignedTransition, WriteIntent, WriteOp,
+        MAX_PAGES, MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
     };
     use crate::error::{Error, Result};
     use std::cell::RefCell;
@@ -4845,6 +4881,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_short_first_page_is_the_end() {
+        let capped = page_until("event", serve(usize::MAX), no_probe(), 150)
+            .await
+            .expect("a capped read stops once past the cap");
+        assert_eq!(
+            capped.len(),
+            200,
+            "two full pages: the second passes the cap"
+        );
         let got = page_to_exhaustion("event", serve(7), no_probe())
             .await
             .unwrap();
