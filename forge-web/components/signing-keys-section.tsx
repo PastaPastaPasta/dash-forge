@@ -84,9 +84,8 @@ export function SigningKeysSection({ identity, stored, onSaved }: { identity: st
         Signing keys
       </h2>
       <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
-        Commits you sign with these keys show <span className="font-medium">Verified</span> in repositories you own or are a member of. Forge checks Ed25519 SSH keys
-        and Ed25519 or ECDSA OpenPGP keys (an RSA key does not fit a profile). Like the rest of your profile, they are public. From a terminal,{' '}
-        <span className="font-mono">dg profile key add</span> publishes the key git signs with.
+        Commits you sign with these keys show <span className="font-medium">Verified</span> in repos you belong to. Ed25519 SSH keys and Ed25519 or
+        ECDSA OpenPGP keys work. RSA keys are too large. These keys are public. From a terminal, use <span className="font-mono">dg profile key add</span>.
       </p>
       {keys.length > 0 ? (
         <ul className="mt-3 divide-y divide-anvil-100 rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800" data-testid="signing-key-list">

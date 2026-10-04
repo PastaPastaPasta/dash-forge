@@ -1615,6 +1615,7 @@ async function signCreate(
   })
   if (document.id.toBase58() !== documentId) {
     throw new Error(
+      // copy-lint-ignore: an invariant that stops a broken write before it is sent
       `document id drifted while building the create transition (${documentId}); ` +
         'refusing to broadcast a write whose id the idempotency cache does not know',
     )
@@ -1809,7 +1810,7 @@ export async function precheckEdit(
 export function checkOwnRepo(storedRepoId: unknown, expected: string | undefined): void {
   if (expected === undefined) return
   const got = typeof storedRepoId === 'string' ? storedRepoId : storedRepoId instanceof Uint8Array ? base58Encode(storedRepoId) : ''
-  if (got !== expected) throw new WriteAuthError('this document belongs to another repo than the page; reload it from its own repo')
+  if (got !== expected) throw new WriteAuthError('this belongs to a different repo than this page; reload it from its own repo')
 }
 
 /**

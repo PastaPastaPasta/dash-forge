@@ -86,7 +86,7 @@ describe('profiles', () => {
     expect(bad({ bucket: 'Forge' })).toMatch(/lowercase/)
     expect(bad({ prefix: 'a/../b' })).toMatch(/segment/)
     expect(bad({ publicUrl: '' })).toMatch(/public URL/)
-    expect(bad({ publicUrl: 'http://pub.example' })).toMatch(/recorded on chain/)
+    expect(bad({ publicUrl: 'http://pub.example' })).toMatch(/recorded on Platform/)
     expect(bad({ pathStyle: false, endpoint: 'https://1.2.3.4' })).toMatch(/path-style/)
     expect(bad({}, {})).toMatch(/access key/)
     expect(profileProblem({ ...S3, name: 'a,b' })).toMatch(/name/)
@@ -108,7 +108,7 @@ describe('profiles', () => {
   it('refuses a published address only its uploader can reach', () => {
     expect(publishProblem(S3)).toBeNull()
     for (const url of ['http://127.0.0.1:9000/forge-byo', 'https://192.168.1.4/b', 'https://10.0.0.8', 'https://minio.local/b', 'https://[::1]/b', 'https://[fd00::1]/b']) {
-      expect(publishProblem({ ...S3, settings: { ...s3Of(S3), publicUrl: url } }), url).toMatch(/other people cannot read/)
+      expect(publishProblem({ ...S3, settings: { ...s3Of(S3), publicUrl: url } }), url).toMatch(/other people can't read/)
     }
     expect(publishProblem({ ...KUBO, settings: { ...KUBO.settings, publicGateway: 'http://localhost:8080' } as ProfilePublic })).toMatch(/other people/)
   })
@@ -500,7 +500,7 @@ describe('storeArtifact', () => {
     const net = fakeNetwork()
     vi.stubGlobal('fetch', net.fetchMock)
     const local = { ...S3, settings: { ...s3Of(S3), publicUrl: 'https://192.168.1.20/forge-byo' } }
-    await expect(storeArtifact(SDK, AUTH, REPO, bytes, { policy: policyFor(['r2-main'], 'one'), profiles: [local], confirmPlatform: async () => false })).rejects.toThrow(/other people cannot read/)
+    await expect(storeArtifact(SDK, AUTH, REPO, bytes, { policy: policyFor(['r2-main'], 'one'), profiles: [local], confirmPlatform: async () => false })).rejects.toThrow(/other people can't read/)
     expect(net.puts).toEqual([])
   })
 

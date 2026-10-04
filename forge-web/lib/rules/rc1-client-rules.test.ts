@@ -64,7 +64,7 @@ describe('rc1WriteProblem: the write chokepoint', () => {
   it('refuses a type sent to the wrong contract, or to none', () => {
     expect(rc1WriteProblem(forge, 'COLLAB', 'event', { kind: 4 })).toMatch(/forge-community/)
     expect(rc1WriteProblem(forge, 'CORE', 'repoKey', {})).toMatch(/forge-collab/)
-    expect(rc1WriteProblem(forge, 'CORE', 'manifestPart', {})).toMatch(/no forge-v2 contract/)
+    expect(rc1WriteProblem(forge, 'CORE', 'manifestPart', {})).toMatch(/no Forge contract/)
     expect(rc1WriteProblem(forge, 'COMMUNITY', 'event', { kind: 4 })).toBeNull()
   })
 

@@ -504,7 +504,7 @@ export class IncompleteReadError extends Error {
     readonly fetched: number,
     reason: string,
   ) {
-    super(`incomplete read of ${documentTypeName} after ${fetched} documents: ${reason}`)
+    super(`incomplete read of ${documentTypeName} after ${fetched} results: ${reason}`)
     this.name = 'IncompleteReadError'
   }
 }
@@ -608,7 +608,7 @@ export async function queryAllDocuments(
       throw new IncompleteReadError(
         query.documentTypeName,
         out.length,
-        'a full page ended on a document with no $id, so the cursor cannot advance',
+        'a full page ended on a result with no id, so the next page cannot be read',
       )
     }
     let cursor: string = lastId
@@ -626,7 +626,7 @@ export async function queryAllDocuments(
         throw new IncompleteReadError(
           query.documentTypeName,
           out.length,
-          `${pageLimit} or more documents share $createdAt ${createdAt}; the page boundary tie cannot be read completely`,
+          `${pageLimit} or more results share the creation time ${createdAt}, so the page boundary cannot be read completely`,
         )
       }
       const lastTied = tied[tied.length - 1]?.['$id']

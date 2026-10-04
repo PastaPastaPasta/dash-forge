@@ -257,7 +257,7 @@ export function CodeOwnerReviewers({
       ) : (
         <>
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400">
-            <span className="font-mono">{file}</span> owns files this pull request changes. Each request is one more document, signed after the pull request.
+            <span className="font-mono">{file}</span> owns files this pull request changes. Each review request is a small extra write after the pull request.
           </p>
           {partial ? (
             <p className="text-[12px] text-caution-700 dark:text-caution-400">

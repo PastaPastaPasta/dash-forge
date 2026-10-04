@@ -34,7 +34,7 @@ export default function ProfileSettingsPage(): JSX.Element {
             <EmptyState
               icon={locked ? Lock : Wallet}
               title={locked ? 'Session locked' : 'Sign in to edit your profile'}
-              body="Your profile is a document your identity signs: sign in to write it."
+              body="Your identity signs your profile. Sign in to edit it."
               action={<SignInButton />}
             />
             <ProfilePublicNote />

@@ -46,7 +46,7 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
       }
     case 'aws':
       return {
-        where: `If the endpoint is not the bucket's own region, AWS answers with a redirect the browser cannot follow, which looks like a CORS failure: check the endpoint first (https://s3.<region>.amazonaws.com). Then save as cors.json and run: aws s3api put-bucket-cors --bucket ${b} --cors-configuration file://cors.json`,
+        where: `Save as cors.json and run: aws s3api put-bucket-cors --bucket ${b} --cors-configuration file://cors.json. If it still fails, check that the endpoint is in the bucket's own region (https://s3.<region>.amazonaws.com).`,
         text: JSON.stringify({ CORSRules: s3Rules(origin) }, null, 2),
       }
     case 'b2':
@@ -63,14 +63,14 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
       }
     case 'minio':
       return {
-        where: `Garage, RustFS and most S3-compatible stores take this document through the S3 API: save it as cors.json and run aws --endpoint-url <your endpoint> s3api put-bucket-cors --bucket ${b} --cors-configuration file://cors.json (Garage applies it to its web endpoint too). MinIO community edition (archived) has no per-bucket CORS: it answers every origin unless it was restricted; restore that with mc admin config set <alias> api cors_allow_origin="*", then make the bucket publicly readable (not writable) with mc anonymous set download <alias>/${b}.`,
+        where: `Garage, RustFS and most S3 stores: save as cors.json, then run aws --endpoint-url <endpoint> s3api put-bucket-cors --bucket ${b} --cors-configuration file://cors.json. MinIO community edition: run mc admin config set <alias> api cors_allow_origin="*" and mc anonymous set download <alias>/${b}.`,
         text: JSON.stringify({ CORSRules: s3Rules(origin) }, null, 2),
       }
     case 'kubo':
     case 'pinning':
       return {
         where:
-          'kubo refuses RPC calls from web pages unless their origin is allowed. The RPC API is the node’s admin interface, so give this app a token limited to what Forge calls (below), put that token in the profile’s API Authorization field, and add this origin to the allowed list. Run, then restart the daemon:',
+          'The RPC API is the node’s admin interface. Give this app a token limited to what Forge calls, paste it in the profile’s API Authorization field, and allow this origin. Run these commands, then restart the daemon:',
         text: kuboCorsLines(origin),
       }
     case 'platform':
