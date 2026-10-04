@@ -27,7 +27,7 @@ import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
-import { useDraftText } from '@/lib/view/draft-text'
+import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
@@ -183,7 +183,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   )
 
   // The unsent comment survives a reload (never stored for a private repo).
-  const [comment, setComment] = useDraftText(data && home.repo.visibility !== 'private' ? `${home.repo.repoId}:${data.issue.id}:comment` : null)
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity))
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -278,20 +278,27 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
+    // Until the outcome is known, a reload must not bring the text back to be posted again.
+    holdDraft(true, comment)
     try {
       const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext })
       setComment('')
+      holdDraft(false, '')
       draft.renew()
       refresh((t) => issueWriteShows(t, { kind: 'comment', id: posted.documentId }))
     } catch (e) {
       if (e instanceof SupersededWriteError) {
         // The earlier version was posted: show it, and never post this draft a second time.
         setComment('')
+        holdDraft(false, '')
         draft.renew()
         refresh((t) => issueWriteShows(t, { kind: 'comment', id: e.documentId }))
       } else if (e instanceof UnconfirmedWriteError) {
         // Sent, not yet visible: keep reading until it shows (the draft stays, as the error says).
         refresh((t) => issueWriteShows(t, { kind: 'comment', id: e.documentId }))
+      } else {
+        // Nothing was sent: keep the draft again.
+        holdDraft(false, comment)
       }
       setCommentError(guard.failed(e))
     } finally {
@@ -586,7 +593,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <LockedBanner locked={lockApplies} viewer={lockViewer} target="issue">
             <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
             {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
-            <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={composeBlock === null && !lockedOutNow ? () => void postComment() : undefined} />
+            <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={composeBlock === null ? () => void postComment() : undefined} />
             <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} long={commentLong} />
           </LockedBanner>
           {lockedOutNow && !canToggle ? null : (

@@ -767,7 +767,12 @@ function Composer({
         textareaRef={field}
         suggestion={preview}
         hint={null}
-        onSubmit={() => (reviewing ? addToReview() : void submit())}
+        onSubmit={() => {
+          // What the main button would do, and only when it is enabled.
+          if (posting || tooLong || body.trim() === '') return
+          if (reviewing) addToReview()
+          else void submit()
+        }}
         tools={
           suggestAt !== null ? (
             <Button

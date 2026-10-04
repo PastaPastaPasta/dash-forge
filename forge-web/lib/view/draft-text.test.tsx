@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownEditor } from '@/components/repo/issue-bits'
-import { DRAFT_TTL_MS, readDraft, useDraftText, writeDraft } from './draft-text'
+import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, readDraft, useDraftText, writeDraft } from './draft-text'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -38,14 +38,36 @@ describe('readDraft / writeDraft', () => {
     expect(readDraft('r:t:comment', 1_000 + DRAFT_TTL_MS + 1)).toBe('')
     expect(localStorage.length).toBe(0)
   })
+  it('keeps the newest drafts only, and drops expired ones as it writes', () => {
+    writeDraft('old', 'x', 1)
+    for (let i = 0; i < MAX_DRAFTS; i++) writeDraft(`k${i}`, 'x', DRAFT_TTL_MS + 10 + i)
+    expect(localStorage.getItem('forge:draft:v1:old')).toBeNull()
+    expect(localStorage.length).toBe(MAX_DRAFTS)
+    writeDraft('newest', 'x', DRAFT_TTL_MS + 10 + MAX_DRAFTS)
+    expect(localStorage.length).toBe(MAX_DRAFTS)
+    expect(localStorage.getItem('forge:draft:v1:k0')).toBeNull()
+  })
+  it('is kept per identity, for public repos only, and forgotten with the identity', () => {
+    expect(commentDraftKey({ repoId: 'R', visibility: 'public' }, 'T', 'A')).toBe('A:R:T:comment')
+    expect(commentDraftKey({ repoId: 'R', visibility: 'private' }, 'T', 'A')).toBeNull()
+    expect(commentDraftKey({ repoId: 'R' }, 'T', 'A')).toBeNull()
+    expect(commentDraftKey({ repoId: 'R', visibility: 'public' }, 'T', null)).toBeNull()
+    writeDraft('A:R:T:comment', 'mine')
+    writeDraft('B:R:T:comment', 'theirs')
+    clearDrafts('A')
+    expect(readDraft('A:R:T:comment')).toBe('')
+    expect(readDraft('B:R:T:comment')).toBe('theirs')
+  })
   it('reads a damaged entry as no draft', () => {
     localStorage.setItem('forge:draft:v1:x', '{not json')
     expect(readDraft('x')).toBe('')
   })
 })
 
+let holdDraft: (held: boolean, text: string) => void = () => {}
 function Composer({ draftKey, onSubmit }: { draftKey: string | null; onSubmit?: () => void }) {
-  const [text, setText] = useDraftText(draftKey)
+  const [text, setText, hold] = useDraftText(draftKey)
+  holdDraft = hold
   return <MarkdownEditor id="c" label="Comment" value={text} onChange={setText} onSubmit={onSubmit} />
 }
 
@@ -70,6 +92,16 @@ describe('useDraftText', () => {
     root = createRoot(host)
     act(() => root.render(<Composer draftKey="r:a:comment" />))
     expect(field().value).toBe('draft on A')
+  })
+  it('stores nothing while a post is in flight, and keeps the text again when nothing was sent', () => {
+    act(() => root.render(<Composer draftKey="r:a:comment" />))
+    type('posting this')
+    act(() => holdDraft(true, 'posting this'))
+    expect(readDraft('r:a:comment')).toBe('')
+    type('posting this, edited')
+    expect(readDraft('r:a:comment')).toBe('')
+    act(() => holdDraft(false, 'posting this, edited'))
+    expect(readDraft('r:a:comment')).toBe('posting this, edited')
   })
   it('stores nothing without a key (a private repository)', () => {
     act(() => root.render(<Composer draftKey={null} />))
