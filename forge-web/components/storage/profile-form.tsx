@@ -23,7 +23,7 @@ import {
 } from '@/lib/storage'
 import { Input } from '@/components/ui/input'
 
-const SECRET_NOTE = 'Stored encrypted in this browser only. Never sent to Forge (there is no Forge server) and never written on-chain.'
+const SECRET_NOTE = 'Stored encrypted in this browser only. Never sent to Forge (there is no Forge server) and never written to Platform.'
 const KEEP_NOTE = 'Leave empty to keep the stored value.'
 
 type Values = Record<string, string | boolean>

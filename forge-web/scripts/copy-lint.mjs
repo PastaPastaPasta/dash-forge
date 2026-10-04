@@ -46,7 +46,7 @@ export const RULES = [
   },
   {
     id: 'banned-phrase',
-    pattern: /Platform refused it|Nothing was charged|\b(proof|hash)-checked\b|\brecovery words\b|\bbrowser key\b|\bseamless(ly)?\b|\bleverag(e|es|ing)\b|\bsimply\b/i,
+    pattern: /Platform refused it|Nothing was charged|\b(proof|hash)-checked\b|\brecovery words\b|\bbrowser key\b|\bon[ -]chain\b|\bonchain\b|\bseamless(ly)?\b|\bleverag(e|es|ing)\b|\bsimply\b/i,
     why: 'banned phrase; see the glossary in the style guide',
   },
   { id: 'doc-path', pattern: /\bdocs\/[\w./-]*\.md\b|forge-contracts\//, why: 'repository path; link to the docs page instead' },

@@ -92,7 +92,7 @@ export const PROVIDERS: readonly ProviderPreset[] = [
     hints: {
       endpoint: { text: 'R2 → Overview → Account details → S3 API. Use the origin only, without the bucket.', href: 'https://dash.cloudflare.com/?to=/:account/r2/overview' },
       bucket: { text: 'R2 → Create bucket, e.g. forge.' },
-      publicUrl: { text: 'Bucket → Settings → Custom Domains: a domain of yours (the r2.dev subdomain is rate-limited, for development only). Recorded on chain forever.' },
+      publicUrl: { text: 'Bucket → Settings → Custom Domains: a domain of yours (the r2.dev subdomain is rate-limited, for development only). Recorded on Platform forever.' },
       accessKeyId: { text: 'R2 → Manage R2 API Tokens → Create API token (Object Read & Write, this bucket).', href: 'https://dash.cloudflare.com/?to=/:account/r2/api-tokens' },
       region: { text: 'R2 always uses auto.' },
     },
@@ -132,7 +132,7 @@ export const PROVIDERS: readonly ProviderPreset[] = [
     hints: {
       endpoint: { text: 'Your server’s S3 API origin (Garage: port 3900 and region garage; local test server: http://127.0.0.1:<port>).' },
       bucket: { text: 'The bucket, publicly readable but not writable (Garage: bucket website --allow; RustFS: an s3:GetObject bucket policy; MinIO: mc anonymous set download).' },
-      publicUrl: { text: 'A stable public https name, recorded on chain forever. Usually <endpoint>/<bucket>; Garage: its web endpoint hostname, with no bucket path.' },
+      publicUrl: { text: 'A stable public https name, recorded on Platform forever. Usually <endpoint>/<bucket>; Garage: its web endpoint hostname, with no bucket path.' },
       accessKeyId: { text: 'An access key with read and write on the bucket.' },
     },
   },
@@ -189,7 +189,7 @@ export const PLATFORM_PROFILE = 'platform'
  * Where a URL is used:
  *  - `local`: only this browser talks to it (the S3 API endpoint, the kubo API and gateway).
  *    https, or plain http to this machine.
- *  - `published`: recorded on chain, read by everyone (the public URL, the public gateway).
+ *  - `published`: recorded on Platform, read by everyone (the public URL, the public gateway).
  *    A public https URL only (`lib/net.ts`): a loopback or private address would be a copy only
  *    its uploader can read, and would point every reader's browser at their own local services.
  */
@@ -211,7 +211,7 @@ function checkUrl(field: string, value: string, use: UrlUse, opts: { originOnly?
   // its public row fails with the reason ({@link publishProblem}); uploads refuse it.
   if (url.protocol === 'http:' && !isLoopback(url.hostname)) {
     return use === 'published'
-      ? `${field} must be https: it is recorded on chain for everyone to read`
+      ? `${field} must be https: it is recorded on Platform for everyone to read`
       : `${field} must be https (plain http is allowed only for a node on this machine, at 127.0.0.1 or localhost)`
   }
   return null
@@ -284,7 +284,7 @@ const BUCKET = /^[a-z0-9._-]{1,63}$/
 
 /**
  * Why this profile's published addresses (the S3 public URL, the IPFS public gateway) cannot
- * be recorded on chain, or null. They are what every reader fetches, so they must be public
+ * be recorded on Platform, or null. They are what every reader fetches, so they must be public
  * https: an address on this machine or a private network works only for its uploader, and would
  * point other readers' browsers at their own local services.
  */

@@ -312,7 +312,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       </Section>
 
       <Section id="storage" title="Storage" icon={<UserCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
+        <StorageBackend backend={home.backend} emptyText="Readers fetch each upload from wherever it was stored." />
         {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
         {!(viewer.known && viewerRole === null) ? (
           <>

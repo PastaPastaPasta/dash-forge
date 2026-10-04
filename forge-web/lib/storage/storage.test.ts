@@ -86,7 +86,7 @@ describe('profiles', () => {
     expect(bad({ bucket: 'Forge' })).toMatch(/lowercase/)
     expect(bad({ prefix: 'a/../b' })).toMatch(/segment/)
     expect(bad({ publicUrl: '' })).toMatch(/public URL/)
-    expect(bad({ publicUrl: 'http://pub.example' })).toMatch(/recorded on chain/)
+    expect(bad({ publicUrl: 'http://pub.example' })).toMatch(/recorded on Platform/)
     expect(bad({ pathStyle: false, endpoint: 'https://1.2.3.4' })).toMatch(/path-style/)
     expect(bad({}, {})).toMatch(/access key/)
     expect(profileProblem({ ...S3, name: 'a,b' })).toMatch(/name/)

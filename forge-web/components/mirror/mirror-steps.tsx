@@ -307,7 +307,7 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
   return (
     <>
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
-        Where the mirror&apos;s git data goes. <strong className="font-medium">Recommended: a Cloudflare R2 or S3 bucket of your own.</strong> Platform then keeps only each push&apos;s manifest and refs (about {PUSH_COST_DASH.byo.max} DASH a push), and readers check every byte against the on-chain hash.
+        Where the mirror&apos;s git data goes. <strong className="font-medium">Recommended: a Cloudflare R2 or S3 bucket of your own.</strong> Platform then keeps only each push&apos;s manifest and refs (about {PUSH_COST_DASH.byo.max} DASH a push), and readers check every byte against the recorded hash.
       </p>
       <fieldset className="space-y-2">
         <legend className="sr-only">Storage for the mirror</legend>

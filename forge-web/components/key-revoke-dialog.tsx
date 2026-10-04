@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * "Revoke on chain" (Settings → This browser's key, QW2-017): disable this browser's key on
+ * "Revoke on Platform" (Settings → This browser's key, QW2-017): disable this browser's key on
  * Platform with the master key, from the identity file or the recovery phrase (an identity
  * created in this browser has no file), then forget it here. The dialog says what happens and
  * what it costs before anything is picked, as Top up and Renew do (QW3-030). The master key signs
@@ -67,7 +67,7 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
   }
 
   return (
-    <Dialog open onClose={onClose} title={unlimited ? 'Disable key on chain' : 'Revoke this key on chain'} description={`Disables ${noun} everywhere, then forgets it here.`}>
+    <Dialog open onClose={onClose} title={unlimited ? 'Disable key on Platform' : 'Revoke this key on Platform'} description={`Disables ${noun} everywhere, then forgets it here.`}>
       <div className="space-y-4 text-dense">
         <p className="text-anvil-600 dark:text-anvil-300">
           Your master key disables {noun}
@@ -79,7 +79,7 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
           {FORGET_DELETES}
         </p>
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-          Only need this browser to stop signing? Sign out &amp; forget key instead: nothing is sent, and the key stays valid on chain until it
+          Only need this browser to stop signing? Sign out &amp; forget key instead: nothing is sent, and the key stays valid on Platform until it
           expires.
         </p>
         {stays !== null ? (
@@ -90,7 +90,7 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
         {needsUnlock ? (
           <UnlockMore
             forgot={false}
-            title="Unlock this tab to revoke on chain"
+            title="Unlock this tab to revoke on Platform"
             testId="revoke-unlock"
             then={() => {
               setUnlockAsked(false)
