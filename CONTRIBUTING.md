@@ -19,9 +19,9 @@ Thanks for helping. This page covers how to build Forge, the checks a change mus
 You need Rust (rustup installs the pinned toolchain), `protoc` 25 or newer, Node 22 and pnpm 11. [docs/BUILDING.md](docs/BUILDING.md) explains each one, including why an older `protoc` fails.
 
 ```sh
-cargo build --workspace                        # every Rust binary
-cd forge-web && pnpm install --frozen-lockfile # the web app's dependencies
-make dev-web                                   # the web app on http://localhost:3000, reading devnet sakura
+cargo build --workspace                          # every Rust binary
+(cd forge-web && pnpm install --frozen-lockfile) # the web app's dependencies
+make dev-web                                     # the web app on http://localhost:3000, reading devnet sakura
 ```
 
 ## Checks
@@ -53,18 +53,18 @@ The unit tests need no network. The end-to-end suites run against devnet sakura 
 
 1. Mint identities with `tools/mint-identity`, one per role, and pay each deposit address from the [sakura faucet](https://faucet.sakura.networks.dash.org) when it asks:
    ```sh
-   cd tools/mint-identity && npm install
-   node mint.mjs --network devnet --devnet-name sakura --funding manual --out ~/forge-e2e --label OWNER
+   (cd tools/mint-identity && npm install &&
+     node mint.mjs --network devnet --devnet-name sakura --funding manual --out ~/forge-e2e --label OWNER)
    ```
    Repeat with `--label COLLAB` and `--label CONTRIB`.
 2. Point `E2E_IDENTITY_DIR` at that directory ([e2e/cli/config.sh](e2e/cli/config.sh) lists every variable), then run `make e2e` for the CLI suite.
-3. For the browser suite, `cd forge-web && pnpm test:e2e` runs the read-only specs against the shared read fixture, with no identities.
+3. For the browser suite, `(cd forge-web && pnpm test:e2e)` runs the read-only specs against the shared read fixture, with no identities.
 4. The browser write specs write to a copy of that fixture which your identities own. Mint a `MAINTAINER` too, then seed your copy (`npm ci` in `forge-contracts/sdk-v2` first):
    ```sh
    node forge-contracts/scripts/seed-v2-fixture.mjs --network devnet --devnet-name sakura \
      --identities ~/forge-e2e --summary ~/forge-e2e/seed.json
    ```
-   Then set `E2E_IDENTITY_DIR=~/forge-e2e`, `FORGE_SEED_SUMMARY=~/forge-e2e/seed.json`, and `E2E_V2_OWNER` and `E2E_V2_EMPTY_OWNER` to the two repository owners the summary names, and run `pnpm test:e2e`.
+   Then set `E2E_IDENTITY_DIR=~/forge-e2e`, `FORGE_SEED_SUMMARY=~/forge-e2e/seed.json`, and `E2E_V2_OWNER` and `E2E_V2_EMPTY_OWNER` to the two repository owners the summary names, and run `(cd forge-web && pnpm test:e2e)`.
 
 Write only to repositories your own identities created.
 

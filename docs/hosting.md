@@ -114,7 +114,7 @@ Every setting below is scoped to the host `forge.dashhq.org`. Cloudflare's HSTS 
 
 | Header | Value | What it stops |
 |---|---|---|
-| `Strict-Transport-Security` | `max-age=31536000` | A first-visit downgrade to plain HTTP on a hostile network, for a year after each visit |
+| `Strict-Transport-Security` | `max-age=31536000` | A downgrade to plain HTTP on a hostile network on every visit after the first, for a year after each visit. Only the preload list (below) covers a first visit |
 | `X-Content-Type-Options` | `nosniff` | A browser running an uploaded file as script because it guessed its type |
 | `Content-Security-Policy` | `frame-ancestors 'none'` | Another site framing the app to trick a click on a write (clickjacking). The browser applies it together with the page's `<meta>` CSP, so nothing else changes |
 | `X-Frame-Options` | `DENY` | The same, in browsers without `frame-ancestors` |
