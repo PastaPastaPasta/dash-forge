@@ -44,6 +44,11 @@
 //             role-gated write is refused (40127); the fees of a triage and a reader enrolment, a
 //             refUpdate and a merge with r (r is one stored byte, about 27.4 k credits: the +1 %
 //             gate is computed; these confirm it against forge-v2.md §7's per-write table)
+//   update1   with UPDATE-1 (dash-forge-qa design/v5/CONTRACT-UPDATE-1.md), on a repo of its own:
+//             release.targetOid (and a release without one), config.movedTo, packMirror (anyone,
+//             unique per writer, only for a repo that exists), ban (maintainer only, unique),
+//             policy.requireCodeOwners, profile.keyProofs and profile.bot, transition.closedByPr,
+//             and the PR author's retarget (authorEvent kind 8 + value); with their fees
 //
 // Every refusal is matched on the node's numeric code (and, for a rule, its name in the
 // message), never on the decoded cause (IMPL-RULES: codes shifted between SDK builds).
@@ -76,6 +81,8 @@ const CLOSE_REASON = 'reason' in CONTRACTS.collab.documentSchemas.transition.pro
 const REVIEW_HUNK = 'diffHunk' in CONTRACTS.collab.documentSchemas.comment.properties;
 // RC2 moderation (design/v5/MODERATION.md): a hide proves its writer a maintainer
 const HIDE_PROOF = 'asMaintainer' in CONTRACTS.community.documentSchemas.event.properties;
+// UPDATE-1 (roadmap D4): the batched in-place update's additions, in this build of the contracts
+const UPDATE1 = 'packMirror' in CONTRACTS.core.documentSchemas;
 // RC2 member roles (design/v5/RECUT-OR-NEVER.md): writer.role, and a claimed `r` on every
 // role-gated type. A case that names no `r` (or no writer `role`) writes 1, what a maintainer, an
 // author, a runner or a role-1 writer sends.
@@ -740,6 +747,48 @@ if (want('roles') && MEMBER_ROLES) {
     await no('ROLES', 'the reader closes its own issue as a member (r 2)', M, COLLAB, 'transition', { repoId: P2, targetId: id(docId(pi)), targetNumber: 1, targetKind: 0, kind: 1, delta: 1, asAuthor: 0, r: 2 }, WHERE_ANYOF);
     await ok('ROLES', 'the reader closes its own issue as the author (r 1)', M, COLLAB, 'transition', { repoId: P2, targetId: id(docId(pi)), targetNumber: 1, targetKind: 0, kind: 1, delta: 1, asAuthor: 1, r: 1 });
     await no('ROLES', 'the reader labels its issue (r 2)', M, COMM, 'event', { repoId: P2, targetId: id(docId(pi)), targetNumber: 1, kind: 4, enc: bytes(61), epoch: 0, r: 2 }, WHERE_ANYOF);
+  }
+}
+
+// ---------------- update1: the UPDATE-1 additions (roadmap D4; dash-forge-qa design/v5/CONTRACT-UPDATE-1.md) ----------------
+// On a repo of its own (its issue and PR numbers start at 1), so it runs alone (--only update1).
+if (want('update1') && UPDATE1) {
+  const u = need(await ok('U1', 'a repo for the UPDATE-1 cases', O, CORE, 'repo', { name: `rc1u-${tag}`, visibility: 'public', defaultBranch: 'main' }), 'the UPDATE-1 repo');
+  const U = id(docId(u));
+  await ok('U1', 'owner self-enrols in it', O, CORE, 'maintainer', { repoId: U, memberId: id(O.id), vis: 'public' });
+  await ok('U1', 'member consents to it', M, CORE, 'consent', { repoId: U });
+  await ok('U1', 'the owner enrols the member as writer', O, CORE, 'writer', { repoId: U, memberId: id(M.id), vis: 'public', consentBy: id(M.id) });
+  await sleep(A_BLOCK);
+  // release.targetOid: optional, so a release without one still lands
+  await ok('U1', 'a release naming the commit its tag points at (targetOid)', O, CORE, 'release', { repoId: U, tagName: 'v1.0.0', name: 'one', vis: 'public', delta: 1, targetOid: bytes(20, 9) }, 'release: with targetOid');
+  await ok('U1', 'a release without targetOid (as every client before UPDATE-1 writes)', O, CORE, 'release', { repoId: U, tagName: 'v1.0.1', name: 'two', vis: 'public', delta: 1 }, 'release');
+  await no('U1', 'a targetOid of 19 bytes', O, CORE, 'release', { repoId: U, tagName: 'v1.0.2', vis: 'public', delta: 1, targetOid: bytes(19, 9) }, [10101, 10418, 10419]);
+  // config.movedTo
+  await ok('U1', 'a config pointing readers at a successor repo (movedTo)', O, CORE, 'config', { repoId: U, defaultBranch: 'main', vis: 'public', movedTo: R }, 'config: movedTo');
+  // packMirror: anyone, one record per (repo, pack, writer), only for a repo that exists
+  const ph = bytes(32, 11);
+  await ok('U1', "a stranger records a copy of the repo's pack (packMirror)", S, CORE, 'packMirror', { repoId: U, packHash: ph, kind: 1, uris: ['https://mirror.example.com/p/abc.pack'] }, 'packMirror');
+  await ok('U1', 'a second mirror of the same pack, by another identity', M, CORE, 'packMirror', { repoId: U, packHash: ph, kind: 2, uris: ['ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'] });
+  await no('U1', 'the same writer mirrors the same pack twice (unique byHash)', S, CORE, 'packMirror', { repoId: U, packHash: ph, kind: 2, uris: ['https://other.example.com/abc.pack'] }, [40105]);
+  await no('U1', 'a mirror of a repo that does not exist', S, CORE, 'packMirror', { repoId: bytes(32, 12), packHash: ph, kind: 1, uris: ['https://mirror.example.com/x.pack'] }, [40120]);
+  // ban: a maintainer's per-repo ban list (readers apply it)
+  await ok('U1', 'a maintainer bans an identity from the repo', O, COLLAB, 'ban', { repoId: U, identityId: id(S.id), reason: 1 }, 'ban');
+  await no('U1', 'the same maintainer bans it twice (unique byRepo)', O, COLLAB, 'ban', { repoId: U, identityId: id(S.id) }, [40105]);
+  await no('U1', 'a writer bans (maintainer only)', M, COLLAB, 'ban', { repoId: U, identityId: id(S.id) }, [40120]);
+  await no('U1', 'a stranger bans', S, COLLAB, 'ban', { repoId: U, identityId: id(M.id) }, [40120]);
+  // policy.requireCodeOwners
+  await ok('U1', 'a merge policy requiring code-owner approval', O, COMM, 'policy', { repoId: U, requiredApprovals: 1, requireCodeOwners: true }, 'policy: requireCodeOwners');
+  // profile.keyProofs and profile.bot (fresh identities: no profile yet)
+  await ok('U1', 'a profile with a key and its possession proof (keyProofs)', M, COMM, 'profile', { displayName: 'member', pubkeys: ['ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7vQ5q0 member'], keyProofs: ['U1NIU0lHAAAAAQ=='] }, 'profile: keyProofs');
+  await ok('U1', "a bot's profile naming its operator (bot.operator)", RN, COMM, 'profile', { displayName: 'ci bot', bot: { operator: id(O.id) } }, 'profile: bot');
+  await no('U1', 'a key proof that is not base64', S, COMM, 'profile', { displayName: 'x', pubkeys: ['ssh-ed25519 AAAA x'], keyProofs: ['not base64!'] }, [10101, 10403]);
+  // transition.closedByPr and authorEvent kind 8 (the author retargets its PR)
+  const ui = await ok('U1', 'issue #1', S, COLLAB, 'issue', { repoId: U, number: 1, tk: 0, title: 'bug', vis: 'public' });
+  const up = await ok('U1', 'PR #2 (by the member)', M, COLLAB, 'patch', { repoId: U, number: 2, tk: 1, title: 'fix', vis: 'public', baseRefNameHash: sha256(Buffer.from('refs/heads/main')), baseRefName: 'refs/heads/main', sourceRepoId: U, sourceRefNameHash: sha256(Buffer.from('refs/heads/f')), sourceRefName: 'refs/heads/f', headOid: bytes(20, 2) });
+  if (ui && up) {
+    await ok('U1', 'a maintainer closes the issue as fixed by PR #2 (closedByPr)', O, COLLAB, 'transition', { repoId: U, targetId: id(docId(ui)), targetNumber: 1, targetKind: 0, kind: 1, delta: 1, asAuthor: 0, r: 1, closedByPr: 2 }, 'transition: closedByPr');
+    await ok('U1', 'the PR author retargets its PR (authorEvent kind 8 + value)', M, COMM, 'authorEvent', { repoId: U, targetId: id(docId(up)), targetNumber: 2, kind: 8, value: 'refs/heads/dev' }, 'authorEvent: retarget');
+    await no('U1', "a non-author's retarget", S, COMM, 'authorEvent', { repoId: U, targetId: id(docId(up)), targetNumber: 2, kind: 8, value: 'refs/heads/dev' }, [40120]);
   }
 }
 
