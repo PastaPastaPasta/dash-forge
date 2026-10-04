@@ -161,14 +161,13 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
   )
 }
 
-/** The release list, for "is there a release yet" (L-11). */
+/** The release list: archives, SHA256SUMS and build attestations. */
 const RELEASES_URL = 'https://github.com/PastaPastaPasta/dash-forge/releases'
 const BUILDING_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/BUILDING.md'
 
 /**
- * Where the CLI comes from (`ux-dx-spec.md` §7.6; `docs/INSTALL.md`). No release has been
- * published yet (L-11), so building from source leads, and the prebuilt routes say they need a
- * release: install.sh stops with that message until one exists.
+ * Where the CLI comes from (`ux-dx-spec.md` §7.6; `docs/INSTALL.md`). Releases are published
+ * (v0.1.0 first), so the checksum-verified installer leads and building from source follows.
  */
 function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void }): JSX.Element {
   const link = 'text-forge-700 underline dark:text-forge-400'
@@ -176,7 +175,19 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
     <Dialog open={open} onClose={onClose} title="Install git-remote-dash and dg" description="Needed for git clone dash://… and pushes.">
       <div className="space-y-3 text-dense">
         <div>
-          <h3 className="mb-1 font-medium">From source (works today, any OS)</h3>
+          <h3 className="mb-1 font-medium">Prebuilt binaries (Linux and macOS)</h3>
+          <CopyRow text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" label="Copy the install command" />
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+            It downloads the latest release, checks its SHA-256 (and its GitHub attestation when <span className="font-mono">gh</span> is signed in),
+            then installs into <span className="font-mono">~/.local/bin</span>. Windows: the .zip on the{' '}
+            <a href={RELEASES_URL} target="_blank" rel="noreferrer noopener" className={link}>
+              Releases page
+            </a>
+            .
+          </p>
+        </div>
+        <div>
+          <h3 className="mb-1 font-medium">From source (any OS)</h3>
           <CopyRow text="git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge" label="Copy the source clone command" />
           <CopyRow text="cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash" label="Copy the cargo install command" />
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -185,21 +196,6 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
               build guide
             </a>
             ). On Windows, run the same commands in PowerShell.
-          </p>
-        </div>
-        <div>
-          <h3 className="mb-1 font-medium">Prebuilt binaries (once a release is published)</h3>
-          <p className="mb-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-            No release has been published yet; check the{' '}
-            <a href={RELEASES_URL} target="_blank" rel="noreferrer noopener" className={link}>
-              Releases page
-            </a>
-            . Until there is one, the installer stops and says so. Linux and macOS:
-          </p>
-          <CopyRow text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" label="Copy the install command" />
-          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            It checks the release&apos;s SHA-256 (and its GitHub attestation when <span className="font-mono">gh</span> is signed in),
-            then installs into <span className="font-mono">~/.local/bin</span>. Windows: the .zip on the Releases page.
           </p>
         </div>
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">

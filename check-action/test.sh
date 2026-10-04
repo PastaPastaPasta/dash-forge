@@ -67,15 +67,17 @@ resolve INPUT_JOB_STATUS=success INPUT_NETWORK=testnet INPUT_DEVNET_NAME=sakura 
 has "--network=testnet"
 lacks_prefix "--devnet-name"
 
-# action.yml's defaults: a network Forge is deployed on (the hosted site's devnet), and no
-# release pinned, so install 'true' builds dg from this action's own source.
+# action.yml's defaults: a network Forge is deployed on (the hosted site's devnet), and the
+# release cut from this commit (the workspace version), which install 'true' downloads.
 case="action.yml defaults"
 default_of() {
   awk -v want="  $1:" '$0 == want { found = 1; next } found && /^    default:/ { sub(/^    default: */, ""); gsub(/"/, ""); print; exit }' "$here/action.yml"
 }
 [[ "$(default_of network)" == devnet ]] || fail "network defaults to '$(default_of network)'"
 [[ -f "$here/../forge-contracts/deployments/devnet-$(default_of devnet-name).json" ]] || fail "no deployment for the default devnet"
-[[ -z "$(default_of version)" ]] || fail "version defaults to '$(default_of version)'"
+workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml")
+[[ -n "$workspace_version" && "$(default_of version)" == "$workspace_version" ]] ||
+  fail "version defaults to '$(default_of version)', not the workspace version '$workspace_version'"
 [[ "$(default_of install)" == true ]] || fail "install defaults to '$(default_of install)'"
 [[ "$(default_of build-cache)" == true ]] || fail "build-cache defaults to '$(default_of build-cache)'"
 

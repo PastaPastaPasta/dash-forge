@@ -49,8 +49,8 @@ inputs:
     description: "Devnet name, used only when network is devnet: lowercase letters, digits and -."
     default: sakura
   version:
-    description: "Dash Forge release to install. Empty (until the first release is pinned here): install 'true' builds dg from source."
-    default: ""
+    description: "Dash Forge release to install (the release this action version pins, kept equal to the workspace version). Empty: install 'true' builds dg from source."
+    default: "0.1.0"
   install:
     description: "true: install release `version`, or build dg from this action's own source (the ref in uses:) when `version` is empty. source: always build from source. false: use the dg already on PATH."
     default: "true"
@@ -126,8 +126,8 @@ runs:
         FORGE_INSTALL_SEVERITY: ${{ inputs.fail-on-error == 'true' && 'error' || 'warning' }}
       run: |
         if [ "$INPUT_INSTALL" = source ] || [ -z "$INPUT_VERSION" ]; then dir=source; else dir=$INPUT_VERSION; fi
-        # The source build (and so the default, until a release is pinned) supports Linux runners
-        # only: say so up front, and let the report step warn or fail as fail-on-error asks.
+        # The source build supports Linux runners only: say so up front, and let the report step
+        # warn or fail as fail-on-error asks.
         if [ "$dir" = source ] && [ "$RUNNER_OS" != Linux ]; then
           echo "failed=dg can be built from source on Linux runners only (this one is $RUNNER_OS). Report from a Linux job, or put dg on PATH and set install: 'false'" >>"$GITHUB_OUTPUT"
           exit 0
