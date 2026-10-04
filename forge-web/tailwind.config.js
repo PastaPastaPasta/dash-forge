@@ -76,6 +76,8 @@ module.exports = {
         // Theme tokens: CSS variables in app/globals.css, one value per theme, so a class needs
         // no `dark:` twin. New colour roles go here rather than as `light dark:` class pairs.
         focus: token('focus'),
+        'surface-raised': token('surface-raised'),
+        'line-highlight': token('line-highlight'),
         state: {
           open: token('state-open'),
           done: token('state-done'),

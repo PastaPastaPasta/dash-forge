@@ -20,8 +20,8 @@
   /*
    * Theme tokens, as RGB channels so Tailwind's `/alpha` works (`bg-state-open/10`). Light values
    * in :root, dark overrides in .dark; a token with no dark value is the same in both themes.
-   * lib/design/contrast.test.ts reads these two blocks and checks every pair, so keep each
-   * value a plain `R G B` triple on its own line.
+   * lib/design/contrast.test.ts reads these blocks and checks every pair, so keep each colour a
+   * plain `R G B` triple (and each alpha a plain number) on its own line.
    */
   :root {
     /* Keyboard focus ring: 3:1 or more against every surface (WCAG 1.4.11). forge-700. */
@@ -36,6 +36,28 @@
     --state-done-fill: 130 80 223;
     --state-closed-fill: 207 34 46;
     --state-draft-fill: 107 100 96;
+    /* A raised strip inside a surface (a diff's "unchanged lines" row). */
+    --surface-raised: 245 245 244;
+    /* A selected line or range of code: the accent, as a tint (`bg-line-highlight/15`). */
+    --line-highlight: 249 115 22;
+    /* Diff rows: a tint of the added or deleted colour, a 2px edge in its marker colour, and a
+       stronger tint on the words that changed. The colour-blind palette (blue/orange) is
+       [data-diff-palette='colorblind'] below. Kept equal to DIFF_PALETTES (lib/view/prefs.ts). */
+    --diff-add: 22 163 74;
+    --diff-del: 220 38 38;
+    --diff-add-edge: 22 101 52;
+    --diff-del-edge: 185 28 28;
+    --diff-row-alpha: 0.1;
+    --diff-word-alpha: 0.15;
+    /* Syntax colours (highlight.js). Keywords have their own hue: the accent means "act here". */
+    --syn-comment: 87 83 78;
+    --syn-keyword: 143 42 141;
+    --syn-string: 17 99 41;
+    --syn-number: 5 80 174;
+    --syn-title: 131 67 0;
+    --syn-type: 108 74 0;
+    --syn-attr: 68 64 60;
+    --syn-deletion: 164 14 38;
   }
   .dark {
     --focus: 251 146 60;
@@ -43,6 +65,29 @@
     --state-done: 163 113 247;
     --state-closed: 248 81 73;
     --state-draft: 168 162 158;
+    --surface-raised: 28 25 23;
+    --diff-add-edge: 74 222 128;
+    --diff-del-edge: 248 113 113;
+    --diff-row-alpha: 0.16;
+    --diff-word-alpha: 0.2;
+    --syn-comment: 185 179 174;
+    --syn-keyword: 210 168 255;
+    --syn-string: 134 239 172;
+    --syn-number: 125 211 252;
+    --syn-title: 252 211 77;
+    --syn-type: 253 230 138;
+    --syn-attr: 214 211 209;
+    --syn-deletion: 252 165 165;
+  }
+  [data-diff-palette='colorblind'] {
+    --diff-add: 37 99 235;
+    --diff-del: 249 115 22;
+    --diff-add-edge: 29 78 216;
+    --diff-del-edge: 154 52 18;
+  }
+  .dark [data-diff-palette='colorblind'] {
+    --diff-add-edge: 96 165 250;
+    --diff-del-edge: 251 146 60;
   }
 
   html {
@@ -114,13 +159,18 @@
 }
 
 /* ---------------------------------------------------------------------------
- * Syntax highlighting theme (highlight.js `hljs-*` classes) — foundry palette,
- * theme-aware via the `.dark` class. Loaded lazily with highlight.js; these rules
- * are tiny and inline so they survive static export (no external CDN stylesheet).
+ * Syntax highlighting theme (highlight.js `hljs-*` classes), from the `--syn-*` tokens above, so
+ * one rule serves both themes. Inline so it survives static export (no CDN stylesheet). The
+ * contrast test checks every colour on the page and on the diff tints.
  * ------------------------------------------------------------------------- */
 .hljs-comment,
+.hljs-quote,
+.hljs-meta,
+.hljs-comment.hljs-doctag {
+  color: rgb(var(--syn-comment));
+}
+.hljs-comment,
 .hljs-quote {
-  color: #6b6460; /* anvil-500: 5.6:1 on anvil-50 (anvil-400 was 2.4:1) */
   font-style: italic;
 }
 .hljs-keyword,
@@ -128,41 +178,37 @@
 .hljs-literal,
 .hljs-doctag,
 .hljs-name {
-  color: #c2410c; /* forge-700 */
+  color: rgb(var(--syn-keyword));
 }
 .hljs-string,
 .hljs-regexp,
 .hljs-addition {
-  color: #15803d; /* green-700 */
+  color: rgb(var(--syn-string));
 }
 .hljs-number,
 .hljs-symbol,
 .hljs-bullet {
-  color: #0369a1; /* sky-700 */
+  color: rgb(var(--syn-number));
 }
 .hljs-title,
 .hljs-title.function_,
 .hljs-section {
-  color: #b45309; /* amber-700 */
+  color: rgb(var(--syn-title));
 }
 .hljs-type,
 .hljs-class .hljs-title,
 .hljs-built_in,
 .hljs-builtin-name {
-  color: #a16207; /* yellow-700 */
+  color: rgb(var(--syn-type));
 }
 .hljs-attr,
 .hljs-attribute,
 .hljs-variable,
 .hljs-template-variable {
-  color: #57534e; /* anvil-600 */
-}
-.hljs-meta,
-.hljs-comment.hljs-doctag {
-  color: #6b6460; /* anvil-500 */
+  color: rgb(var(--syn-attr));
 }
 .hljs-deletion {
-  color: #b91c1c; /* red-700 */
+  color: rgb(var(--syn-deletion));
 }
 .hljs-emphasis {
   font-style: italic;
@@ -171,47 +217,28 @@
   font-weight: 600;
 }
 
-.dark .hljs-comment,
-.dark .hljs-quote {
-  color: #a8a29e; /* anvil-400: 7.7:1 on anvil-950 (#78716c was 4.0:1) */
+/* Diff rows (components/repo/diff-view.tsx). The edge is an inset shadow on the code cell, so
+   changed and unchanged lines keep the same text position. */
+.diff-add {
+  background-color: rgb(var(--diff-add) / var(--diff-row-alpha));
 }
-.dark .hljs-keyword,
-.dark .hljs-selector-tag,
-.dark .hljs-literal,
-.dark .hljs-doctag,
-.dark .hljs-name {
-  color: #fb923c; /* forge-400 */
+.diff-del {
+  background-color: rgb(var(--diff-del) / var(--diff-row-alpha));
 }
-.dark .hljs-string,
-.dark .hljs-regexp,
-.dark .hljs-addition {
-  color: #86efac; /* green-300 */
+.diff-add-edge {
+  box-shadow: inset 2px 0 0 rgb(var(--diff-add-edge));
 }
-.dark .hljs-number,
-.dark .hljs-symbol,
-.dark .hljs-bullet {
-  color: #7dd3fc; /* sky-300 */
+.diff-del-edge {
+  box-shadow: inset 2px 0 0 rgb(var(--diff-del-edge));
 }
-.dark .hljs-title,
-.dark .hljs-title.function_,
-.dark .hljs-section {
-  color: #fcd34d; /* amber-300 */
+mark.diff-add-word,
+mark.diff-del-word {
+  color: inherit;
+  border-radius: 2px;
 }
-.dark .hljs-type,
-.dark .hljs-class .hljs-title,
-.dark .hljs-built_in,
-.dark .hljs-builtin-name {
-  color: #fde68a; /* amber-200 */
+mark.diff-add-word {
+  background-color: rgb(var(--diff-add) / var(--diff-word-alpha));
 }
-.dark .hljs-attr,
-.dark .hljs-attribute,
-.dark .hljs-variable,
-.dark .hljs-template-variable {
-  color: #d6d3d1; /* anvil-300 */
-}
-.dark .hljs-meta {
-  color: #a8a29e; /* anvil-400 */
-}
-.dark .hljs-deletion {
-  color: #fca5a5; /* red-300 */
+mark.diff-del-word {
+  background-color: rgb(var(--diff-del) / var(--diff-word-alpha));
 }

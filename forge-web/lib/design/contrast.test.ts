@@ -302,48 +302,92 @@ describe('no component renders text in the raw brand blue', () => {
 })
 
 describe('diff palettes meet WCAG AA on their row tints, in both themes', () => {
-  // A diff row is its palette's tint at 10% over the page surface; the line text, the line
-  // numbers and the +/− markers sit on it. Both palettes, both themes, every surface.
+  // A diff row is its palette's tint at `--diff-row-alpha` over the page surface (more in dark);
+  // a changed word adds `--diff-word-alpha` of the tint on top. The line text, its syntax
+  // colours, the line numbers and the +/− markers sit on them. Both palettes, both themes.
+  const css = readFileSync(join(root, 'app/globals.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  const alphas = (selector: RegExp): Record<string, number> => {
+    const out: Record<string, number> = {}
+    for (const b of css.matchAll(selector)) for (const v of (b[1] as string).matchAll(/--([\w-]+):\s*(0?\.\d+)\s*;/g)) out[v[1] as string] = Number(v[2])
+    return out
+  }
+  const lightAlpha = alphas(/(?:^|[\s;{}]):root\s*\{([^}]*)\}/g)
+  const darkAlpha = { ...lightAlpha, ...alphas(/(?:^|[\s;{}])\.dark\s*\{([^}]*)\}/g) }
+  /** The colour-blind palette's overrides: on the table (light) and under `.dark`. */
+  const cvd = (selector: RegExp): Record<string, Rgb> => {
+    const out: Record<string, Rgb> = {}
+    for (const b of css.matchAll(selector)) for (const v of (b[1] as string).matchAll(/--([\w-]+):\s*(\d+)\s+(\d+)\s+(\d+)\s*;/g)) out[v[1] as string] = [Number(v[2]), Number(v[3]), Number(v[4])]
+    return out
+  }
+  const cvdLight = cvd(/(?:^|[;{}])\s*\[data-diff-palette='colorblind'\]\s*\{([^}]*)\}/g)
+  const cvdDark = { ...cvdLight, ...cvd(/\.dark \[data-diff-palette='colorblind'\]\s*\{([^}]*)\}/g) }
+  const css4 = { standard: { light: TOKENS.light, dark: TOKENS.dark }, colorblind: { light: { ...TOKENS.light, ...cvdLight }, dark: { ...TOKENS.dark, ...cvdDark } } }
+
   const LIGHT_TEXT = { body: anvil['800']!, gutter: anvil['600']! }
   const DARK_TEXT = { body: anvil['200']!, gutter: anvil['400']! }
+  // Code (and so its syntax colours) sits on the page: anvil-50/white/anvil-100 and anvil-950/900.
+  const CODE_DARK = { 'anvil-950': anvil['950'], 'anvil-900': anvil['900'] }
+  const SYNTAX = Object.keys(TOKENS.light).filter((k) => k.startsWith('syn-'))
   const cases = Object.entries(DIFF_PALETTES).flatMap(([name, p]) =>
-    (['added', 'deleted'] as const).map((side) => [name, side, p[side]] as const),
+    (['added', 'deleted'] as const).map((side) => [name as keyof typeof css4, side, p[side]] as const),
   )
 
+  it('reads its alphas and syntax colours from app/globals.css', () => {
+    expect(lightAlpha['diff-row-alpha']).toBe(0.1)
+    expect(darkAlpha['diff-row-alpha']).toBeGreaterThanOrEqual(0.15)
+    expect(darkAlpha['diff-word-alpha']).toBeDefined()
+    expect(SYNTAX.length).toBeGreaterThanOrEqual(8)
+  })
+
+  it.each(cases)('the CSS of the %s palette, %s rows, is the checked colours', (name, side, p) => {
+    const short = side === 'added' ? 'add' : 'del'
+    expect(hexOf(css4[name].light[`diff-${short}`]!)).toBe(p.tint)
+    expect(hexOf(css4[name].light[`diff-${short}-edge`]!)).toBe(p.markerLight)
+    expect(hexOf(css4[name].dark[`diff-${short}-edge`]!)).toBe(p.markerDark)
+  })
+
   it.each(cases)('%s palette, %s rows', (_, __, side) => {
-    for (const bg of Object.values(LIGHT_SURFACES)) {
-      const row = over(rgb(side.tint), rgb(bg!), 0.1)
-      expect(contrast(rgb(LIGHT_TEXT.body), row)).toBeGreaterThanOrEqual(AA_TEXT)
-      expect(contrast(rgb(LIGHT_TEXT.gutter), row)).toBeGreaterThanOrEqual(AA_TEXT)
-      expect(contrast(rgb(side.markerLight), row)).toBeGreaterThanOrEqual(AA_TEXT)
-      // The +N / −N counts sit on the plain surface.
-      expect(contrast(rgb(side.markerLight), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
-    }
-    for (const bg of Object.values(DARK_SURFACES)) {
-      const row = over(rgb(side.tint), rgb(bg!), 0.1)
-      expect(contrast(rgb(DARK_TEXT.body), row)).toBeGreaterThanOrEqual(AA_TEXT)
-      expect(contrast(rgb(DARK_TEXT.gutter), row)).toBeGreaterThanOrEqual(AA_TEXT)
-      expect(contrast(rgb(side.markerDark), row)).toBeGreaterThanOrEqual(AA_TEXT)
-      expect(contrast(rgb(side.markerDark), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+    for (const [surfaces, alpha, text, marker, syn] of [
+      [LIGHT_SURFACES, lightAlpha, LIGHT_TEXT, side.markerLight, TOKENS.light],
+      [DARK_SURFACES, darkAlpha, DARK_TEXT, side.markerDark, TOKENS.dark],
+    ] as const) {
+      for (const [name, bg] of Object.entries(surfaces)) {
+        const row = over(rgb(side.tint), rgb(bg!), alpha['diff-row-alpha']!)
+        const word = over(rgb(side.tint), row, alpha['diff-word-alpha']!)
+        expect(contrast(rgb(text.body), row), `body on ${name}`).toBeGreaterThanOrEqual(AA_TEXT)
+        expect(contrast(rgb(text.body), word), `body on a changed word on ${name}`).toBeGreaterThanOrEqual(AA_TEXT)
+        expect(contrast(rgb(text.gutter), row), `gutter on ${name}`).toBeGreaterThanOrEqual(AA_TEXT)
+        expect(contrast(rgb(marker), row), `marker on ${name}`).toBeGreaterThanOrEqual(AA_TEXT)
+        // The +N / −N counts sit on the plain surface.
+        expect(contrast(rgb(marker), rgb(bg!)), `count on ${name}`).toBeGreaterThanOrEqual(AA_TEXT)
+        if (surfaces === DARK_SURFACES && !(name in CODE_DARK)) continue
+        for (const k of SYNTAX) {
+          expect(contrast(syn[k]!, row), `${k} on a row on ${name}`).toBeGreaterThanOrEqual(AA_TEXT)
+          expect(contrast(syn[k]!, word), `${k} on a changed word on ${name}`).toBeGreaterThanOrEqual(AA_TEXT)
+        }
+      }
     }
   })
 
-  it('names the Tailwind shades it claims (so the classes and the checked hexes agree)', () => {
-    const TAILWIND: Record<string, string> = {
-      'green-600': '#16a34a', 'green-800': '#166534', 'green-400': '#4ade80',
-      'red-600': '#dc2626', 'red-700': '#b91c1c', 'red-400': '#f87171',
-      'blue-600': '#2563eb', 'blue-700': '#1d4ed8', 'blue-400': '#60a5fa',
-      'orange-500': '#f97316', 'orange-800': '#9a3412', 'orange-400': '#fb923c',
-    }
-    for (const p of Object.values(DIFF_PALETTES)) {
-      for (const side of [p.added, p.deleted]) {
-        const tint = /bg-([a-z]+-\d+)\/10/.exec(side.row)?.[1] as string
-        const [light, dark] = [/^text-([a-z]+-\d+)/, /dark:text-([a-z]+-\d+)/].map((re) => re.exec(side.marker)?.[1] as string)
-        expect(TAILWIND[tint]).toBe(side.tint)
-        expect(TAILWIND[light as string]).toBe(side.markerLight)
-        expect(TAILWIND[dark as string]).toBe(side.markerDark)
+  it('syntax colours, on the page and in a selected line, both themes', () => {
+    for (const [surfaces, syn, text] of [
+      [LIGHT_SURFACES, TOKENS.light, LIGHT_TEXT],
+      [CODE_DARK, TOKENS.dark, DARK_TEXT],
+    ] as const) {
+      for (const [name, bg] of Object.entries(surfaces)) {
+        for (const alpha of [0, 0.15, 0.25]) {
+          const under = over(TOKENS.light['line-highlight']!, rgb(bg!), alpha)
+          for (const k of SYNTAX) expect(contrast(syn[k]!, under), `${k} on ${name} @${alpha}`).toBeGreaterThanOrEqual(AA_TEXT)
+          expect(contrast(rgb(text.gutter), under), `gutter on ${name} @${alpha}`).toBeGreaterThanOrEqual(AA_TEXT)
+        }
       }
     }
+  })
+
+  it('keywords are not the accent (an accent-coloured word reads as a link)', () => {
+    const forge = colors['forge'] as Record<string, string>
+    expect(hexOf(TOKENS.light['syn-keyword']!)).not.toBe(forge['700'])
+    expect(hexOf(TOKENS.dark['syn-keyword']!)).not.toBe(forge['400'])
   })
 })
 
