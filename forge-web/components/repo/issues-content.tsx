@@ -42,10 +42,11 @@ import {
   utf8Length,
   type IssueListQuery,
 } from '@/lib/view/issue-query'
-import { createIssue, issueFirsts, queryIssues, repoContractIds, repoKey, rowFiltersOf, type IssueListPage, type IssueSelection } from '@/lib/repo'
-import { SupersededWriteError } from '@/lib/sdk'
+import { createIssue, issueFirsts, queryIssues, readLabels, repoContractIds, repoKey, rowFiltersOf, setLabel, type IssueListPage, type IssueSelection } from '@/lib/repo'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, sumPreviews } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
+import { useRepoWriteGeneration, useViewerRole } from '@/hooks/use-repo-chrome'
+import { toast } from '@/hooks/use-toasts'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { useSdk } from '@/hooks/use-sdk'
@@ -88,7 +89,8 @@ import {
   useReadProgress,
   type ListGrammar,
 } from '@/components/repo/list-controls'
-import { IssueTemplatePicker } from '@/components/repo/issue-templates'
+import { ContactLinks, TemplatePicker, useIssueChooser } from '@/components/repo/issue-templates'
+import { IssueFormFields } from '@/components/repo/issue-form'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
 import { TriageNav } from '@/components/repo/triage-nav'
@@ -96,7 +98,8 @@ import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/co
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
 import { applyTemplate, type IssueTemplate } from '@/lib/view/issue-templates'
-import { whoCan } from '@/lib/rules/roles'
+import { formBody, initialFormValues, missingAnswers, type FormValue } from '@/lib/view/issue-forms'
+import { capabilitiesOf, whoCan } from '@/lib/rules/roles'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
 const ISSUE_GRAMMAR: ListGrammar<IssueListQuery> = { text: searchText, parse: parseSearchText, unresolved: unresolvedQualifiers, submitBase: searchSubmitBase }
@@ -417,6 +420,10 @@ function ComposeIssueDialog({
   const [title, setTitle] = useState(prefill.title)
   const [body, setBody] = useState(prefill.body)
   const [template, setTemplate] = useState<IssueTemplate | null>(null)
+  // A YAML issue form's answers (the issue's body is made from them).
+  const [answers, setAnswers] = useState<Record<string, FormValue>>({})
+  const chooser = useIssueChooser(home, open)
+  const canLabel = capabilitiesOf(useViewerRole(repo).role).canLabel
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -427,30 +434,63 @@ function ComposeIssueDialog({
 
   // Whether this issue is the repo's (or the author's) first, for a tight preview (D-011).
   const first = useFirstWrite(() => issueFirsts(sdk!, repo, identity!), [open, repoKey(repo), identity ?? ''], open && sdk !== null && identity !== null)
-  const cost = composeCost(repo, 'issue', { title: title.trim(), body }, first)
-  const bodyBytes = utf8Length(body)
+  const form = template?.form ?? null
+  const issueBody = form === null ? body : formBody(form, answers)
+  const missing = form === null ? [] : missingAnswers(form, answers)
+  // A chooser whose config turns blank issues off needs a template picked.
+  const needsTemplate = chooser !== null && !chooser.blankIssuesEnabled && template === null
+  // The template's labels, applied with the issue when the author may label (GitHub applies
+  // those the repo defines; each is one more event).
+  const labelsToApply = canLabel ? (template?.labels ?? []) : []
+  const cost = sumPreviews([composeCost(repo, 'issue', { title: title.trim(), body: issueBody }, first), ...labelsToApply.map(() => previewCreate('event'))])
+  const bodyBytes = utf8Length(issueBody)
 
-  // Untouched template text follows the pick; anything typed stays (QW4-037).
+  // Untouched template text follows the pick; anything typed stays (QW4-037). A form starts
+  // with its own answers; the Markdown body typed meanwhile is kept for a later Markdown pick.
   const pick = (t: IssueTemplate | null): void => {
-    const next = applyTemplate({ title, body }, template, t)
+    const next = applyTemplate({ title, body }, template, t?.form === undefined ? t : { title: t.title, body: '' })
     setTitle(next.title)
     setBody(next.body)
     setTemplate(t)
+    setAnswers(t?.form === undefined ? {} : initialFormValues(t.form))
+  }
+
+  /** Apply the template's labels the repo defines. The issue is open whatever happens here. */
+  const applyLabels = async (issue: { readonly documentId: string; readonly number: number }, names: readonly string[]): Promise<void> => {
+    if (!sdk || !signer || names.length === 0) return
+    let failed = 0
+    try {
+      const defined = new Map((await readLabels(sdk, repo)).filter((l) => !l.retired).map((l) => [l.name.toLowerCase(), l.name]))
+      for (const name of names) {
+        const label = defined.get(name.toLowerCase())
+        if (label === undefined) continue
+        try {
+          await setLabel(sdk, signer, repo, { target: { id: issue.documentId, number: issue.number }, label, add: true, intent: `${draft.intent}:label:${label}` })
+        } catch (e) {
+          if (!(e instanceof UnconfirmedWriteError)) failed++
+        }
+      }
+    } catch {
+      failed = names.length
+    }
+    if (failed > 0) toast({ title: `The template's labels were not all applied`, tone: 'warn', detail: 'Add them from the issue’s Labels menu.' })
   }
 
   const submit = async (): Promise<void> => {
-    if (pending || bodyBytes > BODY_MAX || !guard.check(cost, 'collab', 'open an issue')) return
+    if (pending || bodyBytes > BODY_MAX || missing.length > 0 || needsTemplate || !guard.check(cost, 'collab', 'open an issue')) return
     if (!sdk || !signer || title.trim() === '') return
     setPending(true)
     setError(null)
     setNote(null)
     try {
-      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body, intent: draft.intent }, (taken, next) =>
+      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body: issueBody, intent: draft.intent }, (taken, next) =>
         setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
       )
+      await applyLabels(created, labelsToApply)
       setTitle('')
       setBody('')
       setTemplate(null)
+      setAnswers({})
       draft.renew()
       onCreated(created.number)
       onClose()
@@ -460,6 +500,7 @@ function ComposeIssueDialog({
         setTitle('')
         setBody('')
         setTemplate(null)
+        setAnswers({})
         draft.renew()
         onClose()
         return
@@ -483,8 +524,8 @@ function ComposeIssueDialog({
             variant="primary"
             onClick={submit}
             loading={pending}
-            disabled={title.trim() === '' || bodyBytes > BODY_MAX || guard.disabledReason !== null}
-            title={guard.disabledReason ?? undefined}
+            disabled={title.trim() === '' || bodyBytes > BODY_MAX || missing.length > 0 || needsTemplate || guard.disabledReason !== null}
+            title={guard.disabledReason ?? (needsTemplate ? 'Pick a template' : missing.length > 0 ? `Answer: ${missing.join(', ')}` : undefined)}
           >
             {identity ? 'Submit issue' : locked ? 'Unlock to submit' : 'Sign in to submit'}
           </Button>
@@ -493,23 +534,35 @@ function ComposeIssueDialog({
     >
       <div className="space-y-3">
         {open ? <MirrorComposeHint home={home} /> : null}
-        {open ? <IssueTemplatePicker home={home} selected={template} onPick={pick} /> : null}
+        {open && chooser !== null ? (
+          <>
+            <TemplatePicker templates={chooser.templates} selected={template} onPick={pick} blank={chooser.blankIssuesEnabled ? 'Blank issue' : null} label="Issue template" />
+            <ContactLinks links={chooser.contactLinks} />
+          </>
+        ) : null}
         <Field label="Title" htmlFor="issue-title">
           <Input id="issue-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Something is broken…" autoFocus maxLength={256} />
         </Field>
-        <MarkdownEditor
-          id="issue-body"
-          label="Description"
-          value={body}
-          onChange={setBody}
-          placeholder="What happened, and how to reproduce it."
-          links={links}
-        />
-        <SealedLimit repo={repo} kind="issue" text={title.trim() + body} />
-        <BodyCounter repo={repo} text={body} field="description" />
+        {form !== null ? (
+          <IssueFormFields form={form} values={answers} onChange={(key, v) => setAnswers((prev) => ({ ...prev, [key]: v }))} idBase="issue-form" />
+        ) : (
+          <MarkdownEditor
+            id="issue-body"
+            label="Description"
+            value={body}
+            onChange={setBody}
+            placeholder="What happened, and how to reproduce it."
+            links={links}
+          />
+        )}
+        <SealedLimit repo={repo} kind="issue" text={title.trim() + issueBody} />
+        <BodyCounter repo={repo} text={issueBody} field="description" />
+        {needsTemplate ? <p className="text-[12px] text-anvil-600 dark:text-anvil-400">This repository asks for a template: pick one above.</p> : null}
         {template !== null && template.labels.length > 0 ? (
-          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            This template suggests the labels {template.labels.join(', ')}. Labels are applied after the issue is opened, by {whoCan('canLabel', 'one')}.
+          <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="template-labels">
+            {canLabel
+              ? `The template's labels (${template.labels.join(', ')}) are applied with the issue, those this repository defines: one more document each.`
+              : `This template suggests the labels ${template.labels.join(', ')}. Labels are applied after the issue is opened, by ${whoCan('canLabel', 'one')}.`}
           </p>
         ) : null}
         <CostPreview cost={cost} />

@@ -1,13 +1,18 @@
 /**
- * Issue templates (`platform-parity-spec.md` §1.2): the markdown files in
- * `.forge/ISSUE_TEMPLATE/`, else `.github/ISSUE_TEMPLATE/`, on the default branch, read at
- * compose time through the browse reader. A template is GitHub's Markdown form: optional YAML
- * front matter (`name`, `about`, `title`, `labels`), then the body. YAML issue forms (`*.yml`)
- * are not read (P2).
+ * Issue templates (`platform-parity-spec.md` §1.2, P1-6): the templates in
+ * `.forge/ISSUE_TEMPLATE/`, else `.github/ISSUE_TEMPLATE/`, else `.gitlab/issue_templates/`, on
+ * the default branch, read at compose time through the browse reader. A Markdown template is
+ * GitHub's (optional YAML front matter: `name`, `about`, `title`, `labels`, then the body) or
+ * GitLab's (all body, named after the file); a `*.yml` / `*.yaml` file is a GitHub issue form
+ * (`issue-forms.ts`). The directory's `config.yml` may turn blank issues off and list contact
+ * links, as GitHub's template chooser does.
  */
+
+import { load } from 'js-yaml'
 
 import { MODE_GITLINK, MODE_TREE, type BrowseReader } from '../browse'
 import { decodeTextBlob, type TreeEntry } from './git-objects'
+import { parseIssueForm, type IssueForm } from './issue-forms'
 import { commitRootTree, readBlob, readTree } from './tree-nav'
 
 /** One issue template. */
@@ -18,13 +23,29 @@ export interface IssueTemplate {
   readonly about: string
   /** The title the new issue starts with. */
   readonly title: string
-  /** Labels the template asks for (applied by a member after the issue is opened). */
+  /** Labels the template asks for (applied with the issue when the author may label). */
   readonly labels: readonly string[]
   readonly body: string
+  /** A YAML issue form: the issue's body is built from its answers (`body` is empty). */
+  readonly form?: IssueForm
 }
 
-/** The directories searched, in order: the first that holds templates wins. */
-const TEMPLATE_DIRS = ['.forge/ISSUE_TEMPLATE', '.github/ISSUE_TEMPLATE'] as const
+/** A link the template chooser offers instead of an issue (`config.yml`'s `contact_links`). */
+export interface ContactLink {
+  readonly name: string
+  readonly url: string
+  readonly about: string
+}
+
+/** What "Open an issue" offers: the templates, whether a blank issue is allowed, and links. */
+export interface IssueChooser {
+  readonly templates: readonly IssueTemplate[]
+  readonly blankIssuesEnabled: boolean
+  readonly contactLinks: readonly ContactLink[]
+}
+
+/** The directories searched, in order: the first that holds templates (or a config) wins. */
+const TEMPLATE_DIRS = ['.forge/ISSUE_TEMPLATE', '.github/ISSUE_TEMPLATE', '.gitlab/issue_templates'] as const
 
 /** Most templates read, and the size of one (a template is a short form). */
 const MAX_TEMPLATES = 20
@@ -81,16 +102,54 @@ export function parseIssueTemplate(file: string, text: string): IssueTemplate {
   }
 }
 
-/** The template files of a directory listing, in name order. */
+/** Whether a file name is a chooser config (`config.yml`), never a template. */
+const isConfig = (name: string): boolean => /^config\.(ya?ml|md)$/i.test(name)
+
+/** The template files of a directory listing (Markdown and YAML forms), in name order. */
 export function templateFiles(entries: readonly TreeEntry[]): TreeEntry[] {
   return entries
-    .filter((e) => e.mode !== MODE_TREE && e.mode !== MODE_GITLINK && /\.(md|markdown)$/i.test(e.name) && e.name.toLowerCase() !== 'config.md')
+    .filter((e) => e.mode !== MODE_TREE && e.mode !== MODE_GITLINK && /\.(md|markdown|ya?ml)$/i.test(e.name) && !isConfig(e.name))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .slice(0, MAX_TEMPLATES)
 }
 
+/** A template file's text, or null when it is too large or not text. */
+async function templateText(reader: BrowseReader, oid: string): Promise<string | null> {
+  const bytes = await readBlob(reader, oid)
+  return bytes.length > MAX_TEMPLATE_BYTES ? null : decodeTextBlob(bytes)
+}
+
+/** One template file: a YAML form, else Markdown. Null for a YAML file that is not a valid form. */
+export function parseTemplateFile(file: string, text: string): IssueTemplate | null {
+  if (!/\.ya?ml$/i.test(file)) return parseIssueTemplate(file, text)
+  const f = parseIssueForm(text)
+  return f === null ? null : { file, name: f.name, about: f.about, title: f.title, labels: f.labels, body: '', form: f.form }
+}
+
+/** A `config.yml`'s chooser settings (GitHub's keys; anything malformed reads as the default). */
+export function parseChooserConfig(text: string): Pick<IssueChooser, 'blankIssuesEnabled' | 'contactLinks'> {
+  let doc: unknown
+  try {
+    doc = load(text)
+  } catch {
+    doc = null
+  }
+  const rec = typeof doc === 'object' && doc !== null && !Array.isArray(doc) ? (doc as Record<string, unknown>) : {}
+  const links = Array.isArray(rec['contact_links']) ? rec['contact_links'] : []
+  return {
+    blankIssuesEnabled: rec['blank_issues_enabled'] !== false,
+    contactLinks: links.flatMap((l): ContactLink[] => {
+      if (typeof l !== 'object' || l === null) return []
+      const { name, url, about } = l as Record<string, unknown>
+      // Only web links: a `javascript:` URL in someone's repo must never become a link here.
+      if (typeof name !== 'string' || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return []
+      return [{ name, url, about: typeof about === 'string' ? about : '' }]
+    }),
+  }
+}
+
 /** The entries of `path` under `tree`, or null when it is not a directory there. */
-async function dirAt(reader: BrowseReader, tree: string, path: string): Promise<TreeEntry[] | null> {
+export async function dirAt(reader: BrowseReader, tree: string, path: string): Promise<TreeEntry[] | null> {
   let oid = tree
   for (const seg of path.split('/')) {
     const next = (await readTree(reader, oid)).find((e) => e.name === seg && e.mode === MODE_TREE)
@@ -100,24 +159,27 @@ async function dirAt(reader: BrowseReader, tree: string, path: string): Promise<
   return readTree(reader, oid)
 }
 
-/** The issue templates at `tipOid` (the default branch's tip), or [] when it has none. */
-export async function readIssueTemplates(reader: BrowseReader, tipOid: string): Promise<IssueTemplate[]> {
+/** What "Open an issue" offers at `tipOid` (the default branch's tip): no templates when it has none. */
+export async function readIssueChooser(reader: BrowseReader, tipOid: string): Promise<IssueChooser> {
   const { tree } = await commitRootTree(reader, tipOid)
   for (const dir of TEMPLATE_DIRS) {
     const entries = await dirAt(reader, tree, dir)
     if (entries === null) continue
+    const config = entries.find((e) => e.mode !== MODE_TREE && e.mode !== MODE_GITLINK && /^config\.ya?ml$/i.test(e.name))
     const files = templateFiles(entries)
-    if (files.length === 0) continue
-    const out: IssueTemplate[] = []
+    if (files.length === 0 && config === undefined) continue
+    const templates: IssueTemplate[] = []
     for (const f of files) {
-      const bytes = await readBlob(reader, f.oid)
-      if (bytes.length > MAX_TEMPLATE_BYTES) continue
-      const text = decodeTextBlob(bytes)
-      if (text !== null) out.push(parseIssueTemplate(f.name, text))
+      const text = await templateText(reader, f.oid)
+      const t = text === null ? null : parseTemplateFile(f.name, text)
+      if (t !== null) templates.push(t)
     }
-    return out
+    const configText = config === undefined ? null : await templateText(reader, config.oid)
+    const settings = configText === null ? { blankIssuesEnabled: true, contactLinks: [] } : parseChooserConfig(configText)
+    // Blank issues stay on when no template is usable: nobody may be left unable to open one.
+    return { templates, ...settings, blankIssuesEnabled: settings.blankIssuesEnabled || templates.length === 0 }
   }
-  return []
+  return { templates: [], blankIssuesEnabled: true, contactLinks: [] }
 }
 
 /**
