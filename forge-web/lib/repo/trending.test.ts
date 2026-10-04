@@ -262,17 +262,15 @@ describe('the Trending window in words (QW4-018, QW4-019)', () => {
 
   it('describes the fused star without an opt-out, and the beat shape with it', () => {
     const fused = trendingNote('fused', 'week', NOW, 'UTC')
-    expect(fused).toContain('there is nothing to turn off')
-    expect(fused).toContain('newer than the window')
-    expect(fused).not.toContain('turned that off')
-    expect(fused).not.toContain('never counts')
-    expect(fused).toMatch(/This week began Sat, Sep 26, 00:00 UTC\.$/)
+    expect(fused).toBe(
+      "Most new stars this week (since Sat, Sep 26, 00:00 UTC). Private repos and owners' stars on new repos aren't counted. Unstarring doesn't undo a count.",
+    )
+    expect(fused).not.toContain('opted out')
     const beat = trendingNote('beat', 'today', NOW, 'UTC')
-    expect(beat).toContain('unless the starrer turned that off')
-    expect(beat).toMatch(/Today began 00:00 UTC\.$/)
+    expect(beat).toBe("Most new stars today (since 00:00 UTC). Private repos, owners' own stars and stars from people who opted out aren't counted. Unstarring doesn't undo a count.")
   })
 
   it('says only what holds for both shapes while the shape is read, and no start without a clock', () => {
-    expect(trendingNote(null, 'today', null)).toBe('Ranked by new stargazers in the window, proved by the network.')
+    expect(trendingNote(null, 'today', null)).toBe('Most new stars today.')
   })
 })

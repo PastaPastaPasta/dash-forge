@@ -13,10 +13,10 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
  */
 export function topUpRecordsStay(r: { readonly next: boolean; readonly unfinished: boolean }): string | null {
   if (r.unfinished) {
-    return 'Your unfinished top-up of this identity stays in this browser (its deposit address and lock, no keys or words), so typing your recovery phrase in Top up still finishes it.'
+    return 'Your unfinished top-up stays in this browser (its deposit address and lock, no keys or recovery phrase), so Top up can still finish it.'
   }
   if (r.next) {
-    return 'One note about this identity stays in this browser because you topped it up here: where its next top-up starts (no keys or words), so a later top-up picks the right address and still collects anything left at the last one.'
+    return 'This browser keeps where your next top-up starts (no keys or recovery phrase), so the next top-up collects anything left at the last address.'
   }
   return null
 }

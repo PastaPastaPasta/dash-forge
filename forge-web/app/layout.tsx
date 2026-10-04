@@ -5,7 +5,7 @@ import { prehydrationScript } from '@/lib/prehydration'
 import './globals.css'
 
 const DESCRIPTION =
-  'Repositories, issues and pull requests on Dash Platform, checked by your own browser. No company server to go down, no account to ban.'
+  'Git hosting with no server, on Dash Platform. Your browser verifies every branch and file it shows.'
 
 /**
  * Where this build is served, for the absolute URLs a link preview needs (og:image must be

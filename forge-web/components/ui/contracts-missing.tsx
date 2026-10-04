@@ -20,13 +20,8 @@
 import { Unplug } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { ACTIVE_NETWORK, type NetworkConfig } from '@/lib/constants'
-import { CURRENT_DEVNET, CURRENT_DEVNET_PLATFORM, DEVNET_MOVE_DOC } from '@/lib/devnet-notice'
-
-/** The network as a person reads it: `devnet moutai`, `testnet`, `mainnet`. */
-function networkName(config: NetworkConfig): string {
-  return config.network === 'devnet' && config.devnetName !== null ? `devnet ${config.devnetName}` : config.network
-}
+import { ACTIVE_NETWORK, networkName, type NetworkConfig } from '@/lib/constants'
+import { CURRENT_DEVNET, DEVNET_MOVE_DOC } from '@/lib/devnet-notice'
 
 export function ContractsMissingState({
   detail,
@@ -57,9 +52,9 @@ export function ContractsMissingState({
       </h2>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
         {moved
-          ? `${where[0]!.toUpperCase()}${where.slice(1)} was retired, and the contracts this build reads went with it. Dash Forge moved to devnet ${CURRENT_DEVNET} (${CURRENT_DEVNET_PLATFORM}), where it is registered with new contracts. Mirrors need setting up again with the /mirror wizard, and your own repos need a re-push from your clone. This page works again once the build for ${CURRENT_DEVNET} is published.`
+          ? `${where[0]!.toUpperCase()}${where.slice(1)} was retired. Dash Forge now runs on devnet ${CURRENT_DEVNET}. Set up mirrors again with the /mirror wizard and re-push your repos from your clones. This page works again once the ${CURRENT_DEVNET} build is published.`
           : devnet
-            ? `${where} is a development network, and devnets are reset from time to time. This one was most likely reset, so the contracts Dash Forge reads are gone until it is redeployed. This page works again once a build with the new contracts is published.`
+            ? `${where[0]!.toUpperCase()}${where.slice(1)} is a test network, and it was probably reset. This page works again once Dash Forge is redeployed there.`
             : `${where} has no contracts with the ids this build reads, so nothing can be read here. The build may be misconfigured or made for another network.`}
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-3">

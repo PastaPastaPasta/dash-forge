@@ -208,7 +208,7 @@ function AddProfile({
       <section className="space-y-3 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900" aria-label="Dash Platform storage">
         <h3 className="text-prose">Dash Platform</h3>
         <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          Packs stored as Platform documents: permanent, readable by anyone, nothing to run. Priced at about {PUSH_COST_DASH.perMib} DASH per MiB, charged when you push, and never refunded (Platform storage cannot be deleted, so nobody can break a repo others depend on). Every Platform write asks first, with its price.
+          Your git data is stored on Platform: permanent, public and nothing to run. About {PUSH_COST_DASH.perMib} DASH per MiB, charged when you push and never refunded, because nobody can delete it. Every push shows its price first.
         </p>
         <div className="flex gap-2">
           <Button

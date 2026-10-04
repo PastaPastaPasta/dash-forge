@@ -25,7 +25,7 @@ import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { deriveConnectionTrust, mainnetCents, recentReposPage, type DiscoveredRepo } from '@/lib/view'
 import { isCurated, listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
 import { creditsToDash, PUSH_COST_DASH, typicalIssueCredits } from '@/lib/sdk'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { faucetUrl } from '@/components/top-up-sheet'
 import { verifyGuideUrl } from '@/lib/build-info'
@@ -76,9 +76,8 @@ export default function LandingPage(): JSX.Element {
           A git forge with <span className="text-forge-700 dark:text-forge-500">no server to trust.</span>
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-prose text-anvil-600 dark:text-anvil-300">
-          GitHub&apos;s workflow, with issues, pull requests and reviews. Your repositories live on Dash
-          Platform, your own browser checks everything it reads, and your code is stored where you choose.
-          No company server to go down, no account to ban.
+          Git repositories, issues, pull requests and reviews, like GitHub, with no server. Everything lives on
+          the Dash network, and your browser verifies what it shows. No host can take it down.
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           <Link href="/mirror/" data-testid="hero-mirror">
@@ -137,7 +136,7 @@ export default function LandingPage(): JSX.Element {
           <Step
             icon={<KeyRound className="h-4 w-4 text-forge-500" aria-hidden />}
             title="1. Get a Dash identity"
-            body="Your account is an identity on the Dash network, made from 12 recovery words that only you hold. Reading and cloning need no identity at all."
+            body="Your identity is your account, made from a 12-word recovery phrase only you hold. Reading and cloning need no identity."
             link={{ href: DOCS.identity, label: 'Identities and keys' }}
           />
           <Step
@@ -145,10 +144,10 @@ export default function LandingPage(): JSX.Element {
             title="2. Fund it with a little DASH"
             body={
               testNetwork
-                ? `Every write costs a small fee, shown before you sign. Here the DASH is free test money${faucet ? ' from the faucet' : ''}; on mainnet an issue costs about ${ISSUE_CENTS} and a push ${PUSH_CENTS}. Reading is free.`
+                ? `Every write costs a small fee, shown before you sign. On ${networkName()} the DASH is free test money${faucet ? ', from the faucet' : ''}; on mainnet an issue costs about ${ISSUE_CENTS} and a push ${PUSH_CENTS}. Reading is free.`
                 : `Every write costs a small fee, shown before you sign: about ${ISSUE_CENTS} for an issue and ${PUSH_CENTS} for a push, paid from your identity’s credits. Reading is free.`
             }
-            link={faucet ? { href: faucet, label: 'Get test DASH' } : { href: DOCS.costs, label: 'What it costs' }}
+            link={faucet ? { href: faucet, label: `${networkName()} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
           />
           <Step
             icon={<Upload className="h-4 w-4 text-forge-500" aria-hidden />}

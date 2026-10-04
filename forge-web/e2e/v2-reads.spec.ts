@@ -80,9 +80,9 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expect(page.getByText(/code, issues and pull requests in the shared contracts/i).first()).toBeVisible()
     await expect(page.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     await expect(page.getByText(/\bmain\b/).first()).toBeVisible()
-    // The Verification card attests the ref by FORGE_RULES_V2.
+    // The Verification card says the ref was built from proof-checked history.
     await page.getByRole('button', { name: /verification/i }).click()
-    await expect(page.getByText(/FORGE_RULES_V2/).first()).toBeVisible()
+    await expect(page.getByText(/checked against Platform proofs/).first()).toBeVisible()
     await shot(page, 'v2-02-repo-home')
     expect(errors, errors.join('\n')).toEqual([])
   })
@@ -92,7 +92,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('link', { name: 'main.rs' }).first())
     await page.getByRole('link', { name: 'main.rs' }).first().click()
-    await expect(page.getByText('reads are proof-checked').first()).toBeVisible({ timeout: 45_000 })
+    await expect(page.getByText('Your browser verifies what it shows').first()).toBeVisible({ timeout: 45_000 })
     await shot(page, 'v2-03-blob')
   })
 
@@ -145,8 +145,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   test('v2-7. settings list members from membership documents', async ({ page }) => {
     await page.goto(url('settings'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    // Settings → Collaborators (#66 renamed the old "Members" section, GitHub-style).
-    const collaborators = page.getByRole('region', { name: 'Collaborators' })
+    // Settings → Members (the glossary's term for people with a role; #66 had called it Collaborators).
+    const collaborators = page.getByRole('region', { name: 'Members' })
     await expectLanded(page, collaborators.getByText('WRITER', { exact: true }))
     await expect(collaborators.getByText('MAINTAINER', { exact: true })).toHaveCount(2)
     await expect(collaborators.getByText('owner', { exact: true })).toBeVisible()
