@@ -261,10 +261,11 @@ pub const CHAT_WEBHOOK_GUIDE: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UrlSecret {
     /// A chat service's incoming-webhook URL (`"Discord"`, `"Slack"`, `"Microsoft Teams"`,
-    /// `"Google Chat"`): the token is the URL, so it is never accepted on chain.
+    /// `"Google Chat"`, `"Power Automate"`): the URL is the credential, so it is never accepted
+    /// on chain.
     ChatService(&'static str),
-    /// A token-like segment after `/webhook/` or `/webhooks/` (Matrix hookshot and similar
-    /// receivers): accepted only when the writer confirms it holds nothing secret.
+    /// A token-like segment after `/webhook/`, `/webhooks/` or `/hooks/` (Matrix hookshot,
+    /// Mattermost, Rocket.Chat): accepted only when the writer confirms it holds nothing secret.
     PathToken,
 }
 
@@ -300,6 +301,9 @@ pub fn url_secret(url: &str) -> Option<UrlSecret> {
         Some("Microsoft Teams")
     } else if host == "chat.googleapis.com" {
         Some("Google Chat")
+    } else if under("logic.azure.com") && segs.iter().any(|s| s == "workflows") {
+        // Teams Workflows and other Power Automate triggers: the `sig` query is the credential.
+        Some("Power Automate")
     } else {
         None
     };
@@ -313,11 +317,15 @@ pub fn url_secret(url: &str) -> Option<UrlSecret> {
             && s.bytes().any(|b| b.is_ascii_digit())
             && s.bytes().any(|b| b.is_ascii_alphabetic())
     };
-    // The case-preserving segments: a token's letters may be any case.
+    // Any segment after `/webhook/`, `/webhooks/` or `/hooks/` (Mattermost, Rocket.Chat), case
+    // preserved: a token's letters may be any case.
     let raw: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    segs.iter()
-        .zip(raw.iter().skip(1))
-        .any(|(s, next)| (s == "webhook" || s == "webhooks") && token_like(next))
+    let hook_word = segs
+        .iter()
+        .position(|s| s == "webhook" || s == "webhooks" || s == "hooks")?;
+    raw[hook_word + 1..]
+        .iter()
+        .any(|s| token_like(s))
         .then_some(UrlSecret::PathToken)
 }
 
@@ -327,6 +335,17 @@ pub fn url_secret(url: &str) -> Option<UrlSecret> {
 /// on chain and that URL is the token. With `allow_credentials` false, a query string or a
 /// token-like path segment is refused too: that is where tokens usually hide.
 pub fn check_url_and_events(url: &str, events: &[String], allow_credentials: bool) -> Result<()> {
+    check_hook(url, events, allow_credentials, true)
+}
+
+/// [`check_url_and_events`]; a disabled revision (`refuse_chat` false) may repeat a chat
+/// service's URL, so a hook another maintainer pointed at one can still be stopped.
+fn check_hook(
+    url: &str,
+    events: &[String],
+    allow_credentials: bool,
+    refuse_chat: bool,
+) -> Result<()> {
     if url.is_empty() || url.len() > URL_MAX_LEN {
         return Err(Error::Config(format!(
             "a webhook url must be 1..={URL_MAX_LEN} bytes"
@@ -349,7 +368,7 @@ pub fn check_url_and_events(url: &str, events: &[String], allow_credentials: boo
         )));
     }
     match url_secret(url) {
-        Some(UrlSecret::ChatService(name)) => {
+        Some(UrlSecret::ChatService(name)) if refuse_chat => {
             return Err(Error::Config(format!(
                 "this is a {name} webhook URL, and its token is part of the URL: a hook's URL \
                  is public on chain, so anyone could post to your channel. Keep it off chain \
@@ -666,7 +685,12 @@ impl<'a> WebhookService<'a> {
         // deliver; forge-relay refuses private repositories.
         repo.require_public("webhooks")?;
         let forge = repo.forge();
-        check_url_and_events(&input.url, &input.events, input.allow_credentials_in_url)?;
+        check_hook(
+            &input.url,
+            &input.events,
+            input.allow_credentials_in_url,
+            !input.disabled,
+        )?;
         check_secret(input.secret.expose())?;
 
         let relay = self
@@ -923,6 +947,8 @@ mod tests {
                 .to_string();
             assert!(e.contains(CHAT_WEBHOOK_GUIDE), "{e}");
         }
+        // A disabled revision may repeat it: removing another maintainer's chat hook writes one.
+        assert!(check_hook("https://hooks.slack.com/services/T/B/X", &[], true, false).is_ok());
         let hookshot = "https://h.example/webhook/8e3c1b7a-3c2d-4f5e-9a1b-2c3d4e5f6a7b";
         assert!(check(hookshot, &[]).is_err());
         assert!(check_url_and_events(hookshot, &[], true).is_ok());

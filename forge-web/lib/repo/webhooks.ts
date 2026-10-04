@@ -102,9 +102,10 @@ export const CHAT_WEBHOOK_GUIDE = 'https://github.com/PastaPastaPasta/dash-forge
 
 /**
  * A secret a webhook URL carries in its path, by the URL's shape (forge-core `url_secret`,
- * vectors `webhook_url__*`): a chat service's incoming-webhook URL, which is its own token and
- * is never accepted, or a token-like segment after `/webhook/` (Matrix hookshot and similar),
- * accepted only when the writer confirms it holds nothing secret.
+ * vectors `webhook_url__*`): a chat service's incoming-webhook URL, which is its own credential
+ * and is never accepted, or a token-like segment after `/webhook/`, `/webhooks/` or `/hooks/`
+ * (Matrix hookshot, Mattermost, Rocket.Chat), accepted only when the writer confirms it holds
+ * nothing secret.
  */
 export type UrlSecret = { readonly secret: 'chatService'; readonly service: string } | { readonly secret: 'pathToken' } | { readonly secret: null }
 
@@ -129,19 +130,25 @@ export function webhookUrlSecret(url: string): UrlSecret {
         ? 'Microsoft Teams'
         : host === 'chat.googleapis.com'
           ? 'Google Chat'
-          : null
+          : // Teams Workflows and other Power Automate triggers: the `sig` query is the credential.
+            under('logic.azure.com') && segs.includes('workflows')
+            ? 'Power Automate'
+            : null
   if (service !== null) return { secret: 'chatService', service }
   const tokenLike = (x: string): boolean => x.length >= 24 && /^[A-Za-z0-9_-]+$/.test(x) && /[0-9]/.test(x) && /[A-Za-z]/.test(x)
-  const pathToken = segs.some((x, i) => (x === 'webhook' || x === 'webhooks') && tokenLike(raw[i + 1] ?? ''))
+  // Any segment after /webhook/, /webhooks/ or /hooks/ (Mattermost, Rocket.Chat), case preserved.
+  const hookWord = segs.findIndex((x) => x === 'webhook' || x === 'webhooks' || x === 'hooks')
+  const pathToken = hookWord !== -1 && raw.slice(hookWord + 1).some(tokenLike)
   return pathToken ? { secret: 'pathToken' } : { secret: null }
 }
 
 /**
  * Why `url` cannot be a webhook's (forge-core `check_url_and_events`), or null. A chat service's
- * webhook URL is always refused; a query string or a token-like path segment is refused unless
+ * webhook URL is refused, except in a disabled revision (`disabled`: removing a hook another
+ * maintainer pointed at one); a query string or a token-like path segment is refused unless
  * `allowQuery`: the URL is public on chain.
  */
-export function webhookUrlProblem(url: string, allowQuery = false): string | null {
+export function webhookUrlProblem(url: string, allowQuery = false, disabled = false): string | null {
   if (url === '') return 'Enter the URL to deliver to.'
   if (new TextEncoder().encode(url).length > WEBHOOK_URL_MAX) return `A webhook URL is at most ${WEBHOOK_URL_MAX} bytes.`
   if (!url.startsWith('https://')) return 'A webhook URL must be https://.'
@@ -149,7 +156,7 @@ export function webhookUrlProblem(url: string, allowQuery = false): string | nul
   if (authority.includes('@')) return 'The URL is public on chain, so it must not carry user:password@. Deliveries are signed with the secret instead.'
   if (!URL_PATTERN.test(url)) return 'Use a DNS name (not an IP address, localhost or a name ending in a dot), an optional port, and no spaces.'
   const secret = webhookUrlSecret(url)
-  if (secret.secret === 'chatService')
+  if (secret.secret === 'chatService' && !disabled)
     return `${secret.service} webhook URLs contain their token, and a webhook's URL is public, so anyone could post to your channel. Keep it in your own relay's config instead.`
   if (!allowQuery && secret.secret === 'pathToken') return 'The URL is public on chain, and the part after /webhook/ looks like a token. Remove it, or confirm it holds nothing secret.'
   if (!allowQuery && url.includes('?')) return 'The URL is public on chain, and a query string is where tokens usually hide. Remove it, or confirm it holds nothing secret.'
@@ -225,7 +232,7 @@ export function webhookCost(repo: RepoRef, input: Pick<NewWebhook, 'url' | 'even
 /** Write a webhook document (a new hook, or a newer revision of `input.hookId`). */
 export async function writeWebhook(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, seal: SecretSealer, input: NewWebhook, intent?: string): Promise<void> {
   if (repo.visibility !== 'public') throw new Error('webhooks are for public repos: a relay is not a member of a private repo')
-  const problem = webhookUrlProblem(input.url, true)
+  const problem = webhookUrlProblem(input.url, true, input.disabled === true)
   if (problem !== null) throw new Error(problem)
   const plaintext = new TextEncoder().encode(input.secret)
   let sealed: Record<string, unknown>

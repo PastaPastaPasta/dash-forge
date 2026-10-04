@@ -97,6 +97,8 @@ describe('webhookUrlProblem', () => {
     const hookshot = 'https://h.example/webhook/8e3c1b7a-3c2d-4f5e-9a1b-2c3d4e5f6a7b'
     expect(webhookUrlProblem(hookshot)).toMatch(/looks like a token/)
     expect(webhookUrlProblem(hookshot, true)).toBeNull()
+    // A disabled revision may repeat it, so another maintainer's chat hook can be removed.
+    expect(webhookUrlProblem('https://hooks.slack.com/services/T/B/X', true, true)).toBeNull()
   })
 })
 

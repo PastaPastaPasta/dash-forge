@@ -109,7 +109,7 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 
 ## Chat services
 
-Discord, Slack, Microsoft Teams and Google Chat webhook URLs contain their token. A hook's URL
+Discord, Slack, Microsoft Teams, Google Chat and Power Automate webhook URLs contain their token. A hook's URL
 is public on chain and stays in its history, so anyone who read it could post to your channel,
 even after you remove the hook. `dg webhook add` and the web app refuse these URLs, even with
 `--force`.
