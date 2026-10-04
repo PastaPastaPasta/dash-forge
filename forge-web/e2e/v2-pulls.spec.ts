@@ -218,8 +218,8 @@ test('c7. the owner merges a divergent PR in the browser (merge commit, Platform
   const pr = `/repo/pull/?owner=${seed.owner}&name=${seed.name}&number=${seed.number}`
 
   const page = await signedIn(browser, 'OWNER', '/settings/')
-  await page.getByLabel('Merge commit name').fill('Forge E2E Owner')
-  await page.getByLabel('Merge commit email').fill('owner@e2e.forge.invalid')
+  await page.getByLabel('Commit author name').fill('Forge E2E Owner')
+  await page.getByLabel('Commit author email').fill('owner@e2e.forge.invalid')
   await page.goto(pr, { waitUntil: 'domcontentloaded' })
   await unlock(page)
   await waitForRepoResolved(page)
