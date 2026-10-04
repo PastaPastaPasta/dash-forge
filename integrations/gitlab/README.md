@@ -9,11 +9,13 @@ The full walk-through, with the variables to set and what is and is not mirrored
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/<commit>/integrations/gitlab/dash-forge-mirror.yml
+  - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/v0.1.0/integrations/gitlab/dash-forge-mirror.yml
 variables:
   FORGE_REPO: dash://<owner identity id>/<repo name>
-  FORGE_SOURCE_REF: <the same commit>
+  FORGE_VERSION: "0.1.0"
 ```
+
+To run code that is not in a release, pin a commit you have reviewed in the URL and set `FORGE_SOURCE_REF: <the same commit>` instead of `FORGE_VERSION`: the job builds the tools from it (several minutes the first time).
 
 | Variable | Default | Meaning |
 |---|---|---|
