@@ -211,7 +211,7 @@ export function trendingNote(shape: StarShape | null, span: TrendingWindow, nowM
     shape === 'fused'
       ? " Private repos and owners' stars on new repos aren't counted. Unstarring doesn't undo a count."
       : shape === 'beat'
-        ? " Private repos, owners' own stars and stars from people who opted out aren't counted."
+        ? " Private repos, owners' own stars and stars from people who opted out aren't counted. Unstarring doesn't undo a count."
         : ''
   return `${ranked}${rules}`
 }

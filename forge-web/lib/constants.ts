@@ -86,8 +86,10 @@ export function networkName(config: Pick<NetworkConfig, 'network' | 'devnetName'
  * `forge-contracts/deployments/<key>.json` records them (`docs/contracts/forge-v2.md` §8).
  */
 export class NotDeployedError extends Error {
-  constructor(readonly networkKey: string) {
-    super(`Dash Forge isn't available on ${networkKey.replace(/^devnet-/, 'devnet ')} yet`)
+  readonly networkKey: string
+  constructor(config: Pick<NetworkConfig, 'network' | 'devnetName' | 'key'>) {
+    super(`Dash Forge isn't available on ${networkName(config)} yet`)
+    this.networkKey = config.key
     this.name = 'NotDeployedError'
   }
 }
@@ -241,7 +243,7 @@ export const ACTIVE_NETWORK: NetworkConfig = NETWORKS[DEFAULT_NETWORK]
 /** The forge-v2 contracts of `network`, or a {@link NotDeployedError}. */
 export function requireForge(network: Network): ForgeIds {
   const config = NETWORKS[network]
-  if (config.v2 === null) throw new NotDeployedError(config.key)
+  if (config.v2 === null) throw new NotDeployedError(config)
   return config.v2
 }
 

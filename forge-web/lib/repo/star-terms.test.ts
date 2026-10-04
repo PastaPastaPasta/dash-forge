@@ -34,7 +34,10 @@ describe('starTerms', () => {
     expect(starTerms('beat', true, false)).toEqual({ beats: false, priceBeat: false, trendingNote: '' })
   })
 
-  it('unknown shape: the larger price, and no promise either way', () => {
-    expect(starTerms(null, true, true)).toEqual({ beats: false, priceBeat: true, trendingNote: '' })
+  it('unknown shape: the larger price, and no switch named', () => {
+    expect(starTerms(null, true, true)).toEqual({ beats: false, priceBeat: true, trendingNote: ' · counts toward Trending' })
+    // Signed out, or a repo that takes no beat: nothing promised.
+    expect(starTerms(null, true, false)).toEqual({ beats: false, priceBeat: true, trendingNote: '' })
+    expect(starTerms(null, false, true)).toEqual({ beats: false, priceBeat: true, trendingNote: '' })
   })
 })

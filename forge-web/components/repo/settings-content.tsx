@@ -12,7 +12,7 @@ import { useState } from 'react'
 import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { ConsentMissingError, changeMemberRole, grantDescription, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, changeMemberRole, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
 import { roleChangeCost } from '@/lib/repo/private-members'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
@@ -149,8 +149,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     <div className="mx-auto max-w-2xl space-y-8">
       <SettingsNav />
 
-      {/* Settings are a maintainer's (QW3-055): anyone else reads them, plainly read-only. */}
-      {viewer.known ? <SettingsReadOnly ownerId={repo.ownerId} role={viewerRole} /> : null}
+      {/* Settings are a maintainer's (QW3-055): anyone else reads them, plainly read-only. The
+          sections carry no note of their own, so a failed role read still gets the banner. */}
+      {viewer.known || viewer.failed ? <SettingsReadOnly ownerId={repo.ownerId} role={viewerRole} /> : null}
 
       <GeneralSettings home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
 
@@ -289,7 +290,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
             action?.kind === 'grant'
-              ? `Adds ${action.member.slice(0, 8)}… as ${grantDescription(action.role)}.`
+              ? `Adds ${action.member.slice(0, 8)}… as ${ROLE_NOUN[action.role]}.`
               : action?.kind === 'change'
                 ? `Makes ${action.member.slice(0, 8)}… ${ROLE_NOUN[action.to]} instead of ${ROLE_NOUN[action.role]}. They don't need to accept again.`
                 : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'

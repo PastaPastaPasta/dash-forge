@@ -2055,9 +2055,9 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
     case 'define-label':
       return { title: `Create label "${pending.name}"`, description: 'Creates the label for this repo and adds it here.', label: 'Sign & create' }
     case 'edit-pull':
-      return { title: `Edit PR #${number}`, description: 'You pay only for what changed. Earlier versions stay public.', label: 'Sign & save' }
+      return { title: `Edit PR #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'edit-comment':
-      return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay public.', label: 'Sign & save' }
+      return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'delete-comment':
       return { title: 'Delete comment', description: 'Part of its storage fee is refunded, and replies stay. The original stays in Platform history, so rotate any secret it held.', label: 'Sign & delete' }
     case 'resolve':

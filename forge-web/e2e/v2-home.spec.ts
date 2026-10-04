@@ -177,7 +177,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     expect(bytes.length).toBeGreaterThan(100)
     expect(bytes.subarray(0, 2).toString('latin1')).toBe('PK')
     expect(bytes.includes(Buffer.from(`${NAME}-main/README.md`))).toBe(true)
-    await expect(box.getByText(/Saved .*\.zip .* each hash-checked/)).toBeVisible()
+    await expect(box.getByText(/Saved .*\.zip .* each verified/)).toBeVisible()
   })
 
   test('b-5. empty repo: push commands, storage line, install link', async ({ page }) => {

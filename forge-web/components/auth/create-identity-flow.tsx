@@ -207,7 +207,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     const m = normalizeMnemonic(phrase)
     const v2 = ACTIVE_NETWORK.v2
     if (!v2) {
-      setError(new NotDeployedError(ACTIVE_NETWORK.key).message + '.')
+      setError(new NotDeployedError(ACTIVE_NETWORK).message + '.')
       return
     }
     const deposit = await checkWords(m)

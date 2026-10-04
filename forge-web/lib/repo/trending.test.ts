@@ -267,7 +267,7 @@ describe('the Trending window in words (QW4-018, QW4-019)', () => {
     )
     expect(fused).not.toContain('opted out')
     const beat = trendingNote('beat', 'today', NOW, 'UTC')
-    expect(beat).toBe("Most new stars today (since 00:00 UTC). Private repos, owners' own stars and stars from people who opted out aren't counted.")
+    expect(beat).toBe("Most new stars today (since 00:00 UTC). Private repos, owners' own stars and stars from people who opted out aren't counted. Unstarring doesn't undo a count.")
   })
 
   it('says only what holds for both shapes while the shape is read, and no start without a clock', () => {

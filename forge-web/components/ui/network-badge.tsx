@@ -82,7 +82,7 @@ export function NotDeployedState({ config = ACTIVE_NETWORK }: { config?: Network
         <AlertTriangle className="h-5 w-5" aria-hidden />
       </span>
       <h3 className="text-prose text-anvil-900 dark:text-anvil-50">
-        {mainnet ? "Dash Forge isn't on mainnet yet." : `${new NotDeployedError(config.key).message}.`}
+        {mainnet ? "Dash Forge isn't on mainnet yet." : `${new NotDeployedError(config).message}.`}
       </h3>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
         {mainnet ? (

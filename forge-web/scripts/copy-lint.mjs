@@ -8,7 +8,8 @@
 //   node scripts/copy-lint.mjs --list     # print every extracted string (tab separated)
 //
 // A string that is genuinely not user-facing (a developer error, a log line) can be
-// exempted with a `copy-lint-ignore: <reason>` comment on the line above it, and a
+// exempted with a `copy-lint-ignore: <reason>` comment on its line or one of the two above
+// it (a message often starts on the line after its `throw new Error(`), and a
 // whole file with `// copy-lint-ignore-file: <reason>` as its first line.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
@@ -188,7 +189,7 @@ export function extractFile(path, root = WEB_ROOT) {
         const text = node.getText().slice(1, -1).replace(/\$\{[^}]*\}/g, '…')
         if (isProse(text)) emit(node, 'tpl', text)
       }
-      return // nested literals inside ${} are code
+      // Literals inside ${} are checked on their own: a ternary's branches are often copy.
     }
     ts.forEachChild(node, visit)
   }

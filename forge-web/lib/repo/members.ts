@@ -13,7 +13,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import type { Holdings } from '../rules'
-import { ROLE_NOUN, writerRoleOf } from '../rules/roles'
+import { writerRoleOf } from '../rules/roles'
 import { RoleOracle, type Membership, type Role } from '../rules/v2'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, type RepoRef } from './contract'
@@ -26,11 +26,6 @@ type MemberDoc = (typeof MEMBER_DOCS)[number]
 /** The membership document type that holds `role`. */
 export function memberDocOf(role: Role): MemberDoc {
   return role === 'maintainer' ? DOC.maintainer : DOC.writer
-}
-
-/** What adding `role` creates, for a confirm dialog: "a writer document with the triage role". */
-export function grantDescription(role: Role): string {
-  return ROLE_NOUN[role]
 }
 
 /**

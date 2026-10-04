@@ -63,6 +63,11 @@ describe('copy lint extraction', () => {
     expect(found.some((f) => f.includes('repo with spaces'))).toBe(false)
   })
 
+  it('checks the copy in a template interpolation', () => {
+    const found = extract('t.ts', "export const s = (n: number) => `Your star is saved${n ? ' and the consensus rule counts it' : ''}.`\n")
+    expect(found.map((e) => e.text)).toContain('and the consensus rule counts it')
+  })
+
   it('honours line and file opt-outs', () => {
     const line = extract('b.ts', `// copy-lint-ignore: developer error\nthrow new Error('the packManifest is missing here')\n`)
     expect(line).toEqual([])

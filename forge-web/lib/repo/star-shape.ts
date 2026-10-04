@@ -65,7 +65,9 @@ export interface StarTerms {
  */
 export function starTerms(shape: StarShape | null, trending: boolean, beatAllowedHere: boolean): StarTerms {
   const beats = shape === 'beat' && trending && beatAllowedHere
-  const trendingNote = shape === 'fused' ? ' · counts toward Trending' : beats ? ' · counts toward Trending (turn off in Settings)' : ''
+  // Unknown: a star this viewer may beat counts toward Trending either way; only a beat shape has a switch.
+  const trendingNote =
+    shape === 'fused' || (shape === null && trending && beatAllowedHere) ? ' · counts toward Trending' : beats ? ' · counts toward Trending (turn off in Settings)' : ''
   return { beats, priceBeat: beats || shape !== 'beat', trendingNote }
 }
 

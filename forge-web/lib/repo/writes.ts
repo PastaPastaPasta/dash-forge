@@ -959,7 +959,7 @@ export function watchRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: strin
  */
 export function followRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, forge: ForgeIds | null, target: string): Relation {
   const f = (): ForgeIds => {
-    if (forge === null) throw new Error('Dash Forge is not deployed on this network')
+    if (forge === null) throw new Error("Dash Forge isn't available on this network yet")
     return forge
   }
   return {

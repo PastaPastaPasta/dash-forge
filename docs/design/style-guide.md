@@ -152,7 +152,7 @@ The copy lint (`forge-web/scripts/copy-lint.mjs`, run in CI as `pnpm lint:copy`)
 - **Repository paths:** `docs/….md`, `forge-contracts/`.
 - **Formatting tells:** `(s)` plurals, and any string over 40 words.
 
-A string no user reads (a developer error, a log line) opts out with a `copy-lint-ignore: <reason>` comment on the line above it. A test or script helper opts out as a whole with `// copy-lint-ignore-file: <reason>` as its first line.
+A string no user reads (a developer error, a log line) opts out with a `copy-lint-ignore: <reason>` comment on its line or one of the two lines above it. A test or script helper opts out as a whole with `// copy-lint-ignore-file: <reason>` as its first line.
 
 ### Terminology
 

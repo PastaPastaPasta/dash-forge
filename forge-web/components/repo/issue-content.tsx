@@ -752,9 +752,9 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
         label: 'Sign & create',
       }
     case 'editIssue':
-      return { title: `Edit issue #${number}`, description: 'You pay only for what changed. Earlier versions stay public.', label: 'Sign & save' }
+      return { title: `Edit issue #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'editComment':
-      return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay public.', label: 'Sign & save' }
+      return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'deleteComment':
       return {
         title: 'Delete comment',

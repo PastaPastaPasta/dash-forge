@@ -20,13 +20,8 @@
 import { Unplug } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { ACTIVE_NETWORK, type NetworkConfig } from '@/lib/constants'
+import { ACTIVE_NETWORK, networkName, type NetworkConfig } from '@/lib/constants'
 import { CURRENT_DEVNET, DEVNET_MOVE_DOC } from '@/lib/devnet-notice'
-
-/** The network as a person reads it: `devnet moutai`, `testnet`, `mainnet`. */
-function networkName(config: NetworkConfig): string {
-  return config.network === 'devnet' && config.devnetName !== null ? `devnet ${config.devnetName}` : config.network
-}
 
 export function ContractsMissingState({
   detail,

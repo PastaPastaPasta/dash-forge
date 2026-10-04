@@ -442,14 +442,14 @@ export class AuthController {
   /** The dash-forge contract group this network's keys are bound to. */
   private group(): string {
     const v2 = NETWORKS[this.network].v2
-    if (!v2) throw new NotDeployedError(NETWORKS[this.network].key)
+    if (!v2) throw new NotDeployedError(NETWORKS[this.network])
     return v2.group
   }
 
   /** The group's trust root as the bundled deployment pins it (`groupTrust`). */
   groupTrust(): GroupTrust {
     const trust = groupTrust(DEPLOYMENTS[NETWORKS[this.network].key])
-    if (!trust) throw new NotDeployedError(NETWORKS[this.network].key)
+    if (!trust) throw new NotDeployedError(NETWORKS[this.network])
     return trust
   }
 
@@ -554,7 +554,7 @@ export class AuthController {
       let extra: Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded'> = {}
       if (storage === 'vault') {
         const forge = NETWORKS[this.network].v2
-        if (!forge) throw new KeyNotUsableError(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+        if (!forge) throw new KeyNotUsableError(new NotDeployedError(NETWORKS[this.network]).message)
         extra = await this.verifyScopes(identity, secret, match.keyId, forge)
       }
       // Held to be disabled later: listed while still live on the identity.
@@ -967,7 +967,7 @@ export class AuthController {
       const [main, ...rest] = keys
       if (!main) throw new Error('the wallet granted no key')
       const forge = NETWORKS[this.network].v2
-      if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+      if (!forge) throw new NotDeployedError(NETWORKS[this.network])
       this.requireFullUnlock(identityId)
       const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
       if (previous) await this.assertUnlockedIfWalletKeys(await this.getSdk(), identityId, previous.keyId)
