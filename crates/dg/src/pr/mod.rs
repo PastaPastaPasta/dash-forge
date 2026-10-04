@@ -915,6 +915,7 @@ fn reviews_json(
     comments: &[forge_core::collab::v2::Comment],
     head: &str,
     dismissed: &std::collections::BTreeMap<String, String>,
+    incomplete: &std::collections::BTreeMap<String, String>,
 ) -> Vec<serde_json::Value> {
     let flat: Vec<forge_core::rules::v2::ReviewComment> = comments
         .iter()
@@ -947,6 +948,7 @@ fn reviews_json(
                 "commentsLanded": group.landed,
                 "commentIds": group.comments,
                 "body": r.body,
+                "bodyIncomplete": incomplete.get(&r.document_id),
                 "createdAt": r.created_at,
             })
         })
@@ -954,8 +956,12 @@ fn reviews_json(
 }
 
 /// A PR's comments for `dg pr view --json`: thread, review and anchor (`anchor_of`: null for
-/// a general or malformed-anchor comment).
-fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json::Value> {
+/// a general or malformed-anchor comment), and why only the first part of a long body was read
+/// (`incomplete`, by id).
+fn comments_json(
+    comments: &[forge_core::collab::v2::Comment],
+    incomplete: &std::collections::BTreeMap<String, String>,
+) -> Vec<serde_json::Value> {
     comments
         .iter()
         .map(|c| {
@@ -963,6 +969,7 @@ fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json
                 "id": c.document_id,
                 "author": c.author,
                 "body": c.body,
+                "bodyIncomplete": incomplete.get(&c.document_id),
                 "replyTo": c.reply_to,
                 "reviewId": c.review_id,
                 "anchor": forge_core::rules::v2::anchor_of(&c.anchor),
@@ -996,8 +1003,8 @@ async fn view(
     let approvals = approvals_over(&reviews, &v, &oracle);
     let (mut comments, hidden_comments) = collab.comments_counted(handle, &doc_id).await?;
     // Long bodies (forge-v2.md §6.3): each field's full text, fetched and checked; a text whose
-    // rest cannot be read keeps its first part and says why (a comment's or review's in a line
-    // under it, the description's in `bodyIncomplete` too).
+    // rest cannot be read keeps its first part and says why: in `bodyIncomplete` (the
+    // description's, and by id each comment's and review's), and in a line under it when printed.
     let mut why = crate::long_body::read_in_place(
         &collab,
         handle,
@@ -1009,17 +1016,13 @@ async fn view(
     .await
     .into_iter();
     let body_incomplete = why.next().flatten();
-    for (text, why) in comments
-        .iter_mut()
-        .map(|c| &mut c.body)
-        .chain(reviews.iter_mut().map(|r| &mut r.body))
+    let incomplete: std::collections::BTreeMap<String, String> = comments
+        .iter()
+        .map(|c| &c.document_id)
+        .chain(reviews.iter().map(|r| &r.document_id))
         .zip(why)
-    {
-        if let Some(why) = why {
-            text.push('\n');
-            text.push_str(&crate::long_body::partial_line(&why));
-        }
-    }
+        .filter_map(|(id, w)| w.map(|w| (id.clone(), w)))
+        .collect();
     let review_state = v.review_with_threads(&comments);
     // RC2 MOD: what maintainers hid. Collapsed in the human view unless --show-hidden; a hidden
     // review's verdict still counts (only a dismissal stops it), so approvals are unchanged.
@@ -1034,18 +1037,33 @@ async fn view(
     // A mirrored hunk shows only from a signer who may mirror (the web's trust set: the owner
     // and the current maintainers), as the web shows it.
     threads::drop_untrusted_hunks(&mut conv, trusted);
-    // The conversations as printed: a hidden comment's body is its one "hidden by" line.
-    let printed_conv = if show_hidden || moderation.items.is_empty() {
+    // The conversations as printed: a hidden comment's body is its one "hidden by" line, and a
+    // long body read only in part has the line saying why under it.
+    let printed_conv = if (show_hidden || moderation.items.is_empty()) && incomplete.is_empty() {
         None
     } else {
         let shown: Vec<_> = comments
             .iter()
-            .map(|c| match moderation.item(&c.document_id) {
-                Some(h) => forge_core::collab::v2::Comment {
-                    body: crate::fmt::hidden_line("comment", h, &|id: &str| id.to_string(), false),
-                    ..c.clone()
-                },
-                None => c.clone(),
+            .map(|c| {
+                let hidden = (!show_hidden)
+                    .then(|| moderation.item(&c.document_id))
+                    .flatten();
+                match (hidden, incomplete.get(&c.document_id)) {
+                    (Some(h), _) => forge_core::collab::v2::Comment {
+                        body: crate::fmt::hidden_line(
+                            "comment",
+                            h,
+                            &|id: &str| id.to_string(),
+                            false,
+                        ),
+                        ..c.clone()
+                    },
+                    (None, Some(why)) => forge_core::collab::v2::Comment {
+                        body: format!("{}\n{}", c.body, crate::long_body::partial_line(why)),
+                        ..c.clone()
+                    },
+                    (None, None) => c.clone(),
+                }
             })
             .collect();
         let mut printed = threads::threads(&shown, &v.head, &review_state.resolved_threads);
@@ -1102,7 +1120,7 @@ async fn view(
             .map_or_else(|_| v.patch.source_repo_id.clone(), |r| r.display())
     };
 
-    let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed);
+    let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed, &incomplete);
     let unresolved = conv.threads.iter().filter(|t| !t.resolved).count();
     let standing = json!({
         // Each required check's run on the head (the names are `policy.requiredChecks`).
@@ -1156,7 +1174,7 @@ async fn view(
             "reviews": reviews_json,
             "threads": conv.threads,
             "generalComments": conv.general,
-            "comments": comments_json(&comments),
+            "comments": comments_json(&comments, &incomplete),
             "hiddenComments": hidden_comments,
             "hiddenReviews": hidden_reviews,
             "moderation": moderation,
@@ -1324,6 +1342,9 @@ async fn view(
                 }
                 if !r.body.is_empty() {
                     println!("  {}", safe(&r.body));
+                }
+                if let Some(why) = incomplete.get(&r.document_id) {
+                    println!("  {}", crate::long_body::partial_line(why));
                 }
             }
             if show_comments {
