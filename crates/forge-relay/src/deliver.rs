@@ -450,6 +450,8 @@ pub struct Dispatcher {
     hooks: Mutex<HashMap<String, HookWorker>>,
     /// Repos already warned about having no hook (the warning is logged once per repo).
     warned_no_hooks: Mutex<std::collections::HashSet<String>>,
+    /// Repos served for runner wake-ups, sinks or watch mode only: no hook is expected there.
+    hookless: Mutex<std::collections::HashSet<String>>,
     /// The durable retry queue (`None` in tests that do not need one).
     queue: Option<Arc<RetryQueue>>,
     /// Repos whose hooks the last discovery read authoritatively (and are served): only there
@@ -493,6 +495,7 @@ impl Dispatcher {
             deliverer: Arc::new(deliverer),
             hooks: Mutex::new(HashMap::new()),
             warned_no_hooks: Mutex::new(std::collections::HashSet::new()),
+            hookless: Mutex::new(std::collections::HashSet::new()),
             queue,
             authoritative: Mutex::new(std::collections::HashSet::new()),
             stop: watch::Sender::new(false),
@@ -640,6 +643,12 @@ impl Dispatcher {
     /// such a repo that is gone was removed or disabled: its durable-queue entries are dropped
     /// at once (so a hook re-enabled later under the same id never gets them). Hooks of other
     /// repos keep their entries until their repo is read again.
+    /// The served repos that have no hook by design (wake-ups, sinks, watch mode): their
+    /// events reach no webhook, and that is not worth a warning.
+    pub fn set_hookless(&self, repos: std::collections::HashSet<String>) {
+        *lock_set(&self.hookless) = repos;
+    }
+
     pub fn sync(&self, subs: &[WebhookSub], authoritative: &std::collections::HashSet<String>) {
         let wanted: HashMap<String, &WebhookSub> = subs.iter().map(|s| (Self::key(s), s)).collect();
         let mut hooks = self
@@ -758,7 +767,10 @@ impl Dispatcher {
                 tracing::error!(repo = %sub.repo_id, hook = %sub.hook_id, event = event.event, source = %event.source_doc_id, "DEAD-LETTER: the hook's queue is full; event dropped");
             }
         }
-        if !repo_has_hooks && lock_set(&self.warned_no_hooks).insert(repo_id.to_string()) {
+        if !repo_has_hooks
+            && !lock_set(&self.hookless).contains(repo_id)
+            && lock_set(&self.warned_no_hooks).insert(repo_id.to_string())
+        {
             // Should not happen (a repo is served only once its hooks are synced); say so once.
             tracing::warn!(repo = %repo_id, event = event.event, source = %event.source_doc_id, "an event of a served repo found no hook; dropped (logged once per repo)");
         }

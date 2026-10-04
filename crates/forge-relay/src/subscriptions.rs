@@ -279,10 +279,35 @@ pub fn wake_subscription(repo_id: &str) -> WebhookSub {
     }
 }
 
+/// The URL that marks a watch-mode subscription ([`watch_subscription`]).
+const WATCH_URL: &str = "forge-relay:watch";
+
+/// A subscription that only makes the relay poll `repo_id` for `events` (empty = all), for its
+/// sinks and embedders ([`crate::sinks`]), with no `webhook` document. Like a wake-up, it is
+/// never delivered as a webhook ([`WebhookSub::is_internal`]). `since` is when the repo joined
+/// the watch set (0 at startup): a repo added later is read from then, not from the relay's
+/// start.
+pub fn watch_subscription(repo_id: &str, events: &[String], since: u64) -> WebhookSub {
+    WebhookSub {
+        repo_id: repo_id.to_string(),
+        hook_id: format!("watch:{repo_id}"),
+        url: WATCH_URL.to_string(),
+        events: events.to_vec(),
+        secret: SecretBytes::new(Vec::new()),
+        created_at: since,
+        document_id: None,
+    }
+}
+
 impl WebhookSub {
     /// A runner wake-up subscription ([`wake_subscription`]), not a webhook.
     pub fn is_wake(&self) -> bool {
         self.url == WAKE_URL && self.document_id.is_none()
+    }
+
+    /// A wake-up or watch subscription: it makes a repo polled and is never delivered.
+    pub fn is_internal(&self) -> bool {
+        self.document_id.is_none() && (self.url == WAKE_URL || self.url == WATCH_URL)
     }
 }
 
