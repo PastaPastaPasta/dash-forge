@@ -9,9 +9,16 @@ const DESCRIPTION =
 
 /**
  * Where this build is served, for the absolute URLs a link preview needs (og:image must be
- * absolute). forge.dashhq.org unless a self-hosted deploy sets `NEXT_PUBLIC_SITE_URL`.
+ * absolute). forge.dashhq.org (served from its root) unless a self-hosted deploy sets
+ * `NEXT_PUBLIC_SITE_URL`; that deploy's `NEXT_PUBLIC_BASE_PATH` is added unless the site URL
+ * already ends with it, since Next joins `metadataBase`'s path with the image's.
  */
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://forge.dashhq.org'
+const SITE_URL = (() => {
+  const site = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, '')
+  if (!site) return 'https://forge.dashhq.org/'
+  const base = (process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/+$/, '')
+  return `${base && !site.endsWith(base) ? site + base : site}/`
+})()
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
