@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE_FILE := infra/docker-compose.yml
 
-.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e e2e-fixture devnet-identities devnet-identities-verify storage-it survivability storage-e2e
+.PHONY: check check-rust check-web dev-web build build-rust build-web infra-up infra-down e2e e2e-fixture devnet-identities devnet-identities-verify storage-it survivability storage-e2e
 
 ## check: run rust + web lint/test suites; tolerant of dirs that don't exist yet
 check: check-rust check-web
@@ -28,6 +28,11 @@ check-web:
 	else \
 		echo "== web: skipped (no forge-web/package.json yet) =="; \
 	fi
+
+## dev-web: run the web app's dev server on http://localhost:3000, reading devnet sakura
+## (forge-web/.env.development). Installs the locked dependencies first (quick when nothing changed).
+dev-web:
+	@cd forge-web && pnpm install --frozen-lockfile && pnpm dev
 
 ## build: build rust workspace + web app; tolerant of dirs that don't exist yet
 build: build-rust build-web
