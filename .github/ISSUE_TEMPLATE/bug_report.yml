@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in dg, git-remote-dash or the web app doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security problem, don't file an issue: report it privately as SECURITY.md describes.
+        Never paste a recovery phrase, identity file, private key or storage credential.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Where
+      options:
+        - dg
+        - git-remote-dash (git push, clone, fetch)
+        - Web app
+        - forge-relay
+        - forge-import or the Mirror Action
+        - forge-runner or the check action
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Include the exact command or the page URL.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The error, with its code (such as E504). For dg, the output of the failing command with `--json` helps.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `dg --version`, or "About this build" from the web app's footer.
+    validations:
+      required: true
+  - type: input
+    id: network
+    attributes:
+      label: Network
+      placeholder: devnet sakura
+  - type: textarea
+    id: doctor
+    attributes:
+      label: dg doctor
+      description: For a CLI or git problem, the output of `dg doctor`.
+      render: text
