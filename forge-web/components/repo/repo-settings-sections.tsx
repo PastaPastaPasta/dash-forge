@@ -80,6 +80,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
 import { disabledField, Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
+import { EnforcedBy } from '@/components/ui/enforced-by'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 
@@ -90,7 +91,7 @@ import { ErrorState, LoadingBlock } from '@/components/ui/states'
 const SECTIONS = [
   ['general', 'General'],
   ['branches', 'Branches'],
-  ['collaborators', 'Collaborators'],
+  ['collaborators', 'Members'],
   ['storage', 'Storage'],
   ['webhooks', 'Webhooks'],
   ['danger', 'Danger zone'],
@@ -137,8 +138,9 @@ function Note({ children }: { children: React.ReactNode }): JSX.Element {
   return <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{children}</p>
 }
 
-function ReadOnlyNote({ who }: { who: string }): JSX.Element {
-  return <Note>Only {who} can change this.</Note>
+/** Only for a rule narrower than the page's read-only banner (that banner already names maintainers). */
+function OwnerOnlyNote(): JSX.Element {
+  return <Note>Only the owner can change this.</Note>
 }
 
 /** A private repo's config cannot be written from here: say so, and name the CLI command. */
@@ -281,7 +283,7 @@ export function GeneralSettings({
             </div>
           </Field>
           {live.length === 0 ? <Note>Push a branch first: the default branch is picked from the branches this repo has.</Note> : null}
-          {cfg.sealed ? <SealedNote command={`dg repo edit ${home.repo.ownerId}/${home.repo.name} --default-branch <branch>`} /> : !maintainer ? <ReadOnlyNote who="maintainers" /> : null}
+          {cfg.sealed ? <SealedNote command={`dg repo edit ${home.repo.ownerId}/${home.repo.name} --default-branch <branch>`} /> : null}
         </div>
         <RepoDocForm home={home} owner={owner} onSaved={onSaved} />
       </div>
@@ -367,8 +369,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
       {problem ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : null}
       {home.repo.visibility === 'private' ? (
         <Note>
-          The description and topics are public even for a private repo: they live on its repo document, which is not encrypted. A private repo is not
-          listed on Explore&apos;s topic pages.
+          The description and topics are public, even for a private repo. Private repos aren&apos;t listed on Explore&apos;s topic pages.
         </Note>
       ) : null}
       {owner ? (
@@ -386,7 +387,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
           {changed ? <CostPreview cost={cost} /> : null}
         </div>
       ) : (
-        <ReadOnlyNote who="the owner" />
+        <OwnerOnlyNote />
       )}
       <ConfirmDialog
         open={pending !== null}
@@ -394,8 +395,8 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
         title="Edit the repo details"
         description={
           home.repo.visibility === 'private'
-            ? 'Replaces the description and topics on the repo document. Its name, visibility and fork origin cannot change.'
-            : 'Replaces the description and topics on the repo document; each topic added or removed is also one small topic document (what Explore counts per topic). Its name, visibility and fork origin cannot change.'
+            ? "Replaces the description and topics. The repo's name and visibility can't change."
+            : "Replaces the description and topics. Each topic added or removed costs a little extra so Explore can count it. The repo's name and visibility can't change."
         }
         cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility) : null}
         confirmLabel="Sign & save"
@@ -427,9 +428,9 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
         <h3 className="flex items-center gap-2 text-dense font-medium">
           <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden /> Protected branches and tags
         </h3>
-        <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
-          Only maintainers can update a protected branch or tag. Platform enforces it: such a ref moves only through a
-          maintainer-only document, and a writer&apos;s plain update of it is ignored by every reader.
+        <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense text-anvil-600 dark:text-anvil-300">
+          <span>Only maintainers can update a protected branch or tag.</span>
+          <EnforcedBy by="platform" />
         </p>
         {maintainer ? <DefaultProtectionSuggestion home={home} cfg={cfg} /> : null}
         <ul aria-label="Protected patterns" className="mt-3 divide-y divide-anvil-100 overflow-hidden rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
@@ -523,9 +524,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
           </div>
         ) : cfg.sealed ? (
           <SealedNote command={`dg repo protect add ${home.repo.ownerId}/${home.repo.name} <pattern>`} />
-        ) : (
-          <ReadOnlyNote who="maintainers" />
-        )}
+        ) : null}
       </div>
       <PolicyEditor home={home} maintainer={maintainer} />
       {cfg.dialog}
@@ -655,9 +654,9 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
       <h3 className="flex items-center gap-2 text-dense font-medium">
         <Scale className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Branch policy
       </h3>
-      <p role="note" className="mt-1 rounded-md bg-caution/5 px-2 py-1.5 text-dense text-caution-700 dark:text-caution-400">
-        A client rule, not consensus: Forge clients disable the merge until it is met (the PR author&apos;s own approval never counts), and a
-        maintainer can bypass it explicitly; the bypass is recorded on the PR. Nothing on Platform requires approvals.
+      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense text-anvil-600 dark:text-anvil-300" data-testid="policy-note">
+        <span>Forge blocks merging until these are met. Maintainers can override, and the override is shown on the PR.</span>
+        <EnforcedBy by="apps" />
       </p>
       {current.loading && !current.settled ? (
         <LoadingBlock label="Reading the branch policy" />
@@ -700,7 +699,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
                   />
                   {m.label}
                   {/* The policy can allow it (other clients may), but neither this app nor dg rebase-merges yet (QW-069). */}
-                  {m.key === 'rebase' ? <span className="text-[11px] text-anvil-500 dark:text-anvil-400">(no Forge client merges this way yet)</span> : null}
+                  {m.key === 'rebase' ? <span className="text-[11px] text-anvil-500 dark:text-anvil-400">(not available yet)</span> : null}
                 </label>
               ))}
             </div>
@@ -724,16 +723,14 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
               </Button>
               {changed ? <CostPreview cost={cost} /> : null}
             </div>
-          ) : (
-            <ReadOnlyNote who="maintainers" />
-          )}
+          ) : null}
         </fieldset>
       )}
       <ConfirmDialog
         open={confirming}
         onClose={() => setConfirming(false)}
         title="Save the branch policy"
-        description={`Writes a policy: ${plural(wanted.requiredApprovals, 'required approval')}${(wanted.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}${checksClause}. The newest policy wins. A client rule: a maintainer can override it.`}
+        description={`New policy: ${plural(wanted.requiredApprovals, 'required approval')}${(wanted.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}${checksClause}. It replaces the current one. Maintainers can override it when merging.`}
         cost={cost}
         confirmLabel="Sign & save"
         onConfirm={run}
@@ -906,9 +903,10 @@ export function DangerZone({ home, maintainer, onSaved }: { home: RepoHome; main
           <p className="text-dense font-medium">{archived ? 'Unarchive this repository' : 'Archive this repository'}</p>
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             {archived
-              ? 'Forge clients allow pushes, issues and pull requests again.'
-              : 'Marks it read-only: Forge clients disable issues, pull requests and releases, and the push helper refuses pushes (E606). A client rule: Platform still accepts a member’s writes. Repos cannot be deleted.'}
+              ? 'Allow pushes, issues, pull requests and releases again.'
+              : "Make the repo read-only. Forge apps stop new issues, pull requests, releases and pushes. Repos can't be deleted."}
           </p>
+          <EnforcedBy by="apps" className="mt-1" />
         </div>
         {maintainer && !cfg.sealed ? (
           <Button
@@ -931,8 +929,6 @@ export function DangerZone({ home, maintainer, onSaved }: { home: RepoHome; main
       </div>
       {cfg.sealed ? (
         <SealedNote command={`dg repo ${archived ? 'unarchive' : 'archive'} ${home.repo.ownerId}/${home.repo.name}`} />
-      ) : !maintainer ? (
-        <ReadOnlyNote who="maintainers" />
       ) : null}
       {cfg.dialog}
     </Section>

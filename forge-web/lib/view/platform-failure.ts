@@ -43,7 +43,7 @@ export function unreachableReadCopy(message: string, { network, offline }: { net
   if (isQuorumMiss(message)) {
     return {
       title: 'Waiting for new quorum keys',
-      body: `Platform answered, but its proof is signed by a quorum whose key this app hasn't got from ${keyHost(network)} yet, so the answer can't be checked. That service lists a new quorum a little after the network starts using it. This page will try again by itself.`,
+      body: `Platform answered, but ${keyHost(network)} hasn't published the new quorum key that signed the proof yet, so the answer can't be checked. This page will try again by itself.`,
     }
   }
   return { title: "Couldn't reach Dash Platform", body: 'Nothing answered this read. It will try again by itself in a few seconds.' }

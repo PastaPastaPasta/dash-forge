@@ -12,7 +12,7 @@ import { useState } from 'react'
 import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { ConsentMissingError, changeMemberRole, grantDescription, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, changeMemberRole, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
 import { roleChangeCost } from '@/lib/repo/private-members'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
@@ -29,6 +29,7 @@ import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { Author } from '@/components/author'
 import { BackendBadge } from '@/components/ui/backend-badge'
+import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
@@ -148,14 +149,15 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     <div className="mx-auto max-w-2xl space-y-8">
       <SettingsNav />
 
-      {/* Settings are a maintainer's (QW3-055): anyone else reads them, plainly read-only. */}
-      {viewer.known ? <SettingsReadOnly ownerId={repo.ownerId} role={viewerRole} /> : null}
+      {/* Settings are a maintainer's (QW3-055): anyone else reads them, plainly read-only. The
+          sections carry no note of their own, so a failed role read still gets the banner. */}
+      {viewer.known || viewer.failed ? <SettingsReadOnly ownerId={repo.ownerId} role={viewerRole} /> : null}
 
       <GeneralSettings home={home} maintainer={viewerRole === 'maintainer'} owner={isOwner} onSaved={reload} />
 
       <BranchSettings home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
 
-      <Section id="collaborators" title="Collaborators" icon={<ShieldPlus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
+      <Section id="collaborators" title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         {home.private?.access === 'member' ? (
           <PrivateMembers home={home} session={home.private.session} />
         ) : (
@@ -208,7 +210,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                           }}
                         />
                         <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-                          A role change removes their {m.role} document and adds the new one (two transitions); their acceptance still stands.
+                          They don&apos;t need to accept again.
                         </p>
                       </div>
                     ) : null}
@@ -261,18 +263,16 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               }}
             />
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-              Writers can push, merge and act on issues and PRs; triage members close, label, assign
-              and lock but cannot push or merge; maintainers can also update protected branches,
-              config and releases. Only maintainers&apos; and writers&apos; approvals count. Nobody
-              becomes a member without accepting your invitation first.
+              People join only after accepting your invitation. Only maintainers&apos; and writers&apos; approvals count toward merging.
             </p>
           </div>
         ) : null}
-        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Members are the repo&apos;s maintainer and writer documents (a writer document carries its
-          role: writer, triage or reader). Consensus checks them on every push, ref update and
-          state event; removing one revokes it.
-          {!isOwner ? ' Only the owner can add or remove members.' : ''}
+        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+          <span>
+            Members act according to their role. Removing someone takes effect immediately.
+            {!isOwner ? ' Only the owner can add or remove members.' : ''}
+          </span>
+          <EnforcedBy by="platform" />
         </p>
         <ConfirmDialog
           open={action !== null}
@@ -290,10 +290,10 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
             action?.kind === 'grant'
-              ? `Creates ${grantDescription(action.role)} for ${action.member.slice(0, 8)}… on this repo.`
+              ? `Adds ${action.member.slice(0, 8)}… as ${ROLE_NOUN[action.role]}.`
               : action?.kind === 'change'
-                ? `Deletes ${action.member.slice(0, 8)}…'s ${action.role} document, then adds them as ${action.to} (their acceptance still stands). Two transitions.`
-                : 'Deletes their membership document. Their past pushes and events stay valid; new ones are refused.'
+                ? `Makes ${action.member.slice(0, 8)}… ${ROLE_NOUN[action.to]} instead of ${ROLE_NOUN[action.role]}. They don't need to accept again.`
+                : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
           cost={
             action === null
@@ -312,7 +312,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       </Section>
 
       <Section id="storage" title="Storage" icon={<UserCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
+        <StorageBackend backend={home.backend} emptyText="Readers fetch each upload from wherever it was stored." />
         {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
         {!(viewer.known && viewerRole === null) ? (
           <>
@@ -331,7 +331,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
           <DetailRow label="Repo id">
-            <Oid value={repo.repoId} chars={12} label="repo document id" />
+            <Oid value={repo.repoId} chars={12} label="repo id" />
           </DetailRow>
           <DetailRow label="Owner identity">
             <Oid value={repo.ownerId} chars={12} label="owner identity id" />
@@ -349,11 +349,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             <NetworkBadge always />
           </DetailRow>
         </dl>
-        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          A forge-v2 repo is a <span className="font-mono">repo</span> document in the shared
-          forge-core contract; everything else about it is keyed by the repo id. Click an id to
-          copy it.
-        </p>
+        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Ids for developers and the CLI. Click one to copy it.</p>
       </Section>
     </div>
   )

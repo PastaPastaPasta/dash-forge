@@ -30,7 +30,7 @@ The repository owner alone adds and removes members, and edits the description a
 
 Anyone, member or not, can open issues and PRs, comment and review. Approvals count toward a branch policy only from maintainers and writers: a triage member's or reader's approval is shown as **not counted**, and their request for changes does not block. Imported issues and comments (a mirror's provenance and upstream numbers) are trusted from the same people.
 
-A public repository has no readers: everyone can read it already. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Collaborators has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
+A public repository has no readers: everyone can read it already. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Members has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
 
 Adding a collaborator is two steps: the owner adds them, and the collaborator accepts. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
 
@@ -45,7 +45,7 @@ dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 
 If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).
 
-From the web app, the invitee opens the repository's **invite link** (Settings → Collaborators, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Collaborators lists **Pending invitations** (accepted, not added yet) with a role picker (writer, triage, maintainer, and on a private repository reader) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
+From the web app, the invitee opens the repository's **invite link** (Settings → Members, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Members lists **Pending invitations** (accepted, not added yet) with a role picker (writer, triage, maintainer, and on a private repository reader) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
 
 Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
 
@@ -73,6 +73,13 @@ What each one enforces:
 - **The branch policy** is a client rule. Every Forge client applies it: the web disables the merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). The PR author's own approval never counts. A maintainer can bypass it, as on GitHub: tick "bypass rules" in the merge box and confirm, or pass `dg pr merge --override-policy`. The code is really merged, and an event on the PR records which rules were bypassed. Unlike a comment, the event cannot be edited or deleted, by the maintainer who bypassed or anyone else. Nothing on Platform requires approvals.
 - **Mark as merged (done elsewhere)** records a merge that already happened some other way (a push). It moves no code, so the web offers it only once the PR's head is on the base branch (`dg pr merge --event-only`).
 - **Archiving** is a client rule too. Forge clients refuse writes to an archived repository: the web disables issues, PRs, merges and releases; `dg` refuses issue, PR, comment, review, merge and release writes; and the push helper refuses pushes. All of these use [`E606`](../errors.md#e606). Override with `dg --allow-archived …` or `git push -o allow-archived`. Platform still accepts a member's writes.
+
+### Who enforces what
+
+The web app labels each rule with who enforces it:
+
+- **Enforced by Dash Platform.** Platform refuses a write that breaks the rule, whichever app sends it. Member roles, protected branches, and a limited key's budget and expiry work this way.
+- **Forge apps enforce this.** The web app, `dg` and the push helper apply the rule and won't send a write that breaks it. Platform doesn't check it, so a write made outside Forge's apps can ignore it. The branch policy and archiving work this way. A maintainer's override of the branch policy is recorded on the PR, where everyone can see it.
 
 The description and topics live on the repository document, which only its owner can edit. They are public even for a private repository. A private repository's other settings are encrypted: the CLI writes them sealed, and the web app does not write them yet.
 

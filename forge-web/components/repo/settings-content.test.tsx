@@ -100,7 +100,7 @@ describe('private repo Settings for a non-member (QW-079)', () => {
       await render(privateHome(access))
       expect(host.querySelector('[data-testid="private-repo"]')?.getAttribute('data-access')).toBe(access)
       expect(host.querySelector('nav[aria-label="Settings sections"]')).toBeNull()
-      expect(host.textContent).not.toMatch(/Collaborators/)
+      expect(host.textContent).not.toMatch(/Members/)
     })
   }
 })

@@ -345,6 +345,7 @@ export function workflowYaml(o: WorkflowOptions): string {
   ]
   return [
     `# Mirrors github.com/${o.github.owner}/${o.github.name} into Dash Forge (${o.forgeRepo}).`,
+    // copy-lint-ignore: a comment in the generated workflow file, read in the user's repo
     '# Made by the Forge mirror wizard; see docs/guides/mirror-a-github-repo.md in',
     `# ${src}. The job never checks out or runs this repository's code.`,
     'name: Forge mirror',

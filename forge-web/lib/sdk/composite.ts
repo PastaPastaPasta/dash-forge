@@ -150,6 +150,7 @@ function check(q: CompositeQuery): void {
   q.subQueries.forEach((s, i) => {
     if (s.kind === 'counts' && s.limit !== undefined) throw new Error(`subQueries[${i}]: a counts sub-query takes no limit`)
     if (typeof s.bind?.source === 'number' && (s.bind.source >= i || q.subQueries[s.bind.source]?.kind === 'counts')) {
+      // copy-lint-ignore: a developer error in how a query is built, caught by tests
       throw new Error(`subQueries[${i}]: bind.source must name an earlier documents sub-query`)
     }
   })

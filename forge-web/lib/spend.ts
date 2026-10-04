@@ -208,7 +208,7 @@ const KIND_LABELS: Readonly<Record<string, string>> = {
   'key:register': 'Register this browser’s key',
   'key:renew': 'Renew this browser’s key',
   'key:topup': 'Top up key budget',
-  'key:revoke': 'Revoke key on chain',
+  'key:revoke': 'Revoke key on Platform',
   'key:encryption': 'Register encryption key',
   'key:runner': 'Register a CI runner key',
   'identity:create': 'Create identity',

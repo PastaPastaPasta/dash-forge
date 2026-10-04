@@ -132,7 +132,7 @@ test('r1. the owner sets the branch policy: 1 maintainer approval, checks, squas
   const page = await signedIn(browser, 'OWNER', `/repo/settings/?owner=${ids.owner}&name=${REPO}`)
   await waitForRepoResolved(page)
   const policy = page.getByTestId('policy-editor')
-  await expect(policy).toContainText('A client rule', { timeout: 90_000 })
+  await expect(policy.getByTestId('enforced-by-apps')).toBeVisible({ timeout: 90_000 })
   await policy.getByLabel('Required approvals').fill('1')
   await policy.getByText("Only maintainers' approvals count").click()
   await policy.getByText('Require passing checks').click()
