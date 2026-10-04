@@ -250,9 +250,9 @@ async fn run_inner<'a>(
         None
     };
     // Where texts longer than their field keep their full text (forge-v2.md §6.3): the same
-    // policy, Platform when it names none.
-    let body_storage = crate::long_body::BodyStorage::from_git_dir(policy_dir)
-        .context("reading the storage policy for long texts")?;
+    // policy, Platform when it names none. A policy that cannot be read fails only a text that
+    // needs it.
+    let body_storage = crate::long_body::BodyStorage::from_git_dir(policy_dir);
     let priced = match &dest.existing {
         Some(r) if r.visibility == forge_core::rules::v2::Visibility::Private => {
             let definitions = cfg.classes.include_label_definitions;

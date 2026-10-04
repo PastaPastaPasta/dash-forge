@@ -9,10 +9,12 @@ use std::path::Path;
 
 use forge_core::storage::{ExternalTarget, ResolvedPolicy};
 
-/// Where a run stores long bodies' full texts: its storage policy, resolved.
+/// Where a run stores long bodies' full texts: its storage policy, resolved. A policy that
+/// cannot be read is kept as its error, raised only when a text needs an artifact: a run with
+/// no long text never depends on it.
 #[derive(Debug, Clone)]
 pub struct BodyStorage {
-    resolved: ResolvedPolicy,
+    resolved: Result<ResolvedPolicy, String>,
 }
 
 impl Default for BodyStorage {
@@ -27,49 +29,55 @@ impl BodyStorage {
     #[must_use]
     pub fn platform() -> Self {
         Self {
-            resolved: ResolvedPolicy {
+            resolved: Ok(ResolvedPolicy {
                 external: Vec::new(),
                 platform: true,
                 replicas: 1,
                 platform_fallback: false,
-            },
+            }),
         }
     }
 
-    /// The storage policy in `git_dir`'s git config (any scope, as a push reads it).
-    pub fn from_git_dir(git_dir: &Path) -> anyhow::Result<Self> {
-        Ok(Self {
-            resolved: crate::gitsync::resolved_storage(git_dir)?,
-        })
+    /// The storage policy in `git_dir`'s git config (any scope, as a push reads it), or why
+    /// it cannot be read (raised by [`Self::external_targets`]).
+    #[must_use]
+    pub fn from_git_dir(git_dir: &Path) -> Self {
+        Self {
+            resolved: crate::gitsync::resolved_storage(git_dir).map_err(|e| format!("{e:#}")),
+        }
     }
 
     /// An upper bound on the credits of storing `bytes` of text (`sealed`: in a private
-    /// destination).
+    /// destination); priced as Platform when the policy cannot be read.
     #[must_use]
     pub fn credits(&self, bytes: u64, sealed: bool) -> u64 {
-        forge_core::cost::push_fees::long_body(
-            bytes,
-            sealed,
-            self.resolved.external.len() as u64,
-            self.resolved.platform,
-        )
+        let (external, platform) = self
+            .resolved
+            .as_ref()
+            .map_or((0, true), |r| (r.external.len() as u64, r.platform));
+        forge_core::cost::push_fees::long_body(bytes, sealed, external, platform)
     }
 
-    /// The external targets, opened.
+    /// The external targets, opened; an error when the policy cannot be read.
     pub(crate) fn external_targets(&self) -> forge_core::Result<Vec<ExternalTarget>> {
-        crate::gitsync::external_targets(&self.resolved)
+        let resolved = self.resolved.as_ref().map_err(|e| {
+            forge_core::error::Error::Config(format!(
+                "the storage policy for long texts could not be read: {e}"
+            ))
+        })?;
+        crate::gitsync::external_targets(resolved)
             .map_err(|e| forge_core::error::Error::Config(format!("{e:#}")))
     }
 
     /// Whether Platform `chunk` documents are one of the targets.
     #[must_use]
     pub fn platform_targeted(&self) -> bool {
-        self.resolved.platform
+        self.resolved.as_ref().is_ok_and(|r| r.platform)
     }
 
     /// How many copies must confirm.
     #[must_use]
     pub fn replicas(&self) -> usize {
-        self.resolved.replicas
+        self.resolved.as_ref().map_or(1, |r| r.replicas)
     }
 }
