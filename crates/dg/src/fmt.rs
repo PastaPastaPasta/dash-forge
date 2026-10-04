@@ -34,12 +34,21 @@ pub fn safe(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// An identity id for display, with its DPNS name after it when `names` has one
-/// (`Fi8b… (alice.dash)`), as [`forge_core::platform::PlatformClient::dpns_first_names`]
-/// reads them.
+/// An identity for display: its DPNS name with a shortened id when `names` has one
+/// (`alice.dash (Fi8bQ2xk…)`), as [`forge_core::platform::PlatformClient::dpns_first_names`]
+/// reads them, and the full id otherwise. `--json` output keeps full ids.
 pub fn with_name(id: &str, names: &std::collections::BTreeMap<String, String>) -> String {
     match names.get(id) {
-        Some(name) => format!("{id} ({})", safe(name)),
+        Some(name) => format!("{} ({})", safe(name), short_identity(id)),
+        None => id.to_string(),
+    }
+}
+
+/// An identity id shortened for display next to its name (8 characters and an ellipsis).
+pub fn short_identity(id: &str) -> String {
+    // By character: the value may be untrusted document text, not base58.
+    match id.char_indices().nth(8) {
+        Some((i, _)) => format!("{}\u{2026}", &id[..i]),
         None => id.to_string(),
     }
 }
@@ -462,8 +471,14 @@ mod tests {
     /// QW-083: an id with a DPNS name shows it; one without (or whose read failed) is bare.
     #[test]
     fn an_identity_shows_its_dpns_name_when_it_has_one() {
-        let names = [("A1".to_string(), "alice.dash\u{1b}[2J".to_string())].into();
-        assert_eq!(with_name("A1", &names), "A1 (alice.dash[2J)");
+        let id = "Fi8bQ2xkPqR7sT9uVwXyZ1a2b3c4d5e6f7g8h9i0jKL";
+        let names = [
+            ("A1".to_string(), "alice.dash\u{1b}[2J".to_string()),
+            (id.to_string(), "bob.dash".to_string()),
+        ]
+        .into();
+        assert_eq!(with_name("A1", &names), "alice.dash[2J (A1)");
+        assert_eq!(with_name(id, &names), "bob.dash (Fi8bQ2xk\u{2026})");
         assert_eq!(with_name("B2", &names), "B2");
     }
 
