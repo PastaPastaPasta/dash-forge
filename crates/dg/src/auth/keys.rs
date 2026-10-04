@@ -1,4 +1,4 @@
-//! `dg auth keys list | add | disable` (ux-dx-spec §2.4, §2.5, §9).
+//! `dg auth keys list | add | disable | rotate` (ux-dx-spec §2.4, §2.5, §9).
 
 use std::path::PathBuf;
 
@@ -37,6 +37,25 @@ pub enum KeysCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Replace the ENCRYPTION key (a lost device, a leaked key): add a new one derived from the
+    /// recovery words, rotate every private repository you maintain to it, then disable the old
+    /// one. Repositories where you are not a maintainer are named: a maintainer rotates them.
+    /// Run it again to continue after a failure. A limited key is replaced with `dg auth keys
+    /// add --replace <id>` instead.
+    Rotate {
+        /// Replace the ENCRYPTION key (the only key this command rotates).
+        #[arg(long, required = true)]
+        encryption: bool,
+        /// Keep the old key enabled (it still opens what was sealed for it).
+        #[arg(long)]
+        keep_old: bool,
+        /// The identity file with the master key and the recovery words (else you are asked for
+        /// the words).
+        #[arg(long, value_name = "FILE")]
+        master: Option<PathBuf>,
+        #[command(flatten)]
+        storage: StorageArgs,
+    },
 }
 
 impl KeysCommand {
@@ -46,6 +65,7 @@ impl KeysCommand {
             KeysCommand::List => "could not list keys",
             KeysCommand::Add(_) => "key not added",
             KeysCommand::Disable { .. } => "key not disabled",
+            KeysCommand::Rotate { .. } => "encryption key not replaced",
         }
     }
 }
@@ -97,6 +117,12 @@ pub async fn run(ctx: &Ctx, cmd: &KeysCommand) -> Result<()> {
         KeysCommand::Disable { id, master, force } => {
             disable(ctx, *id, master.as_deref(), *force).await
         }
+        KeysCommand::Rotate {
+            encryption: _,
+            keep_old,
+            master,
+            storage,
+        } => super::rekey::rotate_encryption(ctx, master.as_deref(), storage, *keep_old).await,
     }
 }
 

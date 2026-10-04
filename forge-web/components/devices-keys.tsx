@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { HardDrive, KeyRound, Pencil, ShieldOff } from 'lucide-react'
+import { Copy, HardDrive, KeyRound, LifeBuoy, Pencil, ShieldOff } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -18,6 +18,8 @@ import { useMasterKeyInput } from '@/components/auth/master-key-input'
 import { StepFailed } from '@/components/auth/step-status'
 import { Spinner } from '@/components/ui/states'
 import { ACTIVE_NETWORK } from '@/lib/constants'
+import { DOCS } from '@/lib/docs-links'
+import { useCopy } from '@/hooks/use-copy'
 import { ROLE_TEXT, disableRefusal, readKeyLabels, requestPersistence, storagePersistence, writeKeyLabel, type KeyRow, type StoragePersistence } from '@/lib/auth/devices'
 import { keyKind } from '@/lib/auth/key-watch'
 import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
@@ -66,6 +68,7 @@ export function DevicesKeys(): JSX.Element {
         Labels stay in this browser. Platform doesn&apos;t record when a key was last used: a budget that went down was used, and this browser&apos;s last
         write is below.
       </p>
+      <LostDevice />
       <ThisBrowser identity={identity} />
       {disabling !== null ? (
         <DisableKeyDialog
@@ -223,6 +226,50 @@ function DisableKeyDialog({ row, label, onClose, onDone }: { row: KeyRow; label:
         </div>
       </form>
     </Dialog>
+  )
+}
+
+/** The rekey command (private-repos.md §5.2), run where the recovery words are. */
+const ENCRYPTION_ROTATE_COMMAND = 'dg auth keys rotate --encryption'
+
+/** What to do when a device is lost: its signing key, then the encryption key it held. */
+function LostDevice(): JSX.Element {
+  const [copied, copy] = useCopy(ENCRYPTION_ROTATE_COMMAND)
+  return (
+    <section aria-labelledby="lost-device-title" className="space-y-2 rounded-lg border border-anvil-200 p-4 text-dense dark:border-anvil-800" data-testid="lost-device">
+      <h2 id="lost-device-title" className="flex items-center gap-2 font-medium text-anvil-500 dark:text-anvil-400">
+        <LifeBuoy className="h-4 w-4" aria-hidden /> Lost a device?
+      </h2>
+      <ol className="list-decimal space-y-1.5 pl-5 text-anvil-700 dark:text-anvil-200">
+        <li>Disable its key above. It can no longer write as you.</li>
+        <li>
+          If it could open your private repos (a computer where you ran <span className="font-mono">dg auth login</span>, or a browser with private
+          repos enabled), it also held your encryption key. Replace it from a terminal with your recovery words:{' '}
+          <span className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 font-mono text-anvil-800 dark:bg-anvil-800 dark:text-anvil-100">
+            {ENCRYPTION_ROTATE_COMMAND}
+            <button
+              type="button"
+              onClick={() => void copy()}
+              className="hit-area text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100"
+              aria-label="Copy the command"
+            >
+              <Copy className="h-3 w-3" aria-hidden />
+            </button>
+          </span>
+          {copied ? ' Copied.' : null} It adds a new key, moves every private repo you maintain to it, names the ones a maintainer must move, then
+          disables the old key. Replacing it in the browser is not available yet.
+        </li>
+        <li>On your other devices, sign in again or add the new encryption key from your recovery phrase (Settings → Private repos).</li>
+      </ol>
+      <a
+        href={`${DOCS.identity}#replacing-it-after-a-lost-device`}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="hit-area text-[12px] text-forge-700 underline dark:text-forge-400"
+      >
+        What replacing the encryption key does →
+      </a>
+    </section>
   )
 }
 

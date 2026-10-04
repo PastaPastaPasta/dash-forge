@@ -68,6 +68,7 @@ If you lose a laptop but still have the words or a backup of the file, nothing i
 1. On the new machine run `dg auth login --mnemonic` (type the 12 words) or `dg auth login <file>` with your backup. It registers a new limited key and stores only that, with the encryption key beside it.
 2. Disable the lost machine's key: in the web app, **Settings → Devices & keys** lists every key and has **Disable** (your identity file or recovery phrase signs once); in the terminal, `dg auth keys list` shows it and `dg auth keys disable <id>` disables it (or pass `--replace <id>` to the login above to do both in one update). A limited key can only spend its remaining budget, and only on Forge, until then.
 3. In a browser, **Sign in → Import an identity file or recovery phrase** registers a fresh limited key for that browser; the words alone are enough.
+4. If you use private repositories, the lost machine also held your **encryption key**, which a disabled signing key does not protect. Replace it: `dg auth keys rotate --encryption` ([below](#replacing-it-after-a-lost-device)).
 
 Your **repository data** needs no backup of its own. Refs, issues and PRs are on Platform. Pack bytes are on Platform or in the storage you chose. Any clone also holds a full copy of the history, and [`dg reseed --from-local`](bring-your-own-storage.md#restoring-a-lost-copy) can restore a lost pack copy from it.
 
@@ -121,6 +122,7 @@ dg auth keys list                        # every key: purpose, level, budget lef
 dg auth keys add [--budget 0.25 --expires 180d] [--replace <id> | --keep-current]   # a new key for this computer; disables the one it replaces
 dg auth keys add --for-browser <request> [--replace <id>] [--with-encryption-key]   # a key for a browser tab, printed sealed to it
 dg auth keys disable <id>                # disable one (limited keys; --force for others)
+dg auth keys rotate --encryption [--keep-old]   # replace the ENCRYPTION key and move your private repos to it
 dg auth logout [--disable]               # forget the key here (and disable it on chain)
 ```
 
@@ -128,7 +130,7 @@ dg auth logout [--disable]               # forget the key here (and disable it o
 
 When to rotate:
 
-- a laptop or CI secret that held a key was lost or leaked: **disable that key**;
+- a laptop or CI secret that held a key was lost or leaked: **disable that key**, and if it also held the encryption key (any `dg auth login` with private repos, a browser with private repos enabled), **replace the encryption key** too;
 - a limited key's budget is nearly spent or it is about to expire: `dg auth keys add` registers a fresh one and disables this computer's current key in the same update (`--replace <id>` names another key to disable, `--keep-current` keeps the current one live on chain, though this computer no longer stores it; `dg auth login … --replace <old id>` does the same at sign-in).
 
 A browser's own key is managed in the web app: **Settings → This browser's key** can top it up, renew it or revoke it ([below](#limited-keys)).
@@ -154,6 +156,21 @@ dg auth keys add --encryption
 - `dg auth keys list` shows the result.
 
 **What it can read.** This key can read every private repo you're a member of, and every key you've handed out as a maintainer. Keep it as carefully as your signing keys.
+
+### Replacing it after a lost device
+
+```sh
+dg auth keys rotate --encryption [--master <identity file>] [--keep-old]
+```
+
+It runs the rekey of [private-repos.md §5.2](../security/private-repos.md#52-encryption-keys-derivation-custody-blast-radius-rekey), in this order, and prints the plan and its cost before anything is signed:
+
+1. Adds a new ENCRYPTION key, derived from the recovery words at the next key id, so the words alone recover it (one identity update, signed by the MASTER key).
+2. Rotates the key of every private repository you **maintain**: a new key epoch, wrapped to every member, you first, to your new key. Each costs one wrap per member plus one anchor.
+3. Names the private repositories where you are only a writer, triage or reader. You cannot rotate those. A maintainer's next visit (or `dg repo keys repair <repo>`) wraps the current key to your new one. Until then, new content there is sealed for the old key.
+4. Disables the old key, unless `--keep-old` is given or a repository failed to rotate. A disabled key still opens what was sealed for it, so nothing you could read is lost. Whoever holds the old key keeps what was sealed before, but nothing sealed from now on.
+
+The key `dg` stores beside your limited key gets the new key too. If a step fails, the old key stays enabled; run the command again and it continues where it stopped. Repositories already on the new key are skipped. Other computers and browsers need the new key: sign in again with the words, or in the web app add it from **Settings → Private repos**.
 
 **In the web app** this will be **Settings → Keys → Enable private repos**, with the web release of private repositories.
 
