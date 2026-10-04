@@ -22,7 +22,7 @@ import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
-import { deriveConnectionTrust, listRecentRepos, mainnetCents, type DiscoveredRepo } from '@/lib/view'
+import { deriveConnectionTrust, mainnetCents, recentReposPage, type DiscoveredRepo } from '@/lib/view'
 import { isCurated, listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
 import { creditsToDash, PUSH_COST_DASH, typicalIssueCredits } from '@/lib/sdk'
 import { ACTIVE_NETWORK } from '@/lib/constants'
@@ -32,8 +32,9 @@ import { verifyGuideUrl } from '@/lib/build-info'
 
 /** What a write costs on mainnet, in cents at the indicative rate (docs/guides/costs.md). */
 const ISSUE_CENTS = mainnetCents(creditsToDash(typicalIssueCredits()))
-// A word joiner after the dash keeps `12–17¢` on one line.
-const PUSH_CENTS = `${mainnetCents(PUSH_COST_DASH.byo.min).slice(0, -1)}–\u2060${mainnetCents(PUSH_COST_DASH.byo.max)}`
+// Both storage choices: own storage from its low end to packs on Platform at their high end.
+// A word joiner after the dash keeps `12–33¢` on one line.
+const PUSH_CENTS = `${mainnetCents(PUSH_COST_DASH.byo.min).slice(0, -1)}–\u2060${mainnetCents(PUSH_COST_DASH.platform.max)}`
 
 export default function LandingPage(): JSX.Element {
   const { sdk, ready, connection, network, status: sdkStatus, retry: retrySdk } = useSdk()
@@ -41,8 +42,9 @@ export default function LandingPage(): JSX.Element {
   const quorum = useQuorumCheck(network, connection === 'trusted')
   const proofs = deriveConnectionTrust(network, connection, quorum)
   const deployed = isForgeDeployed()
-  const feed = useAsync(
-    () => listRecentRepos(sdk!, { network, limit: 24 }),
+  // The page, not just its repos: whether its push lookup was complete decides what "pushed" can mean.
+  const feedPage = useAsync(
+    () => recentReposPage(sdk!, { network, limit: 24 }),
     [ready, network],
     { enabled: deployed && ready && sdk !== null },
   )
@@ -55,10 +57,13 @@ export default function LandingPage(): JSX.Element {
   // The recent feed without the featured repos (they are shown above it), once the featured read
   // has settled, so a featured card never shows in the feed and then leaves it.
   const shown = new Set((showcase.data ?? []).map((r) => r.key))
+  const feed = { ...feedPage, data: feedPage.data?.repos ?? null }
+  // A page whose push lookup was cut short or refused cannot tell "not pushed" from "not read".
+  const pushesKnown = feedPage.data !== null && feedPage.data.pushesComplete && !feedPage.data.fallback
   const recentAll = featured && showcase.loading ? null : (feed.data?.filter((r) => !shown.has(r.key)) ?? null)
   // Only described, pushed repos unless the visitor asks for all of them (CJ-1).
   const [showAll, setShowAll] = useState(false)
-  const recent = recentAll === null || showAll ? recentAll : recentAll.filter(isCurated)
+  const recent = recentAll === null || showAll ? recentAll : recentAll.filter((r) => isCurated(r, pushesKnown))
   const hidden = recentAll === null || recent === null ? 0 : recentAll.length - recent.length
   const faucet = faucetUrl()
   const testNetwork = ACTIVE_NETWORK.network !== 'mainnet'
@@ -114,13 +119,13 @@ export default function LandingPage(): JSX.Element {
         <Feature
           icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />}
           title="Private means encrypted"
-          body="A private repository’s code, issues and comments are encrypted on your device, and the network refuses anything unencrypted for it."
+          body="A private repository’s code, issues and comments are encrypted on your device, and the network refuses unencrypted issues, comments and branch names for it."
           link={{ href: '/private/', label: 'What stays visible' }}
         />
         <Feature
           icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
           title="Spam has a price"
-          body={`Each issue or pull request costs its sender about ${ISSUE_CENTS} on mainnet. Reading and cloning are free.`}
+          body={`Opening an issue costs its author about ${ISSUE_CENTS} on mainnet, so flooding a project costs real money. Reading and cloning are free.`}
           link={{ href: DOCS.costs, label: 'What it costs', external: true }}
         />
       </section>

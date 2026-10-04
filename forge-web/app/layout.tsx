@@ -33,7 +33,8 @@ export const metadata: Metadata = {
   },
 }
 
-// The browser chrome follows the page: the light and dark page backgrounds (anvil-50, anvil-950).
+// The browser chrome takes the page background of the system appearance (anvil-50, anvil-950);
+// a visitor who picks the other theme in the app keeps the system's colour there.
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,

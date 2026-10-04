@@ -73,4 +73,8 @@ describe('isCurated: the landing feed keeps described, pushed repos (CJ-1)', () 
   it('drops one with no push read', () => {
     expect(isCurated(repo('A tool', null))).toBe(false)
   })
+  it('keeps a described one when the push lookup was incomplete, which proves nothing', () => {
+    expect(isCurated(repo('A tool', null), false)).toBe(true)
+    expect(isCurated(repo('', null), false)).toBe(false)
+  })
 })

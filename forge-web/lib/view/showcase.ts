@@ -58,8 +58,10 @@ export async function listShowcaseRepos(
 /**
  * The landing page's recent feed without the test debris (CJ-1): only repos with a description
  * and a push the page's push lookup saw (one in the last week, which every repo created in that
- * week and ever pushed has). The rest stay one click away ("Show all recent repos").
+ * week and ever pushed has). When the lookup was cut short or refused (`pushesKnown` false), a
+ * missing push proves nothing, so only the description counts. The rest stay one click away
+ * ("Show all recent repos").
  */
-export function isCurated(repo: DiscoveredRepo): boolean {
-  return repo.description.trim() !== '' && repo.pushedAt != null
+export function isCurated(repo: DiscoveredRepo, pushesKnown = true): boolean {
+  return repo.description.trim() !== '' && (repo.pushedAt != null || !pushesKnown)
 }
