@@ -1070,29 +1070,34 @@ async function revalidateSeeded(connection: Connection, deploymentKey: string, r
   }
 }
 
-/** The contracts each connection refetched for a newer document, and when (ms). */
-const newerDocumentRefetch = new WeakMap<Connection, Map<string, number>>()
-/** A contract fetched (not seeded) is refetched for a newer document at most this often. */
-export const NEWER_DOCUMENT_REFETCH_MS = 60_000
+/** Each connection's recent contract refreshes for a stale read: when, and its outcome. */
+const staleRefreshes = new WeakMap<Connection, Map<string, { readonly at: number; readonly done: Promise<boolean> }>>()
+/** A contract is refreshed for a stale read at most this often; reads in between share it. */
+export const STALE_REFRESH_MS = 60_000
 
 /**
  * A read failed against a contract older than the network's ({@link StaleContractCause}): true
  * when the contract was refetched and the read may be retried once. A seeded contract is
  * refreshed ({@link refreshSeeded}) for either cause. One the SDK fetched (or a seeded one
- * already refreshed this connection) is refetched only for a newer document, which proves the
- * network holds a newer version: an in-place update since it was fetched (a tab left open
- * across UPDATE-1). That refetch happens at most once per {@link NEWER_DOCUMENT_REFETCH_MS} a
- * contract, so a read that keeps failing does not refetch on every attempt.
+ * already refreshed) is refetched only for a newer document, which proves the network holds a
+ * newer version: an in-place update since it was fetched (a tab left open across UPDATE-1).
+ * Reads that fail together (a page's parallel panels) share one refresh and all retry, and a
+ * contract is refreshed at most once per {@link STALE_REFRESH_MS}; a refresh that failed is
+ * forgotten, so the next stale read tries again.
  */
-async function refreshStale(connection: Connection, id: string, cause: StaleContractCause, replaced: (id: string) => void): Promise<boolean> {
-  if (connection.seeded.has(id)) return refreshSeeded(connection, id, replaced)
-  if (cause !== 'newerDocument') return false
-  const refetched = newerDocumentRefetch.get(connection) ?? new Map<string, number>()
-  newerDocumentRefetch.set(connection, refetched)
-  const at = refetched.get(id)
-  if (at !== undefined && Date.now() - at < NEWER_DOCUMENT_REFETCH_MS) return false
-  refetched.set(id, Date.now())
-  return refetchContract(connection.sdk, id)
+export function refreshStale(connection: Connection, id: string, cause: StaleContractCause, replaced: (id: string) => void): Promise<boolean> {
+  const recent = staleRefreshes.get(connection) ?? new Map<string, { readonly at: number; readonly done: Promise<boolean> }>()
+  staleRefreshes.set(connection, recent)
+  const held = recent.get(id)
+  if (held !== undefined && Date.now() - held.at < STALE_REFRESH_MS) return held.done
+  const seeded = connection.seeded.has(id)
+  if (!seeded && cause !== 'newerDocument') return Promise.resolve(false)
+  const done = seeded ? refreshSeeded(connection, id, replaced) : refetchContract(connection.sdk, id)
+  recent.set(id, { at: Date.now(), done })
+  void done.then((ok) => {
+    if (!ok && recent.get(id)?.done === done) recent.delete(id)
+  })
+  return done
 }
 
 /** Drop contract `id` from the SDK's cache and fetch the current one: true when it was found. */
