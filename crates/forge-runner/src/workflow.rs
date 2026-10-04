@@ -92,7 +92,7 @@ pub struct Broken {
     pub reason: String,
 }
 
-/// What a push's workflow files amount to.
+/// What a commit's workflow files amount to for one trigger.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Plan {
     /// The files that run on this push.
@@ -100,7 +100,7 @@ pub struct Plan {
     /// The files that could not be read (each reported as one failed check).
     pub broken: Vec<Broken>,
     /// The files that would run on this pull request but for their `paths` / `paths-ignore`
-    /// filter ([`Facts::filtered_by_paths`]). A required check among their jobs is reported
+    /// filter ([`Facts::runs_without_paths`]). A required check among their jobs is reported
     /// `skipped`, so it does not wait forever for a run that will never come.
     pub path_filtered: Vec<Workflow>,
 }
@@ -143,19 +143,20 @@ pub enum Facts<'a> {
 }
 
 impl Facts<'_> {
-    /// Whether a workflow whose `on` is `on` does not run on this pull request only because the
-    /// PR changes no path its `paths` / `paths-ignore` filter selects. Pull requests only: their
-    /// changes are the whole PR (`base...head`). A push's are only that push's commits, so a
-    /// skip there could pass a required check on a head whose earlier commits it never ran on.
-    pub fn filtered_by_paths(&self, on: &Value) -> bool {
+    /// Whether a workflow whose `on` is `on` would run on this pull request whatever paths it
+    /// changes: for a workflow that does not run ([`Self::runs`]), that its `paths` /
+    /// `paths-ignore` filter alone left it out. Pull requests only: their changes are the whole
+    /// PR (`base...head`). A push's are only that push's commits, so a skip there could pass a
+    /// required check on a head whose earlier commits it never ran on.
+    pub fn runs_without_paths(&self, on: &Value) -> bool {
         match self {
-            Facts::PullRequest(p) if p.changed.is_some() => {
-                let unfiltered = PullFacts {
+            Facts::PullRequest(p) if p.changed.is_some() => runs_on_pull_request(
+                on,
+                &PullFacts {
                     changed: None,
                     ..*p
-                };
-                !runs_on_pull_request(on, p) && runs_on_pull_request(on, &unfiltered)
-            }
+                },
+            ),
             _ => false,
         }
     }
@@ -228,7 +229,7 @@ pub fn plan(
             Ok((wf, on)) => {
                 if facts.runs(&on) {
                     plan.run.push(wf);
-                } else if facts.filtered_by_paths(&on) {
+                } else if facts.runs_without_paths(&on) {
                     plan.path_filtered.push(wf);
                 }
             }
@@ -827,27 +828,32 @@ jobs:
                 any_type: false,
             })
         };
+        // What `plan` reports as path-filtered.
+        let filtered = |f: &Facts<'_>, on: &Value| !f.runs(on) && f.runs_without_paths(on);
         let paths = on("on:\n  pull_request:\n    paths: ['src/**']");
         let ignore = on("on:\n  pull_request:\n    paths-ignore: ['docs/**']");
-        assert!(pr(Some(&docs)).filtered_by_paths(&paths));
-        assert!(pr(Some(&docs)).filtered_by_paths(&ignore));
+        assert!(filtered(&pr(Some(&docs)), &paths));
+        assert!(filtered(&pr(Some(&docs)), &ignore));
         assert!(
-            !pr(Some(&src)).filtered_by_paths(&paths),
+            !filtered(&pr(Some(&src)), &paths),
             "a workflow that runs is not filtered"
         );
         assert!(
-            !pr(None).filtered_by_paths(&paths),
+            !filtered(&pr(None), &paths),
             "unknown changes run the workflow"
         );
         let other_base = on("on:\n  pull_request:\n    branches: [dev]\n    paths: ['src/**']");
         assert!(
-            !pr(Some(&docs)).filtered_by_paths(&other_base),
+            !filtered(&pr(Some(&docs)), &other_base),
             "a workflow for another base would not run whatever the paths"
         );
-        assert!(!pr(Some(&docs)).filtered_by_paths(&on("on: push")));
+        assert!(!filtered(&pr(Some(&docs)), &on("on: push")));
         let push_paths = on("on:\n  push:\n    paths: ['src/**']");
         assert!(
-            !Facts::Push(facts("refs/heads/main", Some(&docs))).filtered_by_paths(&push_paths),
+            !filtered(
+                &Facts::Push(facts("refs/heads/main", Some(&docs))),
+                &push_paths
+            ),
             "a push's changes are only its own commits, so a push is never skipped"
         );
 

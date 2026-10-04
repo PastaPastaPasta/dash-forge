@@ -945,7 +945,7 @@ pub fn run(
         ran.checks.push((name, "failure"));
     }
     if !plan.path_filtered.is_empty() {
-        skip_required(&ctx, &plan.path_filtered, &mut ran);
+        skip_filtered(&ctx, &plan, opts.only.as_deref(), &mut ran)?;
     }
     for wf in &plan.run {
         run_workflow(&ctx, wf, &mut ran)?;
@@ -953,57 +953,89 @@ pub fn run(
     Ok(ran)
 }
 
-/// The repository's required check names (`dg repo policy show`): `Some` empty with no policy,
-/// `None` when the policy could not be read.
-fn required_checks(cfg: &Config, repo: &RepoConfig) -> Option<BTreeSet<String>> {
-    match dg_read(cfg, &["repo", "policy", "show", &repo.repo]) {
-        Ok(v) => Some(required_checks_of(&v)),
-        Err(e) => {
-            eprintln!("forge-runner: {}: branch policy not read: {e:#}", repo.repo);
-            None
-        }
-    }
-}
-
-/// [`required_checks`]' reading of `dg repo policy show --json`.
-fn required_checks_of(v: &serde_json::Value) -> BTreeSet<String> {
-    v["policy"]["requiredChecks"]
+/// Which of a pull request's path-filtered checks get a report, from `dg repo policy show
+/// --json`: the required names, or `None` for every one. With `requireChecks` and no names, the
+/// policy requires every check the head has and at least one, so a head where nothing else
+/// reports (`alone`) gets every filtered check; otherwise those checks are not required.
+fn checks_to_skip(policy: &serde_json::Value, alone: bool) -> Option<BTreeSet<String>> {
+    let names: BTreeSet<String> = policy["policy"]["requiredChecks"]
         .as_array()
         .map(|a| {
             a.iter()
                 .filter_map(serde_json::Value::as_str)
+                .filter(|n| !n.is_empty())
                 .map(str::to_string)
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let require_all = names.is_empty() && policy["policy"]["requireChecks"].as_bool() == Some(true);
+    (!(require_all && alone)).then_some(names)
 }
 
-/// Report `skipped` for each job of `filtered` (workflows a pull request's paths filtered out)
-/// whose check the branch policy requires, so the check is decided instead of waiting forever
-/// for a run that will never come (GitHub's "Expected — waiting for status" trap). Other jobs
-/// get nothing: each report is a paid write. When the policy can't be read, every job is
-/// reported, so a required one is never left waiting.
-fn skip_required(c: &RunCtx<'_>, filtered: &[workflow::Workflow], ran: &mut Ran) {
-    let required = required_checks(c.cfg, c.repo);
-    for wf in filtered {
+/// Report the checks of the workflows a pull request's paths filtered out (`plan.path_filtered`)
+/// that a merge waits for, so they are decided instead of waiting for a run that will never
+/// come (GitHub's "Expected — waiting for status" trap): `skipped`, which counts as passed, or
+/// the refusal a job the runner never runs gets wherever it runs. A check is reported when the
+/// branch policy requires it ([`checks_to_skip`]; every one when the policy can't be read) or
+/// a re-run asks for it (`only`), and never when a workflow that runs here reports the same
+/// name. Other checks get nothing: each report is a paid write.
+///
+/// Called before any workflow runs: a report that fails twice fails the run, which is tried
+/// again on the next poll rather than leaving the check undecided.
+fn skip_filtered(
+    c: &RunCtx<'_>,
+    plan: &workflow::Plan,
+    only: Option<&str>,
+    ran: &mut Ran,
+) -> Result<()> {
+    let running: BTreeSet<String> = plan
+        .run
+        .iter()
+        .flat_map(|wf| &wf.jobs)
+        .map(|j| c.trig.check_name(&j.check_name))
+        .collect();
+    let wanted = match only {
+        Some(o) => Some(BTreeSet::from([o.to_string()])),
+        None => match dg_read(c.cfg, &["repo", "policy", "show", &c.repo.repo]) {
+            Ok(v) => checks_to_skip(&v, running.is_empty() && plan.broken.is_empty()),
+            Err(e) => {
+                eprintln!(
+                    "forge-runner: {}: branch policy not read, so every path-filtered check is reported: {e:#}",
+                    c.repo.repo
+                );
+                None
+            }
+        },
+    };
+    for wf in &plan.path_filtered {
         for j in &wf.jobs {
             let name = c.trig.check_name(&j.check_name);
-            if required.as_ref().is_some_and(|r| !r.contains(&name)) {
+            if running.contains(&name) || wanted.as_ref().is_some_and(|w| !w.contains(&name)) {
                 continue;
             }
+            let (conclusion, summary) = match &j.refused {
+                Some(why) => ("failure", format!("forge-runner did not run this: {why}")),
+                None => (
+                    "skipped",
+                    format!(
+                        "Skipped: {} changes no file this workflow's `paths` filters select{}.",
+                        c.trig.label(),
+                        c.note
+                    ),
+                ),
+            };
             let r = Report {
-                conclusion: Some("skipped"),
-                summary: Some(format!(
-                    "Skipped: {} changes no file this workflow's `paths` filters select{}.",
-                    c.trig.label(),
-                    c.note
-                )),
+                conclusion: Some(conclusion),
+                summary: Some(summary),
                 ..c.report_of(&wf.file, &j.id, &j.check_name, "completed")
             };
-            report(c.cfg, &r);
-            ran.checks.push((r.name, "skipped"));
+            if !report(c.cfg, &r) && !report(c.cfg, &r) {
+                bail!("the check {name:?} could not be reported");
+            }
+            ran.checks.push((r.name, conclusion));
         }
     }
+    Ok(())
 }
 
 /// Run one workflow file with act (its refused jobs reported, not run) and report its jobs.
@@ -1470,21 +1502,34 @@ mod tests {
     }
 
     #[test]
-    fn the_required_checks_come_from_the_policy() {
-        let v = json!({"repo": "o/r", "policy": {"requiredChecks": ["CI / test (pull_request)", "Lint / lint"]}});
+    fn the_checks_to_skip_come_from_the_policy() {
+        let named = json!({"policy": {"requireChecks": true, "requiredChecks": ["CI / test (pull_request)", "Lint / lint"]}});
+        let both = BTreeSet::from([
+            "CI / test (pull_request)".to_string(),
+            "Lint / lint".to_string(),
+        ]);
+        assert_eq!(checks_to_skip(&named, true), Some(both.clone()));
+        assert_eq!(checks_to_skip(&named, false), Some(both));
+        let none = Some(BTreeSet::new());
         assert_eq!(
-            required_checks_of(&v),
-            BTreeSet::from([
-                "CI / test (pull_request)".to_string(),
-                "Lint / lint".to_string()
-            ])
-        );
-        assert!(
-            required_checks_of(&json!({"repo": "o/r", "policy": null})).is_empty(),
+            checks_to_skip(&json!({"policy": null}), true),
+            none,
             "no policy requires nothing"
         );
+        let all = json!({"policy": {"requireChecks": true, "requiredChecks": []}});
+        assert_eq!(
+            checks_to_skip(&all, true),
+            None,
+            "requiring every check, a head where nothing else reports gets them all"
+        );
+        assert_eq!(
+            checks_to_skip(&all, false),
+            none,
+            "…and none when other checks report"
+        );
+        let off = json!({"policy": {"requireChecks": false, "requiredChecks": []}});
+        assert_eq!(checks_to_skip(&off, true), none);
     }
-
     #[test]
     fn rerun_requests_read_from_dg() {
         let v = serde_json::json!([{
