@@ -9,7 +9,7 @@ export function BlobClient(): JSX.Element {
   const path = useParam('path')
   const refParam = useParam('ref')
   return (
-    <RepoScaffold addr={addr} browse refParam={refParam}>
+    <RepoScaffold addr={addr} browse refParam={refParam} rail={false} verification>
       {(home) => <BlobContent home={home} addr={addr} path={path} refParam={refParam} />}
     </RepoScaffold>
   )

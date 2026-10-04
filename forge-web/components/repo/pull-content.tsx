@@ -51,6 +51,7 @@ import {
   X,
   MessageSquareDashed,
 } from 'lucide-react'
+import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
@@ -1024,12 +1025,12 @@ function PullPage({
     files: cmp?.changes.length ?? null,
   }
   const status = merged
-    ? { label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, bg: 'bg-dash-700' }
+    ? { label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, bg: STATE_FILL.done }
     : !open
-      ? { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, bg: 'bg-danger' }
+      ? { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, bg: STATE_FILL.closed }
       : pull.state.draft
-        ? { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, bg: 'bg-anvil-600' }
-        : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
+        ? { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, bg: STATE_FILL.draft }
+        : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: STATE_FILL.open }
   const linkedUpstream = importedHost(pull.importedUrl, mirrorRepo(home.description)) !== null
   // A mirrored description's #n are the source forge's numbers, not this PR's (QW2-054 applies here only).
   const linked = linkedUpstream ? linkedIssues(pull.body) : prLinkedIssues(pull.body, pull.number)
@@ -1383,7 +1384,7 @@ function PullPage({
 
               {closedBranch !== null && guard.disabledReason === null && !archived && !mergeBusy ? (
                 <section aria-label="Source branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="closed-branch-box">
-                  {merged ? <GitMerge className="h-5 w-5 shrink-0 text-dash" aria-hidden /> : <GitPullRequestClosed className="h-5 w-5 shrink-0 text-danger-700 dark:text-danger-400" aria-hidden />}
+                  {merged ? <GitMerge className={`h-5 w-5 shrink-0 ${STATE_TEXT.done}`} aria-hidden /> : <GitPullRequestClosed className={`h-5 w-5 shrink-0 ${STATE_TEXT.closed}`} aria-hidden />}
                   <div className="min-w-0 flex-1 text-dense">
                     <p className="font-medium">{merged ? 'Pull request merged and closed' : closedBranch.restore ? 'Closed, and its branch was deleted' : 'Closed with unmerged commits'}</p>
                     <p className="break-words text-anvil-500 dark:text-anvil-400">
@@ -1571,7 +1572,7 @@ function PullPage({
                         title={reopenBlocked ?? undefined}
                         data-testid="pull-state-toggle"
                       >
-                        {open ? <GitPullRequestClosed className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden /> : <GitPullRequest className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />}
+                        {open ? <GitPullRequestClosed className={`h-3.5 w-3.5 ${STATE_TEXT.closed}`} aria-hidden /> : <GitPullRequest className={`h-3.5 w-3.5 ${STATE_TEXT.open}`} aria-hidden />}
                         {stateToggleLabel(open, withComment !== null, 'pull request')}
                       </Button>
                     ) : null}
