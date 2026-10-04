@@ -164,7 +164,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const settled = counts?.merged != null && counts.closed != null ? counts.merged + counts.closed : null
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <SearchBox id="pull-search" label="Search pull requests" search={search} placeholder="is:open label:bug author:@me" />
         <TriageNav addr={addr} />

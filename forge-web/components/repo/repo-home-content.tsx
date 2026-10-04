@@ -249,7 +249,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
       className="rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900"
     >
       <div className="mb-4 flex items-center gap-2">
-        <Rocket className="h-5 w-5 text-forge-500" aria-hidden />
+        <Rocket className="h-5 w-5 text-fg-muted" aria-hidden />
         <h2 className="text-prose">
           <span className="font-mono">
             {addr.owner.length > 20 ? `${addr.owner.slice(0, 8)}…` : addr.owner}/{home.repo.name || addr.name}

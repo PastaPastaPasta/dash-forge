@@ -437,7 +437,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const canModerate = isMaintainer && !archived && guard.disabledReason === null
 
   return (
-    <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]">
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]">
       <div className="min-w-0 space-y-5">
         {/* Header */}
         <div>

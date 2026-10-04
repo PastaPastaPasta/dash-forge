@@ -77,6 +77,7 @@ module.exports = {
         // no `dark:` twin. New colour roles go here rather than as `light dark:` class pairs.
         focus: token('focus'),
         'surface-raised': token('surface-raised'),
+        'fg-muted': token('fg-muted'),
         'line-highlight': token('line-highlight'),
         state: {
           open: token('state-open'),

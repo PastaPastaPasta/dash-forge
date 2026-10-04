@@ -422,7 +422,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
     <Section id="branches" title="Branches" icon={<GitBranch className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="flex items-center gap-2 text-dense font-medium">
-          <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden /> Protected branches
+          <ShieldCheck className="h-4 w-4 text-fg-muted" aria-hidden /> Protected branches
         </h3>
         <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
           Only maintainers can update a protected branch. Platform enforces it: such a ref moves only through a

@@ -266,7 +266,7 @@ export function MirrorWizard(): JSX.Element {
     <div className="mx-auto max-w-5xl">
       <div className="mb-5 flex items-start gap-3">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-forge-500/15">
-          <GitFork className="h-5 w-5 text-forge-500" aria-hidden />
+          <GitFork className="h-5 w-5 text-fg-muted" aria-hidden />
         </span>
         <div>
           <h1 className="text-xl">Mirror a GitHub repository</h1>

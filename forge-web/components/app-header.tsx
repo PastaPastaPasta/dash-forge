@@ -426,7 +426,7 @@ function NavDrawer({ signedIn }: { signedIn: boolean }): JSX.Element {
     const current = bareRoute(pathname) === bareRoute(href)
     return (
       <Link key={href} href={href} className={cn(ITEM, current && 'bg-anvil-100 dark:bg-anvil-800')} aria-current={current ? 'page' : undefined} onClick={close}>
-        <Icon className="h-4 w-4 shrink-0 text-forge-500" aria-hidden /> {label}
+        <Icon className="h-4 w-4 shrink-0 text-fg-muted" aria-hidden /> {label}
       </Link>
     )
   }
@@ -583,14 +583,14 @@ function NewMenu(): JSX.Element | null {
       {open ? (
         <nav id="new-panel" aria-label="New" className="absolute right-0 z-50 mt-2 w-64 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
           <Link href="/new/" className={MENU_ITEM} onClick={() => setOpen(false)}>
-            <Plus className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden />
+            <Plus className="mt-0.5 h-4 w-4 shrink-0 text-fg-muted" aria-hidden />
             <span>
               Repository
               <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Create a repo on {ACTIVE_NETWORK.key}</span>
             </span>
           </Link>
           <Link href="/mirror/" className={MENU_ITEM} onClick={() => setOpen(false)}>
-            <GitFork className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden />
+            <GitFork className="mt-0.5 h-4 w-4 shrink-0 text-fg-muted" aria-hidden />
             <span>
               Mirror a GitHub repo
               <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Set up in your browser, about 10 minutes</span>

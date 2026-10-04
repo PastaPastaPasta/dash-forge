@@ -41,28 +41,27 @@ import type { PrivateSession } from '../repo/private-session'
 /** Backend descriptor for the repo header badge / clone box. */
 export interface BackendInfo {
   readonly mode: number
-  /** `⛓ platform` / `🌐 ipfs` / … */
+  /** `platform` / `ipfs` / `s3` / `https` / `mixed` (the badge draws its icons from `kind`). */
   readonly label: string
-  readonly glyph: string
   readonly kind: 'platform' | 'ipfs' | 's3' | 'https' | 'mixed'
   readonly uris: readonly string[]
 }
 
 const BACKEND_BY_MODE: Readonly<
-  Record<number, { kind: BackendInfo['kind']; label: string; glyph: string }>
+  Record<number, { kind: BackendInfo['kind']; label: string }>
 > = {
-  0: { kind: 'platform', label: 'platform', glyph: '⛓' },
-  1: { kind: 'ipfs', label: 'ipfs', glyph: '🌐' },
-  2: { kind: 's3', label: 's3', glyph: '🌐' },
-  3: { kind: 'https', label: 'https', glyph: '🌐' },
-  4: { kind: 'mixed', label: 'mixed', glyph: '⛓+🌐' },
+  0: { kind: 'platform', label: 'platform' },
+  1: { kind: 'ipfs', label: 'ipfs' },
+  2: { kind: 's3', label: 's3' },
+  3: { kind: 'https', label: 'https' },
+  4: { kind: 'mixed', label: 'mixed' },
 }
 
 /** Describe a repo backend from its config for the badge + clone box. */
 export function backendInfo(config: RepoConfig | null): BackendInfo {
   const mode = config?.backendMode ?? 0
   const meta = BACKEND_BY_MODE[mode] ?? BACKEND_BY_MODE[0]
-  const info = meta ?? { kind: 'platform', label: 'platform', glyph: '⛓' }
+  const info = meta ?? { kind: 'platform', label: 'platform' }
   return { mode, ...info, uris: config?.backendUris ?? [] }
 }
 

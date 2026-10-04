@@ -1,11 +1,21 @@
 /**
  * Backend badge — signature element (style guide §A.4). Shows where a repo's pack bytes
- * physically live: `⛓ platform` / `🌐 ipfs|s3|https` / `⛓+🌐 mixed`. Rendered on repo headers
- * and the clone box. The glyph + label come from the config-derived {@link BackendInfo}.
+ * physically live: Platform (a chain link), IPFS (a globe), S3 or HTTPS (a drive), or a mix.
+ * Rendered on repo headers and the clone box. The label comes from the config-derived
+ * {@link BackendInfo}; the icons are Lucide line icons, the same on every OS (an emoji was not).
  */
 
+import { Globe, HardDrive, Link2, type LucideIcon } from 'lucide-react'
 import type { BackendInfo } from '@/lib/view'
 import { cn } from '@/lib/utils'
+
+const ICONS: Readonly<Record<BackendInfo['kind'], readonly LucideIcon[]>> = {
+  platform: [Link2],
+  ipfs: [Globe],
+  s3: [HardDrive],
+  https: [HardDrive],
+  mixed: [Link2, Globe],
+}
 
 export function BackendBadge({
   backend,
@@ -27,7 +37,9 @@ export function BackendBadge({
           : `Where this repo's files are stored: ${backend.label} (the owner's own storage). Every file you see is checked against its git hash either way.`
       }
     >
-      <span aria-hidden>{backend.glyph}</span>
+      {ICONS[backend.kind].map((Icon, i) => (
+        <Icon key={i} className="h-3 w-3 shrink-0" aria-hidden data-icon={backend.kind} />
+      ))}
       <span className="font-mono">{backend.label}</span>
     </span>
   )

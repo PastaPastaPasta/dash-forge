@@ -49,6 +49,7 @@ colors: {
 - Semantic colors are *meaningful*, never decorative: green = cryptographically verified, amber = availability risk, red = destructive/unverified, dash-blue = platform identity & credits. Don't repurpose.
 - **Theme tokens.** New colour roles are CSS variables in `forge-web/app/globals.css` (`:root` for light, `.dark` for dark), exposed to Tailwind as `rgb(var(--name) / <alpha-value>)`, so one class serves both themes with no `dark:` twin. The contrast test reads both blocks and checks every pair. Today: `--focus` and `--state-*`.
 - **Issue and PR states are not trust colours.** Use `STATE_TEXT` / `STATE_FILL` from `forge-web/lib/design/state.ts`: open green, merged and completed violet, closed PR red, draft and not planned grey, as on GitHub. Never `verify`, `danger`, `dash` or the ember accent for a state. Each state also has its own icon.
+- **The accent means "act here".** Ember is for links, primary actions, selection, focus and the current tab. Decorative icons (folders, menu and section icons, an empty state's disc) use `text-fg-muted` (and `bg-surface-raised`); inline code is body text on a sunken chip.
 - **Code and diffs.** Syntax colours are the `--syn-*` tokens; keywords have their own violet, never the ember accent (an ember word reads as a link). A selected line or range is `bg-line-highlight/15` (an accent tint), not amber. Diff rows use the `diff-add` / `diff-del` classes: a tint (10 % light, 16 % dark), a 2 px edge in the marker colour, the changed words marked a step stronger, and the `+`/`−` markers always shown; the table's `data-diff-palette` picks standard or blue/orange. The contrast test checks every syntax colour on every row and word tint, in both palettes and themes. Side-by-side cells wrap at word boundaries (`overflow-wrap: anywhere`), never `break-all`.
 
 ### Typography
@@ -57,7 +58,7 @@ colors: {
 - Scale: 13px base for dense surfaces (file lists, commit log), 15px prose (README, issues); headings 1.25 ratio, semibold not bold.
 
 ### Layout & components
-- Max content width 1280px; repo pages: left = content, right 296px rail (metadata, verification panel, storage health). Code pages (file, blame, commit, compare, a PR's Files) have no rail: the code gets the full width, led by the Verification card collapsed to one line.
+- Max content width 1280px; repo pages: left = content, right 296px rail (metadata, verification panel, storage health). Code pages (file, blame, commit, compare, a PR's Files) have no rail: the code gets the full width, led by the Verification card collapsed to one line. Every repo tab starts at the repo header's left edge (no `mx-auto` columns), so switching tabs never moves the content; a narrow form may cap its width, left-aligned.
 - Radix primitives wrapped in `components/ui/` (yappr/shadcn conventions: `clsx` + `tailwind-merge` + CVA variants).
 - Density: tables/lists at 36px rows; generous only around prose.
 - Iconography: Lucide, 16px inline / 20px nav; git-specific glyphs (branch, tag, commit) used consistently.
@@ -67,7 +68,7 @@ colors: {
 1. **Verification chip** — every repo view carries a compact chip row: `refs ✓ proof · packs ✓ sha256 · src: platform/ipfs/s3`. Colors per semantic palette. Clicking opens the trust panel explaining the verification chain.
 2. **Cost preview** — any write button shows cost inline before signing, **DASH primary, USD secondary** (`~0.0003 DASH ≈ $0.01`); destructive deletes show refund estimate in green. Running spend surfaced in settings.
 3. **Identity pill** — DPNS name + dicebear avatar (yappr generator) + abbreviated identity id; consistent everywhere an owner/author appears. Members shown with a role badge (writer/maintainer).
-4. **Backend badge** — `⛓ platform` / `🌐 ipfs|s3|https` / `⛓+🌐 mixed` on repo headers and clone box.
+4. **Backend badge** — `platform` (Lucide `Link2`), `ipfs` (`Globe`), `s3`/`https` (`HardDrive`), `mixed` (`Link2` + `Globe`) on repo headers and clone box. Line icons, never emoji (they render differently per OS).
 
 ### Accessibility
 - WCAG 2.1 AA contrast in **both** themes (validate ember-on-dark combos); all interactive elements keyboard-reachable with visible `:focus-visible` ring (the `--focus` token: forge-700 on light, forge-400 on dark, 3:1 or more on every surface); diff colors pass for color-blind users (blue/orange diff option, which also recolors the A/D file letters); `prefers-reduced-motion` kills all animation.

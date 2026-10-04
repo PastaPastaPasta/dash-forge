@@ -129,7 +129,7 @@ export function ExploreClient(): JSX.Element {
         <header className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="flex items-center gap-2 text-2xl">
-              <Compass className="h-6 w-6 text-forge-500" aria-hidden /> Explore
+              <Compass className="h-6 w-6 text-fg-muted" aria-hidden /> Explore
             </h1>
             <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Read straight from {NETWORKS[network].key}, proof-checked. No server ranks or filters this.</p>
           </div>
@@ -456,7 +456,7 @@ function Section<T>({
     <section aria-labelledby={id} data-testid={id}>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h2 id={id} className="flex items-center gap-2 text-lg">
-          <Icon className="h-4 w-4 text-forge-500" aria-hidden /> {title}
+          <Icon className="h-4 w-4 text-fg-muted" aria-hidden /> {title}
         </h2>
         {state.loading ? <Spinner label="Reading" /> : null}
       </div>

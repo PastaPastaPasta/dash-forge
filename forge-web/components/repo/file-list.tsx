@@ -16,9 +16,9 @@ import { cn } from '@/lib/utils'
 function iconFor(kind: ReturnType<typeof modeKind>): JSX.Element {
   switch (kind) {
     case 'dir':
-      return <Folder className="h-4 w-4 text-forge-500" aria-hidden />
+      return <Folder className="h-4 w-4 text-fg-muted" aria-hidden />
     case 'submodule':
-      return <GitCommitHorizontal className="h-4 w-4 text-dash" aria-hidden />
+      return <GitCommitHorizontal className="h-4 w-4 text-fg-muted" aria-hidden />
     case 'link':
       return <Link2 className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
     case 'exe':
