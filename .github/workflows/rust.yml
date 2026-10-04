@@ -87,10 +87,22 @@ jobs:
   rust:
     name: rust build + test
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    # `!cancelled()` replaces the implicit success() so a FAILED `changes` job runs this job
+    # (and fails it in the first step) instead of skipping it, since a skipped job satisfies a
+    # required check. Not `always()`: that would stop cancel-in-progress from cancelling a
+    # superseded build.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      # A failed `changes` job must not turn into a skipped (= passing) required check.
+      - name: Fail when change detection did not succeed
+        if: needs.changes.result != 'success'
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          echo "::error::the changes job ended '$CHANGES_RESULT'; refusing to skip this required check"
+          exit 1
       - uses: actions/checkout@v4
 
       # The storage fixture (RustFS + kubo + nginx, infra/docker-compose.yml), started
@@ -173,7 +185,11 @@ jobs:
   windows:
     name: windows check + sealed-key tests
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    # `!cancelled()` replaces the implicit success() so a FAILED `changes` job runs this job
+    # (and fails it in the first step) instead of skipping it, since a skipped job satisfies a
+    # required check. Not `always()`: that would stop cancel-in-progress from cancelling a
+    # superseded build.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
     runs-on: windows-2022
     timeout-minutes: 90
     defaults:
@@ -184,6 +200,14 @@ jobs:
       AWS_LC_SYS_PREBUILT_NASM: '1'
       PROTOC_VERSION: '28.3'
     steps:
+      # A failed `changes` job must not turn into a skipped (= passing) required check.
+      - name: Fail when change detection did not succeed
+        if: needs.changes.result != 'success'
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          echo "::error::the changes job ended '$CHANGES_RESULT'; refusing to skip this required check"
+          exit 1
       - uses: actions/checkout@v4
       # The Platform monorepo's paths exceed MAX_PATH under the default CARGO_HOME.
       - name: Shorten CARGO_HOME

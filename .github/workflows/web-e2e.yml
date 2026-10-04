@@ -76,7 +76,11 @@ jobs:
   playwright:
     name: playwright (read-only, devnet sakura)
     needs: changes
-    if: needs.changes.outputs.web == 'true'
+    # `!cancelled()` replaces the implicit success() so a FAILED `changes` job runs this job
+    # (and fails it in the first step) instead of skipping it, since a skipped job satisfies a
+    # required check. Not `always()`: that would stop cancel-in-progress from cancelling a
+    # superseded build.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -85,6 +89,15 @@ jobs:
     env:
       E2E_DEVNET: sakura
     steps:
+      # A failed `changes` job must not turn into a skipped (= passing) required check.
+      - name: Fail when change detection did not succeed
+        if: needs.changes.result != 'success'
+        working-directory: ${{ github.workspace }}
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          echo "::error::the changes job ended '$CHANGES_RESULT'; refusing to skip this required check"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
