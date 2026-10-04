@@ -243,8 +243,7 @@ function LostDevice(): JSX.Element {
       <ol className="list-decimal space-y-1.5 pl-5 text-anvil-700 dark:text-anvil-200">
         <li>Disable its key above. It can no longer write as you.</li>
         <li>
-          If it could open your private repos (a computer where you ran <span className="font-mono">dg auth login</span>, or a browser with private
-          repos enabled), it also held your encryption key. Replace it from a terminal with your recovery words:{' '}
+          If it could open your private repos, it also held your encryption key. Replace that key in a terminal, with your recovery phrase:{' '}
           <span className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 font-mono text-anvil-800 dark:bg-anvil-800 dark:text-anvil-100">
             {ENCRYPTION_ROTATE_COMMAND}
             <button
@@ -256,8 +255,11 @@ function LostDevice(): JSX.Element {
               <Copy className="h-3 w-3" aria-hidden />
             </button>
           </span>
-          {copied ? ' Copied.' : null} It adds a new key, moves every private repo you maintain to it, names the ones a maintainer must move, then
-          disables the old key. Replacing it in the browser is not available yet.
+          {copied ? ' Copied.' : null}
+          <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
+            It adds a new key, moves the private repos you maintain to it and names the ones a maintainer must move, then disables the old key. The
+            browser can&apos;t do this yet.
+          </p>
         </li>
         <li>On your other devices, sign in again or add the new encryption key from your recovery phrase (Settings → Private repos).</li>
       </ol>
