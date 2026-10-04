@@ -1,0 +1,42 @@
+{
+  "name": "missing",
+  "description": "The tag was never pushed.",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "aa"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "alice"
+    },
+    "baseline": null,
+    "pinnedBy": "tag",
+    "lateTag": false,
+    "current": null,
+    "moves": [],
+    "tag": "missing",
+    "assets": {
+      "added": [],
+      "removed": [],
+      "replaced": []
+    }
+  }
+}

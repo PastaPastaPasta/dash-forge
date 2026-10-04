@@ -1,0 +1,63 @@
+{
+  "name": "pinned_by_release",
+  "description": "A release that records its commit is judged against it, not the tag's history.",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      }
+    ],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "aa"
+          }
+        ]
+      }
+    ],
+    "pin": "C"
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "alice"
+    },
+    "baseline": {
+      "oid": "c",
+      "by": "alice",
+      "at": 200
+    },
+    "pinnedBy": "release",
+    "lateTag": false,
+    "current": {
+      "oid": "A",
+      "by": "alice",
+      "at": 100
+    },
+    "moves": [],
+    "tag": "moved",
+    "assets": {
+      "added": [],
+      "removed": [],
+      "replaced": []
+    }
+  }
+}

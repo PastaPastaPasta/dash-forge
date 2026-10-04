@@ -1,0 +1,99 @@
+{
+  "name": "restored",
+  "description": "Moved and moved back: the tag points where it did, but its history shows both moves.",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": true,
+        "protected": false,
+        "author": "mallory",
+        "createdAt": 300
+      },
+      {
+        "id": "u3",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "B",
+        "newOid": "A",
+        "force": true,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 400
+      }
+    ],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "aa"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "alice"
+    },
+    "baseline": {
+      "oid": "A",
+      "by": "alice",
+      "at": 100
+    },
+    "pinnedBy": "tag",
+    "lateTag": false,
+    "current": {
+      "oid": "A",
+      "by": "alice",
+      "at": 400
+    },
+    "moves": [
+      {
+        "id": "u2",
+        "at": 300,
+        "by": "mallory",
+        "from": "A",
+        "to": "B"
+      },
+      {
+        "id": "u3",
+        "at": 400,
+        "by": "alice",
+        "from": "B",
+        "to": "A"
+      }
+    ],
+    "tag": "restored",
+    "assets": {
+      "added": [],
+      "removed": [],
+      "replaced": []
+    }
+  }
+}

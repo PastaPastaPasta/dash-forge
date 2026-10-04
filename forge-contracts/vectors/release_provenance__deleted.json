@@ -1,0 +1,77 @@
+{
+  "name": "deleted",
+  "description": "The tag was deleted after the release was published.",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "A",
+        "newOid": "0",
+        "force": false,
+        "protected": false,
+        "author": "mallory",
+        "createdAt": 300
+      }
+    ],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "aa"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "alice"
+    },
+    "baseline": {
+      "oid": "A",
+      "by": "alice",
+      "at": 100
+    },
+    "pinnedBy": "tag",
+    "lateTag": false,
+    "current": null,
+    "moves": [
+      {
+        "id": "u2",
+        "at": 300,
+        "by": "mallory",
+        "from": "A",
+        "to": null
+      }
+    ],
+    "tag": "deleted",
+    "assets": {
+      "added": [],
+      "removed": [],
+      "replaced": []
+    }
+  }
+}

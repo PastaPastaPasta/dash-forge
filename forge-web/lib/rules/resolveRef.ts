@@ -149,6 +149,14 @@ function causalOrder(updates: readonly RefUpdate[]): RefUpdate[] {
   return out
 }
 
+/**
+ * The valid updates of the ref keyed `refNameHash`, in the causal order: what {@link resolveRef}
+ * folds (release provenance walks them). Parity: forge-core `rules::valid_updates`.
+ */
+export function validRefUpdates(updates: readonly RefUpdate[], configHistory: readonly ConfigDoc[], refNameHash: string): RefUpdate[] {
+  return validUpdates(updates, configHistory, refNameHash)
+}
+
 /** {@link causalOrder}, exported for its property test only. */
 export const causalOrderForTest = causalOrder
 

@@ -33,6 +33,7 @@ mod prompt;
 mod publish;
 mod quote;
 mod release;
+mod release_verify;
 mod repo;
 mod repo_settings;
 mod repo_sync;
@@ -1465,6 +1466,17 @@ pub enum ReleaseCommand {
     /// tag no longer shows as a release. The tag itself, and its previous revisions, are kept
     /// (a release is never deleted); publishing the tag again starts a fresh one.
     Unpublish {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The release tag.
+        tag: String,
+    },
+    /// Check that a release's tag and assets are what was first published: the tag's history
+    /// on Platform against the release's first publish (who pushed it, every later move), the
+    /// assets against the first publish, and the tag's signature when this directory's git
+    /// holds the tag. Exits with E504 when the tag moved, was deleted or races, or the assets
+    /// changed. Needs no identity for a public repository.
+    Verify {
         /// The repository (`owner/name`).
         repo: String,
         /// The release tag.

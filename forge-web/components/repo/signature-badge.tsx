@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils'
 const REASON: Readonly<Record<NonNullable<SignatureVerdict['reason']>, string>> = {
   unknown_key: "The key isn't on the profile of this repository's owner or any of its members.",
   ambiguous_key: 'More than one identity lists this key on its profile, so it names nobody.',
-  bad_signature: 'The signature does not match this commit: the commit was changed after it was signed, or the signature is not git’s.',
+  bad_signature: 'The signature does not match this {subject}: the {subject} was changed after it was signed, or the signature is not git’s.',
   unsupported: 'Forge checks Ed25519 and ECDSA (P-256/384/521) OpenPGP keys and Ed25519 SSH keys, with SHA-256 or stronger. This signature uses something else.',
   malformed: "The signature could not be read.",
 }
@@ -39,7 +39,16 @@ const EDGE = 8
 /** The room (px) the panel needs below its label before it opens above it instead. */
 const PANEL_ROOM = 240
 
-export function SignatureBadge({ state, className }: { state: SignatureState | undefined; className?: string }): JSX.Element | null {
+export function SignatureBadge({
+  state,
+  className,
+  subject = 'commit',
+}: {
+  state: SignatureState | undefined
+  className?: string
+  /** What was signed: a commit, or an annotated tag. */
+  subject?: 'commit' | 'tag'
+}): JSX.Element | null {
   // Where the open panel sits: fixed under the label, kept inside the viewport, so a list's
   // `overflow: hidden` (the commit log's rounded box) never clips it.
   const [at, setAt] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null)
@@ -119,7 +128,7 @@ export function SignatureBadge({ state, className }: { state: SignatureState | u
           ) : (
             <>
               <span className="block font-medium text-anvil-900 dark:text-anvil-50">
-                {verified ? 'This commit was signed with a key its signer lists on their profile.' : REASON[state.reason ?? 'malformed']}
+                {verified ? `This ${subject} was signed with a key its signer lists on their profile.` : REASON[state.reason ?? 'malformed'].replaceAll('{subject}', subject)}
               </span>
               {verified && state.signer !== null ? (
                 <span className="mt-2 flex items-center gap-1">

@@ -208,6 +208,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         // for those failures (L-22).
         Command::Release(R::Download { repo, .. }) => ("release not downloaded", Some(repo)),
         Command::Release(R::Unpublish { repo, .. }) => ("release not unpublished", Some(repo)),
+        Command::Release(R::Verify { repo, .. }) => ("release not verified", Some(repo)),
         Command::Label(LabelCommand::List { repo, .. }) => ("could not list labels", Some(repo)),
         Command::Issue(I::Label { repo, .. })
         | Command::Label(

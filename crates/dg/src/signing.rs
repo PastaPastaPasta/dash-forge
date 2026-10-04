@@ -252,7 +252,7 @@ fn git_bytes(args: &[&str]) -> Result<Vec<u8>> {
 }
 
 /// The words of a verdict for a terminal.
-fn verdict_words(v: &SignatureVerdict, names: &impl Fn(&str) -> String) -> String {
+pub(crate) fn verdict_words(v: &SignatureVerdict, names: &impl Fn(&str) -> String) -> String {
     let key = v.key.as_deref().unwrap_or("?");
     match (v.status.as_str(), v.reason.as_deref()) {
         ("verified", _) => format!(

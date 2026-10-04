@@ -41,9 +41,12 @@ import { CopyLinkButton } from '@/components/ui/copy-link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { EditReleaseButton, NewReleaseButton, useReleaseEditor } from '@/components/repo/new-release'
 import { SealedAssets, useSealedManifest } from '@/components/repo/sealed-release-assets'
+import { ReleaseProvenanceCard } from '@/components/repo/release-provenance'
+import { readAlteredReleaseTags } from '@/lib/repo/release-provenance'
+import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
-import { repoKey } from '@/lib/repo'
+import { repoContractIds, repoKey } from '@/lib/repo'
 import { errorMessage, cn } from '@/lib/utils'
 
 /** L-49: releases per page, with a "Show more" button for the rest. */
@@ -81,6 +84,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
   // Each is shown once (QW2-059): an unpublish listed above is not listed again below.
   const shownAbove = new Set(unpublished.map((r) => r.id))
   const previous = data ? data.previous.filter((r) => !shownAbove.has(r.id)) : []
+  const altered = useAlteredReleaseTags(home.repo, data)
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
@@ -120,6 +124,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                   tagTip={releaseTagTip(home, r.tagName)}
                   isLatest={r.id === latest?.id}
                   stateUnknown={data.unknownTags?.includes(r.tagName) === true}
+                  altered={altered.has(r.tagName)}
                   actions={r.sealed ? <EditReleaseButton home={home} tag={r.tagName} onEdit={editor.edit} /> : null}
                 />
               </li>
@@ -243,6 +248,18 @@ function SealedListNotes({ list }: { list: ReleaseList }): JSX.Element | null {
 }
 
 /** The tip of a release's tag (a commit, or an annotated tag object), or null when no live tag has the name. */
+/** The tags of the list's releases whose provenance is altered (empty until read, or when it fails). */
+function useAlteredReleaseTags(repo: RepoRef, list: ReleaseList | null): ReadonlySet<string> {
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const key = list === null ? '' : list.current.map((r) => r.id).join(',')
+  const read = useAsync(() => readAlteredReleaseTags(sdk!, repo, list as ReleaseList), [ready, repoKey(repo), network, key], {
+    enabled: ready && sdk !== null && list !== null && list.locked !== true,
+  })
+  return read.data ?? NONE
+}
+
+const NONE: ReadonlySet<string> = new Set()
+
 function releaseTagTip(home: RepoHome, tag: string): string | null {
   return tipOidOf(home.tags.find((t) => t.refName === `refs/tags/${tag}`))
 }
@@ -315,6 +332,7 @@ function ReleasePage({
         stateUnknown={data.unknownTags?.includes(tag) === true}
         actions={release.sealed ? <EditReleaseButton home={home} tag={tag} onEdit={onEdit} /> : null}
       />
+      {isUnpublish(release) ? null : <ReleaseProvenanceCard home={home} addr={addr} list={data} tag={tag} />}
       {previous.length > 0 ? (
         <section aria-label="Previous revisions" className="space-y-3">
           <h2 className="text-prose">Previous revisions of {tag}</h2>
@@ -337,6 +355,7 @@ function ReleaseCard({
   tagTip = null,
   isLatest = false,
   stateUnknown = false,
+  altered = false,
   actions = null,
 }: {
   release: ReleaseView
@@ -351,6 +370,8 @@ function ReleaseCard({
   isLatest?: boolean
   /** A newer revision of this sealed release could not be read (§16.3). */
   stateUnknown?: boolean
+  /** Its tag moved, was deleted or races, or its assets changed since it was first published. */
+  altered?: boolean
   /** A maintainer's controls for this release (a sealed one's edit, yank and unpublish). */
   actions?: ReactNode
 }): JSX.Element {
@@ -417,6 +438,15 @@ function ReleaseCard({
           </span>
         ) : previous ? (
           <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">previous</span>
+        ) : null}
+        {altered ? (
+          <Link
+            href={repoHref('/repo/release', addr, { tag: r.tagName })}
+            className="hit-area inline-flex items-center gap-1 rounded bg-danger/10 px-1.5 text-[11px] font-medium uppercase text-danger-700 dark:text-danger-400"
+            data-testid="release-altered"
+          >
+            <AlertTriangle className="h-3 w-3" aria-hidden /> changed since publish
+          </Link>
         ) : null}
         {r.yanked ? (
           <span className="inline-flex items-center gap-1 rounded bg-caution/10 px-1.5 text-[11px] uppercase text-caution-700 dark:text-caution-400">
