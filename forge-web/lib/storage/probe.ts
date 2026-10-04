@@ -12,7 +12,7 @@
  * `no-cors` request to the same origin, which resolves whenever the host answers at all; a
  * `manual`-redirect probe then tells a redirect (wrong region or endpoint) from CORS.
  *
- * The public address is what everyone else reads, and it is recorded on chain: a row fails
+ * The public address is what everyone else reads, and it is recorded on Platform: a row fails
  * when it is only reachable from this machine or its network, even if it answers here.
  */
 
@@ -93,7 +93,7 @@ async function whyBlocked(url: string | URL): Promise<'down' | 'redirect' | 'cor
 
 /**
  * A warning suffix for a public address that is temporary (a quick tunnel, Tailscale Funnel):
- * readable today, but recorded on chain forever.
+ * readable today, but recorded on Platform forever.
  */
 export function temporaryNote(url: string): string {
   let host = ''
@@ -103,7 +103,7 @@ export function temporaryNote(url: string): string {
     return ''
   }
   return isTemporaryHost(host)
-    ? `. Warning: ${host} is a temporary tunnel name that changes or disappears when the tunnel restarts, and the address is recorded on chain forever; use a stable domain for real repositories`
+    ? `. Warning: ${host} is a temporary tunnel name that changes or disappears when the tunnel restarts, and the address is recorded on Platform forever; use a stable domain for real repositories`
     : ''
 }
 

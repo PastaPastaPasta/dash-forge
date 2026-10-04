@@ -3,7 +3,7 @@
 /**
  * Maintainer moderation in the page (RC2 MOD): GitHub's "Hide" menu on a comment or review, the
  * collapsed "hidden by a maintainer" row readers see (and can expand: nothing is deleted, and it is
- * public on chain anyway), and the banner of a hidden issue or PR.
+ * public on Platform anyway), and the banner of a hidden issue or PR.
  */
 
 import { useRef, useState } from 'react'
@@ -189,7 +189,7 @@ export function HiddenBanner({ hidden, noun, revealed, onReveal }: { hidden: Hid
       <EyeOff className="h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
       <span>
         This {noun} was hidden by a maintainer, <Author identityId={hidden.by} link={false} className="align-middle" />
-        {reasonWords(hidden.reason)} · {timeAgo(hidden.at)}. It stays on chain and keeps its number; lists leave it out.
+        {reasonWords(hidden.reason)} · {timeAgo(hidden.at)}. It stays on Platform and keeps its number; lists leave it out.
       </span>
       {!revealed ? (
         <button type="button" onClick={onReveal} className="hit-area ml-auto font-medium text-forge-700 hover:underline dark:text-forge-400" data-testid="reveal-thread">
@@ -303,7 +303,7 @@ export function hideConfirm(
   const review = p.what === 'review' ? ' A hidden review\'s verdict still counts: dismiss it to stop it counting.' : ''
   return {
     title: `Hide ${what}${why}`,
-    description: `Appends a hide event, signed by you as a maintainer. ${shown}. Nothing is deleted: it stays on chain, and anyone can still read it.${review}${also}`,
+    description: `Appends a hide event, signed by you as a maintainer. ${shown}. Nothing is deleted: it stays on Platform, and anyone can still read it.${review}${also}`,
     label: 'Sign & hide',
   }
 }

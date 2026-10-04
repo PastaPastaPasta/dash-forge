@@ -73,7 +73,7 @@ test('5. repo browse contacts only app-origin + DAPI + declared backends (zero-b
   await waitForRepoResolved(page)
   await expectLanded(page, page.getByRole('link', { name: 'README.md' }).first())
   await page.goto(repoUrl('blob', '&path=src/main.rs'), { waitUntil: 'domcontentloaded' })
-  await expectLanded(page, page.getByText('reads are proof-checked').first())
+  await expectLanded(page, page.getByText('Your browser verifies what it shows').first())
   // Let late/lazy fetches (WASM chunk, DAPI round-trips, artifacts) settle.
   await page.waitForTimeout(5000)
 

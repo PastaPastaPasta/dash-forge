@@ -140,7 +140,10 @@ import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/v
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
+import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
+import { checkMerge } from '@/lib/view/merge-check'
+import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
 import { CopyRow } from '@/components/ui/copy-row'
@@ -289,7 +292,7 @@ export function PullContent({
   )
 
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
-  if (loading && !data) return <LoadingBlock label="Folding PR" />
+  if (loading && !data) return <LoadingBlock label="Loading pull request" />
   if (error && !data) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="pull" icon={GitPullRequest} title={`PR #${number} not found`} body="No pull request or issue with that number in this repo." />
   return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} reloadHome={reloadHome} />
@@ -404,6 +407,15 @@ function PullPage({
     () => prCommits(headReader!, prHaveSet({ baseTipOid, comparedBaseOid: cmp!.comparedBaseOid, fellBack: cmp!.fellBack === true, merged: pull.state.merged }), pull.headOid),
     [cmp === null ? '' : `${cmp.comparedBaseOid}:${comparison.sidesKey}`, pull.headOid, baseTipOid],
     { enabled: headReader !== null && cmp !== null },
+  )
+  // Merge integrity: whether the recorded merge commit contains this PR (a squash or a rebase of
+  // it counts), read through the comparison's readers once it has loaded. Git objects only: no
+  // Platform reads beyond the page's own.
+  const mergeHead = merged && pull.mergedAt !== undefined ? headAt(pull.review.headUpdates, pull.initialHeadOid, pull.mergedAt) : ''
+  const mergeCheck = useAsync(
+    () => checkMerge(cmp!.sides, { headOid: mergeHead, mergeOid: pull.mergeOid!, tipBefore: pull.baseOidAtMerge ?? '' }),
+    [pull.mergeOid ?? '', mergeHead, pull.baseOidAtMerge ?? '', comparison.sidesKey],
+    { enabled: merged && cmp !== null && (pull.mergeOid ?? '') !== '' && mergeHead !== '' && pull.state.mergeOnBase !== false },
   )
   // The repo holding the PR's source branch: this one for a same-repo PR, else the fork once read.
   const sourceRefOf = (): RepoRef | null =>
@@ -1188,6 +1200,7 @@ function PullPage({
               merge commit not found on the base
             </span>
           ) : null}
+          {mergeCheck.data ? <MergeContentNote content={mergeCheck.data} mergeOid={pull.mergeOid ?? ''} /> : null}
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
               head <Oid value={pull.headOid} chars={9} />
@@ -2053,13 +2066,13 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         label: 'Sign & delete branch',
       }
     case 'define-label':
-      return { title: `Create label "${pending.name}"`, description: 'Two documents: the label definition (for the whole repo), then a label event on this PR.', label: 'Sign & create' }
+      return { title: `Create label "${pending.name}"`, description: 'Creates the label for this repo and adds it here.', label: 'Sign & create' }
     case 'edit-pull':
-      return { title: `Edit PR #${number}`, description: 'Replaces your PR document; you pay only for the changed bytes. Earlier versions stay readable on Platform.', label: 'Sign & save' }
+      return { title: `Edit PR #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'edit-comment':
-      return { title: 'Edit comment', description: 'Replaces your comment document; you pay only for the changed bytes.', label: 'Sign & save' }
+      return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'delete-comment':
-      return { title: 'Delete comment', description: 'Deletes your comment document (its storage fee is partly refunded). Replies to it stay.', label: 'Sign & delete' }
+      return { title: 'Delete comment', description: 'Part of its storage fee is refunded, and replies stay. The original stays in Platform history, so rotate any secret it held.', label: 'Sign & delete' }
     case 'resolve':
       return pending.resolve
         ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }
@@ -2067,7 +2080,7 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
     case 'rerun':
       return {
         title: pending.check === null ? `Re-run all checks on PR #${number}` : `Re-run ${pending.check}`,
-        description: `Appends a member event asking this repository's runners to run ${pending.check === null ? 'every check' : 'this check'} on ${head.slice(0, 9)} again. A forge-runner watching the repository picks it up at its next poll, or within seconds when its relay wakes it, and its new run replaces the one shown. If the PR's head moves first, nothing re-runs: the new head runs by itself.`,
+        description: `Asks this repo's runners to run ${pending.check === null ? 'every check' : 'this check'} on ${head.slice(0, 9)} again. The new run replaces the one shown. If the PR gets a new commit first, that commit runs instead.`,
         label: 'Sign & request re-run',
       }
     case 'lock':
@@ -2236,9 +2249,9 @@ function BranchRules({
         <p className="flex items-center gap-2" data-testid="protected-base">
           <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />
           <span>
-            <span className="font-mono">{short}</span> is protected: only maintainers can merge into it. Enforced by Platform (a writer&apos;s update of it is refused or
-            inert).
+            <span className="font-mono">{short}</span> is protected. Only maintainers can merge into it.
           </span>
+          <EnforcedBy by="platform" />
         </p>
       ) : null}
       {policy === 'unknown' || status === 'unknown' ? (
@@ -2247,13 +2260,21 @@ function BranchRules({
           <span>Couldn&apos;t read the branch policy; merging is blocked until it loads (a maintainer can bypass it).</span>
         </p>
       ) : policy !== null && status !== null ? (
-        <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
-          {status.met ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
-          <span>
-            {status.have} of {plural(status.need, 'required approval')}
-            {policy.approverRole === 1 ? ' (maintainers)' : ''}
-          </span>
-        </p>
+        <>
+          <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
+            {status.have >= status.need ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
+            <span>
+              {status.have} of {plural(status.need, 'required approval')}
+              {policy.approverRole === 1 ? ' (maintainers)' : ''}
+            </span>
+          </p>
+          {status.blockedBy.length > 0 ? (
+            <p className="mt-1 flex items-center gap-2" data-testid="policy-changes-requested">
+              <X className="h-4 w-4 shrink-0 text-danger" aria-hidden />
+              <span>Changes requested by {plural(status.blockedBy.length, 'reviewer')}. Merging waits until they approve or the review is dismissed.</span>
+            </p>
+          ) : null}
+        </>
       ) : null}
       {known !== null && (named.length > 0 || known.requireChecks === true) ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
@@ -2267,9 +2288,9 @@ function BranchRules({
         </p>
       ) : null}
       {policy !== null ? (
-        <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-          Policy is a client rule; a maintainer can bypass it, and the bypass is recorded on the PR. The PR author&apos;s own approval never counts. Nothing at consensus requires
-          approvals.
+        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-600 dark:text-anvil-400">
+          <span>The author&apos;s own approval doesn&apos;t count. Maintainers can override, and the override is shown on the PR.</span>
+          <EnforcedBy by="apps" />
         </p>
       ) : null}
     </section>
@@ -2288,4 +2309,28 @@ function commitAuthors(commits: readonly { readonly commit: { readonly author: {
     }
   }
   return out
+}
+
+/** What a merged PR's recorded merge commit holds (`merge-content.ts`), next to its state. */
+function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeOid: string }) {
+  const combined = content.combined.length > 0 ? `, combined with base changes in ${plural(content.combined.length, 'file')}` : ''
+  const words: Record<MergeContent['verdict'], string> = {
+    contains: 'contains this PR',
+    squash: `squash of this PR${combined}`,
+    rebase: `rebase of this PR${combined}`,
+    missing: "does not contain this PR's commits",
+    unknown: "couldn't check: its commits could not be read",
+  }
+  const missing = content.verdict === 'missing'
+  return (
+    <span
+      className={`flex items-center gap-1 text-[12px] ${missing ? 'font-medium text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400'}`}
+      data-testid="pr-merge-content"
+      data-verdict={content.verdict}
+      title={missing ? 'A maintainer or writer recorded this merge, but the commit it names neither contains the PR head nor makes its changes.' : undefined}
+    >
+      {missing ? <X className="h-3.5 w-3.5" aria-hidden /> : content.verdict === 'unknown' ? null : <Check className="h-3.5 w-3.5 text-verify" aria-hidden />}
+      merge <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
+    </span>
+  )
 }

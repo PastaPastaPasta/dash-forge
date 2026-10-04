@@ -103,7 +103,7 @@ describe('a commit to the PR branch', () => {
       seen.push(`${commit}<-${have}`)
       return ['ee'.repeat(20)]
     }
-    await expect(runBranchCommit(deps({ verifyPack }), null, () => undefined)).rejects.toThrow(/1 object\(s\) unfetchable \(eeeeeeeee\); nothing was written/)
+    await expect(runBranchCommit(deps({ verifyPack }), null, () => undefined)).rejects.toThrow(/1 object unfetchable \(eeeeeeeee\); nothing was written/)
     expect(seen).toEqual([`${NEW}<-${HEAD}`])
     expect(calls).toEqual([])
     // A complete pack goes on; a resumed run past the upload does not check again.
