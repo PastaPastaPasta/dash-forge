@@ -63,6 +63,7 @@ import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, re
 import {
   createComment,
   recordPolicyBypass,
+  requestRerun,
   commentFirsts,
   createReview,
   LOCKED_REASON,
@@ -98,6 +99,7 @@ import { ROLE_NOUN, capabilitiesOf, memberMayWriteEvent } from '@/lib/rules/role
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
+import { pendingReruns, rerunCounts } from '@/lib/rules/ci-rerun'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
@@ -162,6 +164,15 @@ import { useDpnsName } from '@/hooks/use-dpns-name'
 
 /** No pending review comments (a stable empty list). */
 const NO_DRAFTS: readonly DraftComment[] = []
+const NO_RUNNERS: ReadonlySet<string> = new Set()
+
+/**
+ * While a CI re-run request is pending on the Checks tab, the runs are read again this often, at
+ * most {@link RERUN_POLLS} times (a runner polls every 2 minutes by default, or is woken within
+ * seconds): the new run then shows without a reload.
+ */
+const RERUN_POLL_MS = 30_000
+const RERUN_POLLS = 20
 
 /** The PR page's tabs (`?tab=`; absent: conversation). */
 export const PR_TABS = ['conversation', 'commits', 'checks', 'files'] as const
@@ -212,6 +223,8 @@ type Pending =
   | { kind: 'delete-comment'; id: string }
   | { kind: 'resolve'; root: string; resolve: boolean }
   | { kind: 'lock'; on: boolean }
+  /** Ask the runners to re-run one check of the head, or with `check` null every check (event kind 26). */
+  | { kind: 'rerun'; check: string | null }
   /** A maintainer hides (or unhides) a comment, a review, or with `item` null the PR (RC2 MOD). */
   | { kind: 'hide'; item: string | null; what: 'comment' | 'review' | 'pull request'; reason: HideReason | null; hide: boolean; closeAndLock?: boolean }
 
@@ -413,6 +426,25 @@ function PullPage({
     { enabled: ready && sdk !== null && pull.headOid !== '' },
   )
   const checkSummary = checks.data === null ? null : summarizeChecks(checks.data.runs, membersKnown)
+  // CI re-run requests no newer run answers yet: the owner's, maintainers' and writers' only (a
+  // triage member's is not counted, so runners ignore it).
+  const roleOracle = useMemo(() => new RoleOracle(thread.members), [thread.members])
+  const rerunPending = useMemo(() => {
+    const counted = thread.ciReruns.filter((r) => rerunCounts(r, repo.ownerId, roleOracle))
+    return pendingReruns(counted, checks.data?.runs ?? [], pull.headOid)
+  }, [thread.ciReruns, roleOracle, repo.ownerId, checks.data, pull.headOid])
+  const rerunWaiting = tab === 'checks' && rerunPending.size > 0
+  const reloadChecks = checks.reload
+  useEffect(() => {
+    if (!rerunWaiting) return
+    let polls = 0
+    const timer = setInterval(() => {
+      polls += 1
+      if (polls > RERUN_POLLS) clearInterval(timer)
+      else reloadChecks()
+    }, RERUN_POLL_MS)
+    return () => clearInterval(timer)
+  }, [rerunWaiting, reloadChecks])
 
   // ---- the source branch (head sync) ----------------------------------------------------------
   const crossRepo = pull.sourceId !== '' && pull.sourceId !== repo.repoId
@@ -511,7 +543,7 @@ function PullPage({
       ? null
       : checks.data === null || !membersKnown
         ? ('unknown' as const)
-        : checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, policyNow)
+        : checksState(checks.data.rows, pull.headOid, roleOracle, checks.data.runners, policyNow)
   const actions = pullActions({
     pull,
     viewer,
@@ -566,6 +598,8 @@ function PullPage({
   const links: MarkdownLinks = useRepoLinks(addr, home.description)
 
   const eventCost = previewCreate(stateType, {}, eventFirst)
+  /** A CI re-run request: a member event naming the repository in `refId`, and the check in `value`. */
+  const rerunCost = (check: string | null): Cost => withAddressee(previewCreate('event', check === null ? {} : { value: check }, eventFirst))
   /** Confirm an event write (the route's price checked against the balance first). */
   const confirmEvent = (p: Pending, cost: Cost = eventCost): void => {
     if (guard.check(cost, 'collab')) setPending(p)
@@ -799,6 +833,11 @@ function PullPage({
         await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember: caps.canDraftReady, intent })
         refresh((t) => t.pull.state.draft === (p.to === 'draft'))
         return
+      case 'rerun': {
+        const r = await requestRerun(sdk, signer, repo, { target, sha: pull.headOid, check: p.check, intent })
+        refresh((t) => t.ciReruns.some((x) => x.id === r.documentId))
+        return
+      }
       case 'head':
         await post('headUpdate', intent, { oidHex: p.oid })
         refresh((t) => t.pull.headOid === p.oid)
@@ -926,6 +965,8 @@ function PullPage({
       case 'request':
       case 'resolve':
         return withAddressee(eventCost)
+      case 'rerun':
+        return rerunCost(pending.check)
       case 'milestone':
         return previewCreate('event', pending.title === null ? {} : { value: pending.title })
       case 'delete-branch':
@@ -1633,6 +1674,12 @@ function PullPage({
               error={checks.error}
               onRetry={checks.reload}
               expected={expectedChecks(checks.data?.runs ?? [], policyNow)}
+              rerun={{
+                runners: checks.data?.runners ?? NO_RUNNERS,
+                pending: rerunPending,
+                canRequest: identity !== null && open && caps.canRerunChecks && !writeBlocked,
+                onRerun: (check) => confirmEvent({ kind: 'rerun', check }, rerunCost(check)),
+              }}
             />
           ) : (
             <BranchRunContext.Provider value={branchRun}>
@@ -2012,6 +2059,12 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       return pending.resolve
         ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }
         : { title: 'Unresolve conversation', description: `Appends ${via} naming the thread.`, label: 'Sign & unresolve' }
+    case 'rerun':
+      return {
+        title: pending.check === null ? `Re-run all checks on PR #${number}` : `Re-run ${pending.check}`,
+        description: `Appends a member event asking this repository's runners to run ${pending.check === null ? 'every check' : 'this check'} on ${head.slice(0, 9)} again. A forge-runner watching the repository picks it up at its next poll, or within seconds when its relay wakes it, and its new run replaces the one shown. If the PR's head moves first, nothing re-runs: the new head runs by itself.`,
+        label: 'Sign & request re-run',
+      }
     case 'lock':
       return lockConfirm(pending.on, `PR #${number}`, 'pull')
     case 'hide':

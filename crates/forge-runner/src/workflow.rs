@@ -118,6 +118,11 @@ pub struct PullFacts<'a> {
     pub action: &'a str,
     /// Paths the PR changes (`base...head`); `None` when unknown, which runs path filters.
     pub changed: Option<&'a [String]>,
+    /// A re-run: the workflow runs if any activity the runner runs PRs on
+    /// ([`RUNNER_PULL_ACTIONS`]) matches its `types` (it may have run on another one before),
+    /// then the base branch and the paths are judged as usual. A workflow whose `types` name
+    /// none of them (`closed`, `labeled`) never ran here, and never re-runs.
+    pub any_type: bool,
 }
 
 /// What a workflow's `on:` is judged against.
@@ -430,11 +435,16 @@ fn paths_ok(filters: &Value, changed: Option<&[String]>) -> bool {
 /// The `pull_request` activity types a workflow runs on when it names none (GitHub's default).
 const DEFAULT_PULL_TYPES: [&str; 3] = ["opened", "synchronize", "reopened"];
 
+/// The `pull_request` activities the runner runs PRs on (`watch::pull_events`).
+pub const RUNNER_PULL_ACTIONS: [&str; 4] =
+    ["opened", "synchronize", "reopened", "ready_for_review"];
+
 /// Whether a workflow whose `on` is `on` runs on this pull-request activity (GitHub's rules for
 /// `pull_request`: `types`, then `branches` / `branches-ignore` on the base branch, then
 /// `paths` / `paths-ignore` on the PR's changes). `pull_request_target` never runs here.
 pub fn runs_on_pull_request(on: &Value, pr: &PullFacts<'_>) -> bool {
-    let default_type = DEFAULT_PULL_TYPES.contains(&pr.action);
+    // A re-run's types are the default ones and every activity the runner fires.
+    let default_type = pr.any_type || DEFAULT_PULL_TYPES.contains(&pr.action);
     let filters: &Value = match on {
         Value::String(s) => return s == "pull_request" && default_type,
         Value::Array(a) => {
@@ -447,8 +457,10 @@ pub fn runs_on_pull_request(on: &Value, pr: &PullFacts<'_>) -> bool {
         },
         _ => return false,
     };
-    let type_ok =
-        strings(&filters["types"]).map_or(default_type, |t| t.iter().any(|t| t == pr.action));
+    let type_ok = strings(&filters["types"]).map_or(default_type, |t| {
+        t.iter()
+            .any(|t| t == pr.action || (pr.any_type && RUNNER_PULL_ACTIONS.contains(&t.as_str())))
+    });
     let branch_ok = match (
         strings(&filters["branches"]),
         strings(&filters["branches-ignore"]),
@@ -619,6 +631,7 @@ jobs:
             base,
             action,
             changed,
+            any_type: false,
         };
         let opened = pr("main", "opened", None);
         let sync = pr("main", "synchronize", None);
@@ -638,6 +651,21 @@ jobs:
         assert!(runs_on_pull_request(&typed, &ready) && !runs_on_pull_request(&typed, &opened));
         let empty = on("on:\n  pull_request:");
         assert!(runs_on_pull_request(&empty, &sync));
+        let rerun = PullFacts {
+            any_type: true,
+            ..pr("main", "opened", None)
+        };
+        assert!(
+            runs_on_pull_request(&typed, &rerun)
+                && runs_on_pull_request(&on("on: pull_request"), &rerun),
+            "a re-run runs a workflow of any activity the runner fires"
+        );
+        assert!(!runs_on_pull_request(&on("on: push"), &rerun));
+        let closed = on("on:\n  pull_request:\n    types: [closed, labeled]");
+        assert!(
+            !runs_on_pull_request(&closed, &rerun),
+            "a workflow that never ran here never re-runs"
+        );
         let b = on("on:\n  pull_request:\n    branches: [main]");
         assert!(runs_on_pull_request(&b, &opened), "branches match the base");
         assert!(!runs_on_pull_request(&b, &pr("dev", "opened", None)));

@@ -273,6 +273,7 @@ export {
   postComment,
   postTargetEvent,
   recordPolicyBypass,
+  requestRerun,
   reviewData,
   reviewDraftKey,
   saveReviewDraft,

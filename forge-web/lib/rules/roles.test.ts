@@ -76,7 +76,7 @@ describe('capabilitiesOf', () => {
   it('triage: close, lock, label, assign, milestone, request reviews, resolve; nothing that needs role 1', () => {
     const t = capabilitiesOf('triage')
     expect([t.canCloseReopen, t.canLock, t.canLabel, t.canAssign, t.canMilestone, t.canRequestReview, t.canResolve]).toEqual(Array(7).fill(true))
-    expect([t.canPush, t.canMerge, t.canDraftReady, t.canDismiss, t.canRetarget, t.canPin, t.canPostChecks, t.canBypass, t.canManageSettings]).toEqual(Array(9).fill(false))
+    expect([t.canPush, t.canMerge, t.canDraftReady, t.canDismiss, t.canRetarget, t.canPin, t.canPostChecks, t.canRerunChecks, t.canBypass, t.canManageSettings]).toEqual(Array(10).fill(false))
   })
 
   it('a reader and a non-member: no member writes', () => {
@@ -85,7 +85,7 @@ describe('capabilitiesOf', () => {
 
   it('a writer: everything but bypass and settings; a maintainer: everything', () => {
     const w = capabilitiesOf('writer')
-    expect(w.canPush && w.canMerge && w.canDraftReady && w.canDismiss && w.canPin && w.canPostChecks && w.canCloseReopen).toBe(true)
+    expect(w.canPush && w.canMerge && w.canDraftReady && w.canDismiss && w.canPin && w.canPostChecks && w.canRerunChecks && w.canCloseReopen).toBe(true)
     expect([w.canBypass, w.canManageSettings]).toEqual([false, false])
     expect(Object.values(capabilitiesOf('maintainer')).every((v) => v === true)).toBe(true)
   })
@@ -98,6 +98,15 @@ describe('capabilitiesOf', () => {
     expect(() => claimedRole('event', { kind: 19 }, 'triage')).toThrow(RoleRefusedError)
     expect(t.canLabel).toBe(true)
     expect(claimedRole('event', { kind: 4 }, 'triage')).toBe(2)
+  })
+
+  it('a CI re-run request (kind 26): consensus admits triage, the convention does not', () => {
+    expect(capabilitiesOf('triage').canRerunChecks).toBe(false)
+    expect(() => claimedRole('event', { kind: 26 }, 'triage')).toThrow(/cannot re-run checks/)
+    expect(claimedRole('event', { kind: 26 }, 'writer')).toBe(1)
+    expect(claimedRole('event', { kind: 26 }, 'maintainer')).toBe(1)
+    expect(memberMayWriteEvent('triage', 26)).toBe(false)
+    expect(memberMayWriteEvent('writer', 26)).toBe(true)
   })
 })
 

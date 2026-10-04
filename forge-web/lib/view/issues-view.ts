@@ -55,6 +55,7 @@ import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite
 import { prefetchDpnsNames } from './dpns'
 import { withLongBodies, withLongBody, type LongBodyState } from './long-body'
 import type { Membership } from '../rules/v2'
+import type { RerunRequest } from '../rules/ci-rerun'
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
@@ -558,6 +559,8 @@ export interface PullThread {
   readonly hidden: HiddenCounts
   /** Private repos: the PR's event values not readable here, and those not encrypted. */
   readonly eventValues: EventValueCounts
+  /** The PR's CI re-run requests (event kind 26), oldest first, counted or not (`rerunCounts` judges). */
+  readonly ciReruns: readonly RerunRequest[]
   /**
    * The conversation is locked (RC1 R-15: the PR's transition sum is 16 or more): consensus
    * refuses a comment or review from anyone who does not prove membership.
@@ -689,6 +692,7 @@ export async function loadPullThread(
     labels,
     hidden: tally.value,
     eventValues: eventValues(log),
+    ciReruns: log.ciReruns ?? [],
     locked: isLocked(transitions),
   }
 }
