@@ -1,16 +1,17 @@
 'use client'
 
 /**
- * Landing + discovery. The hero says what Dash Forge is in plain words, the verification chip
- * sits under it (whether this session's Platform connection actually proof-checks reads), "How
- * it works" explains identities, credits and test DASH with links to the guides (QW-013), the
- * network's showcase repos come first (QW-045), then the recent repos from the active network's
- * forge-core when the SDK connects, a clear empty/error state otherwise.
+ * Landing + discovery. The hero says what Dash Forge is in plain words, with "Mirror a GitHub
+ * repo" first (CJ-2) and the verification chip beside the calls to action (whether this session's
+ * Platform connection actually proof-checks reads). Three "why" tiles back the claim, "How it
+ * works" explains identities, credits and test DASH with links to the guides (QW-013), the
+ * network's showcase repos come first (QW-045), then the recent repos that have a description
+ * and a push (CJ-1; the rest behind "Show all recent repos"), a clear empty/error state otherwise.
  */
 
 import Link from 'next/link'
-import { BookOpen, Coins, Compass, ExternalLink, GitBranch, KeyRound, Lock, Plus, Search, Upload } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { BookOpen, Coins, Compass, CopyPlus, ExternalLink, GitBranch, KeyRound, Lock, Plus, ShieldCheck, Upload } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 import { AppShell } from '@/components/app-shell'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
@@ -21,11 +22,18 @@ import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
-import { deriveConnectionTrust, listRecentRepos, type DiscoveredRepo } from '@/lib/view'
-import { listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
+import { deriveConnectionTrust, listRecentRepos, mainnetCents, type DiscoveredRepo } from '@/lib/view'
+import { isCurated, listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
+import { creditsToDash, PUSH_COST_DASH, typicalIssueCredits } from '@/lib/sdk'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { faucetUrl } from '@/components/top-up-sheet'
+import { verifyGuideUrl } from '@/lib/build-info'
+
+/** What a write costs on mainnet, in cents at the indicative rate (docs/guides/costs.md). */
+const ISSUE_CENTS = mainnetCents(creditsToDash(typicalIssueCredits()))
+// A word joiner after the dash keeps `12–17¢` on one line.
+const PUSH_CENTS = `${mainnetCents(PUSH_COST_DASH.byo.min).slice(0, -1)}–\u2060${mainnetCents(PUSH_COST_DASH.byo.max)}`
 
 export default function LandingPage(): JSX.Element {
   const { sdk, ready, connection, network, status: sdkStatus, retry: retrySdk } = useSdk()
@@ -47,8 +55,13 @@ export default function LandingPage(): JSX.Element {
   // The recent feed without the featured repos (they are shown above it), once the featured read
   // has settled, so a featured card never shows in the feed and then leaves it.
   const shown = new Set((showcase.data ?? []).map((r) => r.key))
-  const recent = featured && showcase.loading ? null : (feed.data?.filter((r) => !shown.has(r.key)) ?? null)
+  const recentAll = featured && showcase.loading ? null : (feed.data?.filter((r) => !shown.has(r.key)) ?? null)
+  // Only described, pushed repos unless the visitor asks for all of them (CJ-1).
+  const [showAll, setShowAll] = useState(false)
+  const recent = recentAll === null || showAll ? recentAll : recentAll.filter(isCurated)
+  const hidden = recentAll === null || recent === null ? 0 : recentAll.length - recent.length
   const faucet = faucetUrl()
+  const testNetwork = ACTIVE_NETWORK.network !== 'mainnet'
 
   return (
     <AppShell wide>
@@ -58,14 +71,14 @@ export default function LandingPage(): JSX.Element {
           A git forge with <span className="text-forge-700 dark:text-forge-500">no server to trust.</span>
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-prose text-anvil-600 dark:text-anvil-300">
-          Host git repositories with issues, pull requests and reviews, like GitHub, but nobody runs
-          the server: everything is stored on the Dash network, and your browser checks what it reads
-          instead of trusting a company. No account to lose, no host to take it down.
+          GitHub&apos;s workflow, with issues, pull requests and reviews. Your repositories live on Dash
+          Platform, your own browser checks everything it reads, and your code is stored where you choose.
+          No company server to go down, no account to ban.
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          <Link href="/new/">
+          <Link href="/mirror/" data-testid="hero-mirror">
             <Button variant="primary" size="lg">
-              <Plus className="h-4 w-4" aria-hidden /> New repo
+              <CopyPlus className="h-4 w-4" aria-hidden /> Mirror a GitHub repo
             </Button>
           </Link>
           <Link href="/explore/">
@@ -90,11 +103,26 @@ export default function LandingPage(): JSX.Element {
         </div>
       </section>
 
-      {/* Capability strip */}
-      <section className="mx-auto mt-8 grid max-w-4xl grid-cols-1 gap-3 sm:grid-cols-3">
-        <Feature icon={<Search className="h-4 w-4 text-forge-500" aria-hidden />} title="Size-independent browse" body="With a published browse index, tree, blob, and commit views fetch only the bytes they show, at any repo size." />
-        <Feature icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />} title="Proof-checked reads" body="Refs by Platform proof, file contents by git hash. Each repo's Verification card shows what this session actually checked." />
-        <Feature icon={<GitBranch className="h-4 w-4 text-forge-500" aria-hidden />} title="Issues & threads in-browser" body="Open issues, comment, close and reopen, and grant collaborators — each write signed by your Platform identity." />
+      {/* Why (CJ-2): three claims, each backed by something this page links to. */}
+      <section aria-label="Why Dash Forge" className="mx-auto mt-8 grid max-w-4xl grid-cols-1 gap-3 sm:grid-cols-3" data-testid="why-tiles">
+        <Feature
+          icon={<ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />}
+          title="Can’t go down, can’t be taken down"
+          body="No company runs a server. Branches and history are proof-checked against Dash Platform, and this app is a static bundle anyone can host."
+          link={{ href: verifyGuideUrl(), label: 'Verify this build', external: true }}
+        />
+        <Feature
+          icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />}
+          title="Private means encrypted"
+          body="A private repository’s code, issues and comments are encrypted on your device, and the network refuses anything unencrypted for it."
+          link={{ href: '/private/', label: 'What stays visible' }}
+        />
+        <Feature
+          icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
+          title="Spam has a price"
+          body={`Each issue or pull request costs its sender about ${ISSUE_CENTS} on mainnet. Reading and cloning are free.`}
+          link={{ href: DOCS.costs, label: 'What it costs', external: true }}
+        />
       </section>
 
       {/* How it works (QW-013): what an identity and credits are, before anyone is asked to sign in. */}
@@ -111,11 +139,11 @@ export default function LandingPage(): JSX.Element {
             icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
             title="2. Fund it with a little DASH"
             body={
-              ACTIVE_NETWORK.network === 'mainnet'
-                ? 'Writes (a repo, an issue, a push) cost a small fee in DASH, paid from your identity’s credits and shown before you sign. Reading is free.'
-                : `Writes (a repo, an issue, a push) cost a small fee in credits, shown before you sign. On ${ACTIVE_NETWORK.key} the DASH is free test money${faucet ? ', from the faucet' : ''}. Reading is free.`
+              testNetwork
+                ? `Every write costs a small fee, shown before you sign. Here the DASH is free test money${faucet ? ' from the faucet' : ''}; on mainnet an issue costs about ${ISSUE_CENTS} and a push ${PUSH_CENTS}. Reading is free.`
+                : `Every write costs a small fee, shown before you sign: about ${ISSUE_CENTS} for an issue and ${PUSH_CENTS} for a push, paid from your identity’s credits. Reading is free.`
             }
-            link={faucet ? { href: faucet, label: `${ACTIVE_NETWORK.key} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
+            link={faucet ? { href: faucet, label: 'Get test DASH' } : { href: DOCS.costs, label: 'What it costs' }}
           />
           <Step
             icon={<Upload className="h-4 w-4 text-forge-500" aria-hidden />}
@@ -179,10 +207,21 @@ export default function LandingPage(): JSX.Element {
               </Link>
             }
           />
-        ) : recent && recent.length === 0 ? (
+        ) : recentAll && recentAll.length === 0 ? (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">The newest repos are the featured ones above.</p>
         ) : recent ? (
-          <RepoGrid repos={recent} />
+          <>
+            {recent.length === 0 ? (
+              <p className="text-dense text-anvil-500 dark:text-anvil-400">No new repos with a description and a push this week.</p>
+            ) : (
+              <RepoGrid repos={recent} />
+            )}
+            {hidden > 0 ? (
+              <Button variant="ghost" size="sm" className="mt-3" onClick={() => setShowAll(true)} data-testid="show-all-recent">
+                Show all recent repos ({hidden} more)
+              </Button>
+            ) : null}
+          </>
         ) : sdkStatus.phase === 'error' ? null : sdkStatus.phase === 'downloading' ? (
           <DownloadProgressBar status={sdkStatus} />
         ) : (
@@ -223,14 +262,24 @@ function Step({ icon, title, body, link }: { icon: ReactNode; title: string; bod
   )
 }
 
-function Feature({ icon, title, body }: { icon: ReactNode; title: string; body: string }): JSX.Element {
+function Feature({ icon, title, body, link }: { icon: ReactNode; title: string; body: string; link: { href: string; label: string; external?: boolean } }): JSX.Element {
+  const linkClass = 'hit-area mt-2 inline-flex items-center gap-1 text-dense text-forge-700 underline dark:text-forge-300'
   return (
-    <div className="rounded-lg border border-anvil-200 bg-anvil-50 p-4 dark:border-anvil-800 dark:bg-anvil-900">
+    <div className="flex flex-col rounded-lg border border-anvil-200 bg-anvil-50 p-4 dark:border-anvil-800 dark:bg-anvil-900">
       <div className="flex items-center gap-2">
         {icon}
         <h3 className="text-dense font-semibold">{title}</h3>
       </div>
-      <p className="mt-2 text-dense text-anvil-600 dark:text-anvil-400">{body}</p>
+      <p className="mt-2 flex-1 text-dense text-anvil-600 dark:text-anvil-400">{body}</p>
+      {link.external ? (
+        <a href={link.href} target="_blank" rel="noreferrer noopener" className={linkClass}>
+          {link.label} <ExternalLink className="h-3 w-3" aria-hidden />
+        </a>
+      ) : (
+        <Link href={link.href} className={linkClass}>
+          {link.label}
+        </Link>
+      )}
     </div>
   )
 }

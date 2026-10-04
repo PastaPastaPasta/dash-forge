@@ -21,10 +21,19 @@ export interface ShowcaseEntry {
 }
 
 /**
- * By network key (`ACTIVE_NETWORK.key`). bonsia's entries (the dips and dash mirrors and the
- * seeded demo repo) went with that devnet; devnet-sakura's are added once they exist there.
+ * By network key (`ACTIVE_NETWORK.key`). A network that gets a Forge deployment gets its entries
+ * here as part of its pre-flight checklist (docs/mainnet-runbook.md), or its landing page features
+ * nothing.
  */
-export const SHOWCASE: Readonly<Record<string, readonly ShowcaseEntry[]>> = {}
+export const SHOWCASE: Readonly<Record<string, readonly ShowcaseEntry[]>> = {
+  'devnet-sakura': [
+    // The mirrors of github.com/dashpay/dash and github.com/dashpay/dips.
+    { owner: 'H3xi5biFj6wbxmpbdhHx1D2D3ofKJJ7anDG58ixhqvry', name: 'dash', repoId: '33jeZmQ2afzJAn8zVoFpY8GUWFkkfte2aSiptQcN4ZfC' },
+    { owner: 'BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq', name: 'dips', repoId: '7n5izMV9aMjAGaPi9dvqyp4aae5Lsf6GkGocVBhutZdt' },
+    // The seeded demo: code, issues and pull requests (forge-contracts/scripts/seed-v2-fixture.mjs).
+    { owner: 'G6D3ejKxgcc4yRSRyuLoPg9RGa7XWPwB9kBzU29hgEQH', name: 'forge-v2-demo', repoId: '8KBVQ41HTueY1nuGhpAGNUEy9BQSAgCHV9Z34VUw9ZuP' },
+  ],
+}
 
 /** The showcase entries of a network key. */
 export function showcaseFor(networkKey: string): readonly ShowcaseEntry[] {
@@ -44,4 +53,13 @@ export async function listShowcaseRepos(
     const r = byId.get(e.repoId)
     return r === undefined || r.ownerId !== e.owner || r.slug !== e.name || r.visibility !== 'public' ? [] : [r]
   })
+}
+
+/**
+ * The landing page's recent feed without the test debris (CJ-1): only repos with a description
+ * and a push the page's push lookup saw (one in the last week, which every repo created in that
+ * week and ever pushed has). The rest stay one click away ("Show all recent repos").
+ */
+export function isCurated(repo: DiscoveredRepo): boolean {
+  return repo.description.trim() !== '' && repo.pushedAt != null
 }

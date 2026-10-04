@@ -21,7 +21,7 @@ vi.mock('./discovery', async (orig) => {
 })
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { listShowcaseRepos, type ShowcaseEntry } from './showcase'
+import { isCurated, listShowcaseRepos, type ShowcaseEntry } from './showcase'
 
 // A network's entries, as SHOWCASE lists them (bonsia's mirrors and demo repo).
 const entries: readonly ShowcaseEntry[] = [
@@ -57,5 +57,20 @@ describe('listShowcaseRepos', () => {
   it('reads nothing on a network with no showcase', async () => {
     expect(await listShowcaseRepos({} as EvoSDK, 'testnet', 'testnet')).toEqual([])
     expect(queries).toHaveLength(0)
+  })
+})
+
+describe('isCurated: the landing feed keeps described, pushed repos (CJ-1)', () => {
+  const repo = (description: string, pushedAt: number | null) =>
+    ({ key: 'k', ownerId: 'o', name: 'n', slug: 'n', description, createdAt: 0, visibility: 'public', pushedAt }) as const
+  it('keeps a repo with a description and a push', () => {
+    expect(isCurated(repo('A tool', 1))).toBe(true)
+  })
+  it('drops one without a description, or with only whitespace', () => {
+    expect(isCurated(repo('', 1))).toBe(false)
+    expect(isCurated(repo('   ', 1))).toBe(false)
+  })
+  it('drops one with no push read', () => {
+    expect(isCurated(repo('A tool', null))).toBe(false)
   })
 })
