@@ -517,11 +517,35 @@ pub struct PatchView {
     pub head_on_base: bool,
     /// Every commit the base ref has pointed at (what a merge may name).
     pub base_tips: BTreeSet<String>,
+    /// The same commits in the order the base held them, oldest first ([`Self::tip_before`]).
+    pub base_history: Vec<String>,
     /// The PR's `transition`, `event` and `authorEvent` documents.
     pub log: TargetLog,
 }
 
 impl PatchView {
+    /// The base's tip just before `oid` first became one: what a merge naming `oid` built on.
+    /// `""` when `oid` was the base's first tip or never one.
+    #[must_use]
+    pub fn tip_before(&self, oid: &str) -> String {
+        match self.base_history.iter().position(|t| t == oid) {
+            Some(at) if at > 0 => self.base_history[at - 1].clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// The merge transition's `$createdAt`, when the PR is merged.
+    #[must_use]
+    pub fn merged_at(&self) -> Option<u64> {
+        merge_transition(&self.log.transitions).map(|t| t.created_at)
+    }
+
+    /// The merge transition's `oid` (hex), when the PR is merged and the merge names one.
+    #[must_use]
+    pub fn merge_oid(&self) -> Option<String> {
+        merge_transition(&self.log.transitions).and_then(|t| t.oid.clone())
+    }
+
     /// The review fold with thread resolution: the thread roots are the PR's comments that
     /// reply to nothing.
     #[must_use]
@@ -2257,7 +2281,8 @@ fn view_of(
         merge_base,
         base_tip: base.current,
         head_on_base,
-        base_tips: base.historical.into_iter().collect(),
+        base_tips: base.historical.iter().cloned().collect(),
+        base_history: base.historical,
         log,
     }
 }

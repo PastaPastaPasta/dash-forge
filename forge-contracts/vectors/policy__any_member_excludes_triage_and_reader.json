@@ -55,6 +55,7 @@
   "expected": {
     "met": false,
     "have": 1,
-    "need": 2
+    "need": 2,
+    "blockedBy": []
   }
 }

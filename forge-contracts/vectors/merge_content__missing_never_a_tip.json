@@ -1,0 +1,23 @@
+{
+  "name": "missing_never_a_tip",
+  "description": "The merge commit was the base's first tip or never one (no previous tip), and the head is not in it.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "",
+    "mergeParents": [
+      "5555555555555555555555555555555555555555"
+    ],
+    "headInMerge": false,
+    "tipBeforeInMerge": null,
+    "mergeChange": null,
+    "prChange": null,
+    "baseChange": null
+  },
+  "expected": {
+    "verdict": "missing",
+    "combined": []
+  }
+}

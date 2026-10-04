@@ -181,6 +181,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             | P::View { repo, .. }
             | P::Diff { repo, .. }
             | P::Checkout { repo, .. }
+            | P::Verify { repo, .. }
             | P::Checks { repo, .. }
             | P::Commits { repo, .. },
         ) => ("could not read the pull request", Some(repo)),
