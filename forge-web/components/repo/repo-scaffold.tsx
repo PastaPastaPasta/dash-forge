@@ -198,8 +198,11 @@ export function RepoScaffold({
   )
 }
 
-/** The Verification card of a page with no rail: a leaf, so a content check re-renders only it. */
-function RepoVerification({ home, selected }: { home: RepoHome; selected: SelectedRef }): JSX.Element {
+/**
+ * The Verification card of a page with no rail (code pages, compare): a leaf, so a content check
+ * re-renders only it.
+ */
+export function RepoVerification({ home, selected }: { home: RepoHome; selected: SelectedRef }): JSX.Element {
   return <TrustPanel report={useRepoTrust(home, selected)} />
 }
 

@@ -357,7 +357,7 @@ export function useCommitIdentity(): { name: string; email: string } | null {
 
 /**
  * Where a browser commit needs the viewer's name and email and none are set (QW-065): says so, and
- * opens a form right here (kept in this browser, the same setting as Settings → Merge commits),
+ * opens a form right here (kept in this browser, the same setting as Settings → Commit identity),
  * so a batch collected on the page is not lost to a trip to Settings.
  */
 export function CommitIdentityPrompt({ what, lead = 'A browser commit is authored with your name and email' }: { what: string; lead?: string }): JSX.Element {
@@ -417,7 +417,7 @@ export function CommitIdentityPrompt({ what, lead = 'A browser commit is authore
         <Link href="/settings/" className="underline">
           Settings
         </Link>{' '}
-        → Merge commits).
+        → Commit identity).
       </p>
     </form>
   )

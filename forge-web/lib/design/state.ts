@@ -30,8 +30,11 @@ export const STATE_FILL: Readonly<Record<WorkState, string>> = {
   skipped: 'bg-state-draft-fill',
 }
 
+/** The states a pull request can be in (`done` is merged). */
+export type PullWorkState = Exclude<WorkState, 'skipped'>
+
 /** A pull request's state. */
-export function pullState(state: { readonly open: boolean; readonly merged: boolean; readonly draft?: boolean | undefined }): WorkState {
+export function pullState(state: { readonly open: boolean; readonly merged: boolean; readonly draft?: boolean | undefined }): PullWorkState {
   if (state.merged) return 'done'
   if (!state.open) return 'closed'
   return state.draft === true ? 'draft' : 'open'
