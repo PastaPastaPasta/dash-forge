@@ -254,9 +254,8 @@ fn protocol_loop<R: BufRead, W: Write>(
             "option" => {
                 let rest = line.strip_prefix("option ").unwrap_or("");
                 let reply = handle_option(&mut opts, rest);
-                // git does not print an option's error text; a refusal that is not latched
-                // as fatal (shallow says so at the next command) is said here.
-                if let (options::OptionReply::Error(msg), None) = (&reply, &opts.fatal) {
+                // git does not print an option's error text (and ignores it for `cas`): say it.
+                if let options::OptionReply::Error(msg) = &reply {
                     eprintln!("error: {msg}");
                 }
                 writeln!(writer, "{}", reply.wire())?;

@@ -104,21 +104,36 @@ fn unquote(value: &str) -> String {
     let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
         return value.to_string();
     };
-    let mut out = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some(other) => out.push(other),
-                None => {}
-            }
-        } else {
-            out.push(c);
+    let bytes = inner.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' || i + 1 >= bytes.len() {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
         }
+        let octal = bytes
+            .get(i + 1..i + 4)
+            .filter(|d| d.iter().all(|b| (b'0'..=b'7').contains(b)));
+        if let Some(d) = octal {
+            out.push((d[0] - b'0') * 64 + (d[1] - b'0') * 8 + (d[2] - b'0'));
+            i += 4;
+            continue;
+        }
+        out.push(match bytes[i + 1] {
+            b'n' => b'\n',
+            b't' => b'\t',
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b'f' => 0x0c,
+            b'r' => b'\r',
+            b'v' => 0x0b,
+            other => other,
+        });
+        i += 2;
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 const SHALLOW_UNSUPPORTED: &str =
@@ -260,6 +275,12 @@ mod tests {
         assert_eq!(s.lease("refs/heads/main"), Some(oid.as_str()));
         assert_eq!(s.lease("refs/heads/new"), Some(""));
         assert_eq!(s.lease("refs/heads/other"), None);
+        // git's C quoting writes non-ASCII bytes as octal escapes.
+        assert_eq!(
+            handle_option(&mut s, &format!("cas \"refs/heads/na\\303\\257ve:{oid}\"")),
+            OptionReply::Ok
+        );
+        assert_eq!(s.lease("refs/heads/naïve"), Some(oid.as_str()));
         assert!(matches!(
             handle_option(&mut s, "cas refs/heads/main:abc"),
             OptionReply::Error(_)

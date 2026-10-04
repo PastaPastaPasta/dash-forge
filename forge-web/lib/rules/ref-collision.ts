@@ -10,19 +10,26 @@
 
 import { compareStrings } from './oid'
 
-const isPathPrefix = (parent: string, child: string): boolean => child.length > parent.length && child.startsWith(parent) && child[parent.length] === '/'
-
 /** ASCII-only case fold, as Rust's `eq_ignore_ascii_case`. */
 const foldAscii = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase())
 
+/** `parent` is a folder of `child`, ignoring ASCII case. */
+const isPathPrefix = (parent: string, child: string): boolean =>
+  child.length > parent.length && foldAscii(child.slice(0, parent.length)) === foldAscii(parent) && child[parent.length] === '/'
+
+
 /**
  * The existing ref `name` would collide with, or null: its parent or child path, or a ref that
- * differs from it only in ASCII case. `name` itself is an update, not a collision. The first
+ * differs from it only in ASCII case (the two combine: `Feature` and `feature/x` share a folder). `name` itself is an update, not a collision. The first
  * collision in byte order is returned, so every client names the same one.
  */
 export function refCollision(existing: Iterable<string>, name: string): string | null {
-  const hits = [...existing].filter((e) => e !== name && (isPathPrefix(e, name) || isPathPrefix(name, e) || foldAscii(e) === foldAscii(name)))
-  return hits.sort(compareStrings)[0] ?? null
+  let first: string | null = null
+  for (const e of existing) {
+    if (e === name || !(isPathPrefix(e, name) || isPathPrefix(name, e) || foldAscii(e) === foldAscii(name))) continue
+    if (first === null || compareStrings(e, first) < 0) first = e
+  }
+  return first
 }
 
 /** Why `name` cannot be created next to `existing` (what {@link refCollision} returned). */

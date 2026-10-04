@@ -1401,9 +1401,15 @@ fn plan_pushes(
     for spec in specs {
         let prev = remote_tip(remote_refs, &spec.dst);
         let lease = options.lease(&spec.dst);
+        // A lease that holds forces the update, and it is recorded as forced (`write_ref_updates`
+        // writes `spec.force`), as a `+` refspec would be.
+        let spec = PushSpec {
+            force: spec.force || lease.is_some(),
+            ..spec.clone()
+        };
         if let Some(reject) = lease.and_then(|want| lease_reject(want, prev.as_deref())) {
             planned.push(Planned {
-                spec: spec.clone(),
+                spec,
                 new_oid: None,
                 prev_oid: prev,
                 reject: Some(reject),
@@ -1413,7 +1419,7 @@ fn plan_pushes(
         if spec.src.is_empty() {
             // Deletion.
             planned.push(Planned {
-                spec: spec.clone(),
+                spec,
                 new_oid: None,
                 prev_oid: prev,
                 reject: None,
@@ -1421,34 +1427,28 @@ fn plan_pushes(
             continue;
         }
         let Some(new_oid) = LocalRepo::rev_parse(&spec.src) else {
+            let reject = Some(format!("cannot resolve local source {:?}", spec.src));
             planned.push(Planned {
-                spec: spec.clone(),
+                spec,
                 new_oid: None,
                 prev_oid: prev,
-                reject: Some(format!("cannot resolve local source {:?}", spec.src)),
+                reject,
             });
             continue;
         };
-        let forced = spec.force || lease.is_some();
-        let reject = match &prev {
-            None => collision_reject(&spec.dst, remote_refs, specs),
-            Some(tip) => {
-                let fast_forward =
-                    forced || tip == &new_oid || LocalRepo::is_ancestor(tip, &new_oid);
-                if fast_forward {
-                    None
-                } else {
-                    Some("non-fast-forward".to_string())
-                }
-            }
-        };
+        let reject = prev.as_ref().and_then(|tip| {
+            let fast_forward =
+                spec.force || tip == &new_oid || LocalRepo::is_ancestor(tip, &new_oid);
+            (!fast_forward).then(|| "non-fast-forward".to_string())
+        });
         planned.push(Planned {
-            spec: spec.clone(),
+            spec,
             new_oid: Some(new_oid),
             prev_oid: prev,
             reject,
         });
     }
+    reject_collisions(&mut planned, remote_refs);
     planned
 }
 
@@ -1462,20 +1462,32 @@ fn lease_reject(want: &str, prev: Option<&str>) -> Option<String> {
     (!holds).then(|| "stale info".to_string())
 }
 
-/// Why the new ref `dst` cannot be created next to the remote's refs (the ones this push does not
-/// delete), or `None`.
-fn collision_reject(
-    dst: &str,
-    remote_refs: &[(String, RefState)],
-    specs: &[PushSpec],
-) -> Option<String> {
+/// Refuse each accepted new ref that git clients could not hold next to the refs there will be
+/// (`forge_core::rules::ref_collision`): the remote's live refs, less the ones this push deletes
+/// (an accepted deletion), plus the new refs accepted before it in this push.
+fn reject_collisions(planned: &mut [Planned], remote_refs: &[(String, RefState)]) {
     use forge_core::rules::ref_collision::{collision_reason, ref_collision};
-    let deleted = |name: &str| specs.iter().any(|s| s.src.is_empty() && s.dst == name);
-    let live = remote_refs
+    let deleted: std::collections::HashSet<&str> = planned
         .iter()
-        .filter(|(name, state)| tip_oid(state).is_some() && !deleted(name))
-        .map(|(name, _)| name.as_str());
-    ref_collision(live, dst).map(|existing| collision_reason(dst, &existing))
+        .filter(|p| p.reject.is_none() && p.new_oid.is_none() && p.spec.src.is_empty())
+        .map(|p| p.spec.dst.as_str())
+        .collect();
+    let mut live: Vec<String> = remote_refs
+        .iter()
+        .filter(|(name, state)| tip_oid(state).is_some() && !deleted.contains(name.as_str()))
+        .map(|(name, _)| name.clone())
+        .collect();
+    for p in planned.iter_mut() {
+        let creates = p.reject.is_none() && p.new_oid.is_some() && p.prev_oid.is_none();
+        if !creates {
+            continue;
+        }
+        let dst = p.spec.dst.clone();
+        match ref_collision(live.iter().map(String::as_str), &dst) {
+            Some(existing) => p.reject = Some(collision_reason(&dst, &existing)),
+            None => live.push(dst),
+        }
+    }
 }
 
 /// What [`upload_push_pack`] needs from the push.
@@ -3260,7 +3272,7 @@ mod tests {
 
     #[test]
     fn a_new_ref_that_collides_is_refused_unless_this_push_deletes_the_other() {
-        use super::collision_reject;
+        use super::reject_collisions;
         use forge_core::rules::RefState;
         let live = RefState::Resolved {
             oid: "a".repeat(40),
@@ -3268,27 +3280,45 @@ mod tests {
             created_at: 0,
         };
         let refs = vec![("refs/heads/feature".to_string(), live)];
-        let create = PushSpec {
-            force: false,
-            src: "HEAD".into(),
-            dst: "refs/heads/feature/x".into(),
+        let delete = |dst: &str| Planned {
+            spec: PushSpec {
+                force: false,
+                src: String::new(),
+                dst: dst.into(),
+            },
+            new_oid: None,
+            prev_oid: Some("a".repeat(40)),
+            reject: None,
+        };
+        let rejects = |mut p: Vec<Planned>| {
+            reject_collisions(&mut p, &refs);
+            p.into_iter().map(|p| p.reject).collect::<Vec<_>>()
         };
         assert_eq!(
-            collision_reject(&create.dst, &refs, std::slice::from_ref(&create)).as_deref(),
-            Some("refs/heads/feature exists, so refs/heads/feature/x cannot be created under it")
-        );
-        let delete = PushSpec {
-            force: false,
-            src: String::new(),
-            dst: "refs/heads/feature".into(),
-        };
-        assert_eq!(
-            collision_reject(&create.dst, &refs, &[delete, create.clone()]),
-            None
+            rejects(vec![planned("refs/heads/feature/x")]),
+            vec![Some(
+                "refs/heads/feature exists, so refs/heads/feature/x cannot be created under it"
+                    .to_string()
+            )]
         );
         assert_eq!(
-            collision_reject("refs/heads/Feature", &refs, &[]).as_deref(),
-            Some("refs/heads/feature exists and differs only in letter case")
+            rejects(vec![
+                delete("refs/heads/feature"),
+                planned("refs/heads/feature/x")
+            ]),
+            vec![None, None]
+        );
+        // A deletion the plan refused (a stale lease) does not clear the way.
+        let mut stale = delete("refs/heads/feature");
+        stale.reject = Some("stale info".into());
+        assert!(rejects(vec![stale, planned("refs/heads/feature/x")])[1].is_some());
+        // Two new refs of the same push collide with each other: the second is refused.
+        let r = rejects(vec![planned("refs/heads/a"), planned("refs/heads/A/b")]);
+        assert_eq!(r[0], None);
+        assert!(
+            r[1].as_deref()
+                .is_some_and(|w| w.contains("refs/heads/a exists")),
+            "{r:?}"
         );
     }
 

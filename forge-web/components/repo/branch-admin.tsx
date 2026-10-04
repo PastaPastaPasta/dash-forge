@@ -311,7 +311,9 @@ export function RestoreBranchButton({ home, admin, refName, tip, onRestored }: {
   const [intent] = useState(newIntent)
   if (!admin.canPush) return null
   const name = shortRef(refName)
-  const block = admin.blocked ?? refWriteBlock(admin.role, refName, admin.patterns, 'restore it')
+  // A branch pushed since may now hold the name as a folder (`feature/x`) or in other letter case.
+  const collision = refCollision(home.branches.filter(isLive).map((b) => b.refName), refName)
+  const block = admin.blocked ?? (collision === null ? null : collisionReason(name, shortRef(collision))) ?? refWriteBlock(admin.role, refName, admin.patterns, 'restore it')
   const restore = async (): Promise<void> => {
     if (pending || !sdk || !signer || !guard.check(previewCreate('refUpdate', {}, EXISTING), 'core', 'restore a branch')) return
     setPending(true)

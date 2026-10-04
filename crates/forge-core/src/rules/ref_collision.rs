@@ -8,7 +8,8 @@
 //! with forge-web's `ref-collision.ts` through the `ref_collision__*` vectors.
 
 /// The existing ref that `name` would collide with, if any: one that is `name`'s parent or child
-/// path (`refs/heads/a` and `refs/heads/a/b`), or that differs from it only in ASCII case.
+/// path (`refs/heads/a` and `refs/heads/a/b`), or that differs from it only in ASCII case; the
+/// two combine (`Feature` and `feature/x` share one folder on macOS and Windows).
 /// `name` itself in `existing` is no collision (that is an update). The first collision in
 /// byte order is returned, so every client names the same one.
 #[must_use]
@@ -16,21 +17,20 @@ pub fn ref_collision<'a, I>(existing: I, name: &str) -> Option<String>
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let mut hits: Vec<&str> = existing
+    existing
         .into_iter()
         .filter(|e| *e != name)
         .filter(|e| {
             is_path_prefix(e, name) || is_path_prefix(name, e) || e.eq_ignore_ascii_case(name)
         })
-        .collect();
-    hits.sort_unstable();
-    hits.first().map(|s| (*s).to_string())
+        .min()
+        .map(str::to_string)
 }
 
-/// `parent` is a directory of `child`: `child` starts with `parent/`.
+/// `parent` is a directory of `child`, ignoring ASCII case: `child` starts with `parent/`.
 fn is_path_prefix(parent: &str, child: &str) -> bool {
     child.len() > parent.len()
-        && child.starts_with(parent)
+        && child.as_bytes()[..parent.len()].eq_ignore_ascii_case(parent.as_bytes())
         && child.as_bytes()[parent.len()] == b'/'
 }
 
@@ -68,6 +68,10 @@ mod tests {
         assert_eq!(hit("refs/heads/feature"), None);
         assert_eq!(hit("refs/heads/feat"), None);
         assert_eq!(hit("refs/heads/featured-2"), None);
+        assert_eq!(
+            hit("refs/heads/Feature/x").as_deref(),
+            Some("refs/heads/feature")
+        );
     }
 
     #[test]
