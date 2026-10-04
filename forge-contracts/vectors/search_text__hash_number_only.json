@@ -1,0 +1,14 @@
+{
+  "name": "hash_number_only",
+  "description": "#n matches the number only, never text.",
+  "case": "search_text",
+  "rules": "v2",
+  "input": {
+    "text": "#12",
+    "title": "see #12",
+    "number": 3,
+    "body": "",
+    "scope": "any"
+  },
+  "expected": false
+}

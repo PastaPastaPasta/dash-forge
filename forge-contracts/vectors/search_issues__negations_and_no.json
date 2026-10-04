@@ -1,0 +1,32 @@
+{
+  "name": "negations_and_no",
+  "description": "-label, no:label/milestone/assignee, milestone with quotes, in:title.",
+  "case": "search_issues",
+  "rules": "v2",
+  "input": {
+    "text": "-label:wontfix no:label no:milestone no:assignee milestone:\"v1.0 beta\" in:title flaky"
+  },
+  "expected": {
+    "query": {
+      "state": "open",
+      "labels": [],
+      "author": null,
+      "assignee": "none",
+      "mentions": false,
+      "sort": "newest",
+      "q": "flaky",
+      "page": 1,
+      "notLabels": [
+        "wontfix"
+      ],
+      "noLabel": true,
+      "milestone": "v1.0 beta",
+      "noMilestone": true,
+      "authorLogin": null,
+      "scope": "title",
+      "comments": null,
+      "reason": null
+    },
+    "unresolved": []
+  }
+}

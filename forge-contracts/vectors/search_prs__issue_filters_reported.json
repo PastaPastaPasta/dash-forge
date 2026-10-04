@@ -1,0 +1,38 @@
+{
+  "name": "issue_filters_reported",
+  "description": "is:issue, mentions: and reason: are issue filters; a conflicting state and a bad draft value are reported.",
+  "case": "search_prs",
+  "rules": "v2",
+  "input": {
+    "text": "is:issue mentions:@me reason:completed is:open is:merged draft:maybe review-requested:nobody!"
+  },
+  "expected": {
+    "query": {
+      "labels": [],
+      "author": null,
+      "assignee": null,
+      "sort": "newest",
+      "q": "",
+      "page": 1,
+      "notLabels": [],
+      "noLabel": false,
+      "milestone": null,
+      "noMilestone": false,
+      "authorLogin": null,
+      "scope": "any",
+      "comments": null,
+      "reason": null,
+      "state": "open",
+      "draft": null,
+      "reviewRequested": null
+    },
+    "unresolved": [
+      "is:issue",
+      "mentions:@me",
+      "reason:completed",
+      "is:merged",
+      "draft:maybe",
+      "review-requested:nobody!"
+    ]
+  }
+}

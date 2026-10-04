@@ -1,0 +1,14 @@
+{
+  "name": "negated",
+  "description": "A -word excludes.",
+  "case": "search_text",
+  "rules": "v2",
+  "input": {
+    "text": "crash -windows",
+    "title": "crash on windows",
+    "number": 3,
+    "body": "",
+    "scope": "any"
+  },
+  "expected": false
+}

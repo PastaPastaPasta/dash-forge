@@ -1,0 +1,36 @@
+{
+  "name": "unresolved_and_prose",
+  "description": "Unusable values and unapplied GitHub qualifiers are reported; an unknown key and a GitHub key with no value stay text.",
+  "case": "search_issues",
+  "rules": "v2",
+  "input": {
+    "text": "author:not_a_login! label: sort:best review:approved status: broken foo:bar comments:5..2"
+  },
+  "expected": {
+    "query": {
+      "state": "open",
+      "labels": [],
+      "author": null,
+      "assignee": null,
+      "mentions": false,
+      "sort": "newest",
+      "q": "status: broken foo:bar",
+      "page": 1,
+      "notLabels": [],
+      "noLabel": false,
+      "milestone": null,
+      "noMilestone": false,
+      "authorLogin": null,
+      "scope": "any",
+      "comments": null,
+      "reason": null
+    },
+    "unresolved": [
+      "author:not_a_login!",
+      "label:",
+      "sort:best",
+      "review:approved",
+      "comments:5..2"
+    ]
+  }
+}

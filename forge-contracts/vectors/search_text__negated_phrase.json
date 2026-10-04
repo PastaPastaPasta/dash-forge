@@ -1,0 +1,14 @@
+{
+  "name": "negated_phrase",
+  "description": "A -\"phrase\" excludes; an unclosed quote is a word.",
+  "case": "search_text",
+  "rules": "v2",
+  "input": {
+    "text": "-\"on start\" \"unclosed",
+    "title": "\"unclosed thing",
+    "number": 1,
+    "body": "fails later",
+    "scope": "any"
+  },
+  "expected": true
+}

@@ -1,0 +1,14 @@
+{
+  "name": "scope_title",
+  "description": "in:title does not look in the body.",
+  "case": "search_text",
+  "rules": "v2",
+  "input": {
+    "text": "secret",
+    "title": "plain",
+    "number": 1,
+    "body": "secret",
+    "scope": "title"
+  },
+  "expected": false
+}

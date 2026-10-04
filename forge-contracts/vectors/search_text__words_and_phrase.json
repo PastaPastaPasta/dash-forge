@@ -1,0 +1,14 @@
+{
+  "name": "words_and_phrase",
+  "description": "Every word, and a quoted phrase whole, case-insensitively, in title or body.",
+  "case": "search_text",
+  "rules": "v2",
+  "input": {
+    "text": "Crash \"on start\"",
+    "title": "App crash",
+    "number": 3,
+    "body": "It fails ON START.",
+    "scope": "any"
+  },
+  "expected": true
+}

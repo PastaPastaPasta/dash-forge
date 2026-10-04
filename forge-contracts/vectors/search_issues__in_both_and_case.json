@@ -1,0 +1,32 @@
+{
+  "name": "in_both_and_case",
+  "description": "in:title,body is both; keys match in any case.",
+  "case": "search_issues",
+  "rules": "v2",
+  "input": {
+    "text": "IN:title,body Label:docs STATE:open"
+  },
+  "expected": {
+    "query": {
+      "state": "open",
+      "labels": [
+        "docs"
+      ],
+      "author": null,
+      "assignee": null,
+      "mentions": false,
+      "sort": "newest",
+      "q": "",
+      "page": 1,
+      "notLabels": [],
+      "noLabel": false,
+      "milestone": null,
+      "noMilestone": false,
+      "authorLogin": null,
+      "scope": "any",
+      "comments": null,
+      "reason": null
+    },
+    "unresolved": []
+  }
+}
