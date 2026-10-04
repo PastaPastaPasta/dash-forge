@@ -86,8 +86,8 @@ async function confirmWrite(page: Page, label: RegExp): Promise<void> {
 async function commitIdentity(page: Page, name: string, email: string): Promise<void> {
   await page.goto('/settings/', { waitUntil: 'domcontentloaded' })
   await unlock(page)
-  await page.getByLabel('Merge commit name').fill(name)
-  await page.getByLabel('Merge commit email').fill(email)
+  await page.getByLabel('Commit author name').fill(name)
+  await page.getByLabel('Commit author email').fill(email)
 }
 
 interface View {
