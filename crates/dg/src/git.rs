@@ -318,7 +318,7 @@ pub fn tree_with(
 }
 
 /// Write `bytes` as a blob in `dir`, returning its id.
-fn hash_blob(dir: &Path, bytes: &[u8]) -> Result<String> {
+pub(crate) fn hash_blob(dir: &Path, bytes: &[u8]) -> Result<String> {
     use std::io::Write as _;
     let mut child = Command::new("git")
         .current_dir(dir)
