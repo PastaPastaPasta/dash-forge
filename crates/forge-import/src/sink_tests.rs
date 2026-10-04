@@ -311,6 +311,7 @@ impl Chain for &Recorded {
         Ok(Current {
             code: item.code,
             labels: item.labels.clone(),
+            retargeted: None,
         })
     }
 

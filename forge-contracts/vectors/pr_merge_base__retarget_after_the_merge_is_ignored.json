@@ -1,0 +1,36 @@
+{
+  "name": "retarget_after_the_merge_is_ignored",
+  "description": "A retarget written after the merge transition does not move a merged PR's base; one at the merge's own time still counts.",
+  "case": "pr_merge_base",
+  "rules": "v2",
+  "input": {
+    "baseRefName": "refs/heads/main",
+    "openedAt": 100,
+    "mergedAt": 300,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/dev",
+        "oid": null,
+        "createdAt": 300
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "retarget",
+        "actor": "maint",
+        "value": "refs/heads/late",
+        "oid": null,
+        "createdAt": 301
+      }
+    ]
+  },
+  "expected": {
+    "refName": "refs/heads/dev",
+    "since": 300,
+    "retargeted": true
+  }
+}

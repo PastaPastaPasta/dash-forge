@@ -69,8 +69,8 @@ export interface PullActions {
 
 export interface PullActionInputs {
   readonly pull: Pick<PullView, 'author' | 'headOid' | 'headOnBase' | 'stateComplete' | 'state'> & {
-    /** The full base ref (`refs/heads/main`); absent when unknown. */
-    readonly baseRefName?: string
+    /** The full base ref the PR merges into (`refs/heads/main`, a retarget's when there is one); absent when unknown. */
+    readonly mergeBaseRefName?: string
   }
   /** The signed-in identity, or null when logged out. */
   readonly viewer: string | null
@@ -398,7 +398,7 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
   const { merged, open } = pull.state
   // A PR whose event log was not read completely has no trustworthy state to act on.
   const actionable = pull.stateComplete && !merged
-  const base = pull.baseRefName ?? ''
+  const base = pull.mergeBaseRefName ?? ''
   const baseProtected = base !== '' && matchesProtected(base, protectedPatterns)
   const policyUnknown = policy === 'unknown'
   const unmet = unmetRules(policy, checks, maintainersOnly)
@@ -446,18 +446,18 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
  * {@link mergeRefProblem} refuses:
  * - the base must be a branch now (`currentTip`, the resolved branch; never the PR's historical
  *   tip): pushing to a deleted base would re-create it;
- * - the PR's own base must have been a branch when the PR was opened: its `baseTipOid` is empty
- *   otherwise (`prBaseTips`), and a merge event into it would never count;
- * - the PR must not have been retargeted: the fold checks a merge against the base the PR was
- *   opened with, so a merge into the new base would move that branch and never count
- *   ({@link mergeRefProblem} says to open a new PR instead, as `dg pr merge` does).
+ * - the PR's base must have been a branch when the PR was opened, or retargeted to it: its
+ *   `baseTipOid` is empty otherwise (`prBaseTips` from `prMergeBase`'s `since`), and a merge
+ *   event into it would never count;
+ * - `baseRefName` must be the base the PR merges into now (`mergeBaseRefName`: a retarget's, else
+ *   the one it was opened with), which the fold judges the merge against.
  */
 export function mergeBaseTip(
-  pull: Pick<PullView, 'baseRefName' | 'baseTipOid'>,
+  pull: Pick<PullView, 'mergeBaseRefName' | 'baseTipOid'>,
   baseRefName: string,
   currentTip: string | null,
 ): string {
-  if (currentTip === null || baseRefName !== pull.baseRefName || pull.baseTipOid === '') return ''
+  if (currentTip === null || baseRefName !== pull.mergeBaseRefName || pull.baseTipOid === '') return ''
   return currentTip
 }
 
@@ -470,14 +470,10 @@ export function mergeRefProblem(
   baseRefName: string,
   baseTipOid: string,
   headOid: string,
-  openedBaseRefName: string = baseRefName,
 ): string | null {
-  if (baseRefName !== openedBaseRefName) {
-    return 'This PR was retargeted, and a merge counts only into the base it was opened against, so a merge into the new base would never show. Close it and open a new PR against the new base.'
-  }
   if (!isPlainBranchRef(baseRefName)) return `The PR's base "${baseRefName.slice(0, 80)}" is not a plain branch (refs/heads/<name>); it is not merged in the browser.`
   if (!isOidHex(baseTipOid)) {
-    return 'The base branch does not exist, or was not a branch when this PR was opened, so a merge into it would not count. Open a new PR against an existing branch.'
+    return 'The base branch does not exist, or was not a branch when this PR was opened or retargeted to it, so a merge into it would not count. Retarget the PR to an existing branch.'
   }
   if (!isOidHex(headOid)) return 'The PR names no valid head commit.'
   return null

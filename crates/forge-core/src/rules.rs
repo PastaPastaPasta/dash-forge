@@ -47,6 +47,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 pub mod ci_rerun;
+pub mod codeowners;
 pub mod long_body;
 pub mod moderation;
 pub mod parity;
@@ -1237,7 +1238,7 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        ci_rerun, display_ref_name, is_legal_ref_name, long_body, matches_protected,
+        ci_rerun, codeowners, display_ref_name, is_legal_ref_name, long_body, matches_protected,
         merge_base_tips, overlay_tree, pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event,
         EventKind, FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff,
         Verdict,
@@ -1352,6 +1353,17 @@ mod tests {
         /// The PR's `$createdAt`: when present the base is read through [`pr_base_tips`].
         #[serde(default)]
         opened_at: Option<u64>,
+    }
+
+    /// [`v2::pr_merge_base`]'s inputs.
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PrMergeBaseInput {
+        base_ref_name: String,
+        opened_at: u64,
+        events: Vec<Event>,
+        #[serde(default)]
+        merged_at: Option<u64>,
     }
 
     impl BaseHistory {
@@ -1808,6 +1820,22 @@ mod tests {
 
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
+    struct CodeOwnersInput {
+        file: String,
+        paths: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct CodeOwnerRequestsInput {
+        tokens: Vec<String>,
+        resolved: std::collections::BTreeMap<String, Option<String>>,
+        memberships: Vec<v2::Membership>,
+        author: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
     struct RoleOracleInput {
         memberships: Vec<v2::Membership>,
         queries: Vec<RoleQuery>,
@@ -2254,6 +2282,49 @@ mod tests {
         }
     }
 
+    /// The code owners cases (`code_owners__*`, `code_owner_requests__*`).
+    fn run_code_owners_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "code_owners" => {
+                let inp: CodeOwnersInput = input(v);
+                let parsed = codeowners::parse_code_owners(&inp.file);
+                let all = parsed.owners_of_paths(&inp.paths);
+                let owners: serde_json::Map<String, serde_json::Value> = inp
+                    .paths
+                    .iter()
+                    .map(|p| (p.clone(), serde_json::json!(parsed.owners_of(p))))
+                    .collect();
+                let kinds: serde_json::Map<String, serde_json::Value> = all
+                    .iter()
+                    .map(|t| (t.clone(), serde_json::json!(codeowners::owner_kind(t))))
+                    .collect();
+                let got = serde_json::json!({
+                    "owners": owners,
+                    "all": all,
+                    "kinds": kinds,
+                    "errors": parsed.errors,
+                });
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
+            "code_owner_requests" => {
+                let inp: CodeOwnerRequestsInput = input(v);
+                let got = codeowners::code_owner_requests(
+                    &inp.tokens,
+                    &inp.resolved,
+                    &v2::RoleOracle::new(inp.memberships),
+                    &inp.author,
+                );
+                assert_eq!(
+                    got,
+                    expected::<codeowners::OwnerRequests>(v),
+                    "vector `{ctx}`"
+                );
+            }
+            other => panic!("vector `{ctx}`: not a code owners case `{other}`"),
+        }
+    }
+
     /// `pubkey_entry` and `commit_signature`: the signed-commit rules ([`super::signature`]).
     fn run_signature_case(v: &Vector) {
         #[derive(Deserialize, Serialize)]
@@ -2348,6 +2419,16 @@ mod tests {
                 );
                 assert_eq!(inp.tips(), expected::<MergeBaseTips>(v), "vector `{ctx}`");
             }
+            "pr_merge_base" => {
+                let inp: PrMergeBaseInput = input(v);
+                let got = v2::pr_merge_base(
+                    &inp.base_ref_name,
+                    inp.opened_at,
+                    &inp.events,
+                    inp.merged_at,
+                );
+                assert_eq!(got, expected::<v2::MergeBase>(v), "vector `{ctx}`");
+            }
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);
                 let key: Option<[u8; 32]> = inp.ref_key.as_deref().map(|k| {
@@ -2386,6 +2467,7 @@ mod tests {
                     .collect();
                 assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
             }
+            "code_owners" | "code_owner_requests" => run_code_owners_case(v),
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
             | "linked_issues" => run_review_case(v),
             "checks" | "thread_meta" | "pinned" | "milestones" | "trending" | "hidden_items" => {

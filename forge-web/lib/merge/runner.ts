@@ -25,7 +25,7 @@ import type { WriteAuth } from '../sdk'
 import type { MergeInput } from './engine'
 import type { MergeResult } from './protocol'
 import { mergeRefProblem } from '../view/pull-actions'
-import { formatBytes, plural } from '../view/format'
+import { branchName, formatBytes, plural } from '../view/format'
 
 export type MergeStepId = 'fetch' | 'merge' | 'pack' | 'upload' | 'manifest' | 'index' | 'ref' | 'event' | 'bypass'
 
@@ -67,6 +67,11 @@ export interface MergeRun {
   /** The base tip and PR head this run merged (the ref update's `prevOid` is this tip). */
   readonly baseTip: string
   readonly headOid: string
+  /**
+   * The base branch this run moves (`refs/heads/…`): a PR retargeted since is a new run, even
+   * where the new base has the same tip (its ref update was written to the old base).
+   */
+  readonly baseRef?: string
   /** The squash message this run built with (absent: a merge): a different one is a new run. */
   readonly squash?: string
   /** Built as a merge commit where a fast-forward was possible (--no-ff): the other choice is a new run. */
@@ -84,11 +89,12 @@ export interface MergeRun {
   readonly bypassEventId?: string
 }
 
-/** A fresh run for `input`. */
-export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message' | 'rebase'>): MergeRun {
+/** A fresh run for `input` (into `baseRef`, when known). */
+export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message' | 'rebase'>, baseRef?: string): MergeRun {
   return {
     baseTip: input.baseTip,
     headOid: input.headOid,
+    ...(baseRef !== undefined ? { baseRef } : {}),
     ...(input.squash ? { squash: input.squash.message } : {}),
     ...(input.noFastForward === true && !input.squash ? { noFastForward: true as const } : {}),
     ...(input.message !== undefined && !input.squash ? { message: input.message } : {}),
@@ -110,9 +116,9 @@ function runMatches(run: MergeRun, input: Pick<MergeInput, 'baseTip' | 'headOid'
   )
 }
 
-/** `run` when it is for `input`'s base tip, head, method and message, else a fresh run. */
-export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message' | 'rebase'>): MergeRun {
-  return run !== null && runMatches(run, input) ? run : newRun(input)
+/** `run` when it is for `input`'s base branch, base tip, head, method and message, else a fresh run. */
+export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward' | 'message' | 'rebase'>, baseRef?: string): MergeRun {
+  return run !== null && run.baseRef === baseRef && runMatches(run, input) ? run : newRun(input, baseRef)
 }
 
 export interface MergeRunDeps {
@@ -120,10 +126,10 @@ export interface MergeRunDeps {
   readonly auth: WriteAuth
   readonly repo: RepoRef
   /**
-   * `baseRefName`: the base the merge moves (the PR's current one); `openedBaseRefName`: the
-   * base it was opened against, which the fold checks the merge against.
+   * `baseRefName`: the base the merge moves and is judged against: the PR's current one
+   * (`PullView.mergeBaseRefName`, a retarget's when there is one).
    */
-  readonly pull: Pick<PullView, 'id' | 'number' | 'baseRefName' | 'author'> & { readonly openedBaseRefName: string }
+  readonly pull: Pick<PullView, 'id' | 'number' | 'baseRefName' | 'author'>
   readonly input: MergeInput
   /** Runs the merge and builds the pack (the worker). */
   readonly merge: (input: MergeInput, onPhase: (phase: 'analyse' | 'merge' | 'pack') => void) => Promise<MergeResult>
@@ -140,6 +146,13 @@ export interface MergeRunDeps {
   readonly verifyPack: (pack: Uint8Array, tip: string) => Promise<readonly string[]>
   /** The base branch's current tip, read fresh (`''` when it has none), just before moving it. */
   readonly readBaseTip: () => Promise<string>
+  /**
+   * The PR's base as its newest retarget names it now (`PullView.mergeBaseRefName`), read
+   * fresh just before the ref update and again before the merge transition: a retarget
+   * written while the pack uploads must not let the runner move the old base, or record a
+   * merge the relay and readers then judge against the new one.
+   */
+  readonly readBaseRef: () => Promise<string>
   /** The intent prefix for this merge's writes (one per PR head), so retries re-use them. */
   readonly intent: string
   /**
@@ -230,12 +243,13 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   // A private repo's pack must be encrypted, which the browser merge does not do: refused
   // here too, not only by the panel, so no caller can store a plaintext pack for one.
   if (deps.repo.visibility !== 'public') throw new MergeStopped('Private repositories are merged with `dg pr merge` for now.')
-  if (!runMatches(from, deps.input)) {
+  const otherBase = from.baseRef !== undefined && from.baseRef !== deps.pull.baseRefName
+  if (otherBase || !runMatches(from, deps.input)) {
     throw new MergeStopped('the base branch, the PR head or the merge method changed since this merge started; merge again')
   }
   // The base ref and head come from the PR document, which its author wrote: refuse anything
   // but an existing plain branch and a full commit id before a byte is paid for.
-  const refProblem = mergeRefProblem(deps.pull.baseRefName, deps.input.baseTip, deps.input.headOid, deps.pull.openedBaseRefName)
+  const refProblem = mergeRefProblem(deps.pull.baseRefName, deps.input.baseTip, deps.input.headOid)
   if (refProblem !== null) throw new MergeStopped(refProblem)
   let run: MergeRun = from
   const mark = (step: MergeStepId, patch: Partial<MergeRun> = {}, state: 'done' | 'skipped' = 'done', detail?: string): void => {
@@ -339,7 +353,18 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
     }
   }
 
+  // The PR may have been retargeted since the run started (or, on a resumed run, since the ref
+  // update): consensus allows it, and the merge is judged against the newest retarget written
+  // before the merge transition. Re-read before each of the two writes.
+  const checkBase = async (step: 'ref' | 'event'): Promise<void> => {
+    const now = await attempt(step, () => deps.readBaseRef())
+    if (now === deps.pull.baseRefName) return
+    const moved = run.done.includes('ref') ? `${branchName(deps.pull.baseRefName)} was moved but no merge was recorded` : 'the pack stays stored and unused'
+    throw new MergeStopped(`the pull request was retargeted to ${branchName(now) || '(no branch)'} since this merge started; ${moved}. Merge again`)
+  }
+
   if (!run.done.includes('ref')) {
+    await checkBase('ref')
     // The merge was built on `run.baseTip`: if the branch has moved since, moving it now would
     // drop the commits pushed in between.
     const tipNow = await attempt('ref', () => deps.readBaseTip())
@@ -361,6 +386,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   }
 
   if (!run.done.includes('event')) {
+    await checkBase('event')
     const w = await attempt('event', () =>
       // The merge is recorded as a member's merge transition (only a member merges, and the
       // merge panel is shown to members only).

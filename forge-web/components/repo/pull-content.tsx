@@ -132,6 +132,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
+import { CodeOwnersProvider } from '@/components/repo/code-owners'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
 import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/view/upstream'
@@ -374,7 +375,7 @@ function PullPage({
     // Diverged: no single tip to delete from, and nothing is written (never reported as deleted).
     if (state?.state === 'diverged') throw new Error(`${shortBranch(refName)} has diverged heads; delete it with git`)
     const tip = state?.state === 'resolved' ? state.oid : null
-    const problem = deleteBranchProblem({ refName, sameRepo: src.repoId === repo.repoId, baseRefName: pull.baseRefName, defaultBranch, headOid, tip })
+    const problem = deleteBranchProblem({ refName, sameRepo: src.repoId === repo.repoId, baseRefName: pull.mergeBaseRefName, defaultBranch, headOid, tip })
     if (problem !== null) throw new Error(problem)
     // Already gone (or never recorded): nothing to write, and it is deleted.
     if (tip === null) return
@@ -555,7 +556,7 @@ function PullPage({
   })
   // "Mark as merged (done elsewhere)" is offered on a ready PR whose head is on the base already.
   const showMarkMerged = actions.canMarkMerged && !pull.state.draft
-  const base = shortBranch(pull.baseRefName) || 'the base branch'
+  const base = shortBranch(pull.mergeBaseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
   // Who may request reviews (the author, or a member down to triage).
   const canRequestReview = identity !== null && (isAuthor || caps.canRequestReview) && !archived
@@ -1075,7 +1076,7 @@ function PullPage({
     const label = `${sourcePrefix}${shortBranch(name)}`
     if (sync.kind === 'deleted') {
       // Who could delete it may restore it: the head is still stored there (only the ref moved).
-      const restorable = closedWrite.known && closedWrite.can && closedSource.visibility === 'public' && pull.headOid !== '' && !(closedSource.repoId === repo.repoId && name === pull.baseRefName)
+      const restorable = closedWrite.known && closedWrite.can && closedSource.visibility === 'public' && pull.headOid !== '' && !(closedSource.repoId === repo.repoId && name === pull.mergeBaseRefName)
       if (!restorable) return null
       const head = pull.headOid
       return { label, restore: true, run: () => restoreSourceBranch(closedSource, name, head) }
@@ -1084,7 +1085,7 @@ function PullPage({
       refName: name,
       source: { visibility: closedSource.visibility, sameRepo: closedSource.repoId === repo.repoId },
       canWrite: closedWrite.known ? closedWrite.can : null,
-      baseRefName: pull.baseRefName,
+      baseRefName: pull.mergeBaseRefName,
       defaultBranch: sourceDefault.data,
       headOid: pull.headOid,
     })
@@ -1159,7 +1160,7 @@ function PullPage({
                 {open ? 'wants to merge into' : 'wanted to merge into'}
               </>
             )}{' '}
-            <span className="font-mono">{shortBranch(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
+            <span className="font-mono">{shortBranch(pull.mergeBaseRefName) || '?'}</span>
             {pullOrigin?.headLabel ? (
               // A mirrored PR's head branch at the source, a fork's as `owner:branch` (L-37); the
               // mirror's own `refs/mirror/pull/<n>/head` names no branch anyone knows.
@@ -1523,7 +1524,7 @@ function PullPage({
                       refName: name,
                       source: src === null ? null : { visibility: src.visibility, sameRepo: src.repoId === repo.repoId },
                       canWrite: sourceWrite.known ? sourceWrite.can : null,
-                      baseRefName: pull.baseRefName,
+                      baseRefName: pull.mergeBaseRefName,
                       defaultBranch: sourceDefault.data,
                       headOid: pull.headOid,
                     })
@@ -1540,7 +1541,7 @@ function PullPage({
           {tab === 'conversation' ? (
             <>
               {!(open && pull.state.draft) && open && (actions.baseProtected || rules.status !== null) ? (
-                <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checks={requiredChecks} />
+                <BranchRules base={pull.mergeBaseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checks={requiredChecks} />
               ) : null}
 
               {/* Composer */}
@@ -1727,7 +1728,10 @@ function PullPage({
                   suggestions={suggest.actions}
                   {...(identity !== null && open && !writeBlocked && reviewDraft.pending ? { pending: reviewDraft.pending } : {})}
                 >
-                  {diff}
+                  {/* Code owners from the base branch's file, as GitHub reads them. */}
+                  <CodeOwnersProvider reader={c.sides.base} readerKey={comparison.sidesKey} commitOid={comparison.spec.baseTipOid || c.comparedBaseOid || ''}>
+                    {diff}
+                  </CodeOwnersProvider>
                 </InlineCommentsProvider>
               )}
             />
@@ -1845,7 +1849,7 @@ function PullPage({
                 <>
                   <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="source-branch-deleted-note">
                     The branch was deleted. The PR&apos;s head is <Oid value={pull.headOid} chars={7} copyable={false} />
-                    {merged ? `, in ${shortBranch(pull.state.baseRef ?? pull.baseRefName)}'s history:` : '.'}
+                    {merged ? `, in ${shortBranch(pull.mergeBaseRefName)}'s history:` : '.'}
                   </p>
                   {merged ? <CopyRow text={`git switch --detach ${pull.headOid}`} label="Copy the checkout command" className="mt-2" /> : null}
                 </>

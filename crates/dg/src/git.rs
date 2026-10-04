@@ -254,6 +254,11 @@ fn run_git(mut cmd: Command, dir: &Path, args: &[&str]) -> Result<String> {
 
 /// `git <args>` in `dir`, returning stdout exactly (a file's content: not trimmed), as UTF-8.
 pub fn git_raw(dir: &Path, args: &[&str]) -> Result<String> {
+    String::from_utf8(git_bytes(dir, args)?).context("the file is not UTF-8 text")
+}
+
+/// `git <args>` in `dir`, returning stdout exactly, as bytes.
+pub fn git_bytes(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .current_dir(dir)
         .args(args)
@@ -266,7 +271,7 @@ pub fn git_raw(dir: &Path, args: &[&str]) -> Result<String> {
             last_lines(&String::from_utf8_lossy(&out.stderr), 6)
         );
     }
-    String::from_utf8(out.stdout).context("the file is not UTF-8 text")
+    Ok(out.stdout)
 }
 
 /// The text of `path` at `commit`, when it is a regular file (mode 100644 or 100755): not a

@@ -39,7 +39,7 @@ make_release() {
     stage="$work/stage/$name"
     rel="$work/releases/download/v$version"
     mkdir -p "$stage/completions" "$rel"
-    for bin in dg git-remote-dash forge-relay forge-import; do
+    for bin in dg git-remote-dash forge-relay forge-import forge-runner; do
         printf '#!/bin/sh\necho "%s %s (0123456789ab %s)"\n' "$bin" "$version" "$TARGET" > "$stage/$bin"
         chmod 755 "$stage/$bin"
     done

@@ -495,6 +495,17 @@ function runCaseV2(v: Vector): void {
       expect(baseTipsOf(inp)).toEqual(v.expected)
       break
     }
+    case 'pr_merge_base': {
+      onlyKeys(v, ['baseRefName', 'openedAt', 'events', 'mergedAt'])
+      const inp = v.input as {
+        readonly baseRefName: string
+        readonly openedAt: number
+        readonly events: readonly Event[]
+        readonly mergedAt?: number
+      }
+      expect(v2.prMergeBase(inp.baseRefName, inp.openedAt, inp.events, inp.mergedAt ?? null)).toEqual(v.expected)
+      break
+    }
     case 'ref_name_hashes': {
       onlyKeys(v, ['doc', 'refKey'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly refKey?: string }
@@ -548,6 +559,31 @@ function runCaseV2(v: Vector): void {
       } else {
         expect(parseLongBody(inp.stored as string)).toEqual(v.expected)
       }
+      break
+    }
+    case 'code_owners': {
+      onlyKeys(v, ['file', 'paths'])
+      const inp = v.input as { readonly file: string; readonly paths: readonly string[] }
+      const parsed = v2.parseCodeOwners(inp.file)
+      const all = v2.ownersOfPaths(parsed, inp.paths)
+      expect({
+        owners: Object.fromEntries(inp.paths.map((p) => [p, v2.ownersOf(parsed, p)])),
+        all,
+        kinds: Object.fromEntries(all.map((t) => [t, v2.ownerKind(t)])),
+        errors: parsed.errors,
+      }).toEqual(v.expected)
+      break
+    }
+    case 'code_owner_requests': {
+      onlyKeys(v, ['tokens', 'resolved', 'memberships', 'author'])
+      const inp = v.input as {
+        readonly tokens: readonly string[]
+        readonly resolved: Readonly<Record<string, string | null>>
+        readonly memberships: readonly v2.Membership[]
+        readonly author: string
+      }
+      const got = v2.codeOwnerRequests(inp.tokens, new Map(Object.entries(inp.resolved)), new v2.RoleOracle(inp.memberships), inp.author)
+      expect(got).toEqual(v.expected)
       break
     }
     case 'ci_rerun': {

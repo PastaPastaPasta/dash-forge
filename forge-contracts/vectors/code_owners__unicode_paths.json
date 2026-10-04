@@ -1,0 +1,44 @@
+{
+  "name": "unicode_paths",
+  "description": "Paths and patterns match by Unicode character: `?` is one character (an accented letter, an emoji); owners are listed by the paths in code-point order.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "*.md @a\nnaïve/ @b\ncaf?.md @c\n/?.txt @q\n",
+    "paths": [
+      "😀.txt",
+      "日本/読む.md",
+      "café.md",
+      "naïve/x.txt"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "😀.txt": [
+        "@q"
+      ],
+      "日本/読む.md": [
+        "@a"
+      ],
+      "café.md": [
+        "@c"
+      ],
+      "naïve/x.txt": [
+        "@b"
+      ]
+    },
+    "all": [
+      "@c",
+      "@b",
+      "@a",
+      "@q"
+    ],
+    "kinds": {
+      "@c": "name",
+      "@b": "name",
+      "@a": "name",
+      "@q": "name"
+    },
+    "errors": []
+  }
+}

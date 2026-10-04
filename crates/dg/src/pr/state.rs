@@ -9,12 +9,12 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::collab::v2::{kind_route, Collab, EventPayload, PatchView, StateRoute};
-use forge_core::rules::v2::StateAction;
+use forge_core::rules::v2::{Role, StateAction};
 use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
-use super::{estimate, event_estimate, open_pr, open_pr_read, Est, Pr};
+use super::{event_estimate, open_pr, open_pr_read, Pr};
 use crate::common::{resolve_identity, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, route_text, safe, short, transition_route_text};
@@ -98,93 +98,161 @@ fn unchanged(ctx: &Ctx, status: &str, number: u64, text: &str, extra: serde_json
 // edit
 // ---------------------------------------------------------------------------
 
-/// `dg pr edit`: replace the PR document's title and/or body (the author only).
-pub async fn edit(
-    ctx: &Ctx,
-    repo: &str,
-    number: u64,
-    title: Option<&str>,
-    body: Option<&str>,
-    body_file: Option<&std::path::Path>,
-) -> Result<()> {
-    let body = match (body, body_file) {
-        (Some(b), _) => Some(b.to_string()),
+/// `dg pr edit`: the title and description (a replace, the author only), the labels, assignees
+/// and milestone (events, members down to triage) and the base (`--base`: a retarget, event
+/// kind 8, maintainers and writers), confirmed once.
+pub async fn edit(ctx: &Ctx, a: &crate::PrEditArgs) -> Result<()> {
+    let number = a.number;
+    let body = match (&a.body, &a.body_file) {
+        (Some(b), _) => Some(b.clone()),
         (None, Some(p)) => Some(super::inline::read_body_file(p)?),
         (None, None) => None,
     };
-    if title.is_none() && body.is_none() {
-        return Err(crate::errors::usage("pass --title, --body or --body-file"));
+    let meta = a.meta.edit();
+    if a.title.is_none() && body.is_none() && meta.is_empty() && a.base.is_none() {
+        return Err(crate::errors::usage(
+            "pass --title, --body, --body-file, --base, --add-label, --remove-label, --add-assignee, --remove-assignee, --milestone or --remove-milestone",
+        ));
     }
-    let pr = open_pr(ctx, repo, number, "pull request not edited").await?;
-    let patch = &pr.view.patch;
-    // only the author may edit: refused before a long body's artifact is paid for
-    pr.s.collab()
-        .require_author(&patch.author, &format!("edit PR #{number}"))?;
+    let pr = open_pr(ctx, &a.repo, number, "pull request not edited").await?;
+    let v = &pr.view;
+    let mut plan = match &a.base {
+        Some(base) => retarget_plan(&pr.s, v, base).await?,
+        None => crate::meta::Plan::default(),
+    };
+    let current = crate::meta::Current::of(
+        v.log.hidden_values == 0,
+        &v.state.labels,
+        &v.state.assignees,
+        v.review.milestone.clone(),
+    );
+    let more = crate::meta::plan(&pr.s, &meta, &current, &format!("PR #{number}")).await?;
+    plan.events.extend(more.events);
+    plan.unchanged.extend(more.unchanged);
+    // a private PR is re-sealed under the epoch it was opened with (private-repos.md §4.5)
+    let replace_note = if a.title.is_some() || body.is_some() {
+        match pr
+            .s
+            .collab()
+            .pr_edit_epochs(&pr.s.repo, &v.patch.document_id)
+            .await?
+        {
+            Some((pr_epoch, now)) => format!(
+                "; note: this PR is sealed under key epoch {pr_epoch} (the repo is at {now}), so the edited text stays readable to anyone who held epoch {pr_epoch}'s key, including members removed since, and if you stop being a member the edit can make the PR unreadable to everyone (private-repos.md §4.5)"
+            ),
+            None => String::new(),
+        }
+    } else {
+        String::new()
+    };
+    let patch = &v.patch;
     let field = forge_core::collab::long_body::BodyField::Patch {
-        title: title.unwrap_or(&patch.title),
+        title: a.title.as_deref().unwrap_or(&patch.title),
         base_ref_name: &patch.base_ref_name,
         source_ref_name: patch.source_ref_name.as_deref().unwrap_or_default(),
     };
-    let planned = body
+    let long = body
         .as_deref()
         .map(|b| crate::long_body::Planned::new(&pr.s.repo, field, patch.imported.as_ref(), b))
         .transpose()?;
-    let changed = title.map_or(0, str::len) as u64
-        + planned
-            .as_ref()
-            .map_or(0, crate::long_body::Planned::field_bytes);
-    let est = estimate(Est::Replace, usize::try_from(changed).unwrap_or(usize::MAX))
-        + planned.as_ref().map_or(0, |p| p.extra_credits(&pr.s.repo));
-    let stored = planned
-        .as_ref()
-        .map_or_else(String::new, crate::long_body::Planned::clause);
-    // a private PR is re-sealed under the epoch it was opened with (private-repos.md §4.5)
-    let old_epoch = match pr
-        .s
-        .collab()
-        .pr_edit_epochs(&pr.s.repo, &pr.view.patch.document_id)
-        .await?
-    {
-        Some((pr_epoch, now)) => format!(
-            "; note: this PR is sealed under key epoch {pr_epoch} (the repo is at {now}), so the edited text stays readable to anyone who held epoch {pr_epoch}'s key, including members removed since, and if you stop being a member the edit can make the PR unreadable to everyone (private-repos.md §4.5)"
-        ),
-        None => String::new(),
-    };
-    ctx.confirm_or_cancel(&format!(
-        "Edit PR #{number}? (one document replace, {}{stored}{old_epoch})",
-        cost_line(est, ctx.usd_price())
-    ))?;
-    let collab = pr.s.collab();
-    let body = match &planned {
-        Some(p) => Some(
-            p.field_text(&collab, &pr.s.repo, patch.imported.as_ref())
-                .await?,
-        ),
-        // a longer title leaves a private long body less room: its prefix is cut again
-        None => {
+    // a longer title leaves a private long body less room: its prefix is cut again
+    let refit = (a.title.is_some() && body.is_none())
+        .then(|| {
             crate::long_body::refit_kept(&pr.s.repo, field, patch.imported.as_ref(), &patch.body)
-        }
+        })
+        .flatten();
+    let edit = crate::meta::Edit {
+        noun: "PR",
+        key: "pr",
+        number,
+        target: patch.target(),
+        title: a.title.as_deref(),
+        body: body.as_deref(),
+        long,
+        refit,
+        imported: patch.imported.as_ref(),
+        replace_note,
+        plan,
+        title_json: json!(a.title.as_deref().unwrap_or(&v.patch.title)),
     };
-    let landed = collab
-        .update_target(&pr.s.repo, &patch.target(), title, body.as_deref())
+    crate::meta::run_edit(ctx, &pr.s, edit).await
+}
+
+/// The retarget `dg pr edit --base` writes (event kind 8, `value` the full ref): refused before
+/// anything is signed when the PR is not open (GitHub edits an open PR's base only), the signer
+/// is not a maintainer or writer (`t_triageKinds`), or `base` is not a branch of the repository
+/// now (D-501: a merge counts only into a branch that existed when the PR was retargeted to
+/// it). Nothing is planned when the PR already merges into `base`.
+async fn retarget_plan(s: &Session, v: &PatchView, base: &str) -> Result<crate::meta::Plan> {
+    let number = v.patch.number;
+    let base = git::full_ref(base.trim());
+    let mut plan = crate::meta::Plan::default();
+    if !v.state.open {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!(
+                "PR #{number} not retargeted: it is {}",
+                super::state_label(v)
+            ),
+        )
+        .cause("only an open pull request's base branch changes, as on GitHub")
+        .fix(if v.state.merged {
+            "a merged PR stays merged into its base".to_string()
+        } else {
+            format!("reopen it first: `dg pr reopen <repo> {number}`")
+        })
+        .note("nothing was written")
+        .into());
+    }
+    if base == v.merge_base.ref_name {
+        plan.unchanged
+            .push(format!("already based on {}", safe(short_branch(&base))));
+        return Ok(plan);
+    }
+    s.collab()
+        .require_role(
+            &s.repo,
+            Role::Writer,
+            &format!("retarget pull request #{number}"),
+        )
         .await?;
-    ctx.emit(
-        json!({
-            "status": if landed { "edited" } else { "unchanged" },
-            "pr": number,
-            "written": landed,
-            "title": title.unwrap_or(&pr.view.patch.title),
-            "bodyChanged": planned.is_some(),
-        }),
-        || {
-            if landed {
-                println!("✓ edited PR #{number}");
-            } else {
-                println!("PR #{number} already reads that way; nothing written");
-            }
-        },
-    );
-    Ok(())
+    let refs = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge)
+        .read_refs(&s.repo)
+        .await?;
+    super::require_base_branch(
+        &s.repo,
+        &base,
+        &refs,
+        &format!("PR #{number} not retargeted"),
+    )?;
+    if v.patch.source_repo_id == s.repo.id() && v.patch.source_ref_name.as_deref() == Some(&base) {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!(
+                "PR #{number} not retargeted: {} is its source branch",
+                safe(short_branch(&base))
+            ),
+        )
+        .cause("a pull request cannot merge a branch into itself")
+        .note("nothing was written")
+        .into());
+    }
+    plan.events.push(crate::meta::Planned::new(
+        EventKind::Retarget,
+        Some(base.clone()),
+        format!(
+            "retarget it from {} to {}",
+            safe(short_branch(&v.merge_base.ref_name)),
+            safe(short_branch(&base))
+        ),
+        false,
+    ));
+    Ok(plan)
+}
+
+/// `main` for `refs/heads/main`.
+fn short_branch(r: &str) -> &str {
+    r.strip_prefix("refs/heads/").unwrap_or(r)
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,7 +1102,7 @@ pub async fn commits(ctx: &Ctx, repo: &str, number: u64, limit: usize) -> Result
                 "{total} commit{} on {} not in {}",
                 if total == 1 { "" } else { "s" },
                 short(&view.head),
-                view.patch.base_ref_name
+                view.merge_base.ref_name
             );
             for r in &rows {
                 println!(

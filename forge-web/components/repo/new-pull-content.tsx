@@ -16,7 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
-import { DraftMarkError, createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
+import { DraftMarkError, createPatch, findForks, postTargetEvent, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { ARCHIVED_REASON, branchName, forkSourcePrefix, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { shortIdentity } from '@/lib/view/format'
 import { preferring, type PullComparison } from '@/lib/view/pull-diff'
@@ -29,7 +29,11 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
-import { SupersededWriteError } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, sumPreviews, withAddressee } from '@/lib/sdk'
+import { memberMayWriteEvent } from '@/lib/rules/roles'
+import { useViewerRole } from '@/hooks/use-repo-chrome'
+import { toast } from '@/hooks/use-toasts'
+import { CodeOwnerReviewers, useOwnerRequests } from '@/components/repo/code-owners'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { ComparisonDiff } from '@/components/repo/pull-diff'
 import { TemplatePicker, usePullTemplates } from '@/components/repo/issue-templates'
@@ -206,6 +210,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const sameBranch = head !== null && head.repo.repoId === repo.repoId && head.refName === base
   // The comparison below says whether the base already contains the head (nothing to merge).
   const [comparison, setComparison] = useState<PullComparison | null>(null)
+  const [comparisonError, setComparisonError] = useState<string | null>(null)
   const nothing = head !== null && (head.oid === baseTip || comparison?.upToDate === true)
 
   // The head commit's subject becomes the title until the author types one (L-16). It is read
@@ -233,7 +238,22 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     head === null
       ? null
       : { title: title.trim(), body, baseRefName: base, sourceRepoId: head.repo.repoId, sourceRefName: head.refName, headOid: head.oid }
-  const cost = composeCost(repo, 'patch', input ?? { title: title.trim(), body })
+  // Code owners of the changed files (the base's CODEOWNERS), asked for review once the PR is
+  // open: a member's `event`, or the author's own `authorEvent` (kind 13 either way).
+  const owners = useOwnerRequests({
+    repo,
+    reader: sides?.sides.base ?? null,
+    readerKey: sides?.key ?? '',
+    baseOid: baseTip,
+    changes: comparison === null ? null : comparison.upToDate === true ? [] : comparison.changes,
+    changesFailed: comparisonError,
+    author: identity,
+  })
+  const [skipOwners, setSkipOwners] = useState<ReadonlySet<string>>(() => new Set())
+  const ownerRequests = (owners.requests?.request ?? []).filter((id) => !skipOwners.has(id))
+  const viewerRole = useViewerRole(repo).role
+  const requestAs = memberMayWriteEvent(viewerRole, 13) ? 'event' : 'authorEvent'
+  const cost = sumPreviews([composeCost(repo, 'patch', input ?? { title: title.trim(), body }), ...ownerRequests.map(() => withAddressee(previewCreate(requestAs)))])
   // An archived repo is read-only (QW3-017): no pull request opens there, from any link.
   const composeBlock = home.config?.archived === true ? ARCHIVED_REASON : privateComposeBlock(home)
   // A description over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
@@ -241,20 +261,60 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const tooLong = composeTooLong(repo, 'patch', input ?? { title: title.trim(), body }, longBody)
   const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null || tooLong
 
+  // The PR is open whatever happens here: a request that fails is reported, and can be made again
+  // from the PR's Reviewers card.
+  const requestOwners = async (auth: NonNullable<typeof signer>, pr: { readonly documentId: string; readonly number: number }, ids: readonly string[]): Promise<void> => {
+    if (!sdk || identity === null) return
+    let failed = 0
+    let unconfirmed = 0
+    for (const id of ids) {
+      try {
+        await postTargetEvent(sdk, auth, repo, {
+          target: { id: pr.documentId, number: pr.number },
+          kind: 'reviewRequest',
+          author: identity,
+          isMember: requestAs === 'event',
+          payload: { refId: id },
+          intent: `${draftIntent.intent}:owner:${id}`,
+        })
+      } catch (e) {
+        // Sent but not yet seen: it may land, so it is never offered as safe to redo.
+        if (e instanceof UnconfirmedWriteError) unconfirmed++
+        else failed++
+      }
+    }
+    if (unconfirmed > 0) {
+      toast({ title: `${unconfirmed} code owner review ${unconfirmed === 1 ? 'request was' : 'requests were'} sent but not yet confirmed`, tone: 'warn', detail: 'Check the Reviewers card on the pull request in a moment before requesting again.' })
+    }
+    if (failed > 0) {
+      toast({ title: `${failed} code owner review ${failed === 1 ? 'request' : 'requests'} failed`, tone: 'warn', detail: 'Request them again from the Reviewers card on the pull request.' })
+    }
+  }
+
   const submit = async (): Promise<void> => {
-    if (pending || blocked || input === null) return
+    if (pending || blocked || owners.loading || input === null) return
     if (!guard.check(cost, 'collab', 'open a pull request')) return
     if (!sdk || !signer) return
     setPending(true)
     setError(null)
     setNote(null)
     try {
-      // The PR and its draft mark are one action: one toast with their total (QW3-039).
-      const created = await spendAction({ running: 'Opening the pull request…', done: 'Pull request opened' }, (tag) =>
-        createPatch(sdk, tag(signer), repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
-          setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
-        ),
-      )
+      // The PR, its draft mark and its code owners' review requests are one action: one toast
+      // with their total (QW3-039).
+      const created = await spendAction({ running: 'Opening the pull request…', done: 'Pull request opened' }, async (tag) => {
+        let pr: Awaited<ReturnType<typeof createPatch>>
+        try {
+          pr = await createPatch(sdk, tag(signer), repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
+            setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
+          )
+        } catch (e) {
+          // The PR landed without its draft mark: its owners are still asked, in this action.
+          if (e instanceof DraftMarkError) await requestOwners(tag(signer), e.created, ownerRequests)
+          throw e
+        }
+        await requestOwners(tag(signer), pr, ownerRequests)
+        return pr
+      })
       dropPrDraft(repo)
       router.push(repoHref('/repo/pull', addr, { number: String(created.number), created: '1' }))
     } catch (e) {
@@ -432,6 +492,19 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           <BodyCounter repo={home.repo} text={body} field="description" long={longBody} />
           <SealedLimit repo={home.repo} kind="patch" text={title.trim() + body + (input?.baseRefName ?? '') + (input?.sourceRefName ?? '')} long={longBody} />
         </div>
+        <CodeOwnerReviewers
+          owners={owners}
+          partial={comparison?.truncated === true}
+          skip={skipOwners}
+          onToggle={(id, on) =>
+            setSkipOwners((prev) => {
+              const next = new Set(prev)
+              if (on) next.delete(id)
+              else next.add(id)
+              return next
+            })
+          }
+        />
         {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CostPreview cost={cost} />
@@ -444,8 +517,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               variant="primary"
               onClick={submit}
               loading={pending}
-              disabled={blocked || guard.disabledReason !== null}
-              title={guard.disabledReason ?? undefined}
+              disabled={blocked || owners.loading || guard.disabledReason !== null}
+              title={guard.disabledReason ?? (owners.loading ? 'Reading the code owners of these changes' : undefined)}
             >
               {identity ? (asDraft ? 'Create draft pull request' : 'Create pull request') : locked ? 'Unlock to create' : 'Sign in to create'}
             </Button>
@@ -468,6 +541,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           noHead="Pick a branch to compare."
           onSides={onSides}
           onResult={setComparison}
+          onError={setComparisonError}
         />
       ) : null}
     </div>

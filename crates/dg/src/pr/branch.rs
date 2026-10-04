@@ -639,12 +639,12 @@ pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let Some(base) = view.base_tip.clone() else {
         return Err(crate::errors::usage(format!(
             "{} has no commits; there is nothing to merge in",
-            view.patch.base_ref_name
+            view.merge_base.ref_name
         )));
     };
     // The base is a refspec below (and the source branch a push destination): refuse a
     // malformed one before anything else.
-    git::require_branch_ref(&view.patch.base_ref_name)?;
+    git::require_branch_ref(&view.merge_base.ref_name)?;
     let src = writable_source(s, view, number, "update the PR branch").await?;
     let route = head_route(s, view, &format!("update pull request #{number}")).await?;
     require_branch_at_head(s, &src, view, repo, number).await?;
@@ -656,7 +656,7 @@ pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             || {
                 println!(
                     "PR #{number} already contains {} ({}); nothing written",
-                    view.patch.base_ref_name,
+                    view.merge_base.ref_name,
                     short(&base)
                 );
             },
@@ -668,14 +668,14 @@ pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             dir,
             &s.repo,
             view.patch.number,
-            &view.patch.base_ref_name,
+            &view.merge_base.ref_name,
             &base,
             &view.head,
         ));
     };
     ctx.confirm_or_cancel(&format!(
         "Merge {} ({}) into {} of {} and move PR #{number}'s head? ({} plus the pack's storage)",
-        view.patch.base_ref_name,
+        view.merge_base.ref_name,
         short(&base),
         src.ref_name,
         src.repo_display,
@@ -684,10 +684,10 @@ pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let mut steps = Steps::new(ctx.json);
     let author = git::merge_author_here(&s.identity.id());
     let short_base = view
-        .patch
-        .base_ref_name
+        .merge_base
+        .ref_name
         .strip_prefix("refs/heads/")
-        .unwrap_or(&view.patch.base_ref_name);
+        .unwrap_or(&view.merge_base.ref_name);
     let short_src = src
         .ref_name
         .strip_prefix("refs/heads/")
@@ -709,7 +709,7 @@ pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         || {
             println!(
                 "✓ merged {} into {}; PR #{number} is at {}",
-                view.patch.base_ref_name,
+                view.merge_base.ref_name,
                 src.ref_name,
                 short(&commit)
             );
@@ -725,7 +725,7 @@ pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 /// The branch `dg pr merge --delete-branch` will delete, checked before the merge.
 pub async fn deletable_source(s: &Session, view: &PatchView, number: u64) -> Result<SourceBranch> {
     let src = writable_source(s, view, number, "delete the PR branch").await?;
-    if src.repo.id() == s.repo.id() && src.ref_name == view.patch.base_ref_name {
+    if src.repo.id() == s.repo.id() && src.ref_name == view.merge_base.ref_name {
         return Err(crate::errors::usage(
             "the PR's source branch is its base branch; refusing to delete it",
         ));

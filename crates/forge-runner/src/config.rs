@@ -12,6 +12,7 @@
 //! refs = ["refs/heads/**"]      # which refs run (`*` stays within a path segment, `**` does not)
 //! trusted_refs = ["refs/heads/main"]   # only these get secrets
 //! secrets_file = "/etc/forge-runner/alice-project.secrets"   # KEY=value lines (act --secret-file)
+//! schedule = true               # run `on.schedule` crons on the default branch (off by default)
 //!
 //! [relay]                       # optional: the owner's relay wakes the runner (crate::relay)
 //! url = "http://relay:8080"
@@ -191,6 +192,11 @@ pub struct RepoConfig {
     /// `pull_requests` policy and secrets rules.
     #[serde(default = "default_true")]
     pub reruns: bool,
+    /// Run the workflows' `on.schedule` cron expressions (UTC) on the default branch's tip, as
+    /// GitHub does. Off by default: every scheduled job posts check runs, and each costs
+    /// credits however often the expression fires.
+    #[serde(default)]
+    pub schedule: bool,
 }
 
 /// Which pull requests a repository's runner runs. None ever gets the secrets unless its head

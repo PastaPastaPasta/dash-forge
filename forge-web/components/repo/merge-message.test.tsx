@@ -63,6 +63,7 @@ const pull = {
   author: 'someone',
   headOid: HEAD,
   baseRefName: 'refs/heads/main',
+  mergeBaseRefName: 'refs/heads/main',
   baseTipOid: BASE,
   sourceId: 'R',
   sourceRefName: 'refs/heads/feature',

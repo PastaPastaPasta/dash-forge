@@ -27,6 +27,7 @@
 
 pub mod branch;
 pub mod inline;
+pub mod owners;
 pub mod review;
 pub mod state;
 pub mod threads;
@@ -94,23 +95,7 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
         PrCommand::Checkout { repo, number } => checkout(ctx, repo, *number).await,
         PrCommand::Review(a) => review::review(ctx, a).await,
         PrCommand::Comment(a) => review::comment(ctx, a).await,
-        PrCommand::Edit {
-            repo,
-            number,
-            title,
-            body,
-            body_file,
-        } => {
-            state::edit(
-                ctx,
-                repo,
-                *number,
-                title.as_deref(),
-                body.as_deref(),
-                body_file.as_deref(),
-            )
-            .await
-        }
+        PrCommand::Edit(a) => state::edit(ctx, a).await,
         PrCommand::Sync { repo, number, head } => {
             state::sync(ctx, repo, *number, head.as_deref()).await
         }
@@ -373,7 +358,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     } else {
         svc.read_refs(handle).await?
     };
-    require_base_branch(handle, &base, &target_refs)?;
+    require_base_branch(handle, &base, &target_refs, "pull request not created")?;
     let title = match &args.title {
         Some(t) => t.clone(),
         None => git::git(&cwd, &["log", "-1", "--format=%s", &head_oid], &[])
@@ -411,6 +396,20 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     if !s.collab().patch_create_pending(handle, &input, &journal)? {
         refuse_duplicate(&s, handle, &source, &head_ref, &base, args.draft).await?;
     }
+    // Once the PR may be created: the base's CODEOWNERS: whom to ask for review once the PR is open (GitHub's behaviour).
+    let base_tip = target_refs
+        .iter()
+        .find(|(n, _)| *n == base)
+        .and_then(|(_, st)| forge_core::rules::tip_of(st));
+    let owner_plan = match (&base_tip, args.no_code_owners) {
+        (Some(tip), false) => {
+            owners::plan(
+                ctx, &s, handle, &cwd, &base, tip, &source, &head_ref, &head_oid,
+            )
+            .await
+        }
+        _ => None,
+    };
     if !ctx.json {
         println!(
             "Open PR {title:?} in {}: {} {head_ref} ({}) → {base}",
@@ -427,10 +426,30 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     let pr_quote = crate::quote::target_create(text) + planned.extra_credits(handle);
     let price = ctx.usd_price();
     let stored = planned.clause();
+    // Each code owner review request is one more event naming its reviewer.
+    let asked = owner_plan.as_ref().map_or(0, |p| p.requests.request.len());
+    let requests_quote = owner_plan.as_ref().map_or(0, |p| {
+        (event_estimate(p.route, 0) + crate::quote::ADDRESSEE_EXTRA) * asked as u64
+    });
+    if let (Some(plan), false) = (&owner_plan, ctx.json) {
+        owners::print_plan(plan);
+    }
+    let requests_text = match asked {
+        0 => String::new(),
+        1 => " and one code owner review request".to_string(),
+        n => format!(" and {n} code owner review requests"),
+    };
     ctx.confirm_or_cancel(&if args.draft {
         format!(
-            "Open it as a draft? (the PR and a draft transition: two documents, {}{stored})",
-            cost_line(pr_quote + crate::quote::TRANSITION, price)
+            "Open it as a draft? (the PR and a draft transition{requests_text}: {} documents, {}{stored})",
+            2 + asked,
+            cost_line(pr_quote + crate::quote::TRANSITION + requests_quote, price)
+        )
+    } else if asked > 0 {
+        format!(
+            "Open it? (the PR{requests_text}: {} documents, {}{stored})",
+            1 + asked,
+            cost_line(pr_quote + requests_quote, price)
         )
     } else {
         format!(
@@ -442,6 +461,12 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     let collab = s.collab();
     input.body = planned.field_text(&collab, handle, None).await?;
     let created = collab.create_patch(handle, &input, &journal).await?;
+    let requested = match &owner_plan {
+        Some(plan) if !plan.requests.request.is_empty() => {
+            owners::request(&s, handle, created.number, &created.document_id, plan).await
+        }
+        _ => Vec::new(),
+    };
     let spent = s.spent_since(before).await;
     ctx.emit(
         json!({
@@ -458,6 +483,11 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             "draft": args.draft,
             "draftTransitionId": created.draft_transition,
             "resumed": created.resumed,
+            "codeOwners": owner_plan.as_ref().map(|p| json!({
+                "file": p.file,
+                "requested": requested,
+                "skipped": p.requests.skipped,
+            })),
             "cost": cost_json(spent, price),
         }),
         || {
@@ -473,6 +503,13 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
                 handle.display(),
                 cost_line(spent, price)
             );
+            let ok = requested.iter().filter(|r| r["requested"] == true).count();
+            if ok > 0 {
+                println!(
+                    "✓ asked {ok} code owner{} for review",
+                    if ok == 1 { "" } else { "s" }
+                );
+            }
         },
     );
     Ok(())
@@ -599,7 +636,12 @@ struct PrHead {
 /// Refuse a PR base that is not a branch of `target` (never pushed, a typo, or deleted): a
 /// merge event into it would never count (`pr_base_tips`), and `dg pr merge` would create the
 /// branch (D-501). `refs` are the target's refs as `read_refs` returns them.
-fn require_base_branch(target: &Repo, base: &str, refs: &[(String, RefState)]) -> Result<()> {
+pub(crate) fn require_base_branch(
+    target: &Repo,
+    base: &str,
+    refs: &[(String, RefState)],
+    headline: &str,
+) -> Result<()> {
     git::require_branch_ref(base)?;
     let mut live = refs
         .iter()
@@ -621,7 +663,7 @@ fn require_base_branch(target: &Repo, base: &str, refs: &[(String, RefState)]) -
     Err(UserError::new(
         codes::NOT_FOUND,
         format!(
-            "pull request not created: {} is not a branch of {}",
+            "{headline}: {} is not a branch of {}",
             safe(base),
             target.display()
         ),
@@ -732,12 +774,7 @@ fn same_head_and_base(v: &PatchView, source_id: &str, head_ref: &str, base: &str
     v.state.open
         && v.patch.source_repo_id == source_id
         && v.patch.source_ref_name.as_deref() == Some(head_ref)
-        && git::full_ref(
-            v.state
-                .base_ref
-                .as_deref()
-                .unwrap_or(&v.patch.base_ref_name),
-        ) == base
+        && git::full_ref(&v.merge_base.ref_name) == base
 }
 
 // ---------------------------------------------------------------------------
@@ -790,8 +827,9 @@ async fn list(
                     "author": v.patch.author,
                     "state": state_field(v),
                     "baseRef": v.patch.base_ref_name,
+                    "baseRefName": v.merge_base.ref_name,
                     "baseTip": v.base_tip,
-                    "retargetedTo": v.state.base_ref,
+                    "retargetedTo": v.merge_base.retargeted.then_some(&v.merge_base.ref_name),
                     "headOid": v.head,
                     "repoId": v.patch.repo_id,
                     "sourceRepoId": v.patch.source_repo_id,
@@ -1091,8 +1129,9 @@ async fn view(
             "draft": v.state.draft,
             "labels": v.state.labels,
             "assignees": v.state.assignees,
-            "retargetedTo": v.state.base_ref,
+            "retargetedTo": v.merge_base.retargeted.then_some(&v.merge_base.ref_name),
             "baseRef": v.patch.base_ref_name,
+            "baseRefName": v.merge_base.ref_name,
             "baseTip": v.base_tip,
             "headOid": v.head,
             "initialHeadOid": v.patch.head_oid,
@@ -1166,8 +1205,11 @@ async fn view(
                 source,
                 safe(v.patch.source_ref_name.as_deref().unwrap_or("(no branch)")),
                 short(&v.head),
-                safe(&v.patch.base_ref_name)
+                safe(&v.merge_base.ref_name)
             );
+            if v.merge_base.ref_name != v.patch.base_ref_name {
+                println!("retargeted from {}", safe(&v.patch.base_ref_name));
+            }
             let labels: Vec<&str> = v.state.labels.iter().map(String::as_str).collect();
             let assignees: Vec<String> = v.state.assignees.iter().map(|a| who(a)).collect();
             let milestone = review_state.milestone.as_deref();
@@ -1543,7 +1585,6 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         return Ok(());
     }
     refuse_unmergeable(&view, number)?;
-    refuse_retargeted(&view, number)?;
     refuse_missing_base(&view, number, event_only)?;
     let merge_oid = event_only
         .then(|| event_only_oid(&view, a.merge_oid.as_deref(), number))
@@ -1586,7 +1627,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     } else {
         let default = default_branch_of(&s, handle).await;
         Some(crate::quote::MergePush {
-            history_index: default.is_none_or(|d| git::full_ref(&d) == view.patch.base_ref_name),
+            history_index: default.is_none_or(|d| git::full_ref(&d) == view.merge_base.ref_name),
             platform_bytes: merge_stores_on_platform(),
             // A pull request from a fork: its commits go into the base as a new pack. A squash
             // writes a new commit, uploaded the same way (QW4-046: it was left out). A merge
@@ -1640,7 +1681,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         eprintln!(
             "Merging PR #{number} of {} into {}{}",
             handle.display(),
-            view.patch.base_ref_name,
+            view.merge_base.ref_name,
             match method {
                 Method::Squash => " (squash)",
                 Method::Rebase => " (rebase)",
@@ -1828,7 +1869,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
                      readers label the merge commit as not found on the base",
                     short(&merge_oid),
                     short(&merge_oid),
-                    view.patch.base_ref_name
+                    view.merge_base.ref_name
                 );
             } else {
                 println!("✓ merged PR #{number} ({})", short(&merge_oid));
@@ -2042,45 +2083,21 @@ fn refuse_unmergeable(view: &PatchView, number: u64) -> Result<()> {
     .into())
 }
 
-/// A retarget event moves the PR's base; `dg pr merge` merges only into the base the PR was
-/// opened against, so it refuses rather than merge into a branch the PR no longer names.
-fn refuse_retargeted(view: &PatchView, number: u64) -> Result<()> {
-    let Some(retargeted) = view
-        .state
-        .base_ref
-        .as_deref()
-        .filter(|b| *b != view.patch.base_ref_name)
-    else {
-        return Ok(());
-    };
-    Err(UserError::new(
-        codes::USAGE,
-        format!(
-            "merge not attempted: PR #{number} was retargeted to {}",
-            safe(retargeted)
-        ),
-    )
-    .cause(format!(
-        "it was opened against {}, and a merge counts only into that base, so a merge into the new one would never show",
-        view.patch.base_ref_name
-    ))
-    .fix(format!(
-        "close PR #{number} and open a new one against {} (`dg pr create --base <branch>`)",
-        safe(retargeted)
-    ))
-    .into())
-}
-
 /// `dg pr merge` merges into an existing base branch only (D-501). A base that was no branch
 /// when the PR was opened has no tips (`pr_base_tips`), so no merge into it would count; and
 /// pushing a merge to a base that does not exist now would create it. `--event-only` may still
 /// record a merge into a base deleted since: its tips keep counting.
 fn refuse_missing_base(view: &PatchView, number: u64, event_only: bool) -> Result<()> {
-    let base = safe(&view.patch.base_ref_name);
+    let base = safe(&view.merge_base.ref_name);
+    let when = if view.merge_base.retargeted {
+        "retargeted to it"
+    } else {
+        "opened"
+    };
     let (headline, cause) = if view.base_tips.is_empty() {
         (
-            format!("{base} was not a branch when PR #{number} was opened"),
-            "a merge counts only into a branch that existed when the PR was opened, so this PR can never show as merged",
+            format!("{base} was not a branch when PR #{number} was {when}"),
+            "a merge counts only into a branch that existed when the PR was opened or retargeted to it, so this PR cannot show as merged into it",
         )
     } else if view.base_tip.is_none() && !event_only {
         (
@@ -2093,7 +2110,7 @@ fn refuse_missing_base(view: &PatchView, number: u64, event_only: bool) -> Resul
     Err(UserError::new(codes::NOT_FOUND, format!("merge not attempted: {headline}"))
         .cause(cause)
         .fix(format!(
-            "close PR #{number} and open a new one against an existing branch (`dg pr create --base <branch>`)"
+            "retarget PR #{number} to an existing branch (`dg pr edit <repo> {number} --base <branch>`)"
         ))
         .note("nothing was written")
         .into())
@@ -2116,13 +2133,13 @@ fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<
             format!(
                 "merge event not posted: {} has never been a tip of {}",
                 short(&oid),
-                view.patch.base_ref_name
+                view.merge_base.ref_name
             ),
         )
         .cause("a merge event counts only for a commit the base branch has held, and it cannot be deleted")
         .fix(format!(
             "push the merge to {} first, or run `dg pr merge` without --event-only to merge PR #{number}",
-            view.patch.base_ref_name
+            view.merge_base.ref_name
         ))
         .note("nothing was written")
         .into());
@@ -2206,7 +2223,7 @@ async fn require_merge_rights(
     if maintainer || !pushes || !forge_core::collab::v2::precheck_enabled() {
         return Ok(rights);
     }
-    let base = view.patch.base_ref_name.as_str();
+    let base = view.merge_base.ref_name.as_str();
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
     let Ok(patterns) = svc.protected_patterns(handle).await else {
         return Ok(rights);
@@ -2610,7 +2627,7 @@ fn push_merge(
 ) -> Result<String> {
     let scratch = scratch_with_pr(ctx, handle, view)?;
     let dir = scratch.path();
-    let base_ref = &view.patch.base_ref_name;
+    let base_ref = &view.merge_base.ref_name;
     let base_url = format!("dash://{}", handle.id());
     steps.ok(
         "fetch",
@@ -2641,7 +2658,7 @@ fn push_merge(
 /// branch (it becomes a refspec and a push destination), the head a hex commit id. Both are
 /// document fields anyone could have written.
 pub(crate) fn require_git_safe(view: &PatchView) -> Result<()> {
-    git::require_branch_ref(&view.patch.base_ref_name)?;
+    git::require_branch_ref(&view.merge_base.ref_name)?;
     if !git::is_oid(&view.head) {
         anyhow::bail!(
             "the PR names a malformed head commit {:?}",
@@ -2661,7 +2678,7 @@ pub(crate) fn scratch_repo() -> Result<tempfile::TempDir> {
 /// The environment for fetching from a repository: the key is handed over only when it is
 /// `private`, whose content needs it (a private repository cannot be forked, so a PR's source
 /// repository is as private as its target). A public fetch never gets the key.
-fn read_env(ctx: &Ctx, private: bool) -> Result<git::DashEnv<'_>> {
+pub(crate) fn read_env(ctx: &Ctx, private: bool) -> Result<git::DashEnv<'_>> {
     if private {
         git::dash_env_signing(ctx)
     } else {
@@ -2692,31 +2709,49 @@ pub(crate) fn fetch_base_and_head(
     env: &git::DashEnv<'_>,
 ) -> Result<()> {
     require_git_safe(view)?;
-    let base_ref = &view.patch.base_ref_name;
-    let head = &view.head;
     if view.base_tip.is_some() {
-        git::git_dash(
-            dir,
-            &[
-                "fetch",
-                "-q",
-                &format!("dash://{}", handle.id()),
-                &format!("+{base_ref}:refs/remotes/base/tip"),
-            ],
-            env,
-        )
-        .context("fetching the base branch")?;
+        fetch_base(dir, handle, &view.merge_base.ref_name, env)?;
     }
+    fetch_pr_head(dir, &view.patch.source_repo_id, &view.head, env)
+}
+
+/// Fetch `base_ref` of `handle` (a checked branch name) into `dir` as `refs/remotes/base/tip`.
+pub(crate) fn fetch_base(
+    dir: &Path,
+    handle: &Repo,
+    base_ref: &str,
+    env: &git::DashEnv<'_>,
+) -> Result<()> {
+    git::git_dash(
+        dir,
+        &[
+            "fetch",
+            "-q",
+            &format!("dash://{}", handle.id()),
+            &format!("+{base_ref}:refs/remotes/base/tip"),
+        ],
+        env,
+    )
+    .context("fetching the base branch")?;
+    Ok(())
+}
+
+/// Fetch the PR head `head` from its source repository `source_id` into `dir`, unless `dir` has it.
+pub(crate) fn fetch_pr_head(
+    dir: &Path,
+    source_id: &str,
+    head: &str,
+    env: &git::DashEnv<'_>,
+) -> Result<()> {
     if !git::has_object(dir, head) {
-        let source_url = format!("dash://{}", view.patch.source_repo_id);
-        // Refspec fixed by us: the PR's `sourceRefName` is attacker-chosen and never used
-        // as a refspec. The helper downloads the repo's packs whatever is asked for.
+        // Refspec fixed by us: a PR's `sourceRefName` is attacker-chosen and never used as a
+        // refspec. The helper downloads the repo's packs whatever is asked for.
         git::git_dash(
             dir,
             &[
                 "fetch",
                 "-q",
-                &source_url,
+                &format!("dash://{source_id}"),
                 "+refs/heads/*:refs/remotes/source/*",
             ],
             env,
@@ -2813,7 +2848,7 @@ fn build_rebase(
     committer: &[(String, String)],
     steps: &mut Steps,
 ) -> Result<Option<(String, &'static str)>> {
-    let base_ref = &view.patch.base_ref_name;
+    let base_ref = &view.merge_base.ref_name;
     match git::rebase(dir, base, &view.head, committer)? {
         git::Rebased::Tip(tip) if tip == view.head => Ok(Some((tip, "fast-forward to"))),
         git::Rebased::Tip(tip) if tip == base => {
@@ -2870,7 +2905,7 @@ fn build_merge(
     how: &MergeHow<'_>,
     steps: &mut Steps,
 ) -> Result<Option<String>> {
-    let base_ref = &view.patch.base_ref_name;
+    let base_ref = &view.merge_base.ref_name;
     let head = &view.head;
     let base_tip = view.base_tip.as_deref();
     let plan = git::plan_merge(
@@ -3164,7 +3199,7 @@ async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
     let (source, head, base_ref) = (
         view.patch.source_repo_id,
         view.head,
-        view.patch.base_ref_name,
+        view.merge_base.ref_name,
     );
     // Every field came from a document anyone could have written: check the shapes before
     // any of them reaches git.
@@ -3459,6 +3494,11 @@ mod tests {
                 head,
                 &std::collections::BTreeSet::new(),
             ),
+            merge_base: forge_core::rules::v2::MergeBase {
+                ref_name: base.into(),
+                since: 0,
+                retargeted: false,
+            },
             base_tip: Some("1".repeat(40)),
             head_on_base: false,
             base_tips: std::collections::BTreeSet::new(),
@@ -3499,7 +3539,11 @@ mod tests {
             "refs/heads/dev"
         ));
         let mut retargeted = view_with("refs/heads/main", &head);
-        retargeted.state.base_ref = Some("dev".into());
+        retargeted.merge_base = forge_core::rules::v2::MergeBase {
+            ref_name: "dev".into(),
+            since: 1,
+            retargeted: true,
+        };
         assert!(same_head_and_base(
             &retargeted,
             "s",

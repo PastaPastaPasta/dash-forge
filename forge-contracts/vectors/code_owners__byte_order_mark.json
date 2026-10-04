@@ -1,0 +1,40 @@
+{
+  "name": "byte_order_mark",
+  "description": "A leading UTF-8 byte-order mark (an editor's) is no part of the first rule's pattern; section names are trimmed of spaces and tabs only.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "﻿* @a\n[ Docs\t] @d\n*.md\n[docs]\n/x/ @x\n",
+    "paths": [
+      "README",
+      "a.md",
+      "x/b.md"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "README": [
+        "@a"
+      ],
+      "a.md": [
+        "@a",
+        "@d"
+      ],
+      "x/b.md": [
+        "@a",
+        "@x"
+      ]
+    },
+    "all": [
+      "@a",
+      "@d",
+      "@x"
+    ],
+    "kinds": {
+      "@a": "name",
+      "@d": "name",
+      "@x": "name"
+    },
+    "errors": []
+  }
+}
