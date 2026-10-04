@@ -10,6 +10,7 @@
  */
 
 import type { HandoffRequest } from '@/lib/auth/key-handoff'
+import type { WatchedKey } from '@/lib/auth/key-watch'
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -100,6 +101,8 @@ interface AuthContextValue {
    * unlock; null when signed out.
    */
   readonly unlockScope: 'full' | 'signing' | null
+  /** Keys added to the identity since this device last looked, other than its own (the new-key alert). */
+  readonly newKeys: readonly WatchedKey[]
   /** The limited-key ceremony: import an identity file or a mnemonic once. */
   importIdentity: (
     input: { fileText: string } | { mnemonic: string; identityId: string },
@@ -136,6 +139,8 @@ interface AuthContextValue {
   /** The headless controller (identity creation stores its key before registering it). */
   readonly controller: AuthController
 }
+
+const NO_KEYS: readonly WatchedKey[] = []
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
@@ -321,11 +326,12 @@ export function AuthProvider({
       lastIdentity,
       lockedIdentity: locked ? lockedIdentityOf(vaults, lastIdentity) : null,
       unlockScope: session === null ? null : state.scope ?? null,
+      newKeys: session === null ? NO_KEYS : state.newKeys ?? NO_KEYS,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, lastIdentity, locked, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
+    [actions, controller, funds, keyLimits, lastIdentity, locked, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.newKeys, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

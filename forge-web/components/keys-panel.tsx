@@ -9,6 +9,7 @@
  */
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { GRANT_COPY, nextGrant } from '@/lib/auth/key-registration'
 import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
 import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
@@ -183,6 +184,14 @@ export function KeysPanel(): JSX.Element {
           </p>
         </>
       )}
+      {storage !== 'session' ? (
+        <p className="text-[12px]">
+          <Link href="/settings/keys/" className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="devices-keys-link">
+            Devices &amp; keys
+          </Link>
+          <span className="text-anvil-500 dark:text-anvil-400">: every key on your identity. Disable a lost device&apos;s key there.</span>
+        </p>
+      ) : null}
       {topUpOpen ? <KeyTopUpDialog onClose={() => setTopUpOpen(false)} /> : null}
       {revokeOpen ? <KeyRevokeDialog unlimited={unlimitedKey} onClose={() => setRevokeOpen(false)} /> : null}
       {confirmDialog}
