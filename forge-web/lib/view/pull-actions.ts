@@ -96,6 +96,11 @@ export interface PullActionInputs {
   readonly checks?: ChecksState | null | 'unknown'
 }
 
+/** The branch-rule line for standing requests for changes that block a merge. Parity: `dg`'s `changes_requested_rule`. */
+export function changesRequestedRule(n: number): string {
+  return `changes requested by ${plural(n, 'reviewer')}`
+}
+
 /** The bypass record's line for a policy that could not be read (`dg`'s `POLICY_UNREAD`). */
 export const POLICY_UNREAD = 'the branch policy could not be read'
 
@@ -107,7 +112,8 @@ export const POLICY_UNREAD = 'the branch policy could not be read'
 export function unmetRules(policy: PolicyStatus | null | 'unknown', checks: ChecksState | null | 'unknown' = null, maintainersOnly = false): string[] {
   if (policy === 'unknown') return [POLICY_UNREAD]
   const out: string[] = []
-  if (policy !== null && !policy.met) out.push(`required approvals: ${policy.have} of ${policy.need}${maintainersOnly ? ' (maintainers only)' : ''}`)
+  if (policy !== null && policy.have < policy.need) out.push(`required approvals: ${policy.have} of ${policy.need}${maintainersOnly ? ' (maintainers only)' : ''}`)
+  if (policy !== null && policy.blockedBy.length > 0) out.push(changesRequestedRule(policy.blockedBy.length))
   if (checks === 'unknown') {
     out.push("required checks: unknown (the head's check runs are not read)")
   } else if (checks !== null && !checks.met) {
@@ -422,8 +428,10 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
       mergeHint = `${branchName(base)} is a protected branch: only maintainers can merge into it.`
     } else if (policyUnknown) {
       mergeHint = "Couldn't read the branch policy, so merging is blocked for now; only a maintainer can bypass it."
-    } else if (policy !== null && typeof policy === 'object' && !policy.met) {
+    } else if (policy !== null && typeof policy === 'object' && policy.have < policy.need) {
       mergeHint = `The branch policy needs ${plural(policy.need, 'approval')} (${policy.have} so far; the PR author's own never counts). Only a maintainer can bypass it.`
+    } else if (policy !== null && typeof policy === 'object' && policy.blockedBy.length > 0) {
+      mergeHint = `${policy.blockedBy.length === 1 ? 'A reviewer' : 'Reviewers'} requested changes. Merging waits until the changes are approved or the review is dismissed. Only a maintainer can bypass it.`
     } else if (policyUnmet) {
       mergeHint = 'The branch policy requires passing checks on the head. Only a maintainer can bypass it.'
     }

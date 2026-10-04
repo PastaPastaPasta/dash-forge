@@ -1,0 +1,14 @@
+{
+  "name": "contains_fast_forward",
+  "description": "A fast-forward: the merge names the PR head itself, so it contains the PR without any walk.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "1111111111111111111111111111111111111111"
+  },
+  "expected": {
+    "verdict": "contains",
+    "combined": []
+  }
+}

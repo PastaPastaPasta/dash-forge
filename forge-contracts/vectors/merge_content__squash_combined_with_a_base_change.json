@@ -1,0 +1,34 @@
+{
+  "name": "squash_combined_with_a_base_change",
+  "description": "The base also changed src/a.rs after the PR branched, so git combined both sides: a different blob on that path still matches, and the path is listed.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "3333333333333333333333333333333333333333"
+    ],
+    "headInMerge": false,
+    "tipBeforeInMerge": true,
+    "mergeChange": {
+      "src/a.rs": "a3",
+      "src/b.rs": "b1"
+    },
+    "prChange": {
+      "src/a.rs": "a1",
+      "src/b.rs": "b1"
+    },
+    "baseChange": {
+      "src/a.rs": "a2",
+      "README.md": "r2"
+    }
+  },
+  "expected": {
+    "verdict": "squash",
+    "combined": [
+      "src/a.rs"
+    ]
+  }
+}

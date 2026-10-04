@@ -140,6 +140,8 @@ import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { Oid } from '@/components/ui/oid'
+import { checkMerge } from '@/lib/view/merge-check'
+import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
 import { CopyRow } from '@/components/ui/copy-row'
@@ -403,6 +405,15 @@ function PullPage({
     () => prCommits(headReader!, prHaveSet({ baseTipOid, comparedBaseOid: cmp!.comparedBaseOid, fellBack: cmp!.fellBack === true, merged: pull.state.merged }), pull.headOid),
     [cmp === null ? '' : `${cmp.comparedBaseOid}:${comparison.sidesKey}`, pull.headOid, baseTipOid],
     { enabled: headReader !== null && cmp !== null },
+  )
+  // Merge integrity: whether the recorded merge commit contains this PR (a squash or a rebase of
+  // it counts), read through the comparison's readers once it has loaded. Git objects only: no
+  // Platform reads beyond the page's own.
+  const mergeHead = merged && pull.mergedAt !== undefined ? headAt(pull.review.headUpdates, pull.initialHeadOid, pull.mergedAt) : ''
+  const mergeCheck = useAsync(
+    () => checkMerge(cmp!.sides, { headOid: mergeHead, mergeOid: pull.mergeOid!, tipBefore: pull.baseOidAtMerge ?? '' }),
+    [pull.mergeOid ?? '', mergeHead, pull.baseOidAtMerge ?? '', comparison.sidesKey],
+    { enabled: merged && cmp !== null && (pull.mergeOid ?? '') !== '' && mergeHead !== '' && pull.state.mergeOnBase !== false },
   )
   // The repo holding the PR's source branch: this one for a same-repo PR, else the fork once read.
   const sourceRefOf = (): RepoRef | null =>
@@ -1187,6 +1198,7 @@ function PullPage({
               merge commit not found on the base
             </span>
           ) : null}
+          {mergeCheck.data ? <MergeContentNote content={mergeCheck.data} mergeOid={pull.mergeOid ?? ''} /> : null}
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
               head <Oid value={pull.headOid} chars={9} />
@@ -2246,13 +2258,21 @@ function BranchRules({
           <span>Couldn&apos;t read the branch policy; merging is blocked until it loads (a maintainer can bypass it).</span>
         </p>
       ) : policy !== null && status !== null ? (
-        <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
-          {status.met ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
-          <span>
-            {status.have} of {plural(status.need, 'required approval')}
-            {policy.approverRole === 1 ? ' (maintainers)' : ''}
-          </span>
-        </p>
+        <>
+          <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
+            {status.have >= status.need ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
+            <span>
+              {status.have} of {plural(status.need, 'required approval')}
+              {policy.approverRole === 1 ? ' (maintainers)' : ''}
+            </span>
+          </p>
+          {status.blockedBy.length > 0 ? (
+            <p className="mt-1 flex items-center gap-2" data-testid="policy-changes-requested">
+              <X className="h-4 w-4 shrink-0 text-danger" aria-hidden />
+              <span>Changes requested by {plural(status.blockedBy.length, 'reviewer')}. Merging waits until they approve or the review is dismissed.</span>
+            </p>
+          ) : null}
+        </>
       ) : null}
       {known !== null && (named.length > 0 || known.requireChecks === true) ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
@@ -2287,4 +2307,28 @@ function commitAuthors(commits: readonly { readonly commit: { readonly author: {
     }
   }
   return out
+}
+
+/** What a merged PR's recorded merge commit holds (`merge-content.ts`), next to its state. */
+function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeOid: string }) {
+  const combined = content.combined.length > 0 ? `, combined with base changes in ${plural(content.combined.length, 'file')}` : ''
+  const words: Record<MergeContent['verdict'], string> = {
+    contains: 'contains this PR',
+    squash: `squash of this PR${combined}`,
+    rebase: `rebase of this PR${combined}`,
+    missing: "does not contain this PR's commits",
+    unknown: "couldn't check: its commits could not be read",
+  }
+  const missing = content.verdict === 'missing'
+  return (
+    <span
+      className={`flex items-center gap-1 text-[12px] ${missing ? 'font-medium text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400'}`}
+      data-testid="pr-merge-content"
+      data-verdict={content.verdict}
+      title={missing ? 'A maintainer or writer recorded this merge, but the commit it names neither contains the PR head nor makes its changes.' : undefined}
+    >
+      {missing ? <X className="h-3.5 w-3.5" aria-hidden /> : content.verdict === 'unknown' ? null : <Check className="h-3.5 w-3.5 text-verify" aria-hidden />}
+      merge <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
+    </span>
+  )
 }
