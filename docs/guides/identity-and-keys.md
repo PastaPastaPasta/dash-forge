@@ -170,7 +170,7 @@ It runs the rekey of [private-repos.md §5.2](../security/private-repos.md#52-en
 3. Names the private repositories where you are only a writer, triage or reader. You cannot rotate those. A maintainer's next visit (or `dg repo keys repair <repo>`) wraps the current key to your new one. Until then, new content there is sealed for the old key.
 4. Disables the old key, unless `--keep-old` is given or a repository failed to rotate. A disabled key still opens what was sealed for it, so nothing you could read is lost. Whoever holds the old key keeps what was sealed before, but nothing sealed from now on.
 
-The key `dg` stores beside your limited key gets the new key too. If a step fails, the old key stays enabled; run the command again and it continues where it stopped. Repositories already on the new key are skipped. Other computers and browsers need the new key: sign in again with the words, or in the web app add it from **Settings → Private repos**.
+The key `dg` stores beside your limited key (`dg auth login`) gets the new key too. A repository counts as moved only when a fresh read shows your wrap for its current epoch on the new key. If one is not, every old key stays enabled and nothing is lost. Run the command again: each run adds a fresh key and treats every enabled encryption key as old, since a lost device may have held an earlier run's key too. Other computers and browsers need the new key: sign in again with the words, or in the web app add it from **Settings → Private repos**.
 
 **In the web app** this will be **Settings → Keys → Enable private repos**, with the web release of private repositories.
 

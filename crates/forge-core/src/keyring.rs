@@ -1602,8 +1602,11 @@ pub async fn private_memberships(
                 &[QueryOrder::asc("memberId")],
             )
             .await?;
+        // Each membership document records its repository's visibility (`vis`): public ones
+        // have no keys and are not even resolved.
         by_type.push(
             docs.iter()
+                .filter(|d| d.field_str("vis").as_deref() == Some("private"))
                 .filter_map(|d| d.field_bytes32("repoId"))
                 .collect::<BTreeSet<_>>(),
         );

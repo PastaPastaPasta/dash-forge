@@ -245,6 +245,26 @@ fn passphrase_reason(why: &str) -> String {
     )
 }
 
+/// A storer that writes back to `source` when it is this identity's main slot (dg's own
+/// keychain entry, or its passphrase-sealed key file), else `None` (a key file or inline key of
+/// the user's own, or a plaintext one: those are left alone). The keychain entry is written to
+/// the keychain again, the sealed file to a sealed file.
+pub fn main_slot_storer(network: &str, identity_id: &str, source: &str) -> Result<Option<Storer>> {
+    let keychain_source = format!(
+        "{}{}/{}",
+        keystore::KEYCHAIN_PREFIX,
+        keychain::SERVICE,
+        account(network, identity_id, Slot::Main)
+    );
+    if source == keychain_source {
+        return Ok(Some(Storer::new(false)));
+    }
+    let main = slot_file(network, identity_id, Slot::Main)?;
+    let sealed_here = std::path::Path::new(source) == main
+        && std::fs::read_to_string(&main).is_ok_and(|raw| sealed::is_sealed(&raw));
+    Ok(sealed_here.then(|| Storer::sealed_only(false)))
+}
+
 /// Store a limited key in the main slot (one-off).
 pub fn store(
     network: &str,
