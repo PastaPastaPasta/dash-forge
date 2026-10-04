@@ -1,0 +1,12 @@
+{
+  "name": "at_start",
+  "description": "At the start of the body.",
+  "case": "search_mentions",
+  "rules": "v2",
+  "input": {
+    "body": "@alice: look",
+    "id": "7K1EkGWmXmYBcrQFzNE5P2iv4ww5pRkUY8nNrLVixKkK",
+    "name": "alice"
+  },
+  "expected": true
+}

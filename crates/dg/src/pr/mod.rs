@@ -79,6 +79,7 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
     use crate::PrSuggestionCommand as Sg;
     check_id_args(cmd)?;
     match cmd {
+        PrCommand::Status { repo } => crate::status::pr_status(ctx, repo).await,
         PrCommand::Create(args) => create(ctx, args).await,
         PrCommand::List {
             repo,
@@ -3404,10 +3405,10 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn view_with(base: &str, head: &str) -> PatchView {
+    pub(crate) fn view_with(base: &str, head: &str) -> PatchView {
         let patch = Patch {
             number: 1,
             document_id: "d".into(),

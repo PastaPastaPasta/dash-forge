@@ -1,0 +1,33 @@
+{
+  "name": "state_label_author",
+  "description": "States, labels (quoted too), @me and an identity id lift out; the rest is free text.",
+  "case": "search_issues",
+  "rules": "v2",
+  "input": {
+    "text": "is:closed label:bug label:\"good first\" author:@me assignee:7K1EkGWmXmYBcrQFzNE5P2iv4ww5pRkUY8nNrLVixKkK crash on start"
+  },
+  "expected": {
+    "query": {
+      "state": "closed",
+      "labels": [
+        "bug",
+        "good first"
+      ],
+      "author": "me",
+      "assignee": "7K1EkGWmXmYBcrQFzNE5P2iv4ww5pRkUY8nNrLVixKkK",
+      "mentions": false,
+      "sort": "newest",
+      "q": "crash on start",
+      "page": 1,
+      "notLabels": [],
+      "noLabel": false,
+      "milestone": null,
+      "noMilestone": false,
+      "authorLogin": null,
+      "scope": "any",
+      "comments": null,
+      "reason": null
+    },
+    "unresolved": []
+  }
+}

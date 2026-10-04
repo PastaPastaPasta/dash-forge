@@ -177,6 +177,7 @@ dg issue close  <owner>/<repo> 12
 dg issue reopen <owner>/<repo> 12
 dg issue label  <owner>/<repo> 12 add bug docs     # or: remove bug (the older --add/--remove still work)
 dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS names
+dg issue status <owner>/<repo>                     # assigned to you, mentioning you, opened by you
 ```
 
 `dg issue edit` takes gh's flags: every change is confirmed once and written as one event each, and labels, assignees and milestone can go with a title or body change in the same run. A label must be one the repository defines and a milestone an open one; both are checked, with your role, before anything is signed.
@@ -252,6 +253,40 @@ Reasons are GitHub's: `spam`, `abuse`, `off-topic`, `outdated`, `resolved`, `dup
 
 ---
 
+### Searching, and what concerns you
+
+`dg issue status` and `dg pr status` are gh's summaries for one repository:
+- **Issues:** the open ones assigned to you, those that mention you (`@yourname` or your identity id in the body, the web's mention rule), and those you opened.
+- **PRs:** the PR from the branch checked out here, your open PRs, and the open PRs that request your review. Each shows whether it is a draft, approved, has changes requested, or still needs review.
+
+Inside a clone, leave out the repository: `dg pr status`.
+
+`dg search issues` and `dg search prs` take the web search box's qualifiers. The grammar is shared with the web and pinned by the `search_*` conformance vectors:
+
+```sh
+dg search issues <owner>/<repo> is:open label:bug -label:wontfix author:@me "exact phrase"
+dg search issues <owner>/<repo> no:assignee milestone:"v1.0" in:title crash reason:"not planned"
+dg search prs    <owner>/<repo> is:merged review-requested:@me draft:false
+dg search repos  forge                       # name prefix; or topic:rust, owner:alice (--topic, --owner)
+```
+
+**How a search reads:**
+- It looks in one repository. Platform has no text index, so it reads the repository's items (every issue; the newest 100 PRs) with their state and filters them.
+- Every state is searched unless the query names one, as `gh search` does.
+- `is:closed` on PRs means closed without merging (the web's Closed tab); `is:merged` and `is:unmerged` pick the rest.
+- `author:` and `assignee:` take a DPNS name, an identity id or `@me`.
+- A qualifier dg cannot apply is named on stderr ("not applied: …") and in `--json`'s `notApplied`, never searched for as text: `comments:` and `sort:comments-desc` need a count read per item.
+
+`dg search repos` finds repositories:
+- by name prefix (the `repo.name` index);
+- by topic (public repositories only);
+- by owner; with an owner or a topic, the remaining words must appear in the name or description.
+
+**Raw queries.** `dg api query <core|collab|community|dpns|contract id> <type> '[["field","==",value]]' [--order '[["field","asc"]]'] [--limit N] [--start-after ID] [--all] [--count]` runs one document query, proof-checked like every other read, and prints the documents as JSON:
+- Identifiers are base58 and byte arrays hex.
+- The clauses must fit one of the type's indexes, as Drive requires.
+- `--count` needs a countable index.
+
 ## Pull requests
 
 A pull request is a `patch` document in the **base** repository. It points at the commit you want merged and at the repository that holds that commit (`sourceRepoId`): the base itself, or a fork. The code itself lives in that repository, not in the PR.
@@ -324,6 +359,7 @@ PR numbers follow the same rule as issue numbers.
 **4. Review.** Reviewers fetch your commit straight from your repository:
 
 ```sh
+dg pr status   <owner>/project            # your current branch's PR, yours, and those awaiting your review
 dg pr list     <owner>/project [--state open|closed|all] [--include-hidden]
 dg pr view     <owner>/project 7          # state, reviewers, approvals, reviews
 dg pr view     <owner>/project 7 --comments   # + threads under their file and line

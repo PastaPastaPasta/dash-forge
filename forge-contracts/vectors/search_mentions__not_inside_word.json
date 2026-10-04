@@ -1,0 +1,12 @@
+{
+  "name": "not_inside_word",
+  "description": "@alice inside a longer handle or an email does not count.",
+  "case": "search_mentions",
+  "rules": "v2",
+  "input": {
+    "body": "x@alice and @alice-bot and @alicex",
+    "id": "7K1EkGWmXmYBcrQFzNE5P2iv4ww5pRkUY8nNrLVixKkK",
+    "name": "alice"
+  },
+  "expected": false
+}

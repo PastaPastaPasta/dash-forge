@@ -1,0 +1,33 @@
+{
+  "name": "merged_draft_review",
+  "description": "PR states, is:draft, draft:false and review-requested lift out.",
+  "case": "search_prs",
+  "rules": "v2",
+  "input": {
+    "text": "is:merged draft:false review-requested:@me label:ci fix"
+  },
+  "expected": {
+    "query": {
+      "labels": [
+        "ci"
+      ],
+      "author": null,
+      "assignee": null,
+      "sort": "newest",
+      "q": "fix",
+      "page": 1,
+      "notLabels": [],
+      "noLabel": false,
+      "milestone": null,
+      "noMilestone": false,
+      "authorLogin": null,
+      "scope": "any",
+      "comments": null,
+      "reason": null,
+      "state": "merged",
+      "draft": false,
+      "reviewRequested": "me"
+    },
+    "unresolved": []
+  }
+}

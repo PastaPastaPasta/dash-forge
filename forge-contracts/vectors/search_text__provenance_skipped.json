@@ -1,0 +1,14 @@
+{
+  "name": "provenance_skipped",
+  "description": "A mirrored body's provenance quote is not searched.",
+  "case": "search_text",
+  "rules": "v2",
+  "input": {
+    "text": "thephez",
+    "title": "t",
+    "number": 1,
+    "body": "> Mirrored from github.com by @thephez (issue, 2026-01-01)\n> more\n\nreal body",
+    "scope": "any"
+  },
+  "expected": false
+}

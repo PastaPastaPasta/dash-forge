@@ -5,6 +5,7 @@
 //! `--network`, `--yes`, and an `--identity <file>` override. Cost-bearing commands print a
 //! DASH (primary) / USD (secondary) estimate and prompt unless `--yes`.
 
+mod api;
 mod auth;
 mod ci;
 mod collab;
@@ -34,8 +35,10 @@ mod release;
 mod repo;
 mod repo_settings;
 mod repo_sync;
+mod search;
 mod secret_out;
 mod signing;
+mod status;
 mod storage;
 mod storage_wizard;
 mod webhook;
@@ -209,6 +212,13 @@ pub enum Command {
     /// CI: runner keys and memberships, and check runs on commits.
     #[command(subcommand)]
     Ci(ci::CiCommand),
+    /// Search issues and pull requests (in one repository) and repositories, with the web
+    /// search box's qualifiers (`is:open label:bug author:@me -label:wontfix`).
+    #[command(subcommand)]
+    Search(SearchCommand),
+    /// Raw Platform reads: a proved document query, printed as JSON (gh api).
+    #[command(subcommand)]
+    Api(ApiCommand),
     /// Import (or re-sync) a GitHub repository or GitLab project into forge-v2: code, issues, PRs/MRs, releases.
     Import(Box<import::ImportArgs>),
     /// Diagnose the identity, network, contracts, storage, git config and toolchain.
@@ -556,8 +566,99 @@ pub enum RepoBackendCommand {
     },
 }
 
+/// `dg search` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum SearchCommand {
+    /// Search a repository's issues: every state unless the query names one, newest first.
+    /// Qualifiers: is:open|closed, label:, -label:, no:label|milestone|assignee, author:,
+    /// assignee:, mentions:@me, milestone:, in:title|body, reason:, sort:created-asc; the rest
+    /// is matched in titles and bodies ("a phrase", -word, #12).
+    Issues(SearchArgs),
+    /// Search a repository's pull requests (the newest 100): the issue qualifiers, plus
+    /// is:merged|unmerged|draft, draft:true|false and review-requested:.
+    Prs(SearchArgs),
+    /// Search repositories by name prefix, topic (`topic:rust` or --topic) or owner
+    /// (`owner:alice` or --owner, then the words match names and descriptions).
+    Repos(SearchReposArgs),
+}
+
+/// `dg search issues|prs` arguments.
+#[derive(Debug, clap::Args)]
+pub struct SearchArgs {
+    /// The repository (`owner/name`; inside a clone, the clone's).
+    pub repo: String,
+    /// The query: words, "phrases" and qualifiers.
+    #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+    pub query: Vec<String>,
+    /// At most this many results.
+    #[arg(long, short = 'L', default_value_t = 30)]
+    pub limit: u32,
+}
+
+/// `dg search repos` arguments.
+#[derive(Debug, clap::Args)]
+pub struct SearchReposArgs {
+    /// A name (or its start), and qualifiers topic:<name> and owner:<name>.
+    #[arg(num_args = 0.., allow_hyphen_values = true)]
+    pub query: Vec<String>,
+    /// Only this owner's repositories (an identity id or DPNS name).
+    #[arg(long)]
+    pub owner: Option<String>,
+    /// Only repositories tagged with this topic.
+    #[arg(long)]
+    pub topic: Option<String>,
+    /// At most this many results (1-100).
+    #[arg(long, short = 'L', default_value_t = 30)]
+    pub limit: u32,
+}
+
+/// `dg api` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ApiCommand {
+    /// One proved document query, printed as JSON: `dg api query core repo
+    /// '[["$ownerId","==","<id>"]]' --order '[["name","asc"]]'`. The where-clauses must fit one
+    /// of the type's indexes (Drive's rule). Operands: identifiers base58, byte arrays hex,
+    /// integers numbers, `in` a list.
+    Query(ApiQueryArgs),
+}
+
+/// `dg api query` arguments.
+#[derive(Debug, clap::Args)]
+pub struct ApiQueryArgs {
+    /// The contract: core, collab, community, dpns, or a contract id.
+    pub contract: String,
+    /// The document type (`repo`, `issue`, `event`, `domain`, …).
+    pub doc_type: String,
+    /// The where-clauses, JSON: `[["field", "op", value], …]` (op: ==, >, >=, <, <=,
+    /// startsWith, in).
+    #[arg(value_name = "WHERE")]
+    pub where_json: Option<String>,
+    /// The order, JSON: `[["field", "asc"|"desc"], …]`.
+    #[arg(long)]
+    pub order: Option<String>,
+    /// Rows to read (1-100).
+    #[arg(long, default_value_t = 100)]
+    pub limit: u32,
+    /// Start after this document id (the next page).
+    #[arg(long, value_name = "ID", conflicts_with = "all")]
+    pub start_after: Option<String>,
+    /// Read every matching row, page after page (at most 10,000).
+    #[arg(long, conflicts_with = "count")]
+    pub all: bool,
+    /// Print the proved count of matching documents instead (the clauses must match a
+    /// countable index).
+    #[arg(long)]
+    pub count: bool,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum IssueCommand {
+    /// Issues that concern you in a repository: assigned to you, mentioning you, opened by you
+    /// (open ones; gh issue status).
+    Status {
+        /// The repository (`owner/name`; inside a clone, the clone's).
+        repo: String,
+    },
     /// List issues (every issue is read and folded; filters apply to the whole repo).
     List(Box<IssueListArgs>),
     /// View an issue.
@@ -858,6 +959,12 @@ pub struct IssueListArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum PrCommand {
+    /// Pull requests that concern you in a repository: your current branch's, yours, and
+    /// those requesting your review (gh pr status).
+    Status {
+        /// The repository (`owner/name`; inside a clone, the clone's).
+        repo: String,
+    },
     /// Open a pull request from a branch of this repo or of your fork.
     Create(Box<PrCreateArgs>),
     /// List pull requests.
@@ -2004,6 +2111,8 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
         Command::Ci(cmd) => ci::run(ctx, cmd).await,
+        Command::Search(cmd) => search::run(ctx, cmd).await,
+        Command::Api(cmd) => api::run(ctx, cmd).await,
         Command::Repack {
             repo,
             backend,

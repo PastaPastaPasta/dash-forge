@@ -139,7 +139,7 @@ const CANONICAL: [(u32, Purpose, SecurityLevel, &str); 5] = [
 ];
 
 /// The DPNS system contract (the same id on every network).
-const DPNS_CONTRACT_ID: &str = "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec";
+pub const DPNS_CONTRACT_ID: &str = "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec";
 
 /// The key id a limited key created together with the identity gets (after the canonical set).
 pub const FIRST_LIMITED_KEY_ID: u32 = 5;

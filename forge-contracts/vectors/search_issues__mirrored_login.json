@@ -1,0 +1,30 @@
+{
+  "name": "mirrored_login",
+  "description": "author:<login> that is no identity matches a mirrored item's source login.",
+  "case": "search_issues",
+  "rules": "v2",
+  "input": {
+    "text": "author:@thephez is:issue mentions:@me"
+  },
+  "expected": {
+    "query": {
+      "state": "open",
+      "labels": [],
+      "author": null,
+      "assignee": null,
+      "mentions": true,
+      "sort": "newest",
+      "q": "",
+      "page": 1,
+      "notLabels": [],
+      "noLabel": false,
+      "milestone": null,
+      "noMilestone": false,
+      "authorLogin": "thephez",
+      "scope": "any",
+      "comments": null,
+      "reason": null
+    },
+    "unresolved": []
+  }
+}

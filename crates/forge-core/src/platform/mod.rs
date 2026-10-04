@@ -184,6 +184,23 @@ pub(crate) fn to_dashcore(network: &Network) -> DashcoreNetwork {
 #[derive(Clone)]
 pub struct LoadedContract(Arc<DataContract>);
 
+/// How a property's where-clause operand is typed ([`LoadedContract::property_kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyKind {
+    /// An identifier: base58 text.
+    Identifier,
+    /// A byte array: hex (or base64) text.
+    Bytes,
+    /// An integer (a date included).
+    Integer,
+    /// A string.
+    Text,
+    /// A boolean.
+    Bool,
+    /// An object, an array or a float: not a query operand here.
+    Other,
+}
+
 impl LoadedContract {
     /// The contract's base58 id.
     pub fn id(&self) -> String {
@@ -216,6 +233,53 @@ impl LoadedContract {
         self.0
             .document_type_for_name(document_type)
             .is_ok_and(|t| t.properties().contains_key(property))
+    }
+
+    /// The document types the contract declares, by name.
+    pub fn document_type_names(&self) -> Vec<String> {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        self.0.document_types().keys().cloned().collect()
+    }
+
+    /// How a where-clause operand for `property` of `document_type` is typed: a system field
+    /// (`$id`, `$ownerId`, `$createdAt`, …) or a declared property, dotted for a nested one
+    /// (`records.identity`). `None` for an unknown type or property.
+    pub fn property_kind(&self, document_type: &str, property: &str) -> Option<PropertyKind> {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        use dash_sdk::dpp::data_contract::document_type::DocumentPropertyType as T;
+        match property {
+            "$id" | "$ownerId" | "$creatorId" => return Some(PropertyKind::Identifier),
+            "$createdAt"
+            | "$updatedAt"
+            | "$transferredAt"
+            | "$createdAtBlockHeight"
+            | "$updatedAtBlockHeight"
+            | "$createdAtCoreBlockHeight"
+            | "$updatedAtCoreBlockHeight"
+            | "$revision" => return Some(PropertyKind::Integer),
+            _ => {}
+        }
+        let t = self.0.document_type_for_name(document_type).ok()?;
+        let p = t.flattened_properties().get(property)?;
+        Some(match &p.property_type {
+            T::Identifier | T::IdentifierWithReference(_) => PropertyKind::Identifier,
+            T::ByteArray(_) => PropertyKind::Bytes,
+            T::String(_) => PropertyKind::Text,
+            T::Boolean => PropertyKind::Bool,
+            T::U128
+            | T::I128
+            | T::U64
+            | T::I64
+            | T::U32
+            | T::I32
+            | T::U16
+            | T::I16
+            | T::U8
+            | T::I8
+            | T::Date
+            | T::KeyIdWithReference(_) => PropertyKind::Integer,
+            _ => PropertyKind::Other,
+        })
     }
 
     /// Whether `document_type` lists `property` in `immutable` with a condition (Platform v5;
