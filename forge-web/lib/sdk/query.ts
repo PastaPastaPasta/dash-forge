@@ -197,7 +197,7 @@ export type StaleContractCause = 'unknownType' | 'newerDocument'
  * Called when a read failed against a contract older than the network's. Resolves true when
  * the contract was refreshed and the read may be retried once. Set by the SDK service.
  */
-type StaleContractHandler = (contractId: string, cause: StaleContractCause) => Promise<boolean>
+type StaleContractHandler = (contractId: string, cause: StaleContractCause, documentVersion?: number) => Promise<boolean>
 let staleContractHandler: StaleContractHandler | null = null
 
 /** Install (or clear) the handler for reads against a possibly stale contract. */
@@ -219,12 +219,27 @@ export function staleContractCause(e: unknown): StaleContractCause | null {
 }
 
 /**
+ * The contract version a too-new document was serialized under, when `e` names it (rs-dpp:
+ * "it was serialized under contract version N with properties this document type does not
+ * know"), so a refresh can tell a second update from the one it already fetched.
+ */
+export function staleDocumentVersion(e: unknown): number | undefined {
+  try {
+    const message = e instanceof Error ? e.message : String((e as { message?: unknown })?.message ?? e)
+    const m = /serialized under contract version (\d+)/i.exec(message)
+    return m ? Number(m[1]) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Refresh `contractId` for the reason `e` gives, when it gives one: true when the caller may
  * retry its read once (or settle its write by reading).
  */
 export async function refreshStaleContract(contractId: string, e: unknown): Promise<boolean> {
   const cause = staleContractCause(e)
-  return cause !== null && staleContractHandler !== null && (await staleContractHandler(contractId, cause))
+  return cause !== null && staleContractHandler !== null && (await staleContractHandler(contractId, cause, staleDocumentVersion(e)))
 }
 
 /** `read()`, retried once after its contract was refreshed when it failed on a stale one. */

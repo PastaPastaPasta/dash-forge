@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { countDocuments, countDocumentsGrouped, noteSdkWrite, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler, staleContractCause, sumDocumentsGrouped, ungroupedRangeProblem, type DocumentQuery } from './query'
+import { countDocuments, countDocumentsGrouped, noteSdkWrite, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler, staleContractCause, staleDocumentVersion, sumDocumentsGrouped, ungroupedRangeProblem, type DocumentQuery } from './query'
 
 const CONTRACT = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 
@@ -21,7 +21,7 @@ describe('reads against a seeded contract that went stale (M3)', () => {
     setStaleContractHandler(handler)
     const docs = await queryDocuments(fakeSdk(query), { dataContractId: CONTRACT, documentTypeName: 'milestone' })
     expect(docs).toEqual([{ $id: 'a' }])
-    expect(handler).toHaveBeenCalledWith(CONTRACT, 'unknownType')
+    expect(handler).toHaveBeenCalledWith(CONTRACT, 'unknownType', undefined)
     expect(query).toHaveBeenCalledTimes(2)
   })
 
@@ -47,7 +47,7 @@ describe('reads against a seeded contract that went stale (M3)', () => {
     setStaleContractHandler(handler)
     const docs = await queryDocuments(fakeSdk(query), { dataContractId: CONTRACT, documentTypeName: 'release' })
     expect(docs).toEqual([{ $id: 'a' }])
-    expect(handler).toHaveBeenCalledWith(CONTRACT, 'newerDocument')
+    expect(handler).toHaveBeenCalledWith(CONTRACT, 'newerDocument', 2)
     expect(query).toHaveBeenCalledTimes(2)
   })
 
@@ -56,6 +56,8 @@ describe('reads against a seeded contract that went stale (M3)', () => {
     expect(staleContractCause(new Error(NEWER))).toBe('newerDocument')
     expect(staleContractCause(new Error('Corrupted Serialization: error probing for trailing bytes in serialized document'))).toBeNull()
     expect(staleContractCause(new Error('transport error'))).toBeNull()
+    expect(staleDocumentVersion(new Error(NEWER))).toBe(2)
+    expect(staleDocumentVersion({ message: 'document type not found: packMirror' })).toBeUndefined()
   })
 
   it('does not retry other errors', async () => {

@@ -64,4 +64,27 @@ describe('refreshing a contract a read found stale (UPDATE-1)', () => {
     expect(await refreshStale(c, ID, 'newerDocument', () => undefined)).toBe(true)
     expect(c.sdk.contracts.fetch).toHaveBeenCalledTimes(2)
   })
+
+  it('refetches within the window when the document is newer than the version it fetched', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce({ version: 2 }).mockResolvedValueOnce({ version: 3 })
+    const c = connection(fetch)
+    expect(await refreshStale(c, ID, 'newerDocument', () => undefined, 2)).toBe(true)
+    await Promise.resolve()
+    // A document of version 2 again: the refresh already holds it
+    expect(await refreshStale(c, ID, 'newerDocument', () => undefined, 2)).toBe(true)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    // Version 3: a second update since that refresh
+    expect(await refreshStale(c, ID, 'newerDocument', () => undefined, 3)).toBe(true)
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a contract seeded when its refetch failed, so the next read of either cause retries', async () => {
+    const fetch = vi.fn().mockRejectedValueOnce(new Error('transport')).mockResolvedValueOnce({ version: 2 })
+    const c = connection(fetch, new Map([[ID, 1]]))
+    expect(await refreshStale(c, ID, 'unknownType', () => undefined)).toBe(false)
+    expect(c.seeded.get(ID)).toBe(1)
+    await Promise.resolve()
+    expect(await refreshStale(c, ID, 'unknownType', () => undefined)).toBe(true)
+    expect(c.seeded.has(ID)).toBe(false)
+  })
 })
