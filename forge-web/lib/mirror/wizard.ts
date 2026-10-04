@@ -306,7 +306,8 @@ function q(v: string): string {
  * The network is always written out, never left to the Action's default, so the workflow keeps
  * targeting the network this site reads when that default changes. The Action is pinned to one
  * commit, and `install: 'source'` builds `dg`, `git-remote-dash` and `forge-import` from that
- * same commit (no Dash Forge release is published yet; the Action caches the build).
+ * same commit (the site runs master, which can be ahead of the latest release whose binaries
+ * the Action would otherwise download; the Action caches the build).
  */
 export function workflowYaml(o: WorkflowOptions): string {
   if (!/^[0-9a-f]{40}$/.test(o.commit)) throw new Error('pin a full 40-character Dash Forge commit id')
@@ -356,9 +357,9 @@ export function workflowYaml(o: WorkflowOptions): string {
     '    timeout-minutes: 60',
     '    permissions: { contents: read, issues: read, pull-requests: read }',
     '    steps:',
-    '      # No Dash Forge release is published yet: the Action builds dg, git-remote-dash and',
-    "      # forge-import from this same pinned commit (install: 'source'). The first run compiles",
-    "      # for several minutes; later runs reuse the Action's build cache.",
+    '      # The Action builds dg, git-remote-dash and forge-import from this same pinned commit',
+    "      # (install: 'source'), the one the wizard's site runs. The first run compiles for",
+    "      # several minutes; later runs reuse the Action's build cache.",
     `      - uses: ${src}/action@${o.commit}`,
     '        with:',
     ...withLines.map(([k, v]) => `          ${k}: ${q(v)}`),
