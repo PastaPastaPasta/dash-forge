@@ -87,6 +87,11 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "ADDRS")]
     pub dapi_addresses: Option<String>,
 
+    /// Check proofs against quorum keys from this service instead of the network's, for when
+    /// that one is down or blocked. Also DASH_FORGE_QUORUM_URL or git config dash.quorumUrl.
+    #[arg(long, global = true, value_name = "URL")]
+    pub quorum_url: Option<String>,
+
     /// Override the identity file for this invocation.
     #[arg(long, global = true, value_name = "FILE")]
     pub identity: Option<PathBuf>,
