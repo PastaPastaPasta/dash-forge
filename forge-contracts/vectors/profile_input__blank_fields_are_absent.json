@@ -1,0 +1,20 @@
+{
+  "name": "blank_fields_are_absent",
+  "description": "Blank, null and empty fields, and blank links, are left out: an empty profile is valid.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "displayName": "   ",
+    "bio": null,
+    "location": "",
+    "links": [
+      "",
+      "  "
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "invalid": [],
+    "normalized": {}
+  }
+}

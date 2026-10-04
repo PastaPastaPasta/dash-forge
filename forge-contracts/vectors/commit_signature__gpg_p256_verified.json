@@ -1,0 +1,24 @@
+{
+  "name": "gpg_p256_verified",
+  "description": "An ECDSA P-256 signature verifies.",
+  "case": "commit_signature",
+  "rules": "v2",
+  "input": {
+    "commit": "tree a327b58dc958e651933e39b2de18936326b71106\nparent a888f7b2cb86f24cea580ae96d64412ce9a499c3\nauthor Sig Test <sig@sig.test> 1790942400 +0000\ncommitter Sig Test <sig@sig.test> 1790942400 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iJEEABMIADkWIQSkGDQKBmm+JhEpPM8pZiFThS9oGQUCar9q5BsUgAAAAAAEAA5t\n YW51MiwyLjUrMS4xMiwwLDMACgkQKWYhU4UvaBki1gEAqa12sG3+PvJPeKxnbtqC\n jfnGFvacdbycOE1kuqIkQGIBAMpfIEM+uy6PcOB4fzPqQhQCg82+P3U1oe98VF1k\n Gqq3\n =oYgN\n -----END PGP SIGNATURE-----\n\ngpg-d-p256 commit\n\nBody line for gpg-d-p256.\n",
+    "signers": [
+      {
+        "identity": "J9AeWAQUx5JKWBbZ3oiB82di8DmhoswkwfoYJL8eJwJ6",
+        "pubkeys": [
+          "gpg:A418340A0669BE2611293CCF29662153852F6819 xlIEar9q5BMIKoZIzj0DAQcCAwSh0yLSKaCLcrWFhlIR+fW/rR4MA2yyzCKI3OOQadLjXxQd+/4YUfwYeeSgbbR1c62dhAREuiJcbRX+A6y+8yKC"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "verified",
+    "reason": null,
+    "format": "openpgp",
+    "key": "A418340A0669BE2611293CCF29662153852F6819",
+    "signer": "J9AeWAQUx5JKWBbZ3oiB82di8DmhoswkwfoYJL8eJwJ6"
+  }
+}

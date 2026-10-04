@@ -1,0 +1,24 @@
+{
+  "name": "gpg_unknown_key",
+  "description": "A good signature by a key nobody lists cannot be checked: unknown key.",
+  "case": "commit_signature",
+  "rules": "v2",
+  "input": {
+    "commit": "tree ec1cc7289b3750800883e539f2ef7fefc3394774\nparent f48c6942ad5e09be79f2d7811e06346b99194d81\nauthor Sig Test <sig@sig.test> 1790942400 +0000\ncommitter Sig Test <sig@sig.test> 1790942400 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iJEEABYKADkWIQQFnmXquifkb/T8whHCCdtacyYbhAUCar9q5BsUgAAAAAAEAA5t\n YW51MiwyLjUrMS4xMiwwLDMACgkQwgnbWnMmG4TOTwEAn1gt1czceiJuIiByOfbD\n 02/pwXCHaDaXwZ6K45ve+LYBAMXbnUHpJTZN34n5YPNh3SMKC1EuyrD+mOLVekWk\n I0gA\n =/q3n\n -----END PGP SIGNATURE-----\n\ngpg-a commit\n\nBody line for gpg-a.\n",
+    "signers": [
+      {
+        "identity": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "pubkeys": [
+          "gpg:A418340A0669BE2611293CCF29662153852F6819 xlIEar9q5BMIKoZIzj0DAQcCAwSh0yLSKaCLcrWFhlIR+fW/rR4MA2yyzCKI3OOQadLjXxQd+/4YUfwYeeSgbbR1c62dhAREuiJcbRX+A6y+8yKC"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "unverified",
+    "reason": "unknown_key",
+    "format": "openpgp",
+    "key": "059E65EABA27E46FF4FCC211C209DB5A73261B84",
+    "signer": null
+  }
+}

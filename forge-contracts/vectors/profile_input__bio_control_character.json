@@ -1,0 +1,16 @@
+{
+  "name": "bio_control_character",
+  "description": "Any other control character in a bio is refused.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "bio": "ring \u0007 the bell"
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "bio"
+    ],
+    "normalized": null
+  }
+}

@@ -39,7 +39,14 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
     match cmd {
         RepoCommand::Create(args) => crate::publish::create(ctx, args).await,
         RepoCommand::Clone { repo, dir } => clone(ctx, repo, dir.as_deref()),
-        RepoCommand::Fork { repo, name } => fork(ctx, repo, name.as_deref()).await,
+        RepoCommand::Fork {
+            repo,
+            name,
+            default_branch_only,
+        } => fork(ctx, repo, name.as_deref(), *default_branch_only).await,
+        RepoCommand::Sync { repo, branch } => {
+            crate::repo_sync::sync(ctx, repo, branch.as_deref()).await
+        }
         RepoCommand::Reindex {
             repo,
             profile,
@@ -182,8 +189,9 @@ fn clone_dir_name(name: &str) -> &str {
 
 /// Fork `repo`: a new forge-v2 repository with `forkOf` = the parent, the parent's packs
 /// recorded without re-uploading (external URIs as they are; Platform chunks by a locator
-/// into the parent's scope), and the parent's refs copied. Resumable.
-async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
+/// into the parent's scope), and the parent's branches and tags copied (its default branch
+/// alone with `default_branch_only`). Resumable.
+async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>, default_branch_only: bool) -> Result<()> {
     let Session {
         client,
         bridge,
@@ -220,21 +228,24 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
     let manifest_uris: Vec<u64> = planned.iter().map(|m| m.uris.len() as u64).collect();
     let packs = manifest_uris.len();
     warn_unreadable_packs(&parent, &planned);
-    // Its branches and tags: a mirror's PR heads stay the parent's (QW3-009).
-    let refs = svc
-        .read_refs(&parent)
-        .await
-        .context("reading the parent's refs")?
-        .iter()
-        .filter(|(name, _)| forge_core::fork::forkable_ref(name))
-        .count();
-    let estimate = fork_estimate(&manifest_uris, refs as u64);
     // As on GitHub, the fork takes the parent's default branch (QW2-013) and description
     // (QW2-062; it was "fork of <parent>", which `forkOf` already records).
     let default_branch = default_branch.context("reading the parent's default branch")?;
     let (description, doc_branch) = doc_defaults.context("reading the parent's repo document")?;
     // The newest config's branch, else the one the repo document names (as the web reads it).
     let default_branch = default_branch.filter(|b| !b.is_empty()).or(doc_branch);
+    let opts = fork_opts(slug.clone(), default_branch, &description);
+    // Its branches and tags (a mirror's PR heads stay the parent's, QW3-009), or the default
+    // branch alone.
+    let refs = forge_core::fork::plan_refs(
+        &svc.read_refs(&parent)
+            .await
+            .context("reading the parent's refs")?,
+        &[],
+        default_branch_only.then_some(opts.default_branch.as_str()),
+    )
+    .len();
+    let estimate = fork_estimate(&manifest_uris, refs as u64);
     if !ctx.json {
         println!(
             "Forking {} as {}/{slug} on {}\n  repo + {packs} pack manifest(s), nothing re-uploaded, + {refs} ref(s)   {}",
@@ -245,7 +256,6 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!("Fork {}?", parent.display()))?;
-    let opts = fork_opts(slug, default_branch, &description);
     let result = forge_core::fork::fork_repo(
         &client,
         &identity,
@@ -253,6 +263,7 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
         &parent,
         &opts,
         &default_journal_dir()?,
+        default_branch_only,
     )
     .await
     .context("forking the repository")?;

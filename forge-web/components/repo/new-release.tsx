@@ -17,14 +17,20 @@
  * leaves alone (a switch not touched, a blank title or notes) is carried from the tag's newest
  * revision. {@link EditReleaseButton} opens it for one sealed release: an edit, a yank or an
  * unpublish is a new revision that carries every other field.
+ *
+ * A tag that does not exist yet is created on publish (GitHub's "Create new tag: … on publish",
+ * P1-4): the form names it as new and offers the branch to tag (the default branch first), and
+ * the publish writes a lightweight tag at that branch's tip before the release.
  */
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Lock, Pencil, Plus, RotateCcw, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Lock, Pencil, Plus, RotateCcw, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { ARCHIVED_REASON, formatBytes, plural } from '@/lib/view'
+import { ARCHIVED_REASON, formatBytes, isLive, plural, tipOidOf } from '@/lib/view'
 import { repoKey, type ReleaseList } from '@/lib/repo'
+import { BRANCH_PREFIX, TAG_PREFIX, shortRef } from '@/lib/repo/ref-admin'
+import { sourceBranches } from '@/components/repo/branch-admin'
 import { Author } from '@/components/author'
 import { Time } from '@/components/repo/byline'
 import { privateComposeBlock } from '@/components/repo/private-compose'
@@ -50,7 +56,8 @@ import {
   tagProblem,
 } from '@/lib/repo/new-release'
 import { externalTargets, policyForRepo } from '@/lib/storage'
-import { UnconfirmedWriteError, previewCreate } from '@/lib/sdk'
+import { UnconfirmedWriteError, previewCreate, sumPreviews } from '@/lib/sdk'
+import { spendAction } from '@/lib/spend-toast'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -221,6 +228,8 @@ function NewReleaseDialog({
   const guard = useWriteGuard()
   const { config, needsUnlock: storageNeedsUnlock } = useStorageConfig()
   const [tag, setTag] = useState(fixedTag ?? '')
+  // The branch a new tag is made on (GitHub's release "Target"): the default branch until picked.
+  const [tagTarget, setTagTarget] = useState(`${BRANCH_PREFIX}${home.defaultBranch}`)
   const [title, setTitle] = useState('')
   const [notes, setNotes] = useState('')
   // A public release states its yank (unticked un-yanks it); a sealed revision carries it until touched.
@@ -248,11 +257,20 @@ function NewReleaseDialog({
   const shownGap = gap ?? NO_STORAGE_GAP
   const fixHref = shownGap.fix === 'repo' ? `${repoHref('/repo/settings', addr)}#storage` : shownGap.reason === 'no-profiles' ? '/settings/storage/' : '/settings/storage/#policy-title'
   const trimmedTag = tag.trim()
+  // Whether the tag exists now: a release names a tag, and one that does not exist is created on
+  // publish at the chosen branch (an edit's tag is fixed: never created from here).
+  const tagExists = home.tags.some((t) => t.refName === `${TAG_PREFIX}${trimmedTag}` && isLive(t))
   // A new revision of an existing tag supersedes it (newest per tag wins): what the form leaves
   // blank is kept, so a yank or a notes edit never drops the files (D-504). A sealed tag's newest
   // revision may be an unpublish: publishing again restores it.
   const existing = (releases && (sealedRepo ? newestRevision(releases, trimmedTag) : releases.current.find((r) => r.tagName === trimmedTag))) ?? null
   const sealedExisting = existing?.sealed?.fields
+  const tagTargets = useMemo(() => sourceBranches(home), [home])
+  // A tag with a release already (its tag deleted since) is a new revision, never a new tag: the
+  // release names the commit it was published for.
+  const newTag = fixedTag === undefined && trimmedTag !== '' && tagProblem(trimmedTag) === null && !tagExists && existing === null
+  const targetRef = tagTargets.find((b) => b.refName === tagTarget) ?? tagTargets[0] ?? null
+  const targetOid = targetRef === null ? null : tipOidOf(targetRef)
   const liveTag = existing !== null && sealedExisting?.unpublished !== true
   // Only a live tag can be unpublished: the switch left on for another tag says nothing.
   const unpublishing = unpublish && liveTag
@@ -283,6 +301,7 @@ function NewReleaseDialog({
   }, [sealedRepo, trimmedTag, title, notes, yankedChoice, draftChoice, prereleaseChoice, unpublishing, sealedExisting, newFiles.length])
   const problem =
     tagProblem(trimmedTag) ??
+    (newTag && targetOid === null ? `${trimmedTag} does not exist yet, and this repo has no branch to tag: push one first.` : null) ??
     releaseTextProblem(sealedRepo ? { name: title.trim(), notes: notes.trimEnd() } : { name: finalName, notes: finalNotes }) ??
     assetFilesProblem(newFiles) ??
     // A sealed revision whose notes continue stores an asset list even with no file.
@@ -300,7 +319,9 @@ function NewReleaseDialog({
       }),
     [trimmedTag, finalName, finalNotes, yanked, kept, files, policy, profiles],
   )
-  const cost = sealedPlan?.cost ?? publicCost
+  const releaseCost = sealedPlan?.cost ?? publicCost
+  // A new tag is one more write: a ref update of a new name.
+  const cost = useMemo(() => (newTag ? sumPreviews([releaseCost, previewCreate('refUpdate', {}, { repo: false })]) : releaseCost), [newTag, releaseCost])
   const locked = phase !== 'edit'
 
   const publish = async (): Promise<void> => {
@@ -315,9 +336,9 @@ function NewReleaseDialog({
     let stored = 0
     let current: string | null = null
     try {
-      const published = await publishRelease(
+      const publish = (auth: typeof signer): ReturnType<typeof publishRelease> => publishRelease(
         sdk,
-        signer,
+        auth,
         repo,
         {
           tagName: trimmedTag,
@@ -329,6 +350,7 @@ function NewReleaseDialog({
           yanked: yankedChoice ?? undefined,
           sealed: sealedRepo ? { draft: draftChoice ?? undefined, prerelease: prereleaseChoice ?? undefined, unpublished: unpublishing } : undefined,
           stored: pendingAssets ?? undefined,
+          ...(newTag && targetOid !== null ? { createTag: { target: targetOid } } : {}),
         },
         { policy, profiles },
         (e) => {
@@ -352,9 +374,14 @@ function NewReleaseDialog({
             setProgress(Object.fromEntries(newFiles.map((f) => [f.name, { state: 'reused' } as AssetState])))
             setStatus(newFiles.length > 0 ? 'An earlier attempt already stored these files and their asset list: nothing is uploaded again.' : 'An earlier attempt already stored the asset list: nothing is uploaded again.')
           }
+          if (e.step === 'tag') setStatus(`Creating the tag ${trimmedTag}…`)
           if (e.step === 'release') setStatus(sealedRepo ? 'Sealing and writing the release…' : 'Writing the release…')
         },
       )
+      // A new tag and its release are one action, one toast (a ref update alone reads "Branch updated").
+      const published = newTag
+        ? await spendAction({ running: `Publishing ${trimmedTag}…`, done: `Tag and release ${trimmedTag} saved`, failed: `Tag ${trimmedTag} created; the release stopped` }, (tag) => publish(tag(signer)))
+        : await publish(signer)
       invalidateSessionCache(`releases:${network}:${repoKey(repo)}`)
       setPendingAssets(null)
       setPhase('done')
@@ -456,7 +483,11 @@ function NewReleaseDialog({
           </p>
         ) : (
           <>
-        <Field label="Tag" htmlFor="release-tag" hint="The git tag this release is for, e.g. v1.2.0 (push the tag with git; publishing does not create it).">
+        <Field
+          label="Tag"
+          htmlFor="release-tag"
+          hint={fixedTag !== undefined ? undefined : 'The tag this release is for, e.g. v1.2.0: an existing tag, or a new one that publishing creates on the branch you pick.'}
+        >
           <Input
             id="release-tag"
             value={tag}
@@ -466,8 +497,48 @@ function NewReleaseDialog({
             placeholder="v1.0.0"
             disabled={locked || fixedTag !== undefined}
             autoFocus={fixedTag === undefined}
+            list={fixedTag === undefined ? 'release-tag-options' : undefined}
+            autoComplete="off"
+            spellCheck={false}
           />
+          {fixedTag === undefined ? (
+            <datalist id="release-tag-options">
+              {home.tags.filter(isLive).map((t) => (
+                <option key={t.refName} value={shortRef(t.refName)} />
+              ))}
+            </datalist>
+          ) : null}
         </Field>
+        {newTag && targetRef !== null ? (
+          <div className="rounded-md border border-anvil-200 px-3 py-2 text-dense dark:border-anvil-800" data-testid="release-new-tag">
+            <p className="flex items-start gap-1.5 text-anvil-700 dark:text-anvil-200">
+              <Tag className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span>
+                <span className="font-mono">{trimmedTag}</span> is a new tag: publishing creates it (a lightweight tag) on the target below. Nothing is uploaded for it.
+              </span>
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <label htmlFor="release-tag-target" className="text-[12px] font-medium text-anvil-600 dark:text-anvil-300">
+                Target
+              </label>
+              <select
+                id="release-tag-target"
+                value={targetRef.refName}
+                onChange={(e) => setTagTarget(e.target.value)}
+                disabled={locked}
+                className="min-w-0 max-w-full rounded-md border border-anvil-300 bg-white px-2 py-1 font-mono text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
+                data-testid="release-tag-target"
+              >
+                {tagTargets.map((b) => (
+                  <option key={b.refName} value={b.refName}>
+                    {shortRef(b.refName)}
+                  </option>
+                ))}
+              </select>
+              {targetOid !== null ? <span className="font-mono text-[12px] text-anvil-500 dark:text-anvil-400">at {targetOid.slice(0, 7)}</span> : null}
+            </div>
+          </div>
+        ) : null}
         {existing && sealedRepo ? (
           <p role="note" className="flex items-start gap-1.5 text-[12px] text-caution-700 dark:text-caution-400" data-testid="release-sealed-carry">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />

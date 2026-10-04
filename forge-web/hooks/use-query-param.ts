@@ -20,6 +20,16 @@ export function useParam(name: string, fallback = ''): string {
   return raw === null ? fallback : openParam(name, raw)
 }
 
+/**
+ * Which identity a profile page (`/u`, `/u/followers`, `/u/following`) addresses (D-222):
+ * `?id=` an identity id exactly, else `?name=` a DPNS name (or, as before, an identity id).
+ */
+export function useProfileAddress(): { readonly address: string; readonly byId: boolean } {
+  const id = useParam('id')
+  const name = useParam('name')
+  return id !== '' ? { address: id, byId: true } : { address: name, byId: false }
+}
+
 /** Whether the URL carries a private-repo token this tab did not issue (`private-nav.ts`). */
 export function useExpiredLink(): boolean {
   const params = useSearchParams()

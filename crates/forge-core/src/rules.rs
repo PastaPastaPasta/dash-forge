@@ -49,7 +49,9 @@ use serde::{Deserialize, Serialize};
 pub mod codeowners;
 pub mod moderation;
 pub mod parity;
+pub mod profile;
 pub mod review;
+pub mod signature;
 pub mod transition;
 pub mod v2;
 
@@ -1569,6 +1571,80 @@ mod tests {
         ref_key: Option<String>,
     }
 
+    /// `fork_sync`: the tips and their ancestry (`crate::fork::sync_decision`).
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ForkSyncInput {
+        fork_tip: Option<String>,
+        parent_tip: Option<String>,
+        fork_in_parent: bool,
+        parent_in_fork: bool,
+    }
+
+    /// One ref of a `fork_refs` side.
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ForkRef {
+        ref_name: String,
+        state: RefState,
+    }
+
+    /// `fork_refs`: the parent's and the fork's refs (`crate::fork::plan_refs`).
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ForkRefsInput {
+        parent: Vec<ForkRef>,
+        fork: Vec<ForkRef>,
+        only_branch: Option<String>,
+    }
+
+    /// A planned fork ref, as `expected` names it.
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PlannedRef {
+        ref_name: String,
+        oid: String,
+    }
+
+    /// The fork cases (`fork_sync__*`, `fork_refs__*`): what a fork copies, and what a sync does.
+    fn run_fork_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "fork_sync" => {
+                let inp: ForkSyncInput = input(v);
+                let got = crate::fork::sync_decision(
+                    inp.fork_tip.as_deref(),
+                    inp.parent_tip.as_deref(),
+                    inp.fork_in_parent,
+                    inp.parent_in_fork,
+                );
+                assert_eq!(
+                    got,
+                    expected::<crate::fork::SyncDecision>(v),
+                    "vector `{ctx}`"
+                );
+            }
+            "fork_refs" => {
+                let inp: ForkRefsInput = input(v);
+                let side = |refs: &[ForkRef]| -> Vec<(String, RefState)> {
+                    refs.iter()
+                        .map(|r| (r.ref_name.clone(), r.state.clone()))
+                        .collect()
+                };
+                let got: Vec<PlannedRef> = crate::fork::plan_refs(
+                    &side(&inp.parent),
+                    &side(&inp.fork),
+                    inp.only_branch.as_deref(),
+                )
+                .into_iter()
+                .map(|(ref_name, oid)| PlannedRef { ref_name, oid })
+                .collect();
+                assert_eq!(got, expected::<Vec<PlannedRef>>(v), "vector `{ctx}`");
+            }
+            other => panic!("vector `{ctx}`: not a fork case `{other}`"),
+        }
+    }
+
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct PackCopiesInput {
@@ -2175,6 +2251,58 @@ mod tests {
         }
     }
 
+    /// `pubkey_entry` and `commit_signature`: the signed-commit rules ([`super::signature`]).
+    fn run_signature_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct EntryInput {
+            entry: String,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct CommitInput {
+            commit: String,
+            signers: Vec<super::signature::Signer>,
+        }
+        let ctx = &v.name;
+        let got = if v.case == "pubkey_entry" {
+            let inp: EntryInput = input(v);
+            serde_json::to_value(super::signature::read_pubkey_entry(&inp.entry))
+        } else {
+            let inp: CommitInput = input(v);
+            serde_json::to_value(super::signature::verify_commit_signature(
+                inp.commit.as_bytes(),
+                &inp.signers,
+                false,
+            ))
+        };
+        assert_eq!(got.expect("serialize"), v.expected, "vector `{ctx}`");
+    }
+
+    /// `profile_input` and `avatar_config`: the profile rules ([`super::profile`]).
+    fn run_profile_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct AvatarConfigInput {
+            config: Option<String>,
+            identity_id: String,
+        }
+        let ctx = &v.name;
+        if v.case == "profile_input" {
+            let inp: super::profile::ProfileInput = input(v);
+            let got = serde_json::to_value(super::profile::check_profile(&inp)).expect("serialize");
+            assert_eq!(got, v.expected, "vector `{ctx}`");
+        } else {
+            let inp: AvatarConfigInput = input(v);
+            let got = super::profile::avatar_spec(inp.config.as_deref(), &inp.identity_id);
+            assert_eq!(
+                got,
+                expected::<super::profile::AvatarSpec>(v),
+                "vector `{ctx}`"
+            );
+        }
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2185,6 +2313,7 @@ mod tests {
                 run_transition_case(v);
             }
             "pack_copies" => run_pack_copies(v),
+            "fork_sync" | "fork_refs" => run_fork_case(v),
             "v2_pack_list" => {
                 let inp: V2PackListInput = input(v);
                 let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());
@@ -2227,6 +2356,8 @@ mod tests {
                 let got = v2::ref_name_hashes_agree(&inp.doc, key.as_ref());
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
+            "profile_input" | "avatar_config" => run_profile_case(v),
+            "pubkey_entry" | "commit_signature" => run_signature_case(v),
             "repo_name" => {
                 let inp: RepoNameInput = input(v);
                 let got = serde_json::json!({

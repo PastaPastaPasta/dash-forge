@@ -1,0 +1,13 @@
+{
+  "name": "identicon_is_case_sensitive",
+  "description": "`Identicon` is not the convention.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "Identicon",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "invalid"
+  }
+}

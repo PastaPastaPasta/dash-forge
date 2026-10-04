@@ -1,0 +1,24 @@
+{
+  "name": "ssh_ecdsa_unsupported",
+  "description": "An SSH ECDSA signature is not checked here: unsupported.",
+  "case": "commit_signature",
+  "rules": "v2",
+  "input": {
+    "commit": "tree 43839774b18d9b0e410b294081294b28e285d3d3\nparent 7fd1b3f455b2b6fc8d232cff4e2b979e1dcc1d4d\nauthor Sig Test <sig@sig.test> 1790942400 +0000\ncommitter Sig Test <sig@sig.test> 1790942400 +0000\ngpgsig -----BEGIN SSH SIGNATURE-----\n U1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAE\n EEv1+W6S8DskplM1ewneYlJeByTO286CdM7ooImN/AHozlE5jDlJjTbQSaM4Hi6KCADhMn\n /E0Fy/x6/k2bqeGQpwAAAANnaXQAAAAAAAAABnNoYTUxMgAAAGQAAAATZWNkc2Etc2hhMi\n 1uaXN0cDI1NgAAAEkAAAAgWQAQjJgFAgguFdNa5x87cugUpxIIO3pojpfF+jWXKXsAAAAh\n AKUGotHVoxx5MhqJ/XqPxgVVKZTdrBqnaWsoVkGgrb5g\n -----END SSH SIGNATURE-----\n\nssh-f-ecdsa commit\n\nBody line for ssh-f-ecdsa.\n",
+    "signers": [
+      {
+        "identity": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "pubkeys": [
+          "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBL9flukvA7JKZTNXsJ3mJSXgckztvOgnTO6KCJjfwB6M5ROYw5SY020EmjOB4uiggA4TJ/xNBcv8ev5Nm6nhkKc= sig-test-f"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "unverified",
+    "reason": "unsupported",
+    "format": "ssh",
+    "key": "SHA256:NE3X68BCSK6CWY2wjxyAb/FPN/FO1UwvZUul2xUt2L4",
+    "signer": null
+  }
+}

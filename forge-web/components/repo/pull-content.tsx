@@ -1590,6 +1590,7 @@ function PullPage({
             </>
           ) : tab === 'commits' ? (
             <CommitsTab
+              signing={{ repo, author: pull.author }}
               commits={commits.data}
               error={comparison.error ?? commits.error}
               loading={commits.loading}

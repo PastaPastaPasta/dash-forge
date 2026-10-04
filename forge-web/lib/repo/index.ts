@@ -42,6 +42,7 @@ export {
   readRepoById,
   resolveAnyRepo,
   resolveAnyRepoWith,
+  isIdentifier,
   resolveOwner,
   toRepoDoc,
   repoRefOf,
@@ -315,11 +316,19 @@ export {
   planFork,
   planManifests,
   planRefs,
+  planSyncManifests,
   platformLocator,
+  readSyncManifests,
+  readSyncTarget,
+  recordedPacks,
+  syncDecision,
+  syncFork,
   type ForkNameCheck,
   type ForkProgress,
   type ForkResult,
   type ForkStep,
+  type SyncDecision,
+  type SyncManifests,
 } from './fork'
 export { noteForkOf, readForkParent, resetForkParents } from './fork-parent'
 export {

@@ -18,6 +18,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
 import { addressFromParams, repoHref } from '@/hooks/use-query-param'
+import { identityHref } from '@/lib/view/profile-links'
 import { SignInButton } from '@/components/sign-in-button'
 import { IdentityPill } from '@/components/ui/identity-pill'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -195,7 +196,7 @@ export function AppHeader(): JSX.Element {
 function DocumentTitle(): null {
   const pathname = usePathname()
   const params = useSearchParams()
-  const owner = params.get('owner') ?? (pathname.startsWith('/u') ? params.get('name') : null) ?? ''
+  const owner = params.get('owner') ?? (pathname.startsWith('/u') ? params.get('id') || params.get('name') : null) ?? ''
   const name = useDpnsName(owner)
   const title = pageTitle(pathname, params, name)
   useEffect(() => {
@@ -288,7 +289,7 @@ function JumpBox({ compact = false, onDismiss, onJump }: { compact?: boolean; on
       if (!current()) return
       const target = wordTarget(matches)
       if (target.kind === 'repo') go(discoveredRepoHref(target.repo))
-      else if (target.kind === 'profile') go(profileHref(target.identityId))
+      else if (target.kind === 'profile') go(identityHref(target.identityId))
       else if (target.kind === 'choose') {
         const n = matches.repos.length + (matches.profile === null ? 0 : 1)
         setNote(n === 0 ? `Could not check everything named ${word}.` : `${n} match${n === 1 ? '' : 'es'} for ${word}.`)
@@ -493,7 +494,7 @@ function WordChoices({ word, matches, onPick }: { word: string; matches: WordMat
         ))}
         {matches.profile !== null ? (
           <li>
-            <Link className="hit-area underline" href={profileHref(matches.profile)} onClick={onPick}>
+            <Link className="hit-area underline" href={identityHref(matches.profile)} onClick={onPick}>
               profile @{word}
             </Link>
           </li>
@@ -687,7 +688,7 @@ function AccountMenu({
           <Link href="/settings/" className={ITEM} onClick={() => setOpen(false)}>
             Settings &amp; spend
           </Link>
-          <Link href={`/u/?name=${encodeURIComponent(identity)}`} className={ITEM} onClick={() => setOpen(false)}>
+          <Link href={identityHref(identity)} className={ITEM} onClick={() => setOpen(false)}>
             Your profile
           </Link>
           <button

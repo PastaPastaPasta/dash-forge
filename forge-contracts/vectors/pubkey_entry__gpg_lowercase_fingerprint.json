@@ -1,0 +1,14 @@
+{
+  "name": "gpg_lowercase_fingerprint",
+  "description": "The fingerprint is read case-insensitively and shown in upper case.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "gpg:059e65eaba27e46ff4fcc211c209db5a73261b84 xjMEar9q4xYJKwYBBAHaRw8BAQdAmGsyG5QnBNlTV9rdWGDWvO8EL4giPvjVi5+0qE02qtg="
+  },
+  "expected": {
+    "kind": "openpgp",
+    "fingerprint": "059E65EABA27E46FF4FCC211C209DB5A73261B84",
+    "verifiable": true
+  }
+}

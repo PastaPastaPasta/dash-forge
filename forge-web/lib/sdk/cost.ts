@@ -121,6 +121,9 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   // being byte fields (`webhookCost` sizes them as text would not).
   topic: 59_000_000,
   webhook: 76_000_000,
+  // P1-7, sakura (Platform 5.0.0-beta.1): a profile with ~120 bytes of text 36.8M-37.2M as the
+  // identity's first forge-community write (its nonce, +12M, is CONTRACT_FIRST_CREDITS).
+  profile: 24_000_000,
 }
 
 /**
