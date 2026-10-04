@@ -584,49 +584,23 @@ pub fn parse_pull_search(text: &str, base: &PullQuery) -> Parsed<PullQuery> {
     }
     let issue_base = IssueQuery {
         state: "open".into(),
-        labels: base.labels.clone(),
-        author: base.author.clone(),
-        assignee: base.assignee.clone(),
-        mentions: false,
-        sort: base.sort.clone(),
-        q: base.q.clone(),
-        page: base.page,
-        not_labels: base.not_labels.clone(),
-        no_label: base.no_label,
-        milestone: base.milestone.clone(),
-        no_milestone: base.no_milestone,
-        author_login: base.author_login.clone(),
-        scope: base.scope.clone(),
-        comments: base.comments.clone(),
-        reason: base.reason.clone(),
+        ..base.issue_part()
     };
     let Parsed {
         query: i,
         unresolved: mut issue_unresolved,
     } = parse_issue_search(&rest.join(" "), &issue_base);
     issue_unresolved.extend(pull_unresolved);
+    let state = admitted
+        .as_deref()
+        .map_or_else(|| base.state.clone(), |s| state_of_set(s).to_string());
     Parsed {
-        query: PullQuery {
-            state: admitted
-                .as_deref()
-                .map_or_else(|| base.state.clone(), |s| state_of_set(s).to_string()),
-            labels: i.labels,
-            author: i.author,
-            assignee: i.assignee,
-            sort: i.sort,
-            q: i.q,
-            page: i.page,
-            not_labels: i.not_labels,
-            no_label: i.no_label,
-            milestone: i.milestone,
-            no_milestone: i.no_milestone,
-            author_login: i.author_login,
-            scope: i.scope,
-            comments: i.comments,
-            reason: i.reason,
-            draft: draft.or(base.draft),
-            review_requested: review_requested.or_else(|| base.review_requested.clone()),
-        },
+        query: PullQuery::from_issue_part(
+            i,
+            state,
+            draft.or(base.draft),
+            review_requested.or_else(|| base.review_requested.clone()),
+        ),
         unresolved: issue_unresolved,
     }
 }
@@ -634,8 +608,46 @@ pub fn parse_pull_search(text: &str, base: &PullQuery) -> Parsed<PullQuery> {
 impl Default for PullQuery {
     fn default() -> Self {
         let i = IssueQuery::default();
+        let state = i.state.clone();
+        Self::from_issue_part(i, state, None, None)
+    }
+}
+
+impl PullQuery {
+    /// The filters PRs share with issues, as an [`IssueQuery`] (its `state` this query's, no
+    /// `mentions`): what the issue grammar reads and the row filters apply.
+    #[must_use]
+    pub fn issue_part(&self) -> IssueQuery {
+        IssueQuery {
+            state: self.state.clone(),
+            labels: self.labels.clone(),
+            author: self.author.clone(),
+            assignee: self.assignee.clone(),
+            mentions: false,
+            sort: self.sort.clone(),
+            q: self.q.clone(),
+            page: self.page,
+            not_labels: self.not_labels.clone(),
+            no_label: self.no_label,
+            milestone: self.milestone.clone(),
+            no_milestone: self.no_milestone,
+            author_login: self.author_login.clone(),
+            scope: self.scope.clone(),
+            comments: self.comments.clone(),
+            reason: self.reason.clone(),
+        }
+    }
+
+    /// A PR query from the issue grammar's answer `i` (its `mentions` dropped) and the PR-only
+    /// fields.
+    fn from_issue_part(
+        i: IssueQuery,
+        state: String,
+        draft: Option<bool>,
+        review_requested: Option<String>,
+    ) -> Self {
         Self {
-            state: i.state,
+            state,
             labels: i.labels,
             author: i.author,
             assignee: i.assignee,
@@ -650,8 +662,8 @@ impl Default for PullQuery {
             scope: i.scope,
             comments: i.comments,
             reason: i.reason,
-            draft: None,
-            review_requested: None,
+            draft,
+            review_requested,
         }
     }
 }

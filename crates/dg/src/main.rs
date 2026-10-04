@@ -587,8 +587,9 @@ pub enum SearchCommand {
 pub struct SearchArgs {
     /// The repository (`owner/name`; inside a clone, the clone's).
     pub repo: String,
-    /// The query: words, "phrases" and qualifiers.
-    #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+    /// The query: words, "phrases" and qualifiers. Quote it, or put it after `--` when it
+    /// starts with a negation (`-- -label:wontfix`), as with gh.
+    #[arg(required = true, num_args = 1..)]
     pub query: Vec<String>,
     /// At most this many results.
     #[arg(long, short = 'L', default_value_t = 30)]
@@ -599,7 +600,7 @@ pub struct SearchArgs {
 #[derive(Debug, clap::Args)]
 pub struct SearchReposArgs {
     /// A name (or its start), and qualifiers topic:<name> and owner:<name>.
-    #[arg(num_args = 0.., allow_hyphen_values = true)]
+    #[arg(num_args = 0..)]
     pub query: Vec<String>,
     /// Only this owner's repositories (an identity id or DPNS name).
     #[arg(long)]
@@ -2200,6 +2201,31 @@ mod tests {
             "--remove-milestone"
         ])
         .is_err());
+    }
+
+    /// `dg search`: flags after the query are flags, and a leading negation goes after `--`.
+    #[test]
+    fn search_takes_flags_after_the_query() {
+        let cli =
+            Cli::try_parse_from(["dg", "search", "prs", "o/r", "is:merged", "-L", "5"]).unwrap();
+        let Command::Search(SearchCommand::Prs(a)) = cli.command else {
+            panic!("not search prs");
+        };
+        assert_eq!((a.query, a.limit), (vec!["is:merged".to_string()], 5));
+        let cli = Cli::try_parse_from([
+            "dg",
+            "search",
+            "issues",
+            "o/r",
+            "--",
+            "-label:wontfix",
+            "bug",
+        ])
+        .unwrap();
+        let Command::Search(SearchCommand::Issues(a)) = cli.command else {
+            panic!("not search issues");
+        };
+        assert_eq!(a.query, ["-label:wontfix", "bug"]);
     }
 
     /// QW2-086: an empty list names its state filter ("no open pull requests"), as `gh` does.

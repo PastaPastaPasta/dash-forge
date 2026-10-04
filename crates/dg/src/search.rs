@@ -150,7 +150,35 @@ struct Filters<'a> {
     owner: &'a str,
 }
 
-impl Filters<'_> {
+impl<'a> Filters<'a> {
+    /// The row filters of `q` (a PR query's [`PullQuery::issue_part`]), `me` read as the
+    /// reader's id, with the mention rule's id and DPNS name when `q.mentions`.
+    fn of(
+        q: &'a IssueQuery,
+        me: Option<&str>,
+        my_name: Option<String>,
+        mirror_trust: Option<&'a RoleOracle>,
+        owner: &'a str,
+    ) -> Self {
+        Self {
+            labels: &q.labels,
+            not_labels: &q.not_labels,
+            no_label: q.no_label,
+            milestone: q.milestone.as_deref(),
+            no_milestone: q.no_milestone,
+            author: me_or(q.author.as_ref(), me),
+            author_login: q.author_login.as_deref(),
+            assignee: me_or(q.assignee.as_ref(), me),
+            mentions: q
+                .mentions
+                .then(|| (me.unwrap_or_default().to_string(), my_name)),
+            text: &q.q,
+            scope: &q.scope,
+            mirror_trust,
+            owner,
+        }
+    }
+
     fn matches(&self, r: &Row<'_>) -> bool {
         self.labels.iter().all(|l| r.labels.contains(l))
             && !self.not_labels.iter().any(|l| r.labels.contains(l))
@@ -180,13 +208,33 @@ impl Filters<'_> {
     }
 }
 
-/// What a search could not apply: the grammar's unresolved tokens, and what dg does not read.
-fn not_applied(mut unresolved: Vec<String>, comments: Option<&String>) -> Vec<String> {
-    if let Some(c) = comments {
-        // A comment count is one count read per item: the list does not read it.
+/// What a search could not apply: the grammar's unresolved tokens, and what dg does not read
+/// (a comment count is one count read per item, so `comments:` and the comment sort).
+fn not_applied(mut unresolved: Vec<String>, q: &IssueQuery) -> Vec<String> {
+    if let Some(c) = &q.comments {
         unresolved.push(format!("comments:{c}"));
     }
+    if q.sort == "comments" {
+        unresolved.push("sort:comments-desc".into());
+    }
     unresolved
+}
+
+/// Sort `rows` by creation time as `sort` asks (`oldest`, else newest first).
+fn sort_by_created<T>(rows: &mut [T], sort: &str, created_at: impl Fn(&T) -> u64) {
+    if sort == "oldest" {
+        rows.sort_by_key(|r| created_at(r));
+    } else {
+        rows.sort_by_key(|r| std::cmp::Reverse(created_at(r)));
+    }
+}
+
+/// The repository's role oracle, read only when an `author:<login>` filter needs it.
+async fn mirror_trust(s: &Reader, q: &IssueQuery) -> Result<Option<RoleOracle>> {
+    Ok(match q.author_login {
+        Some(_) => Some(s.collab().member_oracle(&s.repo).await?),
+        None => None,
+    })
 }
 
 fn print_not_applied(ctx: &Ctx, skipped: &[String]) {
@@ -231,28 +279,14 @@ async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
         _ => None,
     };
     let (all, hidden) = s.collab().issues_with_state(&s.repo).await?;
-    let oracle = if q.author_login.is_some() {
-        Some(s.collab().member_oracle(&s.repo).await?)
-    } else {
-        None
-    };
-    let f = Filters {
-        labels: &q.labels,
-        not_labels: &q.not_labels,
-        no_label: q.no_label,
-        milestone: q.milestone.as_deref(),
-        no_milestone: q.no_milestone,
-        author: me_or(q.author.as_ref(), me.as_deref()),
-        author_login: q.author_login.as_deref(),
-        assignee: me_or(q.assignee.as_ref(), me.as_deref()),
-        mentions: q
-            .mentions
-            .then(|| (me.clone().unwrap_or_default(), my_name)),
-        text: &q.q,
-        scope: &q.scope,
-        mirror_trust: oracle.as_ref(),
-        owner: s.repo.owner_id(),
-    };
+    let oracle = mirror_trust(&s, &q).await?;
+    let f = Filters::of(
+        &q,
+        me.as_deref(),
+        my_name,
+        oracle.as_ref(),
+        s.repo.owner_id(),
+    );
     let mut rows: Vec<(&IssueView, Option<String>)> = all
         .iter()
         .filter(|v| match q.state.as_str() {
@@ -280,17 +314,10 @@ async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
             })
         })
         .collect();
-    if q.sort == "oldest" {
-        rows.sort_by_key(|(v, _)| v.issue.created_at);
-    } else {
-        rows.sort_by_key(|(v, _)| std::cmp::Reverse(v.issue.created_at));
-    }
+    sort_by_created(&mut rows, &q.sort, |(v, _)| v.issue.created_at);
     let total = rows.len();
     rows.truncate(a.limit as usize);
-    let mut skipped = not_applied(unresolved, q.comments.as_ref());
-    if q.sort == "comments" {
-        skipped.push("sort:comments-desc".into());
-    }
+    let skipped = not_applied(unresolved, &q);
     let names = names_of(
         ctx,
         &s.client,
@@ -383,26 +410,9 @@ async fn prs(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
     let me = if needs_me { Some(s.me(ctx)?) } else { None };
     // The newest page of PRs (100), folded with their state in a fixed number of reads.
     let page = s.collab().list_patch_views(&s.repo, 100).await?;
-    let oracle = if q.author_login.is_some() {
-        Some(s.collab().member_oracle(&s.repo).await?)
-    } else {
-        None
-    };
-    let f = Filters {
-        labels: &q.labels,
-        not_labels: &q.not_labels,
-        no_label: q.no_label,
-        milestone: q.milestone.as_deref(),
-        no_milestone: q.no_milestone,
-        author: me_or(q.author.as_ref(), me.as_deref()),
-        author_login: q.author_login.as_deref(),
-        assignee: me_or(q.assignee.as_ref(), me.as_deref()),
-        mentions: None,
-        text: &q.q,
-        scope: &q.scope,
-        mirror_trust: oracle.as_ref(),
-        owner: s.repo.owner_id(),
-    };
+    let iq = q.issue_part();
+    let oracle = mirror_trust(&s, &iq).await?;
+    let f = Filters::of(&iq, me.as_deref(), None, oracle.as_ref(), s.repo.owner_id());
     let requested = me_or(q.review_requested.as_ref(), me.as_deref());
     let mut rows: Vec<&PatchView> = page
         .rows
@@ -431,17 +441,10 @@ async fn prs(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
             })
         })
         .collect();
-    if q.sort == "oldest" {
-        rows.sort_by_key(|v| v.patch.created_at);
-    } else {
-        rows.sort_by_key(|v| std::cmp::Reverse(v.patch.created_at));
-    }
+    sort_by_created(&mut rows, &q.sort, |v| v.patch.created_at);
     let total = rows.len();
     rows.truncate(a.limit as usize);
-    let mut skipped = not_applied(unresolved, q.comments.as_ref());
-    if q.sort == "comments" {
-        skipped.push("sort:comments-desc".into());
-    }
+    let skipped = not_applied(unresolved, &iq);
     let names = names_of(ctx, &s.client, rows.iter().map(|v| v.patch.author.as_str())).await;
     ctx.emit(
         json!({
@@ -566,7 +569,7 @@ async fn repos(ctx: &Ctx, a: &crate::SearchReposArgs) -> Result<()> {
             .collect()
     };
     let mut found: Vec<Found> = if let Some(t) = &topic {
-        let ids: Vec<String> = client
+        let ids: Vec<FieldValue> = client
             .query_documents(
                 &core,
                 forge_core::collab::parity::DOC_TOPIC,
@@ -578,18 +581,25 @@ async fn repos(ctx: &Ctx, a: &crate::SearchReposArgs) -> Result<()> {
             .await?
             .iter()
             .filter_map(|d| d.field_bytes32("repoId"))
-            .map(forge_core::platform::encode_identifier)
+            .map(FieldValue::identifier)
             .collect();
-        let mut out = Vec::new();
-        for id in ids {
-            if let Ok(repo) = forge_core::resolve::resolve_id(&client, &id).await {
-                let description = forge_core::resolve::repo_description(&client, &repo)
-                    .await
-                    .unwrap_or_default();
-                out.push(Found { repo, description });
-            }
+        if ids.is_empty() {
+            Vec::new()
+        } else {
+            // The tagged repositories in one read (at most 100 ids, Drive's `in` bound).
+            let n = u32::try_from(ids.len()).unwrap_or(100);
+            let docs = client
+                .query_documents(
+                    &core,
+                    forge_core::resolve::DOC_REPO,
+                    &[QueryFilter::in_list("$id", ids)],
+                    &[],
+                    n,
+                    None,
+                )
+                .await?;
+            from_docs(docs)
         }
-        out
     } else if let Some(id) = &owner_id {
         forge_core::resolve::list_owned(&client, id)
             .await?
@@ -610,11 +620,7 @@ async fn repos(ctx: &Ctx, a: &crate::SearchReposArgs) -> Result<()> {
                 &core,
                 forge_core::resolve::DOC_REPO,
                 &[
-                    QueryFilter {
-                        field: "name".into(),
-                        op: forge_core::platform::QueryOp::Gte,
-                        value: FieldValue::text(prefix.as_str()),
-                    },
+                    QueryFilter::gte("name", FieldValue::text(prefix.as_str())),
                     QueryFilter {
                         field: "name".into(),
                         op: forge_core::platform::QueryOp::Lt,
