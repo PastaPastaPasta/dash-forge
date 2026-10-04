@@ -207,10 +207,23 @@ export const ROTATION_RETRIES_MS: readonly number[] = [2_000, 10_000, 20_000, 25
 /** How many DAPI nodes are asked, one after another, before giving up on a second source. */
 const DAPI_TRIES = 3
 
-async function fetchServiceKeys(endpoint: string, deps: Required<CrossCheckDeps>): Promise<QuorumKey[]> {
+async function fetchServiceKeys(endpoint: string, deps: Required<Pick<CrossCheckDeps, 'fetch' | 'timeoutMs'>>): Promise<QuorumKey[]> {
   const resp = await deps.fetch(`${endpoint.replace(/\/+$/, '')}/quorums`, { signal: AbortSignal.timeout(deps.timeoutMs) })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
   return parseQuorumService(await resp.json())
+}
+
+/**
+ * Whether `endpoint` answers as a quorum service: the quorum keys it lists now. Settings asks
+ * before saving a quorum service the reader typed, so a typo can't stop every read.
+ */
+export async function probeQuorumService(endpoint: string, deps: Pick<CrossCheckDeps, 'fetch' | 'timeoutMs'> = {}): Promise<QuorumKey[]> {
+  const keys = await fetchServiceKeys(endpoint, {
+    fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
+    timeoutMs: deps.timeoutMs ?? 8_000,
+  })
+  if (keys.length === 0) throw new Error('it lists no quorums')
+  return keys
 }
 
 async function fetchDapiKeys(address: string, deps: Required<CrossCheckDeps>): Promise<QuorumKey[]> {

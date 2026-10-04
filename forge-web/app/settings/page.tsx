@@ -19,6 +19,7 @@ import { KeysPanel } from '@/components/keys-panel'
 import { EncryptionKeyPanel } from '@/components/encryption-key-panel'
 import { SecurityPanel } from '@/components/security-panel'
 import { GatewaysField } from '@/components/gateways-field'
+import { QuorumServiceField } from '@/components/quorum-service-field'
 import { DisplayPrefsPanel } from '@/components/display-prefs-panel'
 import { TrendingPrefPanel } from '@/components/trending-pref-panel'
 import { creditsToDash } from '@/lib/sdk'
@@ -40,6 +41,15 @@ export default function SettingsPage(): JSX.Element {
     </section>
   )
 
+  const quorumService = (
+    <section aria-labelledby="quorum-service-title" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+      <h2 id="quorum-service-title" className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">
+        Quorum service
+      </h2>
+      <QuorumServiceField />
+    </section>
+  )
+
   if (!identity) {
     return (
       <AppShell>
@@ -56,6 +66,7 @@ export default function SettingsPage(): JSX.Element {
             action={<SignInButton />}
           />
           {gateways}
+          {quorumService}
         </div>
       </AppShell>
     )
@@ -137,6 +148,8 @@ export default function SettingsPage(): JSX.Element {
         <EncryptionKeyPanel />
 
         {gateways}
+
+        {quorumService}
 
         <p className="text-center text-[12px] text-anvil-500 dark:text-anvil-400">
           <Link href="/" className="hit-area hover:underline">Back to discovery</Link>

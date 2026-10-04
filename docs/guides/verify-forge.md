@@ -43,7 +43,7 @@ A proof is only as good as the quorum public key it is checked against. Today, *
 | mainnet | `https://quorums.mainnet.networks.dash.org` |
 | devnet sakura | `https://quorums.sakura.networks.dash.org` |
 
-Whoever controls that endpoint could hand out a key of their own and vouch for false data. So Forge is **trust-minimized, not trustless**. On a devnet, `dg doctor` prints the endpoint on its `target` line. On testnet and mainnet the tools use the endpoint in the table above, which is built into the Platform SDK.
+Whoever controls that endpoint could hand out a key of their own and vouch for false data. So Forge is **trust-minimized, not trustless**. `dg doctor` prints the endpoint in use on its `target` line. You can [choose another](#point-the-tools-at-another-key-source).
 
 ### The web app cross-checks the keys with a second source
 
@@ -80,12 +80,15 @@ Use Platform's validator quorum type: `llmq_25_67` (type 6) on testnet, `llmq_10
 
 ### Point the tools at another key source
 
-On a devnet you can choose the endpoint:
+If the default endpoint is down or blocked where you are, every read stops: nothing can be checked without quorum keys. Point the tools at another quorum service, on any network:
 
-- `dg` and `git-remote-dash`: `DASH_FORGE_QUORUM_URL`, or `git config dash.quorumUrl`;
-- a self-built web app: `NEXT_PUBLIC_QUORUM_URL`.
+- **Web app:** Settings → **Quorum service**. The app asks the new service for its quorum list before saving it, keeps it in this browser only, and reloads to use it. Repository pages still compare its keys with a Platform node's.
+- **`dg` and `git-remote-dash`:** `--quorum-url <url>` for one command, or `DASH_FORGE_QUORUM_URL`, or `git config dash.quorumUrl` (git hands the setting to `git-remote-dash`).
+- **A self-built web app:** `NEXT_PUBLIC_QUORUM_URL` sets a devnet's default at build time.
 
-On testnet and mainnet, the SDK's built-in endpoint is used.
+On testnet and mainnet the URL must be `https://`. The service must answer `GET <url>/quorums` and `GET <url>/previous` the way Dash's does: run [Dash's quorum list server](https://github.com/dashpay/quorum-list-server) next to a Dash Core node you trust.
+
+**Why not ask Platform nodes directly?** The Platform SDK takes quorum keys from a quorum service and nowhere else. In the CLI, `rs-sdk-trusted-context-provider` (`TrustedHttpContextProvider::new_with_url`) is the only key source Forge can use without a Core node. In the browser, evo-sdk's trusted mode fetches keys only through `WasmTrustedContext.prefetch*WithUrl`, and its untrusted mode checks no proofs at all. DAPI's `getCurrentQuorumsInfo` does list the current keys, unproved, and the web app uses it only as the second source for the cross-check above, never as a replacement.
 
 ---
 
