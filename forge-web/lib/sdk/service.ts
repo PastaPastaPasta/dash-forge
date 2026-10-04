@@ -45,7 +45,7 @@ import { dapiBudget, installDapiFetchGate } from './budget'
 import { isContractMissingError } from './contract-missing'
 import { isQuorumMiss, isStaleConnectionError } from './unreachable'
 import { loadContractSnapshots } from './contract-seed'
-import { followSdkVersion, setStaleContractHandler } from './query'
+import { followSdkVersion, setStaleContractHandler, type StaleContractCause } from './query'
 import { compileWasm, onWasmProgress, type DownloadProgress } from './wasm-fetch'
 import { setWriteHold } from './write'
 
@@ -558,7 +558,7 @@ export class EvoSdkService {
       this.outdated.add(id)
     }
     // Counted like any call, so a swap does not free the connection under them.
-    setStaleContractHandler((id) => this.track(connection, () => refreshSeeded(connection, id, replaced)))
+    setStaleContractHandler((id, cause) => this.track(connection, () => refreshStale(connection, id, cause, replaced)))
     // Off the critical path, on every connection (at most once an hour while the versions
     // match): are the seeded contracts still the network's current versions?
     if (this.network !== null) {
@@ -1070,15 +1070,33 @@ async function revalidateSeeded(connection: Connection, deploymentKey: string, r
   }
 }
 
+/** The contracts each connection refetched for a newer document, and when (ms). */
+const newerDocumentRefetch = new WeakMap<Connection, Map<string, number>>()
+/** A contract fetched (not seeded) is refetched for a newer document at most this often. */
+export const NEWER_DOCUMENT_REFETCH_MS = 60_000
+
 /**
- * Drop a seeded contract from the connection's cache and fetch the current one. True when it
- * was seeded and was refetched (the caller may retry its read once). Used when the versions
- * differ, and when a read names a document type the seeded contract does not have.
+ * A read failed against a contract older than the network's ({@link StaleContractCause}): true
+ * when the contract was refetched and the read may be retried once. A seeded contract is
+ * refreshed ({@link refreshSeeded}) for either cause. One the SDK fetched (or a seeded one
+ * already refreshed this connection) is refetched only for a newer document, which proves the
+ * network holds a newer version: an in-place update since it was fetched (a tab left open
+ * across UPDATE-1). That refetch happens at most once per {@link NEWER_DOCUMENT_REFETCH_MS} a
+ * contract, so a read that keeps failing does not refetch on every attempt.
  */
-async function refreshSeeded(connection: Connection, id: string, replaced: (id: string) => void): Promise<boolean> {
-  const { sdk, seeded } = connection
-  if (!seeded.delete(id)) return false
-  replaced(id)
+async function refreshStale(connection: Connection, id: string, cause: StaleContractCause, replaced: (id: string) => void): Promise<boolean> {
+  if (connection.seeded.has(id)) return refreshSeeded(connection, id, replaced)
+  if (cause !== 'newerDocument') return false
+  const refetched = newerDocumentRefetch.get(connection) ?? new Map<string, number>()
+  newerDocumentRefetch.set(connection, refetched)
+  const at = refetched.get(id)
+  if (at !== undefined && Date.now() - at < NEWER_DOCUMENT_REFETCH_MS) return false
+  refetched.set(id, Date.now())
+  return refetchContract(connection.sdk, id)
+}
+
+/** Drop contract `id` from the SDK's cache and fetch the current one: true when it was found. */
+async function refetchContract(sdk: EvoSDK, id: string): Promise<boolean> {
   try {
     const { Identifier } = await import('@dashevo/evo-sdk')
     sdk.wasm.removeCachedContract(Identifier.fromBase58(id))
@@ -1086,6 +1104,18 @@ async function refreshSeeded(connection: Connection, id: string, replaced: (id: 
   } catch {
     return false
   }
+}
+
+/**
+ * Drop a seeded contract from the connection's cache and fetch the current one. True when it
+ * was seeded and was refetched (the caller may retry its read once). Used when the versions
+ * differ, and when a read against the seeded contract finds it stale ({@link refreshStale}).
+ */
+async function refreshSeeded(connection: Connection, id: string, replaced: (id: string) => void): Promise<boolean> {
+  const { sdk, seeded } = connection
+  if (!seeded.delete(id)) return false
+  replaced(id)
+  return refetchContract(sdk, id)
 }
 
 /** Reject with `what` timed out after `ms`, aborting `controller` so the work stops spending requests. */

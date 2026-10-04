@@ -94,6 +94,7 @@ import {
   type WriteAuth,
 } from './write'
 import { inSpendScope } from './spend-scope'
+import { setStaleContractHandler } from './query'
 import { encodeWif } from '../auth/wif'
 
 const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
@@ -238,6 +239,35 @@ describe('write engine', () => {
     await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'N3' })).rejects.toBeInstanceOf(UnconfirmedWriteError)
     await reported()
     expect(spends).toEqual([])
+  })
+
+  it('a write whose proof is newer than the held contract (UPDATE-1) refreshes it and settles as landed', async () => {
+    // The transition is in a block, but the result wait cannot decode its proof under the
+    // contract version this tab loaded; neither can a read until the contract is refetched.
+    const NEWER = 'serialized document has trailing bytes: it was serialized under contract version 2 with properties this document type does not know; refetch the contract'
+    let refreshed = false
+    const handler = vi.fn(async () => (refreshed = true))
+    setStaleContractHandler(handler)
+    try {
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: (st) => {
+          script.platformNonce = st.nonce
+        },
+        wait: async () => {
+          throw new Error(NEWER)
+        },
+        exists: async () => {
+          if (!refreshed) throw new Error(NEWER)
+          return storedDoc('hi')
+        },
+      }
+      const r = await createDocumentIdempotent(sdkOf(script, []), auth([]), { ...write, contractId: 'N9', confirmTimeoutMs: 1000 })
+      expect(r.documentId).toBeTruthy()
+      expect(handler).toHaveBeenCalledWith('N9', 'newerDocument')
+    } finally {
+      setStaleContractHandler(null)
+    }
   })
 
   it('reports the fee of a refused write as refused:<type>', async () => {

@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { countDocuments, countDocumentsGrouped, noteSdkWrite, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler, sumDocumentsGrouped, ungroupedRangeProblem, type DocumentQuery } from './query'
+import { countDocuments, countDocumentsGrouped, noteSdkWrite, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler, staleContractCause, sumDocumentsGrouped, ungroupedRangeProblem, type DocumentQuery } from './query'
 
 const CONTRACT = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 
@@ -21,7 +21,7 @@ describe('reads against a seeded contract that went stale (M3)', () => {
     setStaleContractHandler(handler)
     const docs = await queryDocuments(fakeSdk(query), { dataContractId: CONTRACT, documentTypeName: 'milestone' })
     expect(docs).toEqual([{ $id: 'a' }])
-    expect(handler).toHaveBeenCalledWith(CONTRACT)
+    expect(handler).toHaveBeenCalledWith(CONTRACT, 'unknownType')
     expect(query).toHaveBeenCalledTimes(2)
   })
 
@@ -32,6 +32,30 @@ describe('reads against a seeded contract that went stale (M3)', () => {
       message: 'document type not found: milestone',
     })
     expect(query).toHaveBeenCalledTimes(1)
+  })
+
+  // What the SDK answered a reader holding version 1 of a contract for a document written under
+  // version 2 of an updated type (measured on sakura, forge-contracts/scripts/update1-probe.mjs)
+  const NEWER = 'dash drive: protocol: Corrupted Serialization: serialized document has trailing bytes: it was serialized under contract version 2 with properties this document type does not know; refetch the contract'
+
+  it('refreshes the contract and retries once when a document is newer than the held contract (UPDATE-1)', async () => {
+    const query = vi
+      .fn()
+      .mockRejectedValueOnce(new Error(NEWER))
+      .mockResolvedValueOnce(new Map([['a', { toJSON: () => ({ $id: 'a' }) }]]))
+    const handler = vi.fn(async () => true)
+    setStaleContractHandler(handler)
+    const docs = await queryDocuments(fakeSdk(query), { dataContractId: CONTRACT, documentTypeName: 'release' })
+    expect(docs).toEqual([{ $id: 'a' }])
+    expect(handler).toHaveBeenCalledWith(CONTRACT, 'newerDocument')
+    expect(query).toHaveBeenCalledTimes(2)
+  })
+
+  it('names the cause of each stale-contract error, and no other', () => {
+    expect(staleContractCause({ message: 'document type not found: packMirror' })).toBe('unknownType')
+    expect(staleContractCause(new Error(NEWER))).toBe('newerDocument')
+    expect(staleContractCause(new Error('Corrupted Serialization: error probing for trailing bytes in serialized document'))).toBeNull()
+    expect(staleContractCause(new Error('transport error'))).toBeNull()
   })
 
   it('does not retry other errors', async () => {
