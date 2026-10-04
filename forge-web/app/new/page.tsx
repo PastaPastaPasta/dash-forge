@@ -95,6 +95,11 @@ export default function NewRepoPage(): JSX.Element {
   const [description, setDescription] = useState('')
   const [defaultBranch, setDefaultBranch] = useState('main')
   const [visibility, setVisibility] = useState<Visibility>('public')
+  // `/new/?visibility=private` (the Private repositories page's button) starts on Private, after
+  // hydration so the static page and the first client render agree.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('visibility') === 'private') setVisibility('private')
+  }, [])
   const isPrivate = visibility === 'private'
   // A private create wraps its key from the encryption key in this browser's vault.
   const ops = useAsync(

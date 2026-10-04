@@ -20,11 +20,11 @@ export function AppFooter(): JSX.Element {
           <a href={DOCS.guides} target="_blank" rel="noreferrer noopener" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             User guides
           </a>
-          <Link href="/explore/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
-            Explore
+          <Link href="/private/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
+            Private repositories
           </Link>
-          <Link href="/new/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
-            New repo
+          <Link href="/networks/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
+            Networks
           </Link>
         </div>
       </div>
