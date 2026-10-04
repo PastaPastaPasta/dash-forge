@@ -881,10 +881,17 @@ function PullPage({
         await setLabel(sdk, signer, repo, { target, label: p.name, add: true, intent: `${intent}:apply` })
         refresh((t) => t.pull.state.labels.includes(p.name))
         return
-      case 'retarget':
+      case 'retarget': {
+        // Read the branch again (dg does): a retarget to a branch deleted since the page loaded
+        // would never count for a merge. A private repo's refs are not read from here.
+        if (repo.visibility !== 'private') {
+          const now = await readBranchState(sdk, repo, p.base)
+          if (now === null || now.state === 'unborn') throw new Error(`${shortBranch(p.base)} is no longer a branch of this repo; reload to see its branches`)
+        }
         await post('retarget', intent, { value: p.base })
         refresh((t) => t.pull.mergeBaseRefName === p.base)
         return
+      }
       case 'edit-pull': {
         const changes: { title?: string; body?: string } = {}
         if (p.title !== pull.title) changes.title = p.title
@@ -1170,11 +1177,12 @@ function PullPage({
               </>
             )}{' '}
             <span className="font-mono" data-testid="pr-base">{shortBranch(pull.mergeBaseRefName) || '?'}</span>
-            {open && caps.canRetarget && identity !== null && !archived ? (
+            {open && canMember && caps.canRetarget ? (
               <EditBase
                 branches={home.branches.filter(isLive).map((b) => b.refName)}
                 current={pull.mergeBaseRefName}
                 source={crossRepo ? null : pull.sourceRefName}
+                defaultBranch={home.defaultBranch}
                 disabledReason={guard.disabledReason}
                 onPick={(b) => setPending({ kind: 'retarget', base: b })}
               />
