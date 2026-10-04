@@ -3,6 +3,9 @@
  * The shim is tested by executing the exact source string the page inlines.
  */
 
+import { readdirSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import { hasShortUrl, RESERVED_SEGMENTS, SHORT_URL_EXPAND_SOURCE, shortRepoPath, shortRepoUrl, shortUrlShimScript, type ShortTarget } from './short-url'
@@ -169,9 +172,14 @@ describe('the shim leaves everything else alone', () => {
   })
 
   it('reserves every real top-level route', () => {
-    for (const r of ['repo', 'settings', 'new', 'login', 'u', 'explore', 'notifications', 'mirror', 'start', '_next']) {
-      expect(RESERVED_SEGMENTS).toContain(r)
-    }
+    // Every directory under app/ is a route, and every entry in public/ a file the host serves:
+    // a short URL must never shadow either (a missing `/icons/x.png` must stay a 404).
+    const routes = readdirSync(join(__dirname, '..', 'app'), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+    const files = readdirSync(join(__dirname, '..', 'public'))
+    expect(routes.length).toBeGreaterThan(5)
+    for (const r of [...routes, ...files, '_next']) expect(RESERVED_SEGMENTS).toContain(r)
   })
 })
 
