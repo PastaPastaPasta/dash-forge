@@ -19,17 +19,22 @@ import {
   advanceCursor,
   feedKey,
   feedQuery,
+  hideWatchRepos,
   initialCursor,
   itemsToDrop,
   loadItems,
   markRead,
+  NO_HIDES,
   pickRound,
   planFeeds,
+  pruneHides,
   clearInbox,
   pollOnce,
   stateWhat,
   toItems,
   transitionWhat,
+  visibleItems,
+  withHides,
   type Feed,
   type InboxItem,
   type Subscriptions,
@@ -446,5 +451,51 @@ describe('a thread watched after its state events landed (L-17)', () => {
   it('keeps a transition backfill to the same window, though its index cannot bound it by time', () => {
     const inWindow = backfillWindow(thread({ id: 'OLD', since: 10 }), { at: 900 }, 500)
     expect([499, 500, 501, 900, 901].map(inWindow)).toEqual([false, false, true, true, false])
+  })
+})
+
+describe('hides (maintainer moderation)', () => {
+  const SPAM = 'Bp1zqfsUqVq6c5L5rXbZxQ9i3JXxj7AoNxw1YnHzWb5K'
+  const COMMENT = '4eZ6XBhzQjYy5o2SEmYQfDuVZ2KpFwvH1BqQ3eqE8yGc'
+  const at = 5_000
+  const newIssue: InboxItem = { id: SPAM, kind: 'issue', repo: REPO, target: { kind: 'issue', number: 9, title: 'Buy now' }, what: 'opened an issue', actor: OTHER, at, read: false }
+  const comment: InboxItem = { id: COMMENT, kind: 'comment', repo: REPO, target: { kind: 'pull', number: 7, title: 'Fix it' }, what: 'commented', actor: OTHER, at, read: false }
+  const hideDoc = (target: string, by: string, over: Record<string, unknown> = {}) => ({ $id: `H${target.slice(0, 6)}${by.slice(0, 4)}`, $ownerId: by, $createdAt: at + 10, targetId: target, kind: 24, ...over })
+
+  it('reads hides from any thread of a repo event page, once each', () => {
+    const docs = [hideDoc(SPAM, ME), { $id: 'L', $ownerId: OTHER, $createdAt: at, targetId: SPAM, kind: 1, value: 'bug' }]
+    const once = withHides(NO_HIDES, REPO, docs, true)
+    expect(once.threads[SPAM]?.events.map((e) => e.kind)).toEqual(['hide'])
+    expect(withHides(once, REPO, docs, true).threads[SPAM]?.events).toHaveLength(1)
+  })
+
+  it('leaves out a hidden issue and a hidden comment, as the lists do', () => {
+    let hides = withHides(NO_HIDES, REPO, [hideDoc(SPAM, ME)], true)
+    hides = withHides(hides, REPO, [hideDoc(thread().id, ME, { refId: COMMENT, $id: 'HC' })], true)
+    const kept = visibleItems([newIssue, comment], hides, subs())
+    expect(kept).toEqual([])
+    // An unhide by the owner restores the issue.
+    const back = withHides(hides, REPO, [hideDoc(SPAM, ME, { kind: 25, $id: 'U', $createdAt: at + 20 })], true)
+    expect(visibleItems([newIssue], back, subs()).map((i) => i.id)).toEqual([SPAM])
+  })
+
+  it('counts only the owner without the contract proof', () => {
+    const byOther = withHides(NO_HIDES, REPO, [hideDoc(SPAM, OTHER)], false)
+    expect(visibleItems([newIssue], byOther, subs())).toHaveLength(1)
+    const proved = withHides(NO_HIDES, REPO, [hideDoc(SPAM, 'MAINT')], true)
+    expect(visibleItems([newIssue], proved, subs())).toHaveLength(0)
+  })
+
+  it('reads the events of a watched repo with new items for hides, from its oldest item', () => {
+    const repoOnly = subs({ threads: [] })
+    const watch = hideWatchRepos([newIssue, { ...newIssue, id: 'X', at: at - 1 }])
+    expect(watch.get(REPO.id)).toBe(at - 1)
+    expect(planFeeds(repoOnly, DEFAULT_PREFS, ME, new Set(watch.keys())).map(feedKey)).toContain(`state:event:${REPO.id}`)
+    expect(planFeeds(repoOnly, DEFAULT_PREFS, ME).map(feedKey)).not.toContain(`state:event:${REPO.id}`)
+  })
+
+  it('keeps hides only for threads the inbox can still show', () => {
+    const hides = withHides(NO_HIDES, REPO, [hideDoc(SPAM, ME), hideDoc('GONE', ME)], true)
+    expect(Object.keys(pruneHides(hides, subs(), [newIssue].map((i) => i)).threads)).toEqual([SPAM])
   })
 })

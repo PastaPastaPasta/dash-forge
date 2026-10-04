@@ -37,7 +37,9 @@ import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { idbBatch, idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { DOC } from '../repo/contract'
-import { contractHasIndex } from '../repo/contract-shape'
+import { contractHasIndex, contractHasProperty } from '../repo/contract-shape'
+import type { Event } from '../rules'
+import { hiddenItems } from '../rules/moderation'
 import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
@@ -214,8 +216,9 @@ export function feedKey(f: Feed): string {
 /**
  * Every feed a subscription set implies, threads first (they are the most personal). The reviews
  * on my PRs (`me`) are one feed where forge-collab has S2 `toAuthor`, else one per PR I opened.
+ * `hideWatch`: the watched repos whose events are read for hides only ({@link hideWatchRepos}).
  */
-export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string): Feed[] {
+export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string, hideWatch: ReadonlySet<string> = new Set()): Feed[] {
   const feeds: Feed[] = []
   const reviewsOnMine = subs.reviewIndexes?.toAuthor === true && me !== undefined
   for (const t of subs.threads) {
@@ -237,6 +240,9 @@ export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string): 
   for (const { repo, reason } of subs.repos) {
     if (reason === 'starred' && !prefs.stars) continue
     feeds.push({ kind: 'new', type: 'issue', repo }, { kind: 'new', type: 'patch', repo })
+    // A repo whose new issues or PRs are in the inbox, with no thread followed there: its events
+    // are read for hides alone ({@link visibleItems}), so a hidden spam issue leaves the inbox.
+    if (hideWatch.has(repo.id) && !threadsByRepo.has(repo.id)) feeds.push({ kind: 'state', type: 'event', repo, threads: [] })
     if (prefs.pushes) feeds.push({ kind: 'push', type: 'refUpdate', repo }, { kind: 'push', type: 'protectedRefUpdate', repo })
   }
   return feeds
@@ -743,6 +749,101 @@ export async function computeSubscriptions(
 }
 
 // ---------------------------------------------------------------------------
+// Hides (maintainer moderation): the inbox leaves out what lists leave out
+// ---------------------------------------------------------------------------
+
+const HIDE_KIND = 24
+const UNHIDE_KIND = 25
+
+/**
+ * The hides and unhides the repos' event feeds have read, by thread (any thread of the repo, not
+ * only those followed), with the repo's owner: what {@link visibleItems} folds.
+ */
+export interface InboxHides {
+  /** Whether forge-community proves a hide's maintainer: then every hide counts, else the owner's only. */
+  readonly proved: boolean
+  readonly threads: Readonly<Record<string, { readonly owner: string; readonly events: readonly Event[] }>>
+}
+
+export const NO_HIDES: InboxHides = { proved: false, threads: {} }
+
+/** The hides and unhides in a page of `repo`'s `event` documents, added to `prev` (each once, by id). */
+export function withHides(prev: InboxHides, repo: RepoLite, docs: readonly PlainDocument[], proved: boolean): InboxHides {
+  const found = parseDocs(addressedEventDoc, docs).filter((d) => d.kind === HIDE_KIND || d.kind === UNHIDE_KIND)
+  if (found.length === 0 && prev.proved === proved) return prev
+  const threads: Record<string, { owner: string; events: readonly Event[] }> = { ...prev.threads }
+  for (const d of found) {
+    const was = threads[d.targetId]?.events ?? []
+    if (was.some((e) => e.id === d.$id)) continue
+    const e: Event = { id: d.$id, targetId: d.targetId, kind: d.kind === HIDE_KIND ? 'hide' : 'unhide', actor: d.$ownerId, refId: d.refId ?? null, createdAt: d.$createdAt }
+    threads[d.targetId] = { owner: repo.ownerId, events: [...was, e] }
+  }
+  return { proved, threads }
+}
+
+/**
+ * The watched repos whose events are read for hides only: those with a new issue or PR in the
+ * inbox (by `items`), each from the oldest such item, so a hide written before the feed's first
+ * read still counts.
+ */
+export function hideWatchRepos(items: readonly InboxItem[]): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const i of items) {
+    if (i.kind !== 'issue' && i.kind !== 'pull') continue
+    out.set(i.repo.id, Math.min(out.get(i.repo.id) ?? i.at, i.at))
+  }
+  return out
+}
+
+/**
+ * `items` without what a maintainer hid, as the issue and PR lists leave it out: every item of a
+ * hidden issue or PR, and a hidden comment or review (shared reader rule {@link hiddenItems}). A
+ * thread is matched to its items by the followed threads in `subs` and by the new-issue and new-PR
+ * items, whose id is the thread's. Without the contract's proof only the repo owner's hides count
+ * (the inbox does not read the members).
+ */
+export function visibleItems(items: readonly InboxItem[], hides: InboxHides, subs: Subscriptions | null): InboxItem[] {
+  const ids = Object.keys(hides.threads)
+  if (ids.length === 0) return [...items]
+  const keyOf = new Map<string, string>()
+  for (const t of subs?.threads ?? []) keyOf.set(t.id, `${t.repo.id}:${t.kind}:${t.number}`)
+  const authorOf = new Map<string, string>()
+  for (const i of items) {
+    if (i.kind !== 'issue' && i.kind !== 'pull') continue
+    keyOf.set(i.id, threadKey(i))
+    authorOf.set(i.id, i.actor)
+  }
+  const hiddenThreads = new Set<string>()
+  const hiddenIds = new Set<string>()
+  for (const id of ids) {
+    const key = keyOf.get(id)
+    const { owner, events } = hides.threads[id]!
+    if (key === undefined) continue
+    const ofThread = items.filter((i) => threadKey(i) === key)
+    const comments = ofThread.filter((i) => i.kind === 'comment').map((i) => ({ id: i.id, author: i.actor }))
+    const reviews = ofThread.filter((i) => i.kind === 'review').map((i) => ({ id: i.id, author: i.actor }))
+    // An unknown author is taken as not the owner's: a maintainer cannot hide the owner's thread,
+    // and the page never offers it.
+    const scope = { threadId: id, threadAuthor: authorOf.get(id) ?? '', owner, proved: hides.proved }
+    const folded = hiddenItems(events, scope, comments, reviews)
+    if (folded.thread !== null) hiddenThreads.add(key)
+    for (const item of Object.keys(folded.items)) hiddenIds.add(item)
+  }
+  return items.filter((i) => !hiddenThreads.has(threadKey(i)) && !hiddenIds.has(i.id))
+}
+
+/** `hides` of the threads the inbox can still show: followed, or with an item stored. */
+export function pruneHides(hides: InboxHides, subs: Subscriptions, items: readonly InboxItem[]): InboxHides {
+  const keep = new Set([...subs.threads.map((t) => t.id), ...items.map((i) => i.id)])
+  const threads = Object.fromEntries(Object.entries(hides.threads).filter(([id]) => keep.has(id)))
+  return { proved: hides.proved, threads }
+}
+
+export async function loadHides(network: Network, me: string): Promise<InboxHides> {
+  return (await idbGet<InboxHides>('inbox', `${prefix(network, me)}hides`)) ?? NO_HIDES
+}
+
+// ---------------------------------------------------------------------------
 // Local state (IndexedDB `inbox` store)
 // ---------------------------------------------------------------------------
 
@@ -840,18 +941,32 @@ export async function pollOnce(
     if (stopped()) return { added: 0, feedsRead: 0, feedsTotal: 0, failed: 0, subs }
     await idbPut('inbox', `${p}subs`, subs)
   }
-  const feeds = planFeeds(subs, prefs, me)
+  const hideWatch = hideWatchRepos(await loadItems(network, me))
+  const feeds = planFeeds(subs, prefs, me, new Set(hideWatch.keys()))
   // When each feed was first watched (planned, not first read: a round may reach it minutes
-  // later). One record for all feeds; only feeds still watched are kept.
+  // later). One record for all feeds; only feeds still watched are kept. A repo's events read
+  // for hides only start from its oldest new issue or PR in the inbox.
   const seenBefore = (await idbGet<Record<string, number>>('inbox', `${p}seen`)) ?? {}
   const seen: Record<string, number> = {}
-  for (const f of feeds) seen[feedKey(f)] = seenBefore[feedKey(f)] ?? now
+  for (const f of feeds) {
+    const hidesOnly = f.kind === 'state' && f.threads.length === 0 ? hideWatch.get(f.repo.id) : undefined
+    seen[feedKey(f)] = seenBefore[feedKey(f)] ?? (hidesOnly !== undefined ? Math.min(hidesOnly + BACKFILL_MS, now) : now)
+  }
   if (stopped()) return { added: 0, feedsRead: 0, feedsTotal: feeds.length, failed: 0, subs }
   await idbPut('inbox', `${p}seen`, seen)
   const { round, next } = pickRound(feeds, roundOffsets.get(p) ?? 0)
   roundOffsets.set(p, next)
 
   const existing = new Set((await loadItems(network, me)).map((i) => i.id))
+  // The hides the event feeds read, kept across polls ({@link visibleItems}).
+  const hidesBefore = await loadHides(network, me)
+  let hides = hidesBefore
+  let proved: boolean | null = null
+  const noteHides = async (f: Feed, docs: readonly PlainDocument[]): Promise<void> => {
+    if (f.kind !== 'state' || f.type !== 'event') return
+    if (proved === null) proved = await contractHasProperty(sdk, forge.community, DOC.event, 'asMaintainer').catch(() => false)
+    hides = withHides(hides, f.repo, docs, proved)
+  }
   let added = 0
   let failed = 0
   let backfills = 0
@@ -904,6 +1019,7 @@ export async function pollOnce(
             try {
               const inWindow = backfillWindow(t, cursor, start.at)
               const docs = (await queryDocumentsWithProof(sdk, q)).documents.filter((d) => inWindow(typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0))
+              await noteHides(f, docs)
               await store(toItems({ ...f, threads: [t] }, docs, me, name))
             } catch {
               // Retried next poll; given up after BACKFILL_TRIES (a count below zero).
@@ -933,6 +1049,7 @@ export async function pollOnce(
     }
     if (stopped()) break
     const unread = oldReviews.size === 0 ? docs : docs.filter((d) => !readByOldFeed(d, oldReviews))
+    await noteHides(feed, docs)
     await store(toItems(feed, unread, me, name))
     if (stopped()) break
     const page = parseDocs(baseDoc, docs).map((d) => ({ at: d.$createdAt, id: d.$id }))
@@ -948,6 +1065,7 @@ export async function pollOnce(
   if (added > 0 && !stopped()) {
     for (const id of itemsToDrop(await loadItems(network, me))) await idbDelete('inbox', `${p}item:${id}`)
   }
+  if (hides !== hidesBefore && !stopped()) await idbPut('inbox', `${p}hides`, pruneHides(hides, subs, await loadItems(network, me)))
   // A thread joined by a mention is followed at once (QW3-050): the stored subscriptions say so
   // now, as the Mentioned filter does, instead of after the next recompute.
   if (joined.length > 0 && !stopped()) {
