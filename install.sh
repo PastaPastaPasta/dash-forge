@@ -19,7 +19,8 @@
 #   DASH_FORGE_VERSION           release to install, e.g. 0.1.0 or v0.1.0 (default: latest)
 #   DASH_FORGE_INSTALL_DIR       where binaries go (default: $HOME/.local/bin)
 #   DASH_FORGE_BINARIES          which binaries to install (default: "dg git-remote-dash";
-#                                the archive also has forge-relay and forge-import)
+#                                the archive also has forge-relay, forge-import and,
+#                                except on Windows, forge-runner)
 #   DASH_FORGE_TARGET            override the detected target triple
 #   DASH_FORGE_ATTESTATION       auto (default) | require | skip
 #   DASH_FORGE_COMPLETIONS       1 = also install shell completions for bash, zsh and fish
@@ -349,7 +350,7 @@ Refusing to install. The file may be corrupt or tampered with; nothing was insta
     for bin in $binaries; do
         case "$bin" in
             dg) installs_dg=true ;;
-            git-remote-dash | forge-relay | forge-import) ;;
+            git-remote-dash | forge-relay | forge-import | forge-runner) ;;
             *) die "unknown binary '$bin' in DASH_FORGE_BINARIES" ;;
         esac
         [ -f "$dir/$bin" ] || die "$asset does not contain $bin"

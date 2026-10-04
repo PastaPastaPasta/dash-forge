@@ -1,7 +1,8 @@
 name: Release
 
 # Builds the prebuilt binaries users install instead of compiling the Platform SDK tree:
-#   dg, git-remote-dash, forge-relay, forge-import, dg's shell completions, README, INSTALL
+#   dg, git-remote-dash, forge-relay, forge-import, forge-runner (not on Windows: it drives
+#   act and Linux containers), dg's shell completions, README, INSTALL
 # for six targets, packaged as dash-forge-<version>-<target>.{tar.gz,zip}, listed in
 # SHA256SUMS, and covered by GitHub build-provenance attestations (Sigstore, keyless; no
 # signing key to leak or rotate). install.sh and `cargo binstall` both consume these names.
@@ -178,6 +179,9 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       VERSION: ${{ needs.plan.outputs.version }}
+      # The binaries built, smoke-tested and packaged. forge-runner (the self-hosted CI runner)
+      # drives act and Linux job containers, so the Windows archive leaves it out.
+      BINS: ${{ contains(matrix.target, 'windows') && 'dg git-remote-dash forge-relay forge-import' || 'dg git-remote-dash forge-relay forge-import forge-runner' }}
       # aws-lc-sys (rustls' crypto provider) needs NASM for x86_64 Windows; use the
       # prebuilt objects it ships instead of installing NASM on the runner.
       AWS_LC_SYS_PREBUILT_NASM: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '1' || '' }}
@@ -272,15 +276,16 @@ jobs:
         run: |
           features=""
           case "$TARGET" in *-linux-*) features="forge-core/vendored-openssl" ;; esac
+          # shellcheck disable=SC2046,SC2086 # one `-p <crate>` per binary
           cargo build --locked --release --target "$TARGET" --features "$features" \
-            -p dg -p git-remote-dash -p forge-relay -p forge-import
+            $(printf -- '-p %s ' $BINS)
 
       - name: Smoke-test the binaries
         run: |
           set -euo pipefail
           ext=$([ "$RUNNER_OS" = Windows ] && echo .exe || true)
           dir="target/${TARGET}/release"
-          for bin in dg git-remote-dash forge-relay forge-import; do
+          for bin in $BINS; do
             out=$("$dir/$bin$ext" --version)
             echo "$out"
             # The version line must name this build's commit and target.
@@ -296,7 +301,7 @@ jobs:
               ;;
             *-linux-gnu)
               # vendored-openssl must have taken effect: no dynamic libssl/libcrypto.
-              for bin in dg git-remote-dash forge-relay forge-import; do
+              for bin in $BINS; do
                 if readelf -d "$dir/$bin" | grep -E 'NEEDED.*lib(ssl|crypto)'; then
                   echo "::error::$bin links the system OpenSSL dynamically"; exit 1
                 fi
@@ -313,7 +318,7 @@ jobs:
           stage="${RUNNER_TEMP}/stage/${name}"
           mkdir -p "$stage/completions" dist
           ext=$([ "$RUNNER_OS" = Windows ] && echo .exe || true)
-          for bin in dg git-remote-dash forge-relay forge-import; do
+          for bin in $BINS; do
             cp "target/${TARGET}/release/${bin}${ext}" "$stage/"
           done
           dg="target/${TARGET}/release/dg${ext}"
