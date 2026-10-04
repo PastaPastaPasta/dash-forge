@@ -21,12 +21,12 @@ describe('a master key for another identity, in plain words (QW3-028)', () => {
   const OTHER = '9CVMSjkxXqpjNnb93AR4mzk6SRp95ZNP6J3xDNTvEmpv'
   it('names both identities, and what to do', () => {
     expect(wrongWordsMessage(ID, OTHER, 'signed-in')).toBe(
-      "These recovery words belong to identity 9CVMSjk…, not 9r27eDs… (the identity signed in here). Use 9r27eDs…'s recovery phrase.",
+      "These recovery words belong to identity 9CVMSjk…vEmpv, not 9r27eDs…q9dUD (the identity signed in here). Use 9r27eDs…q9dUD's recovery phrase.",
     )
-    expect(wrongWordsMessage(ID, null, 'signed-in')).toMatch(/^These recovery words don't open 9r27eDs… \(the identity signed in here\)/)
-    expect(wrongWordsMessage(ID, OTHER, 'import')).toMatch(/belong to identity 9CVMSjk…, not 9r27eDs…\. Leave Identity ID empty to sign in to 9CVMSjk…/)
+    expect(wrongWordsMessage(ID, null, 'signed-in')).toMatch(/^These recovery words don't open 9r27eDs…q9dUD \(the identity signed in here\)/)
+    expect(wrongWordsMessage(ID, OTHER, 'import')).toMatch(/belong to identity 9CVMSjk…vEmpv, not 9r27eDs…q9dUD\. Leave Identity ID empty to sign in to 9CVMSjk…vEmpv/)
     expect(otherIdentityFileMessage(OTHER, ID, 'LOW.identity.json')).toBe(
-      "LOW.identity.json is the identity file of 9CVMSjk…, not 9r27eDs… (the identity signed in here). Choose 9r27eDs…'s file.",
+      "LOW.identity.json is the identity file of 9CVMSjk…vEmpv, not 9r27eDs…q9dUD (the identity signed in here). Choose 9r27eDs…q9dUD's file.",
     )
   })
 })

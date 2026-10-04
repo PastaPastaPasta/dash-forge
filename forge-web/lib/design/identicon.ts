@@ -33,3 +33,23 @@ export function identiconFill(seed: string): string {
   const h = sha256(new TextEncoder().encode(seed))
   return avatarFill((((h[0] as number) << 8) | (h[1] as number)) % 360)
 }
+
+/** A seed's pattern and colour. */
+export interface IdenticonPicture {
+  readonly cells: readonly (readonly boolean[])[]
+  readonly fill: string
+}
+
+/** Pictures drawn this session: a thread shows the same few authors many times. */
+const drawn = new Map<string, IdenticonPicture>()
+const DRAWN_MAX = 500
+
+/** {@link identiconCells} and {@link identiconFill} of `seed`, kept for the session. */
+export function identicon(seed: string): IdenticonPicture {
+  const hit = drawn.get(seed)
+  if (hit !== undefined) return hit
+  const picture = { cells: identiconCells(seed), fill: identiconFill(seed) }
+  if (drawn.size >= DRAWN_MAX) drawn.delete(drawn.keys().next().value as string)
+  drawn.set(seed, picture)
+  return picture
+}

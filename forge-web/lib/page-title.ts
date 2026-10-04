@@ -7,7 +7,7 @@
  * the title; the header's `DocumentTitle` applies it.
  */
 
-import { isIdentityId } from './utils'
+import { isIdentityId, shortId } from './utils'
 
 export const SITE_TITLE = 'Dash Forge'
 
@@ -19,7 +19,7 @@ export function bareRoute(p: string): string {
 /** An owner as people read it: the DPNS name when resolved, else a shortened identity id. */
 export function ownerLabel(owner: string, ownerName?: string | null): string {
   if (ownerName) return ownerName
-  return isIdentityId(owner) ? `${owner.slice(0, 8)}…` : owner
+  return isIdentityId(owner) ? shortId(owner) : owner
 }
 
 /** The query's params (a `URLSearchParams`, or Next's read-only one). */

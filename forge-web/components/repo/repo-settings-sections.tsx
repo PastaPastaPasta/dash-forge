@@ -79,6 +79,7 @@ import { disabledField, Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
+import { shortId } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------------------------
 // Layout
@@ -813,7 +814,7 @@ function SourcePicker({
 /** One source option, named by DPNS once resolved (an option holds text only). */
 function SourceChoice({ id, role }: { id: string; role: string | null }): JSX.Element {
   const name = useDpnsName(id)
-  const who = name ?? `${id.slice(0, 6)}…${id.slice(-4)}`
+  const who = name ?? shortId(id)
   return <option value={id}>{role === null ? who : `${who} · ${role}`}</option>
 }
 

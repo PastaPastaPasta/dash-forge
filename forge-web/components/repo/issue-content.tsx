@@ -92,6 +92,7 @@ import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHidden } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
+import { AuthorRolesProvider } from '@/components/repo/author-roles'
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -436,6 +437,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const canModerate = isMaintainer && !archived && guard.disabledReason === null
 
   return (
+    <AuthorRolesProvider owner={home.repo.ownerId} members={members}>
     <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]">
       <div className="min-w-0 space-y-5">
         {/* Header */}
@@ -712,6 +714,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         onConfirm={runPending}
       />
     </div>
+    </AuthorRolesProvider>
   )
 }
 

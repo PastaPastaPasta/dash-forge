@@ -42,6 +42,7 @@ import { WebhookSettings } from '@/components/repo/webhook-settings'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
+import { shortId } from '@/lib/utils'
 
 /** A Collaborators write awaiting its confirm; `change` (public repos) deletes `role`'s document, then adds `to`. */
 type MemberAction =
@@ -290,9 +291,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
             action?.kind === 'grant'
-              ? `Creates ${grantDescription(action.role)} for ${action.member.slice(0, 8)}… on this repo.`
+              ? `Creates ${grantDescription(action.role)} for ${shortId(action.member)} on this repo.`
               : action?.kind === 'change'
-                ? `Deletes ${action.member.slice(0, 8)}…'s ${action.role} document, then adds them as ${action.to} (their acceptance still stands). Two transitions.`
+                ? `Deletes ${shortId(action.member)}'s ${action.role} document, then adds them as ${action.to} (their acceptance still stands). Two transitions.`
                 : 'Deletes their membership document. Their past pushes and events stay valid; new ones are refused.'
           }
           cost={

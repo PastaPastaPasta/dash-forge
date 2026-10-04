@@ -25,7 +25,7 @@ import { authSdk, type WasmKey } from '../sdk/facade'
 import { isQuorumMiss } from '../sdk/unreachable'
 import type { KeyLimits } from '../view/funds'
 import { retryWhileMissing } from '../view/retry'
-import { abbreviate, errorMessage } from '../utils'
+import { errorMessage, shortId } from '../utils'
 import { assertGroupHolds } from './group-trust'
 import { controlsKey } from './wif'
 
@@ -48,10 +48,8 @@ export function defaultLimits(now = Date.now()): LimitedKeyRequest {
   }
 }
 
-/** An identity id as the key-mismatch copy names it: `DhRR5hs…` ({@link abbreviate}'s 7 characters). */
-export function shortId(id: string): string {
-  return id.length > 8 ? `${abbreviate(id)}…` : id
-}
+/** An identity id as the key-mismatch copy names it (`lib/utils` {@link shortId}). */
+export { shortId }
 
 /**
  * The master key given is not a live MASTER key of the identity (QW3-028: the update was refused

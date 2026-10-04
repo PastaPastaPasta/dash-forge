@@ -43,6 +43,7 @@ import { SecretValue } from '@/components/ui/secret-value'
 import { Field, Input } from '@/components/ui/input'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Section } from '@/components/repo/repo-settings-sections'
+import { shortId } from '@/lib/utils'
 
 function identityProblem(id: string): string | null {
   if (id === '') return 'Enter the relay identity that delivers.'
@@ -274,7 +275,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
         open={adding}
         onClose={() => setAdding(false)}
         title="Add a webhook"
-        description={`Writes a webhook document: ${pending?.url ?? ''} for ${pending === null || pending.events.length === 0 ? 'every event' : pending.events.join(', ')}, delivered by ${pending?.relay.slice(0, 8) ?? ''}…. The URL and events are public; the secret is encrypted to the relay.`}
+        description={`Writes a webhook document: ${pending?.url ?? ''} for ${pending === null || pending.events.length === 0 ? 'every event' : pending.events.join(', ')}, delivered by ${shortId(pending?.relay ?? '')}. The URL and events are public; the secret is encrypted to the relay.`}
         cost={cost}
         confirmLabel="Sign & add"
         onConfirm={add}

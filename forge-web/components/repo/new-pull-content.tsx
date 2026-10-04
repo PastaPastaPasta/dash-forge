@@ -45,7 +45,7 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { PushBranchHint } from '@/components/repo/push-branch-hint'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
-import { abbreviate, cn } from '@/lib/utils'
+import { cn, shortId } from '@/lib/utils'
 import { spendAction } from '@/lib/spend-toast'
 
 /** A branch a PR can come from: this repo's, or one of the viewer's forks'. */
@@ -164,11 +164,11 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       return oid === null ? null : { key: `${r.repoId}:${b.refName}`, repo: r, refName: b.refName, oid, label }
     }
     const own = branches.map((b) => opt(repo, b, short(b.refName)))
-    const fromForks = (forks.data ?? []).flatMap(({ fork, refs }) => refs.map((b) => opt(fork, b, `${forkSourcePrefix({ ownerId: fork.ownerId, ownerLabel: abbreviate(fork.ownerId), name: fork.name }, repo)}${short(b.refName)}`)))
+    const fromForks = (forks.data ?? []).flatMap(({ fork, refs }) => refs.map((b) => opt(fork, b, `${forkSourcePrefix({ ownerId: fork.ownerId, ownerLabel: shortId(fork.ownerId), name: fork.name }, repo)}${short(b.refName)}`)))
     const fromParent =
       forkParent === null
         ? []
-        : (parentBranches.data ?? []).map((b) => opt(forkParent, b, `${forkSourcePrefix({ ownerId: forkParent.ownerId, ownerLabel: abbreviate(forkParent.ownerId), name: forkParent.name }, repo)}${short(b.refName)}`))
+        : (parentBranches.data ?? []).map((b) => opt(forkParent, b, `${forkSourcePrefix({ ownerId: forkParent.ownerId, ownerLabel: shortId(forkParent.ownerId), name: forkParent.name }, repo)}${short(b.refName)}`))
     return [...own, ...fromForks, ...fromParent].filter((o): o is HeadOption => o !== null)
   }, [branches, forks.data, repo, forkParent, parentBranches.data])
 
