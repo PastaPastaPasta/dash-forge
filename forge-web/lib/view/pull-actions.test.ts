@@ -127,7 +127,7 @@ describe('pullActions — "Mark as merged (done elsewhere)" records a merge, it 
   })
 
   it('is never the policy override: unmet rules leave it a record, and a writer is refused it', () => {
-    const unmet = { met: false, have: 0, need: 1 }
+    const unmet = { met: false, have: 0, need: 1, blockedBy: [] }
     const m = pullActions({ pull: pull({ headOnBase: true }), viewer: MAINTAINER, holdings: MAINTAIN, policy: unmet })
     expect(m.canMarkMerged).toBe(true)
     expect(m.unmetRules).toEqual(['required approvals: 0 of 1'])
@@ -178,7 +178,7 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
   })
 
   it('disables a writer on an unmet policy and offers a maintainer the bypass, naming the rules (QW-001)', () => {
-    const unmet = { met: false, have: 0, need: 2 }
+    const unmet = { met: false, have: 0, need: 2, blockedBy: [] }
     const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: unmet })
     expect(w.canMerge).toBe(false)
     expect(w.canBypass).toBe(false)
@@ -209,14 +209,14 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
   })
 
   it('lets a writer merge once the policy is met on an unprotected base', () => {
-    const a = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: { met: true, have: 2, need: 2 } })
+    const a = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: { met: true, have: 2, need: 2, blockedBy: [] } })
     expect(a.canMerge).toBe(true)
     expect(a.canBypass).toBe(false)
     expect(a.unmetRules).toEqual([])
   })
 
   it('withholds a writer merge while required checks are not passing; a maintainer may bypass, the checks named', () => {
-    const met = { met: true, have: 1, need: 1 }
+    const met = { met: true, have: 1, need: 1, blockedBy: [] }
     const failing = { met: false, untrusted: 0, required: [{ name: 'build', state: 'missing' as const, runId: null }, { name: 'lint', state: 'passed' as const, runId: 'x' }] }
     const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: met, checks: failing })
     expect(w.canMerge).toBe(false)
@@ -282,9 +282,9 @@ describe('mergeButton — a head the base already holds (QW-002)', () => {
 describe('unmetRules and bypassValue — the rules named, as dg names them', () => {
   it('names approvals, checks and an unreadable policy', () => {
     expect(unmetRules(null)).toEqual([])
-    expect(unmetRules({ met: true, have: 1, need: 1 })).toEqual([])
+    expect(unmetRules({ met: true, have: 1, need: 1, blockedBy: [] })).toEqual([])
     expect(unmetRules('unknown')).toEqual(['the branch policy could not be read'])
-    expect(unmetRules({ met: false, have: 1, need: 2 }, { met: false, untrusted: 0, required: [] })).toEqual([
+    expect(unmetRules({ met: false, have: 1, need: 2, blockedBy: [] }, { met: false, untrusted: 0, required: [] })).toEqual([
       'required approvals: 1 of 2',
       'required checks: none reported on the head',
     ])
@@ -509,7 +509,7 @@ describe('the merge box review line (RC1 R-16): the fold gates, the proved count
     approvers,
     changesRequested,
     policy,
-    policyStatus: policy === null ? null : { met: have >= policy.requiredApprovals, have, need: policy.requiredApprovals },
+    policyStatus: policy === null ? null : { met: have >= policy.requiredApprovals, have, need: policy.requiredApprovals, blockedBy: [] },
   })
   const proved = (approvals: number, changesRequested = 0, headOid = HEAD) => ({ headOid, approvals, changesRequested })
 
@@ -521,7 +521,7 @@ describe('the merge box review line (RC1 R-16): the fold gates, the proved count
   it('says "N of M required approvals" from the fold, and names a larger proved count "on chain"', () => {
     const line = verdictSummary(fold([MAINTAINER], [], { requiredApprovals: 2 }), proved(3), HEAD)
     expect(line).toMatchObject({ tone: 'required', headline: '1 of 2 required approvals', proved: false })
-    expect(line?.onChain).toMatch(/^3 member approvals on chain \(an upper bound/)
+    expect(line?.onChain).toMatch(/^3 member approvals on Platform \(an upper bound/)
     expect(verdictSummary(fold([MAINTAINER, WRITER], [], { requiredApprovals: 2 }), proved(2), HEAD)).toMatchObject({ tone: 'approved', headline: '2 of 2 required approvals', onChain: null })
     // Maintainers only: the writer's approval is in the fold but not in the policy's count.
     expect(verdictSummary(fold([MAINTAINER, WRITER], [], { requiredApprovals: 2 }, 1), null, HEAD)).toMatchObject({ headline: '1 of 2 required approvals', detail: '2 approvals in all' })
@@ -548,7 +548,7 @@ describe('the merge box review line (RC1 R-16): the fold gates, the proved count
   it('falls back to the proved count, said to be an upper bound, only when the members could not be read', () => {
     const line = verdictSummary(null, proved(2, 1), HEAD.toUpperCase())
     expect(line).toMatchObject({ tone: 'changes', headline: 'Changes requested', proved: false })
-    expect(line?.onChain).toMatch(/^2 member approvals and 1 change request on chain\. The members couldn't be read/)
+    expect(line?.onChain).toMatch(/^2 member approvals and 1 change request on Platform\. The members couldn't be read/)
     expect(verdictSummary(null, null, HEAD)).toBeNull()
   })
 })

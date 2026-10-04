@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 pub mod ci_rerun;
 pub mod codeowners;
 pub mod long_body;
+pub mod merge_check;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
@@ -2441,6 +2442,30 @@ mod tests {
         assert_eq!(got, v.expected, "vector `{ctx}`");
     }
 
+    fn run_approvals_case(v: &Vector) {
+        let inp: ApprovalsInput = input(v);
+        let oracle = v2::RoleOracle::new(inp.memberships);
+        let got = v2::count_approvals(
+            &inp.reviews,
+            &oracle,
+            &inp.head_oid,
+            &inp.dismissed,
+            &inp.pr_author,
+        );
+        assert_eq!(got, expected::<v2::Approvals>(v), "vector `{}`", v.name);
+    }
+
+    fn run_merge_content_case(v: &Vector) {
+        use super::merge_check;
+        let got = merge_check::merge_content(&input::<merge_check::MergeFacts>(v));
+        assert_eq!(
+            got,
+            expected::<merge_check::MergeContent>(v),
+            "vector `{}`",
+            v.name
+        );
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2457,18 +2482,7 @@ mod tests {
                 let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());
                 assert_eq!(got, expected::<Vec<v2::V2Pack>>(v), "vector `{ctx}`");
             }
-            "approvals" => {
-                let inp: ApprovalsInput = input(v);
-                let oracle = v2::RoleOracle::new(inp.memberships);
-                let got = v2::count_approvals(
-                    &inp.reviews,
-                    &oracle,
-                    &inp.head_oid,
-                    &inp.dismissed,
-                    &inp.pr_author,
-                );
-                assert_eq!(got, expected::<v2::Approvals>(v), "vector `{ctx}`");
-            }
+            "approvals" => run_approvals_case(v),
             "well_formed" => {
                 let inp: WellFormedInput = input(v);
                 let got = v2::is_well_formed(&inp.doc, inp.visibility);
@@ -2494,6 +2508,7 @@ mod tests {
                 );
                 assert_eq!(got, expected::<v2::MergeBase>(v), "vector `{ctx}`");
             }
+            "merge_content" => run_merge_content_case(v),
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);
                 let key: Option<[u8; 32]> = inp.ref_key.as_deref().map(|k| {

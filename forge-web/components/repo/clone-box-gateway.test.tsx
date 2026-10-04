@@ -82,7 +82,6 @@ describe('CloneBox with a gateway', () => {
     expect(c).toContain('git clone https://gw.invalid/alice/proj.git')
     expect(c.indexOf('git clone https://gw.invalid/alice/proj.git')).toBeGreaterThan(0)
     expect(host.textContent).toContain('HTTPS via dashhq gateway')
-    expect(host.textContent).not.toContain('No https clone URL')
   })
 
   it('gateway down: dash:// and the commands are unaffected; verify says it could not check', async () => {
@@ -139,6 +138,6 @@ describe('CloneBox without a gateway', () => {
     await render()
     expect(host.querySelector('[data-testid="gateway-clone"]')).toBeNull()
     expect(codes().some((c) => c.includes('https://'))).toBe(false)
-    expect(host.textContent).toContain('No https clone URL')
+    expect(host.textContent).not.toContain('gateway')
   })
 })

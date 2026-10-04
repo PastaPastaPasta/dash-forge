@@ -24,8 +24,11 @@ import { useFirstWrite } from '@/hooks/use-first-write'
 import { useStarShape } from '@/hooks/use-star-shape'
 import { useRelationToggle } from '@/hooks/use-relation-toggle'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { useRememberAcquaintance } from '@/components/lookalike-note'
+import type { Subject } from '@/lib/view/known-names'
 import { Button } from '@/components/ui/button'
 import { beatAllowed, starBeatFirsts, starFirsts, starRelation, type RepoRef } from '@/lib/repo'
+import { starTerms } from '@/lib/repo/star-shape'
 import { trendingPref } from '@/lib/repo/trending'
 import { firstWriteRead, previewCreate, previewDelete, sumPreviews } from '@/lib/sdk'
 import { creditsAsDash, priceLabel, refundLabel } from '@/lib/view/format'
@@ -33,8 +36,11 @@ import { creditsAsDash, priceLabel, refundLabel } from '@/lib/view/format'
 export function StarButton({
   repo,
   count,
+  lookalikes = [],
 }: {
   repo: RepoRef
+  /** The repo and its named owner, as the header's look-alike note names them. */
+  lookalikes?: readonly (Subject | null)[]
   /** The public star count; `null` when it could not be read. */
   count: number | null
 }): JSX.Element {
@@ -43,9 +49,10 @@ export function StarButton({
   const guard = useWriteGuard()
   // Read once per mount: Settings changes it, and the next page picks it up.
   const [trending] = useState(() => trendingPref())
-  // Read only for a signed-in viewer (the only one offered a price); null while it is read or
-  // when the read fails: priced and labelled as a beat-shaped star with its beat.
-  const fused = useStarShape(identity !== null ? repo.forge : null) === 'fused'
+  // Read for every viewer: the signed-out tooltip prices and labels the star too. Seeded
+  // contracts make this free; null while it is read or when the read fails, and then the
+  // price is the larger shape's and the label promises nothing either shape lacks.
+  const shape = useStarShape(repo.forge)
 
   const star = useRelationToggle({
     enabled: ready && sdk !== null && identity !== null,
@@ -55,20 +62,22 @@ export function StarButton({
   })
 
   const starred = star.on === true
+  // A starred repo and its named owner are remembered for the look-alike note (TS-24).
+  useRememberAcquaintance(lookalikes, 'starred', identity === repo.ownerId ? null : star.on)
   // Read which subtrees a star would create only once the viewer points at the button: a page
   // view costs no reads, and the price is an upper bound until then.
   const [interested, setInterested] = useState(false)
   const pricing = interested && ready && sdk !== null && identity !== null && !starred
   const first = useFirstWrite(() => starFirsts(sdk!, repo, identity!, count), [repo.repoId, identity ?? '', count], pricing)
-  // No beat on a private repo or on your own (RC1: consensus refuses both), nor on a fused star.
-  const beats = !fused && trending && beatAllowed(repo, identity ?? '')
+  // No beat on a private repo or on your own (Platform refuses both), nor on a fused star.
+  const { beats, priceBeat, trendingNote } = starTerms(shape, trending, beatAllowed(repo, identity ?? ''))
   const beatFirst = useFirstWrite(() => starBeatFirsts(sdk!, repo, identity!), [repo.repoId, identity ?? ''], beats && pricing)
   // An upper bound: a beat is skipped when an earlier star of this repo already wrote one.
   const starCost = previewCreate('star', {}, first)
-  const cost = beats || fused ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
+  const cost = priceBeat ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
   const refund = previewDelete('star')
   // Until the first-write reads answer, the price is the upper bound, and says so (QW-043).
-  const upperBound = fused || !firstWriteRead(first) || (beats && !firstWriteRead(beatFirst))
+  const upperBound = shape !== 'beat' || !firstWriteRead(first) || (beats && !firstWriteRead(beatFirst))
   const onClick = (): void => {
     if (!starred && !guard.check(cost, 'community', 'star this repo')) return
     if (!identity || !signer) return
@@ -80,7 +89,7 @@ export function StarButton({
   const unknown = signedIn && star.on === null
   const price = starred
     ? `Unstar · refunds at least ${creditsAsDash(-refund.credits)} DASH`
-    : `Star · ${priceLabel(cost.credits, upperBound)} DASH${fused ? ' · counts toward Trending' : beats ? ' · counts toward Trending (turn off in Settings)' : ''}`
+    : `Star · ${priceLabel(cost.credits, upperBound)} DASH${trendingNote}`
 
   return (
     <span className="inline-flex items-center gap-2">

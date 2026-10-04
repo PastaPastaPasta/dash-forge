@@ -67,20 +67,11 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
           </p>
           <CopyRow text={cmd.dgClone} label="Copy dg repo clone command" />
           {GATEWAY !== null && home.repo.visibility === 'public' ? <GatewayRow gateway={GATEWAY} home={home} addr={addr} /> : null}
-          <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="clone-network">
-            The repository is on <span className="font-mono">{ACTIVE_NETWORK.key}</span>; both commands record that in the clone.
-          </p>
         </div>
         <p className="mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="clone-default-branch">
           A clone checks out <span className="font-mono">{home.defaultBranch}</span>, the default branch.
         </p>
         <ZipDownload home={home} addr={addr} selected={selected} />
-        {GATEWAY === null ? (
-          <p className="mt-2 hidden text-[11px] leading-snug text-anvil-500 dark:text-anvil-400 sm:block">
-            No https clone URL: that needs a git server, and this build names none. git talks to the chain and your
-            storage directly through the helper.
-          </p>
-        ) : null}
       </div>
       <InstallSheet open={installing} onClose={() => setInstalling(false)} />
     </section>
@@ -239,7 +230,7 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
       for (const [path, bytes] of Object.entries(entries)) rooted[prefix + path] = bytes
       const zip = await compressInWorker(rooted, setProgress, cancel.current.signal, { modes, mtime: plan.mtime, comment: plan.commit?.oid ?? null })
       saveBytes(zip, name, 'application/zip')
-      setMessage(`Saved ${name} (${formatBytes(zip.length)}, ${plural(files.length, 'file')}, each hash-checked).`)
+      setMessage(`Saved ${name} (${formatBytes(zip.length)}, ${plural(files.length, 'file')}, each verified).`)
     } catch (e) {
       if (e instanceof ZipTooLargeError) setTooLargeRef(tip)
       else setMessage(cancel.current?.signal.aborted ? 'Cancelled.' : `The zip could not be built: ${errorMessage(e)}`)
