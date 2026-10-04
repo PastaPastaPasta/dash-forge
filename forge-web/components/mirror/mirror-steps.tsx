@@ -661,7 +661,7 @@ export function WorkflowStep({
               <CopyBlock text={yaml.text} label="Copy the workflow file" />
             </div>
             <Hint>
-              The job builds its three tools from the pinned commit, the one this site runs, so they match the workflow exactly: the first run spends several minutes compiling, and later runs reuse the cache. To use prebuilt release binaries instead, replace the commit with a release tag (<span className="font-mono">action@v&lt;version&gt;</span>) and remove the <span className="font-mono">install</span> line.
+              The first run builds the tools from this site&apos;s commit, which takes a few minutes. Later runs reuse the cache. For prebuilt binaries, use a release tag (<span className="font-mono">action@v&lt;version&gt;</span>) and remove the <span className="font-mono">install</span> line.
             </Hint>
           </>
         ) : null}
