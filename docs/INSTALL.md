@@ -23,6 +23,7 @@ Dash Forge. Each archive contains:
 | `dg` | the command-line interface |
 | `git-remote-dash` | the git remote helper; git runs it for `dash://` URLs, so it must be on `PATH` |
 | `forge-relay`, `forge-import` | the relay daemon and the GitHub importer (optional) |
+| `forge-runner` | the self-hosted CI runner (optional; [guide](guides/self-host-runner.md)); not in the Windows archive |
 | `completions/` | shell completions for `dg` (bash, zsh, fish, PowerShell) |
 
 ## Supported platforms
@@ -75,7 +76,7 @@ The script never runs `sudo`. You can control it with these environment variable
 |---|---|---|
 | `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.1.0`; needed for a pre-release such as `0.1.0-rc.1`, which "latest" never picks |
 | `DASH_FORGE_INSTALL_DIR` | `~/.local/bin` | where the binaries go |
-| `DASH_FORGE_BINARIES` | `dg git-remote-dash` | add `forge-relay` / `forge-import` if you want them |
+| `DASH_FORGE_BINARIES` | `dg git-remote-dash` | add `forge-relay` / `forge-import` / `forge-runner` if you want them |
 | `DASH_FORGE_COMPLETIONS` | `0` | `1` installs bash, zsh and fish completions under `~/.local/share` and `~/.config/fish` |
 | `DASH_FORGE_ATTESTATION` | `auto` | `require` fails if `gh` cannot verify the attestation; `skip` relies on the checksum alone |
 | `DASH_FORGE_TARGET` | detected | force a target, e.g. `x86_64-unknown-linux-musl` on an old glibc |
@@ -165,7 +166,7 @@ you download them:
   quarantine flag from the unpacked binaries:
 
   ```sh
-  xattr -d com.apple.quarantine dg git-remote-dash forge-relay forge-import
+  xattr -d com.apple.quarantine dg git-remote-dash forge-relay forge-import forge-runner
   ```
 
 Signing and notarization are planned. Until then, the checksum and attestation are how you

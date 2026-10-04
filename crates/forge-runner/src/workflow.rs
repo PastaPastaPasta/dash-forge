@@ -131,6 +131,10 @@ pub enum Facts<'a> {
     Push(PushFacts<'a>),
     /// A pull request was opened, its head moved, it was reopened or marked ready.
     PullRequest(PullFacts<'a>),
+    /// A `schedule` entry's time came: the workflows that list this cron expression run, except
+    /// those that list one of `earlier` (due in the same poll and run with that one already), so
+    /// a workflow runs once a poll however many of its expressions are due.
+    Schedule(&'a str, &'a [String]),
 }
 
 impl Facts<'_> {
@@ -139,12 +143,36 @@ impl Facts<'_> {
         match self {
             Facts::Push(p) => runs_on_push(on, p),
             Facts::PullRequest(p) => runs_on_pull_request(on, p),
+            Facts::Schedule(cron, earlier) => {
+                let listed: Vec<String> =
+                    schedule_crons(on).iter().map(|c| normal_cron(c)).collect();
+                listed.contains(&normal_cron(cron)) && !earlier.iter().any(|e| listed.contains(e))
+            }
         }
     }
 }
 
+/// The cron expressions of a workflow's `on.schedule` (`- cron: '…'` entries), as written.
+/// `schedule` needs its entries, so the bare `on: schedule` forms list none.
+pub fn schedule_crons(on: &Value) -> Vec<String> {
+    on.get("schedule")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.get("cron").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A cron expression with its fields separated by single spaces (how two are compared).
+pub fn normal_cron(cron: &str) -> String {
+    cron.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The largest workflow file read (a bigger one is refused, not parsed).
-const MAX_WORKFLOW_BYTES: u64 = 512 * 1024;
+pub const MAX_WORKFLOW_BYTES: u64 = 512 * 1024;
 
 /// Read every `*.yml` / `*.yaml` directly in `dir` (sorted), and decide what runs.
 pub fn plan(
@@ -757,5 +785,27 @@ jobs:
             .collect();
         #[cfg(unix)]
         assert_eq!(broken, [".forge/workflows/c.yml", ".forge/workflows/d.yml"]);
+    }
+    #[test]
+    fn a_schedule_runs_the_workflows_that_list_its_cron() {
+        let on = |t: &str| -> Value { yaml_serde::from_str::<Value>(t).unwrap()["on"].clone() };
+        let nightly =
+            on("on:\n  schedule:\n    - cron: '0  3 * * *'\n    - cron: '*/5 * * * *'\n  push:");
+        assert_eq!(schedule_crons(&nightly), ["0  3 * * *", "*/5 * * * *"]);
+        assert!(
+            Facts::Schedule("0 3 * * *", &[]).runs(&nightly),
+            "spacing does not matter"
+        );
+        assert!(Facts::Schedule("*/5 * * * *", &[]).runs(&nightly));
+        assert!(
+            !Facts::Schedule("*/5 * * * *", &["0 3 * * *".into()]).runs(&nightly),
+            "it ran for an earlier expression due in the same poll"
+        );
+        assert!(!Facts::Schedule("0 4 * * *", &[]).runs(&nightly));
+        assert!(!Facts::Schedule("0 3 * * *", &[]).runs(&on("on: push")));
+        assert!(
+            schedule_crons(&on("on: [push, schedule]")).is_empty(),
+            "a bare schedule lists no time"
+        );
     }
 }

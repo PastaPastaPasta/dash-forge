@@ -1,0 +1,56 @@
+{
+  "name": "double_star_forms",
+  "description": "`**` leading (any directories), between (zero or more) and trailing (everything under, never the directory's own name as a file); `**` alone owns everything.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "** @d\n**/build @a\nfoo/**/bar.txt @b\n/vendor/** @c\n",
+    "paths": [
+      "build/x",
+      "a/b/build/y",
+      "foo/bar.txt",
+      "foo/a/b/bar.txt",
+      "vendor",
+      "vendor/lib/z.c",
+      "other.txt"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "build/x": [
+        "@a"
+      ],
+      "a/b/build/y": [
+        "@a"
+      ],
+      "foo/bar.txt": [
+        "@b"
+      ],
+      "foo/a/b/bar.txt": [
+        "@b"
+      ],
+      "vendor": [
+        "@d"
+      ],
+      "vendor/lib/z.c": [
+        "@c"
+      ],
+      "other.txt": [
+        "@d"
+      ]
+    },
+    "all": [
+      "@a",
+      "@b",
+      "@d",
+      "@c"
+    ],
+    "kinds": {
+      "@a": "name",
+      "@b": "name",
+      "@d": "name",
+      "@c": "name"
+    },
+    "errors": []
+  }
+}

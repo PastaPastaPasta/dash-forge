@@ -1,0 +1,32 @@
+{
+  "name": "docs_star_owns_direct_children_only",
+  "description": "`docs/*` owns the files directly in docs/ (GitHub's exception to gitignore), not docs/sub/b.md; it is anchored (it holds a slash), so x/docs/c.md is not owned; and a file named docs is not owned either.",
+  "case": "code_owners",
+  "rules": "v2",
+  "input": {
+    "file": "docs/* @docs\n",
+    "paths": [
+      "docs/a.md",
+      "docs/sub/b.md",
+      "x/docs/c.md",
+      "docs"
+    ]
+  },
+  "expected": {
+    "owners": {
+      "docs/a.md": [
+        "@docs"
+      ],
+      "docs/sub/b.md": [],
+      "x/docs/c.md": [],
+      "docs": []
+    },
+    "all": [
+      "@docs"
+    ],
+    "kinds": {
+      "@docs": "name"
+    },
+    "errors": []
+  }
+}

@@ -5046,7 +5046,8 @@ impl<'a> Collab<'a> {
         kind: EventKind,
         payload: &EventPayload<'_>,
     ) -> Result<(StateRoute, String)> {
-        let props = event_payload_props(target, kind, payload)?;
+        // A malformed payload is refused before any read.
+        event_payload_props(target, kind, payload)?;
         let me = self.signer_id()?;
         let role = self.signer_role(repo).await?;
         let route = match kind_route(role, &me, target, kind) {
@@ -5062,13 +5063,29 @@ impl<'a> Collab<'a> {
                 return Err(kind_refusal(role, repo, target, kind, what));
             }
         };
+        let id = self
+            .post_target_event_via(repo, target, kind, payload, route)
+            .await?;
+        Ok((route, id))
+    }
+
+    /// [`Self::post_target_event`] through a `route` the caller already chose (from a role it
+    /// read once for many events): no role is read, and a refused route fails at consensus.
+    pub async fn post_target_event_via(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        kind: EventKind,
+        payload: &EventPayload<'_>,
+        route: StateRoute,
+    ) -> Result<String> {
+        let props = event_payload_props(target, kind, payload)?;
         let doc_type = match route {
             StateRoute::Member => DOC_EVENT,
             StateRoute::Author => DOC_AUTHOR_EVENT,
         };
         let community = self.community_contract(repo).await?;
-        let id = self.write(repo, &community, doc_type, props).await?;
-        Ok((route, id))
+        self.write(repo, &community, doc_type, props).await
     }
 
     /// Set the branch policy (maintainers only at consensus; the client checks first unless

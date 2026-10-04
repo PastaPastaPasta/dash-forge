@@ -30,6 +30,7 @@ export * from './review'
 export * from './parity'
 export * from './moderation'
 export * from './transition'
+export * from './codeowners'
 
 /** The versioned rules identifier for forge-v2 repositories. */
 export const FORGE_RULES_V2 = 'FORGE_RULES_V2' as const
