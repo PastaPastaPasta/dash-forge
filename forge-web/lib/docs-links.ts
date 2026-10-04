@@ -19,4 +19,8 @@ export const DOCS = {
   mirror: `${GUIDES}/mirror-a-github-repo.md`,
   /** What the move to a new devnet (bonsia to sakura) loses and keeps, and how to re-push (the devnet notice). */
   devnetMove: `${GUIDES}/devnet-move.md`,
+  /** The normative private-repository design (key model, what is sealed, the threat model). */
+  privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
+  /** Every network Forge has run on, and what a devnet reset means. */
+  networks: `${REPO_URL}/blob/master/docs/networks.md`,
 } as const
