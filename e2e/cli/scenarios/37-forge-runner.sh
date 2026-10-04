@@ -10,7 +10,8 @@
 #      of kind 26); `dg ci reruns` lists the request, counted; the next poll runs the workflow
 #      again as the branch's push: a newer completed run whose summary names who asked. A poll
 #      after that runs nothing.
-#   5. Clean-up: the PR is closed, the runner revoked and its key disabled.
+#   5. Clean-up, on every exit after step 1: the PR is closed, the runner revoked and its key
+#      disabled (a revoke or disable that fails fails the scenario).
 #
 # Needs act, a running Docker daemon and forge-runner beside dg (`cargo build -p forge-runner`);
 # SKIPs without them. Not in the default set (`run.sh 37`): it pulls a job image and runs a
@@ -29,7 +30,7 @@ RUNNER_BIN="${BIN_DIR}/forge-runner"
 command -v act >/dev/null || skip_scenario "act is not installed"
 docker info >/dev/null 2>&1 || skip_scenario "docker is not running"
 IMAGE="${E2E_RUNNER_IMAGE:-node:20-bookworm-slim}"
-docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull -q "$IMAGE" >/dev/null || skip_scenario "cannot pull $IMAGE"
+docker image inspect "$IMAGE" >/dev/null 2>&1 || _tmo_for 600 docker pull -q "$IMAGE" >/dev/null || skip_scenario "cannot pull $IMAGE"
 
 RUNNER_ID="$(_idid "$RUNNER")"
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
@@ -79,11 +80,35 @@ check_run() { # check_run <sha> <want> <log>
   return 1
 }
 
+# Once the runner is enrolled, every way out (finish_scenario, skip_scenario) first closes the
+# PR, revokes the runner and disables its key; a revoke or disable that fails fails the run.
+PR="" KEY_ID="" CLEANED=""
+cleanup_runner() {
+  [[ -z "$CLEANED" ]] || return 0
+  CLEANED=1
+  step "clean-up: close the PR, revoke the runner, disable its key"
+  if [[ -n "$PR" ]]; then
+    dg_as "$ID_OWNER" --yes --json pr close "$REPO" "$PR" >"$LOG-close.json" 2>"$LOG-close.err" \
+      || info "pr close failed; PR #${PR} stays open"
+  fi
+  dg_as "$ID_OWNER" --yes --json ci runner revoke "$REPO" "$RUNNER_ID" >"$LOG-rev.json" 2>"$LOG-rev.err" \
+    || { cat "$LOG-rev.err" >&2; bad "the runner was not revoked"; }
+  if [[ -n "$KEY_ID" ]]; then
+    DASH_FORGE_KEY="$RUNNER" RUST_LOG=error NO_COLOR=1 _tmo "${DG}" --yes --json auth keys disable "$KEY_ID" --master "$RUNNER" \
+      >"$LOG-dis.json" 2>"$LOG-dis.err" || { cat "$LOG-dis.err" >&2; bad "the runner key was not disabled (it expires in a day)"; }
+  fi
+  rm -f "$KEYFILE"
+}
+eval "harness_finish_scenario() $(declare -f finish_scenario | tail -n +2)"
+eval "harness_skip_scenario() $(declare -f skip_scenario | tail -n +2)"
+
 step "1. OWNER enrols RUNNER with a checkRun-only key"
 rm -f "$KEYFILE"
 dg_as "$ID_OWNER" --yes --json ci runner new "$REPO" --runner "$RUNNER" -o "$KEYFILE" --budget 0.02 --expires 1d \
   >"$LOG-new.json" 2>"$LOG-new.err" || must "$LOG-new" "ci runner new"
 KEY_ID="$(jq_py "$LOG-new.json" 'd["keyId"]')"
+finish_scenario() { cleanup_runner; harness_finish_scenario; }
+skip_scenario() { cleanup_runner; harness_skip_scenario "$@"; }
 check "enrolled" test "$(jq_py "$LOG-new.json" 'd["enrolled"] is not None')" = "True"
 
 step "2. the first poll records the repository and runs nothing"
@@ -157,13 +182,5 @@ else
   cat "$LOG-again.log" >&2
   bad "the poll after the re-run failed"
 fi
-
-step "5. clean-up: close the PR, revoke the runner, disable its key"
-dg_as "$ID_OWNER" --yes --json pr close "$REPO" "$PR" >"$LOG-close.json" 2>"$LOG-close.err" \
-  || info "pr close failed; PR #${PR} stays open"
-dg_as "$ID_OWNER" --yes --json ci runner revoke "$REPO" "$RUNNER_ID" >"$LOG-rev.json" 2>"$LOG-rev.err" \
-  || info "runner revoke failed"
-DASH_FORGE_KEY="$RUNNER" RUST_LOG=error NO_COLOR=1 _tmo "${DG}" --yes --json auth keys disable "$KEY_ID" --master "$RUNNER" \
-  >"$LOG-dis.json" 2>"$LOG-dis.err" || info "disabling the runner key failed; it expires in a day"
 
 finish_scenario
