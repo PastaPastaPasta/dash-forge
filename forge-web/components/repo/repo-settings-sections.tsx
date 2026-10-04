@@ -32,6 +32,7 @@ import {
   fullPattern,
   missingDefaultProtection,
   parseTopics,
+  matchList,
   patternMatches,
   patternsProblem,
   previewConfig,
@@ -410,13 +411,13 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
 
 export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; maintainer: boolean; onSaved: () => void }): JSX.Element {
   const cfg = useConfigWrite(home, onSaved)
-  const branches = home.branches.filter(isLive).map((b) => b.refName.slice('refs/heads/'.length))
+  const refNames = [...home.branches, ...home.tags].filter(isLive).map((r) => r.refName)
   const patterns = cfg.current.protectedPatterns
   const [entry, setEntry] = useState('')
   const candidate = entry.trim() === '' ? '' : fullPattern(entry)
   const nextPatterns = candidate === '' ? patterns : [...patterns, candidate]
   const problem = candidate === '' ? null : patternsProblem(nextPatterns)
-  const preview = candidate === '' ? [] : patternMatches(candidate, branches)
+  const preview = candidate === '' ? [] : patternMatches(candidate, refNames)
   const canEdit = maintainer && !cfg.sealed
 
   return (
@@ -435,12 +436,12 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
             <li className="px-3 py-2 text-dense text-anvil-500 dark:text-anvil-400">Nothing is protected: every writer can update every branch and tag.</li>
           ) : (
             patterns.map((p) => {
-              const hits = patternMatches(p, branches)
+              const hits = patternMatches(p, refNames)
               return (
                 <li key={p} className="flex flex-wrap items-center gap-2 px-3 py-2" data-testid="protected-pattern">
                   <span className="font-mono text-dense">{p}</span>
                   <span className="text-[12px] text-anvil-500 dark:text-anvil-400">
-                    {hits.length === 0 ? 'matches no branch yet' : `matches ${hits.join(', ')}`}
+                    {hits.length === 0 ? `matches no ${p.startsWith('refs/tags/') ? 'tag' : 'branch'} yet` : `matches ${matchList(hits)}`}
                   </span>
                   {canEdit ? (
                     <Button
@@ -487,7 +488,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                 onClick={() =>
                   cfg.ask({
                     title: `Protect ${candidate}`,
-                    description: `Appends a config adding ${candidate}. From then on only maintainers can update ${preview.length > 0 ? preview.join(', ') : 'the branches it matches'}; a writer's push there is refused.`,
+                    description: `Appends a config adding ${candidate}. From then on only maintainers can update ${preview.length > 0 ? matchList(preview) : 'the refs it matches'}; a writer's push there is refused.`,
                     change: { addPatterns: [candidate] },
                     confirmLabel: 'Sign & protect',
                     // QW-072: a protected pattern leaves the field, not "already protected" under it.
@@ -503,7 +504,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <p className="text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="pattern-preview">
                   <span className="font-mono">{candidate}</span>{' '}
-                  {preview.length === 0 ? 'matches no current branch' : `protects ${preview.join(', ')}`}
+                  {preview.length === 0 ? 'matches nothing yet' : `protects ${matchList(preview)}`}
                 </p>
                 <CostPreview cost={cfg.cost({ addPatterns: [candidate] })} />
               </div>

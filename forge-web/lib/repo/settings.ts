@@ -212,9 +212,18 @@ export function previewConfig(next: RepoConfig, first: FirstWrite = {}): CostPre
   return previewCreate(DOC.config, configData(next), first)
 }
 
-/** The branches (short names) each pattern matches, in `branches` order. */
-export function patternMatches(pattern: string, branches: readonly string[]): string[] {
-  return branches.filter((b) => matchesProtected(`refs/heads/${b}`, [pattern]))
+/**
+ * The refs a pattern matches, in `refNames` order, by short name (`main`, `v1.0`): `refNames`
+ * are full ref names (`refs/heads/main`, `refs/tags/v1.0`).
+ */
+export function patternMatches(pattern: string, refNames: readonly string[]): string[] {
+  return refNames.filter((r) => matchesProtected(r, [pattern])).map((r) => r.replace(/^refs\/(heads|tags)\//, ''))
+}
+
+/** "main", "main, dev and 3 more": a short list of matched names for one line. */
+export function matchList(names: readonly string[], shown = 3): string {
+  if (names.length <= shown) return names.join(', ')
+  return `${names.slice(0, shown).join(', ')} and ${names.length - shown} more`
 }
 
 /** Why `topics` would be refused by the `repo` schema (or its `topic` documents), or null. */

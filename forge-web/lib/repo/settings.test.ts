@@ -29,6 +29,7 @@ import {
   missingDefaultProtection,
   newestPolicy,
   parseTopics,
+  matchList,
   patternMatches,
   previewRepoEdit,
   patternsProblem,
@@ -186,12 +187,17 @@ describe('branch names and patterns', () => {
   })
 
   it('preview the branches a pattern protects with the FORGE_RULES wildmatch', () => {
-    const branches = ['main', 'release/1.x', 'release/2.x/rc', 'feature']
+    const branches = ['main', 'release/1.x', 'release/2.x/rc', 'feature'].map((b) => `refs/heads/${b}`)
     expect(patternMatches('refs/heads/main', branches)).toEqual(['main'])
     // `*` stays within one segment; `**` crosses them.
     expect(patternMatches('refs/heads/release/*', branches)).toEqual(['release/1.x'])
     expect(patternMatches('refs/heads/release/**', branches)).toEqual(['release/1.x', 'release/2.x/rc'])
     expect(patternMatches('refs/heads/*', branches)).toEqual(['main', 'feature'])
+    // Tags too: `refs/tags/**` matches every tag and no branch.
+    const refs = [...branches, 'refs/tags/v1.0', 'refs/tags/tools/v2']
+    expect(patternMatches('refs/tags/**', refs)).toEqual(['v1.0', 'tools/v2'])
+    expect(matchList(['a', 'b', 'c', 'd', 'e'])).toBe('a, b, c and 2 more')
+    expect(matchList(['a', 'b'])).toBe('a, b')
   })
 })
 
