@@ -31,6 +31,9 @@ import { useIntent } from '@/hooks/use-intent'
 import { SupersededWriteError } from '@/lib/sdk'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { ComparisonDiff } from '@/components/repo/pull-diff'
+import { TemplatePicker, usePullTemplates } from '@/components/repo/issue-templates'
+import { applyTemplate } from '@/lib/view/issue-templates'
+import { namedTemplate, type PullTemplate } from '@/lib/view/pull-templates'
 import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
@@ -76,6 +79,32 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const [note, setNote] = useState<string | null>(null)
   // "Create draft pull request" (review-parity P6): the PR opens as a draft, marked ready later.
   const [asDraft, setAsDraft] = useState(false)
+
+  // PR templates (P1-6): once read, an empty description takes the one `?template=` names, else
+  // the default; a kept draft's description is never replaced. Several are offered to pick from.
+  const templateParam = useParam('template')
+  const pullTemplates = usePullTemplates(home)
+  const [pullTemplate, setPullTemplate] = useState<PullTemplate | null>(null)
+  const [templateSeeded, setTemplateSeeded] = useState(false)
+  useEffect(() => {
+    if (templateSeeded || pullTemplates === null) return
+    setTemplateSeeded(true)
+    // A kept description that is a template's untouched text still counts as that template.
+    if (body.trim() !== '') {
+      setPullTemplate(pullTemplates.templates.find((x) => x.body === body) ?? null)
+      return
+    }
+    const t = namedTemplate(pullTemplates.templates, templateParam) ?? pullTemplates.templates.find((x) => x.file === pullTemplates.defaultFile) ?? null
+    if (t === null) return
+    setBody(t.body)
+    setPullTemplate(t)
+  }, [templateSeeded, pullTemplates, templateParam, body])
+  // Untouched template text follows the pick; anything typed stays (as for issues, QW4-037).
+  const pickTemplate = (t: PullTemplate | null): void => {
+    const as = (x: PullTemplate | null): { title: string; body: string } | null => (x === null ? null : { title: '', body: x.body })
+    setBody(applyTemplate({ title: '', body }, as(pullTemplate), as(t)).body)
+    setPullTemplate(t)
+  }
 
   // Keep the draft for this tab (a sign-in in between must not lose it). Only a title the author
   // typed is kept: one filled in from a head commit belongs to that head, and a draft restored
@@ -370,6 +399,10 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             placeholder="What does this change?"
           />
         </Field>
+        {/* Offered whenever there is a template besides the one filled in by default. */}
+        {pullTemplates !== null && pullTemplates.templates.some((t) => t.file !== pullTemplates.defaultFile) ? (
+          <TemplatePicker templates={pullTemplates.templates} selected={pullTemplate} onPick={pickTemplate} blank="No template" label="Pull request template" />
+        ) : null}
         <div>
           <div className="mb-1.5 flex items-center justify-between">
             <label htmlFor="pr-body" className="text-dense font-medium text-anvil-700 dark:text-anvil-200">
