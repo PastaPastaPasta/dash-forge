@@ -40,6 +40,13 @@ vi.mock('@/lib/view/tip', () => ({
     return ms
   },
 }))
+/** The viewer's role on the repo (branch administration, P1-4). */
+let role: string | null = null
+vi.mock('@/hooks/use-repo-chrome', () => ({ useViewerRole: () => ({ role, known: true }) }))
+vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, network: 'devnet', ready: true }) }))
+vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ signer: { identityId: 'M', network: 'devnet' } }) }))
+vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, failed: (e: unknown) => String(e), disabledReason: null }) }))
+vi.mock('@/components/repo/private-compose', () => ({ privateComposeBlock: () => null }))
 const READER: Record<string, unknown> = {
   forView: () => READER,
   forHistoryWalk: () => READER,
@@ -54,12 +61,13 @@ const TAG_B = 'b'.repeat(40)
 const COMMIT_A = '1'.repeat(40)
 const COMMIT_B = '2'.repeat(40)
 
-function home(tagTip: string): RepoHome {
+function home(tagTip: string, more: readonly string[] = [], protectedPatterns: readonly string[] = []): RepoHome {
   const ref = (refName: string, oid: string) => ({ refName, refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } })
   return {
-    repo: { repoId: 'r' },
+    repo: { repoId: 'r', visibility: 'public' },
+    config: { protectedPatterns },
     defaultBranch: 'main',
-    branches: [ref('refs/heads/main', COMMIT_A)],
+    branches: [ref('refs/heads/main', COMMIT_A), ...more.map((b) => ref(`refs/heads/${b}`, COMMIT_B))],
     tags: [ref('refs/tags/v1', tagTip)],
   } as unknown as RepoHome
 }
@@ -69,6 +77,7 @@ let root: Root
 let el: HTMLDivElement
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  role = null
   browseCalls.length = 0
   peelTo.clear()
   peelTo.set(TAG_A, COMMIT_A)
@@ -157,5 +166,49 @@ describe('refUpdatedAt (QW-061d: when a branch last moved)', () => {
     expect(refUpdatedAt({ refName: 'refs/heads/a', state: { state: 'resolved', oid: 'x', author: 'a', createdAt: 42 } } as never)).toBe(42)
     expect(refUpdatedAt({ refName: 'refs/heads/b', state: { state: 'diverged', heads: [{ createdAt: 5 }, { createdAt: 9 }] } } as never)).toBe(9)
     expect(refUpdatedAt({ refName: 'refs/heads/c', state: { state: 'deleted' } } as never)).toBe(0)
+  })
+})
+
+// P1-4: GitHub's branch administration, for maintainers and writers only.
+describe('RefListContent branch administration', () => {
+  const deletes = (): HTMLButtonElement[] => [...el.querySelectorAll<HTMLButtonElement>('[data-testid="delete-branch"]')]
+  const render = async (h: RepoHome, kind: 'branches' | 'tags' = 'branches') => {
+    await act(async () => root.render(<RefListContent home={h} addr={addr} kind={kind} />))
+    await settle()
+  }
+
+  it('offers nothing to a signed-out viewer or a non-member', async () => {
+    await render(home(TAG_A, ['feature']))
+    expect(el.querySelector('[data-testid="new-branch"]')).toBeNull()
+    expect(deletes()).toEqual([])
+    expect(el.querySelector('[data-testid="role-limit"]')).toBeNull()
+  })
+
+  it('tells triage members and readers why there is no button', async () => {
+    role = 'triage'
+    await render(home(TAG_A, ['feature']))
+    expect(el.querySelector('[data-testid="new-branch"]')).toBeNull()
+    expect(deletes()).toEqual([])
+    expect(el.querySelector('[data-testid="role-limit"]')?.textContent).toBe("Your role here is triage: a triage member can't create or delete branches.")
+  })
+
+  it('gives a writer New branch and delete, never on the default or a protected branch', async () => {
+    role = 'writer'
+    await render(home(TAG_A, ['feature', 'release/1'], ['refs/heads/release/*']))
+    expect(el.querySelector('[data-testid="new-branch"]')).not.toBeNull()
+    const [main, feature, release] = deletes()
+    expect(main?.disabled).toBe(true)
+    expect(main?.getAttribute('aria-label')).toMatch(/^main is the default branch/)
+    expect(feature?.disabled).toBe(false)
+    expect(feature?.getAttribute('aria-label')).toBe('Delete branch feature')
+    expect(release?.disabled).toBe(true)
+    expect(release?.getAttribute('aria-label')).toMatch(/^release\/1 is protected/)
+  })
+
+  it('has no branch controls on the tags list', async () => {
+    role = 'maintainer'
+    await render(home(TAG_A, ['feature']), 'tags')
+    expect(el.querySelector('[data-testid="new-branch"]')).toBeNull()
+    expect(deletes()).toEqual([])
   })
 })

@@ -16,7 +16,7 @@
  */
 
 import Link from 'next/link'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, XCircle } from 'lucide-react'
 
 import {
@@ -40,12 +40,16 @@ import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { errorMessage } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Oid } from '@/components/ui/oid'
+import { SignatureBadge } from '@/components/repo/signature-badge'
+import { useCommitSignatures, type SignatureState } from '@/hooks/use-commit-signatures'
+import type { RepoRef } from '@/lib/repo'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { AssetRow } from '@/components/repo/releases-content'
 
 export function CommitsTab({
   commits,
+  signing,
   error,
   loading,
   addr,
@@ -62,18 +66,49 @@ export function CommitsTab({
   /** Where the head's commits browse (the fork), when not this repo. */
   sourceAddr: RepoAddress | null
   onRetry: () => void
+  /** The repo and the PR's author: whose signing keys its commits' badges are checked against. */
+  signing?: { readonly repo: RepoRef; readonly author: string }
 }): JSX.Element {
   if (error !== null) return <ErrorState message={error} onRetry={onRetry} />
   if (commits === null && unavailable !== null) return <EmptyState icon={GitCommit} title="Commits unavailable" body={unavailable} />
   if (commits === null) return loading ? <LoadingBlock label="Walking the PR's commits" /> : <LoadingBlock label="Comparing the PR with its base" />
   if (commits.commits.length === 0) return <EmptyState icon={GitCommit} title="No commits" body="The base branch already contains this PR's head." />
-  return <CommitList commits={commits} addr={sourceAddr ?? addr} allHint="`dg pr commits` lists them all." />
+  return <CommitList commits={commits} addr={sourceAddr ?? addr} allHint="`dg pr commits` lists them all." signing={signing} />
 }
 
 /** Commits, newest first, each linking to its page in the repo at `addr`; `allHint` says how to see a cut list whole. */
-export function CommitList({ commits, addr: at, allHint }: { commits: PrCommits; addr: RepoAddress; allHint: string }): JSX.Element {
+export function CommitList({
+  commits,
+  addr: at,
+  allHint,
+  signing,
+}: {
+  commits: PrCommits
+  addr: RepoAddress
+  allHint: string
+  /** Show signed commits' badges, checked against this repo's owner and members (and `author`). */
+  signing?: { readonly repo: RepoRef; readonly author?: string }
+}): JSX.Element {
   return (
     <div data-testid="pr-commits">
+      {signing ? <SignedCommitRows commits={commits} at={at} signing={signing} /> : <CommitRows commits={commits} at={at} signatures={null} />}
+      {commits.truncated ? (
+        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+          Showing the newest {commits.commits.length} of {plural(commits.total ?? 'many', 'commit')}. {allHint}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function SignedCommitRows({ commits, at, signing }: { commits: PrCommits; at: RepoAddress; signing: { readonly repo: RepoRef; readonly author?: string } }): JSX.Element {
+  const signable = useMemo(() => commits.commits.map((c) => ({ oid: c.oid, ...(c.commit.signed ? { signed: c.commit.signed } : {}) })), [commits])
+  const signatures = useCommitSignatures(signing.repo, signable, signing.author ? [signing.author] : [])
+  return <CommitRows commits={commits} at={at} signatures={signatures} />
+}
+
+function CommitRows({ commits, at, signatures }: { commits: PrCommits; at: RepoAddress; signatures: ReadonlyMap<string, SignatureState> | null }): JSX.Element {
+  return (
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         {commits.commits.map((c) => (
           <div key={c.oid} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="pr-commit">
@@ -92,16 +127,11 @@ export function CommitList({ commits, addr: at, allHint }: { commits: PrCommits;
                 </span>
               </div>
             </div>
+            {signatures !== null ? <SignatureBadge state={signatures.get(c.oid)} /> : null}
             <Oid value={c.oid} chars={7} />
           </div>
         ))}
       </div>
-      {commits.truncated ? (
-        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Showing the newest {commits.commits.length} of {plural(commits.total ?? 'many', 'commit')}. {allHint}
-        </p>
-      ) : null}
-    </div>
   )
 }
 

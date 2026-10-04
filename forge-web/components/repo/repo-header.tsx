@@ -22,6 +22,7 @@ import { TabStrip } from '@/components/ui/tab-strip'
 import { bareRoute } from '@/lib/page-title'
 import { ForkButton } from '@/components/repo/fork-button'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
+import { CodeSearchBox } from '@/components/repo/code-search-box'
 
 /**
  * "forked from owner/name", linking to the parent, and GitHub's Contribute: the parent's New pull
@@ -62,7 +63,7 @@ function ForkedFrom({ home }: { home: RepoHome }): JSX.Element {
  * Settings. Commits live under Code (the ref bar's `n commits`). Settings is a maintainer's
  * tab; a writer sees the same page as a read-only Members list.
  */
-export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', '/repo/branches', '/repo/tags', '/repo/commits', '/repo/commit', '/repo/compare']
+export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', '/repo/branches', '/repo/tags', '/repo/commits', '/repo/commit', '/repo/compare', '/repo/search']
 
 /** The tab a repo route belongs to (`null`: none, e.g. Stargazers, as on GitHub). */
 export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'releases' | 'settings' | null {
@@ -120,6 +121,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           <BackendBadge backend={home.backend} />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          <CodeSearchBox addr={addr} />
           <CopyLinkButton repo={addr} />
           {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
           <WatchButton repo={home.repo} />

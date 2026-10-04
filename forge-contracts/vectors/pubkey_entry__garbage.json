@@ -1,0 +1,14 @@
+{
+  "name": "garbage",
+  "description": "Anything else is invalid.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "my key is on keybase"
+  },
+  "expected": {
+    "kind": "invalid",
+    "fingerprint": null,
+    "verifiable": false
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "gpg_ed25519_primary",
+  "description": "An Ed25519 (EdDSA) primary key packet with its v4 fingerprint: verifiable.",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "gpg:059E65EABA27E46FF4FCC211C209DB5A73261B84 xjMEar9q4xYJKwYBBAHaRw8BAQdAmGsyG5QnBNlTV9rdWGDWvO8EL4giPvjVi5+0qE02qtg="
+  },
+  "expected": {
+    "kind": "openpgp",
+    "fingerprint": "059E65EABA27E46FF4FCC211C209DB5A73261B84",
+    "verifiable": true
+  }
+}

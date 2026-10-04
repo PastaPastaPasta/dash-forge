@@ -25,13 +25,16 @@ mod maint;
 mod milestone;
 mod pin;
 mod pr;
+mod profile;
 mod prompt;
 mod publish;
 mod quote;
 mod release;
 mod repo;
 mod repo_settings;
+mod repo_sync;
 mod secret_out;
+mod signing;
 mod storage;
 mod storage_wizard;
 mod webhook;
@@ -137,6 +140,23 @@ pub enum Command {
     /// Milestones (put an issue in one with `dg issue milestone`).
     #[command(subcommand)]
     Milestone(MilestoneCommand),
+    /// Your public profile: display name, bio, avatar, links, location, company, signing keys.
+    #[command(subcommand)]
+    Profile(ProfileCommand),
+    /// Check commits' signatures against the keys a repository's owner and members publish on
+    /// their profiles: the web's Verified / Unverified badges, for a clone's commits.
+    VerifyCommit {
+        /// Commits to check, as git names them (`HEAD`, `main~3`, an oid), like `git verify-commit`.
+        #[arg(required = true, num_args = 1..)]
+        revs: Vec<String>,
+        /// The repository whose owner's and members' keys count (`owner/name`; default: this
+        /// clone's).
+        #[arg(short = 'R', long, value_name = "REPO")]
+        repo: Option<String>,
+        /// Also trust this identity's keys (a pull request's author; id or DPNS name; repeatable).
+        #[arg(long = "author", value_name = "IDENTITY")]
+        author: Vec<String>,
+    },
     /// Repository members (maintainers, writers, triage members and readers).
     #[command(subcommand)]
     Collab(CollabCommand),
@@ -296,13 +316,30 @@ pub enum RepoCommand {
         dir: Option<std::path::PathBuf>,
     },
     /// Fork a repo: a new repo with `forkOf`, the parent's packs recorded by reference
-    /// (nothing re-uploaded) and its refs copied.
+    /// (nothing re-uploaded) and its branches and tags copied.
     Fork {
         /// The repository (`owner/name`).
         repo: String,
         /// The fork's name (default: the parent's).
         #[arg(long)]
         name: Option<String>,
+        /// Copy the parent's default branch only (GitHub's "Copy the main branch only"), not
+        /// every branch and tag: one ref update instead of one per branch and tag.
+        #[arg(long)]
+        default_branch_only: bool,
+    },
+    /// Sync a fork with the repository it was forked from (GitHub's "Sync fork"): fast-forward
+    /// its default branch to the parent's default branch, or `--branch` to the parent's branch
+    /// of the same name. The parent's new packs are recorded by reference (nothing uploaded),
+    /// then one ref update moves the branch. A branch with commits of its own is never moved
+    /// (E105 names the pull request that merges the parent's instead). Maintainers and writers
+    /// of the fork; a protected branch, maintainers.
+    Sync {
+        /// The fork (`owner/name`).
+        repo: String,
+        /// The fork's branch to sync (default: its default branch).
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// Star a repo. A new star also counts toward Trending (one more small document, up to
     /// 0.00023 DASH) unless `--no-trending` or `trending = false` in config.toml. Where the
@@ -702,6 +739,47 @@ pub enum IssueCommand {
         /// Unhide.
         #[arg(long)]
         off: bool,
+    },
+}
+
+/// `dg profile` subcommands. A profile is public, whatever repositories it is shown beside.
+#[derive(Debug, Subcommand)]
+pub enum ProfileCommand {
+    /// Show a profile: yours, or an identity's (id, DPNS name or `@name`).
+    Show {
+        /// The identity (default: yours).
+        #[arg(value_name = "IDENTITY")]
+        who: Option<String>,
+    },
+    /// Set fields of your profile; a field not named is kept, an empty value clears it.
+    Set(profile::SetArgs),
+    /// Delete your profile document (part of its storage fee is refunded).
+    Delete,
+    /// The keys you sign commits with, published on your profile for Verified badges.
+    #[command(subcommand)]
+    Key(ProfileKeyCommand),
+}
+
+/// `dg profile key` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ProfileKeyCommand {
+    /// List the signing keys on your profile.
+    List,
+    /// Publish a signing key: git's own (`user.signingkey`, `gpg.format`) unless one is named.
+    /// Ed25519 SSH keys and Ed25519 or ECDSA OpenPGP keys (an RSA key does not fit a profile).
+    Add {
+        /// An SSH public key: a `.pub` file, or the `ssh-ed25519 AAAA…` line itself.
+        #[arg(long, value_name = "KEY", conflicts_with = "gpg")]
+        ssh: Option<String>,
+        /// An OpenPGP key id or fingerprint, exported with `gpg --export` (`!` at the end: exactly
+        /// that key, as gpg reads it).
+        #[arg(long, value_name = "KEYID")]
+        gpg: Option<String>,
+    },
+    /// Remove a signing key by the end of its fingerprint (`dg profile key list` shows them).
+    Remove {
+        /// The fingerprint, or its last 8 or more characters.
+        fingerprint: String,
     },
 }
 
@@ -1847,6 +1925,10 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Release(cmd) => release::run(ctx, cmd).await,
         Command::Label(cmd) => label::run(ctx, cmd).await,
         Command::Milestone(cmd) => milestone::run(ctx, cmd).await,
+        Command::Profile(cmd) => profile::run(ctx, cmd).await,
+        Command::VerifyCommit { repo, revs, author } => {
+            signing::verify_commits(ctx, repo.as_deref(), revs, author).await
+        }
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,

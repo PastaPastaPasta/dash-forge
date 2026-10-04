@@ -1,0 +1,13 @@
+{
+  "name": "parent_empty",
+  "description": "The parent's branch has no tip (never pushed, or deleted): nothing to sync with.",
+  "case": "fork_sync",
+  "rules": "v2",
+  "input": {
+    "forkTip": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parentTip": null,
+    "forkInParent": false,
+    "parentInFork": false
+  },
+  "expected": "parentEmpty"
+}

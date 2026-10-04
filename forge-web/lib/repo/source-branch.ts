@@ -9,10 +9,10 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { isPlainBranchRef, type RefState, type RefUpdate } from '../rules'
 import { bytesToBase64 } from '../sdk'
-import { readConfigHistory } from './config'
 import type { RepoRef } from './contract'
 import { refNameHash } from './push'
-import { readRefUpdates, resolveRefByHash } from './refs'
+import { readRefNow } from './ref-admin'
+import { readRefUpdates } from './refs'
 
 /**
  * The branch's resolved state, or null when it cannot be known from here: not a plain branch
@@ -21,8 +21,7 @@ import { readRefUpdates, resolveRefByHash } from './refs'
  */
 export async function readBranchState(sdk: EvoSDK, repo: RepoRef, refName: string): Promise<RefState | null> {
   if (!isPlainBranchRef(refName) || repo.visibility === 'private') return null
-  const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(refName)), await readConfigHistory(sdk, repo))
-  return ref?.state ?? null
+  return (await readRefNow(sdk, repo, refName)).state
 }
 
 /**

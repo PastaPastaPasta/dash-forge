@@ -67,6 +67,8 @@ The message lists the conflicting files.
 
 Fix: `dg pr update-branch <owner>/<repo> <n>` merges the base into the PR's branch when that merge is clean. Otherwise resolve it by hand: `dg pr checkout <owner>/<repo> <n>`, merge the base into `pr/<n>`, fix the conflicts, and push the result to the PR's branch. The push moves the PR head, or run `dg pr sync` if it did not. Then run `dg pr merge` again.
 
+`dg repo sync` reports E105 when the fork's branch and its parent's have both moved: a sync only fast-forwards, and never drops the fork's own commits. The message says how many commits each side has. Nothing was written. Fix: merge the parent's branch into the fork with a pull request, `dg pr create <fork> --base <branch> --head <parent's branch> --head-repo <parent> --title "…"` (the web's fork bar offers the same), or pull it locally and push.
+
 ## E106
 
 **Partially completed.** `dg import` finished, but some items were not mirrored: an issue or PR whose number is held by someone else, a document the destination refused, or the optional push of open pull request heads. The warnings name each one, and `counts.skipped` / `counts.gitSkipped` in the `--json` summary count them. Everything else was written.

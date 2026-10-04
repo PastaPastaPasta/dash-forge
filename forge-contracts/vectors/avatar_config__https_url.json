@@ -1,0 +1,14 @@
+{
+  "name": "https_url",
+  "description": "An https link is an image URL, loaded when the viewer asks.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "https://alice.dev/a.png?s=2",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "url",
+    "url": "https://alice.dev/a.png?s=2"
+  }
+}

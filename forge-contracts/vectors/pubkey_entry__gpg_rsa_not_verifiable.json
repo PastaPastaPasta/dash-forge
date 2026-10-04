@@ -1,0 +1,14 @@
+{
+  "name": "gpg_rsa_not_verifiable",
+  "description": "An RSA key reads but never verifies (and does not fit a 300-byte entry on chain).",
+  "case": "pubkey_entry",
+  "rules": "v2",
+  "input": {
+    "entry": "gpg:ECF00BFFAD982D748F6C50B29DF3D1A585349C3D xsBNBGq/auQBCACuOe4Ez1Z8WlFRVeRHgf2MpS1G7UgElC1hXAniIjdE2LoSAF4ywSyN+bnAxEQWxNallM5pp9SA+UjZdmAzbMM+RY8xKO2w1rJhSeSRJ1d/a1XeSIXq7aLudoaxYeapgJ313/K0oHA2Flj0p7B8x7gEjVYhWz6FtgHCEG0+h/bE+M48WCMJRO61VNLzrREJK1I5Q5u/z1NPscgHX1ss7jYZmQsjC1lGuLlhWUNi5jKMeySo+soQdEIj5NHI2+4242t0YyMzFY8VvYWj4vpwUEIgmIgybRoqPULAtEB6GGOIJU8hTeqGSYFiFNhDNZMjWTG4w16gHlh9O/KsdNz/o9XtABEBAAE="
+  },
+  "expected": {
+    "kind": "openpgp",
+    "fingerprint": "ECF00BFFAD982D748F6C50B29DF3D1A585349C3D",
+    "verifiable": false
+  }
+}

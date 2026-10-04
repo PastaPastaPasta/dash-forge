@@ -1,0 +1,74 @@
+{
+  "name": "keeps_the_forks_own",
+  "description": "A ref the fork already has (a resumed fork, or the owner's push) is never moved.",
+  "case": "fork_refs",
+  "rules": "v2",
+  "input": {
+    "parent": [
+      {
+        "refName": "refs/heads/master",
+        "state": {
+          "state": "resolved",
+          "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "author": "A",
+          "createdAt": 1
+        }
+      },
+      {
+        "refName": "refs/heads/dev",
+        "state": {
+          "state": "resolved",
+          "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "author": "A",
+          "createdAt": 1
+        }
+      },
+      {
+        "refName": "refs/tags/v1",
+        "state": {
+          "state": "resolved",
+          "oid": "cccccccccccccccccccccccccccccccccccccccc",
+          "author": "A",
+          "createdAt": 1
+        }
+      },
+      {
+        "refName": "refs/mirror/pull/7/head",
+        "state": {
+          "state": "resolved",
+          "oid": "dddddddddddddddddddddddddddddddddddddddd",
+          "author": "A",
+          "createdAt": 1
+        }
+      },
+      {
+        "refName": "refs/heads/gone",
+        "state": {
+          "state": "unborn"
+        }
+      }
+    ],
+    "fork": [
+      {
+        "refName": "refs/heads/master",
+        "state": {
+          "state": "resolved",
+          "oid": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "author": "A",
+          "createdAt": 1
+        }
+      }
+    ],
+    "onlyBranch": null
+  },
+  "expected": [
+    {
+      "refName": "refs/heads/dev",
+      "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "refName": "refs/tags/v1",
+      "oid": "cccccccccccccccccccccccccccccccccccccccc"
+    }
+  ]
+}

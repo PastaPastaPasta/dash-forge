@@ -1,0 +1,24 @@
+{
+  "name": "ssh_unknown_key",
+  "description": "A good SSH signature by a key nobody lists: unknown key.",
+  "case": "commit_signature",
+  "rules": "v2",
+  "input": {
+    "commit": "tree 78fcc0ac8677efbde0d812a1fc8c0eb0f2d0628a\nparent 4794027a56eae8943a0f09f656c735d04859ba35\nauthor Sig Test <sig@sig.test> 1790942400 +0000\ncommitter Sig Test <sig@sig.test> 1790942400 +0000\ngpgsig -----BEGIN SSH SIGNATURE-----\n U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgqXHAF2XkEyi7tDO03Ly5F8Q1Fy\n 4sR7QS9fbZSAzSNAgAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\n AAAAQBB4MpZ9k9ffDr3LvEq6MC6/g8f65f1X9esjYSLzprZCc6Ub1pRB3osEtDrQJp+V8E\n D1a4wK7svAIXnX3DqCkww=\n -----END SSH SIGNATURE-----\n\nssh-e commit\n\nBody line for ssh-e.\n",
+    "signers": [
+      {
+        "identity": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "pubkeys": [
+          "gpg:059E65EABA27E46FF4FCC211C209DB5A73261B84 xjMEar9q4xYJKwYBBAHaRw8BAQdAmGsyG5QnBNlTV9rdWGDWvO8EL4giPvjVi5+0qE02qtg="
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "unverified",
+    "reason": "unknown_key",
+    "format": "ssh",
+    "key": "SHA256:M6aRFdNb/ydXJCTG0evONUHI5tGSKVbn+YR/GofPUtM",
+    "signer": null
+  }
+}

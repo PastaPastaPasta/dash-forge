@@ -78,6 +78,12 @@ bip39 = "2"
 # contracts. The same package as the SDK's, so it unifies to one copy.
 dpp = { workspace = true, optional = true, features = ["validation", "json-conversion"] }
 
+# Signed-commit badges (`rules::signature`, P1-7): OpenPGP signatures checked with rPGP (pure
+# Rust, independently audited), the Ed25519 of SSH signatures (`sshsig`) with ed25519-dalek (the
+# version the SDK already pulls in). Verification only: nothing here signs or holds a private key.
+pgp = { version = "0.20", default-features = false }
+ed25519-dalek = "2"
+
 # OS credential store for identity keys and storage secrets (`forge_core::keychain`): the
 # Secret Service / Credential Manager through `keyring`. macOS uses /usr/bin/security instead
 # (a stable program identity across dg upgrades), so it does not link keyring.
