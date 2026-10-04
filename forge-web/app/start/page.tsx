@@ -128,6 +128,12 @@ export default function GettingStartedPage(): JSX.Element {
               <Guide href={DOCS.storage}>Bring your own storage</Guide>
             </li>
             <li>
+              <Link href="/private/" className="hit-area text-forge-700 underline dark:text-forge-400">
+                Private repositories
+              </Link>
+              : what is encrypted and what stays visible
+            </li>
+            <li>
               <Guide href={DOCS.guides}>All guides</Guide>
             </li>
           </ul>
