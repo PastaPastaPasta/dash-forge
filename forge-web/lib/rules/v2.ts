@@ -32,6 +32,7 @@ export * from './moderation'
 export * from './transition'
 export * from './codeowners'
 export * from './ref-collision'
+export * from './merge-content'
 
 /** The versioned rules identifier for forge-v2 repositories. */
 export const FORGE_RULES_V2 = 'FORGE_RULES_V2' as const

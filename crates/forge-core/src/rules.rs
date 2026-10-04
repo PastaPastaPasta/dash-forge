@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 pub mod ci_rerun;
 pub mod codeowners;
 pub mod long_body;
+pub mod merge_check;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
@@ -2442,6 +2443,17 @@ mod tests {
         );
     }
 
+    fn run_merge_content_case(v: &Vector) {
+        use super::merge_check;
+        let got = merge_check::merge_content(&input::<merge_check::MergeFacts>(v));
+        assert_eq!(
+            got,
+            expected::<merge_check::MergeContent>(v),
+            "vector `{}`",
+            v.name
+        );
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2485,6 +2497,7 @@ mod tests {
                 assert_eq!(got, expected::<v2::MergeBase>(v), "vector `{ctx}`");
             }
             "ref_collision" => run_ref_collision_case(v),
+            "merge_content" => run_merge_content_case(v),
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);
                 let key: Option<[u8; 32]> = inp.ref_key.as_deref().map(|k| {

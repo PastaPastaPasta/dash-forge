@@ -62,7 +62,7 @@ export function devnetNoticeCopy(notice: DevnetNotice, name: string): { readonly
       }
     : {
         lead: `Dash Forge moved to devnet ${CURRENT_DEVNET} (${CURRENT_DEVNET_PLATFORM}); ${name} was retired.`,
-        body: `Writing is paused here: nothing written on ${name} would survive. Its repos, issues, stars and keys are gone with it; mirrors need setting up again with the /mirror wizard, and your own repos need a re-push from your clone, once the ${CURRENT_DEVNET} build is live.`,
+        body: `Writing is paused here because nothing written on ${name} would survive. Once the ${CURRENT_DEVNET} build is live, set up mirrors again with the /mirror wizard and re-push your own repos from your clones.`,
       }
 }
 

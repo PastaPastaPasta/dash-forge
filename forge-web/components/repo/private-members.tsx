@@ -26,7 +26,7 @@ import { namedAction } from '@/lib/spend-toast'
 import { decodeIdentifier } from '@/lib/auth'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
 import type { Role } from '@/lib/rules/v2'
-import { grantDescription, memberDocOf } from '@/lib/repo'
+import { memberDocOf } from '@/lib/repo'
 import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import {
   addMemberCost,
@@ -262,7 +262,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         onClose={() => setAdding(false)}
         title={`Add ${ROLE_NOUN[role]}`}
         toast={namedAction(membershipTitle('grant', role))}
-        description={`Creates ${grantDescription(role)} for ${shortId(trimmed)} and hands them the current key (epoch ${current ?? 0}): two transitions.${role === 'reader' ? ' A reader reads the repo and its history but changes nothing as a member.' : ''}`}
+        description={`Adds ${shortId(trimmed)} as ${ROLE_NOUN[role]} and shares the repo's key with them.${role === 'reader' ? ' Readers can read the repo and its history but change nothing.' : ''}`}
         cost={addMemberCost(role)}
         confirmLabel="Sign & add"
         onConfirm={async (intent) => {
