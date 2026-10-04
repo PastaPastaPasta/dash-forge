@@ -22,8 +22,8 @@ There are four roles. Consensus enforces what each role can write: a write the r
 | Role | `--role` | Can | Closest GitHub role |
 |---|---|---|---|
 | Reader | `reader` (alias `read`); **private repositories only** | Read the repository (it receives the key). Otherwise what anyone can do: open issues and PRs, comment and review, and as an author close or reopen their own issues and PRs, mark their own PRs draft or ready, request reviews on them and resolve their threads. | Read |
-| Triage | `triage` | Close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, or post check runs. | Triage |
-| Writer | `writer` (default) | Everything triage can, plus push to unprotected branches, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, and post check runs. | Write |
+| Triage | `triage` | Close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, post check runs, or re-run checks. | Triage |
+| Writer | `writer` (default) | Everything triage can, plus push to unprotected branches, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, post check runs, and re-run checks. | Write |
 | Maintainer | `maintainer` | Everything a writer can, plus protected branches, releases, repository settings (`config`, branch policy), webhooks and hiding comments. | Maintain, and most of Admin |
 
 The repository owner alone adds and removes members, and edits the description and topics (GitHub's Admin). `--role write` and `--role maintain` are accepted as aliases.
@@ -205,6 +205,21 @@ dg issue lock   <owner>/<repo> 12 --off    # unlock
 ```
 
 Locking and unlocking are transitions maintainers, writers and triage members write, folded the same way for issues and PRs. `dg issue view --json` shows the fold as `"locked": true|false`; `dg pr view` does not print it today. On the web, an issue's sidebar shows "Locked to members" or "Open to everyone" and has a **Lock** / **Unlock** button for maintainers, writers and triage members; a PR enforces the same lock (a non-member sees the compose box disabled, "This conversation is locked: only the repo's members can comment") but shows no status label and no button yet — it locks and unlocks from `dg pr lock` only. Once locked, a non-member's comment or review is refused at the CLI before anything is signed (*"comment not posted: issue #12 is locked to members"*); a member's still goes through. Locking does not require re-running a close or reopen — it is independent of the issue or PR's open/closed state.
+
+### Issue and PR templates
+
+The web app reads templates from the repository's **default branch** when you open an issue or a PR, as GitHub and GitLab do. They are files in the repository, so a mirrored or imported repository brings its own.
+
+**Issue templates** come from the first of `.forge/ISSUE_TEMPLATE/`, `.github/ISSUE_TEMPLATE/` and `.gitlab/issue_templates/` that holds any. **Open an issue** offers them as buttons above the title:
+
+- **Markdown templates** (`*.md`) work as on GitHub: optional front matter (`name`, `about`, `title`, `labels`) followed by the body. GitLab's plain Markdown files are named after the file.
+- **YAML issue forms** (`*.yml`) use GitHub's schema: `markdown`, `input`, `textarea` (with `render`), `dropdown` (with `multiple` and `default`) and `checkboxes`. Required fields block **Submit** until they are answered. The issue body is the one GitHub writes: each field's label as a `###` heading, then the answer (`_No response_` when empty). A file that is not a valid form is not offered.
+- **`config.yml`** works as on GitHub. `blank_issues_enabled: false` removes **Blank issue**, so a template must be picked, unless no template is usable. `contact_links` (`https` links only) are listed under the templates.
+- **Labels** a template names are applied with the issue when you are a maintainer, writer or triage member. Only labels the repository defines are applied, as on GitHub. Each label is one more document, included in the cost shown. Anyone else sees the suggested labels for a member to apply. A form's `assignees` are not applied.
+
+**PR templates.** **Open a pull request** fills an empty description with the default template. That is the first `pull_request_template.md` (any case) found in `.forge/`, `.github/`, the root or `docs/`; failing that, GitLab's `.gitlab/merge_request_templates/Default.md`. The `*.md` files of a `PULL_REQUEST_TEMPLATE/` folder and GitLab's other merge request templates are offered as buttons. A link can name one, as on GitHub: `…/repo/pulls/new?owner=…&name=…&template=bug.md`. A description you already typed, or one kept from an earlier visit, is never replaced. Picking another template swaps the text only while you have not edited it.
+
+`dg issue create` and `dg pr create` take `--body` as given; they do not read templates.
 
 ### Moderation: lock and hide
 

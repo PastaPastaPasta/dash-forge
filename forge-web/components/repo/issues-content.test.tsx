@@ -25,7 +25,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet', status: { phase: 'ready' } }) }))
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: null, signer: null, locked: false }) }))
 vi.mock('@/hooks/use-mirror-trust', () => ({ useMirrorTrust: () => null }))
-vi.mock('@/hooks/use-repo-chrome', () => ({ useRepoWriteGeneration: () => 0 }))
+vi.mock('@/hooks/use-repo-chrome', () => ({ useRepoWriteGeneration: () => 0, useViewerRole: () => ({ role: null, known: true, failed: false, retry: () => {} }) }))
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, failed: () => '', disabledReason: null }) }))
 vi.mock('@/hooks/use-first-write', () => ({ useFirstWrite: () => ({}) }))
 vi.mock('@/hooks/use-dpns-name', () => ({ useDpnsName: () => null }))
@@ -34,7 +34,7 @@ vi.mock('@/components/repo/use-milestones', () => ({ useMilestones: () => ({ dat
 vi.mock('@/components/repo/mirror-note', () => ({ MirrorNote: () => null, MirrorComposeHint: () => null }))
 vi.mock('@/components/repo/byline', () => ({ Byline: () => <span>someone</span> }))
 vi.mock('@/components/repo/target-href', () => ({ useRepoLinks: () => null }))
-vi.mock('@/components/repo/issue-templates', () => ({ IssueTemplatePicker: () => null }))
+vi.mock('@/components/repo/issue-templates', () => ({ useIssueChooser: () => null, TemplatePicker: () => null, ContactLinks: () => null }))
 
 const asked: { q: IssueSelection; pins: boolean }[] = []
 let answer: IssueListPage

@@ -106,12 +106,19 @@ pub fn stamp_claimed_role(
 /// every other kind, an unknown or future one included, is open to triage.
 pub const WRITER_ONLY_EVENT_KINDS: [u64; 6] = [8, 15, 16, 19, 20, 23];
 
+/// The `event` kinds a client convention keeps from triage though consensus admits them (the
+/// kind is not on `t_triageKinds`): a CI re-run request (26, `rules::ci_rerun`), which, as on
+/// GitHub, needs write access. Readers ignore a triage member's (`ci_rerun::rerun_counts`), so
+/// clients refuse it before signing.
+pub const CLIENT_WRITER_EVENT_KINDS: [u64; 1] = [crate::rules::ci_rerun::CI_RERUN_KIND];
+
 /// The least role an `event` of stored `kind` needs as a member write: a writer for
-/// [`WRITER_ONLY_EVENT_KINDS`], triage for every other kind (unknown ones included). Hides
-/// (24, 25) are maintainer-gated elsewhere (`asMaintainer`, RC2 MOD).
+/// [`WRITER_ONLY_EVENT_KINDS`] and [`CLIENT_WRITER_EVENT_KINDS`], triage for every other kind
+/// (unknown ones included). Hides (24, 25) are maintainer-gated elsewhere (`asMaintainer`, RC2
+/// MOD).
 #[must_use]
 pub fn event_code_needs(kind: u64) -> Role {
-    if WRITER_ONLY_EVENT_KINDS.contains(&kind) {
+    if WRITER_ONLY_EVENT_KINDS.contains(&kind) || CLIENT_WRITER_EVENT_KINDS.contains(&kind) {
         Role::Writer
     } else {
         Role::Triage
@@ -173,13 +180,13 @@ pub fn role_limits(role: Role, repo: &RepoRef) -> Option<String> {
         Role::Triage => Some(format!(
             "{}: triage can close, reopen and lock, label, assign, set milestones, request \
              reviews and resolve threads, but cannot push, merge, mark draft or ready, \
-             retarget, dismiss reviews, update heads, pin or post check runs",
+             retarget, dismiss reviews, update heads, pin, post check runs or re-run them",
             you_are(role, repo)
         )),
         Role::Reader => Some(format!(
             "{}: readers can read the private repository and comment, review and open issues \
              and pull requests, but cannot change state (push, label, assign, close or reopen, \
-             set milestones or post check runs)",
+             set milestones, post check runs or re-run them)",
             you_are(role, repo)
         )),
     }
@@ -932,9 +939,10 @@ mod tests {
         ] {
             assert_eq!(event_needs(k), Role::Triage, "{k:?}");
         }
-        // Every code outside the deny-list is open to triage, unknown ones included.
+        // Every code outside the deny-list is open to triage, unknown ones included, but for
+        // the client convention a reader never counts from triage (26, a CI re-run request).
         for code in 0..64u64 {
-            let want = if matches!(code, 8 | 15 | 16 | 19 | 20 | 23) {
+            let want = if matches!(code, 8 | 15 | 16 | 19 | 20 | 23 | 26) {
                 Role::Writer
             } else {
                 Role::Triage

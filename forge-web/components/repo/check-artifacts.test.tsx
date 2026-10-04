@@ -40,6 +40,7 @@ const RUN: CheckRun = {
   startedAt: 0,
   completedAt: 0,
   logUrl: '',
+  externalId: '',
   logSha256: '',
   artifacts: [{ name: 'dist.zip', sha256: 'a'.repeat(64), size: 248, uris: ['https://bucket.example/ci/packs/x.pack'] }],
   requiredSource: null,

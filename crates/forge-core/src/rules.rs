@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod ci_rerun;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
@@ -1235,9 +1236,9 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        display_ref_name, is_legal_ref_name, matches_protected, merge_base_tips, overlay_tree,
-        pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event, EventKind, FlatIndex,
-        IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
+        ci_rerun, display_ref_name, is_legal_ref_name, matches_protected, merge_base_tips,
+        overlay_tree, pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event, EventKind,
+        FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
@@ -1821,6 +1822,66 @@ mod tests {
         queries: Vec<RoleQuery>,
     }
 
+    #[derive(Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CiRerunInput {
+        repo_id: String,
+        owner: String,
+        memberships: Vec<v2::Membership>,
+        events: Vec<ci_rerun::RerunEvent>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CiRerunWriteInput {
+        repo_id: String,
+        cases: Vec<CiRerunWriteCase>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct CiRerunWriteCase {
+        sha: String,
+        #[serde(default)]
+        check: Option<String>,
+    }
+
+    /// The CI re-run convention (`ci_rerun__*`): which events are requests, which count, and
+    /// what a request stores.
+    fn run_ci_rerun_case(v: &Vector) {
+        let ctx = &v.name;
+        let got: Vec<serde_json::Value> = match v.case.as_str() {
+            "ci_rerun" => {
+                let inp: CiRerunInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                inp.events
+                    .iter()
+                    .map(|e| {
+                        let req = ci_rerun::rerun_request(&inp.repo_id, e);
+                        let counts = req
+                            .as_ref()
+                            .map(|r| ci_rerun::rerun_counts(r, &inp.owner, &oracle));
+                        serde_json::json!({ "request": req, "counts": counts })
+                    })
+                    .collect()
+            }
+            "ci_rerun_write" => {
+                let inp: CiRerunWriteInput = input(v);
+                inp.cases
+                    .iter()
+                    .map(|c| {
+                        match ci_rerun::rerun_fields(&inp.repo_id, &c.sha, c.check.as_deref()) {
+                            Ok(f) => serde_json::to_value(f).expect("fields serialize"),
+                            Err(_) => serde_json::json!({ "error": true }),
+                        }
+                    })
+                    .collect()
+            }
+            other => panic!("vector `{ctx}`: not a ci_rerun case `{other}`"),
+        };
+        assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
+    }
+
     /// Every key of `given` (the vector's JSON) must survive a parse + re-serialize into
     /// `parsed`, at every depth. A key the rule types do not have would be dropped by serde's
     /// default (ignore unknown fields) on the nested public types, so a typo there would
@@ -2349,6 +2410,7 @@ mod tests {
             "checks" | "thread_meta" | "pinned" | "milestones" | "trending" | "hidden_items" => {
                 run_parity_case(v);
             }
+            "ci_rerun" | "ci_rerun_write" => run_ci_rerun_case(v),
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
     }

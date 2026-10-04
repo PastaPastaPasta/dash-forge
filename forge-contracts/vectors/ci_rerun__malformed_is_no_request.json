@@ -1,0 +1,207 @@
+{
+  "name": "malformed_is_no_request",
+  "description": "Not a request: another kind, an event of another repository naming this one in refId (the addressee index is keyed by refId alone), a sealed check name this reader cannot open (unknown is not every check), a refId that is not the repository (or none), no oid or one that is not 40/64 hex digits, a check name over 100 characters, a target number of 0.",
+  "case": "ci_rerun",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "events": [
+      {
+        "id": "e1",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 25,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Other11111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100
+      },
+      {
+        "id": "e3",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100
+      },
+      {
+        "id": "e4",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "actor": "wri",
+        "createdAt": 100
+      },
+      {
+        "id": "e5",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "abc",
+        "actor": "wri",
+        "createdAt": 100
+      },
+      {
+        "id": "e6",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "actor": "wri",
+        "createdAt": 100
+      },
+      {
+        "id": "e7",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100,
+        "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+        "id": "e8",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100,
+        "value": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+      },
+      {
+        "id": "e9",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 0,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100
+      },
+      {
+        "id": "e10",
+        "repoId": "Other11111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100
+      },
+      {
+        "id": "e11",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr4",
+        "targetNumber": 4,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actor": "wri",
+        "createdAt": 100,
+        "valueHidden": true
+      }
+    ]
+  },
+  "expected": [
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    },
+    {
+      "request": null,
+      "counts": null
+    }
+  ]
+}

@@ -11,6 +11,7 @@ import type { ForgeIds } from '../deployments'
 import type { PrivateSession } from './private-session'
 import type { Event, EventKind, RefUpdate } from '../rules'
 import { isWellFormed, type ContentKind, type Visibility } from '../rules/v2'
+import type { RerunEvent } from '../rules/ci-rerun'
 import { base58Decode, base58Encode } from '../auth/base58'
 import { base64ToBytes, base64ToHex, type PlainDocument } from '../sdk'
 
@@ -218,6 +219,29 @@ export function toEvent(doc: PlainDocument): Event | null {
     value: typeof value === 'string' ? value : null,
     oid: oidHex.length > 0 ? oidHex : null,
     ...(refId !== '' ? { refId } : {}),
+    createdAt: num(doc, '$createdAt'),
+  }
+}
+
+/**
+ * An `event` document as the CI re-run rule reads it (`rules/ci-rerun.ts`; parity: forge-core
+ * `rerun_event_of`). `sealed`: the document carried `enc` before it was opened.
+ */
+export function toRerunEvent(doc: PlainDocument, sealed = false): RerunEvent {
+  const oid = byteFieldToHex(doc, 'oid')
+  const refId = asIdentifierString(doc['refId'])
+  const value = doc['value']
+  return {
+    id: str(doc, '$id'),
+    repoId: asIdentifierString(doc['repoId']),
+    targetId: asIdentifierString(doc['targetId']),
+    targetNumber: num(doc, 'targetNumber'),
+    kind: num(doc, 'kind'),
+    refId: refId === '' ? null : refId,
+    oid: oid === '' ? null : oid,
+    value: typeof value === 'string' ? value : null,
+    valueHidden: sealed && typeof value !== 'string',
+    actor: str(doc, '$ownerId'),
     createdAt: num(doc, '$createdAt'),
   }
 }
