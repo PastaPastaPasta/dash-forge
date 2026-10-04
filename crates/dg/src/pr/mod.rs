@@ -470,8 +470,15 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     })?;
     let before = s.balance().await;
     let collab = s.collab();
-    input.body = planned.field_text(&collab, handle, None).await?;
-    let created = collab.create_patch(handle, &input, &journal).await?;
+    // An interrupted create of this PR that landed is finished first, before a long body's
+    // artifact would be stored (and paid for) again.
+    let created =
+        if let Some(created) = collab.resume_patch_create(handle, &input, &journal).await? {
+            created
+        } else {
+            input.body = planned.field_text(&collab, handle, None).await?;
+            collab.create_patch(handle, &input, &journal).await?
+        };
     let requested = match &owner_plan {
         Some(plan) if !plan.requests.request.is_empty() => {
             owners::request(&s, handle, created.number, &created.document_id, plan).await

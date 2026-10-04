@@ -1197,6 +1197,12 @@ pub fn issue_props(
     Ok(p)
 }
 
+/// What makes two `create_issue` calls the same create, for its resume journal: a long body
+/// by its prefix and length (§6.3: a private one's artifact hash changes with every seal).
+fn issue_fingerprint(title: &str, body: &str) -> String {
+    [title, "\0", &crate::rules::long_body::journal_key(body)].concat()
+}
+
 /// What makes two `create_patch` calls the same create, for its resume journal.
 fn patch_fingerprint(input: &PatchInput) -> String {
     format!(
@@ -3890,9 +3896,7 @@ impl<'a> Collab<'a> {
         journal_dir: &Path,
     ) -> Result<Created> {
         issue_props(1, title, body, Provenance::default())?;
-        // a long body by its prefix and length (§6.3: a private one's artifact hash changes
-        // with every seal)
-        let fingerprint = [title, "\0", &crate::rules::long_body::journal_key(body)].concat();
+        let fingerprint = issue_fingerprint(title, body);
         self.create_dense(
             repo,
             TargetKind::Issue,
@@ -3928,6 +3932,60 @@ impl<'a> Collab<'a> {
             created.draft_transition = self.mark_new_draft(repo, &created).await?;
         }
         Ok(created)
+    }
+
+    /// Finish an interrupted [`Self::create_issue`] of this same issue (`body`: the field as its
+    /// journal keys it, [`crate::rules::long_body::journal_key`]) before anything else is paid
+    /// for: `Some` when it landed. A caller storing a long body's artifact calls this first, so
+    /// a retry does not store (and pay for) another artifact, sealed afresh in a private
+    /// repository, for an issue that is already open.
+    pub async fn resume_issue_create(
+        &self,
+        repo: &RepoRef,
+        title: &str,
+        body: &str,
+        journal_dir: &Path,
+    ) -> Result<Option<Created>> {
+        let fingerprint = issue_fingerprint(title, body);
+        self.resume_journaled(repo, TargetKind::Issue, journal_dir, &fingerprint)
+            .await
+    }
+
+    /// [`Self::resume_issue_create`] for [`Self::create_patch`] (a draft's transition written
+    /// as that would).
+    pub async fn resume_patch_create(
+        &self,
+        repo: &RepoRef,
+        input: &PatchInput,
+        journal_dir: &Path,
+    ) -> Result<Option<Created>> {
+        let fingerprint = patch_fingerprint(input);
+        let mut created = self
+            .resume_journaled(repo, TargetKind::Patch, journal_dir, &fingerprint)
+            .await?;
+        if let (Some(c), true) = (created.as_mut(), input.draft) {
+            c.draft_transition = self.mark_new_draft(repo, c).await?;
+        }
+        Ok(created)
+    }
+
+    /// The saved create of `fingerprint`, replayed ([`Self::resume_create`]) when one is on disk.
+    async fn resume_journaled(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        journal_dir: &Path,
+        fingerprint: &str,
+    ) -> Result<Option<Created>> {
+        let me = self.signer_id()?;
+        let path = self.journal_path(repo, kind, &me, Some((journal_dir, fingerprint)))?;
+        if !path.as_ref().is_some_and(|p| p.exists()) {
+            return Ok(None);
+        }
+        let collab = self.collab_contract(repo).await?;
+        let engine = self.engine()?;
+        self.resume_create(&engine, &collab, kind, path.as_deref())
+            .await
     }
 
     /// Whether an earlier [`Self::create_patch`] of this same PR was interrupted before it was
@@ -7133,6 +7191,30 @@ mod fused_star_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A long body's create is keyed alike before its artifact is stored (any hash, as
+    /// `dg` plans it) and after (the stored field), so an interrupted create is replayed
+    /// before a retry stores another artifact; a different text is a different create.
+    #[test]
+    fn a_long_body_create_is_keyed_before_its_artifact_is_stored() {
+        use crate::rules::long_body::stored_text;
+        let full = "word ".repeat(3000);
+        let planned = stored_text(&full, 5085, &[0; 32]).unwrap();
+        let stored = stored_text(&full, 5085, &[7; 32]).unwrap();
+        assert_eq!(
+            issue_fingerprint("T", &planned),
+            issue_fingerprint("T", &stored)
+        );
+        let other = stored_text(&"else ".repeat(3000), 5085, &[7; 32]).unwrap();
+        assert_ne!(
+            issue_fingerprint("T", &planned),
+            issue_fingerprint("T", &other)
+        );
+        assert_ne!(
+            issue_fingerprint("T", &planned),
+            issue_fingerprint("U", &planned)
+        );
+    }
 
     const ME: &str = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
     const OTHER_REPO: &str = "9sGUjxras61DAe457iUfbJcKTfVT7qVj16PJ3xstqMKr";

@@ -882,10 +882,18 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     ))?;
     let before = s.balance().await;
     let collab = s.collab();
-    let body = planned.field_text(&collab, &s.repo, None).await?;
-    let created = collab
-        .create_issue(&s.repo, title, &body, &default_journal_dir()?)
-        .await?;
+    let journal = default_journal_dir()?;
+    // An interrupted create of this issue that landed is finished first, before a long body's
+    // artifact would be stored (and paid for) again.
+    let created = if let Some(created) = collab
+        .resume_issue_create(&s.repo, title, &planned.journal_text(), &journal)
+        .await?
+    {
+        created
+    } else {
+        let body = planned.field_text(&collab, &s.repo, None).await?;
+        collab.create_issue(&s.repo, title, &body, &journal).await?
+    };
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
 
