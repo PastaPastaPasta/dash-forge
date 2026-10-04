@@ -29,8 +29,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GitMerge, Loader2 } from 'lucide-react'
 
-import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
+import { readConfigHistory, readTargetLog, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
 import { matchesProtected } from '@/lib/rules'
+import { prMergeBase } from '@/lib/rules/v2'
 import { EXISTING, bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
 import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
 import { mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
@@ -392,6 +393,8 @@ export function MergePanel({
               const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
               return tipOidOf(ref ?? undefined) ?? ''
             },
+            // The PR's base now: its newest retarget (any reader's rule, with no merge yet).
+            readBaseRef: async () => prMergeBase(pull.baseRefName, pull.createdAt, (await readTargetLog(sdk, repo, pull.id)).events, null).refName,
             intent,
             ...(bypass !== null && bypass.length > 0
               ? {
@@ -445,7 +448,7 @@ export function MergePanel({
       setBusy(false)
       starting.current = false
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, onBranchDeleted])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.createdAt, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, onBranchDeleted])
   const onMergeClick = (): void => {
     // Locked: the click opens Unlock (the guard); merging is the next click, once unlocked.
     if (unlockFirst) {

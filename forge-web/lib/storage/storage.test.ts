@@ -471,6 +471,7 @@ describe('storeArtifact', () => {
       publishIndex: null,
       verifyPack: async () => [],
       readBaseTip: async () => base,
+      readBaseRef: async () => 'refs/heads/main',
       intent: 'merge:P',
     }
     await expect(runMergeSteps(deps, newRun({ baseTip: base, headOid: head }), () => undefined)).rejects.toThrow(/dg pr merge/)

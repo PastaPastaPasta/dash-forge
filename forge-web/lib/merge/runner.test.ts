@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RepoRef } from '../repo'
 import type { WriteAuth } from '../sdk'
-import { failureMessage, MergeStepError, mergeSteps, MergeStopped, newRun, runFor, runMergeSteps, type MergeRunDeps, type StepEvent } from './runner'
+import { failureMessage, MergeStepError, mergeSteps, MergeStopped, newRun, runFor, runMergeSteps, type MergeRun, type MergeRunDeps, type StepEvent } from './runner'
 
 const calls: string[] = []
 const fail = new Set<string>()
@@ -67,6 +67,7 @@ function deps(extra: Partial<MergeRunDeps> = {}): MergeRunDeps {
       calls.push('tip')
       return fail.has('moved') ? 'ff'.repeat(20) : BASE
     },
+    readBaseRef: async () => (fail.has('retargeted') ? 'refs/heads/next' : 'refs/heads/main'),
     intent: 'merge:P:bb',
     ...extra,
   }
@@ -103,6 +104,28 @@ describe('merge step runner', () => {
     const main = { ...newRun({ baseTip: BASE, headOid: HEAD }, 'refs/heads/main'), done: ['merge' as const] }
     expect(runFor(main, { baseTip: BASE, headOid: HEAD }, 'refs/heads/next').done).toEqual([])
     expect(runFor(main, { baseTip: BASE, headOid: HEAD }, 'refs/heads/main').done).toEqual(['merge'])
+  })
+
+  it('stops before the ref update when the PR is retargeted while the pack uploads', async () => {
+    // The run started on main; a member retargets the PR to next before the ref step.
+    fail.add('retargeted')
+    const err = await runMergeSteps(deps(), newRun({ baseTip: BASE, headOid: HEAD }, 'refs/heads/main'), () => undefined).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(MergeStopped)
+    expect(String(err)).toMatch(/retargeted to next since this merge started; the pack stays stored and unused/)
+    // Nothing moved and no merge was recorded: no tip read, no ref update, no event.
+    expect(calls.some((c) => c === 'tip' || c.startsWith('ref:') || c.startsWith('event:'))).toBe(false)
+  })
+
+  it('stops before the merge transition when the PR was retargeted after the ref update', async () => {
+    // A resumed run whose ref update landed; the PR was retargeted before the event retry.
+    const d = deps()
+    const moved = { ...(await runMergeSteps(d, newRun({ baseTip: BASE, headOid: HEAD }, 'refs/heads/main'), () => undefined)), done: ['fetch', 'merge', 'pack', 'upload', 'manifest', 'index', 'ref'] as MergeRun['done'] }
+    calls.length = 0
+    fail.add('retargeted')
+    const err = await runMergeSteps(d, moved, () => undefined).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(MergeStopped)
+    expect(String(err)).toMatch(/main was moved but no merge was recorded/)
+    expect(calls.some((c) => c.startsWith('event:'))).toBe(false)
   })
 
   it('runs every step in order and writes the pack, the protected ref and the merge event', async () => {

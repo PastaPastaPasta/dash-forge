@@ -25,7 +25,7 @@ import type { WriteAuth } from '../sdk'
 import type { MergeInput } from './engine'
 import type { MergeResult } from './protocol'
 import { mergeRefProblem } from '../view/pull-actions'
-import { formatBytes, plural } from '../view/format'
+import { branchName, formatBytes, plural } from '../view/format'
 
 export type MergeStepId = 'fetch' | 'merge' | 'pack' | 'upload' | 'manifest' | 'index' | 'ref' | 'event' | 'bypass'
 
@@ -135,6 +135,13 @@ export interface MergeRunDeps {
   readonly verifyPack: (pack: Uint8Array, tip: string) => Promise<readonly string[]>
   /** The base branch's current tip, read fresh (`''` when it has none), just before moving it. */
   readonly readBaseTip: () => Promise<string>
+  /**
+   * The PR's base as its newest retarget names it now (`PullView.mergeBaseRefName`), read
+   * fresh just before the ref update and again before the merge transition: a retarget
+   * written while the pack uploads must not let the runner move the old base, or record a
+   * merge the relay and readers then judge against the new one.
+   */
+  readonly readBaseRef: () => Promise<string>
   /** The intent prefix for this merge's writes (one per PR head), so retries re-use them. */
   readonly intent: string
   /**
@@ -333,7 +340,18 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
     }
   }
 
+  // The PR may have been retargeted since the run started (or, on a resumed run, since the ref
+  // update): consensus allows it, and the merge is judged against the newest retarget written
+  // before the merge transition. Re-read before each of the two writes.
+  const checkBase = async (step: 'ref' | 'event'): Promise<void> => {
+    const now = await attempt(step, () => deps.readBaseRef())
+    if (now === deps.pull.baseRefName) return
+    const moved = run.done.includes('ref') ? `${branchName(deps.pull.baseRefName)} was moved but no merge was recorded` : 'the pack stays stored and unused'
+    throw new MergeStopped(`the pull request was retargeted to ${branchName(now) || '(no branch)'} since this merge started; ${moved}. Merge again`)
+  }
+
   if (!run.done.includes('ref')) {
+    await checkBase('ref')
     // The merge was built on `run.baseTip`: if the branch has moved since, moving it now would
     // drop the commits pushed in between.
     const tipNow = await attempt('ref', () => deps.readBaseTip())
@@ -355,6 +373,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   }
 
   if (!run.done.includes('event')) {
+    await checkBase('event')
     const w = await attempt('event', () =>
       // The merge is recorded as a member's merge transition (only a member merges, and the
       // merge panel is shown to members only).
