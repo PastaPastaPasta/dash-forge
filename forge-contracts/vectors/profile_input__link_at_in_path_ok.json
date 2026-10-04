@@ -1,0 +1,20 @@
+{
+  "name": "link_at_in_path_ok",
+  "description": "An `@` after the host is fine.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "links": [
+      "https://mastodon.social/@alice"
+    ]
+  },
+  "expected": {
+    "valid": true,
+    "invalid": [],
+    "normalized": {
+      "links": [
+        "https://mastodon.social/@alice"
+      ]
+    }
+  }
+}

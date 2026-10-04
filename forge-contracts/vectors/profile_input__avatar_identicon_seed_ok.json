@@ -1,0 +1,16 @@
+{
+  "name": "avatar_identicon_seed_ok",
+  "description": "`identicon:<seed>` is an avatar config.",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "avatarConfig": "identicon:Blue-7_x.y"
+  },
+  "expected": {
+    "valid": true,
+    "invalid": [],
+    "normalized": {
+      "avatarConfig": "identicon:Blue-7_x.y"
+    }
+  }
+}

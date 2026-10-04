@@ -9,7 +9,7 @@ export function RepoHomeClient(): JSX.Element {
   const refParam = useParam('ref')
   return (
     <RepoScaffold addr={addr} browse refParam={refParam}>
-      {(home) => <RepoHomeContent home={home} addr={addr} refParam={refParam} />}
+      {(home, reload) => <RepoHomeContent home={home} addr={addr} refParam={refParam} reload={reload} />}
     </RepoScaffold>
   )
 }

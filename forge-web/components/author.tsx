@@ -9,6 +9,7 @@
 import Link from 'next/link'
 import { IdentityPill, type TokenRole } from '@/components/ui/identity-pill'
 import { useDpnsName } from '@/hooks/use-dpns-name'
+import { identityHref } from '@/lib/view/profile-links'
 
 export function Author({
   identityId,
@@ -26,7 +27,7 @@ export function Author({
   const pill = <IdentityPill identityId={identityId} name={name} role={role} className={className} />
   if (!link) return pill
   return (
-    <Link href={`/u/?name=${encodeURIComponent(identityId)}`} className="hit-area inline-flex min-w-0 max-w-full rounded-full">
+    <Link href={identityHref(identityId)} className="hit-area inline-flex min-w-0 max-w-full rounded-full">
       {pill}
     </Link>
   )

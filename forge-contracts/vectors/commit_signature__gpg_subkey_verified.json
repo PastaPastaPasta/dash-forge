@@ -1,0 +1,24 @@
+{
+  "name": "gpg_subkey_verified",
+  "description": "A signature by a signing subkey verifies against that subkey's entry.",
+  "case": "commit_signature",
+  "rules": "v2",
+  "input": {
+    "commit": "tree 03096f89713717fca9bcca7017131ff8421700a4\nparent 8aaa041ccb93e509d851e06cd993263925d9e24b\nauthor Sig Test <sig@sig.test> 1790942400 +0000\ncommitter Sig Test <sig@sig.test> 1790942400 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iJEEABYKADkWIQRPjieCzdNiEZ3vb/4LxkBpuvFEaQUCar9q5BsUgAAAAAAEAA5t\n YW51MiwyLjUrMS4xMiwwLDMACgkQC8ZAabrxRGnPZwEArP37wFG4vhvXA4yONW9g\n P511gE5vXHlxxJur2ja88A0A/3wTyz1XTLXmZ6Suli+ZAxbgw02kw2G76rGOQYwd\n DAAF\n =rda+\n -----END PGP SIGNATURE-----\n\ngpg-b-subkey commit\n\nBody line for gpg-b-subkey.\n",
+    "signers": [
+      {
+        "identity": "J9AeWAQUx5JKWBbZ3oiB82di8DmhoswkwfoYJL8eJwJ6",
+        "pubkeys": [
+          "gpg:4F8E2782CDD362119DEF6FFE0BC64069BAF14469 zjMEar9q4xYJKwYBBAHaRw8BAQdAUzQ66cMiGFMnNaP1cpZJ4wyLzQ2iAkrPrHed5u8CSP4="
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "verified",
+    "reason": null,
+    "format": "openpgp",
+    "key": "4F8E2782CDD362119DEF6FFE0BC64069BAF14469",
+    "signer": "J9AeWAQUx5JKWBbZ3oiB82di8DmhoswkwfoYJL8eJwJ6"
+  }
+}

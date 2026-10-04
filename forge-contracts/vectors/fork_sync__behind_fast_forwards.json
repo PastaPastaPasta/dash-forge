@@ -1,0 +1,13 @@
+{
+  "name": "behind_fast_forwards",
+  "description": "The fork's tip is an ancestor of the parent's: the branch fast-forwards.",
+  "case": "fork_sync",
+  "rules": "v2",
+  "input": {
+    "forkTip": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parentTip": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "forkInParent": true,
+    "parentInFork": false
+  },
+  "expected": "fastForward"
+}

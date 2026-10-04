@@ -302,7 +302,7 @@ fn labels_of(state: &IssueState) -> String {
 /// `me`, a DPNS name or an identity id (`who`), as a base58 identity id. The `me` closure
 /// gives the caller's own id; it is called only when `who` is `me`, so a read that names
 /// nobody never opens the key.
-async fn identity_arg(
+pub(crate) async fn identity_arg(
     client: &forge_core::platform::PlatformClient,
     me: impl FnOnce() -> Result<String>,
     who: &str,

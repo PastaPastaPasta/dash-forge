@@ -1,0 +1,18 @@
+{
+  "name": "link_http_refused",
+  "description": "Links are https only (R-07).",
+  "case": "profile_input",
+  "rules": "v2",
+  "input": {
+    "links": [
+      "http://alice.dev"
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "invalid": [
+      "links"
+    ],
+    "normalized": null
+  }
+}

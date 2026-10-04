@@ -1,0 +1,13 @@
+{
+  "name": "identicon_seed_65_invalid",
+  "description": "A 65-character seed is invalid.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "identicon:sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "invalid"
+  }
+}

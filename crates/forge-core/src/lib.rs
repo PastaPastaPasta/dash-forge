@@ -63,6 +63,7 @@ pub mod network;
 pub mod pack;
 pub mod platform;
 pub mod private;
+pub mod profile;
 pub mod refs;
 pub mod repo;
 pub mod repo_pin;
@@ -70,6 +71,7 @@ pub mod resolve;
 pub mod rules;
 pub mod scope;
 pub mod sealed;
+pub mod signing_keys;
 pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_http;

@@ -1,0 +1,13 @@
+{
+  "name": "http_url_invalid",
+  "description": "An http link is invalid.",
+  "case": "avatar_config",
+  "rules": "v2",
+  "input": {
+    "config": "http://alice.dev/a.png",
+    "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
+  },
+  "expected": {
+    "kind": "invalid"
+  }
+}

@@ -47,6 +47,11 @@ export interface CommitObject {
   readonly author: GitIdent
   readonly committer: GitIdent
   readonly message: string
+  /**
+   * The raw object, kept only for a commit that carries a signature header (`gpgsig`,
+   * `gpgsig-sha256`): what its badge is verified from (`lib/rules/signature.ts`).
+   */
+  readonly signed?: Uint8Array
 }
 
 /** A git author/committer identity line. */
@@ -102,7 +107,16 @@ export function parseCommit(bytes: Uint8Array): CommitObject {
   const none: GitIdent = { name: '', email: '', when: 0 }
   const a = first('author')
   const c = first('committer')
-  return { tree, parents, author: a === undefined ? none : parseIdent(a), committer: c === undefined ? none : parseIdent(c), message }
+  const signed = lines.some((l) => l.startsWith('gpgsig ') || l.startsWith('gpgsig-sha256 '))
+  return {
+    tree,
+    parents,
+    author: a === undefined ? none : parseIdent(a),
+    committer: c === undefined ? none : parseIdent(c),
+    message,
+    // A copy: `bytes` may be a view into a larger buffer the walk would otherwise keep alive.
+    ...(signed ? { signed: bytes.slice() } : {}),
+  }
 }
 
 /** The header of an annotated tag object: what it points at. */

@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
-import { collectPageErrors, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, E2E_DEVNET, EMPTY, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { collectPageErrors, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, DEMO, E2E_DEVNET, EMPTY, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 import { quorumGuardLong } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -56,6 +56,8 @@ const DEMO_COLD_HOME = 12
  * devnet grows.
  */
 const DEMO_COLD_ISSUES = 9 + DAPI_RESEND_SLACK
+/** A profile page, cold (pb-5): measured 9 on sakura, P1-7's profile document included. */
+const PROFILE_COLD = 10 + DAPI_RESEND_SLACK
 /**
  * The commit column's walk on a showcase repo: one chunk read per 256 KiB of pack history it
  * crosses (preact 12, dashpay/dash 20). Owned by the last-change index work; tracked, not S-1.
@@ -187,6 +189,77 @@ test.describe('page request budget (S-1)', () => {
     await page.waitForTimeout(3_000)
     await expect(page.getByTestId('facts-skeleton')).toHaveCount(0)
     await shot(page, 'pb-06-empty-repo-rail')
+  })
+
+  /**
+   * P1-7: a profile, cold, by `?id=` (D-222). Measured on sakura (2026-10-02): 9 requests (the
+   * contracts, the quorum cross-check, and 7 documents: DPNS, owned repos, member repos, the
+   * two follow counts and the `profile` document, which is the one P1-7 adds).
+   */
+  test('pb-5. a profile by ?id=, cold, ≤ budget, with its profile document read once', async ({ browser }) => {
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    const { errors } = collectPageErrors(page)
+    const dapi = recordDapi(page)
+    await page.goto(`/u/?id=${DEMO.owner}`, { waitUntil: 'domcontentloaded' })
+    await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible({ timeout: 90_000 })
+    await expect(page.getByTestId('profile-card')).toBeVisible()
+    await settle(page)
+    const all = dapi.all()
+    test.info().annotations.push({ type: 'dapi', description: `profile cold: ${all.length} ${summary(all)}` })
+    const profileReads = all.filter((r) => r.method === 'getDocuments' && decodeDocumentsRequest(r.body)?.documentType === 'profile')
+    expect(profileReads.length, 'the profile document is read once').toBe(1)
+    expect(all.length, summary(all)).toBeLessThanOrEqual(PROFILE_COLD)
+    expect(errors, errors.join('\n')).toEqual([])
+    await shot(page, 'pb-07-profile-cold')
+    await context.close()
+  })
+
+  /**
+   * P1-7, signed-commit badges: the signers (memberships and one `profile` query) are read only
+   * once a page shows a signed commit. The fixture's commits are unsigned, so its commits list
+   * queries no profile at all.
+   */
+  test('sg-1. an unsigned history reads no signing keys', async ({ browser }) => {
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    const dapi = recordDapi(page)
+    await page.goto(repoUrl('commits'), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    await expect(page.locator('main a[href*="/repo/commit/"]').first()).toBeVisible({ timeout: 90_000 })
+    await settle(page)
+    const profiles = dapi.all().filter((r) => r.method === 'getDocuments' && decodeDocumentsRequest(r.body)?.documentType === 'profile')
+    expect(profiles.length, summary(dapi.all())).toBe(0)
+    await expect(page.getByTestId('signature-badge')).toHaveCount(0)
+    await context.close()
+  })
+
+  /**
+   * A history of signed commits (set `E2E_SIGNED_REPO=<owner>/<name>`: on sakura, the P1-7 QA
+   * repo `J9AeWAQUx5JKWBbZ3oiB82di8DmhoswkwfoYJL8eJwJ6/p17-signed`, six commits signed every way).
+   * Measured on sakura (2026-10-02): the commits list 12 requests cold with every badge, a commit
+   * page 9; the signers add the two membership reads (shared with the checks) and one `profile`.
+   */
+  test('sg-2. signed commits: badges within S-1, the signers read once', async ({ browser }) => {
+    const signed = process.env['E2E_SIGNED_REPO']
+    test.skip(signed === undefined, 'set E2E_SIGNED_REPO=<owner>/<name> to a repository with signed commits')
+    const [owner, name] = (signed as string).split('/') as [string, string]
+    for (const path of ['commits']) {
+      const context = await browser.newContext()
+      const page = await context.newPage()
+      const dapi = recordDapi(page)
+      await page.goto(repoUrl(path, '', { owner, name }), { waitUntil: 'domcontentloaded' })
+      await expect(page.getByTestId('signature-badge').first()).toBeVisible({ timeout: 120_000 })
+      await expect(page.getByTestId('signature-checking')).toHaveCount(0, { timeout: 60_000 })
+      await settle(page)
+      const all = dapi.all()
+      test.info().annotations.push({ type: 'dapi', description: `signed ${path}, cold: ${all.length} ${summary(all)}` })
+      const profiles = all.filter((r) => r.method === 'getDocuments' && decodeDocumentsRequest(r.body)?.documentType === 'profile')
+      expect(profiles.length, 'the signers are read once').toBe(1)
+      expect(all.length, summary(all)).toBeLessThanOrEqual(COLD_BUDGET)
+      await shot(page, `sg-02-${path}-badges`)
+      await context.close()
+    }
   })
 
   test.describe('showcase repos', () => {
