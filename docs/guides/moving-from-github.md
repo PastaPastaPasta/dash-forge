@@ -254,6 +254,7 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 | **Packages** (npm, containers) | None | Publish to the usual registries, or attach build outputs to a release (`dg release create --asset`) |
 | **Projects / boards** | None | Labels, and `dg issue list --label … --assignee …` filters |
 | **Milestones** | Supported (`dg milestone`, and **Issues → Milestones** on the web), but the importer does not bring them over | Re-create the ones you need ([Milestones](collaborating.md#milestones)) and set them with `dg issue milestone` |
+| **Issue and PR templates** | Supported on the web: Markdown templates, YAML issue forms and `config.yml` from `.github/ISSUE_TEMPLATE/` (or `.gitlab/issue_templates/`), and `pull_request_template.md` / `PULL_REQUEST_TEMPLATE/` (or GitLab's merge request templates). A form's `assignees` are not applied, and `dg` does not read templates | Nothing: they are read from the repository ([Issue and PR templates](collaborating.md#issue-and-pr-templates)) |
 | **Reactions** | None: each one would be a paid document | A comment, or a review approval |
 | **Verified commits** | Supported for Ed25519 SSH and Ed25519/ECDSA OpenPGP keys you publish on your profile; RSA keys don't fit | `dg profile key add` ([Signed commits](identity-and-keys.md#signed-commits-and-verified-badges)) |
 | **Assignees** | Not imported; you can assign on Forge (`dg issue assign`) | Re-assign open items after the import |
