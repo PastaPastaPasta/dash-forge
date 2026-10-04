@@ -12,6 +12,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { PACK_KIND } from '../constants'
 import { repoKey, type RepoRef } from '../repo/contract'
+import { sealedLength } from '../private/pack'
 import { readPackCopies, type PackManifest } from '../repo/packs'
 import { openLongBodyText, parseLongBody, type LongBodyState } from '../rules/long-body'
 import { loadArtifactBytes } from './browse-source'
@@ -27,10 +28,10 @@ export interface BodyRead {
 /** The size cap a copy may claim before it is fetched: the text's own length, or sealed (§3). */
 function sizeCap(repo: RepoRef, bytes: number): number {
   // a §3 header and a tag per segment at the smallest segment size a reader accepts (1 KiB)
-  return repo.visibility === 'private' ? 36 + bytes + 16 * Math.max(1, Math.ceil(bytes / 1024)) : bytes
+  return repo.visibility === 'private' ? sealedLength(bytes, 10) : bytes
 }
 
-/** Full texts read this session, by repo (and private session) and artifact hash: the newest few. */
+/** Full texts read this session, by repo (and private session), artifact hash and length: the newest few. */
 const texts = new Map<string, Promise<string>>()
 /** How many full texts are kept (each at most 256 KiB). */
 const KEPT_TEXTS = 32
@@ -50,9 +51,12 @@ async function fetchText(sdk: EvoSDK, repo: RepoRef, sha256: string, bytes: numb
   return opened.text
 }
 
-/** The full text `sha256` names, read once per session (a failure is not kept: a reload retries). */
+/**
+ * The full text `sha256` names, read once per session (a failure is not kept: a reload retries).
+ * Keyed by the trailer's `bytes` too, so a field claiming another length is checked on its own.
+ */
 function cachedText(sdk: EvoSDK, repo: RepoRef, sha256: string, bytes: number): Promise<string> {
-  const key = `${repoKey(repo)}:${sha256}`
+  const key = `${repoKey(repo)}:${sha256}:${bytes}`
   let p = texts.get(key)
   if (p === undefined) {
     p = fetchText(sdk, repo, sha256, bytes)
