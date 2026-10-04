@@ -172,12 +172,14 @@ describe('the shim leaves everything else alone', () => {
   })
 
   it('reserves every real top-level route', () => {
-    // Every directory under app/ is a route a short URL must never shadow.
+    // Every directory under app/ is a route, and every entry in public/ a file the host serves:
+    // a short URL must never shadow either (a missing `/icons/x.png` must stay a 404).
     const routes = readdirSync(join(__dirname, '..', 'app'), { withFileTypes: true })
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
+    const files = readdirSync(join(__dirname, '..', 'public'))
     expect(routes.length).toBeGreaterThan(5)
-    for (const r of [...routes, '_next']) expect(RESERVED_SEGMENTS).toContain(r)
+    for (const r of [...routes, ...files, '_next']) expect(RESERVED_SEGMENTS).toContain(r)
   })
 })
 

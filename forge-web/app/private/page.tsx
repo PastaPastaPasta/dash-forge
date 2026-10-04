@@ -19,20 +19,20 @@ const SEALED: readonly string[] = [
   'Branch and tag names',
   'Issue and pull request titles and text',
   'Comments, review comments and the files they point at',
-  'Release notes, assets and tags',
-  'Which label or milestone an issue carries',
-  'Repository settings, such as the default branch',
+  'Release names, notes and assets',
+  'Milestones, and which label or milestone an issue carries',
+  'The default branch and which branches are protected',
 ]
 
 const VISIBLE: readonly string[] = [
   'That the repository exists, with its name, description, topics and owner',
-  'Its members, their roles and when each joined',
-  'When anything happens and who did it: pushes, issues, pull requests, comments and reviews',
+  'Its members, their roles, when each joined, and when its key changed',
+  'When anything happens and who did it: pushes, issues, pull requests, comments, reviews and edits',
+  'Whether an issue or pull request is open, closed, merged or a draft, and who is assigned or asked to review',
+  'Issue and pull request numbers, review verdicts, and the line numbers review comments point at',
   'File sizes, and roughly how long each piece of text is',
-  'Issue and pull request numbers, and review verdicts',
   'Commit ids, so someone who already knows a commit can confirm the repository has it',
-  'Label names and colours, and check names',
-  'Who is assigned to an issue or pull request',
+  'Label names, colours and descriptions, check names, and merge rules such as required approvals',
 ]
 
 function Section({ icon, title, id, children }: { icon: ReactNode; title: string; id: string; children: ReactNode }): JSX.Element {
@@ -65,7 +65,7 @@ export default function PrivateReposPage(): JSX.Element {
           <h1 className="text-2xl">Private repositories</h1>
           <p className="mt-2 text-prose text-anvil-600 dark:text-anvil-300">
             A private repository is encrypted on your device before anything is stored. Only its members hold the key, and Dash Platform
-            refuses unencrypted content for it: privacy is a network rule, not a promise from a server.
+            itself refuses an unencrypted issue, pull request, comment or branch name for it.
           </p>
         </div>
 
@@ -73,7 +73,10 @@ export default function PrivateReposPage(): JSX.Element {
           <ol className="list-decimal space-y-1 pl-5">
             <li>Each private repository has its own key. Every member gets a copy, encrypted to their identity.</li>
             <li>Your browser or the command line encrypts code, branch names, issues, pull requests, comments, reviews and releases before they leave your device.</li>
-            <li>Dash Platform rejects any unencrypted issue, pull request, comment, review, branch update or release for a private repository.</li>
+            <li>
+              Dash Platform rejects an unencrypted issue, pull request, comment, review text, branch name or release note for a private
+              repository. The details of events, such as which label was added, are encrypted by Forge&apos;s apps.
+            </li>
             <li>Storage, whether your own bucket, IPFS or Dash Platform, only ever holds encrypted files.</li>
             <li>Members decrypt in their own browser or terminal. There is no Forge server that could read anything.</li>
           </ol>
@@ -117,7 +120,7 @@ export default function PrivateReposPage(): JSX.Element {
         </Section>
 
         <div className="flex flex-wrap items-center gap-3 pt-2">
-          <Link href="/new/">
+          <Link href="/new/?visibility=private">
             <Button variant="primary">
               <Plus className="h-4 w-4" aria-hidden /> New private repository
             </Button>
