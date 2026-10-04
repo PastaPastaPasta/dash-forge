@@ -15,8 +15,8 @@ use serde_json::json;
 use forge_core::envelope::SecretBytes;
 use forge_core::user_error::{codes, UserError};
 use forge_core::webhooks::{
-    generate_secret, hook_id_for_label, newest_per_hook, random_hook_id, NewWebhook, WebhookReader,
-    WebhookService,
+    check_url_and_events, generate_secret, hook_id_for_label, newest_per_hook, random_hook_id,
+    url_secret, NewWebhook, UrlSecret, WebhookReader, WebhookService, CHAT_WEBHOOK_GUIDE,
 };
 
 use crate::common::{resolve, Reader, RepoRef};
@@ -74,7 +74,8 @@ pub struct AddArgs {
     /// random hook id.
     #[arg(long)]
     name: Option<String>,
-    /// Accept a URL with a query string (it is public on chain).
+    /// Accept a URL with a query string or a token-like path segment (it is public on chain).
+    /// A chat service's webhook URL (Discord, Slack, Teams, Google Chat) is refused anyway.
     #[arg(long)]
     force: bool,
 }
@@ -155,6 +156,29 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         ..
     } = args;
     let repo_ref = RepoRef::parse(repo)?;
+    // The URL first: a chat service's webhook URL is refused before anything is asked or read.
+    if let Some(UrlSecret::ChatService(service)) = url_secret(url) {
+        return Err(UserError::new(codes::USAGE, "webhook not added")
+            .cause(format!(
+                "a {service} webhook URL contains its token, and a hook's URL is public on chain: \
+                 anyone could post to your channel"
+            ))
+            .fix(format!(
+                "keep the URL in your own relay's config instead: {CHAT_WEBHOOK_GUIDE}"
+            ))
+            .note("nothing was written or paid")
+            .into());
+    }
+    if let Err(e) = check_url_and_events(url, events, args.force) {
+        let cause = match e {
+            forge_core::Error::Config(m) => m,
+            other => other.to_string(),
+        };
+        return Err(UserError::new(codes::USAGE, "webhook not added")
+            .cause(cause)
+            .note("nothing was written or paid")
+            .into());
+    }
     let (secret, show) = hook_secret(ctx, args)?;
     let hook_id = args
         .name

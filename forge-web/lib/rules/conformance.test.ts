@@ -39,6 +39,7 @@ import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-re
 import { avatarSpec, checkProfile, type ProfileInput } from './profile'
 import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
 import { planRefs, syncDecision } from '../repo/fork'
+import { webhookUrlSecret } from '../repo/webhooks'
 import { matchesText, mentions } from '../repo/issue-index'
 import { parseSearchText, unresolvedQualifiers } from '../view/issue-query'
 import { parsePullSearch, unresolvedPullQualifiers } from '../view/pull-query'
@@ -548,6 +549,11 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['config', 'identityId'])
       const inp = v.input as { readonly config: string | null; readonly identityId: string }
       expect(avatarSpec(inp.config, inp.identityId)).toEqual(v.expected)
+      break
+    }
+    case 'webhook_url': {
+      onlyKeys(v, ['url'])
+      expect(webhookUrlSecret((v.input as { readonly url: string }).url)).toEqual(v.expected)
       break
     }
     case 'repo_name': {

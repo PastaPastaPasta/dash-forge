@@ -2476,14 +2476,7 @@ mod tests {
             }
             "profile_input" | "avatar_config" => run_profile_case(v),
             "pubkey_entry" | "commit_signature" => run_signature_case(v),
-            "repo_name" => {
-                let inp: RepoNameInput = input(v);
-                let got = serde_json::json!({
-                    "valid": v2::is_valid_repo_name(&inp.name),
-                    "normalized": v2::normalize_repo_name(&inp.name),
-                });
-                assert_eq!(got, v.expected, "vector `{ctx}`");
-            }
+            "repo_name" | "webhook_url" => run_name_case(v),
             "role_oracle" => {
                 let inp: RoleOracleInput = input(v);
                 let oracle = v2::RoleOracle::new(inp.memberships);
@@ -2526,6 +2519,35 @@ mod tests {
         sha256: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blob_hex: Option<String>,
+    }
+
+    /// `repo_name`: whether a name is valid, and its normalized form. `webhook_url`: the
+    /// secret a webhook URL carries in its path, by its shape.
+    fn run_name_case(v: &Vector) {
+        use crate::webhooks::{url_secret, UrlSecret};
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            url: String,
+        }
+        if v.case == "repo_name" {
+            let inp: RepoNameInput = input(v);
+            let got = serde_json::json!({
+                "valid": v2::is_valid_repo_name(&inp.name),
+                "normalized": v2::normalize_repo_name(&inp.name),
+            });
+            assert_eq!(got, v.expected, "vector `{}`", v.name);
+            return;
+        }
+        let inp: Input = input(v);
+        let got = match url_secret(&inp.url) {
+            Some(UrlSecret::ChatService(name)) => {
+                serde_json::json!({ "secret": "chatService", "service": name })
+            }
+            Some(UrlSecret::PathToken) => serde_json::json!({ "secret": "pathToken" }),
+            None => serde_json::json!({ "secret": null }),
+        };
+        assert_eq!(got, v.expected, "vector `{}`", v.name);
     }
 
     /// `long_body__*` (forge-v2.md §6.3): `{stored}` reads a field, `{full, room, sha256}`

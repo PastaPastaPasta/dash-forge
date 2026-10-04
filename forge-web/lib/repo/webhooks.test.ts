@@ -90,6 +90,14 @@ describe('webhookUrlProblem', () => {
     expect(webhookUrlProblem('https://ci.example.com/hook?token=x')).toMatch(/query string/)
     expect(webhookUrlProblem('https://ci.example.com/hook?ref=main', true)).toBeNull()
   })
+
+  it('refuses chat-service webhook URLs even when confirmed, and token paths unless confirmed', () => {
+    expect(webhookUrlProblem('https://discord.com/api/webhooks/1/tok/github', true)).toMatch(/^Discord webhook URLs contain their token/)
+    expect(webhookUrlProblem('https://hooks.slack.com/services/T/B/X', true)).toMatch(/^Slack/)
+    const hookshot = 'https://h.example/webhook/8e3c1b7a-3c2d-4f5e-9a1b-2c3d4e5f6a7b'
+    expect(webhookUrlProblem(hookshot)).toMatch(/looks like a token/)
+    expect(webhookUrlProblem(hookshot, true)).toBeNull()
+  })
 })
 
 describe('newest per hook', () => {

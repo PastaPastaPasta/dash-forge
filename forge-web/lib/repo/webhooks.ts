@@ -97,9 +97,49 @@ export function activeHooks(docs: readonly WebhookView[]): WebhookView[] {
   return newestPerHook(docs).filter((h) => !h.disabled)
 }
 
+/** Where a chat service's webhook URL is kept off chain instead: a relay's private config. */
+export const CHAT_WEBHOOK_GUIDE = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/crates/forge-relay/README.md#chat-services'
+
 /**
- * Why `url` cannot be a webhook's (forge-core `check_url_and_events`), or null. A query string
- * is refused unless `allowQuery`: the URL is public on chain.
+ * A secret a webhook URL carries in its path, by the URL's shape (forge-core `url_secret`,
+ * vectors `webhook_url__*`): a chat service's incoming-webhook URL, which is its own token and
+ * is never accepted, or a token-like segment after `/webhook/` (Matrix hookshot and similar),
+ * accepted only when the writer confirms it holds nothing secret.
+ */
+export type UrlSecret = { readonly secret: 'chatService'; readonly service: string } | { readonly secret: 'pathToken' } | { readonly secret: null }
+
+export function webhookUrlSecret(url: string): UrlSecret {
+  if (!url.startsWith('https://')) return { secret: null }
+  const rest = url.slice('https://'.length)
+  const cut = rest.search(/[/?#]/)
+  const authority = cut === -1 ? rest : rest.slice(0, cut)
+  const tail = cut === -1 ? '' : rest.slice(cut)
+  const host = (authority.split(':')[0] ?? '').toLowerCase()
+  const raw = (tail.split(/[?#]/)[0] ?? '').split('/').filter((x) => x !== '')
+  const segs = raw.map((x) => x.toLowerCase())
+  const seg = (i: number): string => segs[i] ?? ''
+  const under = (root: string): boolean => host === root || host.endsWith(`.${root}`)
+  // Discord: /api/webhooks/{id}/{token}[/github|/slack], or with an API version (/api/v10/webhooks/…).
+  const discordHook = seg(0) === 'api' && (seg(1) === 'webhooks' || (seg(1).startsWith('v') && seg(2) === 'webhooks'))
+  const service = under('hooks.slack.com')
+    ? 'Slack'
+    : (under('discord.com') || under('discordapp.com')) && discordHook
+      ? 'Discord'
+      : under('webhook.office.com') || (host === 'outlook.office.com' && seg(0).startsWith('webhook'))
+        ? 'Microsoft Teams'
+        : host === 'chat.googleapis.com'
+          ? 'Google Chat'
+          : null
+  if (service !== null) return { secret: 'chatService', service }
+  const tokenLike = (x: string): boolean => x.length >= 24 && /^[A-Za-z0-9_-]+$/.test(x) && /[0-9]/.test(x) && /[A-Za-z]/.test(x)
+  const pathToken = segs.some((x, i) => (x === 'webhook' || x === 'webhooks') && tokenLike(raw[i + 1] ?? ''))
+  return pathToken ? { secret: 'pathToken' } : { secret: null }
+}
+
+/**
+ * Why `url` cannot be a webhook's (forge-core `check_url_and_events`), or null. A chat service's
+ * webhook URL is always refused; a query string or a token-like path segment is refused unless
+ * `allowQuery`: the URL is public on chain.
  */
 export function webhookUrlProblem(url: string, allowQuery = false): string | null {
   if (url === '') return 'Enter the URL to deliver to.'
@@ -108,6 +148,10 @@ export function webhookUrlProblem(url: string, allowQuery = false): string | nul
   const authority = url.slice('https://'.length).split(/[/?#]/, 1)[0] ?? ''
   if (authority.includes('@')) return 'The URL is public on chain, so it must not carry user:password@. Deliveries are signed with the secret instead.'
   if (!URL_PATTERN.test(url)) return 'Use a DNS name (not an IP address, localhost or a name ending in a dot), an optional port, and no spaces.'
+  const secret = webhookUrlSecret(url)
+  if (secret.secret === 'chatService')
+    return `${secret.service} webhook URLs contain their token, and a webhook's URL is public, so anyone could post to your channel. Keep it in your own relay's config instead.`
+  if (!allowQuery && secret.secret === 'pathToken') return 'The URL is public on chain, and the part after /webhook/ looks like a token. Remove it, or confirm it holds nothing secret.'
   if (!allowQuery && url.includes('?')) return 'The URL is public on chain, and a query string is where tokens usually hide. Remove it, or confirm it holds nothing secret.'
   return null
 }
