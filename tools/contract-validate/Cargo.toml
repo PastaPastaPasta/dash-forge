@@ -1,6 +1,6 @@
 [package]
 name = "contract-validate"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Offline validation of the forge-v2 data contracts against Dash Platform protocol 14 (rs-dpp v5.0.0-beta.1)"

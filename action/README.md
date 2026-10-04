@@ -4,7 +4,7 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** Forge runs on devnet **sakura** (RC2 registered on Platform v5.0.0-beta.1), the network [forge.dashhq.org](https://forge.dashhq.org) runs on, and that is the Action's default network. It is not deployed on mainnet or testnet yet. No Dash Forge release is published yet either, so this Action pins none (`version` is empty), and the default `install: 'true'` builds `dg`, `git-remote-dash` and `forge-import` from the Action's own source (the ref after `@` in `uses:`). It keeps doing so at that ref after a release is published: only an Action version that sets `version` downloads release binaries. The first run compiles for several minutes; later runs reuse a build cache. This Action has no release tag yet: use `@master`, or better, pin a commit you have reviewed (`@<40-character commit id>`).
+> **Status.** Forge runs on devnet **sakura** (Forge's contracts are registered on Platform v5.0.0-beta.1), the network [forge.dashhq.org](https://forge.dashhq.org) runs on, and that is the Action's default network. It is not deployed on mainnet or testnet yet. Pin a release tag: at `@v0.1.0` the Action's `version` defaults to `0.1.0`, so the default `install: 'true'` downloads that release's `dg`, `git-remote-dash` and `forge-import`, checked against its `SHA256SUMS` (and its build attestation, with `gh` signed in). To run code that is not in a release, pin a commit you have reviewed (`@<40-character commit id>`) with `install: 'source'`: the Action then builds the three tools from that commit, which takes several minutes on the first run; later runs reuse a build cache. Avoid `@master`: it runs master's scripts with the latest release's binaries.
 
 ## Quick start
 
@@ -29,11 +29,11 @@ concurrency: { group: forge-mirror, cancel-in-progress: false }
 jobs:
   mirror:
     runs-on: ubuntu-latest
-    timeout-minutes: 60                  # the first run compiles Dash Forge (see Status above)
+    timeout-minutes: 60
     permissions: { contents: read, issues: read, pull-requests: read }
     steps:
-      # Pin a commit you have reviewed instead of master: the binaries run with your key.
-      - uses: PastaPastaPasta/dash-forge/action@master
+      # A release tag: installs that release's checksum-verified binaries, which run with your key.
+      - uses: PastaPastaPasta/dash-forge/action@v0.1.0
         with:
           repo: dash://<owner identity id>/project
           network: devnet                # Forge's network today (the default)
@@ -74,7 +74,7 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 | `dry-run` | `false` | `true`: list, compare and estimate, and write nothing. |
 | `fail-on-partial` | `false` | `true`: fail the step when some items were skipped (`status: partial`). By default that is a warning, because the next run retries them. |
 | `github-repo` | `${{ github.repository }}` | The GitHub repository to mirror. |
-| `version` | *(empty)* | The Dash Forge release this Action version pins. Empty until the first release: `install: 'true'` then builds from source. |
+| `version` | `0.1.0` | The Dash Forge release this Action version pins: the one it was cut with. Empty: `install: 'true'` builds from source. |
 | `install` | `true` | `true`: install release `version` with [`install.sh`](../install.sh) (the step fails if that release is not published), or, with `version` empty, build from source as `source` does. `source`: build `dg`, `git-remote-dash` and `forge-import` from the Action's own source, the ref after `@` in `uses:` (needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on Linux x86_64 and arm64). `false`: use the binaries already on `PATH`. |
 | `build-cache` | `true` | A source build reuses its compiled dependencies from `actions/cache`, keyed by `Cargo.lock` and the toolchain. `false`: compile everything on every run. |
 | `state-cache` | `true` | Keep the incremental sync state in `actions/cache`, so a run looks only at what changed on GitHub since the last one. This is only for speed: without the cache a run re-examines everything and still writes nothing that is already there. |

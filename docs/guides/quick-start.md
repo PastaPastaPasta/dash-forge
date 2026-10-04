@@ -14,9 +14,9 @@ You will:
 
 Replace every `<…>` placeholder in the commands with your own value before running them; the shell reads a bare `<` or `>` as a redirection.
 
-Allow about 15 minutes. Most of it is the first build, or waiting for the network to confirm your identity.
+Allow about 15 minutes. Most of it is waiting for the network to confirm your identity (or, if you build from source, the first build).
 
-> **Which network?** This guide's commands target devnet **sakura** (Platform protocol 14, v5.0.0-beta.1). Its status: RC2 registered on Platform v5.0.0-beta.1 (2026-10-01), and the web app at forge.dashhq.org runs on sakura. Devnet bonsia, where the RC1 contracts ran, is gone, and moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts. The fees below were measured on sakura where they say so (2026-10-01), else on bonsia (Platform v4.2), and sakura's can differ: [Costs](costs.md) has both. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
+> **Which network?** This guide's commands target devnet **sakura** (Platform protocol 14, v5.0.0-beta.1). Its status: Forge's contracts are registered on Platform v5.0.0-beta.1 (2026-10-01), and the web app at forge.dashhq.org runs on sakura. Devnet bonsia, where the RC1 contracts ran, is gone, and moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts. The fees below were measured on sakura where they say so (2026-10-01), else on bonsia (Platform v4.2), and sakura's can differ: [Costs](costs.md) has both. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
 
 ---
 
@@ -27,7 +27,17 @@ You need two programs on your `PATH`:
 - `dg`: the command-line tool, shaped like GitHub's `gh`;
 - `git-remote-dash`: the git remote helper. Git runs it whenever a URL starts with `dash://`.
 
-### Build from source (works today)
+### Prebuilt binaries (Linux and macOS)
+
+This one line installs the latest release's checksum-verified binaries into `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
+```
+
+[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads (Windows included), `cargo binstall`, and pinning a version.
+
+### Or build from source
 
 You need Rust (the repository pins the version; rustup installs it for you) and `protoc` 25 or newer. [BUILDING.md](../BUILDING.md) explains both.
 
@@ -38,16 +48,6 @@ cargo install --locked --path crates/git-remote-dash
 ```
 
 `cargo install` puts both binaries in `~/.cargo/bin`, which rustup already added to your `PATH`.
-
-### Prebuilt binaries
-
-**Coming soon:** the release pipeline and `install.sh` are merged, but no release has been tagged yet, so there is nothing to download. After the first release, this one line installs checksum-verified binaries into `~/.local/bin`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
-```
-
-[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads, `cargo binstall`, and Windows.
 
 ### Check the install
 

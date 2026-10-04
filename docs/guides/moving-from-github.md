@@ -85,10 +85,10 @@ dg auth new --network devnet --devnet-name sakura
 
 ## 4. Import the repository
 
-Build the importer ([quick start §1](quick-start.md#1-install) builds `dg` and `git-remote-dash`), and sign in to GitHub so it can read issues, PRs and releases:
+Install the importer ([quick start §1](quick-start.md#1-install) installs `dg` and `git-remote-dash`; from a source clone, `cargo install --locked --path crates/forge-import` builds it instead), and sign in to GitHub so it can read issues, PRs and releases:
 
 ```sh
-cargo install --locked --path crates/forge-import
+curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/v0.1.0/install.sh | DASH_FORGE_VERSION=0.1.0 DASH_FORGE_BINARIES="dg git-remote-dash forge-import" sh
 gh auth login
 ```
 
