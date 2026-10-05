@@ -85,7 +85,9 @@ export function provedRefs(home: RepoHome): ProvedRef[] {
     if (oid === null) return []
     const s = r.state
     const changedAt = s.state === 'resolved' ? s.createdAt : s.state === 'diverged' ? (s.heads[0]?.createdAt ?? null) : null
-    return [{ name: r.refName, oid, changedAt }]
+    // Without the ref's history only its live tips are known valid: anything else is a mismatch.
+    const tipsEver = r.tipsEver ?? (s.state === 'diverged' ? s.heads.map((h) => h.oid) : [oid])
+    return [{ name: r.refName, oid, changedAt, tipsEver }]
   })
 }
 

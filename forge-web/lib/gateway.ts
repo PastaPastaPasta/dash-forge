@@ -83,6 +83,11 @@ export interface ProvedRef {
   readonly oid: string
   /** When its tip was set (ms), when known. */
   readonly changedAt: number | null
+  /**
+   * Every tip a valid update of this ref ever set (`mergeBaseTips(…).historical`): what an
+   * older snapshot can serve. A served oid outside it is a mismatch, whatever the manifest says.
+   */
+  readonly tipsEver: readonly string[]
 }
 
 export type MirrorVerdict = 'match' | 'stale' | 'mismatch'
@@ -99,8 +104,10 @@ const RANK: Record<MirrorVerdict, number> = { match: 0, stale: 1, mismatch: 2 }
 
 /**
  * Compare what a mirror serves with the proved refs. `asOfMs` is the Platform time its manifest
- * says its snapshot reflects (`null`: no manifest). Only refs `inScope` are judged (this page
- * proves branches and tags).
+ * says its snapshot reflects (`null`: no manifest). A served tip is only ever `stale` when it is
+ * one the ref validly had ({@link ProvedRef.tipsEver}): the manifest is the mirror's own claim,
+ * so it can excuse lag, never a forged tip. Only refs `inScope` are judged (this page proves
+ * branches and tags). Parity: forge-core `mirror::compare`.
  */
 export function compareMirror(
   served: ReadonlyMap<string, string>,
@@ -117,9 +124,10 @@ export function compareMirror(
     const proved = p?.oid ?? null
     if (s !== null && s === proved) return { name, served: s, proved, verdict: 'match', why: 'the proved tip' }
     if (s !== null && p !== undefined) {
+      if (!p.tipsEver.includes(s)) return { name, served: s, proved, verdict: 'mismatch', why: 'a tip no valid update of this ref ever set' }
       return movedSince(p)
-        ? { name, served: s, proved, verdict: 'stale', why: 'the ref moved after the mirror’s snapshot' }
-        : { name, served: s, proved, verdict: 'mismatch', why: 'a different tip, though the mirror’s snapshot is newer than the ref' }
+        ? { name, served: s, proved, verdict: 'stale', why: 'an earlier tip; the ref moved after the mirror’s snapshot' }
+        : { name, served: s, proved, verdict: 'mismatch', why: 'an earlier tip, though the mirror’s snapshot is newer than the ref' }
     }
     if (s !== null) return { name, served: s, proved, verdict: 'mismatch', why: 'not a ref of this repository on Platform' }
     return p !== undefined && movedSince(p)

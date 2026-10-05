@@ -76,9 +76,11 @@ describe('parseAdvertisement', () => {
 
 describe('compareMirror', () => {
   const all = (): boolean => true
+  const D = 'd'.repeat(40)
+  // main moved A → B at 30; dev has only ever been A.
   const proved: ProvedRef[] = [
-    { name: 'refs/heads/main', oid: B, changedAt: 30 },
-    { name: 'refs/heads/dev', oid: A, changedAt: 10 },
+    { name: 'refs/heads/main', oid: B, changedAt: 30, tipsEver: [A, B] },
+    { name: 'refs/heads/dev', oid: A, changedAt: 10, tipsEver: [A] },
   ]
 
   it('matches the proved tips', () => {
@@ -86,11 +88,20 @@ describe('compareMirror', () => {
     expect(c.verdict).toBe('match')
   })
 
-  it('is stale when the ref moved after the snapshot, a mismatch when it did not', () => {
+  it('an earlier tip is stale when the ref moved after the snapshot, a mismatch when it did not', () => {
     const served = new Map([['refs/heads/main', A], ['refs/heads/dev', A]])
     expect(compareMirror(served, proved, 20, all).verdict).toBe('stale')
     expect(compareMirror(served, proved, null, all).verdict).toBe('stale')
     expect(compareMirror(served, proved, 40, all).verdict).toBe('mismatch')
+  })
+
+  it('a tip the ref never had is a mismatch, whatever the manifest says', () => {
+    const forged = new Map([['refs/heads/main', D], ['refs/heads/dev', A]])
+    for (const asOf of [null, 0, 20, 40]) {
+      const c = compareMirror(forged, proved, asOf, all)
+      expect(c.verdict).toBe('mismatch')
+      expect(c.refs.find((r) => r.name === 'refs/heads/main')?.why).toMatch(/no valid update/)
+    }
   })
 
   it('flags refs Platform does not have, and omissions the snapshot should show', () => {
@@ -108,7 +119,7 @@ describe('compareMirror', () => {
 })
 
 describe('verifyGateway', () => {
-  const proved: ProvedRef[] = [{ name: 'refs/heads/main', oid: A, changedAt: 10 }]
+  const proved: ProvedRef[] = [{ name: 'refs/heads/main', oid: A, changedAt: 10, tipsEver: [A] }]
   const manifest = { schema: 'forge-gateway-manifest/v1', repoId: 'R', network: 'devnet-sakura', platformHeight: 7, platformTimeMs: 20, fetchedAtMs: 30 }
   const fetchFrom =
     (routes: Record<string, () => Response>): typeof fetch =>
@@ -137,6 +148,13 @@ describe('verifyGateway', () => {
     const c = await verifyGateway('https://g/alice/proj.git', proved, { repoId: 'R', network: 'devnet-sakura' }, { fetchImpl: f })
     expect(c.verdict).toBe('mismatch')
     expect(c.problems[0]).toMatch(/OTHER/)
+  })
+
+  it('a forged tip with the manifest dropped is a mismatch, not stale', async () => {
+    const f = fetchFrom({ '/info/refs?service=git-upload-pack': () => new Response(advertisement([[C, 'refs/heads/main']])) })
+    const c = await verifyGateway('https://g/alice/proj.git', proved, { repoId: 'R', network: 'devnet-sakura' }, { fetchImpl: f })
+    expect(c.manifest).toBeNull()
+    expect(c.verdict).toBe('mismatch')
   })
 
   it('works without a manifest, and throws when the gateway is down', async () => {
