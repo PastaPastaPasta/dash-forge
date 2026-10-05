@@ -1,0 +1,46 @@
+{
+  "name": "former_maintainers",
+  "description": "who was a maintainer: owners of config and repoKey documents (maintainer-only and undeletable), the `maintainers` a current maintainer's snapshot lists, and the maintainer being removed; never what a non-maintainer's snapshot claims, and never a current maintainer.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "former",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
+    ],
+    "configOwners": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX"
+    ],
+    "wrapOwners": [
+      "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+    ],
+    "snapshots": [
+      {
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "maintainers": [
+          "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+          "7mzLgLpF8dwfvjgCQq1j6zshHKQCvo3YKejWwWw5ojhi"
+        ]
+      },
+      {
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "maintainers": [
+          "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+          "6uEvtSgQjdQsaPw3qBRpr21Acb7WfAshhVKRzDNKCjRY"
+        ]
+      }
+    ],
+    "extra": [
+      "5J5YCvQ7PCyb29nZKcgtbKjP2pLfCPBGFTG9CfayauJ6"
+    ]
+  },
+  "expected": {
+    "results": [
+      "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+      "5J5YCvQ7PCyb29nZKcgtbKjP2pLfCPBGFTG9CfayauJ6",
+      "7mzLgLpF8dwfvjgCQq1j6zshHKQCvo3YKejWwWw5ojhi",
+      "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+    ]
+  }
+}

@@ -70,6 +70,8 @@ impl Opened {
 pub struct Book {
     /// The repository's current maintainers (base58).
     pub maintainers: BTreeSet<String>,
+    /// Identities shown to have been maintainers ([`chain::former_maintainers`]).
+    pub former: BTreeSet<String>,
     /// Every kind-8 manifest, newest first, as read.
     pub manifests: Vec<PackManifestInfo>,
     /// What each authorized snapshot came to, by manifest document id.
@@ -115,6 +117,12 @@ pub enum Blocked {
         head: Head,
         /// Why, for a person.
         reason: String,
+    },
+    /// The latest change was saved by someone who is no longer a maintainer: a maintainer must
+    /// save it again (`dg env resave`). Older values are never used instead.
+    Stale {
+        /// That change.
+        head: Head,
     },
 }
 
@@ -176,6 +184,9 @@ impl Book {
                 .snapshot(&state.heads[0])
                 .ok_or_else(|| self.unreadable(&state.heads[0])),
             State::Unreadable => Err(self.unreadable(&state.heads[0])),
+            State::Stale => Err(Blocked::Stale {
+                head: self.head(&state.heads[0]),
+            }),
             State::Conflict => Err(Blocked::Conflict(
                 state.heads.iter().map(|h| self.head(h)).collect(),
             )),
@@ -256,6 +267,74 @@ impl Book {
         chain::exposure(&histories, removed, held_members_key)
     }
 
+    /// What saving `env` again starts from when it is stale ([`State::Stale`]): its newest
+    /// change's entries and audience, superseding it. The newest change is opened for this
+    /// (never used otherwise); a maintainer it was not sent to cannot save it again.
+    pub fn resave_base(&self, repo: &RepoRef, env: &str) -> Result<(Base, Head)> {
+        let Some(state) = self.state(env).filter(|s| s.state == State::Stale) else {
+            return Err(UserError::new(
+                codes::USAGE,
+                format!(
+                    "{env} doesn't need saving again: its latest change is by a current maintainer"
+                ),
+            )
+            .fix(format!(
+                "`dg env ls {} --env {env}` shows it",
+                repo.display()
+            ))
+            .into());
+        };
+        let head = self.head(&state.heads[0]);
+        let Some(snap) = self.snapshot(&head.id) else {
+            let why = self
+                .opened
+                .get(&head.id)
+                .map(Opened::reason)
+                .unwrap_or_default();
+            return Err(UserError::new(
+                codes::NOT_A_KEY_HOLDER,
+                format!("{env}'s latest change can't be read by you, so you can't save it again"),
+            )
+            .cause(format!("{} by {} at {}: {why}", head.short(), head.author, utc(head.created_at)))
+            .fix("ask a maintainer it was sent to (Maintainers), or who holds the members key (Members), to run it")
+            .note("nothing was written")
+            .into());
+        };
+        let supersedes = self
+            .manifest(&head.id)
+            .map(|m| vec![m.pack_hash])
+            .unwrap_or_default();
+        Ok((
+            Base {
+                vars: snap.vars.clone(),
+                audience: Some(snap.audience),
+                supersedes,
+            },
+            head,
+        ))
+    }
+
+    /// The environments whose newest change `author` made (by name), and which of them this
+    /// reader can open (`true`) and so can save again: what removing a maintainer saves again.
+    #[must_use]
+    pub fn heads_by(&self, author: &str) -> Vec<(String, bool, u64)> {
+        self.resolution
+            .environments
+            .iter()
+            .filter(|e| e.heads.len() == 1)
+            .filter_map(|e| {
+                let m = self.manifest(&e.heads[0])?;
+                (m.owner_id == author).then(|| {
+                    (
+                        e.env.clone(),
+                        self.snapshot(&e.heads[0]).is_some(),
+                        m.size_bytes,
+                    )
+                })
+            })
+            .collect()
+    }
+
     /// What a new snapshot of `env` starts from: the current entries and audience and the
     /// heads it supersedes. On a conflict, `keep` (a head's id or its prefix) picks the entries
     /// and the new snapshot supersedes every head, which resolves it.
@@ -300,6 +379,7 @@ impl Book {
                     None => Err(conflict_error(repo, env, &heads)),
                 }
             }
+            Err(Blocked::Stale { head }) => Err(stale_error(repo, env, &head)),
             Err(Blocked::Unreadable { head, reason }) => Err(UserError::new(
                 codes::NOT_A_KEY_HOLDER,
                 format!(
@@ -331,7 +411,27 @@ pub fn conflict_headline(env: &str, heads: &[Head]) -> String {
     }
 }
 
-/// E607 for an environment two people changed at once.
+/// E609: `env`'s latest change, `head`, was saved by someone who is no longer a maintainer.
+#[must_use]
+pub fn stale_error(repo: &RepoRef, env: &str, head: &Head) -> Error {
+    UserError::new(
+        codes::ENV_RESAVE,
+        format!("{env}'s latest change was saved by someone who is no longer a maintainer"),
+    )
+    .cause(format!(
+        "{} saved it at {} ({}). Its values aren't used, and older values are never used instead.",
+        head.author,
+        utc(head.created_at),
+        head.short()
+    ))
+    .fix(format!(
+        "A maintainer needs to save it again: `dg env resave {} --env {env}`",
+        repo.display()
+    ))
+    .into()
+}
+
+/// E608 for an environment two people changed at once.
 #[must_use]
 pub fn conflict_error(repo: &RepoRef, env: &str, heads: &[Head]) -> Error {
     let versions: Vec<String> = heads
@@ -339,7 +439,7 @@ pub fn conflict_error(repo: &RepoRef, env: &str, heads: &[Head]) -> Error {
         .map(|h| format!("{} by {} at {}", h.short(), h.author, utc(h.created_at)))
         .collect();
     let mut u = UserError::new(
-        codes::EDIT_CONFLICT,
+        codes::ENV_CONFLICT,
         format!(
             "{}, so its values can't be used until one version is kept",
             conflict_headline(env, heads)
@@ -486,12 +586,19 @@ impl<'a> Environments<'a> {
         }
     }
 
+    /// Read every environment of `repo` ([`Self::read_with`] with no extra former maintainer).
+    pub async fn read(&self, repo: &RepoRef) -> Result<Book> {
+        self.read_with(repo, &[]).await
+    }
+
     /// Read every environment of `repo`: the kind-8 manifests and the current maintainers, then
     /// every snapshot a current maintainer wrote, fetched (checked against its manifest's
-    /// `packHash`) and opened, then [`chain::resolve`]. A snapshot by anyone else is never
-    /// fetched.
-    #[allow(clippy::too_many_lines)] // fetch, keys, open, resolve: one read
-    pub async fn read(&self, repo: &RepoRef) -> Result<Book> {
+    /// `packHash`) and opened, then [`chain::resolve`] with the former maintainers
+    /// ([`chain::former_maintainers`], plus `extra_former`: a caller that is removing a
+    /// maintainer knows they were one). A snapshot by anyone else is never opened, except a
+    /// former maintainer's that is an environment's newest: it is opened to be shown and saved
+    /// again (`dg env resave`), never to be used.
+    pub async fn read_with(&self, repo: &RepoRef, extra_former: &[String]) -> Result<Book> {
         let svc = self.repo_service();
         let members = MemberReader::new(self.client);
         let (manifests, maintainers) =
@@ -503,12 +610,108 @@ impl<'a> Environments<'a> {
         let maintainers: BTreeSet<String> =
             maintainers.into_iter().map(|m| m.identity_id).collect();
         let authorized = authorized(&manifests, &maintainers);
+        let mut opened: BTreeMap<String, Opened> = self
+            .opener(repo, &svc, &authorized)
+            .await?
+            .open_all(&authorized);
 
-        // fetch the authorized artifacts (each checked against its manifest's packHash)
+        // who was a maintainer, looked up only when someone else wrote a kind-8 manifest
+        let former = if manifests.iter().any(|m| !maintainers.contains(&m.owner_id)) {
+            let (configs, wraps) = self.maintainer_documents(repo).await?;
+            let snaps: Vec<(&str, &Snapshot)> = authorized
+                .iter()
+                .filter_map(|m| {
+                    opened
+                        .get(&m.document_id)
+                        .and_then(Opened::snapshot)
+                        .map(|s| (m.owner_id.as_str(), s))
+                })
+                .collect();
+            chain::former_maintainers(
+                &maintainers,
+                configs,
+                wraps,
+                snaps,
+                extra_former.iter().cloned(),
+            )
+        } else {
+            BTreeSet::new()
+        };
+
+        let refs: Vec<SnapshotRef> = manifests.iter().map(snapshot_ref).collect();
+        let by_hash: BTreeMap<[u8; 32], String> = authorized
+            .iter()
+            .filter_map(|m| {
+                opened
+                    .get(&m.document_id)
+                    .and_then(Opened::snapshot)
+                    .map(|s| (m.pack_hash, s.env.clone()))
+            })
+            .collect();
+        let resolution = chain::resolve(&maintainers, &former, &refs, |h| {
+            by_hash.get(h).map(String::as_str)
+        });
+
+        // a stale environment's newest change is opened, to be shown and saved again
+        let stale_heads: Vec<&PackManifestInfo> = resolution
+            .environments
+            .iter()
+            .filter(|e| e.state == State::Stale)
+            .flat_map(|e| e.heads.iter())
+            .filter_map(|id| manifests.iter().find(|m| &m.document_id == id))
+            .collect();
+        if !stale_heads.is_empty() {
+            let heads = self.opener(repo, &svc, &stale_heads).await?;
+            opened.extend(heads.open_all(&stale_heads));
+        }
+        Ok(Book {
+            maintainers,
+            former,
+            manifests,
+            opened,
+            resolution,
+        })
+    }
+
+    /// The owners of `repo`'s `config` and `repoKey` documents: both are maintainer-only at
+    /// consensus and cannot be deleted, so each owner was a maintainer.
+    async fn maintainer_documents(&self, repo: &RepoRef) -> Result<(Vec<String>, Vec<String>)> {
+        let scope = repo.scope()?;
+        let core = self.client.fetch_contract(&scope.contract_id).await?;
+        let collab = self.client.fetch_contract(&repo.forge().collab).await?;
+        let order = [crate::platform::QueryOrder::asc("$createdAt")];
+        let owners = |docs: Vec<crate::platform::FetchedDocument>| -> Vec<String> {
+            docs.into_iter().map(|d| d.owner_id).collect()
+        };
+        let configs = self
+            .client
+            .query_all_documents(&core, crate::refs::DOC_CONFIG, &scope.filters([]), &order)
+            .await?;
+        let wraps = self
+            .client
+            .query_all_documents(
+                &collab,
+                crate::keyring::DOC_REPO_KEY,
+                &scope.filters([]),
+                &[crate::platform::QueryOrder::asc("memberId")],
+            )
+            .await?;
+        Ok((owners(configs), owners(wraps)))
+    }
+
+    /// Fetch `list`'s artifacts and gather the keys to open them with: the owners' identity keys
+    /// (a Maintainers snapshot's sender key), the reader's ENCRYPTION keys, and the members key
+    /// chain when a Members snapshot is met.
+    async fn opener(
+        &self,
+        repo: &RepoRef,
+        svc: &RepoService<'_>,
+        list: &[&PackManifestInfo],
+    ) -> Result<Opener> {
         let reader = crate::storage::PackReader::from_user_config();
-        let fetched: Vec<(String, std::result::Result<Vec<u8>, String>)> =
-            futures::stream::iter(authorized.iter().map(|m| {
-                let (svc, reader) = (&svc, &reader);
+        let fetched: BTreeMap<String, std::result::Result<Vec<u8>, String>> =
+            futures::stream::iter(list.iter().map(|m| {
+                let reader = &reader;
                 async move {
                     let got = svc
                         .fetch_artifact(repo, m, reader)
@@ -518,21 +721,18 @@ impl<'a> Environments<'a> {
                 }
             }))
             .buffer_unordered(FETCH_WINDOW)
-            .collect()
-            .await;
-        let fetched: BTreeMap<String, std::result::Result<Vec<u8>, String>> =
-            fetched.into_iter().collect();
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect();
         let needs = |version: u8| {
             fetched
                 .values()
                 .any(|b| b.as_ref().is_ok_and(|b| b.get(4) == Some(&version)))
         };
-
-        // the keys: the owners' identity keys (a Maintainers snapshot's sender key), the
-        // reader's ENCRYPTION keys, and the members key chain when a Members snapshot is met
         let mut owner_keys: BTreeMap<String, Vec<OwnerKey>> = BTreeMap::new();
         if needs(crate::private::named::ARTIFACT_VERSION) {
-            let owners: BTreeSet<&str> = authorized.iter().map(|m| m.owner_id.as_str()).collect();
+            let owners: BTreeSet<&str> = list.iter().map(|m| m.owner_id.as_str()).collect();
             for owner in owners {
                 let keys = match self.client.fetch_identity(owner).await {
                     Ok(identity) => codec::owner_keys(&identity.public_keys()),
@@ -561,54 +761,13 @@ impl<'a> Environments<'a> {
                 }
             }
         }
-        let repo_id = repo.scope()?.repo_id;
-        let lookup = |e: u32| epoch_keys.get(&e);
-        let none: Vec<OwnerKey> = Vec::new();
-        let mut opened: BTreeMap<String, Opened> = BTreeMap::new();
-        for m in &authorized {
-            let result = match fetched.get(&m.document_id) {
-                Some(Ok(bytes)) => {
-                    let keys = OpenKeys {
-                        repo_id: &repo_id,
-                        owner_keys: owner_keys.get(&m.owner_id).unwrap_or(&none),
-                        reader: reader_id.map(|identity_id| Reader {
-                            identity_id,
-                            keys: &reader_keys,
-                        }),
-                        epoch_keys: &lookup,
-                    };
-                    let check = ManifestCheck {
-                        owner_id: &m.owner_id,
-                        pack_hash: &m.pack_hash,
-                        size_bytes: m.size_bytes,
-                    };
-                    match codec::open(&check, bytes, &keys) {
-                        Ok(s) => Opened::Snapshot(s),
-                        Err(e) => Opened::Refused(e),
-                    }
-                }
-                Some(Err(e)) => Opened::Unfetched(e.clone()),
-                None => Opened::Unfetched("not fetched".into()),
-            };
-            opened.insert(m.document_id.clone(), result);
-        }
-
-        let refs: Vec<SnapshotRef> = manifests.iter().map(snapshot_ref).collect();
-        let by_hash: BTreeMap<[u8; 32], &str> = authorized
-            .iter()
-            .filter_map(|m| {
-                opened
-                    .get(&m.document_id)
-                    .and_then(Opened::snapshot)
-                    .map(|s| (m.pack_hash, s.env.as_str()))
-            })
-            .collect();
-        let resolution = chain::resolve(&maintainers, &refs, |h| by_hash.get(h).copied());
-        Ok(Book {
-            maintainers,
-            manifests,
-            opened,
-            resolution,
+        Ok(Opener {
+            repo_id: repo.scope()?.repo_id,
+            fetched,
+            owner_keys,
+            reader_id,
+            reader_keys,
+            epoch_keys,
         })
     }
 
@@ -700,14 +859,13 @@ impl<'a> Environments<'a> {
         &self,
         repo: &RepoRef,
         me: Recipient,
+        maintainers: &[String],
     ) -> Result<(Vec<Recipient>, Vec<String>)> {
         let me_id = platform::encode_identifier(me.identity_id);
-        let mut others: Vec<String> = MemberReader::new(self.client)
-            .maintainers(repo)
-            .await?
-            .into_iter()
-            .map(|m| m.identity_id)
-            .filter(|id| *id != me_id)
+        let mut others: Vec<String> = maintainers
+            .iter()
+            .filter(|id| **id != me_id)
+            .cloned()
             .collect();
         others.sort();
         others.dedup();
@@ -734,6 +892,7 @@ impl<'a> Environments<'a> {
     }
 
     /// Seal `draft` for its audience: the bytes, who it goes to, and who was left out.
+    #[allow(clippy::too_many_lines)] // the snapshot, then one branch per audience
     async fn seal(
         &self,
         repo: &RepoRef,
@@ -752,10 +911,23 @@ impl<'a> Environments<'a> {
             env: draft.env.clone(),
             audience: draft.audience,
             generated_at,
+            maintainers: Vec::new(),
             to: Vec::new(),
             vars: draft.vars.clone(),
         };
         let action = format!("save {}", draft.env);
+        // the maintainers now, the writer among them: what later readers take as evidence of
+        // who was a maintainer (a removed one's latest change then fails closed)
+        let mut maintainers: Vec<String> = MemberReader::new(self.client)
+            .maintainers(repo)
+            .await?
+            .into_iter()
+            .map(|m| m.identity_id)
+            .collect();
+        maintainers.push(signer.identity.id());
+        maintainers.sort();
+        maintainers.dedup();
+        snap.maintainers = maintainers.clone();
         match draft.audience {
             Audience::Members => {
                 let kr = signer.keyring(repo).await?;
@@ -805,6 +977,7 @@ impl<'a> Environments<'a> {
                             identity_id: me_bytes,
                             public_key: sender.public_key(),
                         },
+                        &maintainers,
                     )
                     .await?;
                 if recipients.len() > MAX_RECIPIENTS {
@@ -835,6 +1008,53 @@ impl<'a> Environments<'a> {
                 Ok((sealed, snap.to.clone(), skipped))
             }
         }
+    }
+}
+
+/// Fetched artifacts and the keys to open them ([`Environments::read_with`]).
+struct Opener {
+    repo_id: [u8; 32],
+    fetched: BTreeMap<String, std::result::Result<Vec<u8>, String>>,
+    owner_keys: BTreeMap<String, Vec<OwnerKey>>,
+    reader_id: Option<[u8; 32]>,
+    reader_keys: Vec<crate::envelope::PrivateKey>,
+    epoch_keys: BTreeMap<u32, EpochKeys>,
+}
+
+impl Opener {
+    /// What each of `list` came to: opened ([`codec::open`], D24's order), refused, or unfetched.
+    fn open_all(&self, list: &[&PackManifestInfo]) -> BTreeMap<String, Opened> {
+        let lookup = |e: u32| self.epoch_keys.get(&e);
+        let none: Vec<OwnerKey> = Vec::new();
+        list.iter()
+            .map(|m| {
+                let result = match self.fetched.get(&m.document_id) {
+                    Some(Ok(bytes)) => {
+                        let keys = OpenKeys {
+                            repo_id: &self.repo_id,
+                            owner_keys: self.owner_keys.get(&m.owner_id).unwrap_or(&none),
+                            reader: self.reader_id.map(|identity_id| Reader {
+                                identity_id,
+                                keys: &self.reader_keys,
+                            }),
+                            epoch_keys: &lookup,
+                        };
+                        let check = ManifestCheck {
+                            owner_id: &m.owner_id,
+                            pack_hash: &m.pack_hash,
+                            size_bytes: m.size_bytes,
+                        };
+                        match codec::open(&check, bytes, &keys) {
+                            Ok(s) => Opened::Snapshot(s),
+                            Err(e) => Opened::Refused(e),
+                        }
+                    }
+                    Some(Err(e)) => Opened::Unfetched(e.clone()),
+                    None => Opened::Unfetched("not fetched".into()),
+                };
+                (m.document_id.clone(), result)
+            })
+            .collect()
     }
 }
 

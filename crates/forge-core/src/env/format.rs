@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{valid_env_name, valid_var_name, Audience, MAX_RECIPIENTS};
+use super::{valid_env_name, valid_var_name, Audience, MAX_MAINTAINERS, MAX_RECIPIENTS};
 
 /// Snapshots are padded to a multiple of this many bytes.
 pub const BUCKET: usize = 512;
@@ -81,6 +81,10 @@ pub struct Snapshot {
     pub audience: Audience,
     /// When the writer made it (ms since the epoch; informational, `$createdAt` orders).
     pub generated_at: u64,
+    /// The repository's maintainers when it was saved (base58), the writer among them: what lets
+    /// a reader tell a removed maintainer's change from a writer's ([`super::chain`]). Encoded
+    /// sorted.
+    pub maintainers: Vec<String>,
     /// The recipients of a Maintainers snapshot in slot order (base58 identity ids, the writer
     /// first), "as listed by the writer"; empty for Members.
     pub to: Vec<String>,
@@ -133,6 +137,19 @@ impl Snapshot {
         if self.generated_at > MAX_SAFE_INT {
             return bad("generatedAt is out of range".into());
         }
+        if self.maintainers.is_empty() || self.maintainers.len() > MAX_MAINTAINERS {
+            return bad(format!(
+                "a snapshot lists 1 to {MAX_MAINTAINERS} maintainers, not {}",
+                self.maintainers.len()
+            ));
+        }
+        for (i, m) in self.maintainers.iter().enumerate() {
+            if !canonical_id(m) || self.maintainers[..i].contains(m) {
+                return bad(format!(
+                    "{m:?} is not a maintainer identity id, or is listed twice"
+                ));
+            }
+        }
         if let Some(n) = self.vars.keys().find(|n| !valid_var_name(n)) {
             return bad(format!(
                 "{n:?} is not a variable name (letters, digits and `_`, not starting with a digit)"
@@ -170,6 +187,16 @@ impl Snapshot {
         out.push_str(",\"env\":");
         push_str(&mut out, &self.env);
         let _ = write!(out, ",\"generatedAt\":{}", self.generated_at);
+        let mut maintainers: Vec<&String> = self.maintainers.iter().collect();
+        maintainers.sort();
+        out.push_str(",\"maintainers\":[");
+        for (i, m) in maintainers.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            push_str(&mut out, m);
+        }
+        out.push(']');
         if self.audience == Audience::Maintainers {
             out.push_str(",\"to\":[");
             for (i, t) in self.to.iter().enumerate() {
@@ -233,7 +260,15 @@ impl Snapshot {
     }
 
     fn from_value(v: &serde_json::Value) -> Option<Self> {
-        const KEYS: [&str; 6] = ["audience", "env", "generatedAt", "to", "v", "vars"];
+        const KEYS: [&str; 7] = [
+            "audience",
+            "env",
+            "generatedAt",
+            "maintainers",
+            "to",
+            "v",
+            "vars",
+        ];
         let obj = v.as_object()?;
         if obj.keys().any(|k| !KEYS.contains(&k.as_str())) || obj.get("v")?.as_u64()? != 1 {
             return None;
@@ -269,10 +304,17 @@ impl Snapshot {
                 },
             );
         }
+        let maintainers = obj
+            .get("maintainers")?
+            .as_array()?
+            .iter()
+            .map(|x| x.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()?;
         let snap = Self {
             env: obj.get("env")?.as_str()?.to_owned(),
             audience,
             generated_at: obj.get("generatedAt")?.as_u64()?,
+            maintainers,
             to,
             vars,
         };
@@ -466,6 +508,7 @@ mod tests {
             env: "dev".into(),
             audience: Audience::Members,
             generated_at: 1,
+            maintainers: vec![crate::platform::encode_identifier([7; 32])],
             to: Vec::new(),
             vars: vars
                 .iter()

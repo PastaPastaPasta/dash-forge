@@ -20,7 +20,8 @@ use zeroize::Zeroizing;
 
 use forge_core::env::format::{diff, parse_dotenv, render_dotenv, Change};
 use forge_core::env::service::{
-    conflict_error, conflict_headline, utc, Blocked, Book, Draft, Environments, Prepared,
+    conflict_error, conflict_headline, stale_error, utc, Blocked, Book, Draft, Environments,
+    Prepared,
 };
 use forge_core::env::{
     default_audience, valid_env_name, valid_var_name, Audience, Snapshot, Var, VarType,
@@ -191,6 +192,17 @@ pub enum EnvCommand {
         #[arg(long, requires = "output")]
         force: bool,
     },
+    /// Save an environment again as you
+    ///
+    /// For an environment whose latest change was saved by someone who is no longer a
+    /// maintainer: shows who saved it and when, then saves the same values as you.
+    Resave {
+        /// The repository.
+        repo: String,
+        /// The environment.
+        #[arg(long)]
+        env: String,
+    },
     /// Show who changed an environment, and when
     ///
     /// Each change lists the entries it touched, never their values.
@@ -215,6 +227,7 @@ impl EnvCommand {
             }
             Self::Run { repo, .. } => ("command not run", Some(repo)),
             Self::Set { repo, .. }
+            | Self::Resave { repo, .. }
             | Self::Unset { repo, .. }
             | Self::Edit { repo, .. }
             | Self::Import { repo, .. } => ("environment not changed", Some(repo)),
@@ -281,6 +294,7 @@ pub async fn run(ctx: &Ctx, cmd: &EnvCommand) -> Result<()> {
             force,
         } => export(ctx, repo, env, output.as_deref(), *force).await,
         EnvCommand::History { repo, env } => history(ctx, repo, env).await,
+        EnvCommand::Resave { repo, env } => resave(ctx, repo, env).await,
     }
 }
 
@@ -365,6 +379,7 @@ fn blocked_error(repo: &Repo, env: &str, blocked: Blocked, maintainer: bool) -> 
             .into()
         }
         Blocked::Conflict(heads) => conflict_error(repo, env, &heads).into(),
+        Blocked::Stale { head } => stale_error(repo, env, &head).into(),
         Blocked::Unreadable { head, reason } => {
             let u = UserError::new(
                 codes::NOT_A_KEY_HOLDER,
@@ -493,6 +508,10 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
                     Err(Blocked::Conflict(h)) => format!(
                         "changed at the same time: {} versions, one must be kept",
                         h.len()
+                    ),
+                    Err(Blocked::Stale { .. }) => format!(
+                        "needs saving again by a maintainer: `dg env resave --env {}`",
+                        e.env
                     ),
                     Err(_) => "latest change can't be read by you".into(),
                 };
@@ -864,6 +883,7 @@ async fn commit(
         env: env.to_owned(),
         audience: base.audience.unwrap_or(Audience::Members),
         generated_at: 0,
+        maintainers: Vec::new(),
         to: Vec::new(),
         vars: base.vars.clone(),
     };
@@ -877,6 +897,7 @@ async fn commit(
         env: env.to_owned(),
         audience,
         generated_at: 0,
+        maintainers: Vec::new(),
         to: Vec::new(),
         vars,
     };
@@ -1271,6 +1292,7 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
     };
     let items = book.history(env);
     let conflict = matches!(book.current(env), Err(Blocked::Conflict(_)));
+    let needs_resave = matches!(book.current(env), Err(Blocked::Stale { .. }));
     ctx.emit(
         json!({ "env": env, "state": state.state, "heads": state.heads, "changes": items }),
         || {
@@ -1302,32 +1324,147 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
                     conflict_headline(env, &book.heads(env))
                 );
             }
+            if needs_resave {
+                println!(
+                    "The latest change was saved by someone who is no longer a maintainer. A maintainer needs to save it again: `dg env resave --env {env}`."
+                );
+            }
             println!("{ACCESS_SENTENCE}");
         },
     );
     Ok(())
 }
 
-/// The removal checklist for `member` leaving `s.repo` (DESIGN §4.5 "Audit and exposure"):
-/// the environments and current value names they could read, as JSON and as text to print after
-/// a line (each of its lines starts with a newline; empty when there is nothing to say).
-/// `held_members_key`: whether they held the members key. Reading fails softly (a note).
-pub async fn removal_checklist(
+/// `dg env resave`: save a stale environment's newest values again as this maintainer.
+async fn resave(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
+    check_env_name(env)?;
+    let s = Session::open_for_write(ctx, repo, "environment not saved again").await?;
+    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+    envs.require_maintainer(&s.repo, &format!("save {env} again"))
+        .await?;
+    let book = envs.read(&s.repo).await?;
+    let (base, head) = book.resave_base(&s.repo, env)?;
+    let audience = base.audience.unwrap_or_else(|| default_audience(env));
+    let names: Vec<&str> = base.vars.keys().map(String::as_str).collect();
+    let draft = Draft {
+        env: env.to_owned(),
+        audience,
+        vars: base.vars.clone(),
+        supersedes: base.supersedes.clone(),
+    };
+    let prepared = envs.prepare(&s.repo, &draft).await?;
+    let quote = prepared.credits();
+    eprintln!(
+        "  {env}'s latest change was saved by {} at {} ({}), who is no longer a maintainer.",
+        head.author,
+        utc(head.created_at),
+        head.short()
+    );
+    eprintln!(
+        "  It holds {}: {}.",
+        count(names.len(), "entry"),
+        names.join(", ")
+    );
+    eprintln!(
+        "  One chunk and one record, {}.",
+        cost_line(quote, ctx.usd_price())
+    );
+    ctx.confirm_or_cancel(&format!(
+        "Save these values again as you, for {}?",
+        audience_phrase(&prepared, audience)
+    ))?;
+    let (saved, spent) = s.metered(|| envs.store(&s.repo, &prepared)).await?;
+    ctx.emit(
+        json!({
+            "status": "saved",
+            "env": env,
+            "audience": saved.audience,
+            "to": saved.to,
+            "skipped": saved.skipped,
+            "from": head,
+            "id": saved.id,
+            "packHash": saved.pack_hash,
+            "spent": cost_json(spent, ctx.usd_price()),
+        }),
+        || {
+            println!(
+                "✓ saved {env} again ({}), with the values {} saved",
+                audience_phrase(&prepared, audience),
+                head.author
+            );
+            println!("  spent {}", cost_line(spent, ctx.usd_price()));
+        },
+    );
+    Ok(())
+}
+
+/// What removing a member does to environments, worked out before the confirmation: the
+/// checklist of what they could read, and (for a maintainer) the environments whose latest
+/// change they made, saved again after the removal so they keep working.
+pub struct Removal {
+    /// The checklist, as JSON.
+    pub exposed: Value,
+    checklist: String,
+    /// Environments to save again, with their current sealed size.
+    resave: Vec<(String, u64)>,
+    /// Environments whose latest change they made that the remover cannot read.
+    cannot: Vec<String>,
+}
+
+impl Removal {
+    /// The sentence the removal prompt adds (empty when nothing is saved again).
+    #[must_use]
+    pub fn prompt_note(&self, member: &str, price: Option<f64>) -> String {
+        let mut out = String::new();
+        if !self.resave.is_empty() {
+            let credits: u64 = self
+                .resave
+                .iter()
+                .map(|(_, size)| forge_core::env::service::snapshot_credits(*size))
+                .sum();
+            let names: Vec<&str> = self.resave.iter().map(|(e, _)| e.as_str()).collect();
+            let _ = write!(
+                out,
+                ". It also saves {} again as you ({}), whose latest change {member} made, so they keep working: {}",
+                count(names.len(), "environment"),
+                names.join(", "),
+                cost_line(credits, price)
+            );
+        }
+        if !self.cannot.is_empty() {
+            let _ = write!(
+                out,
+                ". {} can't be saved again by you and will need a maintainer it was sent to: {}",
+                count(self.cannot.len(), "environment"),
+                self.cannot.join(", ")
+            );
+        }
+        out
+    }
+}
+
+/// [`Removal`] for `member` leaving `s.repo`, read before anything changes. `held_members_key`:
+/// whether they held the members key; `maintainer`: whether a maintainer role is removed.
+/// Reading fails softly (a note in the checklist).
+pub async fn prepare_removal(
     s: &Session,
     member: &str,
     held_members_key: bool,
-) -> (Value, String) {
+    maintainer: bool,
+) -> Removal {
     let book = match book(s).await {
         Ok(b) => b,
         Err(e) => {
-            return (
-                Value::Null,
-                format!("\ncouldn't list the environments {member} could read: {e}"),
-            )
+            return Removal {
+                exposed: Value::Null,
+                checklist: format!("\ncouldn't list the environments {member} could read: {e}"),
+                resave: Vec::new(),
+                cannot: Vec::new(),
+            }
         }
     };
     let exposed = book.exposure(member, held_members_key);
-    let mut lines = String::new();
+    let mut checklist = String::new();
     for e in &exposed {
         let n = e.names.len();
         let past = if e.audience == Audience::Members {
@@ -1336,7 +1473,7 @@ pub async fn removal_checklist(
             ""
         };
         let _ = write!(
-            lines,
+            checklist,
             "\n{member} could read {n} {} value{}{past}. Rotate {} at the source: {}",
             e.env,
             if n == 1 { "" } else { "s" },
@@ -1344,7 +1481,83 @@ pub async fn removal_checklist(
             e.names.join(", ")
         );
     }
-    (serde_json::to_value(&exposed).unwrap_or(Value::Null), lines)
+    let (mut resave, mut cannot) = (Vec::new(), Vec::new());
+    if maintainer {
+        for (env, readable, size) in book.heads_by(member) {
+            if readable {
+                resave.push((env, size));
+            } else {
+                cannot.push(env);
+            }
+        }
+    }
+    Removal {
+        exposed: serde_json::to_value(&exposed).unwrap_or(Value::Null),
+        checklist,
+        resave,
+        cannot,
+    }
+}
+
+/// After `member` is removed: save again every environment of [`Removal`] whose latest change
+/// is now theirs, one snapshot each (the same values, as the remover), then the checklist.
+/// Returns the environments saved again as JSON, and the text to print after the removal line.
+pub async fn finish_removal(s: &Session, member: &str, removal: &Removal) -> (Value, String) {
+    let mut text = String::new();
+    let mut saved_envs = Vec::new();
+    if !removal.resave.is_empty() {
+        let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+        match envs.read_with(&s.repo, &[member.to_owned()]).await {
+            Ok(book) => {
+                for (env, _) in &removal.resave {
+                    match resave_now(&envs, s, &book, env).await {
+                        Ok(audience) => {
+                            let _ = write!(
+                                text,
+                                "\nSaved {env} again as you ({}), so it keeps working.",
+                                audience.label()
+                            );
+                            saved_envs.push(env.clone());
+                        }
+                        Err(e) => {
+                            let _ = write!(
+                                text,
+                                "\ncouldn't save {env} again: {e}. Its values aren't used until a maintainer runs `dg env resave --env {env}`."
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = write!(
+                    text,
+                    "\ncouldn't read the environments to save them again: {e}"
+                );
+            }
+        }
+    }
+    text.push_str(&removal.checklist);
+    (json!(saved_envs), text)
+}
+
+/// Save stale `env` again from `book`, already confirmed.
+async fn resave_now(
+    envs: &Environments<'_>,
+    s: &Session,
+    book: &Book,
+    env: &str,
+) -> Result<Audience> {
+    let (base, _) = book.resave_base(&s.repo, env)?;
+    let audience = base.audience.unwrap_or_else(|| default_audience(env));
+    let draft = Draft {
+        env: env.to_owned(),
+        audience,
+        vars: base.vars,
+        supersedes: base.supersedes,
+    };
+    let prepared = envs.prepare(&s.repo, &draft).await?;
+    envs.store(&s.repo, &prepared).await?;
+    Ok(audience)
 }
 
 #[cfg(test)]
@@ -1481,6 +1694,7 @@ mod tests {
             env: "dev".into(),
             audience: Audience::Members,
             generated_at: 0,
+            maintainers: Vec::new(),
             to: Vec::new(),
             vars: BTreeMap::new(),
         };

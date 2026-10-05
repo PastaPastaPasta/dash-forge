@@ -32,6 +32,12 @@ fn snapshot_of(v: &Value) -> Snapshot {
         env: v["env"].as_str().unwrap().into(),
         audience: Audience::parse(v["audience"].as_str().unwrap()).unwrap(),
         generated_at: v["generatedAt"].as_u64().unwrap(),
+        maintainers: v["maintainers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_owned())
+            .collect(),
         to: v
             .get("to")
             .map(|t| {
@@ -64,11 +70,18 @@ fn snapshot_of(v: &Value) -> Snapshot {
     }
 }
 
+fn sorted(v: &[String]) -> Vec<String> {
+    let mut m = v.to_vec();
+    m.sort();
+    m
+}
+
 fn snapshot_json(s: &Snapshot) -> Value {
     let mut out = json!({
         "env": s.env,
         "audience": s.audience.as_str(),
         "generatedAt": s.generated_at,
+        "maintainers": sorted(&s.maintainers),
         "vars": s.vars.iter().map(|(k, v)| (k.clone(), json!({
             "type": v.kind.as_str(), "value": v.value, "note": v.note,
         }))).collect::<serde_json::Map<String, Value>>(),
@@ -271,7 +284,13 @@ fn run_resolve(inp: &Value) -> Value {
             )
         })
         .collect();
-    let r = chain::resolve(&maintainers, &manifests, |h| {
+    let former: BTreeSet<String> = inp["formerMaintainers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap().to_owned())
+        .collect();
+    let r = chain::resolve(&maintainers, &former, &manifests, |h| {
         opened.get(h).and_then(|e| e.as_deref())
     });
     serde_json::to_value(r).unwrap()
@@ -282,6 +301,7 @@ fn run_exposure(inp: &Value) -> Value {
         env: "x".into(),
         audience: Audience::parse(v["audience"].as_str().unwrap()).unwrap(),
         generated_at: 0,
+        maintainers: Vec::new(),
         to: v
             .get("to")
             .map(|t| {
@@ -349,6 +369,50 @@ fn run_exposure(inp: &Value) -> Value {
     json!({ "results": results })
 }
 
+fn run_former(inp: &Value) -> Value {
+    let list = |k: &str| -> Vec<String> {
+        inp[k]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_owned())
+            .collect()
+    };
+    let current: BTreeSet<String> = list("maintainers").into_iter().collect();
+    let snaps: Vec<(String, Snapshot)> = inp["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            let maintainers = s["maintainers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap().to_owned())
+                .collect();
+            (
+                s["ownerId"].as_str().unwrap().to_owned(),
+                Snapshot {
+                    env: "x".into(),
+                    audience: Audience::Members,
+                    generated_at: 0,
+                    maintainers,
+                    to: Vec::new(),
+                    vars: BTreeMap::new(),
+                },
+            )
+        })
+        .collect();
+    let former = chain::former_maintainers(
+        &current,
+        list("configOwners"),
+        list("wrapOwners"),
+        snaps.iter().map(|(o, s)| (o.as_str(), s)),
+        list("extra"),
+    );
+    json!({ "results": former.into_iter().collect::<Vec<_>>() })
+}
+
 fn run(v: &Value) -> Value {
     let inp = &v["input"];
     match inp["op"].as_str().unwrap() {
@@ -367,6 +431,7 @@ fn run(v: &Value) -> Value {
         "open" => run_open(inp, &v["expected"]),
         "resolve" => run_resolve(inp),
         "exposure" => run_exposure(inp),
+        "former" => run_former(inp),
         "defaultAudience" => json!({ "results": inp["names"].as_array().unwrap().iter()
             .map(|n| default_audience(n.as_str().unwrap()).as_str()).collect::<Vec<_>>() }),
         other => panic!("unknown env_snapshot op {other}"),

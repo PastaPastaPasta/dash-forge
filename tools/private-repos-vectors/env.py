@@ -35,6 +35,7 @@ VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 TYPES = ("secret", "variable")
 AUDIENCES = ("members", "maintainers")
 MAX_RECIPIENTS = 16
+MAX_MAINTAINERS = 64
 # The one name rule (owner question 3): these names default to Maintainers, every other to Members.
 MAINTAINERS_BY_DEFAULT = ("production", "prod*", "staging", "release*")
 
@@ -66,6 +67,7 @@ def default_audience(name):
 def snapshot_obj(s):
     """The JSON object of snapshot `s` (`note` left out when empty; `to` only for maintainers)."""
     obj = {"v": 1, "env": s["env"], "audience": s["audience"], "generatedAt": s["generatedAt"],
+           "maintainers": sorted(s["maintainers"]),
            "vars": {k: dict({"type": v["type"], "value": v["value"]}, **({"note": v["note"]} if v.get("note") else {}))
                     for k, v in s["vars"].items()}}
     if s["audience"] == "maintainers":
@@ -83,7 +85,11 @@ def encode(s):
 def valid(obj):
     """Whether `obj` (parsed JSON) is a version-1 snapshot; returns the snapshot dict or None."""
     is_int = lambda x: isinstance(x, int) and not isinstance(x, bool)
-    if not isinstance(obj, dict) or not set(obj) <= {"v", "env", "audience", "generatedAt", "to", "vars"}:
+    if not isinstance(obj, dict) or not set(obj) <= {"v", "env", "audience", "generatedAt", "maintainers", "to", "vars"}:
+        return None
+    ms = obj.get("maintainers")
+    if not isinstance(ms, list) or not 1 <= len(ms) <= MAX_MAINTAINERS or len(set(map(str, ms))) != len(ms) \
+            or any(b58decode(m) is None for m in ms):
         return None
     if obj.get("v") != 1 or not is_int(obj.get("v")) or not isinstance(obj.get("env"), str) \
             or not ENV_NAME.match(obj["env"]) or obj.get("audience") not in AUDIENCES \
@@ -105,7 +111,8 @@ def valid(obj):
                 or not isinstance(v.get("note", ""), str):
             return None
         out_vars[k] = dict(type=v["type"], value=v["value"], note=v.get("note", ""))
-    s = dict(env=obj["env"], audience=obj["audience"], generatedAt=obj["generatedAt"], vars=out_vars)
+    s = dict(env=obj["env"], audience=obj["audience"], generatedAt=obj["generatedAt"], maintainers=list(ms),
+             vars=out_vars)
     if obj["audience"] == "maintainers":
         s["to"] = list(obj["to"])
     return s
@@ -132,6 +139,7 @@ def decode(pt):
 def snapshot_json(s):
     """A decoded snapshot as the vectors carry it (`note` always present)."""
     out = dict(env=s["env"], audience=s["audience"], generatedAt=s["generatedAt"],
+               maintainers=sorted(s["maintainers"]),
                vars={k: dict(type=v["type"], value=v["value"], note=v.get("note", "")) for k, v in s["vars"].items()})
     if s["audience"] == "maintainers":
         out["to"] = list(s["to"])
@@ -189,7 +197,7 @@ def open_snapshot(manifest, sealed, owner_keys, reader, epoch_keys):
     else:
         return dict(error="sealedPackCorrupt")
     s = decode(plain)
-    if s is None or s["audience"] != audience:
+    if s is None or s["audience"] != audience or manifest["ownerId"] not in s["maintainers"]:
         return dict(error="malformed")
     if audience == "maintainers" and (len(s["to"]) != sealed[8] or s["to"][0] != manifest["ownerId"]):
         return dict(error="malformed")
@@ -199,20 +207,22 @@ def open_snapshot(manifest, sealed, owner_keys, reader, epoch_keys):
 # --- authorization, the chain and forks (D24) -----------------------------------------------------------
 
 
-def resolve(maintainers, manifests, opened):
-    """`manifests`: [{id, ownerId, packHash, supersedes: [hex], createdAt}]; `opened`: packHash →
-    {env, ...} (readable) or {unreadable: reason}. Returns the resolution the vectors expect."""
+def resolve(maintainers, former, manifests, opened):
+    """`manifests`: [{id, ownerId, packHash, supersedes: [hex], createdAt}]; `former`: identities shown to have
+    been maintainers (never opened: their snapshots join the chain unread, and a chain they end is `stale`);
+    `opened`: packHash → {env, ...} (readable) or {unreadable: reason}. Returns the resolution the vectors expect."""
     order = sorted(manifests, key=lambda m: (m["createdAt"], m["id"]))
     nodes, ignored, passthrough = {}, [], {}
     for m in order:
-        if m["ownerId"] not in maintainers:
+        if m["ownerId"] not in maintainers and m["ownerId"] not in former:
             ignored.append(dict(id=m["id"], reason="notAMaintainer"))
             passthrough.setdefault(m["packHash"], []).extend(m["supersedes"])
         elif m["packHash"] in nodes:
             ignored.append(dict(id=m["id"], reason="duplicate"))
         else:
             nodes[m["packHash"]] = m
-    env_of = lambda h: opened.get(h, {}).get("env")
+    stale = lambda h: nodes[h]["ownerId"] not in maintainers
+    env_of = lambda h: None if stale(h) else opened.get(h, {}).get("env")
 
     def targets(t):
         out, seen, todo = [], {t["packHash"]}, list(t["supersedes"])
@@ -271,13 +281,28 @@ def resolve(maintainers, manifests, opened):
         heads = heads_of(group)
         no_heads = not any(not any((t, n) in edges for t in group) for n in group)
         if len(heads) == 1 and not no_heads:
-            state = "current" if env_of(heads[0]) is not None else "unreadable"
+            state = "stale" if stale(heads[0]) else "current" if env_of(heads[0]) is not None else "unreadable"
         else:
             state = "conflict"
         out_envs.append(dict(env=e, state=state, heads=ids(heads), snapshots=ids(group)))
     out_hidden = [dict(heads=ids(heads_of(set(g))), snapshots=ids(g))
                   for g in sorted(hidden, key=lambda g: min(key(h) for h in g))]
     return dict(ignored=ignored, environments=out_envs, hidden=out_hidden)
+
+
+# --- who was a maintainer ------------------------------------------------------------------------
+
+
+def former_maintainers(maintainers, config_owners, wrap_owners, snapshots, extra):
+    """Identities shown to have been maintainers, minus the current ones: owners of the repo's `config` and
+    `repoKey` documents (consensus admits both only from a maintainer, and neither can be deleted), every
+    `maintainers` entry of a snapshot a current maintainer wrote (opened), and `extra` (what the caller knows:
+    the maintainer it is removing)."""
+    out = set(config_owners) | set(wrap_owners) | set(extra)
+    for snap in snapshots:
+        if snap["ownerId"] in maintainers:
+            out |= set(snap["maintainers"])
+    return sorted(out - set(maintainers))
 
 
 # --- the removal checklist --------------------------------------------------------------------------
@@ -325,12 +350,13 @@ def var(value, type_="secret", note=""):
 
 def format_vectors():
     cases = []
-    small = dict(env="dev", audience="members", generatedAt=GENERATED_AT, vars={})
+    MS = [B(ALICE)]
+    small = dict(env="dev", audience="members", generatedAt=GENERATED_AT, maintainers=MS, vars={})
     pt = encode(small)
     assert len(pt) == 512 and decode(pt) is not None
     cases.append(dict(snapshot=snapshot_json(small), plaintextHex=H(pt), sizeBytes=len(pt)))
     # canonical JSON of exactly 512 bytes: no padding at all
-    base = dict(env="dev", audience="members", generatedAt=GENERATED_AT, vars={"FILL": var("")})
+    base = dict(env="dev", audience="members", generatedAt=GENERATED_AT, maintainers=MS, vars={"FILL": var("")})
     fill = 512 - len(canonical_json(snapshot_obj(base)))
     exact = dict(base, vars={"FILL": var("x" * fill)})
     pt = encode(exact)
@@ -341,6 +367,7 @@ def format_vectors():
     assert len(pt) == 1024
     cases.append(dict(snapshot=snapshot_json(over), plaintextHex=H(pt), sizeBytes=len(pt)))
     named = dict(env="production", audience="maintainers", generatedAt=GENERATED_AT, to=[B(ALICE), B(BOB)],
+                 maintainers=[B(BOB), B(ALICE), B(CAROL)],
                  vars={"DB_URL": var("postgres://fake:fake@db.example/app", note="primary"),
                        "LOG_LEVEL": var("info", "variable"),
                        "GREETING": var("héllo \"wörld\"\n\ttab\u0001\\  ", "variable")})
@@ -351,15 +378,19 @@ def format_vectors():
     assert encode(big) is None
     cases.append(dict(snapshot=snapshot_json(big), tooLarge=True))
     vector("padding", "the artifact is canonical JSON (sorted keys, no whitespace, UTF-8 unescaped, `note` left out "
-           "when empty, `to` only for Maintainers) padded with spaces to a multiple of 512 bytes; exactly 512 needs no "
+           "when empty, `to` only for Maintainers, `maintainers` sorted) padded with spaces to a multiple of 512 bytes; exactly 512 needs no "
            "padding, one byte more takes 1,024; over 12,288 bytes is refused by the writer.",
            dict(op="format", cases=[dict(snapshot=c["snapshot"]) for c in cases]),
            dict(results=[{k: v for k, v in c.items() if k != "snapshot"} for c in cases]))
 
 
 def decode_vectors():
-    good = encode(dict(env="dev", audience="members", generatedAt=GENERATED_AT, vars={"A": var("1")}))
+    good = encode(dict(env="dev", audience="members", generatedAt=GENERATED_AT, maintainers=[B(ALICE)],
+                       vars={"A": var("1")}))
     raw = good.rstrip(b" ")
+    MA = b'"maintainers":["' + B(ALICE).encode() + b'"],'
+    two = sorted([B(ALICE), B(BOB)])
+    MS2 = b'"maintainers":["' + two[1].encode() + b'","' + two[0].encode() + b'"],'
 
     def pad(b, n=512):
         return b + b" " * (n - len(b))
@@ -370,15 +401,19 @@ def decode_vectors():
         ("tab_in_padding", raw + b"\t" + b" " * (511 - len(raw)), False),
         ("nul_padding", raw + b"\x00" * (512 - len(raw)), False),
         ("whitespace_inside", pad(raw.replace(b",", b", ", 1)), False),
-        ("keys_unsorted", pad(b'{"v":1,"audience":"members","env":"dev","generatedAt":1767225600000,"vars":{}}'), False),
-        ("empty_note", pad(b'{"audience":"members","env":"dev","generatedAt":1767225600000,"v":1,'
+        ("keys_unsorted", pad(b'{"v":1,"audience":"members","env":"dev","generatedAt":1767225600000,' + MA
+                              + b'"vars":{}}'), False),
+        ("empty_note", pad(b'{"audience":"members","env":"dev","generatedAt":1767225600000,' + MA + b'"v":1,'
                            b'"vars":{"A":{"note":"","type":"secret","value":"1"}}}'), False),
         ("unknown_key", pad(raw[:-1] + b',"x":1}'), False),
         ("unknown_type", pad(raw.replace(b'"secret"', b'"file"')), False),
-        ("members_with_to", pad(b'{"audience":"members","env":"dev","generatedAt":1767225600000,"to":["'
+        ("members_with_to", pad(b'{"audience":"members","env":"dev","generatedAt":1767225600000,' + MA + b'"to":["'
                                 + B(ALICE).encode() + b'"],"v":1,"vars":{}}'), False),
-        ("maintainers_without_to", pad(b'{"audience":"maintainers","env":"dev","generatedAt":1767225600000,"v":1,'
-                                       b'"vars":{}}'), False),
+        ("maintainers_without_to", pad(b'{"audience":"maintainers","env":"dev","generatedAt":1767225600000,' + MA
+                                       + b'"v":1,"vars":{}}'), False),
+        ("no_maintainers", pad(raw.replace(MA, b"")), False),
+        ("maintainers_unsorted", pad(raw.replace(MA, MS2)), False),
+        ("maintainers_empty", pad(raw.replace(MA, b'"maintainers":[],')), False),
         ("bad_var_name", pad(raw.replace(b'"A"', b'"1A"')), False),
         ("bad_env_name", pad(raw.replace(b'"dev"', b'"-dev"')), False),
         ("version_2", pad(raw.replace(b'"v":1', b'"v":2')), False),
@@ -390,7 +425,8 @@ def decode_vectors():
         assert (decode(pt) is not None) == ok, name
     vector("decode_refused", "a reader takes only the exact canonical bytes: a length that is not a multiple of 512, "
            "padding other than spaces, any whitespace or key order other than canonical, an empty `note`, an unknown "
-           "key or type, `to` on a Members snapshot or none on a Maintainers one, a bad name, another version, an "
+           "key or type, `to` on a Members snapshot or none on a Maintainers one, a missing, empty or unsorted "
+           "`maintainers` list, a bad name, another version, an "
            "escape the writer never makes or a non-integer time is malformed.",
            dict(op="decode", cases=[dict(name=n, plaintextHex=H(pt)) for n, pt, _ in cases]),
            dict(results=[dict(name=n, snapshot=snapshot_json(decode(pt))) if ok else dict(name=n, error="malformed")
@@ -422,7 +458,7 @@ def open_case(manifest, sealed, owner_keys, reader, epoch_keys):
 
 
 def open_vectors():
-    dev = dict(env="dev", audience="members", generatedAt=GENERATED_AT,
+    dev = dict(env="dev", audience="members", generatedAt=GENERATED_AT, maintainers=[B(ALICE), B(BOB), B(CAROL)],
                vars={"API_URL": var("https://api.example.test", "variable"), "API_TOKEN": var("fake-token-1")})
     plain, file_id, sealed = sealed_members(dev)
     man = manifest_of(ALICE, sealed)
@@ -438,6 +474,7 @@ def open_vectors():
 
     recipients = [ALICE, BOB, CAROL]
     prod = dict(env="production", audience="maintainers", generatedAt=GENERATED_AT, to=[B(p) for p in recipients],
+                maintainers=[B(p) for p in recipients],
                 vars={"STRIPE_KEY": var("sk_test_fake_1"), "DB_URL": var("postgres://fake:fake@db.example/prod"),
                       "SENTRY_DSN": var("https://fake@sentry.example/1", note="error reporting")})
     plain, k_obj, file_id, ivs, sealed = sealed_maintainers(prod, ALICE, recipients)
@@ -490,13 +527,19 @@ def open_vectors():
     _, _, _, _, lsealed = sealed_maintainers(lying, ALICE, recipients, label=b"lying to")
     man2 = manifest_of(ALICE, lsealed)
     r2 = open_case(man2, lsealed, okeys, reader_json(BOB), [])
-    assert r1 == r2 == dict(error="malformed")
-    vector("audience_mismatch", "an artifact that opens but disagrees with its envelope is malformed: Maintainers "
-           "content in a Members (DFPK 0x01) file, and a DFPK 0x02 snapshot whose `to` does not list its owner first.",
+    unlisted = dict(dev, maintainers=[B(BOB)])
+    _, _, usealed = sealed_members(unlisted, label=b"owner not listed")
+    man3 = manifest_of(ALICE, usealed)
+    r3 = open_case(man3, usealed, [], reader_json(BOB), k0)
+    assert r1 == r2 == r3 == dict(error="malformed")
+    vector("audience_mismatch", "an artifact that opens but disagrees with its envelope or its manifest is malformed: "
+           "Maintainers content in a Members (DFPK 0x01) file, a DFPK 0x02 snapshot whose `to` does not list its owner "
+           "first, and a snapshot whose `maintainers` does not list its owner (the writer was a maintainer).",
            dict(op="open", repoId=H(repoId), cases=[
                dict(manifest=man, sealed=H(wsealed), ownerKeys=[], reader=reader_json(BOB), epochKeys=k0),
-               dict(manifest=man2, sealed=H(lsealed), ownerKeys=okeys, reader=reader_json(BOB), epochKeys=[])]),
-           dict(results=[r1, r2]))
+               dict(manifest=man2, sealed=H(lsealed), ownerKeys=okeys, reader=reader_json(BOB), epochKeys=[]),
+               dict(manifest=man3, sealed=H(usealed), ownerKeys=[], reader=reader_json(BOB), epochKeys=k0)]),
+           dict(results=[r1, r2, r3]))
 
 
 def hx(label):
@@ -508,15 +551,16 @@ def m(label, owner, at, sup=()):
                 packHash=hx(label), supersedes=[hx(s) for s in sup], createdAt=at, label=label)
 
 
-def resolve_vector(name, desc, maintainers, manifests, opened, check):
+def resolve_vector(name, desc, maintainers, manifests, opened, check, former=()):
     op = {hx(k): v for k, v in opened.items()}
-    res = resolve({B(p) for p in maintainers}, manifests, op)
+    res = resolve({B(p) for p in maintainers}, {B(p) for p in former}, manifests, op)
     by_id = {mm["id"]: mm["label"] for mm in manifests}
     check({e["env"]: dict(e, heads=[by_id[i] for i in e["heads"]], snapshots=[by_id[i] for i in e["snapshots"]])
            for e in res["environments"]},
           [dict(i, id=by_id[i["id"]]) for i in res["ignored"]],
           [dict(heads=[by_id[i] for i in g["heads"]], snapshots=[by_id[i] for i in g["snapshots"]]) for g in res["hidden"]])
     vector(name, desc, dict(op="resolve", maintainers=sorted(B(p) for p in maintainers),
+                            formerMaintainers=sorted(B(p) for p in former),
                             manifests=[{k: v for k, v in mm.items() if k != "label"} for mm in manifests], opened=op),
            res)
 
@@ -569,12 +613,26 @@ def resolve_vectors():
 
     def removed(envs, ign, hid):
         assert envs["production"]["state"] == "current" and envs["production"]["heads"] == ["s3"]
-        assert envs["production"]["snapshots"] == ["s1", "s3"] and [i["id"] for i in ign] == ["s2"]
-    resolve_vector("removed_maintainer_skipped", "carol's change (s2) stops counting once she is no longer a "
-                   "maintainer; alice's later s3 superseded it, and supersedes s1 through it, so production has one "
-                   "head and no fork.", [ALICE],
+        assert envs["production"]["snapshots"] == ["s1", "s2", "s3"] and not ign
+    resolve_vector("removed_maintainer_mid_chain", "carol, no longer a maintainer but shown to have been one, saved s2; "
+                   "alice's later s3 superseded it, so production has one head, s3, and carol's change is history "
+                   "(never opened, never served).", [ALICE],
                    [m("s1", ALICE, 1000), m("s2", CAROL, 2000, ["s1"]), m("s3", ALICE, 3000, ["s2"])],
-                   {"s1": P, "s2": P, "s3": P}, removed)
+                   {"s1": P, "s3": P}, removed, former=[CAROL])
+
+    def stale_head(envs, ign, hid):
+        assert envs["production"]["state"] == "stale" and envs["production"]["heads"] == ["s2"]
+        assert envs["dev"]["state"] == "current" and envs["dev"]["heads"] == ["d2"]
+        assert [i["id"] for i in ign] == ["w1"]
+    resolve_vector("head_by_removed_maintainer", "carol saved production's latest change (s2) and was then removed "
+                   "(by a client that did not save it again): production's head is a change by someone who is no "
+                   "longer a maintainer, so production is `stale` and fails closed until a maintainer saves it again; "
+                   "it never falls back to alice's older s1 (which could hold a rotated credential). A writer's "
+                   "snapshot on top (w1) is still ignored. carol's change in the middle of dev (d1) does not matter.",
+                   [ALICE],
+                   [m("s1", ALICE, 1000), m("d0", ALICE, 1100), m("d1", CAROL, 1200, ["d0"]), m("s2", CAROL, 2000, ["s1"]),
+                    m("d2", ALICE, 2100, ["d1"]), m("w1", WRITER, 3000, ["s2"])],
+                   {"s1": P, "d0": D, "d2": D, "w1": P}, stale_head, former=[CAROL])
 
     def unreadable(envs, ign, hid):
         assert envs["production"]["state"] == "unreadable" and envs["production"]["heads"] == ["s2"]
@@ -633,6 +691,21 @@ def exposure_vectors():
            dict(op="exposure", environments=envs, cases=cases), dict(results=results))
 
 
+def former_vectors():
+    cur = [B(ALICE)]
+    inp = dict(maintainers=cur, configOwners=[B(ALICE), B(CAROL)], wrapOwners=[B(BOB)],
+               snapshots=[dict(ownerId=B(ALICE), maintainers=[B(ALICE), B(NAMED_OTHERS[3])]),
+                          dict(ownerId=B(WRITER), maintainers=[B(WRITER), B(NAMED_OUTSIDER)])],
+               extra=[B(NAMED_OTHERS[4])])
+    res = former_maintainers(set(inp["maintainers"]), inp["configOwners"], inp["wrapOwners"], inp["snapshots"],
+                             inp["extra"])
+    assert B(WRITER) not in res and B(NAMED_OUTSIDER) not in res and B(ALICE) not in res and len(res) == 4
+    vector("former_maintainers", "who was a maintainer: owners of config and repoKey documents (maintainer-only and "
+           "undeletable), the `maintainers` a current maintainer's snapshot lists, and the maintainer being removed; "
+           "never what a non-maintainer's snapshot claims, and never a current maintainer.",
+           dict(op="former", **inp), dict(results=res))
+
+
 def default_audience_vectors():
     names = ["production", "Production", "prod", "prod-eu", "products", "staging", "staging-2", "release",
              "release-1.2", "releases", "dev", "test", "preview", "my-production", "qa"]
@@ -647,6 +720,7 @@ def build():
     open_vectors()
     resolve_vectors()
     exposure_vectors()
+    former_vectors()
     default_audience_vectors()
 
 

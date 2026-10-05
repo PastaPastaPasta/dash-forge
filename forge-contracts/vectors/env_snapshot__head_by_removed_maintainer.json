@@ -1,0 +1,115 @@
+{
+  "name": "head_by_removed_maintainer",
+  "description": "carol saved production's latest change (s2) and was then removed (by a client that did not save it again): production's head is a change by someone who is no longer a maintainer, so production is `stale` and fails closed until a maintainer saves it again; it never falls back to alice's older s1 (which could hold a rotated credential). A writer's snapshot on top (w1) is still ignored. carol's change in the middle of dev (d1) does not matter.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
+    ],
+    "formerMaintainers": [
+      "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX"
+    ],
+    "manifests": [
+      {
+        "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "supersedes": [],
+        "createdAt": 1000
+      },
+      {
+        "id": "34K58fxKaxbHR2AL4GCUEmgqvJhTGLRhKNG2g1poE7DN",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "32720f7e01e3d260ec17c086819b48f5ebf2c3b862ae64938ad421a652cd6d34",
+        "supersedes": [],
+        "createdAt": 1100
+      },
+      {
+        "id": "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
+        "ownerId": "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+        "packHash": "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19",
+        "supersedes": [
+          "32720f7e01e3d260ec17c086819b48f5ebf2c3b862ae64938ad421a652cd6d34"
+        ],
+        "createdAt": 1200
+      },
+      {
+        "id": "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
+        "ownerId": "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+        "packHash": "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+        "supersedes": [
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "createdAt": 2000
+      },
+      {
+        "id": "ETPNSdJnTH5geB1VSGQiaUTDFfdddAJ3TFncz32GKzZS",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "36206e06e42448afa6605d3861fcfe57aed3009acaaf99967f7360d4c15998dd",
+        "supersedes": [
+          "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19"
+        ],
+        "createdAt": 2100
+      },
+      {
+        "id": "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "packHash": "054525cf10e2e0e17d3c8cc2f6a8364019f25cf5d93049c7305a95bd3f2c99b6",
+        "supersedes": [
+          "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02"
+        ],
+        "createdAt": 3000
+      }
+    ],
+    "opened": {
+      "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c": {
+        "env": "production"
+      },
+      "32720f7e01e3d260ec17c086819b48f5ebf2c3b862ae64938ad421a652cd6d34": {
+        "env": "dev"
+      },
+      "36206e06e42448afa6605d3861fcfe57aed3009acaaf99967f7360d4c15998dd": {
+        "env": "dev"
+      },
+      "054525cf10e2e0e17d3c8cc2f6a8364019f25cf5d93049c7305a95bd3f2c99b6": {
+        "env": "production"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [
+      {
+        "id": "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+        "reason": "notAMaintainer"
+      }
+    ],
+    "environments": [
+      {
+        "env": "dev",
+        "state": "current",
+        "heads": [
+          "ETPNSdJnTH5geB1VSGQiaUTDFfdddAJ3TFncz32GKzZS"
+        ],
+        "snapshots": [
+          "34K58fxKaxbHR2AL4GCUEmgqvJhTGLRhKNG2g1poE7DN",
+          "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
+          "ETPNSdJnTH5geB1VSGQiaUTDFfdddAJ3TFncz32GKzZS"
+        ]
+      },
+      {
+        "env": "production",
+        "state": "stale",
+        "heads": [
+          "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc"
+        ],
+        "snapshots": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+          "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc"
+        ]
+      }
+    ],
+    "hidden": []
+  }
+}

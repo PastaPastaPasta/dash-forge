@@ -326,6 +326,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)] // one removal: prompt, re-anchor, revoke, rotate, environments
 async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
@@ -360,11 +361,13 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     } else {
         format!("Remove {member} as a {shown} of {repo}? Their next write is refused at once")
     };
+    // Environments (DESIGN §4.5), read before they go: what they could read (keyed = held the
+    // key), and those whose latest change a removed maintainer made, saved again afterwards.
+    let removal = crate::env::prepare_removal(&s, member, keyed, role == Role::Maintainer).await;
+    let prompt = format!("{prompt}{}", removal.prompt_note(member, ctx.usd_price()));
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
     }
-    // What they could read in environments (DESIGN §4.5), before they go; keyed = held the key.
-    let (exposed, exposed_lines) = crate::env::removal_checklist(&s, member, keyed).await;
     let signer = crate::keys::signer(&s);
     // Removing a maintainer withdraws their anchors (§5.3): re-anchor their epochs under the
     // same keys first, or the repo would fall back to an older key.
@@ -406,6 +409,12 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     } else {
         None
     };
+    // after the rotation: the environments whose latest change they made, saved again
+    let (resaved, exposed_lines) = if removed {
+        crate::env::finish_removal(&s, member, &removal).await
+    } else {
+        (serde_json::Value::Null, String::new())
+    };
     ctx.emit(
         json!({
             "status": if removed { "removed" } else { "not_a_member" },
@@ -415,7 +424,8 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
             "rotation": rotation.as_ref().map(crate::keys::rotation_json),
             "droppedEpochs": dropped,
             "losingMembers": losing,
-            "environments": exposed,
+            "environments": removal.exposed,
+            "resavedEnvironments": resaved,
         }),
         || {
             if !dropped.is_empty() {

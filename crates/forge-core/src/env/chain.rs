@@ -4,9 +4,12 @@
 //!
 //! [`resolve`], step by step:
 //!
-//! 1. Manifests in `($createdAt, $id)` order. One whose `$ownerId` is not a current maintainer is
-//!    ignored (`notAMaintainer`); its `supersedes` is kept only as a link to follow (below). A
-//!    second manifest of an authorized `packHash` is ignored (`duplicate`).
+//! 1. Manifests in `($createdAt, $id)` order. One by a current maintainer counts. One by a
+//!    **former maintainer** (someone shown to have been one, [`former_maintainers`]) joins the
+//!    chain but is never opened: its values are never served. Any other is ignored
+//!    (`notAMaintainer`; consensus admits a role-1 writer's `packManifest`) and its `supersedes`
+//!    is kept only as a link to follow (below). A second manifest of a `packHash` already in the
+//!    chain is ignored (`duplicate`).
 //! 2. A snapshot `t` supersedes `s` when `t.supersedes` names `s`, directly or through ignored
 //!    manifests (so a removed maintainer's change in the middle of a chain does not split it; a
 //!    non-maintainer's manifest can never end a chain, since nothing authorized names it). A
@@ -16,9 +19,11 @@
 //!    one of its readable snapshots names; its unreadable snapshots go with it. A component with
 //!    no readable snapshot is a hidden environment (counted, never named).
 //! 4. An environment's heads are its snapshots no other of its snapshots supersedes, oldest
-//!    first. One readable head: `current`. One unreadable head: `unreadable` (the latest change
-//!    does not open here; nothing older is served). Two or more: `conflict`. None (a cycle):
-//!    `conflict` listing every snapshot.
+//!    first. One head by a former maintainer: `stale` (a maintainer must save it again; the older
+//!    values, which may hold a rotated credential, are never served instead). One readable head:
+//!    `current`. One unreadable head: `unreadable` (the latest change does not open here;
+//!    nothing older is served). Two or more: `conflict`. None (a cycle): `conflict` listing
+//!    every snapshot.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -67,6 +72,8 @@ pub enum State {
     Current,
     /// One head, which does not open for this reader.
     Unreadable,
+    /// One head, saved by someone who is no longer a maintainer: a maintainer must save it again.
+    Stale,
     /// Two or more heads (or a cycle): people pick; programs refuse.
     Conflict,
 }
@@ -122,13 +129,14 @@ fn find(parent: &mut BTreeMap<[u8; 32], [u8; 32]>, mut x: [u8; 32]) -> [u8; 32] 
     x
 }
 
-/// Resolve `manifests` (kind 8 only) against the current `maintainers` (base58) and
-/// `env_of(packHash)`: the environment an authorized snapshot opened to, `None` when it did not
-/// open for this reader. See the module docs for the steps.
+/// Resolve `manifests` (kind 8 only) against the current `maintainers` and the `former` ones
+/// (base58) and `env_of(packHash)`: the environment a current maintainer's snapshot opened to,
+/// `None` when it did not open for this reader. See the module docs for the steps.
 #[must_use]
 #[allow(clippy::too_many_lines)] // one pass, step by step as the module docs number them
 pub fn resolve<'a>(
     maintainers: &BTreeSet<String>,
+    former: &BTreeSet<String>,
     manifests: &[SnapshotRef],
     env_of: impl Fn(&[u8; 32]) -> Option<&'a str>,
 ) -> Resolution {
@@ -138,7 +146,7 @@ pub fn resolve<'a>(
     let mut passthrough: BTreeMap<[u8; 32], Vec<[u8; 32]>> = BTreeMap::new();
     let mut ignored = Vec::new();
     for m in order {
-        let reason = if !maintainers.contains(&m.owner_id) {
+        let reason = if !maintainers.contains(&m.owner_id) && !former.contains(&m.owner_id) {
             passthrough
                 .entry(m.pack_hash)
                 .or_default()
@@ -156,6 +164,9 @@ pub fn resolve<'a>(
         });
     }
 
+    // a former maintainer's snapshot is never opened: it has no environment of its own
+    let by_former = |h: &[u8; 32]| !maintainers.contains(&nodes[h].owner_id);
+    let env_of = |h: &[u8; 32]| if by_former(h) { None } else { env_of(h) };
     let targets = |t: &SnapshotRef| -> Vec<[u8; 32]> {
         let mut out = Vec::new();
         let mut seen = BTreeSet::from([t.pack_hash]);
@@ -238,7 +249,9 @@ pub fn resolve<'a>(
             let (heads, any) = heads_of(&group);
             let state = match heads.as_slice() {
                 [one] if any => {
-                    if env_of(one).is_some() {
+                    if by_former(one) {
+                        State::Stale
+                    } else if env_of(one).is_some() {
                         State::Current
                     } else {
                         State::Unreadable
@@ -275,6 +288,34 @@ pub fn resolve<'a>(
         environments,
         hidden,
     }
+}
+
+/// Who was a maintainer, beside the current `maintainers`: the owners of the repository's
+/// `config` and `repoKey` documents (consensus admits both only from a maintainer, and neither
+/// can be deleted), every `maintainers` entry of a snapshot a current maintainer wrote
+/// (`snapshots`: `(owner, opened snapshot)`), and `extra` (what the caller knows, such as the
+/// maintainer it is removing). Never what a non-maintainer's snapshot claims; never a current
+/// maintainer.
+#[must_use]
+pub fn former_maintainers<'s>(
+    maintainers: &BTreeSet<String>,
+    config_owners: impl IntoIterator<Item = String>,
+    wrap_owners: impl IntoIterator<Item = String>,
+    snapshots: impl IntoIterator<Item = (&'s str, &'s Snapshot)>,
+    extra: impl IntoIterator<Item = String>,
+) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = config_owners
+        .into_iter()
+        .chain(wrap_owners)
+        .chain(extra)
+        .collect();
+    for (owner, snap) in snapshots {
+        if maintainers.contains(owner) {
+            out.extend(snap.maintainers.iter().cloned());
+        }
+    }
+    out.retain(|m| !maintainers.contains(m));
+    out
 }
 
 /// One environment's opened snapshots, as the removal checklist reads them.
@@ -360,9 +401,12 @@ mod tests {
     ) -> Resolution {
         let map: BTreeMap<[u8; 32], Option<&'static str>> =
             opened.iter().map(|(l, e)| (h(l), *e)).collect();
-        resolve(&maint.iter().map(|s| (*s).to_owned()).collect(), ms, |p| {
-            map.get(p).copied().flatten()
-        })
+        resolve(
+            &maint.iter().map(|s| (*s).to_owned()).collect(),
+            &BTreeSet::new(),
+            ms,
+            |p| map.get(p).copied().flatten(),
+        )
     }
 
     #[test]
@@ -394,6 +438,59 @@ mod tests {
         );
         assert_eq!(r.env("prod").unwrap().heads, vec!["s1"]);
         assert_eq!(r.ignored[0].reason, IgnoredReason::NotAMaintainer);
+    }
+
+    #[test]
+    fn a_removed_maintainers_head_fails_closed_but_a_writers_never_does() {
+        let ms = [
+            m("s1", "A", 1, &[]),
+            m("s2", "C", 2, &["s1"]),
+            m("w1", "W", 3, &["s2"]),
+        ];
+        let opened = [
+            ("s1", Some("prod")),
+            ("s2", Some("prod")),
+            ("w1", Some("prod")),
+        ];
+        let map: BTreeMap<[u8; 32], Option<&'static str>> =
+            opened.iter().map(|(l, e)| (h(l), *e)).collect();
+        let maint: BTreeSet<String> = ["A".to_owned()].into();
+        let env_of = |p: &[u8; 32]| map.get(p).copied().flatten();
+        // C shown to have been a maintainer: production is stale, never back at s1
+        let former: BTreeSet<String> = ["C".to_owned()].into();
+        let r = resolve(&maint, &former, &ms, env_of);
+        let e = r.env("prod").unwrap();
+        assert_eq!(
+            (e.state, e.heads.clone()),
+            (State::Stale, vec!["s2".into()])
+        );
+        // no evidence about C: C's snapshot is ignored like the writer's
+        let r = resolve(&maint, &BTreeSet::new(), &ms, env_of);
+        assert_eq!(r.env("prod").unwrap().heads, vec!["s1"]);
+        assert_eq!(r.ignored.len(), 2);
+    }
+
+    #[test]
+    fn former_maintainers_come_from_maintainer_documents_and_maintainers_snapshots() {
+        let snap = |ms: &[&str]| Snapshot {
+            env: "x".into(),
+            audience: Audience::Members,
+            generated_at: 0,
+            maintainers: ms.iter().map(|m| (*m).to_owned()).collect(),
+            to: Vec::new(),
+            vars: BTreeMap::new(),
+        };
+        let (a, w) = (snap(&["A", "B"]), snap(&["W", "X"]));
+        let cur: BTreeSet<String> = ["A".to_owned()].into();
+        let got = former_maintainers(
+            &cur,
+            ["C".to_owned(), "A".to_owned()],
+            ["D".to_owned()],
+            [("A", &a), ("W", &w)],
+            ["E".to_owned()],
+        );
+        let want: BTreeSet<String> = ["B", "C", "D", "E"].map(str::to_owned).into();
+        assert_eq!(got, want);
     }
 
     #[test]

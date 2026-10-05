@@ -115,7 +115,8 @@ export async function openSnapshot(manifest: ManifestCheck, sealed: Uint8Array, 
   }
   try {
     const s = decodeSnapshot(plain)
-    if (s === null || s.audience !== audience) throw new SnapshotOpenError('malformed')
+    // the writer was a maintainer when it saved this: it lists itself among them
+    if (s === null || s.audience !== audience || !s.maintainers.includes(manifest.ownerId)) throw new SnapshotOpenError('malformed')
     if (audience === 'maintainers' && (s.to.length !== sealed[8] || s.to[0] !== manifest.ownerId)) {
       throw new SnapshotOpenError('malformed')
     }

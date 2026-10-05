@@ -52,6 +52,17 @@
 //! heads and refused by `dg env run`, `get` and `export` (fail closed), never merged
 //! automatically. A maintainer resolves it by writing a snapshot that supersedes every head.
 //!
+//! # A removed maintainer's latest change (`env_snapshot__head_by_removed_maintainer`)
+//!
+//! Consensus cannot tell a removed maintainer's snapshot from a writer's (both carry `r` 1, and
+//! the maintainer document is deleted on removal), so readers look for evidence that its owner was
+//! a maintainer ([`chain::former_maintainers`]: a `config` or `repoKey` document they own, or a
+//! current maintainer's snapshot listing them in `maintainers`). Such a snapshot joins the chain
+//! unopened; when it is an environment's newest, the environment is `stale` and fails closed
+//! until a maintainer saves it again (`dg env resave`), so a removal never resurrects older
+//! values. Without evidence it is ignored like any writer's. `dg collab remove` saves again,
+//! before the rotation, every environment whose latest change the removed maintainer made.
+//!
 //! # What stays public
 //!
 //! That environments exist and how many; each change's author, time and padded size; for a
@@ -66,7 +77,8 @@ pub mod service;
 pub(crate) mod conformance;
 
 pub use chain::{
-    exposure, resolve, EnvState, Exposure, HiddenEnv, Ignored, Resolution, SnapshotRef,
+    exposure, former_maintainers, resolve, EnvState, Exposure, HiddenEnv, Ignored, Resolution,
+    SnapshotRef, State,
 };
 pub use codec::{open, owner_keys, seal_maintainers, seal_members, OpenError, OpenKeys};
 pub use format::{Snapshot, Var, VarType};
@@ -146,6 +158,9 @@ pub const ACCESS_SENTENCE: &str = "Access is granted, not logged.";
 /// At most this many people receive a Maintainers snapshot, the writer included (the
 /// specific-people header's limit, [`crate::private::named::MAX_RECIPIENTS`]).
 pub const MAX_RECIPIENTS: usize = crate::private::named::MAX_RECIPIENTS;
+
+/// A snapshot lists at most this many maintainers (its `maintainers` field).
+pub const MAX_MAINTAINERS: usize = 64;
 
 /// Whether `name` is a valid environment name: 1 to 64 of `A-Z a-z 0-9 . _ -`, starting with a
 /// letter or digit.

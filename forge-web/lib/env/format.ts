@@ -13,6 +13,8 @@ export const BUCKET = 512
 export const MAX_SNAPSHOT = 12_288
 /** At most this many people receive a Maintainers snapshot, the writer included. */
 export const MAX_RECIPIENTS = 16
+/** A snapshot lists at most this many maintainers. */
+export const MAX_MAINTAINERS = 64
 
 export type Audience = 'members' | 'maintainers'
 export type VarType = 'secret' | 'variable'
@@ -31,6 +33,11 @@ export interface Snapshot {
   readonly audience: Audience
   /** When the writer made it (ms). */
   readonly generatedAt: number
+  /**
+   * The repository's maintainers when it was saved (base58), the writer among them: what lets a
+   * reader tell a removed maintainer's change from a writer's. Encoded sorted.
+   */
+  readonly maintainers: readonly string[]
   /** Maintainers only: the recipients in slot order (base58), the writer first; empty for Members. */
   readonly to: readonly string[]
   /** The entries by name (a `Map`: a name like `__proto__` is just a name). */
@@ -96,6 +103,12 @@ function canonicalId(id: string): boolean {
 export function snapshotProblem(s: Snapshot): string | null {
   if (!validEnvName(s.env)) return `${JSON.stringify(s.env)} is not an environment name`
   if (!Number.isSafeInteger(s.generatedAt) || s.generatedAt < 0 || s.generatedAt > MAX_SAFE) return 'generatedAt is out of range'
+  if (s.maintainers.length === 0 || s.maintainers.length > MAX_MAINTAINERS) return `a snapshot lists 1 to ${MAX_MAINTAINERS} maintainers`
+  const listed = new Set<string>()
+  for (const m of s.maintainers) {
+    if (!canonicalId(m) || listed.has(m)) return `${JSON.stringify(m)} is not a maintainer identity id, or is listed twice`
+    listed.add(m)
+  }
   for (const [name, v] of s.vars) {
     if (!validVarName(name)) return `${JSON.stringify(name)} is not a variable name`
     if (v.type !== 'secret' && v.type !== 'variable') return `${name} has an unknown type`
@@ -115,7 +128,8 @@ export function snapshotProblem(s: Snapshot): string | null {
 /** The canonical JSON (sorted keys, no whitespace; `note` left out when empty; `to` for Maintainers only). */
 function canonical(s: Snapshot): string {
   const str = (x: string) => JSON.stringify(x)
-  let out = `{"audience":${str(s.audience)},"env":${str(s.env)},"generatedAt":${s.generatedAt}`
+  const maintainers = [...s.maintainers].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  let out = `{"audience":${str(s.audience)},"env":${str(s.env)},"generatedAt":${s.generatedAt},"maintainers":[${maintainers.map(str).join(',')}]`
   if (s.audience === 'maintainers') out += `,"to":[${s.to.map(str).join(',')}]`
   const names = [...s.vars.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   const entries = names.map((n) => {
@@ -145,7 +159,7 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
   return out
 }
 
-const TOP_KEYS = new Set(['audience', 'env', 'generatedAt', 'to', 'v', 'vars'])
+const TOP_KEYS = new Set(['audience', 'env', 'generatedAt', 'maintainers', 'to', 'v', 'vars'])
 const VAR_KEYS = new Set(['note', 'type', 'value'])
 
 function isObject(x: unknown): x is Record<string, unknown> {
@@ -154,7 +168,8 @@ function isObject(x: unknown): x is Record<string, unknown> {
 
 function fromJson(obj: unknown): Snapshot | null {
   if (!isObject(obj) || Object.keys(obj).some((k) => !TOP_KEYS.has(k)) || obj.v !== 1) return null
-  const { audience, env, generatedAt, vars } = obj
+  const { audience, env, generatedAt, vars, maintainers } = obj
+  if (!Array.isArray(maintainers) || maintainers.some((m) => typeof m !== 'string')) return null
   if (audience !== 'members' && audience !== 'maintainers') return null
   if (typeof env !== 'string' || typeof generatedAt !== 'number' || !isObject(vars)) return null
   let to: string[] = []
@@ -172,7 +187,7 @@ function fromJson(obj: unknown): Snapshot | null {
     if ((type !== 'secret' && type !== 'variable') || typeof value !== 'string' || typeof note !== 'string') return null
     out.set(name, { type, value, note })
   }
-  const s: Snapshot = { env, audience, generatedAt, to, vars: out }
+  const s: Snapshot = { env, audience, generatedAt, maintainers: maintainers as string[], to, vars: out }
   return snapshotProblem(s) === null ? s : null
 }
 

@@ -233,7 +233,8 @@ pub fn open(
             _ => return Err(OpenError::SealedPackCorrupt),
         };
     let snap = Snapshot::decode(&plain).ok_or(OpenError::Malformed)?;
-    if snap.audience != audience {
+    // the writer was a maintainer when it saved this: it lists itself among them
+    if snap.audience != audience || !snap.maintainers.iter().any(|m| m == manifest.owner_id) {
         return Err(OpenError::Malformed);
     }
     if audience == Audience::Maintainers
