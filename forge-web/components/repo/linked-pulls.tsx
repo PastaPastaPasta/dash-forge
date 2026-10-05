@@ -19,6 +19,7 @@ import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { mirrorRepo, pullHref } from '@/components/repo/target-href'
 import { importedHost } from '@/lib/view/ref-targets'
+import { closedByPr } from '@/lib/rules/transition'
 
 function stateOf(p: PullRow): { label: string; icon: JSX.Element } {
   const { label, Icon, klass } = pullStateView(p.state)
@@ -112,4 +113,16 @@ export function LinkedPulls({ addr, number, backlinks }: { addr: RepoAddress | u
       {data.searched !== null ? <p className="mt-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">Searched the newest {data.searched} pull requests.</p> : null}
     </div>
   )
+}
+
+/**
+ * The PR a close names as its cause (`closedByPr`), when it holds (the shared `closedByPr` rule):
+ * among the PRs whose description closes issue `issue`, merged and not imported. Null otherwise
+ * (not read yet, not merged, or naming another PR): the close shows as a plain one.
+ */
+export function namedClosingPull(backlinks: IssueBacklinks, issue: number, pr: number): PullRow | null {
+  const p = backlinks.linking.data?.pulls.find((x) => x.number === pr)
+  if (p === undefined) return null
+  const ok = closedByPr(issue, pr, { number: p.number, merged: p.state.merged, body: p.body, imported: p.imported })
+  return ok === null ? null : p
 }

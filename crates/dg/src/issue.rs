@@ -1645,6 +1645,7 @@ mod tests {
             created_at: 1,
             reason,
             dup_number: dup,
+            closed_by_pr: None,
         };
         assert_eq!(
             transition_line(&t(Some(3), Some(1)), 3),
@@ -1674,6 +1675,7 @@ mod tests {
             created_at: at,
             reason: None,
             dup_number: None,
+            closed_by_pr: None,
         };
         let transitions = [transition("t3", 30, 1), transition("t4", 40, 2)];
         let comments = [comment("c2", 20)];

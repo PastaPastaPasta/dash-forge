@@ -1,0 +1,16 @@
+{
+  "name": "names_itself",
+  "description": "A close naming the issue's own number reads as a plain close.",
+  "case": "closed_by_pr",
+  "input": {
+    "issue": 7,
+    "closedByPr": 7,
+    "pr": {
+      "number": 7,
+      "merged": true,
+      "body": "Fixes #7",
+      "imported": false
+    }
+  },
+  "expected": null
+}

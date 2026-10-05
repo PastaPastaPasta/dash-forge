@@ -2752,6 +2752,18 @@ mod tests {
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "profile_input" | "avatar_config" | "profile_bot" => run_profile_case(v),
+            "closed_by_pr" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct ClosedByInput {
+                    issue: u32,
+                    closed_by_pr: Option<u32>,
+                    pr: Option<super::transition::ClosingPr>,
+                }
+                let inp: ClosedByInput = input(v);
+                let got = super::transition::closed_by_pr(inp.issue, inp.closed_by_pr, inp.pr.as_ref());
+                assert_eq!(got, expected::<Option<u32>>(v), "vector `{}`", v.name);
+            }
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
             "pubkey_entry" | "commit_signature" | "tag_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),

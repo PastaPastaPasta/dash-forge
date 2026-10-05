@@ -1,0 +1,16 @@
+{
+  "name": "not_merged",
+  "description": "A close naming a PR that is not merged reads as a plain close.",
+  "case": "closed_by_pr",
+  "input": {
+    "issue": 3,
+    "closedByPr": 7,
+    "pr": {
+      "number": 7,
+      "merged": false,
+      "body": "Fixes #3",
+      "imported": false
+    }
+  },
+  "expected": null
+}

@@ -913,6 +913,10 @@ pub fn transition_from_doc(d: &FetchedDocument) -> Option<Transition> {
         created_at: d.created_at.unwrap_or_default(),
         reason: d.field_u64("reason").and_then(|n| u8::try_from(n).ok()),
         dup_number: d.field_u64("dupNumber").and_then(|n| u32::try_from(n).ok()),
+        closed_by_pr: d
+            .field_u64(TRANSITION_CLOSED_BY_PR)
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0),
     })
 }
 
@@ -1492,6 +1496,8 @@ pub fn transition_props(
 /// The `transition` property that records a close reason (QW-069; a `build.py` rider flag, so a
 /// writer feature-detects it on the registered contract).
 pub const TRANSITION_REASON: &str = "reason";
+/// `transition.closedByPr` (UPDATE-1 `transition_closed_by_pr`): the PR whose merge closed an issue.
+pub const TRANSITION_CLOSED_BY_PR: &str = "closedByPr";
 /// `release.targetOid` (UPDATE-1 `release_target_oid`): the tag tip a public revision records.
 pub const RELEASE_TARGET_OID: &str = "targetOid";
 
@@ -3278,6 +3284,9 @@ impl<'a> Collab<'a> {
     /// ("Fixes #2"). A `transition` names no cause, so the close is matched to the merge it
     /// followed. Requests: one read of the repository's transition feed back from the close,
     /// and one read per candidate pull request (usually one). `None` for any other close.
+    ///
+    /// A close that names its merge (`closedByPr`) on a public repository is judged by that
+    /// instead ([`crate::rules::transition::closed_by_pr`]): the PR's document and state.
     pub async fn closing_merge(
         &self,
         repo: &RepoRef,
@@ -3287,6 +3296,28 @@ impl<'a> Collab<'a> {
         use crate::rules::transition::{ISSUE_CLOSE, PR_MERGE};
         if close.kind != ISSUE_CLOSE {
             return Ok(None);
+        }
+        // A close that names its merge (`closedByPr`, UPDATE-1) is judged by that alone, and only
+        // on a public repository: the PR must be merged and close the issue, or the close is a
+        // plain one (no timing guess).
+        if let (Some(n), Visibility::Public) = (close.closed_by_pr, repo.visibility) {
+            let pr = match self.patch(repo, n).await? {
+                Some(p) => {
+                    let sum = self.state_sum(repo, &p.document_id).await?;
+                    Some(crate::rules::transition::ClosingPr {
+                        number: n,
+                        merged: crate::rules::transition::status_of_code(sum).merged,
+                        body: p.body.clone(),
+                        imported: p.imported.is_some(),
+                    })
+                }
+                None => None,
+            };
+            return Ok(crate::rules::transition::closed_by_pr(
+                issue,
+                Some(n),
+                pr.as_ref(),
+            ));
         }
         let collab = self.collab_contract(repo).await?;
         let from = close.created_at.saturating_sub(Self::CLOSED_IN_WINDOW_MS);
@@ -4057,7 +4088,7 @@ impl<'a> Collab<'a> {
             return Ok(None);
         }
         let e = match self
-            .set_state_from(repo, &target, StateAction::Draft, None, Some(code), None)
+            .set_state_from(repo, &target, StateAction::Draft, None, Some(code), None, None)
             .await
         {
             Ok(c) => return Ok(Some(c.transition_id)),
@@ -5050,7 +5081,22 @@ impl<'a> Collab<'a> {
         action: StateAction,
         merge_oid: Option<&[u8]>,
     ) -> Result<StateChange> {
-        self.set_state_from(repo, target, action, merge_oid, None, None)
+        self.set_state_from(repo, target, action, merge_oid, None, None, None)
+            .await
+    }
+
+    /// Close the issue `target` because pull request `pr` merged and its description closes it
+    /// ("Fixes #N"): [`Self::set_state`]'s close, whose transition also names the pull request
+    /// (`closedByPr`, UPDATE-1) on a public repository whose contract has the field. Readers
+    /// show "closed in #N" once they verify that PR is merged and names the issue
+    /// ([`crate::rules::transition::closed_by_pr`]).
+    pub async fn close_by_merge(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        pr: u32,
+    ) -> Result<StateChange> {
+        self.set_state_from(repo, target, StateAction::Close, None, None, None, Some(pr))
             .await
     }
 
@@ -5064,7 +5110,7 @@ impl<'a> Collab<'a> {
         target: &Target,
         closed: &ClosedAs,
     ) -> Result<StateChange> {
-        self.set_state_from(repo, target, StateAction::Close, None, None, Some(closed))
+        self.set_state_from(repo, target, StateAction::Close, None, None, Some(closed), None)
             .await
     }
 
@@ -5096,6 +5142,7 @@ impl<'a> Collab<'a> {
         merge_oid: Option<&[u8]>,
         known_code: Option<i64>,
         closed: Option<&ClosedAs>,
+        closed_by: Option<u32>,
     ) -> Result<StateChange> {
         let me = self.signer_id()?;
         let role = self.signer_role(repo).await?;
@@ -5143,6 +5190,19 @@ impl<'a> Collab<'a> {
         let mut props = transition_props(target, &mv, merge_oid)?;
         let collab = self.collab_contract(repo).await?;
         let closed_as = with_close_reason(&mut props, &collab, target, &mv, closed)?;
+        // The merge that closes an issue, named where readers may see it (a public repository)
+        // and the contract has the field: an issue close only.
+        if let Some(n) = closed_by {
+            if mv.kind == crate::rules::transition::ISSUE_CLOSE
+                && repo.visibility == Visibility::Public
+                && collab.has_property(DOC_TRANSITION, TRANSITION_CLOSED_BY_PR)
+            {
+                props.insert(
+                    TRANSITION_CLOSED_BY_PR.to_string(),
+                    FieldValue::integer(u64::from(n)),
+                );
+            }
+        }
         match self.write(repo, &collab, DOC_TRANSITION, props).await {
             Ok(transition_id) => Ok(StateChange {
                 route,

@@ -1,0 +1,16 @@
+{
+  "name": "other_pr_read",
+  "description": "The PR read must be the one the close names.",
+  "case": "closed_by_pr",
+  "input": {
+    "issue": 3,
+    "closedByPr": 7,
+    "pr": {
+      "number": 8,
+      "merged": true,
+      "body": "Fixes #3",
+      "imported": false
+    }
+  },
+  "expected": null
+}

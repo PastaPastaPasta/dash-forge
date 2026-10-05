@@ -22,7 +22,7 @@ import { trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
-import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
+import { LinkedPulls, namedClosingPull, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
 import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
@@ -551,7 +551,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   ),
                 }
               : {})}
-            closedIn={(t) => closedInRef(t, backlinks, addr)}
+            closedIn={(t) => closedInRef(t, backlinks, addr, home.repo.visibility === 'public' ? issue.number : null)}
             closeWhy={(t) => closeWhyOf(t, issue.number, data.duplicates ?? NO_DUPLICATES, (n) => (addr ? repoHref('/repo/issue', addr, { number: String(n) }) : ''))}
             crossRefs={crossRefsOf(backlinks.linking.data, addr)}
             imported={origin === null ? null : { origin, signer: issue.author, createdAt: issue.createdAt }}
@@ -788,9 +788,10 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
 }
 
 /** "closed this as completed in #3": the merged PR that closes this issue whose merge made `t` (QW2-048). */
-function closedInRef(t: TransitionView, backlinks: IssueBacklinks, addr: RepoAddress | undefined): TimelineRef | null {
+function closedInRef(t: TransitionView, backlinks: IssueBacklinks, addr: RepoAddress | undefined, issue: number | null): TimelineRef | null {
   if (addr === undefined) return null
-  const pull = closedIn(t, backlinks.merges)
+  // A close naming its merge is judged by that alone, on a public repo (`issue` null otherwise).
+  const pull = closedIn(t, backlinks.merges, issue === null ? undefined : (pr) => namedClosingPull(backlinks, issue, pr))
   return pull === null ? null : { number: pull.number, title: pull.title, href: pullHref(addr, pull.number) }
 }
 

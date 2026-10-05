@@ -1,0 +1,11 @@
+{
+  "name": "pr_missing",
+  "description": "A close naming a PR that does not exist reads as a plain close.",
+  "case": "closed_by_pr",
+  "input": {
+    "issue": 3,
+    "closedByPr": 7,
+    "pr": null
+  },
+  "expected": null
+}

@@ -672,7 +672,7 @@ export async function setTargetState(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string; closed?: ClosedAs },
+  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string; closed?: ClosedAs; closedByPr?: number },
 ): Promise<WriteResult> {
   return writeTransition(sdk, auth, repo, (type, data, intent) => writeRepoDoc(sdk, auth, repo, type, data, intent), input)
 }
