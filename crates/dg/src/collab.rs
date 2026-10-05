@@ -390,10 +390,12 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     // after the rotation (their snapshots stop counting when they go).
     let mut removal =
         crate::env::prepare_removal(&s, member, keyed, role == Role::Maintainer).await;
-    if no_resave {
-        removal.skip_saves(member);
-    }
-    let prompt = format!("{prompt}{}", removal.explain(member, ctx.usd_price()));
+    let explained = if no_resave {
+        removal.explain_skipped(member)
+    } else {
+        removal.explain(member, ctx.usd_price())
+    };
+    let prompt = format!("{prompt}{explained}");
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
     }

@@ -1701,6 +1701,32 @@ impl Removal {
         )
     }
 
+    /// [`Self::explain`] under `--no-resave`: name each environment that changes when `member`
+    /// goes (none is saved again), then drop the saves. Returns the prompt's sentence.
+    pub fn explain_skipped(&mut self, member: &str) -> String {
+        explain_pins(&[], &self.cannot, member, "After the removal");
+        if self.pins.is_empty() {
+            return String::new();
+        }
+        for p in &self.pins {
+            eprintln!(
+                "  {}: changes when {member} goes: it then holds the version before their change, or a conflict. Not saved again (--no-resave).",
+                p.env
+            );
+        }
+        let n = self.pins.len();
+        self.skip_saves(member);
+        let verb = if n == 1 {
+            "changes and is"
+        } else {
+            "change and are"
+        };
+        format!(
+            ". {} {verb} not saved again (--no-resave)",
+            count(n, "environment")
+        )
+    }
+
     /// Whether anything is to be saved again.
     #[must_use]
     pub fn saves(&self) -> bool {
