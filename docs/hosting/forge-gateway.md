@@ -175,6 +175,26 @@ Badges, feeds and previews are cached for `GATEWAY_RENDER_TTL_SECS`. When Platfo
 - **Request size:** a clone's request body is capped at 16 MiB, and each response at `GATEWAY_SERVE_TIMEOUT_SECS`.
 - **Surface:** only the routes above. Mirrors are configured `http.getanyfile=false` (no dumb-HTTP file serving) and `http.receivepack=false`; the staging namespace is hidden from the advertisement. The client's address never reaches git.
 - **Content:** the gateway serves what Platform's refs point at. Hiding an issue (kinds 24/25) affects the issue feed, not git objects. A takedown is the operator's policy: stop serving a repository by leaving `GATEWAY_ALL_PUBLIC` off and listing the rest, or block the path at the proxy.
+- **Outbound requests:** a repository's pack URLs are written by whoever pushed it, so a stranger can make the gateway fetch them. The fetch only follows public `https` URLs, refuses a redirect to anything else, and drops DNS answers that are private, loopback, link-local, CGNAT (100.64/10) or unique-local (fc00::/7) addresses. Back that up with an egress firewall.
+
+### Egress firewall
+
+The gateway needs to reach only the internet: DNS, the network's DAPI nodes (port 1443), its quorum URL, and the storage repositories use (IPFS gateways and S3 endpoints, port 443). On a home or office network, refuse everything else from the gateway's container, so no bug in the gateway, `git` or the helper can reach the LAN. With Docker, rules for traffic leaving a container go in the `DOCKER-USER` chain; the host's own addresses are reached through `INPUT`:
+
+```sh
+# The compose network's subnet: docker network inspect forge-gateway_default
+SUBNET=172.18.0.0/16
+for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
+  iptables -I DOCKER-USER -s "$SUBNET" -d "$net" -j REJECT
+done
+iptables -I DOCKER-USER -s "$SUBNET" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -I INPUT -s "$SUBNET" -m conntrack --ctstate NEW -j REJECT
+# IPv6, if the network has it:
+# ip6tables -I DOCKER-USER -s <subnet6> -d fc00::/7 -j REJECT
+# ip6tables -I DOCKER-USER -s <subnet6> -d fe80::/10 -j REJECT
+```
+
+Rules inserted with `-I` go first, so the `ESTABLISHED` rule, inserted last, keeps replies flowing. If the forge-relay of `GATEWAY_WAKE_URL` (or a DAPI node) is on the LAN, allow exactly its address and port by running `iptables -I DOCKER-USER -s "$SUBNET" -d <address> -p tcp --dport <port> -j ACCEPT` after the rules above, so it lands above the rejects. Make the rules persistent the way the host does (`iptables-persistent`, or the Proxmox firewall on the LXC or VM, which can express the same rules per guest).
 
 ## Monitoring
 
