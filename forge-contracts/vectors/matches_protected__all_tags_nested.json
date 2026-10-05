@@ -1,0 +1,12 @@
+{
+  "name": "all_tags_nested",
+  "description": "The default tag pattern covers a nested tag (a monorepo's tools/v0.1.0).",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/tags/tools/v0.1.0",
+    "patterns": [
+      "refs/tags/**"
+    ]
+  },
+  "expected": true
+}

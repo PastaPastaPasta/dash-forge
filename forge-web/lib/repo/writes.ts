@@ -50,7 +50,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, asIdentifierString, withVis, type RepoRef } from './contract'
-import { isRc1BranchName, isRc1OidHex, isRc1TagName } from '../rules'
+import { defaultProtectedPatterns, isRc1BranchName, isRc1OidHex, isRc1TagName } from '../rules'
 import { invalidateMembers, memberDocOf, readMemberships, roleOfMemberDoc } from './members'
 import { contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
@@ -63,6 +63,7 @@ import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
 import { WRITER_ROLE_CODE, grantableRoles } from '../rules/roles'
 import { repoSource } from './source'
+import { MAX_PATTERN_CHARS } from './settings'
 import { starShape } from './star-shape'
 import { writeLock, writeTransition, type StateTarget } from './transitions'
 import { LAG_RETRY_MS, retryAfterLag } from './lag-retry'
@@ -1314,6 +1315,16 @@ export interface CreateRepoInput {
   readonly forkOf?: string
   /** Set at creation only (immutable). A private repo needs the owner's encryption key. */
   readonly visibility?: Visibility
+  /**
+   * Protect the default branch and every tag from the first config on
+   * ({@link defaultProtectedPatterns}): the New repository form's default. A fork leaves it off.
+   */
+  readonly protect?: boolean
+}
+
+/** The protected patterns a create's first config carries: none, or the default set. */
+export function createPatterns(input: CreateRepoInput): string[] {
+  return input.protect === true ? defaultProtectedPatterns(input.defaultBranch ?? 'main') : []
 }
 
 /** The steps of a repo creation, in order. */
@@ -1326,7 +1337,12 @@ export type CreateRepoStep = 'repo' | 'maintainer' | 'config'
  */
 export interface PrivateCreate {
   readonly ops: EncryptionOps
-  readonly epochZero: (c: { sdk: EvoSDK; auth: WriteAuth; repo: RepoRef; network: Network; ops: EncryptionOps }, defaultBranch: string, intent: string) => Promise<boolean>
+  readonly epochZero: (
+    c: { sdk: EvoSDK; auth: WriteAuth; repo: RepoRef; network: Network; ops: EncryptionOps },
+    defaultBranch: string,
+    intent: string,
+    protectedPatterns: readonly string[],
+  ) => Promise<boolean>
 }
 
 /** A repo creation's journal entry (IndexedDB), kept until all three documents exist. */
@@ -1359,6 +1375,11 @@ export function checkRepoInput(input: CreateRepoInput): void {
     throw new Error(`${JSON.stringify(input.defaultBranch)} is not a branch name git accepts.`)
   }
   if (input.visibility === 'private' && input.forkOf !== undefined) throw new Error('a fork is public: a private repository cannot be a fork')
+  // The first config's patterns, checked before the repo and its maintainer are written:
+  // `refs/heads/<branch>` can outgrow a pattern's 100 characters.
+  if (createPatterns(input).some((p) => [...p].length > MAX_PATTERN_CHARS)) {
+    throw new Error(`The default branch name is too long to protect (a protected pattern is at most ${MAX_PATTERN_CHARS} characters). Choose a shorter one, or create the repository unprotected.`)
+  }
 }
 
 function journalKey(network: Network, ownerId: string, name: string): string {
@@ -1536,9 +1557,10 @@ export async function createRepo(
   // 3. the first config (append-only; one is enough). A private repo's is its epoch-0 anchor,
   // after the owner's self-wrap of a fresh key (§5.3).
   await step('config', async () => {
+    const patterns = createPatterns(input)
     if (visibility === 'private') {
       const p = privateCreate as PrivateCreate
-      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key)
+      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key, patterns)
       return
     }
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
@@ -1546,7 +1568,13 @@ export async function createRepo(
     await createDocumentIdempotent(sdk, auth, {
       contractId: forge.core,
       documentType: DOC.config,
-      data: withVis(visibility, DOC.config, { repoId: R, defaultBranch: input.defaultBranch ?? 'main', backend: { mode: 0 } }),
+      data: withVis(visibility, DOC.config, {
+        repoId: R,
+        defaultBranch: input.defaultBranch ?? 'main',
+        backend: { mode: 0 },
+        // An empty list is the same as none, and omitting it keeps the document small.
+        ...(patterns.length > 0 ? { protectedPatterns: patterns } : {}),
+      }),
       intent: `${key}:config`,
     })
   })
