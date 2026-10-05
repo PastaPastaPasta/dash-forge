@@ -62,6 +62,8 @@ export interface DiscoveredRepo {
   readonly description: string
   readonly createdAt: number
   readonly visibility: 'public' | 'private'
+  /** The repo it was forked from (its id), or null; absent where a caller built the row by hand. */
+  readonly forkOf?: string | null
   /** Provable counts, or null when not read. */
   readonly stars?: number | null
   readonly issues?: number | null
@@ -83,6 +85,7 @@ export function fromRepoDoc(doc: RepoDoc, extra: Partial<Pick<DiscoveredRepo, 's
     description: doc.description,
     createdAt: doc.createdAt,
     visibility: doc.visibility,
+    forkOf: doc.forkOf ?? null,
     stars: extra.stars ?? null,
     issues: extra.issues ?? null,
     pushedAt: extra.pushedAt ?? null,
