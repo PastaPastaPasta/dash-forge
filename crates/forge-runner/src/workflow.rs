@@ -905,7 +905,10 @@ jobs:
             "an earlier commit of the PR changed src/"
         );
         assert!(!skip(&[pr_docs, pr_src]), "every PR must leave it out");
-        assert!(!skip(&[]), "no PR: nothing waits on the check, nothing is reported");
+        assert!(
+            !skip(&[]),
+            "no PR: nothing waits on the check, nothing is reported"
+        );
 
         let d = tempfile::tempdir().unwrap();
         let w = d.path().join(".forge/workflows");

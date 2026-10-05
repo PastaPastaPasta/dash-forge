@@ -775,7 +775,8 @@ pub fn dependent(
     {
         return Some(Uses::Head);
     }
-    (target_id == repo_id && git::full_ref(&v.merge_base.ref_name) == ref_name).then_some(Uses::Base)
+    (target_id == repo_id && git::full_ref(&v.merge_base.ref_name) == ref_name)
+        .then_some(Uses::Base)
 }
 
 /// The most PRs [`refuse_dependents`] reads: one page, the newest.
@@ -799,8 +800,14 @@ pub async fn refuse_dependents(
         .rows
         .iter()
         .filter_map(|(v, _)| {
-            dependent(v, view.patch.number, handle.id(), src.repo.id(), &src.ref_name)
-                .map(|u| (v.patch.number, v.patch.title.clone(), u))
+            dependent(
+                v,
+                view.patch.number,
+                handle.id(),
+                src.repo.id(),
+                &src.ref_name,
+            )
+            .map(|u| (v.patch.number, v.patch.title.clone(), u))
         })
         .collect();
     match dependents_refusal(&using, &handle.display(), view, &src.ref_name) {
@@ -821,7 +828,9 @@ pub fn dependents_refusal(
         return None;
     }
     let branch = safe(forge_core::repo::short_branch_name(ref_name));
-    let base = safe(forge_core::repo::short_branch_name(&view.merge_base.ref_name));
+    let base = safe(forge_core::repo::short_branch_name(
+        &view.merge_base.ref_name,
+    ));
     let listed: Vec<String> = using
         .iter()
         .map(|(n, title, how)| {
@@ -848,9 +857,11 @@ pub fn dependents_refusal(
         ));
     }
     Some(
-        u.fix("or merge without --delete-branch, and delete the branch once they no longer need it")
-            .fix("or pass --force-delete-branch to delete it anyway")
-            .note("checked before anything was pushed or written"),
+        u.fix(
+            "or merge without --delete-branch, and delete the branch once they no longer need it",
+        )
+        .fix("or pass --force-delete-branch to delete it anyway")
+        .note("checked before anything was pushed or written"),
     )
 }
 

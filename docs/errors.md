@@ -465,3 +465,9 @@ Fix: get the missing approvals (`dg pr review --approve` by a member other than 
 A private key, AWS key or token only warns when its file is in a `test`, `tests`, `testdata` or `fixtures` folder. A `.env` file is refused there too. Any finding only warns when it is only in history older than the repository on Forge (commits made more than a day before the repository was created, and everything `forge-import` mirrors). [Secrets in a push](guides/quick-start.md#secrets-in-a-push) lists what is checked.
 
 Fix: take the file out of the commits that added it (`git rm --cached <file>`, add it to `.gitignore`, then amend or rebase), and replace any real secret it held. If you have checked it and it is safe to publish, push with `-o allow-secret=<fingerprint>` (the code printed in brackets beside each finding), or add the fingerprint to `.forge/secret-scan-allow` at the tip of the branch or tag and commit that. A path in that file turns the refusal into a warning that is printed on every push.
+
+## E808
+
+**Branch other pull requests use.** `dg pr merge --delete-branch` would delete the PR's source branch, but other open pull requests use it: as their base (a PR stacked on this one) or as their head. A PR whose base branch is deleted can't be merged until its base is changed, and one whose head branch is deleted stops following new pushes. The cause names each PR and how it uses the branch. Checked before anything is pushed or written, against the repository's newest 100 pull requests.
+
+Fix: retarget the PRs based on it (`dg pr edit <owner>/<repo> <n> --base <branch>`), or merge without `--delete-branch` and delete the branch once nothing needs it, or pass `--force-delete-branch` to delete it anyway.

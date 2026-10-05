@@ -34,6 +34,9 @@
 #  12. Path filters: a PR that changes no file a workflow's `paths` selects gets `skipped` for each
 #      of its checks the branch policy requires and nothing for the rest; when the policy can't be
 #      read, every one of its checks is reported.
+#  13. A push to an open PR's branch, changing no file a push workflow's `paths` selects: its
+#      required check is reported `skipped` only when the whole PR (merge-base..head) changes no
+#      such file either; a PR whose earlier commit did gets nothing.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -441,6 +444,43 @@ check "…saying why" test "$(q "'PR #4 changes no file' in rs[0]['summary']")" 
 "$RUNNER" -c "$W/runner.toml" run e2e/app --pr 4 >>"$W/runner.log" 2>&1
 rm -f "$FAKE_POLICY_FAILS"
 check "an unreadable policy reports every filtered check" test "$(q "sorted(r['name'] for r in rs)")" = "['paths / other (pull_request)', 'paths / req (pull_request)']"
+
+echo "== 13. a push to a PR's branch: a push workflow's paths filter is judged on the whole PR"
+echo '{"repo":"e2e/app","policy":{"requiredChecks":["pp / req"]}}' >"$FAKE_POLICY"
+# PR 5's first commit changes src/; PR 6 never does.
+for b in psrc pdoc; do
+  git -C "$R" switch -q -c "$b" main
+  git -C "$R" rm -rq --ignore-unmatch .forge
+  mkdir -p "$R/.forge/workflows" "$R/docs" "$R/src"
+  cat >"$R/.forge/workflows/pp.yml" <<'EOF'
+name: pp
+on:
+  push:
+    paths: ['src/**']
+jobs:
+  req:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ran
+EOF
+  [[ "$b" == psrc ]] && echo 'fn main() {}' >"$R/src/a.rs"
+  echo "$b" >"$R/docs/$b.md"
+  git -C "$R" add -A; git -C "$R" commit -qm "$b: start"
+done
+prs "5,MEMBER,app,refs/heads/psrc,$(git -C "$R" rev-parse psrc),open" "6,MEMBER,app,refs/heads/pdoc,$(git -C "$R" rev-parse pdoc),open"
+poll
+# Now a docs-only push to each branch.
+for b in psrc pdoc; do
+  git -C "$R" switch -q "$b"
+  echo more >>"$R/docs/$b.md"
+  git -C "$R" add -A; git -C "$R" commit -qm "$b: docs"
+done
+HSRC=$(git -C "$R" rev-parse psrc); HDOC=$(git -C "$R" rev-parse pdoc)
+prs "5,MEMBER,app,refs/heads/psrc,$HSRC,open" "6,MEMBER,app,refs/heads/pdoc,$HDOC,open"
+: >"$FAKE_DG_LOG"; poll
+check "the PR that changes no src/ file gets its required push check skipped" test "$(q "[(r['name'], r['status'], r['conclusion']) for r in rs if r['sha']=='$HDOC']")" = "[('pp / req', 'completed', 'skipped')]"
+check "…naming the PR judged" test "$(q "'PR #6, whose head is pdoc, changes no file' in [r for r in rs if r['sha']=='$HDOC'][0]['summary']")" = True
+check "the PR whose earlier commit changed src/ gets nothing" test "$(q "[r['name'] for r in rs if r['sha']=='$HSRC']")" = "[]"
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 

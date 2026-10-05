@@ -30,8 +30,8 @@
 pub mod branch;
 pub mod inline;
 pub mod owners;
-pub mod review;
 mod revert;
+pub mod review;
 pub mod state;
 pub mod threads;
 pub(crate) mod verify;
