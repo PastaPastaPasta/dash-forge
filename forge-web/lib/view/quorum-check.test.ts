@@ -22,6 +22,8 @@ import {
   decodeCurrentQuorumsInfo,
   grpcWebMessage,
   parseQuorumService,
+  probeQuorumService,
+  QuorumProbeError,
   type QuorumKey,
 } from './quorum-check'
 
@@ -255,5 +257,42 @@ describe('quorumCheckDueInMs: a transient outcome', () => {
     await crossCheckQuorumKeysCached(cfg, { now: () => 0, check: async () => ({ state: 'unavailable', reason: 'offline' }) })
     await Promise.resolve()
     expect(quorumCheckDueInMs(cfg, 1_000)).toBe(0)
+  })
+})
+
+describe('probeQuorumService (Settings)', () => {
+  const CAND = 'https://q.example.org'
+  const node = 'https://10.0.0.1:1443'
+  const rpc = `${node}/org.dash.platform.dapi.v0.Platform/getCurrentQuorumsInfo`
+  const dapi = (): Response => new Response(DAPI_BODY.slice(), { headers: { 'content-type': 'application/grpc-web+proto' } })
+  const serve = (routes: Record<string, () => Response>): typeof fetch =>
+    ((input: RequestInfo | URL) => {
+      const route = routes[String(input)]
+      return route ? Promise.resolve(route()) : Promise.reject(new TypeError('connection refused'))
+    }) as typeof fetch
+  const reason = async (p: Promise<void>): Promise<string> =>
+    p.then(
+      () => 'ok',
+      (e: unknown) => (e instanceof QuorumProbeError ? e.reason : String(e)),
+    )
+  const other = { ...fixture.quorumService, data: fixture.quorumService.data.map((q) => ({ ...q, quorum_hash: q.quorum_hash.replace(/^../, 'ff') })) }
+  const forged = { ...fixture.quorumService, data: fixture.quorumService.data.map((q, i) => (i === 0 ? { ...q, key: q.key.replace(/^../, q.key.startsWith('aa') ? 'bb' : 'aa') } : q)) }
+
+  it('takes a service whose keys a Platform node confirms', async () => {
+    const fetch = serve({ [`${CAND}/quorums`]: () => Response.json(fixture.quorumService), [rpc]: dapi })
+    expect(await reason(probeQuorumService(CAND, [node], { fetch }))).toBe('ok')
+  })
+
+  it('takes a service that answers when no node does', async () => {
+    const fetch = serve({ [`${CAND}/quorums`]: () => Response.json(fixture.quorumService) })
+    expect(await reason(probeQuorumService(CAND, [node], { fetch }))).toBe('ok')
+  })
+
+  it('refuses a service that does not answer, another network\'s, and contradicting keys', async () => {
+    expect(await reason(probeQuorumService(CAND, [node], { fetch: serve({ [rpc]: dapi }) }))).toBe('no-answer')
+    const elsewhere = serve({ [`${CAND}/quorums`]: () => Response.json(other), [rpc]: dapi })
+    expect(await reason(probeQuorumService(CAND, [node], { fetch: elsewhere }))).toBe('other-network')
+    const lying = serve({ [`${CAND}/quorums`]: () => Response.json(forged), [rpc]: dapi })
+    expect(await reason(probeQuorumService(CAND, [node], { fetch: lying }))).toBe('keys-differ')
   })
 })

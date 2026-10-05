@@ -28,7 +28,8 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   [
     'landing',
     '/',
-    (page) => page.locator('section').filter({ hasText: 'Recent repos' }).first().locator('a[href*="/repo"]').first(),
+    // A card, or the "Show all recent repos" offer when none of the newest has a description and a push.
+    (page) => page.locator('section').filter({ hasText: 'Recent repos' }).first().locator('a[href*="/repo"], [data-testid="show-all-recent"]').first(),
   ],
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
   ['private', '/private/', (page) => page.getByRole('heading', { name: 'Private repositories', exact: true })],

@@ -1,14 +1,62 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import type { ReactNode } from 'react'
 import { Providers } from '@/components/providers'
 import { prehydrationScript } from '@/lib/prehydration'
 import './globals.css'
 
+const DESCRIPTION =
+  'Git hosting with no server, on Dash Platform. Your browser verifies every branch and file it shows.'
+
+/**
+ * Where this build is served, for the absolute URLs a link preview needs (og:image must be
+ * absolute). forge.dashhq.org (served from its root) unless a self-hosted deploy sets
+ * `NEXT_PUBLIC_SITE_URL`; that deploy's `NEXT_PUBLIC_BASE_PATH` is added unless the site URL
+ * already ends with it, since Next joins `metadataBase`'s path with the image's.
+ */
+const SITE_URL = (() => {
+  const site = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, '')
+  if (!site) return 'https://forge.dashhq.org/'
+  const base = (process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/+$/, '')
+  return `${base && !site.endsWith(base) ? site + base : site}/`
+})()
+
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: 'Dash Forge',
-  description:
-    'Git hosting with no server, on Dash Platform. Your browser verifies every branch and file it shows.',
+  description: DESCRIPTION,
+  applicationName: 'Dash Forge',
+  openGraph: {
+    type: 'website',
+    siteName: 'Dash Forge',
+    title: 'Dash Forge: a git forge with no server to trust',
+    description: DESCRIPTION,
+    images: [{ url: '/og.png', width: 1200, height: 630, alt: 'Dash Forge: a git forge with no server to trust.' }],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Dash Forge: a git forge with no server to trust',
+    description: DESCRIPTION,
+    images: ['/og.png'],
+  },
 }
+
+// The browser chrome takes the page background of the system appearance (anvil-50, anvil-950);
+// a visitor who picks the other theme in the app keeps the system's colour there.
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#fafaf9' },
+    { media: '(prefers-color-scheme: dark)', color: '#0f0d0c' },
+  ],
+}
+
+/**
+ * Where the manifest and icons in `public/` are linked from. The IPFS variant runs under a base
+ * path only known at run time, so its links are relative to the <base> it sets
+ * (scripts/ipfs-postbuild.mjs refuses a root-relative one); elsewhere they sit under the base path.
+ */
+const ASSETS = process.env.FORGE_IPFS_BUILD === '1' ? '' : `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/`
 
 // CSP is delivered via <meta> so it survives static export (yappr pattern).
 // - script 'wasm-unsafe-eval': the evo-sdk WASM runtime. JS 'unsafe-eval' is not granted
@@ -46,6 +94,8 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>
         <meta httpEquiv="Content-Security-Policy" content={CSP} />
+        <link rel="manifest" href={`${ASSETS}manifest.webmanifest`} />
+        <link rel="apple-touch-icon" href={`${ASSETS}icons/apple-touch-icon.png`} />
         {/* Before the body: a tap on a button before the app hydrates is kept and replayed. */}
         <script dangerouslySetInnerHTML={{ __html: prehydrationScript() }} />
       </head>
