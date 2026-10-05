@@ -1298,7 +1298,7 @@ async fn poll_repo_rest(
                     if d.field_u64("kind") == Some(16) && !moved {
                         None
                     } else {
-                        ingest::translate_event(&st.meta, d, &st.targets, &st.closed).map(
+                        ingest::translate_event(doc_type, &st.meta, d, &st.targets, &st.closed).map(
                             |mut e| {
                                 // GitHub's `edited` names the base the PR left.
                                 if let Some(from) = retargeted_from {

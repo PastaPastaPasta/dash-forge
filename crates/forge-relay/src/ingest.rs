@@ -539,7 +539,8 @@ fn as_member(d: &FetchedDocument) -> bool {
 ///   stranger's ciphertext that no member's client shows, and the relay says nothing;
 /// * an `event`: only a maintainer or writer can write one (its `ownerRefersTo`), the same
 ///   proof `asMember` gives, so its sealed value (a label name, a retarget's base) is a
-///   member's.
+///   member's. An `authorEvent` is not: the thread's author writes it, member or not, so a
+///   sealed one (its contract has no `enc` today) would be a stranger's and is never reported.
 ///
 /// A sealed `release` revision is never reported: the public release fold ignores it, and a
 /// `release` event with no tag would mislead a consumer that deploys on releases. A sealed ref
@@ -952,13 +953,16 @@ pub fn translate_transition(
 /// adds GitHub's `label` / `assignee` object. A members-only event (its `value` sealed) is
 /// marked [`MEMBERS_ONLY_KEY`]: its label `name` is empty and its assignee is the plaintext
 /// `refId` (public: `forge-v2.md` `needAssignee`).
+///
+/// `doc_type` is the stream `d` was read from: [`DOC_EVENT`] or [`DOC_AUTHOR_EVENT`].
 pub fn translate_event(
+    doc_type: &str,
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
     closed: &BTreeSet<String>,
 ) -> Option<WebhookEvent> {
-    if !reportable(DOC_EVENT, d) {
+    if !reportable(doc_type, d) {
         return None;
     }
     let target_id = id_field(d, "targetId")?;
@@ -1287,7 +1291,7 @@ mod tests {
         assert_eq!(t.head_oid, newer);
         // The webhook: `synchronize` with the new head.
         let prs = targets([9; 32], t);
-        let e = translate_event(&meta(), &head("MEMBER", &newer), &prs, &BTreeSet::new()).unwrap();
+        let e = translate_event(DOC_EVENT,&meta(), &head("MEMBER", &newer), &prs, &BTreeSet::new()).unwrap();
         assert_eq!(e.payload["action"], "synchronize");
         assert_eq!(e.payload["pull_request"]["head"]["sha"], newer);
     }
@@ -1307,26 +1311,27 @@ mod tests {
         let issues = targets([1; 32], target(false, 8));
         let empty = BTreeSet::new();
         let e =
-            translate_event(&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &empty).unwrap();
+            translate_event(DOC_EVENT,&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &empty).unwrap();
         assert_eq!(e.payload["action"], "labeled");
         assert_eq!(e.payload["label"]["name"], "bug");
         assert_eq!(e.payload["sender"]["login"], "ACTOR");
         assert_eq!(e.payload["issue"]["state"], "open");
         let e =
-            translate_event(&meta(), &ev("a", 6, Some("BOB"), [1; 32]), &issues, &empty).unwrap();
+            translate_event(DOC_EVENT,&meta(), &ev("a", 6, Some("BOB"), [1; 32]), &issues, &empty).unwrap();
         assert_eq!(e.payload["assignee"]["login"], "BOB");
 
         // The relay's last-seen fold, not the event's own: a labeled event on an issue the
         // relay has seen closed still reports the issue closed.
         let closed = BTreeSet::from([encode_identifier([1; 32])]);
         let e =
-            translate_event(&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &closed).unwrap();
+            translate_event(DOC_EVENT,&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &closed).unwrap();
         assert_eq!(e.payload["issue"]["state"], "closed");
         // Likewise a PR event carries TargetInfo::merged forward.
         let mut merged_pr = target(true, 3);
         merged_pr.merged = true;
         let prs_merged = targets([9; 32], merged_pr);
         let e = translate_event(
+            DOC_EVENT,
             &meta(),
             &ev("l", 4, Some("bug"), [9; 32]),
             &prs_merged,
@@ -1340,19 +1345,19 @@ mod tests {
         let prs = targets([9; 32], target(true, 3));
         for kind in [1, 2, 3, 9, 10] {
             assert!(
-                translate_event(&meta(), &ev("x", kind, None, [9; 32]), &prs, &empty).is_none()
+                translate_event(DOC_EVENT,&meta(), &ev("x", kind, None, [9; 32]), &prs, &empty).is_none()
             );
             assert!(
-                translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
+                translate_event(DOC_EVENT,&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
             );
         }
         for kind in [8, 11] {
             assert!(
-                translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
+                translate_event(DOC_EVENT,&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
             );
         }
         assert!(
-            translate_event(&meta(), &ev("x", 4, Some("b"), [5; 32]), &issues, &empty).is_none()
+            translate_event(DOC_EVENT,&meta(), &ev("x", 4, Some("b"), [5; 32]), &issues, &empty).is_none()
         );
     }
 
@@ -2093,7 +2098,7 @@ mod tests {
                 ("kind", FieldValue::integer(4)),
             ],
         );
-        let ev = translate_event(&meta(), &label, &issues, &none).unwrap();
+        let ev = translate_event(DOC_EVENT,&meta(), &label, &issues, &none).unwrap();
         assert_eq!(ev.payload["action"], "labeled");
         assert_eq!(ev.payload["label"]["name"], "");
         assert_content_free(&ev, &e);
@@ -2108,12 +2113,47 @@ mod tests {
                 ("refId", FieldValue::identifier([0xb0; 32])),
             ],
         );
-        let ev = translate_event(&meta(), &assign, &issues, &none).unwrap();
+        let ev = translate_event(DOC_EVENT,&meta(), &assign, &issues, &none).unwrap();
         assert_eq!(
             ev.payload["assignee"]["login"],
             encode_identifier([0xb0; 32])
         );
         assert_content_free(&ev, &e);
+    }
+
+    /// An `authorEvent` is written by the thread's author, who need not be a member: a sealed
+    /// one is never reported, whatever its kind (its contract has no `enc` today; this does not
+    /// depend on that). A plaintext one is, as before.
+    #[test]
+    fn a_sealed_author_event_is_not_reported() {
+        let prs = targets([9; 32], target(true, 3));
+        let none = BTreeSet::new();
+        for kind in [4, 13, 16] {
+            let mut fields = vec![
+                ("targetId", FieldValue::identifier([9; 32])),
+                ("kind", FieldValue::integer(kind)),
+            ];
+            if kind == 16 {
+                fields.push(("oid", FieldValue::bytes(vec![0xab; 20])));
+            }
+            let d = sealed("ae", "AUTH", &enc(3, 61), fields.clone());
+            assert!(!reportable(DOC_AUTHOR_EVENT, &d));
+            assert!(translate_event(DOC_AUTHOR_EVENT, &meta(), &d, &prs, &none).is_none());
+            // The same document read as a member `event` is a member's (its writer is checked).
+            assert!(reportable(DOC_EVENT, &d));
+            assert!(reportable(DOC_AUTHOR_EVENT, &doc("ap", "AUTH", fields)));
+        }
+        let synchronize = doc(
+            "ap16",
+            "AUTH",
+            vec![
+                ("targetId", FieldValue::identifier([9; 32])),
+                ("kind", FieldValue::integer(16)),
+                ("oid", FieldValue::bytes(vec![0xab; 20])),
+            ],
+        );
+        let ev = translate_event(DOC_AUTHOR_EVENT, &meta(), &synchronize, &prs, &none).unwrap();
+        assert_eq!(ev.payload["action"], "synchronize");
     }
 
     #[test]
