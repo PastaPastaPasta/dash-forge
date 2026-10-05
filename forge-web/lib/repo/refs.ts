@@ -63,7 +63,7 @@ import {
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { DOC, str, toRefUpdate, wellFormed, type RepoRef } from './contract'
+import { DOC, gitPlaneDocWellFormed, str, toRefUpdate, wellFormed, type RepoRef } from './contract'
 import { admitAll } from './private-content'
 import { readConfigHistory } from './config'
 import { repoSource } from './source'
@@ -328,6 +328,14 @@ interface TypeScan {
   readonly rows: readonly PlainDocument[]
 }
 
+/**
+ * A ref update the fold takes: sealed in a private repo; in a public repo the git plane's
+ * plaintext form only (`gitPlaneWellFormed`, DESIGN D1), whatever members-only content it holds.
+ */
+function refRowWellFormed(repo: RepoRef, doc: PlainDocument): boolean {
+  return repo.visibility === 'private' ? wellFormed(repo, 'refUpdate', doc) : gitPlaneDocWellFormed('refUpdate', doc)
+}
+
 /** Group rows per ref: plain before protected, each in read order (the fold re-sorts). */
 function groupByRef(repo: RepoRef, scans: readonly TypeScan[]): Map<string, RefUpdate[]> {
   const byHash = new Map<string, RefUpdate[]>()
@@ -335,7 +343,7 @@ function groupByRef(repo: RepoRef, scans: readonly TypeScan[]): Map<string, RefU
     for (const doc of rows) {
       // forge-v2: a ref update not well-formed for the repo's visibility (a private repo's
       // plaintext `refName`, say) is skipped before the fold sees it (`forge-v2.md` §5).
-      if (!wellFormed(repo, 'refUpdate', doc)) continue
+      if (!refRowWellFormed(repo, doc)) continue
       const hex = refHashHexOf(doc, type)
       const update = toRefUpdate(doc, isProtected)
       const group = byHash.get(hex)
@@ -455,8 +463,8 @@ export async function readRefUpdates(
     readOneRef(sdk, repo, DOC.protectedRefUpdate, refNameHashB64),
   ])
   return [
-    ...plain.filter((d) => wellFormed(repo, 'refUpdate', d)).map((d) => toRefUpdate(d, false)),
-    ...prot.filter((d) => wellFormed(repo, 'refUpdate', d)).map((d) => toRefUpdate(d, true)),
+    ...plain.filter((d) => refRowWellFormed(repo, d)).map((d) => toRefUpdate(d, false)),
+    ...prot.filter((d) => refRowWellFormed(repo, d)).map((d) => toRefUpdate(d, true)),
   ]
 }
 

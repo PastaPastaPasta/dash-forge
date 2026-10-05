@@ -10,7 +10,7 @@
 import type { ForgeIds } from '../deployments'
 import type { PrivateSession } from './private-session'
 import type { Event, EventKind, RefUpdate } from '../rules'
-import { isWellFormed, type ContentKind, type Visibility } from '../rules/v2'
+import { contentWellFormed, gitPlaneWellFormed, type ContentDoc, type ContentKind, type Visibility } from '../rules/v2'
 import type { RerunEvent } from '../rules/ci-rerun'
 import { base58Decode, base58Encode } from '../auth/base58'
 import { base64ToBytes, base64ToHex, type PlainDocument } from '../sdk'
@@ -153,34 +153,45 @@ export function byteFieldToHex(doc: PlainDocument, field: string): string {
   return ''
 }
 
-/**
- * Whether a raw document is well-formed for its repo (`isWellFormed`, `forge-v2.md` §5:
- * plaintext xor `enc`, the visibility says which, and a patch's or ref update's names hash
- * to their indexed keys). Every reader skips a malformed document before any other rule sees
- * it.
- */
-export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument): boolean {
+/** A raw document's content fields as the well-formedness rules read them. */
+export function contentDocOf(kind: ContentKind, doc: PlainDocument): ContentDoc {
   const text = (field: string): string | null => (typeof doc[field] === 'string' ? str(doc, field) : null)
   const hex = (field: string): string | null => byteFieldToHex(doc, field) || null
-  return isWellFormed(
-    {
-      kind,
-      title: text('title'),
-      body: text('body'),
-      refName: text('refName'),
-      baseRefName: text('baseRefName'),
-      sourceRefName: text('sourceRefName'),
-      refNameHash: hex('refNameHash'),
-      baseRefNameHash: hex('baseRefNameHash'),
-      sourceRefNameHash: hex('sourceRefNameHash'),
-      defaultBranch: text('defaultBranch'),
-      protectedPatterns: stringArray(doc, 'protectedPatterns'),
-      path: text('path'),
-      enc: hex('enc'),
-      epoch: doc['epoch'] == null ? null : num(doc, 'epoch'),
-    },
-    repo.visibility,
-  )
+  return {
+    kind,
+    title: text('title'),
+    body: text('body'),
+    refName: text('refName'),
+    baseRefName: text('baseRefName'),
+    sourceRefName: text('sourceRefName'),
+    refNameHash: hex('refNameHash'),
+    baseRefNameHash: hex('baseRefNameHash'),
+    sourceRefNameHash: hex('sourceRefNameHash'),
+    defaultBranch: text('defaultBranch'),
+    protectedPatterns: stringArray(doc, 'protectedPatterns'),
+    path: text('path'),
+    enc: hex('enc'),
+    epoch: doc['epoch'] == null ? null : num(doc, 'epoch'),
+  }
+}
+
+/**
+ * Whether a raw **content** document (issue, patch, comment, review; a private repo's ref
+ * updates) is well-formed for its repo (`contentWellFormed`, `forge-v2.md` §5: plaintext xor
+ * `enc`; a public repo also admits members-only and specific-people `enc`). Every reader skips a
+ * malformed document before any other rule sees it.
+ */
+export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument): boolean {
+  return contentWellFormed(contentDocOf(kind, doc), repo.visibility)
+}
+
+/**
+ * Whether a raw public **git-plane** document (a settings `config`, a ref update) is well-formed:
+ * plaintext only (`gitPlaneWellFormed`). The members-key anchor, a sealed `config` of a public
+ * repo, is never a settings row (DESIGN D1).
+ */
+export function gitPlaneDocWellFormed(kind: ContentKind, doc: PlainDocument): boolean {
+  return gitPlaneWellFormed(contentDocOf(kind, doc))
 }
 
 /**

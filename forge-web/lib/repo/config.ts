@@ -10,7 +10,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { compareKey, type ConfigDoc } from '../rules'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
-import { DOC, stringArray, wellFormed, type RepoRef } from './contract'
+import { DOC, gitPlaneDocWellFormed, stringArray, wellFormed, type RepoRef } from './contract'
 import { repoSource } from './source'
 
 /** The current repo config surface most views need. */
@@ -85,7 +85,9 @@ export async function readConfigBundle(sdk: EvoSDK, repo: RepoRef): Promise<Conf
 
 /** A public repo's {@link ConfigBundle} from its complete config timeline, however it was read. */
 export function configBundleOf(repo: RepoRef, rows: readonly PlainDocument[]): ConfigBundle {
-  const documents = rows.filter((d) => wellFormed(repo, 'config', d))
+  // The settings fold is the git plane: plaintext only. A sealed config of a public repo (its
+  // members-key anchor) is never a settings row (DESIGN D1), whatever lane session is loaded.
+  const documents = rows.filter((d) => configWellFormed(repo, d))
   // Do NOT take the wire order's last row as "newest". Drive orders the terminal
   // document-id subtree by the RAW 32 bytes of `$id`, while `configAsOf` — the rule that
   // decides which config is in force — tie-breaks on the base58 `$id` STRING. For two
@@ -134,10 +136,18 @@ export async function readConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig
       limit: 10,
     }),
   )
-  const doc = documents.find((d) => wellFormed(repo, 'config', d))
+  const doc = documents.find((d) => configWellFormed(repo, d))
+  // A public repo whose members key rotated often: the newest plaintext config sits behind more
+  // than one page of sealed anchors. The full timeline still holds it.
+  if (doc === undefined && repo.visibility === 'public' && documents.length >= 10) return (await readConfigBundle(sdk, repo)).config
   if (doc === undefined) return null
   // Without a session a private config shows only what is plaintext by design: the backend.
   return repo.visibility === 'private' ? { ...toRepoConfig(doc), defaultBranch: 'main', protectedPatterns: [] } : toRepoConfig(doc)
+}
+
+/** A config row of `repo`'s settings timeline: sealed in a private repo, plaintext (git plane) in a public one. */
+function configWellFormed(repo: RepoRef, doc: PlainDocument): boolean {
+  return repo.visibility === 'private' ? wellFormed(repo, 'config', doc) : gitPlaneDocWellFormed('config', doc)
 }
 
 /** Convenience: the default branch name (falls back to `main`). */
