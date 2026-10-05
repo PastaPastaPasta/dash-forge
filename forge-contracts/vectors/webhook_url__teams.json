@@ -1,0 +1,13 @@
+{
+  "name": "teams",
+  "description": "A Teams incoming webhook on a tenant's webhook.office.com host.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://contoso.webhook.office.com/webhookb2/abc@def/IncomingWebhook/x/y"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Microsoft Teams"
+  }
+}
