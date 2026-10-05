@@ -720,8 +720,9 @@ async function runSignatureVector(v: Vector): Promise<void> {
 describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
   const base = vectors.filter((v) => v.rules === undefined)
-  // `private_*` cases (private-repos.md §11) run in `lib/private/conformance.test.ts`.
-  const isPrivate = (v: Vector) => v.case.startsWith('private_')
+  // `private_*` cases (private-repos.md §11) and the mixed-visibility envelope cases
+  // (`mixed_doc_*`, `named_envelope*`) run in `lib/private/conformance.test.ts`.
+  const isPrivate = (v: Vector) => ['private_', 'mixed_doc_', 'named_envelope'].some((p) => v.case.startsWith(p))
   const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
   const privateVectors = vectors.filter(isPrivate)
 

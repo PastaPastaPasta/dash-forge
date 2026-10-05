@@ -8,7 +8,8 @@
  * (`conformance.test.ts`). Deterministic seal variants for those vectors live in
  * `./testing`, which this module deliberately does not re-export (ESLint bans importing it
  * outside tests); `__unsafe*` symbols of `./doc`, `./pack` and `./release` are likewise not
- * re-exported. `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
+ * re-exported. `./named` is the specific-people letter (`enc` v0x04); `sealMembersDoc` the
+ * members-only (`enc` v0x03) seal of a public repository's lane. `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
  * sealed releases (`private-repos.md` §16.8, `lib/repo/sealed-release.ts`): both draw hedged
  * randomness, and only their fixed-nonce twins stay test-only.
  */
@@ -26,6 +27,7 @@ export {
 export {
   EpochKeys,
   generateEpochKey,
+  objKeys,
   importEpochKeyAndWipe,
   refNameHash,
   releaseTagHash,
@@ -34,6 +36,10 @@ export {
 } from './keys'
 export {
   MalformedError,
+  PAD_BUCKET,
+  RECIPIENT_TAG,
+  letterKind,
+  parseLetterTlv,
   parseTlv,
   propOf,
   type DocFields,
@@ -42,13 +48,25 @@ export {
 } from './tlv'
 export {
   GRACE_BLOCKS,
+  MAX_LETTER_RECIPIENTS,
   TooLargeError,
+  V1,
+  V2,
+  V3,
+  V4,
   docAd,
+  docAdWithoutKeys,
   isLate,
+  letterFraming,
+  letterFramed,
+  maxLetterPlaintext,
+  maxMembersPlaintext,
   maxPlaintext,
   openContent,
   openWithKey,
+  pads,
   sealDoc,
+  sealMembersDoc,
   type AnchorRef,
   type IdentitySet,
   type OpenContext,
@@ -58,6 +76,18 @@ export {
   type StoredPrivateDoc,
   type UnreadableReason,
 } from './doc'
+export {
+  KEY_TYPE_ECDSA_SECP256K1,
+  PURPOSE_ENCRYPTION,
+  SLOT_VERSION,
+  letterSharedKey,
+  openLetter,
+  sealLetter,
+  type LetterOpenResult,
+  type LetterReader,
+  type LetterRecipient,
+  type OwnerKey,
+} from './named'
 export {
   HEADER_LEN,
   PackError,

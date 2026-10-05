@@ -19,7 +19,18 @@ import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import { bytesToHex, concat, hexToBytes, sha256 } from './bytes'
-import { TooLargeError, openContent, type OpenContext, type OpenResult, type PrivateDoc, type StoredPrivateDoc } from './doc'
+import {
+  TooLargeError,
+  V4,
+  docAdWithoutKeys,
+  maxLetterPlaintext,
+  openContent,
+  padded,
+  type OpenContext,
+  type OpenResult,
+  type PrivateDoc,
+  type StoredPrivateDoc,
+} from './doc'
 import {
   contentIsLate,
   manifestStanding,
@@ -43,12 +54,15 @@ import {
   type ReleaseStatus,
   type StoredRelease,
 } from './release'
-import { buildTlv, MalformedError, type DocFields, type PrivateDocType } from './tlv'
+import { openLetter, letterSharedKey, type LetterOpenResult, type OwnerKey } from './named'
+import { buildTlv, encodeRecipients, MalformedError, type DocFields, type PrivateDocType } from './tlv'
 import { WrapError, buildWrapPlaintext, openWrap, sealWrap, type WrapFacade } from './wrap'
 import {
   hedgedFileId,
   hedgedNonce,
   sealDocWithNonce,
+  sealLetterWith,
+  sealMembersDocWithNonce,
   sealPackWithFileId,
   sealReleaseManifestWithFileId,
   sealReleaseWithNonce,
@@ -70,8 +84,11 @@ interface Vector {
 
 const ROOT = resolve(process.cwd(), '..')
 const VECTORS_DIR = resolve(ROOT, 'forge-contracts', 'vectors')
+/** The private-repository cases and the mixed-visibility envelopes (members-only, specific people). */
+const CRYPTO_PREFIXES = ['private_', 'mixed_doc_', 'named_envelope']
+const isCryptoCase = (name: string) => CRYPTO_PREFIXES.some((p) => name.startsWith(p))
 const PRIVATE_FILES = readdirSync(VECTORS_DIR)
-  .filter((f) => f.startsWith('private_') && f.endsWith('.json'))
+  .filter((f) => isCryptoCase(f) && f.endsWith('.json'))
   .sort()
 
 // ---------------------------------------------------------------------------------------------
@@ -112,7 +129,29 @@ const RELEASE_MANIFEST = object({
   assets: each(object({ ...leafFields('name', 'sha256', 'sizeBytes', 'sealedSha256', 'sealedSizeBytes'), uris: LEAF })),
 })
 
+const MIXED_DOC = leaves(...DOC_KEYS, 'vis')
+const PARTY = leaves('identityId', 'priv', 'pub', 'keyId')
+
 const SHAPES: Readonly<Record<string, Shape>> = {
+  mixed_doc_seal: object({ ...leafFields('repoId', 'key', 'nonce'), doc: MIXED_DOC, fields: FIELDS }),
+  mixed_doc_open: object({
+    repoId: LEAF,
+    context: OPEN_CONTEXT,
+    doc: leaves(...DOC_KEYS, 'vis', 'id', 'createdAtBlockHeight', 'updatedAtBlockHeight', 'enc'),
+  }),
+  named_envelope: object({
+    ...leafFields('repoId', 'kObj', 'nonce', 'ivs'),
+    doc: MIXED_DOC,
+    fields: FIELDS,
+    sender: PARTY,
+    recipients: each(PARTY),
+  }),
+  named_envelope_open: object({
+    repoId: LEAF,
+    doc: leaves(...DOC_KEYS, 'vis', 'enc'),
+    ownerKeys: each(leaves('id', 'purpose', 'keyType', 'data')),
+    readers: each(leaves('identityId', 'keys')),
+  }),
   private_kdf: leaves(...KEY_INPUT, 'fileId'),
   private_ref_hash: leaves(...KEY_INPUT, 'refName'),
   private_doc_seal: object({ ...leafFields('repoId', 'key', 'nonce', 'anchor'), doc: leaves(...DOC_KEYS), fields: FIELDS }),
@@ -235,6 +274,7 @@ function importKey(o: Obj): Promise<EpochKeys> {
 function toDoc(d: Obj): PrivateDoc {
   return {
     type: str(d, 'type') as PrivateDocType,
+    vis: 'vis' in d ? (str(d, 'vis') as 'public' | 'private') : undefined,
     ownerId: privateId(str(d, 'ownerId')),
     epoch: num(d, 'epoch'),
     number: 'number' in d ? num(d, 'number') : undefined,
@@ -339,6 +379,80 @@ function fieldsJson(f: DocFields): Json {
 function openJson(r: OpenResult): Json {
   if (r.status === 'readable') return { status: 'readable', fields: fieldsJson(r.fields) }
   return r.status === 'unreadable' ? { status: 'unreadable', reason: r.reason } : { status: 'malformed' }
+}
+
+function letterJson(r: LetterOpenResult): Json {
+  if (r.status === 'readable') {
+    return { status: 'readable', fields: fieldsJson(r.fields), recipients: r.recipients.map(bytesToHex), slot: r.slot }
+  }
+  return r.status === 'unreadable' ? { status: 'unreadable', reason: r.reason } : { status: 'malformed' }
+}
+
+function storedDoc(d: Obj): StoredPrivateDoc {
+  return {
+    ...toDoc(d),
+    id: 'id' in d ? privateId(str(d, 'id')) : undefined,
+    createdAtBlockHeight: 'createdAtBlockHeight' in d ? num(d, 'createdAtBlockHeight') : undefined,
+    updatedAtBlockHeight: 'updatedAtBlockHeight' in d ? num(d, 'updatedAtBlockHeight') : undefined,
+    enc: hex(d, 'enc'),
+  }
+}
+
+/** `named_envelope`: the deterministic seal, every intermediate, every recipient's open and the SDK drift check. */
+async function namedEnvelope(inp: Obj): Promise<Json> {
+  const repoId = hex(inp, 'repoId')
+  const doc = toDoc(obj(inp, 'doc'))
+  const fields = toFields(obj(inp, 'fields'))
+  const sender = obj(inp, 'sender')
+  const recipients = arr(inp, 'recipients')
+  const ivs = inp['ivs']
+  if (!Array.isArray(ivs)) throw new TypeError('ivs: expected an array')
+  const kObj = hex(inp, 'kObj')
+  const sealed = await sealLetterWith(
+    repoId,
+    hex(sender, 'priv'),
+    num(sender, 'keyId'),
+    doc,
+    fields,
+    recipients.map((r) => ({ identityId: hex(r, 'identityId'), publicKey: hex(r, 'pub') })),
+    kObj,
+    hex(inp, 'nonce'),
+    ivs.map((x) => hexToBytes(String(x))),
+  )
+  // The intermediates, recomputed from their definitions rather than read back from the seal
+  const n = recipients.length
+  const body = concat(buildTlv(fields, { type: doc.type, epoch: 0 }), encodeRecipients(recipients.map((r) => hex(r, 'identityId'))))
+  expect(bytesToHex(sealed.tlv)).toBe(bytesToHex(padded(doc.type, body, maxLetterPlaintext(doc.type, n))))
+  expect(bytesToHex(sealed.head)).toBe(bytesToHex(sealed.enc.subarray(1, 38 + 64 * n)))
+  expect(bytesToHex(sealed.ad)).toBe(bytesToHex(concat(docAdWithoutKeys(doc, repoId, V4), await sha256(sealed.head))))
+  // The SDK's own decrypt opens every slot to 0x02 ‖ KCV_obj ‖ K_obj (drift check)
+  for (const [i, r] of recipients.entries()) {
+    const slot = sealed.head.subarray(37 + 64 * i, 37 + 64 * (i + 1))
+    const pt = await facade.decrypt({
+      dataContract: repoKeyContract,
+      document: repoKeyDocument(repoId, 0, slot),
+      property: 'wrapped',
+      recipientPrivateKey: evo.PrivateKey.fromHex(str(r, 'priv'), 'testnet'),
+      senderKey: encryptionKey(str(sender, 'pub')),
+    })
+    expect(bytesToHex(pt)).toBe(bytesToHex(concat(new Uint8Array([0x02]), sealed.commit.subarray(0, 14), kObj)))
+  }
+  const ownerKeys: OwnerKey[] = [{ id: num(sender, 'keyId'), purpose: 1, keyType: 0, data: hex(sender, 'pub') }]
+  const stored: StoredPrivateDoc = { ...doc, enc: sealed.enc }
+  const opened: Json[] = []
+  for (const r of recipients) {
+    opened.push(letterJson(await openLetter(repoId, stored, ownerKeys, { identityId: hex(r, 'identityId'), secrets: [hex(r, 'priv')] })))
+  }
+  return {
+    shared: await Promise.all(recipients.map(async (r) => bytesToHex(await letterSharedKey(hex(sender, 'priv'), hex(r, 'pub'))))),
+    commit: bytesToHex(sealed.commit),
+    kcv: bytesToHex(sealed.commit.subarray(0, 14)),
+    headerSha256: bytesToHex(await sha256(sealed.head)),
+    ad: bytesToHex(sealed.ad),
+    tlv: bytesToHex(sealed.tlv),
+    enc: bytesToHex(sealed.enc),
+    opened,
+  }
 }
 
 async function keyring(repoId: Uint8Array, keys: Obj): Promise<EpochKeyring> {
@@ -493,6 +607,37 @@ async function run(v: Vector): Promise<Json> {
     }
     case 'private_collab_seal':
       return collabSeal(inp)
+    case 'mixed_doc_seal': {
+      const doc = toDoc(obj(inp, 'doc'))
+      const keys = await EpochKeys.import(hex(inp, 'repoId'), doc.epoch, hex(inp, 'key'))
+      try {
+        const r = await sealMembersDocWithNonce(keys, doc, toFields(obj(inp, 'fields')), hex(inp, 'nonce'))
+        return { ad: bytesToHex(r.ad), kObj: bytesToHex(r.kObj), commit: bytesToHex(r.commit), tlv: bytesToHex(r.tlv), enc: bytesToHex(r.enc) }
+      } catch (e) {
+        if (e instanceof MalformedError) return { error: 'malformed' }
+        if (e instanceof TooLargeError) return { error: 'tooLarge' }
+        throw e
+      }
+    }
+    case 'mixed_doc_open': {
+      const repoId = hex(inp, 'repoId')
+      return openJson(await openContent(storedDoc(obj(inp, 'doc')), await openContextOf(repoId, obj(inp, 'context'))))
+    }
+    case 'named_envelope':
+      return namedEnvelope(inp)
+    case 'named_envelope_open': {
+      const repoId = hex(inp, 'repoId')
+      const doc = storedDoc(obj(inp, 'doc'))
+      const ownerKeys: OwnerKey[] = arr(inp, 'ownerKeys').map((k) => ({ id: num(k, 'id'), purpose: num(k, 'purpose'), keyType: num(k, 'keyType'), data: hex(k, 'data') }))
+      const results: Json[] = []
+      for (const r of arr(inp, 'readers')) {
+        const keys = r['keys']
+        if (!Array.isArray(keys)) throw new TypeError('keys: expected an array')
+        const reader = { identityId: hex(r, 'identityId'), secrets: keys.map((k) => hexToBytes(String(k))) }
+        results.push(letterJson(await openLetter(repoId, doc, ownerKeys, reader)))
+      }
+      return { results }
+    }
     case 'private_doc_open': {
       const repoId = hex(inp, 'repoId')
       const d = obj(inp, 'doc')
@@ -845,7 +990,7 @@ describe('private-repository conformance vectors', () => {
 
   for (const v of vectors) {
     it(`${v.case} :: ${v.name}`, async () => {
-      expect(v.case.startsWith('private_')).toBe(true)
+      expect(isCryptoCase(v.case)).toBe(true)
       expect(v.rules).toBe('v2')
       const shape = SHAPES[v.case]
       if (shape === undefined) throw new Error(`unknown private vector case: ${v.case}`)
