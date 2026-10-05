@@ -4,7 +4,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 vi.mock('@dashevo/evo-sdk', () => ({ Identifier: { fromBase58: (id: string) => id } }))
 vi.mock('./wasm-fetch', () => ({ compileWasm: () => Promise.resolve({}), onWasmProgress: () => () => undefined }))
 
-import { STALE_REFRESH_MS, refreshStale, type Connection } from './service'
+import { STALE_REFRESH_MS, refreshStale, revalidateSeeded, type Connection } from './service'
 
 const ID = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 
@@ -86,5 +86,26 @@ describe('refreshing a contract a read found stale (UPDATE-1)', () => {
     await Promise.resolve()
     expect(await refreshStale(c, ID, 'unknownType', () => undefined)).toBe(true)
     expect(c.seeded.has(ID)).toBe(false)
+  })
+
+  it('a read that fails while the seeded-version check refetches its contract joins that refetch', async () => {
+    let resolve!: (v: unknown) => void
+    const c = connection(() => new Promise((r) => (resolve = r)), new Map([[ID, 1]]))
+    ;(c.sdk.contracts as unknown as { getLatestVersions: unknown }).getLatestVersions = async () => new Map([[ID, { version: 2 }]])
+    const check = revalidateSeeded(c, 'devnet-test', () => undefined)
+    await vi.waitFor(() => expect(c.sdk.contracts.fetch).toHaveBeenCalled())
+    // The check took the contract out of `seeded`: a read finding it stale must not give up
+    const read = refreshStale(c, ID, 'unknownType', () => undefined)
+    resolve({ version: 2 })
+    expect(await read).toBe(true)
+    await check
+    expect(c.sdk.contracts.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves a seeded contract alone when it is as new as the document (a composite names every contract)', async () => {
+    const c = connection(async () => ({ version: 2 }), new Map([[ID, 2]]))
+    expect(await refreshStale(c, ID, 'newerDocument', () => undefined, 2)).toBe(false)
+    expect(c.sdk.contracts.fetch).not.toHaveBeenCalled()
+    expect(c.seeded.get(ID)).toBe(2)
   })
 })

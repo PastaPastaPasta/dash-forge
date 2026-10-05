@@ -1049,8 +1049,12 @@ async function seed(sdk: EvoSDK, deploymentKey: string, outdated: ReadonlySet<st
  * contract update. The SDK also refetches on its own once a document carries a newer
  * `$contractVersion`; this catches the update before any such document is read. Runs at
  * most once per {@link SEED_CHECK_MS} per profile while the versions keep matching.
+ *
+ * Each refetch is a stale-contract refresh ({@link refreshStale}): the page's first reads run
+ * alongside this check, and one that fails on the old contract meanwhile joins the refetch in
+ * flight instead of finding the contract no longer seeded and giving up (or fetching it twice).
  */
-async function revalidateSeeded(connection: Connection, deploymentKey: string, replaced: (id: string) => void): Promise<void> {
+export async function revalidateSeeded(connection: Connection, deploymentKey: string, replaced: (id: string) => void): Promise<void> {
   const { sdk, seeded } = connection
   if (seeded.size === 0) return
   const versions = JSON.stringify([...seeded].sort())
@@ -1062,7 +1066,7 @@ async function revalidateSeeded(connection: Connection, deploymentKey: string, r
       const now = latest.get(id)?.version
       if (now !== undefined && now !== version) {
         current = false
-        await refreshSeeded(connection, id, replaced)
+        await refreshStale(connection, id, 'newerDocument', replaced, now)
       }
     }
     if (current) recordSeedCheck(deploymentKey, versions)
@@ -1092,6 +1096,7 @@ export const STALE_REFRESH_MS = 60_000
  * contract is refreshed at most once per {@link STALE_REFRESH_MS}, unless the failed read's
  * document (`documentVersion`) is newer than the version that refresh fetched (a second update
  * within the window); a refresh that failed is forgotten, so the next stale read tries again.
+ * A seeded contract already at the failed read's document version is left alone.
  */
 export function refreshStale(
   connection: Connection,
@@ -1105,7 +1110,10 @@ export function refreshStale(
   const held = recent.get(id)
   const outran = documentVersion !== undefined && held?.version !== undefined && documentVersion > held.version
   if (held !== undefined && Date.now() - held.at < STALE_REFRESH_MS && !outran) return held.done
-  const seeded = connection.seeded.has(id)
+  const seededVersion = connection.seeded.get(id)
+  // Not the stale one: a read over several contracts (a composite) names them all.
+  if (seededVersion !== undefined && documentVersion !== undefined && seededVersion >= documentVersion) return Promise.resolve(false)
+  const seeded = seededVersion !== undefined
   if (!seeded && cause !== 'newerDocument') return Promise.resolve(false)
   const fetched = seeded ? refreshSeeded(connection, id, replaced) : refetchContract(connection.sdk, id)
   const entry: StaleRefresh = { at: Date.now(), done: fetched.then((v) => v !== null) }
