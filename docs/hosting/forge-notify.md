@@ -272,6 +272,8 @@ The web app shows **Settings → Notifications → Email and push** only when it
 NEXT_PUBLIC_NOTIFY_URL=https://notify.forge.dashhq.org pnpm build
 ```
 
+For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads it from the repository variable `PAGES_NOTIFY_URL` (Settings → Secrets and variables → Actions → Variables). Set it, then re-run **Deploy forge-web to Pages** or push to master. Delete it and deploy again to hide the section. A value that is not an `https://` URL is ignored.
+
 Without the variable, the section and its code stay out of the page. The web app signs requests for the host in that URL, so the service's operator name must be that host (the default when `FORGE_NOTIFY_OPERATOR` is unset). The service must allow the web app's origin (`FORGE_NOTIFY_ALLOWED_ORIGINS`, which defaults to `FORGE_NOTIFY_WEB_URL`'s origin). A build served from IPFS gateways has a different origin on each gateway. List the ones you support, or accept that those builds can't reach the service. Every other part of Forge still works.
 
 ## Test it locally
@@ -332,7 +334,7 @@ The MVP is free, within the rate limits above. Billing is designed but not built
 5. **Cloudflare tunnel:** route `notify.forge.dashhq.org` to `http://localhost:8080`.
 6. **`.env`:** as in [Run it](#run-it), with the privacy notice URL and contact.
 7. **Publish the privacy notice** (the draft above, completed) at the URL in `FORGE_NOTIFY_PRIVACY_URL`.
-8. **Web app:** build forge.dashhq.org with `NEXT_PUBLIC_NOTIFY_URL=https://notify.forge.dashhq.org`.
+8. **Web app:** set the repository variable `PAGES_NOTIFY_URL` to `https://notify.forge.dashhq.org` and deploy ([Show it in the web app](#show-it-in-the-web-app)).
 9. **Backups:** a daily `sqlite3 .backup` of the volume, stored apart from the data key.
 10. **Monitoring:** an uptime check on `/healthz`, and the alerts in [Monitoring](#monitoring).
 11. **Smoke test:** sign up from the web app, confirm the mail, send a test from Settings, turn on push in a browser, @mention yourself from a second identity, and unsubscribe from the mail's link.

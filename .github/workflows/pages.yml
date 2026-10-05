@@ -14,6 +14,12 @@ name: Deploy forge-web to Pages
 # to (sakura). Changing the variable takes effect on the next deploy
 # (re-run this workflow, or push to master); any other value fails the build. A tab opened before
 # the deploy keeps running the old build until it is reloaded, so it will not show the notice yet.
+#
+# The optional services are switched on the same way, and stay hidden while their variable is
+# unset (docs/hosting/forge-gateway.md, docs/hosting/forge-notify.md): PAGES_GATEWAY_URL (and
+# PAGES_GATEWAY_LABEL) adds the HTTPS clone row of a forge-gateway, and PAGES_NOTIFY_URL adds
+# Settings → Notifications → Email and push for a forge-notify. A value that is not a usable URL
+# leaves the feature hidden.
 
 on:
   push:
@@ -57,6 +63,10 @@ jobs:
           NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'sakura') || '' }}
           # Empty when the variable is unset: no notice.
           NEXT_PUBLIC_DEVNET_NOTICE: ${{ vars.PAGES_DEVNET_NOTICE }}
+          # Empty when unset: no HTTPS clone row, no email and push settings.
+          NEXT_PUBLIC_GATEWAY_URL: ${{ vars.PAGES_GATEWAY_URL }}
+          NEXT_PUBLIC_GATEWAY_LABEL: ${{ vars.PAGES_GATEWAY_LABEL }}
+          NEXT_PUBLIC_NOTIFY_URL: ${{ vars.PAGES_NOTIFY_URL }}
           # The /mirror wizard pins the Mirror Action and its binaries to the commit deployed.
           FORGE_BUILD_COMMIT: ${{ github.sha }}
         run: pnpm build
