@@ -517,8 +517,9 @@ async fn private_epoch_zero(
     Ok(("repoKey + anchor config", outcome))
 }
 
-/// Whether the repository `name` exists with a config. A private repo's sealed anchor is a
-/// `config` document in the same scope.
+/// Whether the public repository `name` exists with a config. A private repo counts as not
+/// written: its sealed anchor is judged by the key ring, not by a `config` document existing,
+/// and a sealed pattern is beyond the contract's length check.
 async fn config_written(
     client: &PlatformClient,
     forge: &ForgeIds,
@@ -529,6 +530,9 @@ async fn config_written(
     let Some(repo) = find_named(client, forge, owner, name).await? else {
         return Ok(false);
     };
+    if repo.visibility == Visibility::Private {
+        return Ok(false);
+    }
     Ok(!client
         .query_documents(core, DOC_CONFIG, &repo.scope()?.filters([]), &[], 1, None)
         .await?

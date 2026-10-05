@@ -312,7 +312,14 @@ describe('the policy in force', () => {
 
 describe('the config the protection suggestion judges', () => {
   const AT = 1_000_000_000
-  const base = { config: { ...DEFAULT_CONFIG, protectedPatterns: ['refs/tags/**'] }, sealed: false, unlocked: false, repoCreatedAt: AT - 60_000, now: AT }
+  const base = {
+    config: { ...DEFAULT_CONFIG, protectedPatterns: ['refs/tags/**'] },
+    sealed: false,
+    unlocked: false,
+    repoDefaultBranch: 'trunk',
+    repoCreatedAt: AT - 60_000,
+    now: AT,
+  }
   it('is the repo\'s config when one is readable', () => {
     expect(suggestionConfig(base)).toEqual(base.config)
   })
@@ -320,8 +327,11 @@ describe('the config the protection suggestion judges', () => {
     expect(suggestionConfig({ ...base, sealed: true })).toBeNull()
     expect(suggestionConfig({ ...base, sealed: true, unlocked: true })).toEqual(base.config)
   })
-  it('is unknown for a new repo with no config yet, and the default for an old one', () => {
+  it('is unknown for a new repo with no config yet, and protects nothing on an old one, on its own default branch', () => {
+    const old = { ...base, config: null, repoCreatedAt: AT - CONFIG_LAG_MS - 1 }
     expect(suggestionConfig({ ...base, config: null })).toBeNull()
-    expect(suggestionConfig({ ...base, config: null, repoCreatedAt: AT - CONFIG_LAG_MS - 1 })).toEqual(DEFAULT_CONFIG)
+    expect(suggestionConfig(old)).toEqual({ ...DEFAULT_CONFIG, defaultBranch: 'trunk' })
+    // A private repo's config is sealed: with none, only finishing its create can write one.
+    expect(suggestionConfig({ ...old, sealed: true, unlocked: true })).toBeNull()
   })
 })

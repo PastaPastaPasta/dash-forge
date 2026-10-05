@@ -560,23 +560,31 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
     config: home.config,
     sealed: home.repo.visibility === 'private',
     unlocked: home.private?.access === 'member',
+    repoDefaultBranch: home.defaultBranch,
     repoCreatedAt: home.v2.createdAt,
     now,
   })
   const missing = known === null ? [] : missingDefaultProtection(known.defaultBranch, known.protectedPatterns)
   if (missing.length === 0 || dismissed || home.v2.forkOf !== null || mirrorSourceOfRepo(home.v2, 'issue') !== null) return null
   const branch = missing.find((p) => p.startsWith('refs/heads/'))?.slice('refs/heads/'.length) ?? null
-  const tags = missing.some((p) => p.startsWith('refs/tags/'))
-  const what = branch !== null && tags ? `${branch} and tags` : (branch ?? 'tags')
   const exposure =
-    branch !== null && tags
+    branch !== null && missing.length > 1
       ? `Any writer can push to ${branch} and create or move tags that no pattern protects yet.`
       : branch !== null
         ? `Any writer can push to ${branch}.`
         : 'Any writer can create or move tags that no pattern protects yet.'
-  const tooLong = branch !== null && missing.some((p) => [...p].length > MAX_PATTERN_CHARS)
-  const full = tooLong ? null : patternsProblem([...(known?.protectedPatterns ?? []), ...missing])
-  const blocked = tooLong ? `${branch} is too long to protect by name.` : full !== null ? `${full} Remove one to make room.` : null
+  // What the button adds: a branch whose pattern would pass the limit is left out, its tags not.
+  const tooLong = missing.some((p) => [...p].length > MAX_PATTERN_CHARS)
+  const offer = missing.filter((p) => [...p].length <= MAX_PATTERN_CHARS)
+  const offerBranch = offer.some((p) => p.startsWith('refs/heads/')) ? branch : null
+  const offerTags = offer.some((p) => p.startsWith('refs/tags/'))
+  const what = offerBranch !== null && offerTags ? `${offerBranch} and tags` : (offerBranch ?? 'tags')
+  const full = offer.length === 0 ? null : patternsProblem([...(known?.protectedPatterns ?? []), ...offer])
+  const note = [tooLong ? `${branch} is too long to protect by name.` : null, full !== null ? `${full} Remove one to make room.` : null]
+    .filter((x) => x !== null)
+    .join(' ')
+  // With no config yet, the first one keeps the branch readers already take as the default.
+  const change = { addPatterns: offer, ...(home.config === null && known !== null ? { defaultBranch: known.defaultBranch } : {}) }
   const dismiss = (): void => {
     try {
       window.localStorage.setItem(key, '1')
@@ -593,14 +601,14 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
     >
       <p className="flex-1 text-dense text-anvil-700 dark:text-anvil-200">
         {exposure} New repositories protect the default branch and every tag.
-        {blocked !== null ? ` ${blocked}` : null}
+        {note !== '' ? ` ${note}` : null}
       </p>
       <div className="flex shrink-0 items-center gap-1.5">
         {cfg.sealed ? (
           <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
             Run <span className="break-all font-mono">dg repo protect defaults {home.repo.ownerId}/{home.repo.name}</span>
           </p>
-        ) : blocked === null ? (
+        ) : offer.length > 0 && full === null ? (
           <Button
             size="sm"
             variant="primary"
@@ -608,10 +616,10 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
             onClick={() =>
               cfg.ask({
                 title: `Protect ${what}`,
-                description: `Appends a config adding ${missing.join(' and ')}. From then on only maintainers can ${
-                  branch !== null && tags ? `push to ${branch} or create and move tags` : branch !== null ? `push to ${branch}` : 'create and move tags'
+                description: `Appends a config adding ${offer.join(' and ')}. From then on only maintainers can ${
+                  offerBranch !== null && offerTags ? `push to ${offerBranch} or create and move tags` : offerBranch !== null ? `push to ${offerBranch}` : 'create and move tags'
                 }; a writer's push there is refused.`,
-                change: { addPatterns: missing },
+                change,
                 confirmLabel: 'Sign & protect',
               })
             }

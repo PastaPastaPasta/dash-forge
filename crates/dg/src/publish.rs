@@ -782,7 +782,7 @@ fn confirm_plan(
         } else {
             // A config an earlier run left unwritten is written now, with the same patterns.
             println!(
-                "  if its config is still missing, finishing {}",
+                "  if an earlier run left the config unwritten, it {}",
                 protection_line(&plan.default_branch, opts.no_protect)
             );
         }
