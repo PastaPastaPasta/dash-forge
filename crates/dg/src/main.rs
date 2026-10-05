@@ -14,6 +14,7 @@ mod config;
 mod context;
 mod cost;
 mod doctor;
+mod env;
 mod errors;
 mod fmt;
 mod git;
@@ -240,6 +241,10 @@ pub enum Command {
     /// Webhooks a relay delivers (forge-v2).
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
+    /// Environments: configuration and secrets per environment (dev, staging, production),
+    /// encrypted for Maintainers or Members, injected with `dg env run`, never in git.
+    #[command(subcommand)]
+    Env(env::EnvCommand),
     /// CI: runner keys and memberships, and check runs on commits.
     #[command(subcommand)]
     Ci(ci::CiCommand),
@@ -2159,6 +2164,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
+        Command::Env(cmd) => env::run(ctx, cmd).await,
         Command::Ci(cmd) => ci::run(ctx, cmd).await,
         Command::Search(cmd) => search::run(ctx, cmd).await,
         Command::Api(cmd) => api::run(ctx, cmd).await,

@@ -337,8 +337,10 @@ pub fn conflict_error(repo: &RepoRef, env: &str, heads: &[Head]) -> Error {
             h.short()
         ));
     }
-    u.fix(format!("`dg env history --env {env}` shows what each changed"))
-        .into()
+    u.fix(format!(
+        "`dg env history --env {env}` shows what each changed"
+    ))
+    .into()
 }
 
 /// Where a new snapshot starts ([`Book::base`]).
@@ -365,7 +367,30 @@ pub struct Draft {
     pub supersedes: Vec<[u8; 32]>,
 }
 
-/// What [`Environments::save`] wrote.
+/// A sealed snapshot not yet written ([`Environments::prepare`]).
+#[derive(Debug, Clone)]
+pub struct Prepared {
+    /// Its audience.
+    pub audience: Audience,
+    /// What it supersedes.
+    pub supersedes: Vec<[u8; 32]>,
+    /// The sealed artifact.
+    pub sealed: Vec<u8>,
+    /// Who it goes to (Maintainers; base58, the writer first).
+    pub to: Vec<String>,
+    /// Maintainers left out because their identity has no usable encryption key.
+    pub skipped: Vec<String>,
+}
+
+impl Prepared {
+    /// The upper bound it costs to store ([`snapshot_credits`]).
+    #[must_use]
+    pub fn credits(&self) -> u64 {
+        snapshot_credits(self.sealed.len() as u64)
+    }
+}
+
+/// What [`Environments::store`] wrote.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Saved {
@@ -386,7 +411,9 @@ pub struct Saved {
 /// The upper bound a snapshot of `sealed_len` bytes costs: one `chunk` and one `packManifest`.
 #[must_use]
 pub fn snapshot_credits(sealed_len: u64) -> u64 {
-    use crate::cost::push_fees::{CHUNK_FLAT, CHUNK_OVERHEAD_BYTES, CHUNK_PER_BYTE, MANIFEST_FIRST};
+    use crate::cost::push_fees::{
+        CHUNK_FLAT, CHUNK_OVERHEAD_BYTES, CHUNK_PER_BYTE, MANIFEST_FIRST,
+    };
     CHUNK_PER_BYTE * (sealed_len + CHUNK_OVERHEAD_BYTES) + CHUNK_FLAT + MANIFEST_FIRST
 }
 
@@ -443,6 +470,7 @@ impl<'a> Environments<'a> {
     /// every snapshot a current maintainer wrote, fetched (checked against its manifest's
     /// `packHash`) and opened, then [`chain::resolve`]. A snapshot by anyone else is never
     /// fetched.
+    #[allow(clippy::too_many_lines)] // fetch, keys, open, resolve: one read
     pub async fn read(&self, repo: &RepoRef) -> Result<Book> {
         let svc = self.repo_service();
         let members = MemberReader::new(self.client);
@@ -568,9 +596,11 @@ impl<'a> Environments<'a> {
     /// maintainers-only writes, security review H5).
     pub async fn require_maintainer(&self, repo: &RepoRef, action: &str) -> Result<()> {
         let Some((identity, _)) = self.signer else {
-            return Err(UserError::new(codes::NO_IDENTITY, format!("{action}: no identity"))
-                .fix("`dg auth login <file>`")
-                .into());
+            return Err(
+                UserError::new(codes::NO_IDENTITY, format!("{action}: no identity"))
+                    .fix("`dg auth login <file>`")
+                    .into(),
+            );
         };
         let me = identity.id();
         let role = MemberReader::new(self.client).best_role(repo, &me).await?;
@@ -593,37 +623,51 @@ impl<'a> Environments<'a> {
         .into())
     }
 
-    /// Save `draft` as a new snapshot of its environment: sealed for its audience (Members under
-    /// the members key at the write epoch, read fresh; Maintainers to every current maintainer
-    /// with a usable encryption key, the writer first), stored as one Platform chunk, recorded
-    /// as a kind-8 `packManifest` superseding `draft.supersedes`. Refused unless the signer is a
-    /// current maintainer.
-    pub async fn save(&self, repo: &RepoRef, draft: &Draft) -> Result<Saved> {
+    /// Seal `draft` as the next snapshot of its environment, for its audience (Members under the
+    /// members key at the write epoch, read fresh; Maintainers to every current maintainer with
+    /// a usable encryption key, the writer first). Refused unless the signer is a current
+    /// maintainer. Nothing is written: [`Self::store`] does that, after the caller has shown
+    /// the plan and its cost.
+    pub async fn prepare(&self, repo: &RepoRef, draft: &Draft) -> Result<Prepared> {
         self.require_maintainer(repo, &format!("change {}", draft.env))
             .await?;
         let (sealed, to, skipped) = self.seal(repo, draft).await?;
-        let (id, pack_hash) = self
-            .repo_service()
-            .store_env_snapshot(repo, &sealed, draft.supersedes.clone())
-            .await?;
-        Ok(Saved {
-            id,
-            pack_hash: hex::encode(pack_hash),
-            size_bytes: sealed.len() as u64,
+        Ok(Prepared {
             audience: draft.audience,
+            supersedes: draft.supersedes.clone(),
+            sealed,
             to,
             skipped,
         })
     }
 
+    /// Store `prepared` as one Platform chunk and record its kind-8 `packManifest`.
+    pub async fn store(&self, repo: &RepoRef, prepared: &Prepared) -> Result<Saved> {
+        let (id, pack_hash) = self
+            .repo_service()
+            .store_env_snapshot(repo, &prepared.sealed, prepared.supersedes.clone())
+            .await?;
+        Ok(Saved {
+            id,
+            pack_hash: hex::encode(pack_hash),
+            size_bytes: prepared.sealed.len() as u64,
+            audience: prepared.audience,
+            to: prepared.to.clone(),
+            skipped: prepared.skipped.clone(),
+        })
+    }
+
     /// Seal `draft` for its audience: the bytes, who it goes to, and who was left out.
-    pub async fn seal(
+    async fn seal(
         &self,
         repo: &RepoRef,
         draft: &Draft,
     ) -> Result<(Vec<u8>, Vec<String>, Vec<String>)> {
         let signer = self.private_signer().ok_or_else(|| {
-            Error::from(UserError::new(codes::NO_IDENTITY, "saving an environment needs an identity"))
+            Error::from(UserError::new(
+                codes::NO_IDENTITY,
+                "saving an environment needs an identity",
+            ))
         })?;
         let generated_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -732,7 +776,11 @@ pub fn utc(ms: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", rem / 3600, rem % 3600 / 60)
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
+        rem / 3600,
+        rem % 3600 / 60
+    )
 }
 
 /// Members audience without a members key to write under.
@@ -791,6 +839,9 @@ mod tests {
     fn a_snapshot_is_quoted_as_one_chunk_and_one_manifest() {
         let c = snapshot_credits(MAX_SEALED);
         assert!(c > crate::cost::push_fees::MANIFEST_FIRST);
-        assert!(MAX_SEALED <= crate::pack::DOC_PAYLOAD_MAX as u64, "one chunk");
+        assert!(
+            MAX_SEALED <= crate::pack::DOC_PAYLOAD_MAX as u64,
+            "one chunk"
+        );
     }
 }

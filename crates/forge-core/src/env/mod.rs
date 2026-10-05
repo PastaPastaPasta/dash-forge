@@ -65,12 +65,16 @@ pub mod service;
 #[cfg(test)]
 pub(crate) mod conformance;
 
-pub use chain::{exposure, resolve, EnvState, Exposure, HiddenEnv, Ignored, Resolution, SnapshotRef};
+pub use chain::{
+    exposure, resolve, EnvState, Exposure, HiddenEnv, Ignored, Resolution, SnapshotRef,
+};
 pub use codec::{open, owner_keys, seal_maintainers, seal_members, OpenError, OpenKeys};
 pub use format::{Snapshot, Var, VarType};
 
 /// Who can read an environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum Audience {
     /// Every current member holding the repository's members key, and every future one: they
@@ -120,10 +124,12 @@ pub const MAINTAINERS_BY_DEFAULT: &[&str] = &["production", "prod*", "staging", 
 #[must_use]
 pub fn default_audience(name: &str) -> Audience {
     let n = name.to_ascii_lowercase();
-    let hit = MAINTAINERS_BY_DEFAULT.iter().any(|p| match p.strip_suffix('*') {
-        Some(prefix) => n.starts_with(prefix),
-        None => n == *p,
-    });
+    let hit = MAINTAINERS_BY_DEFAULT
+        .iter()
+        .any(|p| match p.strip_suffix('*') {
+            Some(prefix) => n.starts_with(prefix),
+            None => n == *p,
+        });
     if hit {
         Audience::Maintainers
     } else {
@@ -168,7 +174,14 @@ mod tests {
 
     #[test]
     fn default_audience_follows_the_one_rule() {
-        for n in ["production", "PRODUCTION", "prod", "prod-eu", "staging", "release-1.2"] {
+        for n in [
+            "production",
+            "PRODUCTION",
+            "prod",
+            "prod-eu",
+            "staging",
+            "release-1.2",
+        ] {
             assert_eq!(default_audience(n), Audience::Maintainers, "{n}");
         }
         for n in ["dev", "staging-2", "my-production", "qa", "test"] {

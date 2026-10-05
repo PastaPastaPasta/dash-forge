@@ -322,6 +322,10 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
     }
+    // The environments they could read, listed before they go (their own snapshots still count
+    // while they are a maintainer): the rotation checklist (DESIGN §4.5). Every member of a
+    // private repository holds its members key.
+    let (exposed, exposed_lines) = crate::env::removal_checklist(&s, member, private).await;
     let signer = crate::keys::signer(&s);
     // Removing a maintainer withdraws their anchors (§5.3): re-anchor their epochs under the
     // same keys first, or the repo would fall back to an older key.
@@ -372,6 +376,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
             "rotation": rotation.as_ref().map(crate::keys::rotation_json),
             "droppedEpochs": dropped,
             "losingMembers": losing,
+            "environments": exposed,
         }),
         || {
             if !dropped.is_empty() {
@@ -387,6 +392,9 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
             }
             if removed {
                 println!("Removed {member} ({shown}) from {}.", handle.display());
+                for line in &exposed_lines {
+                    println!("{line}");
+                }
             } else {
                 println!(
                     "{member} is not a {shown} of {}; nothing to remove.",

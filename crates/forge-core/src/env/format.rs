@@ -151,7 +151,9 @@ impl Snapshot {
                 }
                 for (i, t) in self.to.iter().enumerate() {
                     if !canonical_id(t) || self.to[..i].contains(t) {
-                        return bad(format!("{t:?} is not a recipient identity id, or is listed twice"));
+                        return bad(format!(
+                            "{t:?} is not a recipient identity id, or is listed twice"
+                        ));
                     }
                 }
                 Ok(())
@@ -219,7 +221,7 @@ impl Snapshot {
     /// and exactly the bytes [`Self::encode`] makes of it. `None` is malformed.
     #[must_use]
     pub fn decode(pt: &[u8]) -> Option<Self> {
-        if pt.is_empty() || pt.len() > MAX_SNAPSHOT || pt.len() % BUCKET != 0 {
+        if pt.is_empty() || pt.len() > MAX_SNAPSHOT || !pt.len().is_multiple_of(BUCKET) {
             return None;
         }
         let end = pt.iter().rposition(|b| *b != b' ')? + 1;
@@ -231,8 +233,8 @@ impl Snapshot {
     }
 
     fn from_value(v: &serde_json::Value) -> Option<Self> {
-        let obj = v.as_object()?;
         const KEYS: [&str; 6] = ["audience", "env", "generatedAt", "to", "v", "vars"];
+        let obj = v.as_object()?;
         if obj.keys().any(|k| !KEYS.contains(&k.as_str())) || obj.get("v")?.as_u64()? != 1 {
             return None;
         }
@@ -249,7 +251,9 @@ impl Snapshot {
         let mut vars = BTreeMap::new();
         for (name, entry) in obj.get("vars")?.as_object()? {
             let e = entry.as_object()?;
-            if e.keys().any(|k| !["note", "type", "value"].contains(&k.as_str())) {
+            if e.keys()
+                .any(|k| !["note", "type", "value"].contains(&k.as_str()))
+            {
                 return None;
             }
             let note = match e.get("note") {
@@ -396,7 +400,7 @@ pub fn parse_dotenv(text: &str) -> Result<BTreeMap<String, Zeroizing<String>>, D
                     return Err(err("a double-quoted value is not closed"));
                 }
                 value.push('\n');
-                chunk = lines[i].to_owned();
+                lines[i].clone_into(&mut chunk);
                 i += 1;
             }
             chunk.zeroize();
@@ -420,7 +424,8 @@ pub fn render_dotenv(vars: &BTreeMap<String, Var>) -> Zeroizing<String> {
         out.push_str(name);
         out.push('=');
         let bare = v.value.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ':' | '@' | '%' | '+' | ',' | '-')
+            c.is_ascii_alphanumeric()
+                || matches!(c, '_' | '.' | '/' | ':' | '@' | '%' | '+' | ',' | '-')
         });
         if bare {
             out.push_str(&v.value);
@@ -462,7 +467,10 @@ mod tests {
             audience: Audience::Members,
             generated_at: 1,
             to: Vec::new(),
-            vars: vars.iter().map(|(k, v)| ((*k).to_owned(), var(v))).collect(),
+            vars: vars
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), var(v)))
+                .collect(),
         }
     }
 
@@ -486,7 +494,9 @@ mod tests {
         let mut tab = pt.to_vec();
         *tab.last_mut().unwrap() = b'\t';
         assert!(Snapshot::decode(&tab).is_none());
-        let s = String::from_utf8(pt.to_vec()).unwrap().replacen(',', ", ", 1);
+        let s = String::from_utf8(pt.to_vec())
+            .unwrap()
+            .replacen(',', ", ", 1);
         assert!(Snapshot::decode(&s.as_bytes()[..512]).is_none());
     }
 
@@ -529,10 +539,7 @@ mod tests {
         assert_eq!(g("D"), "bare");
         assert_eq!(g("E"), "multi\nline");
         assert_eq!(g("F"), "");
-        let vars: BTreeMap<String, Var> = got
-            .iter()
-            .map(|(k, v)| (k.clone(), var(v)))
-            .collect();
+        let vars: BTreeMap<String, Var> = got.iter().map(|(k, v)| (k.clone(), var(v))).collect();
         let back = parse_dotenv(&render_dotenv(&vars)).unwrap();
         assert_eq!(back.len(), vars.len());
         for (k, v) in &vars {

@@ -112,10 +112,21 @@ impl Resolution {
     }
 }
 
+/// The union-find root of `x`, halving the path.
+fn find(parent: &mut BTreeMap<[u8; 32], [u8; 32]>, mut x: [u8; 32]) -> [u8; 32] {
+    while parent[&x] != x {
+        let up = parent[&parent[&x]];
+        parent.insert(x, up);
+        x = up;
+    }
+    x
+}
+
 /// Resolve `manifests` (kind 8 only) against the current `maintainers` (base58) and
 /// `env_of(packHash)`: the environment an authorized snapshot opened to, `None` when it did not
 /// open for this reader. See the module docs for the steps.
 #[must_use]
+#[allow(clippy::too_many_lines)] // one pass, step by step as the module docs number them
 pub fn resolve<'a>(
     maintainers: &BTreeSet<String>,
     manifests: &[SnapshotRef],
@@ -133,11 +144,11 @@ pub fn resolve<'a>(
                 .or_default()
                 .extend(m.supersedes.iter().copied());
             IgnoredReason::NotAMaintainer
-        } else if nodes.contains_key(&m.pack_hash) {
-            IgnoredReason::Duplicate
-        } else {
-            nodes.insert(m.pack_hash, m);
+        } else if let std::collections::btree_map::Entry::Vacant(slot) = nodes.entry(m.pack_hash) {
+            slot.insert(m);
             continue;
+        } else {
+            IgnoredReason::Duplicate
         };
         ignored.push(Ignored {
             id: m.id.clone(),
@@ -175,14 +186,6 @@ pub fn resolve<'a>(
 
     // components (union-find, the smaller hash as the root)
     let mut parent: BTreeMap<[u8; 32], [u8; 32]> = nodes.keys().map(|h| (*h, *h)).collect();
-    fn find(parent: &mut BTreeMap<[u8; 32], [u8; 32]>, mut x: [u8; 32]) -> [u8; 32] {
-        while parent[&x] != x {
-            let up = parent[&parent[&x]];
-            parent.insert(x, up);
-            x = up;
-        }
-        x
-    }
     for (a, b) in &edges {
         let (ra, rb) = (find(&mut parent, *a), find(&mut parent, *b));
         if ra != rb {
@@ -216,7 +219,7 @@ pub fn resolve<'a>(
     let mut envs: BTreeMap<String, BTreeSet<[u8; 32]>> = BTreeMap::new();
     let mut hidden: Vec<Vec<[u8; 32]>> = Vec::new();
     for members in comps.values() {
-        let names: BTreeSet<&str> = members.iter().filter_map(|h| env_of(h)).collect();
+        let names: BTreeSet<&str> = members.iter().filter_map(&env_of).collect();
         if names.is_empty() {
             hidden.push(members.clone());
         }
@@ -253,7 +256,7 @@ pub fn resolve<'a>(
             }
         })
         .collect();
-    hidden.sort_by_key(|g| g.iter().map(|h| key(h)).min());
+    hidden.sort_by_key(|g| g.iter().map(&key).min());
     let hidden = hidden
         .into_iter()
         .map(|g| {
@@ -350,22 +353,32 @@ mod tests {
         }
     }
 
-    fn run(maint: &[&str], ms: &[SnapshotRef], opened: &[(&str, Option<&'static str>)]) -> Resolution {
+    fn run(
+        maint: &[&str],
+        ms: &[SnapshotRef],
+        opened: &[(&str, Option<&'static str>)],
+    ) -> Resolution {
         let map: BTreeMap<[u8; 32], Option<&'static str>> =
             opened.iter().map(|(l, e)| (h(l), *e)).collect();
-        resolve(
-            &maint.iter().map(|s| (*s).to_owned()).collect(),
-            ms,
-            |p| map.get(p).copied().flatten(),
-        )
+        resolve(&maint.iter().map(|s| (*s).to_owned()).collect(), ms, |p| {
+            map.get(p).copied().flatten()
+        })
     }
 
     #[test]
     fn a_fork_is_a_conflict_naming_both_heads() {
         let r = run(
             &["A", "B"],
-            &[m("s1", "A", 1, &[]), m("s2", "A", 2, &["s1"]), m("s3", "B", 3, &["s1"])],
-            &[("s1", Some("prod")), ("s2", Some("prod")), ("s3", Some("prod"))],
+            &[
+                m("s1", "A", 1, &[]),
+                m("s2", "A", 2, &["s1"]),
+                m("s3", "B", 3, &["s1"]),
+            ],
+            &[
+                ("s1", Some("prod")),
+                ("s2", Some("prod")),
+                ("s3", Some("prod")),
+            ],
         );
         let e = r.env("prod").unwrap();
         assert_eq!(e.state, State::Conflict);
@@ -391,6 +404,9 @@ mod tests {
             &[("s1", Some("prod"))],
         );
         let e = r.env("prod").unwrap();
-        assert_eq!((e.state, e.heads.clone()), (State::Unreadable, vec!["s2".into()]));
+        assert_eq!(
+            (e.state, e.heads.clone()),
+            (State::Unreadable, vec!["s2".into()])
+        );
     }
 }

@@ -17,7 +17,10 @@ use crate::private::{EpochKey, EpochKeys};
 pub(crate) const CASE_PREFIX: &str = "env_snapshot";
 
 fn hex32(v: &Value) -> [u8; 32] {
-    hex::decode(v.as_str().unwrap()).unwrap().try_into().unwrap()
+    hex::decode(v.as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap()
 }
 
 fn bytes(v: &Value) -> Vec<u8> {
@@ -203,7 +206,11 @@ fn run_open(inp: &Value, expected: &Value) -> Value {
             )
             .unwrap()
         };
-        assert_eq!(hex::encode(&resealed), hex::encode(&sealed), "resealed bytes");
+        assert_eq!(
+            hex::encode(&resealed),
+            hex::encode(&sealed),
+            "resealed bytes"
+        );
         out.insert(
             "packHash".into(),
             json!(hex::encode(crate::private::keys::sha256(&sealed))),
@@ -244,7 +251,12 @@ fn run_resolve(inp: &Value) -> Value {
             id: m["id"].as_str().unwrap().into(),
             owner_id: m["ownerId"].as_str().unwrap().into(),
             pack_hash: hex32(&m["packHash"]),
-            supersedes: m["supersedes"].as_array().unwrap().iter().map(hex32).collect(),
+            supersedes: m["supersedes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(hex32)
+                .collect(),
             created_at: m["createdAt"].as_u64().unwrap(),
         })
         .collect();
@@ -302,7 +314,11 @@ fn run_exposure(inp: &Value) -> Value {
         .iter()
         .map(|e| {
             let list = |k: &str| e[k].as_array().unwrap().iter().map(snap).collect();
-            (e["env"].as_str().unwrap().to_owned(), list("heads"), list("snapshots"))
+            (
+                e["env"].as_str().unwrap().to_owned(),
+                list("heads"),
+                list("snapshots"),
+            )
         })
         .collect();
     let refs: Vec<(String, Vec<&Snapshot>, Vec<&Snapshot>)> = envs
@@ -366,7 +382,8 @@ fn env_snapshot_vectors() {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(CASE_PREFIX) && n.ends_with(".json"))
+                .is_some_and(|n| n.starts_with(CASE_PREFIX))
+                && p.extension().is_some_and(|x| x == "json")
         })
         .collect();
     files.sort();

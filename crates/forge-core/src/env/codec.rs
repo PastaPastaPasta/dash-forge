@@ -43,13 +43,20 @@ pub fn seal_members_with(
     file_id: [u8; 16],
 ) -> Result<Vec<u8>, SealError> {
     let pt = snap.encode()?;
-    Ok(pack::seal_with_file_id(keys, &pt, file_id, pack::WRITE_SEG_LOG2)?)
+    Ok(pack::seal_with_file_id(
+        keys,
+        &pt,
+        file_id,
+        pack::WRITE_SEG_LOG2,
+    )?)
 }
 
 /// The recipients must be exactly the snapshot's `to`, in order, the writer (`owner_id`) first.
 fn check_recipients(snap: &Snapshot, owner_id: &[u8; 32], recipients: &[Recipient]) -> bool {
     snap.audience == Audience::Maintainers
-        && recipients.first().is_some_and(|r| r.identity_id == *owner_id)
+        && recipients
+            .first()
+            .is_some_and(|r| r.identity_id == *owner_id)
         && recipients.len() == snap.to.len()
         && recipients
             .iter()
@@ -191,40 +198,40 @@ pub fn open(
     if sealed.len() < 9 || sealed[..4] != pack::MAGIC {
         return Err(OpenError::SealedPackCorrupt);
     }
-    let (plain, audience): (Zeroizing<Vec<u8>>, Audience) = match sealed[4] {
-        pack::VERSION => {
-            let pt = pack::open(sealed, manifest.size_bytes, |e| (keys.epoch_keys)(e)).map_err(
-                |e| match e {
-                    PrivateError::NoKey(_) => OpenError::NoKey,
-                    PrivateError::SizeMismatch => OpenError::SizeMismatch,
-                    _ => OpenError::SealedPackCorrupt,
-                },
-            )?;
-            (Zeroizing::new(pt), Audience::Members)
-        }
-        named::ARTIFACT_VERSION => {
-            let empty = Reader {
-                identity_id: [0; 32],
-                keys: &[],
-            };
-            let reader = keys.reader.as_ref().unwrap_or(&empty);
-            let pt = named::open_artifact(
-                keys.repo_id,
-                sealed,
-                manifest.size_bytes,
-                keys.owner_keys,
-                reader,
-            )
-            .map_err(|e| match e {
-                ArtifactError::SizeMismatch => OpenError::SizeMismatch,
-                ArtifactError::SealedPackCorrupt => OpenError::SealedPackCorrupt,
-                ArtifactError::Malformed => OpenError::Malformed,
-                ArtifactError::NotARecipient => OpenError::NotARecipient,
-            })?;
-            (pt, Audience::Maintainers)
-        }
-        _ => return Err(OpenError::SealedPackCorrupt),
-    };
+    let (plain, audience): (Zeroizing<Vec<u8>>, Audience) =
+        match sealed[4] {
+            pack::VERSION => {
+                let pt = pack::open(sealed, manifest.size_bytes, |e| (keys.epoch_keys)(e))
+                    .map_err(|e| match e {
+                        PrivateError::NoKey(_) => OpenError::NoKey,
+                        PrivateError::SizeMismatch => OpenError::SizeMismatch,
+                        _ => OpenError::SealedPackCorrupt,
+                    })?;
+                (Zeroizing::new(pt), Audience::Members)
+            }
+            named::ARTIFACT_VERSION => {
+                let empty = Reader {
+                    identity_id: [0; 32],
+                    keys: &[],
+                };
+                let reader = keys.reader.as_ref().unwrap_or(&empty);
+                let pt = named::open_artifact(
+                    keys.repo_id,
+                    sealed,
+                    manifest.size_bytes,
+                    keys.owner_keys,
+                    reader,
+                )
+                .map_err(|e| match e {
+                    ArtifactError::SizeMismatch => OpenError::SizeMismatch,
+                    ArtifactError::SealedPackCorrupt => OpenError::SealedPackCorrupt,
+                    ArtifactError::Malformed => OpenError::Malformed,
+                    ArtifactError::NotARecipient => OpenError::NotARecipient,
+                })?;
+                (pt, Audience::Maintainers)
+            }
+            _ => return Err(OpenError::SealedPackCorrupt),
+        };
     let snap = Snapshot::decode(&plain).ok_or(OpenError::Malformed)?;
     if snap.audience != audience {
         return Err(OpenError::Malformed);
