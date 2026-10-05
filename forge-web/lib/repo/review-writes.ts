@@ -793,8 +793,7 @@ async function replace(
       const drops = Object.fromEntries(Object.entries(changes).filter(([k, v]) => v === undefined && REFERENCE_FIELDS.includes(k) && k !== 'asMember'))
       replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])), ...drops }
     }
-    const kind = documentType === 'comment' ? 'comment' : documentType
-    if (!editKeepsAudience(contentDocOf(kind, stored), contentDocOf(kind, { ...stored, ...replaced }))) {
+    if (!editKeepsAudience(contentDocOf(documentType, stored), contentDocOf(documentType, { ...stored, ...replaced }))) {
       throw new PrivateWriteError(`this ${documentType} is ${audience === 'public' ? 'public' : 'members-only'}, and an edit keeps who can read it; nothing was written`)
     }
   }

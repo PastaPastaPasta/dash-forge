@@ -507,7 +507,7 @@ export const ENC_MEMBERS = 0x03
 export const ENC_SPECIFIC_PEOPLE = 0x04
 
 /** The `enc` version byte of `doc` (`enc[0]`), when it carries a non-empty `enc`. */
-function encVersion(doc: ContentDoc): number | null {
+function encVersion(doc: Pick<ContentDoc, 'enc'>): number | null {
   const hex = doc.enc
   if (hex == null || hex.length < 2) return null
   const v = Number.parseInt(hex.slice(0, 2), 16)
@@ -524,7 +524,7 @@ export type Audience = 'public' | 'members' | 'specificPeople'
 /** The audience `doc` was written for (its `enc`, never the repository's visibility). */
 export function audienceOf(doc: Pick<ContentDoc, 'enc'>): Audience {
   if (!present(doc.enc)) return 'public'
-  return encVersion(doc as ContentDoc) === ENC_SPECIFIC_PEOPLE ? 'specificPeople' : 'members'
+  return encVersion(doc) === ENC_SPECIFIC_PEOPLE ? 'specificPeople' : 'members'
 }
 
 /**

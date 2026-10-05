@@ -664,12 +664,11 @@ export async function readableReviews(
   const rows: ReadReview[] = []
   const views = new Map<string, ReviewView>()
   for (const { d, a } of read) {
-    if (a.ok) shown.push(reviewViewOf(a.doc))
-    else tally.add(a.reason, a.placeholder)
+    if (!a.ok) tally.add(a.reason, a.placeholder)
     // Only a well-formed sealed review has a placeholder: a malformed one never counts.
-    const sealed = isSealedDoc(d)
     if (!a.ok && a.placeholder === undefined) continue
     const view = a.ok ? reviewViewOf(a.doc) : { ...reviewViewOf(d), body: '', membersOnly: true as const }
+    if (a.ok) shown.push(view)
     views.set(view.id, view)
     rows.push({
       id: view.id,
@@ -677,7 +676,7 @@ export async function readableReviews(
       verdict: view.verdictCode,
       commitOid: view.commitOid,
       createdAt: view.createdAt,
-      sealed,
+      sealed: isSealedDoc(d),
       opened: a.ok,
       asMember: asIdentifierString(d['asMember']) !== '',
     })

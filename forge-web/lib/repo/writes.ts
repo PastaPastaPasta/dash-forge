@@ -307,18 +307,19 @@ export async function writeRepoDoc(
   // what the caller settled (`audience`), and an event's value follows its target, read now.
   const audience = await writeAudience(sdk, repo, documentType, data, options.audience)
   const sealedType = audience === 'public' ? null : sealedTypeOf(documentType, data)
-  if (sealedType !== null && repo.visibility === 'private') {
+  if (sealedType !== null) {
     contentKey = contentHash(documentType, scoped(repo, data))
-    const w = writer ?? (await privateWriter(sdk, auth, repo))
-    data = await sealForRepo(sdk, auth, repo, sealedType, data, w)
-    // D14: every sealed write by a member carries `asMember`.
-    if (w.isMember === true) data = withMemberProof(documentType, data, auth.identityId)
-    intent = sealedIntent(intent, w.keys)
-  } else if (sealedType !== null) {
-    contentKey = contentHash(documentType, scoped(repo, data))
-    const w = options.membersWriter ?? (await membersWriter(sdk, auth, repo))
-    data = await sealMembersContent(auth, sealedType, data, w)
-    intent = sealedIntent(intent, w.keys)
+    if (repo.visibility === 'private') {
+      const w = writer ?? (await privateWriter(sdk, auth, repo))
+      data = await sealForRepo(sdk, auth, repo, sealedType, data, w)
+      // D14: every sealed write by a member carries `asMember`.
+      if (w.isMember === true) data = withMemberProof(documentType, data, auth.identityId)
+      intent = sealedIntent(intent, w.keys)
+    } else {
+      const w = options.membersWriter ?? (await membersWriter(sdk, auth, repo))
+      data = await sealMembersContent(auth, sealedType, data, w)
+      intent = sealedIntent(intent, w.keys)
+    }
   }
   assertNoPlaintext(repo, documentType, data, sealedType !== null && repo.visibility === 'public')
   let result: WriteResult | undefined

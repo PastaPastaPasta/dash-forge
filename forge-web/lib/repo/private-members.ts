@@ -199,7 +199,6 @@ function staleHeldKey(held: readonly number[], current: number): PrivateMembersE
   )
 }
 
-
 /** A pending self-wrap of `epoch` to a key of ours this browser does not hold: it cannot be resumed here. */
 function notHeldKey(epoch: number, keyId: number): PrivateMembersError {
   return new PrivateMembersError(

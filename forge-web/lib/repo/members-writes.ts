@@ -100,15 +100,10 @@ export async function childAudience(
   if (repo.visibility === 'private') return audienceFor(repo, input.requested, null)
   let parent = await targetAudience(sdk, repo, input.targetId)
   if (input.replyTo !== undefined && input.replyTo !== '') {
-    const replied = await storedDoc(sdk, repo, DOC.comment, input.replyTo)
-    if (replied === null) throw parentNotFound('comment', input.replyTo)
-    parent = narrower(parent, docAudience(replied))
-    const root = asIdentifierString(replied['replyTo'])
-    if (root !== '') {
-      const rootDoc = await storedDoc(sdk, repo, DOC.comment, root)
-      if (rootDoc === null) throw parentNotFound('comment', root)
-      parent = narrower(parent, docAudience(rootDoc))
-    }
+    const replied = await storedAudience(sdk, repo, DOC.comment, input.replyTo)
+    parent = narrower(parent, replied.audience)
+    const root = asIdentifierString(replied.doc['replyTo'])
+    if (root !== '') parent = narrower(parent, (await storedAudience(sdk, repo, DOC.comment, root)).audience)
   }
   return audienceFor(repo, input.requested, parent)
 }
