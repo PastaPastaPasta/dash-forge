@@ -2,7 +2,7 @@
 
 Forge charges nothing. Nobody runs it, so nobody takes a cut. What you pay goes to two places: **Dash Platform fees**, paid from your identity's credits, and **your own storage provider's bill**, if you use one. Reading, cloning and browsing cost nothing on Platform. If a repository's packs are in a bucket, its owner's provider may bill the owner for the download traffic (egress); R2 has none.
 
-Amounts are in **DASH**. Dollar figures are examples at **$30/DASH**, the same fallback price `dg` uses on mainnet (set `DASH_USD` to change it). On testnet and devnets DASH is test money with no cash value, so neither `dg` nor the web shows a dollar figure there (`--json` gives `usd` and `usdPrice` as `null`).
+Amounts are in **DASH**. Dollar figures are examples at **$30/DASH**, the same fallback price `dg` uses on mainnet (set `DASH_USD` to change it). On testnet and devnets DASH is test money with no cash value, so neither `dg` nor the web shows a dollar figure for a write there (`--json` gives `usd` and `usdPrice` as `null`); only the web's landing page quotes what an issue and a push would cost on mainnet, in cents.
 
 1. [Credits](#credits)
 2. [Deposits and burns](#deposits-and-burns)

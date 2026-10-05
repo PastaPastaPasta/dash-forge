@@ -165,6 +165,8 @@ The same rules apply:
 - `application/wasm` as the wasm MIME type, which the browser needs to compile while streaming
 - HTML short-lived
 
+Build with `NEXT_PUBLIC_SITE_URL=https://<your host>` so link previews (`og:image`) point at your copy, not forge.dashhq.org. A build under `NEXT_PUBLIC_BASE_PATH` adds that path to it.
+
 For nginx. `add_header` in a `location` replaces every `add_header` inherited from the `server`, so a location that sets Cache-Control must repeat the other headers the site sends:
 
 ```nginx

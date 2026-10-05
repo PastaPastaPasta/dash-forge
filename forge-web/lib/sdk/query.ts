@@ -182,26 +182,74 @@ export interface ProofedDocuments {
 }
 
 /**
- * Called when a read names a document type its contract does not have: a seeded contract may
- * be older than the network's. Resolves true when the contract was refreshed and the read may
- * be retried once. Set by the SDK service.
+ * Why a read failed against a contract older than the network's:
+ * - `unknownType`: it names a document type the held contract does not have (a type an
+ *   in-place update added);
+ * - `newerDocument`: a document it read was written under a newer version of the contract,
+ *   with a property the held type does not know (an update gave the type a property). rs-dpp
+ *   refuses to decode it: "serialized document has trailing bytes ... refetch the contract"
+ *   (v5.0.0-beta.1 rs-dpp/src/document/v0/serialize/v3.rs:557-570), on every read and on the
+ *   proof a write's result wait checks.
  */
-type StaleContractHandler = (contractId: string) => Promise<boolean>
+export type StaleContractCause = 'unknownType' | 'newerDocument'
+
+/**
+ * Called when a read failed against a contract older than the network's. Resolves true when
+ * the contract was refreshed and the read may be retried once. Set by the SDK service.
+ */
+type StaleContractHandler = (contractId: string, cause: StaleContractCause, documentVersion?: number) => Promise<boolean>
 let staleContractHandler: StaleContractHandler | null = null
 
-/** Install (or clear) the handler for reads against a possibly stale seeded contract. */
+/** Install (or clear) the handler for reads against a possibly stale contract. */
 export function setStaleContractHandler(handler: StaleContractHandler | null): void {
   staleContractHandler = handler
 }
 
-function isUnknownDocumentType(e: unknown): boolean {
+/** Why `e` says the held contract is older than the network's, or null when it does not. */
+export function staleContractCause(e: unknown): StaleContractCause | null {
   let message = ''
   try {
     message = e instanceof Error ? e.message : String((e as { message?: unknown })?.message ?? e)
   } catch {
-    return false
+    return null
   }
-  return /document type not found/i.test(message)
+  if (/document type not found/i.test(message)) return 'unknownType'
+  if (/trailing bytes/i.test(message) && /refetch the contract/i.test(message)) return 'newerDocument'
+  return null
+}
+
+/**
+ * The contract version a too-new document was serialized under, when `e` names it (rs-dpp:
+ * "it was serialized under contract version N with properties this document type does not
+ * know"), so a refresh can tell a second update from the one it already fetched.
+ */
+export function staleDocumentVersion(e: unknown): number | undefined {
+  try {
+    const message = e instanceof Error ? e.message : String((e as { message?: unknown })?.message ?? e)
+    const m = /serialized under contract version (\d+)/i.exec(message)
+    return m ? Number(m[1]) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Refresh `contractId` for the reason `e` gives, when it gives one: true when the caller may
+ * retry its read once (or settle its write by reading).
+ */
+export async function refreshStaleContract(contractId: string, e: unknown): Promise<boolean> {
+  const cause = staleContractCause(e)
+  return cause !== null && staleContractHandler !== null && (await staleContractHandler(contractId, cause, staleDocumentVersion(e)))
+}
+
+/** `read()`, retried once after its contract was refreshed when it failed on a stale one. */
+export async function retryOnStaleContract<T>(contractId: string, read: () => Promise<T>): Promise<T> {
+  try {
+    return await read()
+  } catch (e) {
+    if (!(await refreshStaleContract(contractId, e))) throw e
+    return read()
+  }
 }
 
 /**
@@ -259,13 +307,7 @@ export async function queryDocuments(sdk: EvoSDK, query: DocumentQuery): Promise
 }
 
 async function readDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<PlainDocument[]> {
-  let response: Map<string, unknown>
-  try {
-    response = await documentsOf(sdk).query(query)
-  } catch (e) {
-    if (!isUnknownDocumentType(e) || !(await staleContractHandler?.(query.dataContractId))) throw e
-    response = await documentsOf(sdk).query(query)
-  }
+  const response = await retryOnStaleContract(query.dataContractId, () => documentsOf(sdk).query(query))
   followSdkVersion(sdk)
   return mapToDocuments(response)
 }

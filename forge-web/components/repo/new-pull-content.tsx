@@ -338,7 +338,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5">
+    <div className="max-w-5xl space-y-5">
       <div>
         <h1 className="text-xl">Open a pull request</h1>
         <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">

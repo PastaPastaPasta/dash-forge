@@ -147,7 +147,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     members.reload()
   }
   return (
-    <div className="mx-auto max-w-2xl space-y-8">
+    <div className="max-w-2xl space-y-8">
       <SettingsNav />
 
       {/* Settings are a maintainer's (QW3-055): anyone else reads them, plainly read-only. The

@@ -255,12 +255,59 @@ impl Summary {
         if let Some(e) = &self.error {
             eprintln!("  error: {e}");
         }
+        if let Some(hint) = self.backlink_hint() {
+            eprintln!("  {hint}");
+        }
+    }
+
+    /// After creating a GitHub mirror: how its source can vouch for it (forge-v2.md §6.4).
+    /// Readers show the description's claim as "says it mirrors" until the source's
+    /// `.dash-forge.json` lists the repo.
+    fn backlink_hint(&self) -> Option<String> {
+        let github = self.source.starts_with("github.com/");
+        if !github
+            || !self.repo.created
+            || self.repo.id.is_empty()
+            || self.error.is_some()
+            || self.status == Status::DryRun
+        {
+            return None;
+        }
+        let file = forge_core::rules::mirror::backlink_file(std::slice::from_ref(&self.repo.id));
+        Some(format!(
+            "confirm the mirror: add {} to {} containing {} (readers check it with GitHub)",
+            forge_core::rules::mirror::BACKLINK_FILE,
+            self.source,
+            file.trim_end()
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_github_mirror_says_how_its_source_vouches_for_it() {
+        let mut s = Summary::new("devnet-sakura".into(), "github.com/dashpay/dips".into());
+        assert_eq!(s.backlink_hint(), None, "no repo created");
+        s.repo.created = true;
+        s.repo.id = "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq".into();
+        let hint = s.backlink_hint().expect("hint");
+        assert!(
+            hint.contains(".dash-forge.json to github.com/dashpay/dips"),
+            "{hint}"
+        );
+        assert!(
+            hint.contains(r#"{"mirrors":["BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"]}"#),
+            "{hint}"
+        );
+        let gitlab = Summary {
+            source: "gitlab.com/g/p".into(),
+            ..s
+        };
+        assert_eq!(gitlab.backlink_hint(), None, "only GitHub is checked");
+    }
 
     #[test]
     fn the_json_shape_matches_the_action_contract() {
