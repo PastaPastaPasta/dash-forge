@@ -332,7 +332,9 @@ octokit) reads them:
   sinks (and forge-notify, which renders through them) do exactly that. Limits: no
   `check_run` is reported for a members-only pull request (its head is a stand-in), and a
   merge of one always carries `dash_merge_check: "not_on_base"`, because its base branch name
-  is members-only.
+  is members-only. The same holds after a members-only retarget: the relay cannot read the new
+  base, so it still judges the merge against the old one. Either way `dash_merge_unverified`
+  is `true`; check the merge with `dg pr verify` before acting on it.
 
 ## Delivery semantics
 
