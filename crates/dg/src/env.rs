@@ -1736,9 +1736,10 @@ impl Removal {
     /// Drop the saves (`--no-resave`, or a no at their own confirmation).
     pub fn skip_saves(&mut self, member: &str) {
         if !self.pins.is_empty() {
+            let each = if self.pins.len() == 1 { "It" } else { "Each" };
             let _ = write!(
                 self.checklist,
-                "\nNot saved again: {}. Each now holds the version before {member}'s change, or a conflict.",
+                "\nNot saved again: {}. {each} now holds the version before {member}'s change, or a conflict.",
                 self.pins.iter().map(|p| p.env.as_str()).collect::<Vec<_>>().join(", ")
             );
         }
