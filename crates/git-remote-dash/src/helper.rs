@@ -1206,6 +1206,11 @@ fn packs_to_fetch(
 /// landed and others did not, the ones that did not are rejected in `planned`, so the push
 /// goes on to its read-back, reports each ref to git and syncs the PRs of the refs that
 /// moved; when none landed, the first failure is the push's error.
+///
+/// A new ref that only fits because this push deletes a ref it collides with (`feature`
+/// deleted, `feature/x` created) is written after that deletion landed, and refused when it
+/// did not: written together, a failed deletion would leave both refs live. So when a push
+/// has such a ref, its deletions are written first, on their own.
 async fn write_ref_updates(
     svc: &RepoService<'_>,
     repo: &RepoRef,
@@ -1215,6 +1220,66 @@ async fn write_ref_updates(
     let accepted: Vec<usize> = (0..planned.len())
         .filter(|&i| planned[i].reject.is_none())
         .collect();
+    let gated = gated_creations(planned, &accepted);
+    if gated.is_empty() {
+        return write_batch(svc, repo, planned, &accepted, progress, false).await;
+    }
+    let (deletions, rest): (Vec<usize>, Vec<usize>) = accepted
+        .iter()
+        .partition(|&&i| planned[i].new_oid.is_none());
+    write_batch(svc, repo, planned, &deletions, progress, false).await?;
+    for (i, needs) in gated {
+        if let Some(&d) = needs.iter().find(|&&d| planned[d].reject.is_some()) {
+            planned[i].reject = Some(format!(
+                "not written: deleting {} failed, and git cannot hold both names",
+                planned[d].spec.dst
+            ));
+        }
+    }
+    let rest: Vec<usize> = rest
+        .into_iter()
+        .filter(|&i| planned[i].reject.is_none())
+        .collect();
+    if rest.is_empty() {
+        return Ok(());
+    }
+    write_batch(svc, repo, planned, &rest, progress, true).await
+}
+
+/// Each accepted new ref (`planned[i]`) that collides with refs this push deletes, with those
+/// deletions: it may be written only once they all landed.
+fn gated_creations(planned: &[Planned], accepted: &[usize]) -> Vec<(usize, Vec<usize>)> {
+    use forge_core::rules::ref_collision::ref_collision;
+    let deletions: Vec<usize> = accepted
+        .iter()
+        .copied()
+        .filter(|&d| planned[d].new_oid.is_none())
+        .collect();
+    accepted
+        .iter()
+        .copied()
+        .filter(|&i| planned[i].new_oid.is_some() && planned[i].prev_oid.is_none())
+        .filter_map(|i| {
+            let dst = planned[i].spec.dst.as_str();
+            let needs: Vec<usize> = deletions
+                .iter()
+                .copied()
+                .filter(|&d| ref_collision([planned[d].spec.dst.as_str()], dst).is_some())
+                .collect();
+            (!needs.is_empty()).then_some((i, needs))
+        })
+        .collect()
+}
+
+/// Write `planned[accepted[..]]` in one batch and settle it ([`settle_ref_writes`]).
+async fn write_batch(
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    planned: &mut [Planned],
+    accepted: &[usize],
+    progress: Progress,
+    landed_before: bool,
+) -> Result<()> {
     let writes = accepted
         .iter()
         .map(|&i| {
@@ -1256,20 +1321,21 @@ async fn write_ref_updates(
     if let Some(written) = fail_after {
         bail!("simulated failure after {written} ref update(s) (DASH_FORGE_FAIL_AFTER_REFS)");
     }
-    settle_ref_writes(planned, &accepted, results)
+    settle_ref_writes(planned, accepted, results, landed_before)
 }
 
 /// Fold a batch's per-ref `results` (for `planned[accepted[i]]`, in order; shorter when a
-/// sequential write stopped at its failure) into the plan. Nothing landed: the first failure
-/// is the error (a whole-push failure, classified for the user as before). Some landed: each
-/// ref that failed, or was not attempted after a failure, is rejected with its reason, and
-/// the push goes on for the rest.
+/// sequential write stopped at its failure) into the plan. Nothing landed, in this batch or an
+/// earlier one of the push (`landed_before`): the first failure is the error (a whole-push
+/// failure, classified for the user as before). Some landed: each ref that failed, or was not
+/// attempted after a failure, is rejected with its reason, and the push goes on for the rest.
 fn settle_ref_writes(
     planned: &mut [Planned],
     accepted: &[usize],
     results: Vec<forge_core::Result<String>>,
+    landed_before: bool,
 ) -> Result<()> {
-    if !results.iter().any(Result::is_ok) {
+    if !landed_before && !results.iter().any(Result::is_ok) {
         let failed = accepted
             .iter()
             .zip(results)
@@ -1402,7 +1468,9 @@ fn plan_pushes(
         let prev = remote_tip(remote_refs, &spec.dst);
         let lease = options.lease(&spec.dst);
         // A lease that holds forces the update, and it is recorded as forced (`write_ref_updates`
-        // writes `spec.force`), as a `+` refspec would be.
+        // writes `spec.force`), as a `+` refspec would be. The lease is checked against this
+        // read, not at the write: Platform has no compare-and-swap, so an update that lands in
+        // between is still superseded (docs/guides/collaborating.md says so).
         let spec = PushSpec {
             force: spec.force || lease.is_some(),
             ..spec.clone()
@@ -3357,6 +3425,7 @@ mod tests {
             &mut p,
             &[0, 1, 2],
             vec![Ok("1".into()), fail(), Ok("3".into())],
+            false,
         )
         .unwrap();
         let r = rejects(&p);
@@ -3368,7 +3437,7 @@ mod tests {
 
         // Sequential (private): a landed, b failed, c never attempted.
         let mut p = three();
-        settle_ref_writes(&mut p, &[0, 1, 2], vec![Ok("1".into()), fail()]).unwrap();
+        settle_ref_writes(&mut p, &[0, 1, 2], vec![Ok("1".into()), fail()], false).unwrap();
         let r = rejects(&p);
         assert!(r[0].is_none(), "{r:?}");
         assert!(r[1].as_deref().is_some_and(|w| w.contains("refused")));
@@ -3378,16 +3447,26 @@ mod tests {
 
         // Nothing landed: the first failure is the push's error, naming its ref.
         let mut p = three();
-        let err = settle_ref_writes(&mut p, &[0, 1, 2], vec![fail()]).unwrap_err();
+        let err = settle_ref_writes(&mut p, &[0, 1, 2], vec![fail()], false).unwrap_err();
         assert!(
             format!("{err:#}").contains("writing ref update for refs/heads/a"),
             "{err:#}"
         );
 
+        // Nothing landed in a batch written after one that did: each ref is rejected instead.
+        let mut p = three();
+        settle_ref_writes(&mut p, &[1, 2], vec![fail()], true).unwrap();
+        let r = rejects(&p);
+        assert!(r[0].is_none(), "{r:?}");
+        assert!(r[1].as_deref().is_some_and(|w| w.contains("refused")));
+        assert!(r[2]
+            .as_deref()
+            .is_some_and(|w| w.contains("earlier ref update")));
+
         // An already-rejected spec is not in `accepted` and keeps its own reason.
         let mut p = three();
         p[0].reject = Some("non-fast-forward".into());
-        settle_ref_writes(&mut p, &[1, 2], vec![Ok("2".into()), fail()]).unwrap();
+        settle_ref_writes(&mut p, &[1, 2], vec![Ok("2".into()), fail()], false).unwrap();
         assert_eq!(p[0].reject.as_deref(), Some("non-fast-forward"));
         assert!(p[1].reject.is_none() && p[2].reject.is_some());
 
@@ -3397,9 +3476,41 @@ mod tests {
             &mut p,
             &[0, 1, 2],
             vec![Ok("1".into()), Ok("2".into()), Ok("3".into())],
+            false,
         )
         .unwrap();
         assert!(rejects(&p).iter().all(Option::is_none));
+    }
+
+    /// CodeRabbit (PR #377): a new ref that only fits because the push deletes a ref it
+    /// collides with waits for that deletion; other refs, and a new ref with no such
+    /// collision, do not.
+    #[test]
+    fn a_new_ref_waits_for_the_deletion_that_makes_room_for_it() {
+        use super::gated_creations;
+        let deletion = |dst: &str| Planned {
+            spec: PushSpec {
+                force: false,
+                src: String::new(),
+                dst: dst.into(),
+            },
+            new_oid: None,
+            prev_oid: Some("2".repeat(40)),
+            reject: None,
+        };
+        let p = vec![
+            deletion("refs/heads/feature"),
+            planned("refs/heads/feature/x"),
+            planned("refs/heads/other"),
+            deletion("refs/heads/old"),
+            planned("refs/heads/FEATURE"),
+        ];
+        assert_eq!(
+            gated_creations(&p, &[0, 1, 2, 3, 4]),
+            vec![(1, vec![0]), (4, vec![0])]
+        );
+        // A deletion the plan refused is not accepted, so nothing waits on it.
+        assert!(gated_creations(&p, &[1, 2, 3, 4]).is_empty());
     }
     use forge_core::network::NetworkSettings;
     use forge_core::user_error::{codes, UserError};
