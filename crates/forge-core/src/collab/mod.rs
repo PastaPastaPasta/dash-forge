@@ -268,6 +268,11 @@ pub struct ReleaseInput {
     /// ([`v2::sealed_provenance`]); its `url` is also the asset list's `source`. `None`
     /// carries the tag's last revision's. The public release has no field for it.
     pub imported: Option<Imported>,
+    /// A public repository: the tag's tip as this writer read it (hex), written as
+    /// `release.targetOid` (UPDATE-1) where the contract has the field; `None` writes none.
+    /// Release provenance compares it with the tag's history. A sealed revision and an
+    /// unpublish never carry it.
+    pub target_oid: Option<String>,
 }
 
 /// One file a sealed release stores as an asset (§16.5).
@@ -349,6 +354,9 @@ pub struct Release {
     /// A private repository's sealed revision (§16): its epoch and every field it states.
     /// `None` on a public release.
     pub sealed: Option<SealedRelease>,
+    /// A public revision's `release.targetOid` (UPDATE-1, hex): the tag's tip its writer read.
+    /// Read only on a public repository (a plaintext target beside a sealed revision is ignored).
+    pub target_oid: Option<String>,
 }
 
 /// What a sealed release revision states besides the fields [`Release`] flattens.
@@ -449,6 +457,7 @@ pub(crate) fn release_from_doc(d: &platform::FetchedDocument) -> Release {
             .and_then(FieldValue::as_i64)
             .unwrap_or(0),
         sealed: None,
+        target_oid: d.field_hex("targetOid"),
     }
 }
 
@@ -470,6 +479,7 @@ pub(crate) fn release_from_sealed(
         created_at: d.created_at.unwrap_or(0),
         delta: 0,
         sealed: Some(SealedRelease { epoch, fields }),
+        target_oid: None,
     }
 }
 

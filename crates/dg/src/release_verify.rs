@@ -49,8 +49,16 @@ fn unpublished(r: &Release) -> bool {
     r.is_unpublish() || r.sealed.as_ref().is_some_and(|s| s.fields.draft)
 }
 
+/// What a release records of its target: a sealed revision's pin, and a public revision's
+/// `targetOid` (read on a public repository only).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Recorded {
+    pin: Option<String>,
+    target: Option<String>,
+}
+
 /// Every revision of `tag`'s release, and the target its first published revision records.
-fn revisions_of(all: &[&Release]) -> (Vec<ProvenanceRevision>, Option<String>) {
+fn revisions_of(all: &[&Release], public: bool) -> (Vec<ProvenanceRevision>, Recorded) {
     let revisions = all
         .iter()
         .map(|r| ProvenanceRevision {
@@ -81,7 +89,10 @@ fn revisions_of(all: &[&Release]) -> (Vec<ProvenanceRevision>, Option<String>) {
     let pin = first
         .and_then(|r| r.sealed.as_ref())
         .and_then(|s| s.fields.target_oid.clone());
-    (revisions, pin)
+    let target = first
+        .filter(|r| public && r.sealed.is_none())
+        .and_then(|r| r.target_oid.clone());
+    (revisions, Recorded { pin, target })
 }
 
 /// The tag object `oid` in this directory's git, or the signature state there is without one.
@@ -107,6 +118,11 @@ fn local_tag_object(oid: &str) -> std::result::Result<Vec<u8>, LocalSignature> {
 
 /// What the tag's verdict means, in a sentence.
 fn headline(p: &ReleaseProvenance, tag: &str) -> String {
+    if p.record_differs && matches!(p.tag, TagVerdict::Unchanged | TagVerdict::Restored) {
+        return format!(
+            "{tag} pointed at another commit than the release records when it was published"
+        );
+    }
     match p.tag {
         TagVerdict::Unchanged => {
             format!("{tag} points where it did when the release was published")
@@ -154,6 +170,13 @@ fn print_human(p: &ReleaseProvenance, tag: &str, repo: &str, sig: &LocalSignatur
                 b.by,
                 when(b.at)
             );
+        }
+    }
+    if let (Some(r), "tag") = (&p.recorded, p.pinned_by.as_str()) {
+        if p.record_differs {
+            println!("  recorded    {} by the release: the tag did not point there", short(r));
+        } else {
+            println!("  recorded    {} by the release: matches", short(r));
         }
     }
     if let Some(c) = &p.current {
@@ -223,10 +246,18 @@ pub async fn verify(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
         )
         .fix(format!("`dg release list {repo}` lists the releases")));
     }
-    let (revisions, pin) = revisions_of(&all);
+    let public = s.repo.visibility == forge_core::rules::v2::Visibility::Public;
+    let (revisions, recorded) = revisions_of(&all, public);
     let ref_name = format!("refs/tags/{tag}");
     let (hash, updates, configs) = s.service().ref_history(&s.repo, &ref_name).await?;
-    let p = release_provenance(&hash, &updates, &configs, &revisions, pin.as_deref());
+    let p = release_provenance(
+        &hash,
+        &updates,
+        &configs,
+        &revisions,
+        recorded.pin.as_deref(),
+        recorded.target.as_deref(),
+    );
     // Best effort: the keys are read only for a signed tag object this git holds, and a failed
     // read leaves the signature unchecked rather than hiding the provenance.
     let sig = match p.current.as_ref().map(|c| local_tag_object(&c.oid)) {

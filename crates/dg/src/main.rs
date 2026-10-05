@@ -527,6 +527,11 @@ pub struct RepoEditArgs {
     /// The topics, comma-separated (`""` clears them): up to 10 of `a-z`, `0-9`, `-`.
     #[arg(long)]
     pub topics: Option<String>,
+    /// Mark the repository as moved to another (`owner/name` or a repo id; `""` clears the
+    /// mark). Readers show where it went; nothing is redirected. Public repositories only;
+    /// writes a new `config` (maintainers only).
+    #[arg(long = "moved-to", value_name = "REPO")]
+    pub moved_to: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

@@ -2486,6 +2486,8 @@ mod tests {
                     revisions: Vec<super::provenance::ProvenanceRevision>,
                     #[serde(default)]
                     pin: Option<String>,
+                    #[serde(default)]
+                    target: Option<String>,
                 }
                 let inp: Input =
                     serde_json::from_value(v.input.clone()).expect("release_provenance input");
@@ -2495,6 +2497,7 @@ mod tests {
                     &inp.configs,
                     &inp.revisions,
                     inp.pin.as_deref(),
+                    inp.target.as_deref(),
                 );
                 assert_eq!(
                     serde_json::to_value(&got).expect("provenance json"),

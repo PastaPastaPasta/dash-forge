@@ -32,7 +32,7 @@ use crate::keystore::BridgeIdentity;
 use crate::layout;
 use crate::platform::{
     self, FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity,
-    PlatformClient, PushJournal, WriteEngine, WriteIntent,
+    PlatformClient, PushJournal, QueryOrder, WriteEngine, WriteIntent,
 };
 use crate::private::{DocHeader, DocKind, Fields, Private, PrivateError, RefNameHasher};
 use crate::rules::v2::{CopyKey, PackCopy, PackCopyRow, Role, V2Pack, Visibility};
@@ -1305,6 +1305,37 @@ impl<'a> RepoService<'a> {
         self.update_config(repo, &change).await
     }
 
+    /// The repository a public repository says it moved to (`config.movedTo`, UPDATE-1), from
+    /// one cheap read of its newest configs (the web's `readConfig` makes the same trade: two
+    /// configs in one block may pick either). `None` for a private repository (readers honour a
+    /// move on public repositories only), a contract without the field, no move, or a move that
+    /// names the repository itself.
+    pub async fn moved_to(&self, repo: &RepoRef) -> Result<Option<String>> {
+        if repo.visibility == Visibility::Private {
+            return Ok(None);
+        }
+        let (scope, contract) = self.readable(repo).await?;
+        if !contract.has_property(DOC_CONFIG, CONFIG_MOVED_TO) {
+            return Ok(None);
+        }
+        let docs = self
+            .client
+            .query_documents(
+                &contract,
+                DOC_CONFIG,
+                &scope.filters([]),
+                &[QueryOrder::desc("$createdAt")],
+                10,
+                None,
+            )
+            .await?;
+        Ok(newest_well_formed_config(docs)
+            .as_ref()
+            .map(CurrentConfig::of_doc)
+            .and_then(|c| c.moved_to)
+            .filter(|id| *id != repo.repo_id))
+    }
+
     /// The repository's current configuration (the newest well-formed `config`; a private
     /// repo's decrypted), or the defaults when none exists.
     pub async fn current_config(&self, repo: &RepoRef) -> Result<CurrentConfig> {
@@ -1332,6 +1363,13 @@ impl<'a> RepoService<'a> {
         change: &ConfigChange,
     ) -> Result<Option<String>> {
         change.validate()?;
+        if change.moved_to.is_some() && repo.visibility == Visibility::Private {
+            return Err(Error::Config(
+                "only a public repository can be marked as moved: a private one's config is \
+                 sealed, and readers follow a move on public repositories only"
+                    .into(),
+            ));
+        }
         let (scope, contract) = self.writable(repo).await?;
         if repo.visibility == Visibility::Private {
             let (w, kr) = self.private_writer(repo).await?;
@@ -1386,6 +1424,19 @@ impl<'a> RepoService<'a> {
             props.insert(
                 "protectedPatterns".into(),
                 FieldValue::text_list(next.protected_patterns.clone()),
+            );
+        }
+        // Carried over by every config write, like the other fields; written only where the
+        // contract has the field (UPDATE-1).
+        if let Some(id) = &next.moved_to {
+            if !contract.has_property(DOC_CONFIG, CONFIG_MOVED_TO) {
+                return Err(Error::Config(
+                    "this network's Forge contract has no config.movedTo field yet".into(),
+                ));
+            }
+            props.insert(
+                CONFIG_MOVED_TO.into(),
+                FieldValue::identifier(platform::decode_identifier(id)?),
             );
         }
         layout::stamp_vis(&mut props, repo.visibility);
@@ -3334,6 +3385,9 @@ pub fn is_topic_name(name: &str) -> bool {
         })
 }
 
+/// `config.movedTo` (UPDATE-1 `config_moved_to`): the repository a public one moved to.
+pub const CONFIG_MOVED_TO: &str = "movedTo";
+
 /// A repository's current configuration, as a settings reader and writer sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3348,6 +3402,9 @@ pub struct CurrentConfig {
     pub backend_mode: u8,
     /// `backend.uris`.
     pub backend_uris: Vec<String>,
+    /// `movedTo` (UPDATE-1): the repository this one moved to (base58 repo id). Public only:
+    /// a private repository's is never read or written.
+    pub moved_to: Option<String>,
 }
 
 impl Default for CurrentConfig {
@@ -3358,6 +3415,7 @@ impl Default for CurrentConfig {
             archived: false,
             backend_mode: 0,
             backend_uris: Vec::new(),
+            moved_to: None,
         }
     }
 }
@@ -3377,6 +3435,9 @@ impl CurrentConfig {
             archived: d.field_bool("archived"),
             backend_mode,
             backend_uris,
+            moved_to: d
+                .field_bytes32(CONFIG_MOVED_TO)
+                .map(platform::encode_identifier),
         }
     }
 
@@ -3392,6 +3453,7 @@ impl CurrentConfig {
             archived: cfg.archived,
             backend_mode,
             backend_uris,
+            moved_to: None,
         }
     }
 
@@ -3413,6 +3475,9 @@ impl CurrentConfig {
         }
         if let Some(u) = &change.backend_uris {
             next.backend_uris.clone_from(u);
+        }
+        if let Some(m) = &change.moved_to {
+            next.moved_to.clone_from(m);
         }
         next
     }
@@ -3489,6 +3554,9 @@ pub struct ConfigChange {
     pub backend_mode: Option<u8>,
     /// The new advertised read bases.
     pub backend_uris: Option<Vec<String>>,
+    /// Mark the repository moved to another (`Some(Some(repo id))`), or clear the mark
+    /// (`Some(None)`). Public repositories only.
+    pub moved_to: Option<Option<String>>,
 }
 
 impl ConfigChange {
@@ -3499,6 +3567,11 @@ impl ConfigChange {
         }
         if let Some(p) = &self.protected_patterns {
             check_patterns(p)?;
+        }
+        if let Some(Some(id)) = &self.moved_to {
+            platform::decode_identifier(id).map_err(|_| {
+                Error::Config(format!("{id:?} is not a repository id"))
+            })?;
         }
         if let Some(u) = &self.backend_uris {
             if !BACKEND_URIS_V2.fits(u) {

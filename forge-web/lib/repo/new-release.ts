@@ -311,6 +311,11 @@ interface PublishInput {
    * that exists at another commit refuses the publish before anything uploads.
    */
   readonly createTag?: { readonly target: string }
+  /**
+   * The existing tag's tip as the page read it (hex): a public release records it, so provenance
+   * can check the tag's history against it. With `createTag`, the new tag's target is recorded.
+   */
+  readonly tagTip?: string
 }
 
 /** Create the tag a publish names, when asked to: once the role is known, before any upload. */
@@ -443,6 +448,7 @@ export async function publishRelease(
   onEvent?.({ step: 'release' })
   const notes = longNotes ? await longBodyField(sdk, auth, repo, 'release', typed, {}, input.draft) : typed
   const intent = await releaseIntent(input.draft, { ...input, name, notes }, assets)
+  const target = input.createTag?.target ?? input.tagTip
   try {
     const release = await createRelease(sdk, auth, repo, {
       tagName: input.tagName,
@@ -450,6 +456,7 @@ export async function publishRelease(
       ...(name ? { name } : {}),
       ...(notes ? { notes } : {}),
       ...(assets.length > 0 ? { assets } : {}),
+      ...(target !== undefined ? { targetOid: target } : {}),
       intent,
     })
     return { release, assets }

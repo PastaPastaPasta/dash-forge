@@ -163,7 +163,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     // command does not change is carried forward: `--yanked` alone must not drop the files.
     let current = collab.releases(&s.repo).await?.current;
     let existing = current.into_iter().find(|r| &r.tag_name == tag);
-    ensure_tag(&s, tag, Some(existing.is_some())).await?;
+    let tag_tip = ensure_tag(&s, tag, Some(existing.is_some())).await?;
     let targets = if args.assets.is_empty() {
         None
     } else {
@@ -237,6 +237,8 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     }
     let before = s.balance().await;
     let mut input = superseding_input(existing.as_ref(), args, uploaded);
+    // The tag's tip as read now: provenance checks the tag's history against it.
+    input.target_oid = tag_tip;
     if !args.notes.is_empty() {
         input.notes = planned.field_text(&collab, &s.repo, None).await?;
     }
@@ -271,8 +273,9 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
 }
 
 /// [`require_tag`] against the repository's refs (names opened for a member of a private
-/// repository). `has_release`: whether the tag has a release now, `None` to read it.
-async fn ensure_tag(s: &Session, tag: &str, has_release: Option<bool>) -> Result<()> {
+/// repository). `has_release`: whether the tag has a release now, `None` to read it. Returns
+/// the tag's tip when it resolves to one (what a public release records as its target).
+async fn ensure_tag(s: &Session, tag: &str, has_release: Option<bool>) -> Result<Option<String>> {
     let has_release = match has_release {
         Some(h) => h,
         None => s
@@ -286,7 +289,12 @@ async fn ensure_tag(s: &Session, tag: &str, has_release: Option<bool>) -> Result
     let refs = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge)
         .read_refs(&s.repo)
         .await?;
-    require_tag(&refs, &s.repo.display(), tag, has_release)
+    require_tag(&refs, &s.repo.display(), tag, has_release)?;
+    let want = format!("refs/tags/{tag}");
+    Ok(refs.iter().find(|(n, _)| *n == want).and_then(|(_, st)| match st {
+        forge_core::rules::RefState::Resolved { oid, .. } => Some(oid.clone()),
+        _ => None,
+    }))
 }
 
 /// Refuse a release for a tag the repository does not have (E102), before anything is
@@ -1763,6 +1771,7 @@ mod tests {
             created_at: 1,
             delta: 1,
             sealed: None,
+            target_oid: None,
         }
     }
 

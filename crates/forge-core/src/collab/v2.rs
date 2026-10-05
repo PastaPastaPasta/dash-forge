@@ -1492,6 +1492,8 @@ pub fn transition_props(
 /// The `transition` property that records a close reason (QW-069; a `build.py` rider flag, so a
 /// writer feature-detects it on the registered contract).
 pub const TRANSITION_REASON: &str = "reason";
+/// `release.targetOid` (UPDATE-1 `release_target_oid`): the tag tip a public revision records.
+pub const RELEASE_TARGET_OID: &str = "targetOid";
 
 /// Add an issue close's reason (QW-069) to the properties of its transition: `reason`, and for a
 /// duplicate of another issue of the repo `dupNumber`. Only an issue close (kind 1) records one,
@@ -5351,6 +5353,19 @@ impl<'a> Collab<'a> {
         )
         .await?;
         let core = self.core_contract(repo).await?;
+        // The tag's tip, recorded where the contract has the field (UPDATE-1): provenance
+        // compares it with the tag's history.
+        if let Some(oid) = &input.target_oid {
+            if core.has_property(DOC_RELEASE, RELEASE_TARGET_OID) {
+                let bytes = hex::decode(oid)
+                    .ok()
+                    .filter(|b| b.len() == 20 || b.len() == 32)
+                    .ok_or_else(|| {
+                        Error::Config(format!("release target {oid:?} is not a 20- or 32-byte oid"))
+                    })?;
+                p.insert(RELEASE_TARGET_OID.to_string(), FieldValue::bytes(bytes));
+            }
+        }
         // The tag's revisions, read now: whether this one publishes or edits.
         let revisions = self
             .client
@@ -8393,6 +8408,7 @@ mod tests {
             created_at: at,
             delta,
             sealed: None,
+            target_oid: None,
         };
         let (cur, prev) = newest_per_tag(vec![
             rel("v1", 1, "a", 1),
@@ -8715,6 +8731,7 @@ mod tests {
             created_at: at,
             delta: 0,
             sealed: None,
+            target_oid: None,
         };
         // r1 (carried from), then bob's r2 landed meanwhile, then ours (newest)
         let after = ReleaseList {
@@ -9129,6 +9146,7 @@ mod tests {
             created_at: at,
             delta: 0,
             sealed: None,
+            target_oid: None,
         };
         let list = ReleaseList {
             current: vec![rel("theirs", 2)],
@@ -9190,6 +9208,7 @@ mod tests {
             publisher: "m".into(),
             created_at: at,
             sealed: None,
+            target_oid: None,
         };
         // Written in GitHub's listing order: newest release first (lowest $createdAt).
         let (cur, _) = newest_per_tag(vec![

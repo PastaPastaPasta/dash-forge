@@ -1,6 +1,6 @@
 {
-  "name": "unchanged",
-  "description": "The tag points where it did when the release was published, and never moved.",
+  "name": "target_pins_late_tag",
+  "description": "A public release published before its tag is judged against its record: a tag later pushed at the recorded tip is unchanged.",
   "case": "release_provenance",
   "input": {
     "refNameHash": "T",
@@ -10,11 +10,11 @@
         "refNameHash": "T",
         "refName": "refs/tags/v1.0",
         "prevOid": "0",
-        "newOid": "A",
+        "newOid": "a",
         "force": false,
         "protected": false,
         "author": "alice",
-        "createdAt": 100
+        "createdAt": 300
       }
     ],
     "configs": [],
@@ -24,14 +24,10 @@
         "createdAt": 200,
         "delta": 1,
         "publisher": "alice",
-        "assets": [
-          {
-            "name": "app.tgz",
-            "sha256": "aa"
-          }
-        ]
+        "assets": []
       }
-    ]
+    ],
+    "target": "a"
   },
   "expected": {
     "published": {
@@ -40,16 +36,16 @@
       "by": "alice"
     },
     "baseline": {
-      "oid": "A",
+      "oid": "a",
       "by": "alice",
-      "at": 100
+      "at": 200
     },
-    "pinnedBy": "tag",
-    "lateTag": false,
+    "pinnedBy": "release",
+    "lateTag": true,
     "current": {
-      "oid": "A",
+      "oid": "a",
       "by": "alice",
-      "at": 100
+      "at": 300
     },
     "moves": [],
     "tag": "unchanged",
@@ -58,7 +54,7 @@
       "removed": [],
       "replaced": []
     },
-    "recorded": null,
+    "recorded": "a",
     "recordDiffers": false
   }
 }

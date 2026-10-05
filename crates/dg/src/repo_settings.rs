@@ -49,7 +49,9 @@ const CREDITS_PER_TEXT_BYTE: u64 = 27_500;
 fn config_estimate(c: &CurrentConfig) -> u64 {
     let text: usize = c.default_branch.len()
         + c.protected_patterns.iter().map(String::len).sum::<usize>()
-        + c.backend_uris.iter().map(String::len).sum::<usize>();
+        + c.backend_uris.iter().map(String::len).sum::<usize>()
+        // `movedTo`: a 32-byte id (36.2M measured on sakura with it, 2026-10-05)
+        + if c.moved_to.is_some() { 32 } else { 0 };
     CONFIG_BASE_CREDITS + CREDITS_PER_TEXT_BYTE * text as u64
 }
 
@@ -86,9 +88,13 @@ fn full_pattern(p: &str) -> String {
 
 /// `dg repo edit`: default branch (a config write), description and topics (a repo replace).
 pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
-    if args.default_branch.is_none() && args.description.is_none() && args.topics.is_none() {
+    if args.default_branch.is_none()
+        && args.description.is_none()
+        && args.topics.is_none()
+        && args.moved_to.is_none()
+    {
         return Err(crate::errors::usage(
-            "nothing to change: pass --default-branch, --description and/or --topics",
+            "nothing to change: pass --default-branch, --description, --topics and/or --moved-to",
         ));
     }
     let repo_edit = RepoEdit {
@@ -96,13 +102,17 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
         topics: args.topics.as_deref().map(parse_topics),
     };
     repo_edit.validate()?;
+    let s = Session::open(ctx, &args.repo).await?;
+    let moved_to = match args.moved_to.as_deref() {
+        None => None,
+        Some(target) => Some(moved_target(&s, target).await?),
+    };
     let change = ConfigChange {
         default_branch: args.default_branch.clone(),
+        moved_to: moved_to.as_ref().map(|m| m.as_ref().map(|r| r.repo_id.clone())),
         ..ConfigChange::default()
     };
     change.validate()?;
-
-    let s = Session::open(ctx, &args.repo).await?;
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
     let price = ctx.usd_price();
     let is_owner = s.repo.owner_id() == s.identity.id();
@@ -110,9 +120,14 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
     if doc_changes && !is_owner {
         return Err(owner_only(&s.repo.display()));
     }
-    let current = if change.default_branch.is_some() {
+    let current = if change.default_branch.is_some() || change.moved_to.is_some() {
+        let what = if change.default_branch.is_some() {
+            "change the default branch"
+        } else {
+            "mark the repository as moved"
+        };
         s.collab()
-            .require_role(&s.repo, Role::Maintainer, "change the default branch")
+            .require_role(&s.repo, Role::Maintainer, what)
             .await?;
         Some(svc.current_config(&s.repo).await?)
     } else {
@@ -128,6 +143,7 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
             .as_ref()
             .zip(next.as_ref())
             .filter(|_| config_changes),
+        moved_to.as_ref(),
         &repo_edit,
         price,
     );
@@ -164,6 +180,7 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
             "defaultBranch": default_branch,
             "description": repo_edit.description,
             "topics": repo_edit.topics,
+            "movedTo": next.as_ref().and_then(|n| n.moved_to.clone()),
             "configDocumentId": config_id,
             "repoEdited": edited,
             "cost": cost_json(spent, price),
@@ -174,10 +191,20 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
                 return;
             }
             if let (Some(id), Some(n)) = (&config_id, &next) {
-                println!(
-                    "✓ default branch is now {} (config {id})",
-                    safe(&n.default_branch)
-                );
+                if change.default_branch.is_some() {
+                    println!(
+                        "✓ default branch is now {} (config {id})",
+                        safe(&n.default_branch)
+                    );
+                }
+                match &moved_to {
+                    Some(Some(r)) => println!(
+                        "✓ marked as moved to {} (config {id})",
+                        safe(&r.display())
+                    ),
+                    Some(None) => println!("✓ no longer marked as moved (config {id})"),
+                    None => {}
+                }
             }
             if edited {
                 println!("✓ repo document updated");
@@ -188,12 +215,39 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
     Ok(())
 }
 
+/// The repository `--moved-to` names (`Ok(None)` for `""`, which clears the mark): it must
+/// exist and must not be this one. Only a public repository can be marked.
+async fn moved_target(
+    s: &Session,
+    target: &str,
+) -> Result<Option<forge_core::scope::RepoRef>> {
+    if target.trim().is_empty() {
+        return Ok(None);
+    }
+    if s.repo.visibility == forge_core::rules::v2::Visibility::Private {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("{} is private: only a public repository can be marked as moved", s.repo.display()),
+        )
+        .cause("readers follow a move on public repositories only, and a private repository's settings are sealed")
+        .into());
+    }
+    let target_ref = crate::common::RepoRef::parse(target)?;
+    let to = crate::common::resolve_for(&s.client, None, &target_ref).await?;
+    if to.repo_id == s.repo.repo_id {
+        return Err(crate::errors::usage("a repository cannot move to itself"));
+    }
+    Ok(Some(to))
+}
+
 /// Print what `dg repo edit` will write (human mode) and return its estimate in credits:
-/// the config append when the default branch changes, the repo replace when its text does.
+/// the config append when the default branch or the move changes, the repo replace when its
+/// text does.
 fn edit_plan(
     ctx: &Ctx,
     repo: &str,
     branch: Option<(&CurrentConfig, &CurrentConfig)>,
+    moved_to: Option<&Option<forge_core::scope::RepoRef>>,
     edit: &RepoEdit,
     price: Option<f64>,
 ) -> u64 {
@@ -209,11 +263,19 @@ fn edit_plan(
     if !ctx.json {
         println!("Editing {repo} on {}", ctx.network_label());
         if let Some((c, n)) = branch {
-            println!(
-                "  default branch: {} → {}",
-                safe(&c.default_branch),
-                safe(&n.default_branch)
-            );
+            if c.default_branch != n.default_branch {
+                println!(
+                    "  default branch: {} → {}",
+                    safe(&c.default_branch),
+                    safe(&n.default_branch)
+                );
+            }
+            if c.moved_to != n.moved_to {
+                match moved_to {
+                    Some(Some(r)) => println!("  moved to:       {}", safe(&r.display())),
+                    _ => println!("  moved to:       (cleared)"),
+                }
+            }
         }
         if let Some(d) = &edit.description {
             println!("  description:    {:?}", safe(d));

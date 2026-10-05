@@ -167,6 +167,29 @@ pub struct Session {
     pub repo: Repo,
 }
 
+/// The one-line note a command prints (to stderr) for a public repository a maintainer marked as
+/// moved (`config.movedTo`): where it went, by name when the new repository resolves. Nothing is
+/// redirected: the command still acts on `repo`.
+pub async fn note_moved(client: &PlatformClient, repo: &Repo, moved_to: Option<&str>) {
+    let Some(id) = moved_to.filter(|id| *id != repo.repo_id) else {
+        return;
+    };
+    let to = forge_core::resolve::resolve_id(client, id)
+        .await
+        .map_or_else(|_| id.to_string(), |r| r.display());
+    eprintln!("{}", moved_note(&repo.display(), &to));
+}
+
+/// The text of [`note_moved`].
+pub fn moved_note(from: &str, to: &str) -> String {
+    format!(
+        "note: {} has moved to {} (this command still uses {})",
+        crate::fmt::safe(from),
+        crate::fmt::safe(to),
+        crate::fmt::safe(from)
+    )
+}
+
 impl Session {
     /// Parse `repo`, connect, fetch the signer and resolve the repository.
     pub async fn open(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
@@ -204,7 +227,14 @@ impl Session {
         let svc = forge_core::repo::RepoService::new(&self.client, &self.identity, &self.bridge);
         match svc.current_config(&self.repo).await {
             Ok(c) if c.archived => Err(archived_refusal(&self.repo.display(), action).into()),
-            _ => Ok(()),
+            Ok(c) => {
+                // A move redirects nothing: the write goes here, and says where the repo went.
+                if self.repo.visibility == Visibility::Public {
+                    note_moved(&self.client, &self.repo, c.moved_to.as_deref()).await;
+                }
+                Ok(())
+            }
+            Err(_) => Ok(()),
         }
     }
 
@@ -299,6 +329,13 @@ impl Reader {
             signer = Some(ctx.signer_on(&client).await?);
         }
         let viewer = signer.as_ref().map(|(_, i)| i.id()).or(owner);
+        // Best effort, one small read: a public repository marked as moved says where it went.
+        if let Ok(moved) = forge_core::repo::RepoService::reader(&client)
+            .moved_to(&repo)
+            .await
+        {
+            note_moved(&client, &repo, moved.as_deref()).await;
+        }
         Ok(Self {
             client,
             repo,

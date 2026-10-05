@@ -1,6 +1,6 @@
 {
-  "name": "moved",
-  "description": "A writer force-moved the tag after the release: moved, and the move names who and when.",
+  "name": "target_then_moved",
+  "description": "A recorded tip that matched at publish does not hide a later move of the tag.",
   "case": "release_provenance",
   "input": {
     "refNameHash": "T",
@@ -10,7 +10,7 @@
         "refNameHash": "T",
         "refName": "refs/tags/v1.0",
         "prevOid": "0",
-        "newOid": "A",
+        "newOid": "a",
         "force": false,
         "protected": false,
         "author": "alice",
@@ -20,11 +20,11 @@
         "id": "u2",
         "refNameHash": "T",
         "refName": "refs/tags/v1.0",
-        "prevOid": "A",
-        "newOid": "B",
+        "prevOid": "a",
+        "newOid": "c",
         "force": true,
         "protected": false,
-        "author": "mallory",
+        "author": "bob",
         "createdAt": 300
       }
     ],
@@ -35,14 +35,10 @@
         "createdAt": 200,
         "delta": 1,
         "publisher": "alice",
-        "assets": [
-          {
-            "name": "app.tgz",
-            "sha256": "aa"
-          }
-        ]
+        "assets": []
       }
-    ]
+    ],
+    "target": "a"
   },
   "expected": {
     "published": {
@@ -51,24 +47,24 @@
       "by": "alice"
     },
     "baseline": {
-      "oid": "A",
+      "oid": "a",
       "by": "alice",
       "at": 100
     },
     "pinnedBy": "tag",
     "lateTag": false,
     "current": {
-      "oid": "B",
-      "by": "mallory",
+      "oid": "c",
+      "by": "bob",
       "at": 300
     },
     "moves": [
       {
         "id": "u2",
         "at": 300,
-        "by": "mallory",
-        "from": "A",
-        "to": "B"
+        "by": "bob",
+        "from": "a",
+        "to": "c"
       }
     ],
     "tag": "moved",
@@ -77,7 +73,7 @@
       "removed": [],
       "replaced": []
     },
-    "recorded": null,
+    "recorded": "a",
     "recordDiffers": false
   }
 }

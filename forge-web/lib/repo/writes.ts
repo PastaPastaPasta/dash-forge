@@ -769,6 +769,11 @@ export interface ReleaseInput {
   readonly draft?: boolean
   /** Sealed only (§16.3): this revision unpublishes the tag. */
   readonly unpublished?: boolean
+  /**
+   * Public only: the tag's tip as the writer read it (hex), recorded as `targetOid` where the
+   * contract has the field (UPDATE-1). Release provenance checks the tag's history against it.
+   */
+  readonly targetOid?: string
 }
 
 /**
@@ -798,6 +803,10 @@ export async function createRelease(
   if (input.name && input.name.length > 0) fields['name'] = input.name
   if (input.notes && input.notes.length > 0) fields['notes'] = input.notes
   if (input.assets && input.assets.length > 0) fields['assets'] = releaseAssetsJson(input.assets)
+  if (input.targetOid !== undefined) {
+    if (!isRc1OidHex(input.targetOid)) throw new Error(`a release's target must be a 20- or 32-byte oid, not ${JSON.stringify(input.targetOid)}`)
+    if (await contractHasProperty(sdk, repo.forge.core, DOC.release, 'targetOid')) fields['targetOid'] = hexToBytes(input.targetOid)
+  }
   const attempt = async (): Promise<WriteResult> =>
     writeRepoDoc(sdk, auth, repo, DOC.release, { ...fields, delta: publishDelta(await readTagLive(sdk, repo, input.tagName)) }, input.intent)
   try {

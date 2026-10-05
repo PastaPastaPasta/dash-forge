@@ -959,6 +959,7 @@ mod tests {
                             epoch: 0,
                             fields: f.clone(),
                         }),
+                        target_oid: None,
                     })
                     .collect(),
                 ..ReleaseList::default()
