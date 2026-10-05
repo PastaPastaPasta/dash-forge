@@ -413,13 +413,15 @@ async function writeAudience(
     }
     return target
   }
-  if (requested !== undefined) return requested
+  // A comment or review is always checked against its parents, even when the caller asked for
+  // an audience: a requested "public" under a members-only parent is refused, never written.
+  const asked = requested !== undefined ? { requested } : {}
   if (documentType === DOC.comment) {
     const replyTo = idOf('replyTo')
-    return childAudience(sdk, repo, { targetId: named('targetId', 'comment'), ...(replyTo !== '' ? { replyTo } : {}) })
+    return childAudience(sdk, repo, { targetId: named('targetId', 'comment'), ...(replyTo !== '' ? { replyTo } : {}), ...asked })
   }
-  if (documentType === DOC.review) return childAudience(sdk, repo, { targetId: named('patchId', 'review') })
-  return 'public'
+  if (documentType === DOC.review) return childAudience(sdk, repo, { targetId: named('patchId', 'review'), ...asked })
+  return requested ?? 'public'
 }
 
 /** A write that found its unique slot already held by the signer: success, nothing spent. */
@@ -1397,7 +1399,10 @@ export async function changeMemberRole(
   await writerRoleData(sdk, repo, to)
   if (memberDocOf(from) !== memberDocOf(to)) {
     const other = await findMembership(sdk, repo, to, memberId)
-    if (other !== null) throw new MemberRoleTakenError(memberId, other.role)
+    // A maintainer's demotion on a repo with members-only content writes the new role first: one
+    // that stands already is an interrupted change resuming, and goes on to the removal.
+    const resuming = keyed !== null && from === 'maintainer' && other?.role === to
+    if (other !== null && !resuming) throw new MemberRoleTakenError(memberId, other.role)
   }
   if ((await findConsent(sdk, repo, memberId)) === null) throw new ConsentMissingError(memberId)
   // The document being replaced must still hold `from` (another tab may have changed it already).

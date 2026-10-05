@@ -37,7 +37,7 @@ import { matchesProtected } from '@/lib/rules'
 import { prMergeBase } from '@/lib/rules/v2'
 import { EXISTING, bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
 import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
-import { mergeMessage, mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
+import { MEMBERS_MESSAGE_WARNING, mergeMessage, mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
 import { MergeStepError, mergeSteps, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
 import { bypassValue, mergeButton, mergeGate, mergeRefProblem } from '@/lib/view/pull-actions'
@@ -220,7 +220,9 @@ export function MergePanel({
   // The merge commit's message (review-parity M2): the default until the merger edits it.
   const sourceLabel = mergeSourceLabel(pull.sourceRefName, pull.headOid)
   const [mergeText, setMergeText] = useState<string | null>(null)
-  const mergeMsg = mergeText ?? mergeMessage(pull.number, sourceLabel, pull.title).replace(/\n$/, '')
+  // A members-only PR's title is for members: the public merge commit names only its number.
+  const publicTitle = pull.audience === 'members' ? '' : pull.title
+  const mergeMsg = mergeText ?? mergeMessage(pull.number, sourceLabel, publicTitle).replace(/\n$/, '')
   // A merge commit is written (the plan's, or --no-ff; a fast-forward writes none): its message
   // box shows, and its edited message is passed.
   const writesMergeCommit = method === 'no-ff' || (method === 'merge' && check === 'merge')
@@ -235,7 +237,7 @@ export function MergePanel({
       headOid: pull.headOid,
       prNumber: pull.number,
       sourceLabel,
-      title: pull.title,
+      title: publicTitle,
       // Only an edited message: the default is the engine's own (the same bytes).
       ...(mergeText !== null && writesMergeCommit ? { message: mergeText } : {}),
       author: { name: prefs.mergeName.trim(), email: prefs.mergeEmail.trim() },
@@ -245,7 +247,7 @@ export function MergePanel({
       ...(method === 'no-ff' ? { noFastForward: true as const } : {}),
       ...(method === 'rebase' ? { rebase: true as const } : {}),
     }),
-    [baseTipOid, pull.headOid, pull.number, sourceLabel, pull.title, mergeText, writesMergeCommit, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg, squashByName, squashByEmail],
+    [baseTipOid, pull.headOid, pull.number, sourceLabel, publicTitle, mergeText, writesMergeCommit, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg, squashByName, squashByEmail],
   )
   // Widened for the real commit's identity (author and committer) and the squash message as it
   // is now: the check used a placeholder identity and the message of the moment.
@@ -650,6 +652,11 @@ export function MergePanel({
             Commit message
           </label>
           <Textarea id="merge-message" value={mergeMsg} onChange={(e) => setMergeText(e.target.value)} className="min-h-[72px] font-mono text-[12px]" disabled={busy} data-testid="merge-message" />
+          {pull.audience === 'members' ? (
+            <p className="mt-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="merge-members-warning">
+              {MEMBERS_MESSAGE_WARNING}
+            </p>
+          ) : null}
         </div>
       ) : null}
       {mergeable && method === 'squash' && newTip === null ? (

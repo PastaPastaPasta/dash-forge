@@ -10,7 +10,7 @@ import { BrowseReader, gitOidHex, ObjectLocator, type GitObject } from '../brows
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
 import { parseCommit } from '../view/git-objects'
-import { applyAll, applySuggestionCommit, planSuggestion, readTextFile, suggestionMessage, SuggestionRefused, unapplicable, updateBranchCommit, type SuggestionComment } from './branch-commit'
+import { MEMBERS_SUGGESTION_CONFIRM, applyAll, applySuggestionCommit, planSuggestion, readTextFile, suggestionMessage, SuggestionRefused, unapplicable, updateBranchCommit, type SuggestionComment } from './branch-commit'
 import { gitAcceptsHistory, HAVE_GIT } from './git-oracle'
 
 const HEAD = '3'.repeat(40)
@@ -62,6 +62,16 @@ describe('suggestion planning (parity with dg)', () => {
     const plans = [{ commentId: 'C1d', reviewer: 'Rev1', path: 'a', start: 1, end: 1, text: '' }]
     const m = suggestionMessage(plans, new Map([['Rev1', 'alice.dash']]))
     expect(m).toBe('Apply suggestions from code review\n\nCo-authored-by: alice.dash <Rev1@users.forge.invalid>\nForge-Suggestion: C1d')
+  })
+
+  it('a members-only comment is not named in the public commit (no Forge-Suggestion trailer)', () => {
+    const c: SuggestionComment = { ...comment('m', null, 1, 1, HEAD, '```suggestion\ny\n```'), audience: 'members' }
+    const plan = planSuggestion(c, HEAD)
+    expect(plan.membersOnly).toBe(true)
+    const m = suggestionMessage([plan, { commentId: 'C2', reviewer: 'Rev1', path: 'a', start: 1, end: 1, text: '' }], new Map())
+    expect(m).not.toContain(`Forge-Suggestion: ${c.id}`)
+    expect(m).toContain('Forge-Suggestion: C2')
+    expect(MEMBERS_SUGGESTION_CONFIRM).toBe('This suggestion is members-only. Committing it makes it public.')
   })
 })
 

@@ -173,6 +173,21 @@ describe('membership changes of a public repo with members-only content', () => 
   })
 })
 
+describe('a resumed maintainer demotion', () => {
+  it('takes a writer document that already stands as granted, then removes the maintainer role', async () => {
+    configs = [plainConfig, membersAnchor]
+    memberships = {
+      consent: [{ $id: 'k', $ownerId: BOB }],
+      maintainer: [{ $id: 'm', $ownerId: ALICE, memberId: BOB }],
+      writer: [{ $id: 'w', $ownerId: ALICE, memberId: BOB, role: 1 }],
+    }
+    await changeMemberRole(sdk, auth, REPO, BOB, 'maintainer', 'writer', 'i7', ops)
+    // nothing written again for the role that stands; the member list is waited on, then the removal
+    expect(created).toEqual([])
+    expect(flows).toEqual(['wait', `remove:maintainer:${BOB}`])
+  })
+})
+
 describe('a failed role change on a repo with members-only content', () => {
   it('rotates the key away from someone left without a role, never silently', async () => {
     configs = [plainConfig, membersAnchor]
