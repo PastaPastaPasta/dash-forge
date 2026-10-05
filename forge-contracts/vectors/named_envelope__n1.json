@@ -1,0 +1,60 @@
+{
+  "name": "n1",
+  "description": "a specific-people comment to 1 recipient(s), the sender in slot 0: each slot is IV ‖ AES-256-CBC(S, IV, 0x02 ‖ KCV_obj ‖ K_obj) under S = SHA-256 of the compressed ECDH point; AD' = AD(0x04, epoch 0) ‖ SHA-256(H); tag 25 lists the recipients in slot order (§4.1).",
+  "case": "named_envelope",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "fields": {
+      "body": "A letter to 1 people (the sender included): the embargo ends on Friday."
+    },
+    "sender": {
+      "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+      "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082",
+      "keyId": 4
+    },
+    "recipients": [
+      {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+        "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      }
+    ],
+    "kObj": "6d6b6e960fe0ad430b2844bf74e163d436cf5295445a7a01d3a78758092b7a25",
+    "nonce": "4d9674163356a3861f99e5ab",
+    "ivs": [
+      "cb46edbf34628ae8391fd36059ad01dd"
+    ]
+  },
+  "expected": {
+    "shared": [
+      "c7524c877dacb46526e61feb3284a734dce449c07bfb0aae69308c5062f8c7f5"
+    ],
+    "commit": "2dc65817226a703692c4718be4d43ac458a7ef18f38f925fe833b0c134e6ccd1",
+    "kcv": "2dc65817226a703692c4718be4d4",
+    "headerSha256": "0e9463a55c5607de6da89e1a6be6edb4814a46abf569c329f08c3cb9cf66ad76",
+    "ad": "646173682d666f7267652f76322f646f63000411111111111111111111111111111111111111111111111111111111111111115e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea00000000636f6d6d656e740033333333333333333333333333333333333333333333333333333333333333330e9463a55c5607de6da89e1a6be6edb4814a46abf569c329f08c3cb9cf66ad76",
+    "tlv": "02004741206c657474657220746f20312070656f706c6520287468652073656e64657220696e636c75646564293a2074686520656d626172676f20656e6473206f6e204672696461792e1900205e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea40001000000000000000000000000000000000",
+    "enc": "0401000000042dc65817226a703692c4718be4d43ac458a7ef18f38f925fe833b0c134e6ccd1cb46edbf34628ae8391fd36059ad01dd19101f5ddc0012a57b62b074f9422e032f2a38ae1984f474a825bef9055a65851093bca8dd5d51335d02f9f02e1f35764d9674163356a3861f99e5abf3037f5e5de156c8c15d9c1085cf38df3e0fe1f720ed30405c45b68b2764f69c86dec9f2ffefb3c1df786764e3d18f44848d4ffc441377a8bc2fad07e5d316a94f17b6a24ed44678d794ff05293777675920808c9e0166da288128480a71c98351c7d79d04a54d8a2d9757f997695d44a3ed2c94a08178940666ac1a5d5ed2d05c70869c765d11107620e788ed670309",
+    "opened": [
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to 1 people (the sender included): the embargo ends on Friday."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea"
+        ],
+        "slot": 0
+      }
+    ]
+  }
+}

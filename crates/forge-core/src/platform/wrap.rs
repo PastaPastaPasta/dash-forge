@@ -212,6 +212,30 @@ pub(crate) fn shared_key_for_vectors(secret: &WrapSecret, public: &[u8]) -> [u8;
     SharedSecret::new(&public_key(public).expect("public key"), &secret.0).secret_bytes()
 }
 
+/// Decrypt raw `encryptedFor` bytes through the SDK's own `decrypt_property`, with the
+/// `repoKey.wrapped` declaration as a carrier: the drift check that a specific-people slot
+/// (`private::named`) is still the SDK's scheme byte for byte. Tests only; production never opens a
+/// slot this way (the SDK needs a declared property and draws its own IV).
+#[cfg(test)]
+pub(crate) fn sdk_decrypt_for_vectors(
+    contract: &LoadedContract,
+    ciphertext: &[u8],
+    reader: &WrapSecret,
+    counterparty_public_key: &[u8],
+) -> Option<Vec<u8>> {
+    let dt = doc_type(contract).ok()?;
+    let mut props = BTreeMap::new();
+    props.insert(PROPERTY.to_string(), Value::Bytes(ciphertext.to_vec()));
+    decrypt_property(
+        dt,
+        PROPERTY,
+        &props,
+        &reader.0,
+        &public_key(counterparty_public_key).ok()?,
+    )
+    .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

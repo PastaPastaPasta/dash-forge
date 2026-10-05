@@ -137,6 +137,21 @@ const MAX_PATTERNS = 8
 const FIRST_RESERVED = 16
 const FIRST_EXTENSION = 64
 
+/**
+ * Tag 25 (`enc` v0x04 only, repeatable): a specific-people letter's recipient identity ids, 32
+ * bytes each, in slot order. In every other envelope it stays reserved, so malformed.
+ */
+export const RECIPIENT_TAG = 25
+/** Tag 64, the first extension tag: the padding record of a members or specific-people document (§4.3). */
+export const PAD_TAG = FIRST_EXTENSION
+/** Members and specific-people documents pad their TLV to a multiple of this many bytes (D28). */
+export const PAD_BUCKET = 64
+
+/** The kinds a specific-people letter (`enc` v0x04) may carry: the discussion types and an event. */
+export function letterKind(type: PrivateDocType): boolean {
+  return type === 'issue' || type === 'patch' || type === 'comment' || type === 'review' || type === 'event'
+}
+
 /** What the parser needs to know about the document besides its bytes. */
 export interface TlvContext {
   readonly type: PrivateDocType
@@ -163,8 +178,26 @@ function decodeText(value: Uint8Array, spec: TextSpec): string {
   return s
 }
 
-/** Parse and validate a TLV plaintext for a document of `ctx.type` (§4.3). */
+/**
+ * Parse and validate a TLV plaintext for a document of `ctx.type` (§4.3). Tag 25 is refused: it
+ * belongs to `enc` v0x04 only ({@link parseLetterTlv}).
+ */
 export function parseTlv(pt: Uint8Array, ctx: TlvContext): DocFields {
+  return parseWith(pt, ctx, undefined)
+}
+
+/**
+ * Parse the TLV of a specific-people letter (`enc` v0x04): the content records of `type`, one
+ * tag-25 record per recipient (32 bytes each, consecutive, in slot order), then extension
+ * records. Throws {@link MalformedError}.
+ */
+export function parseLetterTlv(pt: Uint8Array, type: PrivateDocType): { fields: DocFields; recipients: Uint8Array[] } {
+  const recipients: Uint8Array[] = []
+  const fields = parseWith(pt, { type, epoch: 0 }, recipients)
+  return { fields, recipients }
+}
+
+function parseWith(pt: Uint8Array, ctx: TlvContext, recipients: Uint8Array[] | undefined): DocFields {
   const allowed = TAGS_OF[ctx.type]
   // Every config of an epoch e >= 1 carries prevEpoch/prevEpochKey, anchor or not (§4.3): any
   // of them may become the anchor once an earlier one's author stops being a maintainer.
@@ -185,11 +218,16 @@ export function parseTlv(pt: Uint8Array, ctx: TlvContext): DocFields {
     const end = start + len
     if (end > pt.length) throw new MalformedError(`tag ${tag}: length past the end`)
     pos = end
-    if (tag < lastTag || (tag === lastTag && tag !== TAG.protectedPattern)) {
+    if (tag < lastTag || (tag === lastTag && tag !== TAG.protectedPattern && tag !== RECIPIENT_TAG)) {
       throw new MalformedError(`tag ${tag}: out of order or repeated`)
     }
     lastTag = tag
     if (tag >= FIRST_EXTENSION) continue
+    if (tag === RECIPIENT_TAG && recipients !== undefined && letterKind(ctx.type)) {
+      if (len !== 32) throw new MalformedError('a recipient id is not 32 bytes')
+      recipients.push(pt.slice(start, end))
+      continue
+    }
     if (tag >= FIRST_RESERVED) throw new MalformedError(`reserved tag ${tag}`)
     if (!allowed.includes(tag)) throw new MalformedError(`tag ${tag} is not a ${ctx.type} field`)
     const value = pt.subarray(start, end)
@@ -289,6 +327,23 @@ export function encodeTlv(fields: DocFields): Bytes {
   text(TAG.importedUrl, fields.importedUrl)
   text(TAG.eventValue, fields.eventValue)
   return concat(...parts)
+}
+
+/**
+ * The padding record (§4.3, D28) a TLV of `n` bytes gets so that it ends on a multiple of
+ * {@link PAD_BUCKET}: one tag-64 record of zero bytes, never taking the TLV past `room`, and
+ * empty when not even its 3-byte header fits. Like a sealed release's (§16.2), it is always
+ * written when it fits, so an exact multiple gains a whole bucket.
+ */
+export function padRecord(n: number, room: number): Bytes {
+  if (n + 3 > room) return new Uint8Array(0)
+  const fill = Math.min((PAD_BUCKET - ((n + 3) % PAD_BUCKET)) % PAD_BUCKET, room - 3 - n)
+  return record(PAD_TAG, new Uint8Array(fill))
+}
+
+/** One tag-25 record per recipient id, in slot order: a letter's TLV tail before its padding. */
+export function encodeRecipients(ids: readonly Uint8Array[]): Bytes {
+  return concat(...ids.map((id) => record(RECIPIENT_TAG, id)))
 }
 
 /** {@link encodeTlv}, then {@link parseTlv} with the same context; throws {@link MalformedError}. */

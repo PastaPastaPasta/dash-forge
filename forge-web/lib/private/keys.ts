@@ -8,7 +8,7 @@
  * compared as bytes, go through `deriveBits`.
  */
 
-import { bytes, concat, isU32, randomBytes, utf8, u32, wipe, type Bytes } from './bytes'
+import { bytes, concat, isU32, randomBytes, sha256, utf8, u32, wipe, type Bytes } from './bytes'
 
 /** `"dash-forge/v2/" ‖ label ‖ 0x00 ‖ u32(e) ‖ x`. */
 export function subkeyInfo(label: string, epoch: number, x: Uint8Array = new Uint8Array(0)): Bytes {
@@ -81,6 +81,18 @@ export class EpochKeys {
     )
   }
 
+  /**
+   * `K_obj = HKDF-Expand(PRK_e, "dash-forge/v2/obj" ‖ 0x00 ‖ u32(e) ‖ nonce ‖ SHA-256(AD), 32)`:
+   * the raw per-object key of a members (`enc` v0x03) document, bound to its nonce and AD (§4.1).
+   * Raw because the next step re-imports it ({@link objKeys}); the caller wipes it.
+   */
+  async objKey(nonce: Uint8Array, ad: Uint8Array): Promise<Bytes> {
+    if (nonce.length !== 12) throw new RangeError('a nonce is 12 bytes')
+    const info = subkeyInfo('obj', this.epoch, concat(nonce, await sha256(ad)))
+    const bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: this.repoId, info }, this.base, 256)
+    return new Uint8Array(bits)
+  }
+
   /** `K_pack,e,fileId`: the AES-256-GCM key of one sealed artifact (§3.3). */
   packKey(fileId: Uint8Array): Promise<CryptoKey> {
     if (fileId.length !== 16) throw new RangeError('fileId must be 16 bytes')
@@ -97,6 +109,43 @@ export class EpochKeys {
       ['encrypt', 'decrypt'],
     )
   }
+}
+
+/** The keys a per-object key yields (§4.1): `K_doc,obj` (non-extractable AES-GCM) and `COMMIT_obj`. */
+export interface ObjKeys {
+  readonly docKey: CryptoKey
+  readonly commit: Bytes
+  /**
+   * `K_pack,obj,fileId = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-pack" ‖ 0x00 ‖ 0x02 ‖ fileId)`:
+   * the key of a sealed artifact under a specific-people header (DFPK version 0x02, §3.2).
+   */
+  packKey(fileId: Uint8Array): Promise<CryptoKey>
+}
+
+/**
+ * `PRK_obj = HKDF-Extract(repoId, K_obj)`; `K_doc,obj = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-doc" ‖ 0x00)`;
+ * `COMMIT_obj = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-commit" ‖ 0x00)` (§4.1). `KCV_obj` is
+ * `commit[0..14]`.
+ */
+export async function objKeys(repoId: Uint8Array, kObj: Uint8Array): Promise<ObjKeys> {
+  if (repoId.length !== 32 || kObj.length !== 32) throw new RangeError('repoId and K_obj are 32 bytes')
+  const base = await crypto.subtle.importKey('raw', bytes(kObj), 'HKDF', false, ['deriveKey', 'deriveBits'])
+  const params = (label: string): HkdfParams => ({
+    name: 'HKDF',
+    hash: 'SHA-256',
+    salt: new Uint8Array(repoId),
+    info: concat(utf8(`dash-forge/v2/${label}`), new Uint8Array([0])),
+  })
+  const [docKey, commit] = await Promise.all([
+    crypto.subtle.deriveKey(params('obj-doc'), base, AES_256, false, ['encrypt', 'decrypt']),
+    crypto.subtle.deriveBits(params('obj-commit'), base, 256),
+  ])
+  const packKey = (fileId: Uint8Array): Promise<CryptoKey> => {
+    if (fileId.length !== 16) throw new RangeError('fileId must be 16 bytes')
+    const info = concat(utf8('dash-forge/v2/obj-pack'), new Uint8Array([0, 0x02]), fileId)
+    return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(repoId), info }, base, AES_256, false, ['encrypt', 'decrypt'])
+  }
+  return { docKey, commit: new Uint8Array(commit), packKey }
 }
 
 /** {@link EpochKeys.import}, then erase `raw` (best effort; the caller must not reuse it). */

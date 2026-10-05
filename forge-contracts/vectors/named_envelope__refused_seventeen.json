@@ -1,0 +1,136 @@
+{
+  "name": "refused_seventeen",
+  "description": "17 recipients, the sender included: the writer refuses.",
+  "case": "named_envelope",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "fields": {
+      "body": "x"
+    },
+    "sender": {
+      "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+      "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082",
+      "keyId": 4
+    },
+    "recipients": [
+      {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+        "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      },
+      {
+        "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+        "priv": "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955",
+        "pub": "02bf17b1a250a78519af75826803dc13b2182a3ce97a7badb50135cb3194e2388a"
+      },
+      {
+        "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+        "priv": "800419f853a2e11eeb44d05d603918884d93a42258c72df493c7d252e30130e8",
+        "pub": "026e30ff71fd069a535f7f75eee8118a4342cb224934cc4fb34959ca59814c9feb"
+      },
+      {
+        "identityId": "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+        "priv": "0abadf5fa1f7846dfa8e073bd9b40da5c2d54e1b0b6b9a0139fc4077bd25f155",
+        "pub": "025b0a23ba6f307d8a7c52f37a1daeca4a56aafebdefcd75ce6eeca2dc47ef31a0"
+      },
+      {
+        "identityId": "64ac82c9a356f7c8c36196070c575f76f1faa2b1425a10fefcbdf7b642a46991",
+        "priv": "e6a0d90cd98908367bec7faf5b3e35603ece3bbe457e19d0e31aa9c586bfe4c1",
+        "pub": "03775f7907b68b65e9aabc5ca4dbe0947cdf3376eafed8622d007b0a0a9a704cc8"
+      },
+      {
+        "identityId": "3fcec0abdd529d9e17c72a03e75bb845b4f9615faff60d008f4d6a51efb3ea77",
+        "priv": "fc1d6298352851664450c40a1a6116b675696e62e6f45cdafa83d349a58832b7",
+        "pub": "02e7a7b7076e9bb3e4dbde330658ef70c413a7d685f4fb215edc049564badf8c2f"
+      },
+      {
+        "identityId": "487ee57fb87d8bcc55783ac1ff9a3523cf59c472c5c0e14ea05dc311168ba47a",
+        "priv": "1720be82a567f366c8cf41516e92828d8b2b28cbcba5842ef3661c16d383fe26",
+        "pub": "02cb3329c2bd15de4c349aa8542fe8d2db77d0b333ce8b0800ab9f1e6c2fcbc648"
+      },
+      {
+        "identityId": "f0933f136588aec8ccfefaddbc976b6887adf1f3572d9bf7bec6119b47297ecb",
+        "priv": "66318acc032cc44996ed6b34bec16c27e31278138c604587b9526109bd60e1de",
+        "pub": "03f9bd2430d4940f90f310f8d9e2ac2e88ea82f8f63c20d47aa593752af3b2252a"
+      },
+      {
+        "identityId": "a9f38cb847e7a1e374a8bba60905a03d4ff05674b58eb1762c0129b6adabdf51",
+        "priv": "6c9c863eda7f6906a23b9589d69886e409d17491ddba780c08bf9be0f9e5a936",
+        "pub": "03060ba48a254b7e423ad704e758260fccfc30901bb92bfaff610f5d1433cf6230"
+      },
+      {
+        "identityId": "2deb2e9ba1c87b1035e6fd52fb8834aec78da85909d3fff6a8dc3f8c26b6d628",
+        "priv": "f58b368512c3edcc45d84a292bb3baf730f4c990abede14842cd4d04dcd027d0",
+        "pub": "02b7182a137b11360669ce40f96d0019d17860f53d98ac408444ec04eccb23e5c1"
+      },
+      {
+        "identityId": "5fc4b98a5651070834bb703155256c40de4efaf4255cf890abf3b61c07f16621",
+        "priv": "0b1d54f8b344e5f80d7f4120d702f246533ead7b9075db9f2fe7933786fdbdf0",
+        "pub": "0320edf39899bf93dcb5e289cdc76b6b26dc9aa364cb707310e8f4fad3f3c0ebc1"
+      },
+      {
+        "identityId": "fa724ebd3e140a0695dcccc949d4ab641249a5528727e69fe2749f58cb9a65d5",
+        "priv": "bea8c91163b1ee2a6f543fe79b3e6192ad78cc1d39393f810bb988cef4f06494",
+        "pub": "02341e7784e233556c085100ac4aadb5ad13d973c8290ab80511c5c14108770cc7"
+      },
+      {
+        "identityId": "78bd5f8dca83f84cd9bf6c9b7eb9dc1efb019fc938bc40d16008a331bc074ba7",
+        "priv": "705509d8d1a7775c0f175f9c71106bc81002ff28e3c797a71df9b70746755c43",
+        "pub": "0310839e8934bfc0d88cd94d3ccb25d54ca45a7b4c7ec31f85b2677e86757084c4"
+      },
+      {
+        "identityId": "9b760795a39691788c43fbf9ca5126f7f8d188a2f4a921193c31c91eae048d0e",
+        "priv": "f741886f8630000ae684ee68bf5ee4e5dbdbad859d7f9b2ffef7a05287e48061",
+        "pub": "0212d41c2b40d9d122e5ddc0ed4c57fbec896a9796db87dac8636a532ea75fbd99"
+      },
+      {
+        "identityId": "3cc960fd85dd5c992534014a7e3a1024a42544bde0f68019e96d6150ffafad9e",
+        "priv": "da1cc2fbec5ead1e4e7e6c0427dd1299f0bd3bfe84646ec210c1ea012b4dbc00",
+        "pub": "039bb36df08357f193f7e7112ce99c4ac50055bb58ec39d04871b69d3bcd492cb7"
+      },
+      {
+        "identityId": "f088ee17fe69ea1b8310d3afde3fd94daa454bb77a6781de18ff24ddf0083f9d",
+        "priv": "3d13ce1b15a0ae2bbe0be3a0759b3863f8b5f874d1f7311dbcdf2df7fb359612",
+        "pub": "020f6a49de6b309f9153a642bbe0f2dcda8a8cd1c9e45f8dadf2d5b71f31919afb"
+      },
+      {
+        "identityId": "57ac62e92e47a65079dd33aa33abbbe3434824ff864261f7c56531e92cb21bef",
+        "priv": "4960c41071d54b6daf47871e2349e514b5b66717abe00281a2ca8ae4efcbf91e",
+        "pub": "03ad19dbe1d8e095c586e0d21d22f7e97526e5f2a31771263e11bdce9194a824ec"
+      }
+    ],
+    "kObj": "c4245c2ee814320decd5b6250c6f60c3e76d67ff5e6d843eb59a5b947ce3479c",
+    "nonce": "1dfc5ec0c8c829dd5f390066",
+    "ivs": [
+      "994c0e1102672882620e4502b1de8d04",
+      "441c27ffa2e4051e1d78195653990f69",
+      "3c4d4167f37a4c527ca7eef673aee8ae",
+      "b0d4088ee44a2af93a46712dc5b84f4a",
+      "1f483d7b99c6d69fa30b376966b59b8b",
+      "61ddb83b4d7950409e2fc7f60157a562",
+      "5f8751a3d316626455aaf6b97e3b8c3f",
+      "75c108bce1abaf5bcf307557f724bd36",
+      "5ca0aefba9187f22c5b61ad381eb8774",
+      "f15500cddd731ee551fce7588fc766e3",
+      "387734d118ecbdee49abc622411858d6",
+      "f0c8f082fd413cb4f031736d15f30eec",
+      "bddd3fdef164389aa213fa4be6091e53",
+      "b74c42404ff6b23931c7d20bc30da567",
+      "2a69d3f1ee9428a94838adb9f8475cba",
+      "a187d93a001b827fad0f1ac79dc478fc",
+      "cef07d95450eefa4c7232edccfc1b383"
+    ]
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}
