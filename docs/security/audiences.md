@@ -25,8 +25,8 @@ This page explains what each audience means, what a public repository can keep *
 | Audience | Who reads it | Changes when members change | Available |
 |---|---|---|---|
 | **Public** | Everyone | — | today |
-| **Members** | Every current member of the repository: maintainers, writers, triage members and readers. Members added later read it too, including what was posted before they joined. | yes | today, for issues, comments, reviews and environments |
-| **Specific people** | A list the writer picks, members or not. The writer is always on it. | no | **coming later**. Environments already use one fixed list, **Maintainers**: the repository's maintainers when each change is saved. |
+| **Members** | Every current member of the repository: maintainers, writers, triage members and readers. Members added later read it too, including what was posted before they joined. | yes | today, for issues, comments, reviews and environments <!-- PENDING #397: environments --> |
+| **Specific people** | A list the writer picks, members or not. The writer is always on it. | no | **coming later**. Environments already use one fixed list, **Maintainers**: the repository's maintainers when each change is saved. <!-- PENDING #397 --> |
 
 The Members audience is encrypted on your computer or in your browser before anything is sent. Dash Platform stores the encrypted text. Nobody without the repository's members key can read it: not Platform nodes, not storage providers, not Forge's developers.
 
@@ -74,7 +74,7 @@ dg repo members enable <owner>/<repo>
 
 Before anything is signed it asks "Turn on members-only content?", says what members will be able to do and that everyone can still see that something was posted, by whom and when, and shows the cost of setting up keys for the current members (each later removal costs about the same again). It also warns that people using older Forge builds will see fewer things until they update ([below](#older-forge-builds)).
 
-It shares the members key with every current member who has an encryption key, and names those who don't yet. `dg repo members status <owner>/<repo>` says whether it is on, whether you can read it, and who is still waiting for the key. Anyone else who asks for members-only content in a repository where it is off is told to ask a maintainer ([E312](#e312)).
+It shares the members key with every current member who has an encryption key, and lists those who don't have one yet. `dg repo members status <owner>/<repo>` says whether it is on, whether you can read it, and who is still waiting for the key. A member who asks for members-only content in a repository where it is off is told to ask a maintainer ([E312](#e312)).
 
 Turning it on cannot be undone, and it changes nothing that is already public.
 
@@ -101,16 +101,16 @@ $ dg issue view alice/shop 3
 
 $ dg pr view alice/shop 7
 ...
-3 members-only comments hidden (you're not a member of alice/shop)
+3 members-only comments hidden, shown as placeholders (you're not a member of alice/shop)
 ```
 
-Counts that include members-only items say so: "Issues 3 (1 members-only)".
+`dg issue view` adds a line saying only members can read it, and `dg pr view --comments` shows each members-only comment as a placeholder with its author and time. Lists say how many rows you can't read: "Issues 3 (1 members-only; only members of alice/shop can read them)".
 
 **In the web app**, members read members-only issues, comments and reviews after unlocking once in the tab, and a reply in a members-only conversation stays members-only. <!-- PENDING #400 (weblane) (1B/1F web) for reading and replies. --> The audience picker for a new issue or comment, the members-only rows and placeholders for everyone else, the "#N · members-only" page and **View as public** are **coming soon**. <!-- PENDING web UX stream (1D). -->
 
 **Search** looks only at what you can read. `dg search` tells you how many members-only issues it could not search.
 
-**Notifications.** The web app's notifications and the webhooks `forge-relay` delivers say that something happened, never what was said. Encrypted posts from people who are not members are not shown and notify nobody. Whoever runs a notification service gets the same rules ([members-only notifications](../hosting/members-only-notifications.md)).
+**Notifications.** The web app's notifications and the webhooks `forge-relay` delivers say that something happened, never what was said. Encrypted comments and reviews from people who are not members are not shown and notify nobody. An issue anyone opens as members-only still gets its numbered row and a notice, since its number is public. Whoever runs a notification service gets the same rules ([members-only notifications](../hosting/members-only-notifications.md)).
 
 ## What it costs
 
@@ -122,7 +122,7 @@ Measured on devnet sakura:
 | Add a member to a repository with members-only content | the usual membership write, plus about 0.0007 DASH to share the key |
 | Remove a member | the usual delete, plus a key change: about 0.0007 DASH per remaining member and about 0.0006 DASH more |
 | Post a members-only issue, comment or review | 0 to 8 % more than the same thing in public |
-| Save an environment change | about 0.0025 DASH |
+| Save an environment change <!-- PENDING #397 --> | about 0.0025 DASH |
 
 Reading costs nothing.
 
@@ -141,7 +141,7 @@ And per kind of item:
 |---|---|---|
 | A members-only comment or review on a public issue or pull request | which issue or pull request it is on, and which comment it replies to; an inline comment's line numbers and commit; **a review's verdict** (approved, changes requested, commented), which counts toward the branch policy for everyone | the text, an inline comment's file path, the review's text |
 | A members-only issue | its number ("#12 · members-only"); when it was opened, closed, reopened or locked, and by whom; that a label or milestone was set or someone assigned, and **who** was assigned; the counts that include it | the title, the body, the names of its labels and milestone |
-| An environment | that the repository has environments and how many; for each change, who made it, when, and its size rounded up to 512 bytes; for a Maintainers environment, how many people it was sent to | its name, the names, types and notes of its entries, and every value |
+| An environment <!-- PENDING #397 --> | that the repository has environments and how many; for each change, who made it, when, and its size rounded up to 512 bytes; for a Maintainers environment, how many people it was sent to | its name, the names, types and notes of its entries, and every value |
 | The repository | that members-only content is on; when the members key changed; who shared the key with whom; the member list and roles (public on every repository) | the key |
 
 A review's verdict is public on purpose: everyone agrees on whether a pull request has its approvals, so a member and a non-member see the same merge button. A pull request's author who is not a member sees "Changes requested by @bob" and cannot read why. Add one public line saying what to fix.
@@ -157,7 +157,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 | A current member | yes | |
 | A removed member | everything posted before the removal, forever | sizes and timing afterwards |
 | A CI runner | no, unless you make its identity a reader | |
-| Someone who builds a modified Forge, or runs an old one | no | they can post encrypted text anyone may post, but no member's client shows it unless its author was a member |
+| Someone who builds a modified Forge | no | they can post encrypted text, as anyone may. A comment or review from someone who was not a member is shown by no member's client. An issue gets its numbered row, like any members-only issue. |
 | A tampered copy of the web app that you unlock | everything you can read | [Verify the app you loaded](../guides/verify-the-app.md), or run your own copy |
 
 ## What can still leak
@@ -165,7 +165,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 - **Everything in [What everyone can still see](#what-everyone-can-still-see).** Who talks, when, how much, and on which issue can say a lot. Leave out what the timing alone would give away.
 - **What members copy.** Any member can copy, quote or screenshot what they read. Quoting a members-only comment into a public reply publishes the quoted text.
 - **What removed members kept.** They keep everything posted before the removal. Removing someone protects only what comes after.
-- **Past values in a Members environment.** Everyone who becomes a member later can read every value ever stored there, including past values. Keep production credentials in a **Maintainers** environment, and rotate a secret at its source when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
+- **Past values in a Members environment.** <!-- PENDING #397 --> Everyone who becomes a member later can read every value ever stored there, including past values. Keep production credentials in a **Maintainers** environment, and rotate a secret at its source when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
 - **Code.** Everything pushed to a public repository is public, forever, even if you delete it later. The push helper refuses some files that look like secrets and warns about others ([Secrets in a push](../guides/quick-start.md#secrets-in-a-push)), but it cannot know everything. Keep secrets in an environment instead.
 - **Your encryption key.** It reads every private repository and every members-only conversation you belong to. Keep it like your signing keys, and replace it after a lost device ([Identity and keys](../guides/identity-and-keys.md#replacing-it-after-a-lost-device)).
 - **Mentions.** Mentioning someone who is not a member in a members-only comment tells them nothing they can read, but they may learn that something was posted.
@@ -187,7 +187,7 @@ People using older Forge builds see fewer things until they update. Nothing leak
 
 Change members only with an up-to-date Forge (`dg`, and the web app from its update with members-only support <!-- PENDING #400 (weblane) -->), so the key follows every change:
 
-- a member added by an older build has no key yet, and sees [E311](#e311). An up-to-date maintainer's `dg repo keys repair` (or their next visit in the web app) shares it;
+- a member added by an older build has no key yet, and sees [E311](#e311). A maintainer's `dg repo keys repair` shares it, or **Repair** in an up-to-date web app, which shows the cost first <!-- PENDING #400 (weblane): the web Repair note -->;
 - a member removed by an older build can still read new members-only content until the key changes. `dg repo keys status` flags it, and `dg repo keys repair` changes the key.
 
 ## Errors
@@ -196,7 +196,7 @@ Change members only with an up-to-date Forge (`dg`, and the web app from its upd
 
 **No key has been shared with you yet.** You're a member, but no maintainer has shared the members key with your encryption key. This happens when an older Forge build added you. You can still read and do everything public. The members-only items show as placeholders.
 
-Fix: a maintainer's up-to-date client shares it the next time they open the repository, or a maintainer runs `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, set one up first: `dg auth keys add --encryption`.
+Fix: a maintainer runs `dg repo keys repair <owner>/<repo>`, or chooses **Repair** in an up-to-date web app, which shows the cost first <!-- PENDING #400 (weblane) -->. If your identity has no encryption key yet, set one up first: `dg auth keys add --encryption`.
 
 ### E312
 

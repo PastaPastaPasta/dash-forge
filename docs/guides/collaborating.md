@@ -3,13 +3,13 @@
 Everything a team does on Forge is a signed document on Dash Platform: who may push, issues, comments, pull requests, reviews, merges and releases. There is no server in the middle to ask. Consensus decides who may write, and every client computes the same state from the same documents.
 
 1. [Collaborators](#collaborators)
-   - [Private repositories](#private-repositories)
-   - [Members-only content in a public repository](#members-only-content-in-a-public-repository)
-2. [Issues](#issues)
-3. [Pull requests](#pull-requests)
-4. [Releases](#releases)
-5. [From the web app](#from-the-web-app)
-6. [Webhooks and CI](#webhooks-and-ci)
+2. [Private repositories](#private-repositories)
+3. [Members-only content in a public repository](#members-only-content-in-a-public-repository)
+4. [Issues](#issues)
+5. [Pull requests](#pull-requests)
+6. [Releases](#releases)
+7. [From the web app](#from-the-web-app)
+8. [Webhooks and CI](#webhooks-and-ci)
 
 The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories. Every argument naming an identity — `dg repo list --owner`, `dg collab add`/`remove`, `dg issue --author`/`--assignee`, `dg pr request-review`, `dg ci runner add`/`revoke` — accepts either form; a name is resolved once per process and cached.
 
@@ -165,7 +165,9 @@ Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks 
 
 **Content a removed member wrote late.** A member removed from the repository who keeps writing under the old key, more than 240 blocks after the rotation, is hidden from every reader (the late-content rule). A clone that needs such a pack stops with [`E510`](../errors.md#e510) (`clone incomplete: N packs hidden by the late-content rule`).
 
-### Members-only content in a public repository
+---
+
+## Members-only content in a public repository
 
 A public repository can keep some of its discussion **members-only**: issues, comments and reviews that only its members can read, beside everything public. Its code, branches and pull requests stay public. Everyone can still see that something was posted, by whom and when. [Who can read what](../security/audiences.md) explains the audiences, exactly what stays public, and what can still leak.
 
@@ -178,11 +180,11 @@ dg pr comment    <owner>/<repo> 7 --members --body "…"
 dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 ```
 
-**Turning it on** shares a members key with every member who has an encryption key: about 0.0004 DASH plus about 0.0007 DASH per member (about 0.004 DASH for 5 members). Members without an encryption key are listed. They get the key once they set one up (`dg auth keys add --encryption`) and a maintainer runs `dg repo keys repair`. Anyone else who asks for members-only content gets [`E312`](../errors.md#e312). In the web app, turning it on is **coming soon**. <!-- PENDING web UX stream (1D) -->
+**Turning it on** shares a members key with every member who has an encryption key: about 0.0004 DASH plus about 0.0007 DASH per member (about 0.004 DASH for 5 members). Members without an encryption key are listed. They get the key once they set one up (`dg auth keys add --encryption`) and a maintainer runs `dg repo keys repair`. A member who asks for members-only content before it is on gets [`E312`](../errors.md#e312). In the web app, turning it on is **coming soon**. <!-- PENDING web UX stream (1D) -->
 
 **Replies follow what they answer.** Without `--members`, a comment on a members-only issue, or a reply to a members-only comment, is members-only. A public reply inside a members-only conversation is refused before anything is signed. Edits keep the audience.
 
-**Reading.** Members read members-only items in `dg issue view`/`list` and `dg pr view`/`list`, marked "members-only". Everyone else sees `#3 · members-only issue by @alice · open` and "3 members-only comments hidden (you're not a member of alice/shop)", and counts are labelled ("Issues 3 (1 members-only)"). In `--json`, every item has `"audience"` and `"readable"`. A `dg` key protected by a passphrase is asked for on the terminal. Without a terminal (or with `--json`, and no `DASH_FORGE_PASSPHRASE`), a member sees the items as locked instead. A removed member still reads what was posted before the removal.
+**Reading.** Members read members-only items in `dg issue view`/`list` and `dg pr view`/`list`, marked "members-only". Everyone else sees `#3 · members-only issue by @alice · open`, "3 members-only comments hidden, shown as placeholders (you're not a member of alice/shop)", and lists that say how many rows they can't read ("Issues 3 (1 members-only; only members of alice/shop can read them)"). In `--json`, every item has `"audience"` and `"readable"`. A `dg` key protected by a passphrase is asked for on the terminal. Without a terminal (or with `--json`, and no `DASH_FORGE_PASSPHRASE`), a member sees the items as locked instead. A removed member still reads what was posted before the removal.
 
 **From the web app**, members read members-only issues, comments and reviews after one unlock per tab, and a reply in a members-only conversation stays members-only. <!-- PENDING #400 (weblane) --> Choosing Members for a new issue or comment, the members-only rows and placeholders for everyone else, and **View as public** are **coming soon**. <!-- PENDING web UX stream (1D) -->
 
@@ -194,7 +196,7 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 - `dg collab remove` changes the key (about 0.0007 DASH per remaining member, plus about 0.0006 DASH), and says so before you confirm: new members-only issues, comments and reviews will be unreadable to them, and what they could already read stays readable to them.
 - A role change between writer, triage and reader keeps the key: every role holds it, readers included.
 - The web app's **Settings → Members** does the same from its update with members-only support. <!-- PENDING #400 (weblane) (1F web): on master the web refuses membership changes on a repository with members-only content -->
-- Change members only with an up-to-date Forge. A member added by an older build has no key yet and sees [`E311`](../errors.md#e311) until a maintainer's next visit or `dg repo keys repair` shares it. A member removed by an older build keeps reading new content until `dg repo keys repair` changes the key. `dg repo keys status` shows both.
+- Change members only with an up-to-date Forge. A member added by an older build has no key yet and sees [`E311`](../errors.md#e311) until a maintainer shares it with `dg repo keys repair`, or with **Repair** in an up-to-date web app <!-- PENDING #400 (weblane) -->. A member removed by an older build keeps reading new content until `dg repo keys repair` changes the key. `dg repo keys status` shows both.
 
 **CI runners are not members.** A runner key (`dg ci runner add`) reports check runs and never receives the members key. If you make a runner's identity a reader, it reads everything members-only.
 

@@ -213,7 +213,7 @@ Fix: a maintainer runs `dg repo keys repair <owner>/<repo>`; then try again. Not
 
 **No key has been shared with you yet.** You're a member of this public repository and it has members-only content, but no maintainer has shared its key with your encryption key. This happens when you were added by an older Forge build that did not share the key. You can still read everything public, and the members-only items show as placeholders.
 
-Fix: a maintainer's client shares it the next time they open the repo; from the command line a maintainer runs `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, add one first: `dg auth keys add --encryption`.
+Fix: a maintainer runs `dg repo keys repair <owner>/<repo>`, or chooses **Repair** in an up-to-date web app (it shows the cost first). <!-- PENDING #400 (weblane): the web Repair note --> If your identity has no encryption key yet, add one first: `dg auth keys add --encryption`.
 
 ## E312
 
