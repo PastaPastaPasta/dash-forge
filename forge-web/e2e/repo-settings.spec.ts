@@ -24,7 +24,7 @@ import { idFile, idOf, shot, signedIn, unlock, waitForRepoResolved } from './hel
  *       elsewhere).
  *   s4. OWNER changes the default branch to `trunk`: the repo home opens on `trunk` and the
  *       clone box says a clone checks out `trunk`.
- *   s5. OWNER sets a branch policy (labelled a client rule); the PR shows "0 of 1", the merge is
+ *   s5. OWNER sets a branch policy (labelled as enforced by Forge apps); the PR shows "0 of 1", the merge is
  *       disabled, and OWNER is offered the explicit "bypass rules" step (QW-001).
  *   s6. OWNER archives: composers are disabled for COLLAB; OWNER unarchives.
  */
@@ -179,11 +179,11 @@ test('s4. changing the default branch updates the repo home and the clone box', 
   expect(sym.out).toMatch(/ref: refs\/heads\/trunk\s+HEAD/)
 })
 
-test('s5. the branch policy is saved and shown on the PR as a client rule', async ({ browser }) => {
+test('s5. the branch policy is saved and shown on the PR as enforced by Forge apps', async ({ browser }) => {
   const page = await signedIn(browser, 'OWNER', repoPath('settings'))
   await waitForRepoResolved(page)
   const policy = page.getByTestId('policy-editor')
-  await expect(policy).toContainText('A client rule, not consensus', { timeout: 60_000 })
+  await expect(policy.getByTestId('enforced-by-apps')).toBeVisible({ timeout: 60_000 })
   await policy.getByLabel('Required approvals').fill('1')
   await policy.getByRole('button', { name: /save policy/i }).click()
   await confirmWrite(page, /sign & save/i)
@@ -194,7 +194,7 @@ test('s5. the branch policy is saved and shown on the PR as a client rule', asyn
   await unlock(page)
   await waitForRepoResolved(page)
   await expect(page.getByTestId('policy-status')).toContainText('0 of 1 required approval', { timeout: 90_000 })
-  await expect(page.getByText(/Policy is a client rule; a maintainer can bypass it/)).toBeVisible()
+  await expect(page.getByText(/The author's own approval doesn't count\. Maintainers can override/)).toBeVisible()
   await expect(page.getByTestId('merge-rules-unmet')).toContainText('required approvals: 0 of 1', { timeout: 240_000 })
   await expect(page.getByTestId('merge-submit')).toBeDisabled()
   await page.getByTestId('merge-bypass').check()

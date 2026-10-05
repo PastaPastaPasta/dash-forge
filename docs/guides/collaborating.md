@@ -30,7 +30,7 @@ The repository owner alone adds and removes members, and edits the description a
 
 Anyone, member or not, can open issues and PRs, comment and review. Approvals count toward a branch policy only from maintainers and writers: a triage member's or reader's approval is shown as **not counted**, and their request for changes does not block. Imported issues and comments (a mirror's provenance and upstream numbers) are trusted from the same people.
 
-A public repository has no readers: everyone can read it already. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Collaborators has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
+A public repository has no readers: everyone can read it already. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Members has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
 
 Adding a collaborator is two steps: the owner adds them, and the collaborator accepts. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
 
@@ -45,7 +45,7 @@ dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 
 If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).
 
-From the web app, the invitee opens the repository's **invite link** (Settings → Collaborators, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Collaborators lists **Pending invitations** (accepted, not added yet) with a role picker (writer, triage, maintainer, and on a private repository reader) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
+From the web app, the invitee opens the repository's **invite link** (Settings → Members, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Members lists **Pending invitations** (accepted, not added yet) with a role picker (writer, triage, maintainer, and on a private repository reader) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
 
 Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
 
@@ -69,9 +69,16 @@ What each one enforces:
 
 - **Protected branches** are enforced by Platform. A ref matching a pattern moves only through a maintainer-only document; a writer's push is refused ([`E601`](../errors.md#e601)), and a plain update of a protected ref is ignored by every reader. A bare name means `refs/heads/<name>`; `*` stays within one path segment and `**` crosses segments. Up to 8 patterns.
 - **The default branch** is what a clone checks out and what the web opens on.
-- **The branch policy** is a client rule. Every Forge client applies it: the web disables the merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). The PR author's own approval never counts. A maintainer can bypass it, as on GitHub: tick "bypass rules" in the merge box and confirm, or pass `dg pr merge --override-policy`. The code is really merged, and an event on the PR records which rules were bypassed. Unlike a comment, the event cannot be edited or deleted, by the maintainer who bypassed or anyone else. Nothing on Platform requires approvals.
+- **The branch policy** is a client rule. Every Forge client applies it: the web disables the merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). The PR author's own approval never counts. When the policy requires approvals, a request for changes from a maintainer or writer whose approval would count blocks the merge, as on GitHub, until they approve or the review is dismissed. A maintainer can bypass it, as on GitHub: tick "bypass rules" in the merge box and confirm, or pass `dg pr merge --override-policy`. The code is really merged, and an event on the PR records which rules were bypassed. Unlike a comment, the event cannot be edited or deleted, by the maintainer who bypassed or anyone else. Nothing on Platform requires approvals.
 - **Mark as merged (done elsewhere)** records a merge that already happened some other way (a push). It moves no code, so the web offers it only once the PR's head is on the base branch (`dg pr merge --event-only`).
 - **Archiving** is a client rule too. Forge clients refuse writes to an archived repository: the web disables issues, PRs, merges and releases; `dg` refuses issue, PR, comment, review, merge and release writes; and the push helper refuses pushes. All of these use [`E606`](../errors.md#e606). Override with `dg --allow-archived …` or `git push -o allow-archived`. Platform still accepts a member's writes.
+
+### Who enforces what
+
+The web app labels each rule with who enforces it:
+
+- **Enforced by Dash Platform.** Platform refuses a write that breaks the rule, whichever app sends it. Member roles, protected branches, and a limited key's budget and expiry work this way.
+- **Forge apps enforce this.** The web app, `dg` and the push helper apply the rule and won't send a write that breaks it. Platform doesn't check it, so a write made outside Forge's apps can ignore it. The branch policy and archiving work this way. A maintainer's override of the branch policy is recorded on the PR, where everyone can see it.
 
 The description and topics live on the repository document, which only its owner can edit. They are public even for a private repository. A private repository's other settings are encrypted: the CLI writes them sealed, and the web app does not write them yet.
 
@@ -93,7 +100,7 @@ A collaborator is a `writer` or `maintainer` document in Forge's shared forge-co
 
 Forge has no organization accounts, and membership is never delegated: only a repository's owner can add or remove its members. A team that wants one shared owner uses an **organization identity**:
 
-1. Create an identity for the organization (`dg auth new`, or the web app's sign-up) and keep its identity file or recovery words offline. It owns the organization's repositories (`dg repo create`), so their URLs are `<org>/<repo>`; register a DPNS name for it.
+1. Create an identity for the organization (`dg auth new`, or the web app's sign-up) and keep its identity file or recovery phrase offline. It owns the organization's repositories (`dg repo create`), so their URLs are `<org>/<repo>`; register a DPNS name for it.
 2. Add each admin's **personal** identity as a maintainer of each repository (`dg collab add <org>/<repo> <admin> --role maintainer`). Pushes, merges, reviews and releases stay signed by the person who made them.
 3. Give each admin a **limited key of the organization identity** for the owner-only writes: adding and removing members, the description and topics. The key can do everything the organization can on Forge (it is the owner and a maintainer of every organization repository: protected pushes, settings, policy, webhooks, new repositories), but never spend more than its budget, never outlive its expiry, and never touch another contract. The organization's master key registers it:
 
@@ -427,9 +434,11 @@ Each step is reported. If one fails, the output says what already happened. If t
 
 - **Conflicts:** nothing is pushed ([`E105`](../errors.md#e105)). Check the PR out, merge the base into it, resolve, push the result to the PR's branch (the PR follows it), and run `dg pr merge` again. `dg pr update-branch` does this for you when the merge is clean.
 - **Protected base branch:** only a maintainer can push to it. A writer's merge is refused with [`E601`](../errors.md#e601) before any git work.
-- **Merged elsewhere:** if the merge was pushed some other way, `dg pr merge --event-only [--merge-oid <commit>]` only posts the event. The commit must already have been a tip of the base branch: a merge event is permanent, so `dg` refuses to post one that would not count.
+- **Merged elsewhere:** if the merge was pushed some other way, `dg pr merge --event-only [--merge-oid <commit>]` only posts the event. A merge event is permanent, so `dg` checks the commit first: it must already have been a tip of the base branch, and it must contain the PR (the PR head is that commit or one of its ancestors, or the commit is a squash or a rebase of the PR on the base). On a protected base only a maintainer can record a merge, as only a maintainer can push one.
 
 A PR shows as merged only when **both** are true: the `merge` event exists (consensus admits it only from a writer or maintainer), and its commit has been **a tip of the base branch**. `dg pr merge` reads the PR back and reports what readers will see.
+
+**Checking a merge.** Platform cannot read git, so a member could record a merge that does not contain the PR. Readers check it: the web labels a merged PR's merge commit as containing the PR, as a squash or a rebase of it, or, in red, as not containing its commits. `dg pr verify <repo> <n>` fetches the base and the PR head and says the same; `dg pr view` says it when the current repository already has the commits.
 
 **Close without merging:** `dg pr close` / `dg pr reopen`. The author can close and reopen their own PR, as with issues.
 

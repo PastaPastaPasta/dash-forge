@@ -20,6 +20,7 @@ import {
   type ForgeIds,
 } from './deployments'
 import storageDefaults from '../../forge-contracts/config/storage-defaults.json'
+import { userQuorumUrl } from './quorum-url'
 
 // ---------------------------------------------------------------------------
 // Network
@@ -72,13 +73,24 @@ export interface NetworkEnv {
   readonly quorumBaseUrl?: string
 }
 
-/** Thrown by reads/writes on a network where forge-v2 is not deployed ({@link NetworkConfig.v2} null). */
+/**
+ * How copy names a network: `devnet sakura`, `testnet`, `mainnet` (style guide glossary). The
+ * deployment key (`devnet-sakura`) stays for file names, commands and settings.
+ */
+export function networkName(config: Pick<NetworkConfig, 'network' | 'devnetName' | 'key'> = ACTIVE_NETWORK): string {
+  return config.network === 'devnet' && config.devnetName !== null ? `devnet ${config.devnetName}` : config.key
+}
+
+/**
+ * Thrown by reads/writes on a network where Forge's contracts are not deployed
+ * ({@link NetworkConfig.v2} null): a network is deployed once
+ * `forge-contracts/deployments/<key>.json` records them (`docs/contracts/forge-v2.md` §8).
+ */
 export class NotDeployedError extends Error {
-  constructor(readonly networkKey: string) {
-    super(
-      `forge-v2 is not deployed on ${networkKey}; see docs/contracts/forge-v2.md §8 ` +
-        `(a network is deployed once forge-contracts/deployments/${networkKey}.json records it)`,
-    )
+  readonly networkKey: string
+  constructor(config: Pick<NetworkConfig, 'network' | 'devnetName' | 'key'>) {
+    super(`Dash Forge isn't available on ${networkName(config)} yet`)
+    this.networkKey = config.key
     this.name = 'NotDeployedError'
   }
 }
@@ -196,10 +208,18 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = RESOLVED.netwo
  * defaults compiled into evo-sdk's `testnetTrusted()` / `mainnetTrusted()`; a devnet uses its
  * configured `quorumBaseUrl` (`NEXT_PUBLIC_QUORUM_URL`, else the deployment file), else
  * `quorums.<name>.networks.dash.org` — what `service.ts` hands the SDK (parity with forge-core
- * `Network::quorum_base_url`). The trust panel discloses this, so it must name the endpoint
- * the SDK actually uses. `''` for a devnet config with no name (one this build does not target).
+ * `Network::quorum_base_url`). A quorum service the reader set in Settings
+ * (`lib/quorum-url.ts`) replaces it. The trust panel discloses this, so it must name the
+ * endpoint the SDK actually uses. `''` for a devnet config with no name (one this build does
+ * not target).
  */
 export function quorumEndpoint(config: NetworkConfig): string {
+  const fallback = defaultQuorumEndpoint(config)
+  return fallback === '' ? '' : userQuorumUrl(config.key) ?? fallback
+}
+
+/** {@link quorumEndpoint} before the reader's own choice: the network's quorum service. */
+export function defaultQuorumEndpoint(config: NetworkConfig): string {
   switch (config.network) {
     case 'testnet':
     case 'mainnet':
@@ -232,7 +252,7 @@ export const ACTIVE_NETWORK: NetworkConfig = NETWORKS[DEFAULT_NETWORK]
 /** The forge-v2 contracts of `network`, or a {@link NotDeployedError}. */
 export function requireForge(network: Network): ForgeIds {
   const config = NETWORKS[network]
-  if (config.v2 === null) throw new NotDeployedError(config.key)
+  if (config.v2 === null) throw new NotDeployedError(config)
   return config.v2
 }
 

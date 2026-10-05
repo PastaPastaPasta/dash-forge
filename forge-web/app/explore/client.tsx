@@ -32,7 +32,7 @@ import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { repoHref } from '@/hooks/use-query-param'
 import { useRepoPages, type RepoPages } from '@/hooks/use-repo-pages'
 import { useSdk } from '@/hooks/use-sdk'
-import { ACTIVE_NETWORK, NETWORKS, type Network } from '@/lib/constants'
+import { ACTIVE_NETWORK, NETWORKS, networkName, type Network } from '@/lib/constants'
 import { listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
 import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
 import { rankedRepos, recentReposPage, recentlyUpdated, reposWithTopic, searchPrefix, searchRepos, PUSH_WINDOW_MS, TOPIC_PAGE, type RankedRepos } from '@/lib/view/discovery'
@@ -129,9 +129,9 @@ export function ExploreClient(): JSX.Element {
         <header className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="flex items-center gap-2 text-2xl">
-              <Compass className="h-6 w-6 text-forge-500" aria-hidden /> Explore
+              <Compass className="h-6 w-6 text-fg-muted" aria-hidden /> Explore
             </h1>
-            <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Read straight from {NETWORKS[network].key}, proof-checked. No server ranks or filters this.</p>
+            <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Everything here is read from {networkName(NETWORKS[network])} and verified in your browser. No server ranks or filters it.</p>
           </div>
         </header>
 
@@ -262,9 +262,9 @@ export function ExploreClient(): JSX.Element {
               icon={Info}
               state={scan}
               empty="Nothing assigned to you or mentioning you in the recent activity of your repos."
-              note={`Partial by necessity: assignments and @mentions have no index. This looks only at the newest 100 events and 30 issues and 30 pull requests of ${
-                watched.length < memberOf.length ? `${watched.length} of the ${plural(memberOf.length, 'repo')}` : `the ${plural(watched.length, 'repo')}`
-              } you own or belong to, and at issue and pull request descriptions only (not comments).`}
+              note={`Recent issues and pull requests in ${
+                watched.length < memberOf.length ? `${watched.length} of your ${plural(memberOf.length, 'repo')}` : `your ${plural(watched.length, 'repo')}`
+              }. Comments aren't searched yet.`}
               partial={(d) => (d.failed > 0 ? `${d.failed} of ${plural(d.reposScanned, 'repo')} could not be read; results cover the rest.` : null)}
             >
               {(d) => (
@@ -456,7 +456,7 @@ function Section<T>({
     <section aria-labelledby={id} data-testid={id}>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h2 id={id} className="flex items-center gap-2 text-lg">
-          <Icon className="h-4 w-4 text-forge-500" aria-hidden /> {title}
+          <Icon className="h-4 w-4 text-fg-muted" aria-hidden /> {title}
         </h2>
         {state.loading ? <Spinner label="Reading" /> : null}
       </div>

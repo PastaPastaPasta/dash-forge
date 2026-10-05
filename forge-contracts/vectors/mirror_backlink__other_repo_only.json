@@ -1,0 +1,14 @@
+{
+  "name": "other_repo_only",
+  "description": "A valid file that lists another repo: this one is not vouched for.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "{\"mirrors\": [\"H3xi5biFj6wbxmpbdhHx1D2D3ofKJJ7anDG58ixhqvry\"]}",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": true,
+    "listed": false
+  }
+}

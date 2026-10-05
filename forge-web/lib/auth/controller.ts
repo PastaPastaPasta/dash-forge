@@ -26,7 +26,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { DEFAULT_NETWORK, NETWORKS } from '../constants'
+import { DEFAULT_NETWORK, NETWORKS, NotDeployedError } from '../constants'
 import { errorMessage } from '../utils'
 import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
@@ -46,6 +46,7 @@ import { PLATFORM_READ_MS, withPlatformRead } from './connect'
 import { withTimeout } from '../timeout'
 import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
+import { clearDrafts } from '../view/draft-text'
 import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
@@ -442,14 +443,14 @@ export class AuthController {
   /** The dash-forge contract group this network's keys are bound to. */
   private group(): string {
     const v2 = NETWORKS[this.network].v2
-    if (!v2) throw new Error(`forge-v2 is not deployed on ${NETWORKS[this.network].key}: limited keys need its contract group`)
+    if (!v2) throw new NotDeployedError(NETWORKS[this.network])
     return v2.group
   }
 
   /** The group's trust root as the bundled deployment pins it (`groupTrust`). */
   groupTrust(): GroupTrust {
     const trust = groupTrust(DEPLOYMENTS[NETWORKS[this.network].key])
-    if (!trust) throw new Error(`forge-v2 is not deployed on ${NETWORKS[this.network].key}: limited keys need its contract group`)
+    if (!trust) throw new NotDeployedError(NETWORKS[this.network])
     return trust
   }
 
@@ -569,7 +570,7 @@ export class AuthController {
       let extra: Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded'> = {}
       if (storage === 'vault') {
         const forge = NETWORKS[this.network].v2
-        if (!forge) throw new KeyNotUsableError(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+        if (!forge) throw new KeyNotUsableError(new NotDeployedError(NETWORKS[this.network]).message)
         extra = await this.verifyScopes(identity, secret, match.keyId, forge)
       }
       // Held to be disabled later: listed while still live on the identity.
@@ -982,7 +983,7 @@ export class AuthController {
       const [main, ...rest] = keys
       if (!main) throw new Error('the wallet granted no key')
       const forge = NETWORKS[this.network].v2
-      if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+      if (!forge) throw new NotDeployedError(NETWORKS[this.network])
       this.requireFullUnlock(identityId)
       const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
       if (previous) await this.assertUnlockedIfWalletKeys(await this.getSdk(), identityId, previous.keyId)
@@ -1346,7 +1347,7 @@ export class AuthController {
     return this.run(async () => {
       const session = this.state.session
       if (!session || session.storage !== 'vault' || session.keyId === undefined) {
-        throw new Error("only a stored Forge browser key can be topped up; sign in with your identity first")
+        throw new Error("only a key this browser keeps can be topped up; sign in with your identity first")
       }
       const { identityId, keyId } = session
       const masterWif = await this.masterWifFor(identityId, input)
@@ -1432,7 +1433,7 @@ export class AuthController {
     const liveOther = k !== undefined && k.disabledAt === undefined && !isForgeBrowserKey(k)
     if (liveOther || (await hasExtraKeys(this.network, identityId))) {
       throw new VaultLockedError(
-        "This device holds wallet keys for this identity. Unlock first (Sign in → Unlock), so they can be disabled on chain in the same update; otherwise they would stay live after this device forgets them. If you can no longer unlock it, disable those keys from your wallet, then use \"Forget this key\" on the Unlock screen and sign in again.",
+        "This device holds wallet keys for this identity. Unlock first (Sign in → Unlock) so they are disabled in the same update. Can't unlock? Disable them from your wallet, then choose \"Forget this key\" and sign in again.",
       )
     }
   }
@@ -1476,8 +1477,8 @@ export class AuthController {
 
   /**
    * Delete the stored key of `identityId` from this device (ending its session if open), and
-   * what this browser recorded for the identity: its spend ledger, its notifications inbox and
-   * the last-used marker (QW2-028). Write journals stay: they finish an interrupted write. So do
+   * what this browser recorded for the identity: its spend ledger, its notifications inbox, its
+   * comment drafts and the last-used marker (QW2-028). Write journals stay: they finish an interrupted write. So do
    * the top-up records (`topUpRecords`, QW3-034: an unfinished top-up, and where the next one
    * starts), which the forget and revoke confirmations name.
    */
@@ -1485,6 +1486,7 @@ export class AuthController {
     if (this.state.session?.identityId === identityId) this.logout()
     await forgetVault(this.network, identityId)
     forgetLastIdentity(this.network, identityId)
+    clearDrafts(identityId)
     await Promise.allSettled([clearLedger(this.network, identityId), clearInbox(this.network, identityId)])
   }
 }
@@ -1503,12 +1505,12 @@ export function wrongWordsMessage(identityId: string, theirs: string | null, who
   const id = shortId(identityId)
   if (who === 'import') {
     return theirs !== null && theirs !== identityId
-      ? `These recovery words belong to identity ${shortId(theirs)}, not ${id}. Leave Identity ID empty to sign in to ${shortId(theirs)}, or check the words.`
-      : `These recovery words don't belong to identity ${id}. Check the words, or leave Identity ID empty to find the identity they belong to.`
+      ? `This recovery phrase belongs to identity ${shortId(theirs)}, not ${id}. Leave Identity ID empty to sign in to ${shortId(theirs)}, or check the phrase.`
+      : `This recovery phrase doesn't belong to identity ${id}. Check the phrase, or leave Identity ID empty to find its identity.`
   }
   return theirs !== null && theirs !== identityId
-    ? `These recovery words belong to identity ${shortId(theirs)}, not ${id} (the identity signed in here). Use ${id}'s recovery phrase.`
-    : `These recovery words don't open ${id} (the identity signed in here). Check the words, or use its identity file.`
+    ? `This recovery phrase belongs to identity ${shortId(theirs)}, not ${id} (the identity signed in here). Use ${id}'s recovery phrase.`
+    : `This recovery phrase doesn't open ${id} (the identity signed in here). Check the phrase, or use its identity file.`
 }
 
 /**
@@ -1538,7 +1540,7 @@ function stagedUnlockMessage(status: RecoverResult['status'] | 'none', hasMain: 
 export class PendingRenewalChoiceError extends Error {
   constructor(readonly keyId: number) {
     super(
-      `This device has an unfinished key renewal (key ${keyId}). Finish it by unlocking with the passphrase or passkey you chose for it, or continue with your wallet: this browser then keeps the renewal's key only so that your next key renewal or "Revoke on chain" (Settings → This browser's key) disables it. It never signs.`,
+      `This device has an unfinished key renewal (key ${keyId}). Finish it by unlocking with the passphrase or passkey you chose for it, or continue with your wallet. That key then never signs, and your next renewal disables it.`,
     )
     this.name = 'PendingRenewalChoiceError'
   }

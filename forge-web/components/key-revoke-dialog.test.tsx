@@ -117,11 +117,11 @@ describe('KeyRevokeDialog', () => {
 
   it("QW3-028: another identity's words stay in the field beside a plain error", async () => {
     auth.scope = 'full'
-    auth.revokeStored.mockRejectedValueOnce(new WrongMasterKeyError(ID, 'These recovery words belong to identity 9CVMSjk…, not 9r27eDs… (the identity signed in here).'))
+    auth.revokeStored.mockRejectedValueOnce(new WrongMasterKeyError(ID, 'This recovery phrase belongs to identity 9CVMSjk…, not 9r27eDs… (the identity signed in here).'))
     render()
     await giveWords()
     await act(async () => button(/Sign once & revoke/).click())
-    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/belong to identity 9CVMSjk…, not 9r27eDs…/)
+    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/belongs to identity 9CVMSjk…, not 9r27eDs…/)
     expect(host.querySelector('textarea')!.value).toBe(WORDS)
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -143,7 +143,7 @@ describe('KeyRevokeDialog', () => {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0))
     })
-    expect(host.querySelector('[data-testid="revoke-top-up-stays"]')!.textContent).toMatch(/where its next top-up starts/)
+    expect(host.querySelector('[data-testid="revoke-top-up-stays"]')!.textContent).toMatch(/where your next top-up starts/)
     resetMemoryStores()
   })
 

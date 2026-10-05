@@ -208,33 +208,34 @@ function CommitByline({ commit }: { commit: CommitObject }): JSX.Element {
   )
 }
 
-/** A body longer than this many lines (or characters) starts collapsed on a phone. */
-const PHONE_BODY_LINES = 6
-const PHONE_BODY_CHARS = 480
+/** A body longer than this many lines (or characters) starts collapsed, at every width. */
+const LONG_BODY_LINES = 4
+const LONG_BODY_CHARS = 360
 
-/** Whether a commit body is long enough to start collapsed on a phone (QW-061f). */
+/** Whether a commit body is long enough to start collapsed (QW-061f, T-7). */
 export function longCommitBody(body: string): boolean {
-  return body.split('\n').length > PHONE_BODY_LINES || body.length > PHONE_BODY_CHARS
+  return body.split('\n').length > LONG_BODY_LINES || body.length > LONG_BODY_CHARS
 }
 
 /**
- * The commit message's body. On a phone a long one (a squash's list of commits, a release's
- * changelog) starts clamped to a few lines with "Show more", so the diff is not screens away;
- * from `sm` up it is shown whole, as GitHub's commit page does.
+ * The commit message's body, in mono (commit bodies are hard-wrapped at 72 columns). A long one (a
+ * squash's list of commits, a release's changelog) starts at its first 3 lines with "Show full
+ * message", so the diff is not screens away. Collapsed, the rest is not rendered at all (not just
+ * clipped), so its links take no keyboard focus and a screen reader reads what is shown.
  */
-function CommitBody({ body, links }: { body: string; links: ReturnType<typeof useRepoLinks> }): JSX.Element {
+export function CommitBody({ body, links }: { body: string; links: ReturnType<typeof useRepoLinks> }): JSX.Element {
   const [open, setOpen] = useState(false)
   const long = longCommitBody(body)
-  // CSS only (below `sm`), so a desktop never paints it clamped first.
   const clamped = long && !open
+  const shown = clamped ? body.split('\n').slice(0, 3).join('\n') : body
   return (
     <div className="mt-2">
-      <pre className={cn('whitespace-pre-wrap font-sans text-dense text-anvil-600 [overflow-wrap:anywhere] dark:text-anvil-300', clamped && 'max-sm:line-clamp-6')} data-testid="commit-body" data-clamped={clamped || undefined}>
-        <LinkifiedText text={body} links={links} imported={sourceUrl(links)} />
+      <pre id="commit-body" className={cn('whitespace-pre-wrap font-mono text-[13px] leading-5 text-anvil-600 [overflow-wrap:anywhere] dark:text-anvil-300', clamped && 'line-clamp-3')} data-testid="commit-body" data-clamped={clamped || undefined}>
+        <LinkifiedText text={shown} links={links} imported={sourceUrl(links)} />
       </pre>
       {long ? (
-        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="mt-1 text-[12px] font-medium text-forge-700 underline-offset-2 hover:underline coarse:min-h-11 sm:hidden dark:text-forge-400" data-testid="commit-body-toggle">
-          {open ? 'Show less' : 'Show more'}
+        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-controls="commit-body" className="mt-1 text-[12px] font-medium text-forge-700 underline-offset-2 hover:underline coarse:min-h-11 dark:text-forge-400" data-testid="commit-body-toggle">
+          {open ? 'Show less' : 'Show full message'}
         </button>
       ) : null}
     </div>

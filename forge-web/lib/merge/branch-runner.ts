@@ -16,7 +16,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { postTargetEvent, type RepoRef } from '../repo'
 import { writePackManifest, writeRefUpdate } from '../repo/push'
 import type { WriteAuth } from '../sdk'
-import { formatBytes } from '../view/format'
+import { formatBytes, plural } from '../view/format'
 import type { BranchCommit } from './branch-commit'
 import type { StoredPack, UploadPack } from './runner'
 
@@ -24,7 +24,7 @@ export type BranchStepId = 'upload' | 'manifest' | 'index' | 'ref' | 'head'
 
 export const BRANCH_STEPS: readonly { readonly id: BranchStepId; readonly label: string }[] = [
   { id: 'upload', label: 'Upload the pack to storage' },
-  { id: 'manifest', label: 'Record the pack (packManifest)' },
+  { id: 'manifest', label: 'Record the upload' },
   { id: 'index', label: 'Publish the browse index' },
   { id: 'ref', label: 'Move the PR branch (ref update)' },
   { id: 'head', label: 'Move the PR head (head update)' },
@@ -152,7 +152,7 @@ export async function runBranchCommit(deps: BranchRunDeps, from: BranchRun | nul
     }
     if (missing.length > 0) {
       throw new BranchStopped(
-        `The commit's pack would leave ${missing.length} object(s) unfetchable (${missing
+        `The commit's pack would leave ${plural(missing.length, 'object')} unfetchable (${missing
           .slice(0, 3)
           .map((o) => o.slice(0, 9))
           .join(', ')}); nothing was written. Use the CLI (\`dg pr suggestion apply\`, \`dg pr update-branch\`).`,

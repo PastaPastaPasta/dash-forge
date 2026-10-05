@@ -80,7 +80,7 @@ export function useLongCompose(repo: RepoRef, kind: LongBodyKind, text: string, 
   if (viewer.failed) return { long: true, credits, problem: "Couldn't read your role in this repo, so a text this long cannot be posted yet: reload to try again." }
   if (!viewer.known) return { long: true, credits, problem: 'Checking whether you can post a text this long…' }
   if (longBodyStoredText(text, room, ANY_HASH) === null) {
-    return { long: true, credits, problem: `The rest of this document's text leaves no room for its first part and the line naming the full text: shorten the title or the text.` }
+    return { long: true, credits, problem: 'The title and text are too long together. Shorten one of them.' }
   }
   if (!mayStoreLongBodies(viewer.role)) {
     return {

@@ -15,8 +15,9 @@ If your CID, the GitHub release's and the Forge release's all match the CID in t
 3. [Step 2: rebuild the CID from the tag](#step-2-rebuild-the-cid-from-the-tag)
 4. [Step 3: compare with the GitHub release](#step-3-compare-with-the-github-release)
 5. [Step 4: compare with the Forge release on chain](#step-4-compare-with-the-forge-release-on-chain)
-6. [What this proves, and what it does not](#what-this-proves-and-what-it-does-not)
-7. [For maintainers: publishing the Forge release](#for-maintainers-publishing-the-forge-release)
+6. [Check a deployed copy: `dg verify-app`](#check-a-deployed-copy-dg-verify-app)
+7. [What this proves, and what it does not](#what-this-proves-and-what-it-does-not)
+8. [For maintainers: publishing the Forge release](#for-maintainers-publishing-the-forge-release)
 
 ---
 
@@ -28,7 +29,8 @@ Each `v<version>` release on GitHub carries, next to the CLI archives:
 |---|---|
 | `forge-web-<version>.cid` | The site's root CID (CIDv1), one line. It is also in the release notes. |
 | `forge-web-<version>.car` | The whole site as a [CAR file](https://ipld.io/specs/transport/car/carv1/). Import it into your IPFS node to pin the app. |
-| `SHA256SUMS` | The SHA-256 of both files and of every CLI archive, with a GitHub build provenance attestation. |
+| `forge-web-<version>.manifest.json` | Every file of the site with its SHA-256: what [`dg verify-app`](#check-a-deployed-copy-dg-verify-app) checks a copy against. The site also serves it as `forge-manifest.json`. |
+| `SHA256SUMS` | The SHA-256 of these files and of every CLI archive, with a GitHub build provenance attestation. |
 
 Nobody pins this copy for you: Forge hosts nothing. To run it from your own node:
 
@@ -49,7 +51,7 @@ The footer of every page says **About this build**: the commit the app was built
 
 **The CID in the footer comes from the URL, so it is only as good as whatever served the page.** A public gateway could serve any bytes under any CID. Only an IPFS node checks the blocks it serves against the CID it was asked for. So load the app through a node you run yourself (`ipfs dag import` above, or `ipfs pin add <cid>`, then `http://<cid>.ipfs.localhost:8080/`). Your node then refuses any byte that does not hash to that CID, and the footer's CID is the app you are running.
 
-A build served from an ordinary host (such as forge.dashhq.org on GitHub Pages) shows its commit, but no CID. That build is not the IPFS variant. To check it, rebuild that commit with `FORGE_BUILD_COMMIT=<commit> pnpm build` and the network it reads: every file you build should be served byte for byte (the Pages deploy also keeps the previous two builds' chunks, so it serves more files than you built). The commit's page on GitHub is linked from the footer.
+A build served from an ordinary host (such as forge.dashhq.org on GitHub Pages) shows its commit, but no CID. That build is not the IPFS variant. [`dg verify-app`](#check-a-deployed-copy-dg-verify-app) checks it file by file against the manifest its deploy published. To check it, rebuild that commit with `FORGE_BUILD_COMMIT=<commit> pnpm build` and the network it reads: every file you build should be served byte for byte (the Pages deploy also keeps the previous two builds' chunks, so it serves more files than you built). The commit's page on GitHub is linked from the footer.
 
 ---
 
@@ -114,6 +116,36 @@ sha256sum ipfs-build/forge-web.car                    # must equal the CAR's lis
 
 ---
 
+## Check a deployed copy: `dg verify-app`
+
+Every build of the web app lists its files with their SHA-256 in `forge-manifest.json`, at the site's root. `dg verify-app` fetches every listed file from a site and checks each one:
+
+```sh
+dg verify-app https://forge.dashhq.org
+```
+
+```
+Site:      https://forge.dashhq.org/
+Build:     commit 0f605099596192a525f99c6cbafab4e54b29cee4 (devnet-sakura, host build)
+Manifest:  attested by PastaPastaPasta/dash-forge's CI (`gh attestation verify --repo PastaPastaPasta/dash-forge` on the manifest checks the signature)
+Files:     174 of 174 match
+```
+
+The site could rewrite its own manifest, so `dg` trusts it only when it is published elsewhere:
+
+- **By default**, it asks GitHub for a build provenance attestation of the served manifest's SHA-256 from this repository's CI. The Pages deploy (`pages.yml`) attests each build's manifest, and every release attests `forge-web-<version>.manifest.json` through `SHA256SUMS`. To check the attestation's Sigstore signature yourself, download the manifest and run `gh attestation verify forge-manifest.json --repo PastaPastaPasta/dash-forge`.
+- **With `--manifest <file>`**, it checks against a manifest you got yourself. The strongest is a release's manifest from the Forge release on chain: `dg release download <owner>/dash-forge v<version> --asset forge-web-<version>.manifest.json --output manifest.json`, then `dg verify-app <url> --manifest manifest.json`.
+
+Any build this repository ever published passes, an older one included. To require the build you expect, add `--commit <sha>` (7 characters or more).
+
+It fails (exit 5, [`E504`](../errors.md#e504)) when the site has no manifest, when GitHub has no attestation for it, when it is not the `--commit` you named, or when any listed file can't be fetched, is missing or differs, and it names each one. It asks for each file as a browser does, so a host that changes pages only for browsers (an injected analytics script) fails the check. `--json` gives the counts and the lists. Set `GITHUB_TOKEN` to lift GitHub's anonymous rate limit. The nightly workflow runs it against forge.dashhq.org.
+
+**In the app.** When you unlock a private repository (or manage your encryption key in Settings), the app makes the same lookup for its own manifest. If GitHub has no attestation for it, a note says the copy isn't a published build. Unpublished code could read what you unlock. The note is a check for mistakes and unofficial copies, not a defence: a malicious build can leave it out. `dg verify-app` checks a site from outside.
+
+**What it checks.** The files this run was served, not what someone else gets: a host can serve different bytes to different visitors. Files the site serves beyond the manifest are not checked (the Pages deploy keeps the previous two builds' chunks for open tabs), but the pages and scripts the manifest lists load only each other.
+
+---
+
 ## What this proves, and what it does not
 
 **It proves** that the files in your browser are, byte for byte, what the tagged source builds into, if you loaded them through your own node and the CIDs match. Two parties vouch for the CID independently of your rebuild: GitHub Actions (Sigstore attestation) and the maintainer's identity on Platform (a signed release document).
@@ -142,7 +174,7 @@ cmp "forge-web-$v.car" ipfs-build/forge-web.car            # never record a buil
 cid=$(cat "forge-web-$v.cid")
 dg --devnet-name sakura release create <owner>/dash-forge --tag "v$v" --name "Dash Forge v$v" \
   --notes "Web app on IPFS: $cid (forge-web-$v.car; verify: docs/guides/verify-the-app.md)" \
-  --asset "forge-web-$v.car" --asset "forge-web-$v.cid" --storage <profile>
+  --asset "forge-web-$v.car" --asset "forge-web-$v.cid" --asset "forge-web-$v.manifest.json" --storage <profile>
 ipfs dag import "forge-web-$v.car"                          # optional: pin the app on your own node
 ```
 

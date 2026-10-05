@@ -14,6 +14,7 @@ import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useAuth } from '@/contexts/auth-context'
 import type { RepoAddress } from '@/hooks/use-query-param'
+import { BuildIntegrityNotice } from '@/components/build-integrity-notice'
 
 /**
  * A private repo seen by a non-member (`ux-dx-spec.md` §6.3): only what is public by design
@@ -45,6 +46,7 @@ export function PrivateRepoState({
         <Lock className="h-5 w-5 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <h2 className="text-prose font-mono">{repo.name || addr.name}</h2>
       </div>
+      {access === 'locked' || access === 'no-key' ? <BuildIntegrityNotice className="mb-3" /> : null}
       {access === 'signed-out' ? (
         <SignedOutNote />
       ) : access === 'locked' ? (

@@ -49,6 +49,8 @@ use serde::{Deserialize, Serialize};
 pub mod ci_rerun;
 pub mod codeowners;
 pub mod long_body;
+pub mod merge_check;
+pub mod mirror;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
@@ -2354,6 +2356,41 @@ mod tests {
         assert_eq!(got.expect("serialize"), v.expected, "vector `{ctx}`");
     }
 
+    /// `repo_name`: [`v2::is_valid_repo_name`] and [`v2::normalize_repo_name`].
+    fn run_repo_name_case(v: &Vector) {
+        let inp: RepoNameInput = input(v);
+        let got = serde_json::json!({
+            "valid": v2::is_valid_repo_name(&inp.name),
+            "normalized": v2::normalize_repo_name(&inp.name),
+        });
+        assert_eq!(got, v.expected, "vector `{}`", v.name);
+    }
+
+    /// `mirror_backlink` and `mirror_backlink_file`: the mirror back-link ([`super::mirror`]).
+    fn run_mirror_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct BacklinkInput {
+            file: String,
+            repo_id: String,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct BacklinkFileInput {
+            repo_ids: Vec<String>,
+        }
+        let ctx = &v.name;
+        let got = if v.case == "mirror_backlink" {
+            let inp: BacklinkInput = input(v);
+            serde_json::to_value(super::mirror::read_backlink(&inp.file, &inp.repo_id))
+                .expect("serialises")
+        } else {
+            let inp: BacklinkFileInput = input(v);
+            serde_json::json!({ "file": super::mirror::backlink_file(&inp.repo_ids) })
+        };
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+    }
+
     /// `profile_input` and `avatar_config`: the profile rules ([`super::profile`]).
     fn run_profile_case(v: &Vector) {
         #[derive(Deserialize, Serialize)]
@@ -2410,6 +2447,30 @@ mod tests {
         assert_eq!(got, v.expected, "vector `{ctx}`");
     }
 
+    fn run_approvals_case(v: &Vector) {
+        let inp: ApprovalsInput = input(v);
+        let oracle = v2::RoleOracle::new(inp.memberships);
+        let got = v2::count_approvals(
+            &inp.reviews,
+            &oracle,
+            &inp.head_oid,
+            &inp.dismissed,
+            &inp.pr_author,
+        );
+        assert_eq!(got, expected::<v2::Approvals>(v), "vector `{}`", v.name);
+    }
+
+    fn run_merge_content_case(v: &Vector) {
+        use super::merge_check;
+        let got = merge_check::merge_content(&input::<merge_check::MergeFacts>(v));
+        assert_eq!(
+            got,
+            expected::<merge_check::MergeContent>(v),
+            "vector `{}`",
+            v.name
+        );
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2426,18 +2487,7 @@ mod tests {
                 let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());
                 assert_eq!(got, expected::<Vec<v2::V2Pack>>(v), "vector `{ctx}`");
             }
-            "approvals" => {
-                let inp: ApprovalsInput = input(v);
-                let oracle = v2::RoleOracle::new(inp.memberships);
-                let got = v2::count_approvals(
-                    &inp.reviews,
-                    &oracle,
-                    &inp.head_oid,
-                    &inp.dismissed,
-                    &inp.pr_author,
-                );
-                assert_eq!(got, expected::<v2::Approvals>(v), "vector `{ctx}`");
-            }
+            "approvals" => run_approvals_case(v),
             "well_formed" => {
                 let inp: WellFormedInput = input(v);
                 let got = v2::is_well_formed(&inp.doc, inp.visibility);
@@ -2463,6 +2513,7 @@ mod tests {
                 );
                 assert_eq!(got, expected::<v2::MergeBase>(v), "vector `{ctx}`");
             }
+            "merge_content" => run_merge_content_case(v),
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);
                 let key: Option<[u8; 32]> = inp.ref_key.as_deref().map(|k| {
@@ -2475,15 +2526,9 @@ mod tests {
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "profile_input" | "avatar_config" => run_profile_case(v),
+            "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
             "pubkey_entry" | "commit_signature" => run_signature_case(v),
-            "repo_name" => {
-                let inp: RepoNameInput = input(v);
-                let got = serde_json::json!({
-                    "valid": v2::is_valid_repo_name(&inp.name),
-                    "normalized": v2::normalize_repo_name(&inp.name),
-                });
-                assert_eq!(got, v.expected, "vector `{ctx}`");
-            }
+            "repo_name" => run_repo_name_case(v),
             "role_oracle" => {
                 let inp: RoleOracleInput = input(v);
                 let oracle = v2::RoleOracle::new(inp.memberships);

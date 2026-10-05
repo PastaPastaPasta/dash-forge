@@ -22,6 +22,7 @@ import { HiddenRowMark, HiddenThreadsToggle, useHiddenThreads } from '@/componen
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { CheckCircle2, CircleDot, CircleSlash, MessageSquarePlus, Pin, X } from 'lucide-react'
+import { STATE_TEXT } from '@/lib/design/state'
 import { readCloseReasons } from '@/lib/repo/transitions'
 import { closedSkipped } from '@/lib/view/close-reason'
 import type { RepoHome } from '@/lib/view'
@@ -194,7 +195,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const lastPage = empty ? pastLastPage(query.page, data?.matching ?? null, ISSUE_PAGE_SIZE) : null
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <SearchBox id="issue-search" label="Search issues" search={search} placeholder="is:open label:bug author:@me" />
         <TriageNav addr={addr} />
@@ -339,11 +340,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
             {rows.map((issue) => (
               <li key={issue.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="issue-row" data-number={issue.number}>
                 {issue.state.open ? (
-                  <><CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden /><span className="sr-only">Open</span></>
+                  <><CircleDot className={`mt-0.5 h-4 w-4 shrink-0 ${STATE_TEXT.open}`} aria-hidden /><span className="sr-only">Open</span></>
                 ) : closedSkipped(reasons.data?.get(issue.id)) ? (
-                  <><CircleSlash className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden data-icon="closed-skipped" /><span className="sr-only">{reasons.data?.get(issue.id)?.reason === 'duplicate' ? 'Closed as a duplicate' : 'Closed as not planned'}</span></>
+                  <><CircleSlash className={`mt-0.5 h-4 w-4 shrink-0 ${STATE_TEXT.skipped}`} aria-hidden data-icon="closed-skipped" /><span className="sr-only">{reasons.data?.get(issue.id)?.reason === 'duplicate' ? 'Closed as a duplicate' : 'Closed as not planned'}</span></>
                 ) : (
-                  <><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden /><span className="sr-only">Closed</span></>
+                  <><CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${STATE_TEXT.done}`} aria-hidden /><span className="sr-only">Closed</span></>
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -579,7 +580,7 @@ function ComposeIssueDialog({
                 : labelDefs.error !== null
                   ? `The repository's labels could not be read, so this template's labels (${template.labels.join(', ')}) are not applied.`
                   : labelsToApply.length > 0
-                    ? `The labels ${labelsToApply.join(', ')} are applied with the issue: one more document each.`
+                    ? `The labels ${labelsToApply.join(', ')} are applied with the issue, each for a small extra fee.`
                     : `This template's labels (${template.labels.join(', ')}) are not defined in this repository, so none is applied.`
               : `This template suggests the labels ${template.labels.join(', ')}. Labels are applied after the issue is opened, by ${whoCan('canLabel', 'one')}.`}
           </p>

@@ -42,6 +42,7 @@ import {
   previewCredits,
   queryAllDocuments,
   queryDocumentsWithProof,
+  retryOnStaleContract,
   sumDocumentsGrouped,
   type DeleteResult,
   type PlainDocument,
@@ -846,16 +847,18 @@ async function findOwnIndexOnly(
   targetId: string,
 ): Promise<unknown | null> {
   const field = targetField(type)
-  const rows = await (sdk as unknown as { documents: RawDocumentsFacade }).documents.query({
-    dataContractId: forge.community,
-    documentTypeName: type,
-    where: [
-      ['$ownerId', '==', ownerId],
-      [field, '==', targetId],
-    ],
-    orderBy: [['$ownerId', 'asc']],
-    limit: 1,
-  })
+  const rows = await retryOnStaleContract(forge.community, () =>
+    (sdk as unknown as { documents: RawDocumentsFacade }).documents.query({
+      dataContractId: forge.community,
+      documentTypeName: type,
+      where: [
+        ['$ownerId', '==', ownerId],
+        [field, '==', targetId],
+      ],
+      orderBy: [['$ownerId', 'asc']],
+      limit: 1,
+    }),
+  )
   for (const doc of rows.values()) if (doc) return doc
   return null
 }
@@ -959,7 +962,7 @@ export function watchRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: strin
  */
 export function followRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, forge: ForgeIds | null, target: string): Relation {
   const f = (): ForgeIds => {
-    if (forge === null) throw new Error('Dash Forge is not deployed on this network')
+    if (forge === null) throw new Error("Dash Forge isn't available on this network yet")
     return forge
   }
   return {
@@ -1047,7 +1050,7 @@ export class PrivateMembershipError extends Error {
  */
 export class ConsentMissingError extends Error {
   constructor(readonly memberId: string) {
-    super("they haven't accepted the invitation yet: send them this repo's invite link (Settings → Collaborators) to accept, then add them")
+    super("they haven't accepted the invitation yet: send them this repo's invite link (Settings → Members) to accept, then add them")
     this.name = 'ConsentMissingError'
   }
 }
@@ -1469,7 +1472,7 @@ export async function createRepo(
       if (repoId === null) throw e
     }
   })
-  if (repoId === null) throw new Error('the repo document did not land; try again')
+  if (repoId === null) throw new Error("the repo wasn't created; try again")
   journal.repoId = repoId
   await save()
   const R = decodeIdentifier(repoId)

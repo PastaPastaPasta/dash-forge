@@ -19,6 +19,7 @@ import { verdictSummary, type PullApprovals, type VerdictSummary } from '@/lib/v
 import type { ProvedVerdicts } from '@/lib/repo/verdicts'
 import { approverPhrase, type ReviewerRow } from '@/lib/view/review-fold'
 import { Author } from '@/components/author'
+import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
 import { cn } from '@/lib/utils'
 
@@ -61,9 +62,9 @@ export function Approvals({ approvals, headOid, proved }: { approvals: PullAppro
           ))}
         </ul>
       ) : null}
-      <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-        Counted by the client rule every Forge client applies: reviews on this head by current maintainers and writers, newest
-        verdict per reviewer. Nothing at consensus requires them.
+      <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-600 dark:text-anvil-400">
+        <span>Counts each maintainer&apos;s and writer&apos;s latest review of this commit.</span>
+        <EnforcedBy by="apps" />
       </p>
     </section>
   )
@@ -94,8 +95,8 @@ export function VerdictLine({ approvals, proved, headOid }: { approvals: PullApp
         </span>
         {line.detail !== null ? <span className="text-anvil-600 dark:text-anvil-300">{line.detail}</span> : null}
         {line.proved ? (
-          <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" title="Consensus proves these reviewers were members when they reviewed" data-testid="merge-verdicts-proved">
-            <ShieldCheck className="h-3.5 w-3.5" aria-hidden /> proved on chain
+          <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" title="Verified members at the time of review" data-testid="merge-verdicts-proved">
+            <ShieldCheck className="h-3.5 w-3.5" aria-hidden /> verified
           </span>
         ) : null}
       </p>

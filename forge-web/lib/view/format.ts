@@ -44,6 +44,15 @@ export function dashToUsd(dash: number, network: Network): string | null {
   return `$${usd.toFixed(2)}`
 }
 
+/**
+ * A mainnet price in whole cents at the same indicative rate, for copy that quotes what a write
+ * would cost there (the landing page): `4¢`. Never under 1¢.
+ */
+export function mainnetCents(dash: number): string {
+  // toFixed first: 0.0055 DASH is 16.4999… cents in binary floating point, and reads as 17¢.
+  return `${Math.max(1, Math.round(Number((dash * USD_PER_DASH * 100).toFixed(6))))}¢`
+}
+
 /** What sits beside a balance: its USD estimate on mainnet, else that test DASH has no value. */
 export function dashValueNote(dash: number, network: Network): string {
   const usd = dashToUsd(dash, network)

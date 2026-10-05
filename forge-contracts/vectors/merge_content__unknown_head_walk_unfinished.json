@@ -1,0 +1,27 @@
+{
+  "name": "unknown_head_walk_unfinished",
+  "description": "The ancestry walk did not finish and the changes differ: unknown, never missing.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "3333333333333333333333333333333333333333"
+    ],
+    "headInMerge": null,
+    "tipBeforeInMerge": true,
+    "mergeChange": {
+      "CHANGELOG.md": "c4"
+    },
+    "prChange": {
+      "src/a.rs": "a1"
+    },
+    "baseChange": {}
+  },
+  "expected": {
+    "verdict": "unknown",
+    "combined": []
+  }
+}
