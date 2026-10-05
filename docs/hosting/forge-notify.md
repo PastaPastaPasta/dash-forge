@@ -272,7 +272,7 @@ The web app shows **Settings → Notifications → Email and push** only when it
 NEXT_PUBLIC_NOTIFY_URL=https://notify.forge.dashhq.org pnpm build
 ```
 
-For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads it from the repository variable `PAGES_NOTIFY_URL` (Settings → Secrets and variables → Actions → Variables). Set it, then re-run **Deploy forge-web to Pages** or push to master. Delete it and deploy again to hide the section. A value that is not an `https://` URL is ignored.
+For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads it from the repository variable `PAGES_NOTIFY_URL` (Settings → Secrets and variables → Actions → Variables). Set it, then deploy: **Actions → Deploy forge-web to Pages → Run workflow** on master (or push to master). Delete it and deploy again to hide the section. A value that is not an `https://` URL (other than a loopback `http://` test service) is ignored.
 
 Without the variable, the section and its code stay out of the page. The web app signs requests for the host in that URL, so the service's operator name must be that host (the default when `FORGE_NOTIFY_OPERATOR` is unset). The service must allow the web app's origin (`FORGE_NOTIFY_ALLOWED_ORIGINS`, which defaults to `FORGE_NOTIFY_WEB_URL`'s origin). A build served from IPFS gateways has a different origin on each gateway. List the ones you support, or accept that those builds can't reach the service. Every other part of Forge still works.
 
