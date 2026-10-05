@@ -13,11 +13,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { NETWORKS } from '../constants'
-import { idbEntries, resetMemoryStores } from '../idb'
+import { idbEntries, idbGet, idbPut, resetMemoryStores } from '../idb'
 import { AuthController } from './controller'
-import { ENCRYPTION_KEY_ELSEWHERE, ENCRYPTION_KEY_OTHER_APPROVAL, adoptWalletEncryptionKey, encryptionKeyState, encryptionOps } from './encryption-key'
+import { ENCRYPTION_KEY_ELSEWHERE, ENCRYPTION_KEY_OTHER_APPROVAL, adoptWalletEncryptionKey, encryptionKeyState, encryptionOps, type EncryptionOps, type UnwrapInput } from './encryption-key'
+import { WrapError } from '../private'
 import type { WalletKey } from './key-registration'
-import { lockVault, releaseUnlocked, storeEncryptionKey, storeInVault, storedEncryptionKeyId, withEncryptionKey } from './vault'
+import { lockVault, releaseUnlocked, storeEncryptionKey, storeInVault, storedEncryptionKeyId, storedEncryptionKeyIds, withEncryptionKey } from './vault'
 import { encryptionKeyFromLogin } from './wallet-protocol'
 import { decodeWif, encodeWif } from './wif'
 
@@ -45,10 +46,18 @@ vi.mock('@dashevo/evo-sdk', () => ({
   },
   Document: { fromJSON: (j: unknown) => j },
 }))
-vi.mock('../private', async (orig) => ({
-  ...(await orig<typeof import('../private')>()),
-  unwrapKey: async (_facade: unknown, p: { readerPrivateKey: { hex: string }; repoId: Uint8Array }) => ({ reader: p.readerPrivateKey.hex, repo: bytesToHex(p.repoId) }),
-}))
+// A wrap opens only with the private key it was sealed to (`opensWith`, when the test says).
+vi.mock('../private', async (orig) => {
+  const real = await orig<typeof import('../private')>()
+  return {
+    ...real,
+    unwrapKey: async (_facade: unknown, p: { readerPrivateKey: { hex: string }; repoId: Uint8Array; document: Record<string, unknown> }) => {
+      const want = p.document['opensWith']
+      if (typeof want === 'string' && want !== p.readerPrivateKey.hex) throw new real.WrapError('wrapUnreadable')
+      return { reader: p.readerPrivateKey.hex, repo: bytesToHex(p.repoId) }
+    },
+  }
+})
 
 interface FakeKey {
   keyId: number
@@ -187,7 +196,7 @@ describe('wallet login and the encryption key (D27)', () => {
     expect(await withEncryptionKey(NET, ID, async (_k, s) => bytesToHex(s))).toBe(bytesToHex(WALLET_ENC))
   }, 30_000)
 
-  it('over a locked vault whose copy cannot be carried over, the wallet key replaces it without a "not carried over" notice', async () => {
+  it('over a locked vault whose copy cannot be carried over, the wallet key stores it again without a "not carried over" notice', async () => {
     // An earlier sign-in with a limited key from the identity file, its encryption key beside it.
     await storeInVault(NET, { identityId: ID, keyId: 9, wif: encodeWif(new Uint8Array(32).fill(9), NET) }, PASSKEY)
     await storeEncryptionKey(NET, ID, 6, new Uint8Array(WALLET_ENC))
@@ -233,12 +242,13 @@ describe('wallet login and the encryption key (D27)', () => {
     expect(c.getState().session?.identityId).toBe(ID)
   }, 30_000)
 
-  it("the wallet's key is on the identity but a newer key from dg is the one writers use: not stored", async () => {
+  it("the wallet's key is on the identity but a newer key from dg is the one writers use: kept, and the notice says where the newer one is", async () => {
     keys = [authKey(5, AUTH_WIF), encKey(6, WALLET_ENC), encKey(7, DG_ENC)]
     const c = make()
     await login(c)
     expect(c.getState().notice).toBe(ENCRYPTION_KEY_ELSEWHERE)
-    expect(await storedEncryptionKeyId(NET, ID)).toBeNull()
+    // Wraps made to key 6 still open here; new ones go to key 7.
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([6])
   }, 30_000)
 
   it('a disabled wallet key, or one bound to another contract, is not stored', async () => {
@@ -278,12 +288,13 @@ describe('wallet login and the encryption key (D27)', () => {
     } as unknown as EvoSDK
     const mine = new Uint8Array(WALLET_ENC)
     const outcome = await adoptWalletEncryptionKey(lagging, NET, ID, FORGE.core, [mine], { attempts: 5, intervalMs: 5 })
-    expect(outcome).toEqual({ kind: 'stored', keyId: 6 })
+    expect(outcome).toEqual({ stored: [6], missing: null })
     expect(reads).toBe(3)
     expect(bytesToHex(mine)).toBe(bytesToHex(WALLET_ENC))
     // Without retries (a returning login), one read decides.
     reads = 0
-    expect(await adoptWalletEncryptionKey(lagging, NET, ID, FORGE.core, [mine])).toEqual({ kind: 'none' })
+    const behindOnly = { ...lagging, identities: { ...(lagging as unknown as { identities: object }).identities, fetch: async () => ({ balance: 1n, publicKeys: (++reads, behind) }) } } as unknown as EvoSDK
+    expect(await adoptWalletEncryptionKey(behindOnly, NET, ID, FORGE.core, [mine])).toEqual({ stored: [], missing: null })
     expect(reads).toBe(1)
   }, 30_000)
 
@@ -297,28 +308,90 @@ describe('wallet login and the encryption key (D27)', () => {
     expect(await withEncryptionKey(NET, ID, async (k, s) => [k, bytesToHex(s)])).toEqual([6, bytesToHex(WALLET_ENC)])
   }, 30_000)
 
-  it("a grant's first approval registers the identity's new usable key: the grant keeps it", async () => {
+  /** The wallet's first approval for forge-collab: another auth key (7), and another encryption key (8). */
+  const COLLAB_WIF = encodeWif(new Uint8Array(32).fill(7), NET)
+  const COLLAB_ENC = encryptionKeyFromLogin(new Uint8Array(32).fill(0x22), ID)
+  const collabGrant: WalletKey = { keyId: 7, wif: COLLAB_WIF, scope: { core: false, collab: true, community: false, unbounded: false }, limits: null }
+  async function twoApprovals(): Promise<AuthController> {
     const c = make()
     await login(c, true)
-    // The wallet's first approval for forge-collab: another auth key, and another encryption key.
-    const COLLAB_WIF = encodeWif(new Uint8Array(32).fill(7), NET)
-    const collabEnc = encryptionKeyFromLogin(new Uint8Array(32).fill(0x22), ID)
-    keys = [...keys, authKey(7, COLLAB_WIF, FORGE.collab), encKey(8, collabEnc)]
-    const grant: WalletKey = { keyId: 7, wif: COLLAB_WIF, scope: { core: false, collab: true, community: false, unbounded: false }, limits: null }
-    await c.addWalletGrant(ID, grant, FORGE.collab, { encryptionKeys: [new Uint8Array(collabEnc)], justRegistered: true })
+    keys = [...keys, authKey(7, COLLAB_WIF, FORGE.collab), encKey(8, COLLAB_ENC)]
+    await c.addWalletGrant(ID, collabGrant, FORGE.collab, { encryptionKeys: [new Uint8Array(COLLAB_ENC)], justRegistered: true })
+    return c
+  }
+  /** A repo's wrap to key `keyId` of ours, which opens only with `secret`. */
+  const wrapTo = (keyId: number | null, secret: Uint8Array): UnwrapInput => ({
+    document: { ...(keyId === null ? {} : { recipientKeyId: keyId, senderKeyId: 4 }), opensWith: bytesToHex(secret) },
+    counterpartyKey: {} as never,
+    repoId: new Uint8Array(32).fill(keyId ?? 0),
+    epoch: 0,
+  })
+  const readerOf = async (ops: EncryptionOps, w: UnwrapInput): Promise<string> => ((await ops.unwrap(w)) as unknown as { reader: string }).reader
+
+  it('two approvals: the vault holds both keys, and a repo wrapped to either opens', async () => {
+    const c = await twoApprovals()
     expect(c.getState().notice ?? null).toBeNull()
-    expect(await withEncryptionKey(NET, ID, async (k, s) => [k, bytesToHex(s)])).toEqual([8, bytesToHex(collabEnc)])
-    // A later forge-core login elsewhere: its key is no longer the identity's, and the notice
-    // points to the approval that brings it (not to an import no file could make).
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([8, 6])
+    const ops = (await encryptionOps(sdk, NET, ID, FORGE.collab))!
+    // Writers send from the newest; readers pick the key the wrap names.
+    expect(ops.keyId).toBe(8)
+    expect(ops.keyIds).toEqual([8, 6])
+    expect(await readerOf(ops, wrapTo(6, WALLET_ENC))).toBe(bytesToHex(WALLET_ENC))
+    expect(await readerOf(ops, wrapTo(8, COLLAB_ENC))).toBe(bytesToHex(COLLAB_ENC))
+    // A wrap naming no key id: each held key is tried in turn.
+    expect(await readerOf(ops, wrapTo(null, WALLET_ENC))).toBe(bytesToHex(WALLET_ENC))
+    // A wrap to a key this browser does not hold does not open.
+    await expect(ops.unwrap(wrapTo(3, WALLET_ENC))).rejects.toBeInstanceOf(WrapError)
+    // Both stay held across a reload: one unlock opens the set.
+    releaseUnlocked()
+    gestures = 0
+    const tab = make()
+    await tab.unlock(ID, 'passkey')
+    expect(gestures).toBe(1)
+    const again = (await encryptionOps(sdk, NET, ID, FORGE.collab))!
+    expect(await readerOf(again, wrapTo(6, WALLET_ENC))).toBe(bytesToHex(WALLET_ENC))
+    expect(await readerOf(again, wrapTo(8, COLLAB_ENC))).toBe(bytesToHex(COLLAB_ENC))
+  }, 30_000)
+
+  it('an imported key is added too, never replacing one already held', async () => {
+    const c = await twoApprovals()
+    keys = [...keys, encKey(9, DG_ENC)]
+    await storeEncryptionKey(NET, ID, 9, new Uint8Array(DG_ENC))
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([9, 8, 6])
+    // A returning login stores its key again: still one entry per key id.
+    await login(c)
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([9, 8, 6])
+  }, 30_000)
+
+  it('a vault written with a single key entry reads as a set of one, and grows from it', async () => {
+    const c = make()
+    await login(c, true)
+    // What the vault held before key sets: the one sealed entry itself, not a list.
+    const at = (await idbEntries('vault')).map(([k]) => String(k)).find((k) => k.startsWith('vault-enc:'))!
+    const list = (await idbGet<unknown[]>('vault', at))!
+    expect(list).toHaveLength(1)
+    await idbPut('vault', at, list[0])
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([6])
+    expect(await withEncryptionKey(NET, ID, async (k, s) => [k, bytesToHex(s)])).toEqual([6, bytesToHex(WALLET_ENC)])
+    keys = [...keys, authKey(7, COLLAB_WIF, FORGE.collab), encKey(8, COLLAB_ENC)]
+    await c.addWalletGrant(ID, collabGrant, FORGE.collab, { encryptionKeys: [new Uint8Array(COLLAB_ENC)] })
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([8, 6])
+    const ops = (await encryptionOps(sdk, NET, ID, FORGE.collab))!
+    expect(await readerOf(ops, wrapTo(6, WALLET_ENC))).toBe(bytesToHex(WALLET_ENC))
+  }, 30_000)
+
+  it('a login whose key another approval superseded: no notice at sign-in (the repo that needs it says so)', async () => {
+    await twoApprovals()
     resetMemoryStores()
     lockVault()
     const other = make()
     await login(other)
-    expect(other.getState().notice).toBe(ENCRYPTION_KEY_OTHER_APPROVAL)
-    expect(await storedEncryptionKeyId(NET, ID)).toBeNull()
+    expect(other.getState().notice ?? null).toBeNull()
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([6])
+    expect(ENCRYPTION_KEY_OTHER_APPROVAL).toMatch(/another approval in your wallet/)
   }, 30_000)
 
-  it('replacing a different key the vault could not carry over still says it was dropped', async () => {
+  it('a different key the vault could not carry over is still reported as dropped', async () => {
     const OLD = new Uint8Array(32).fill(0x44)
     keys = [encKey(4, OLD), authKey(5, AUTH_WIF), encKey(6, WALLET_ENC)]
     await storeInVault(NET, { identityId: ID, keyId: 9, wif: encodeWif(new Uint8Array(32).fill(9), NET) }, PASSKEY)
@@ -327,6 +400,6 @@ describe('wallet login and the encryption key (D27)', () => {
     const c = make()
     await login(c)
     expect(c.getState().notice).toMatch(/not carried over/)
-    expect(await withEncryptionKey(NET, ID, async (k) => k)).toBe(6)
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([6])
   }, 30_000)
 })

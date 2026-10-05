@@ -75,6 +75,7 @@ const encKey = (keyId = 4): EncKeyLike => ({ keyId, purposeNumber: 1, keyTypeNum
 let identityKeys: EncKeyLike[] = [encKey()]
 const ops: EncryptionOps = {
   keyId: 4,
+  keyIds: [4],
   unwrap: async (p) => (await ops.unwrapRaw(p)).keys,
   unwrapRaw: async (p) => {
     const bytes = p.document['wrapped']

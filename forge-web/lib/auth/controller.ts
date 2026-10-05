@@ -46,8 +46,8 @@ import { PLATFORM_READ_MS, withPlatformRead } from './connect'
 import { withTimeout } from '../timeout'
 import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
-import { ENCRYPTION_KEY_ELSEWHERE, ENCRYPTION_KEY_OTHER_APPROVAL, adoptWalletEncryptionKey, type WalletEncryptionOutcome } from './encryption-key'
-import { storedEncryptionKeyId } from './vault'
+import { ENCRYPTION_KEY_ELSEWHERE, adoptWalletEncryptionKey, type WalletEncryptionOutcome } from './encryption-key'
+import { storedEncryptionKeyIds } from './vault'
 import { clearDrafts } from '../view/draft-text'
 import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
@@ -1019,14 +1019,14 @@ export class AuthController {
     const kept = [...held, ...(given ? [given] : [])].filter((h, i, all) => !fresh.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
     const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
     const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
-    const heldBefore = await storedEncryptionKeyId(this.network, identityId)
+    const heldBefore = await storedEncryptionKeyIds(this.network, identityId)
     const stored = await storeInVault(this.network, secret, protection, pending !== null ? { dropStagedKeyId: pending.keyId } : {})
     const encryption = await this.keepWalletEncryptionKey(identityId, forge, options)
-    // A key the vault could not carry over is not reported when the wallet's own key replaced
-    // that same key, or when the notice already says where the identity's key is.
-    const replaced = encryption.outcome?.kind === 'stored' && encryption.outcome.keyId === heldBefore
+    // Keys the vault could not carry over are not reported when the wallet's own keys are every
+    // one of them again, or when the notice already says where the identity's key is.
+    const restored = heldBefore.every((id) => encryption.outcome?.stored.includes(id) === true)
     this.noteDropped(
-      replaced || encryption.outcome?.kind === 'elsewhere' ? { ...stored, encryptionKeyDropped: false } : stored,
+      restored || encryption.notice === ENCRYPTION_KEY_ELSEWHERE ? { ...stored, encryptionKeyDropped: false } : stored,
       'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
       encryption.notice,
     )
@@ -1038,10 +1038,11 @@ export class AuthController {
   }
 
   /**
-   * Seal the encryption key a wallet login stands for beside the wallet key just stored, when it
-   * is the identity's (DESIGN D27, {@link adoptWalletEncryptionKey}). Signing in never fails on
-   * it: `notice` says why private repos were not enabled (another key is the identity's, or a read
-   * failed), and nothing is stored then.
+   * Add the encryption keys a wallet answer stands for to the vault's keys, each that is a usable
+   * ENCRYPTION key of the identity (DESIGN D27, {@link adoptWalletEncryptionKey}). Signing in
+   * never fails on it. `notice`: the identity's usable key is held elsewhere (a key from `dg`,
+   * not one of the wallet's approvals), or a read failed. A usable key that another approval of
+   * the wallet registered is said on the repo that needs it, not here.
    */
   private async keepWalletEncryptionKey(
     identityId: string,
@@ -1053,8 +1054,7 @@ export class AuthController {
     try {
       const sdk = await this.getSdk()
       const outcome = await adoptWalletEncryptionKey(sdk, this.network, identityId, forge.core, options.encryptionKeys, options.justRegistered === true ? { attempts: 5 } : {})
-      const notice = outcome.kind === 'elsewhere' ? ENCRYPTION_KEY_ELSEWHERE : outcome.kind === 'other-approval' ? ENCRYPTION_KEY_OTHER_APPROVAL : null
-      return { outcome, notice }
+      return { outcome, notice: outcome.missing !== null && !outcome.missing.otherApproval ? ENCRYPTION_KEY_ELSEWHERE : null }
     } catch (e) {
       return { outcome: null, notice: `Private repos could not be enabled: ${errorMessage(e)}` }
     }

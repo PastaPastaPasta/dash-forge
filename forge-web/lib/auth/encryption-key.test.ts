@@ -26,6 +26,8 @@ import {
   storeEncryptionKey,
   storeInVault,
   storedEncryptionKeyId,
+  storedEncryptionKeyIds,
+  EncryptionKeyNotHeldError,
   unlockWithPassphrase,
   withEncryptionKey,
 } from './vault'
@@ -84,6 +86,32 @@ describe('the vault encryption-key slot', () => {
     await forgetVault('devnet', ID)
     expect(await storedEncryptionKeyId('devnet', ID)).toBeNull()
   }, 60_000)
+
+  it('keeps every key by id (a second never replaces the first), and carries all of them across a renewal', async () => {
+    const ENC2 = new Uint8Array(32).fill(0x43)
+    await storeInVault('devnet', SECRET, { passphrase: PASS })
+    await storeEncryptionKey('devnet', ID, 4, new Uint8Array(ENC))
+    await storeEncryptionKey('devnet', ID, 7, new Uint8Array(ENC2))
+    expect(await storedEncryptionKeyIds('devnet', ID)).toEqual([7, 4])
+    expect(await storedEncryptionKeyId('devnet', ID)).toBe(7)
+    await storeInVault('devnet', { ...SECRET, keyId: 6 }, { passphrase: 'another passphrase!' })
+    expect(await withEncryptionKey('devnet', ID, async (k, s) => [k, bytesToHex(s)], 4)).toEqual([4, bytesToHex(ENC)])
+    expect(await withEncryptionKey('devnet', ID, async (k, s) => [k, bytesToHex(s)], 7)).toEqual([7, bytesToHex(ENC2)])
+    // No default other than the newest; a key it does not hold is named as such.
+    expect(await withEncryptionKey('devnet', ID, async (k) => k)).toBe(7)
+    await expect(withEncryptionKey('devnet', ID, async (k) => k, 5)).rejects.toBeInstanceOf(EncryptionKeyNotHeldError)
+    // Removing removes them all.
+    await removeEncryptionKey('devnet', ID)
+    expect(await storedEncryptionKeyIds('devnet', ID)).toEqual([])
+  }, 60_000)
+
+  it('a tab-only session keeps several keys too', async () => {
+    holdForSession('devnet', SECRET)
+    await storeEncryptionKey('devnet', ID, 4, new Uint8Array(ENC))
+    await storeEncryptionKey('devnet', ID, 7, new Uint8Array(32).fill(0x43))
+    expect(await storedEncryptionKeyIds('devnet', ID)).toEqual([7, 4])
+    expect(await withEncryptionKey('devnet', ID, async (_k, s) => bytesToHex(s), 4)).toBe(bytesToHex(ENC))
+  })
 
   it('can be removed on its own', async () => {
     await storeInVault('devnet', SECRET, { passphrase: PASS })

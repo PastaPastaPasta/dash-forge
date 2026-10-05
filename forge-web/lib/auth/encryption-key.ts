@@ -22,13 +22,13 @@ import * as secp from '@noble/secp256k1'
 import type { DataContract, Document, EvoSDK, IdentityPublicKey, PrivateKey as WasmPrivateKey } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { bytesToHex, unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type WrapFacade } from '../private'
+import { WrapError, bytesToHex, unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type WrapFacade } from '../private'
 import { authSdk, sleep } from '../sdk/facade'
 import { timed } from '../step-timing'
 import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, invalidMnemonicMessage, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
 import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate, shortId } from './limited-key'
-import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockScope, unlockedSecret, withEncryptionKey } from './vault'
+import { EncryptionKeyNotHeldError, VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, storedEncryptionKeyIds, unlockScope, unlockedSecret, withEncryptionKey } from './vault'
 
 /** The step-timing flow of enabling private repos at sign-in (L-20). */
 export const PRIVATE_REPOS_FLOW = 'enable-private-repos'
@@ -117,15 +117,16 @@ export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identity
 }
 
 /**
- * A wallet login's encryption key is not the one the identity uses (it registered another from
- * `dg`, say), so it was not kept. Shown at sign-in.
+ * The identity's usable encryption key (the one writers wrap to) is not one this browser holds,
+ * and no approval of the wallet registered it (a key from `dg`, say). Shown at sign-in.
  */
 export const ENCRYPTION_KEY_ELSEWHERE = 'Your encryption key is held elsewhere. Import it under Settings → Private repos.'
 
 /**
- * The identity's encryption key came with another of the wallet's approvals: each first approval
- * for another Forge contract registers its own (QR #2 adds exactly an auth and an encryption
- * key), and the latest is the one writers use. Approving that contract here again brings it.
+ * A repo was wrapped only to keys this browser does not hold, and the one it was wrapped to last
+ * came with another of the wallet's approvals: each first approval for another Forge contract
+ * registers its own (QR #2 adds exactly an auth and an encryption key). Approving that contract
+ * here again brings it. Shown on the repo.
  */
 export const ENCRYPTION_KEY_OTHER_APPROVAL =
   "Your encryption key came with another approval in your wallet. Approve it again under Settings → This browser's key to read private repos."
@@ -134,31 +135,35 @@ export const ENCRYPTION_KEY_OTHER_APPROVAL =
 const PURPOSE_AUTHENTICATION = 0
 const KEY_TYPE_ECDSA_HASH160 = 2
 
-/** What became of the encryption key a wallet login stands for ({@link adoptWalletEncryptionKey}). */
-export type WalletEncryptionOutcome =
-  /** It is the identity's usable encryption key, now sealed in the vault. */
-  | { readonly kind: 'stored'; readonly keyId: number }
-  /** It is not, and the vault already holds the one the identity uses. */
-  | { readonly kind: 'held'; readonly keyId: number }
-  /** It is not, and this browser does not hold the one the identity uses ({@link ENCRYPTION_KEY_ELSEWHERE}). */
-  | { readonly kind: 'elsewhere'; readonly keyId: number }
+/**
+ * Whether encryption key `keyId` of an identity is one a wallet registered: a wallet adds its
+ * encryption key right after its HASH160 auth key, in one update.
+ */
+export function walletRegistered(keys: readonly Pick<EncKeyLike, 'keyId' | 'purposeNumber' | 'keyTypeNumber'>[], keyId: number): boolean {
+  return keys.some((k) => k.keyId === keyId - 1 && k.purposeNumber === PURPOSE_AUTHENTICATION && k.keyTypeNumber === KEY_TYPE_ECDSA_HASH160)
+}
+
+/** What became of the encryption keys a wallet answer stands for ({@link adoptWalletEncryptionKey}). */
+export interface WalletEncryptionOutcome {
+  /** The key ids of the wallet's keys now sealed in the vault (each a usable ENCRYPTION key of the identity). */
+  readonly stored: readonly number[]
   /**
-   * It is not: the identity's is the one another approval of the wallet registered, right after
-   * its auth key ({@link ENCRYPTION_KEY_OTHER_APPROVAL}). Its grant for that contract brings it.
+   * The identity's usable key (the one writers wrap to) when this browser holds none by that id
+   * (null: held, or the identity has none). `otherApproval`: an approval of the wallet registered it.
    */
-  | { readonly kind: 'other-approval'; readonly keyId: number }
-  /** The identity has no usable encryption key. */
-  | { readonly kind: 'none' }
+  readonly missing: { readonly keyId: number; readonly otherApproval: boolean } | null
+}
 
 /**
- * Keep the encryption key a wallet login stands for (DESIGN D27): the wallet derives
+ * Keep the encryption keys a wallet answer stands for (DESIGN D27): the wallet derives
  * `HKDF(loginKey, identityId, "encryption")` for each login key and registers it beside the auth
- * key at the first login, and a returning login derives the same one. `candidates` are those
- * private keys. One is sealed into the vault (beside the wallet key, under the same protection)
- * only when its public key is the identity's usable encryption key, the one writers wrap to
- * ({@link usableEncryptionKey}). Anything else would be a key no wrap is sealed to, so nothing is
- * stored. `attempts` re-reads the identity while none of the candidates is on it yet (a node a
- * block behind the wallet's registration). Copies are taken: the caller still wipes `candidates`.
+ * key the first time it approves a contract; a returning login derives the same one. `candidates`
+ * are those private keys. Each whose public key is an enabled, usable ENCRYPTION key of the
+ * identity is ADDED to the vault's keys (beside the wallet key, under the same protection); no key
+ * already there is replaced, so wraps made to an older key still open. Anything else is a key no
+ * wrap could be sealed to, and is not stored. `attempts` re-reads the identity while none of the
+ * candidates is on it yet (a node a block behind the wallet's registration). Copies are taken:
+ * the caller still wipes `candidates`.
  */
 export async function adoptWalletEncryptionKey(
   sdk: EvoSDK,
@@ -173,22 +178,21 @@ export async function adoptWalletEncryptionKey(
     const pubs = secrets.map((s) => bytesToHex(secp.getPublicKey(s, true)))
     for (let attempt = 1; ; attempt++) {
       const keys = await timed(PRIVATE_REPOS_FLOW, 'read identity keys (wallet)', () => requireIdentityKeys(sdk, identityId))
-      const usable = usableEncryptionKey(keys, coreId)
-      const at = usable === null ? -1 : pubs.indexOf(usable.data.toLowerCase())
-      if (usable !== null && at >= 0) {
-        await timed(PRIVATE_REPOS_FLOW, 'seal into the vault', () => storeEncryptionKey(network, identityId, usable.keyId, secrets[at] as Uint8Array))
-        return { kind: 'stored', keyId: usable.keyId }
-      }
       const onChain = keys.some((k) => k.purposeNumber === PURPOSE_ENCRYPTION && pubs.includes(k.data.toLowerCase()))
       if (!onChain && attempt < (options.attempts ?? 1)) {
         await sleep(options.intervalMs ?? 1500)
         continue
       }
-      if (usable === null) return { kind: 'none' }
-      if ((await storedEncryptionKeyId(network, identityId)) === usable.keyId) return { kind: 'held', keyId: usable.keyId }
-      // A wallet registers its encryption key right after the auth key, in one update.
-      const companion = keys.some((k) => k.keyId === usable.keyId - 1 && k.purposeNumber === PURPOSE_AUTHENTICATION && k.keyTypeNumber === KEY_TYPE_ECDSA_HASH160)
-      return { kind: companion ? 'other-approval' : 'elsewhere', keyId: usable.keyId }
+      const stored: number[] = []
+      for (const k of keys) {
+        const at = pubs.indexOf(k.data.toLowerCase())
+        if (at < 0 || !isUsableEncryptionKey(k, coreId)) continue
+        await timed(PRIVATE_REPOS_FLOW, 'seal into the vault', () => storeEncryptionKey(network, identityId, k.keyId, secrets[at] as Uint8Array))
+        stored.push(k.keyId)
+      }
+      const usable = usableEncryptionKey(keys, coreId)
+      const held = usable === null || (await storedEncryptionKeyIds(network, identityId)).includes(usable.keyId)
+      return { stored, missing: held ? null : { keyId: usable.keyId, otherApproval: walletRegistered(keys, usable.keyId) } }
     }
   } finally {
     for (const s of secrets) s.fill(0)
@@ -407,12 +411,16 @@ export async function registerEncryptionKey(
 
 /** What a private-repo read or write may do with the vault's encryption key. */
 export interface EncryptionOps {
-  /** The key id of the stored encryption key on this identity. */
+  /** The highest key id this browser holds for the identity: the one its own wraps are sent from. */
   readonly keyId: number
+  /** Every key id this browser holds for the identity, highest first ({@link keyId} among them). */
+  readonly keyIds: readonly number[]
   /**
    * Decrypt a `repoKey` (the reader's own, or one it sent) and check its version and `KCV_e`.
    * `counterpartyKey` is the other side's ENCRYPTION public key: the sender's for a wrap to
-   * this identity (its own key for a self-wrap), the recipient's for a wrap it sent.
+   * this identity (its own key for a self-wrap), the recipient's for a wrap it sent. The private
+   * key is the held one the document names (`recipientKeyId`, else `senderKeyId`); a document
+   * naming neither is tried with each held key in turn.
    */
   unwrap(p: UnwrapInput): Promise<EpochKeys>
   /** {@link unwrap}, also returning the raw epoch key (wipe it after use). */
@@ -422,6 +430,23 @@ export interface EncryptionOps {
    * `raw` (subkeys `keys`) to `recipientKey`, sent from this identity's stored key `senderKey`.
    */
   wrap(p: { keys: EpochKeys; raw: Uint8Array; senderKey: IdentityPublicKey; recipientKey: IdentityPublicKey }): Promise<Record<string, unknown>>
+}
+
+/** A key id a `repoKey` document names (`recipientKeyId` / `senderKeyId`), when it is one. */
+function namedKeyId(doc: Record<string, unknown>, field: string): number | null {
+  const v = doc[field]
+  const n = typeof v === 'bigint' ? Number(v) : v
+  return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : null
+}
+
+/**
+ * Which held keys may open `doc`, in order: the held ones it names (the reader's own key is the
+ * recipient of a wrap to it and the sender of one it sent), else, naming none, every held key.
+ */
+export function keysToTry(doc: Record<string, unknown>, held: readonly number[]): number[] {
+  const named = [namedKeyId(doc, 'recipientKeyId'), namedKeyId(doc, 'senderKeyId')].filter((n): n is number => n !== null)
+  if (named.length === 0) return [...held]
+  return [...new Set(named)].filter((n) => held.includes(n))
 }
 
 export interface UnwrapInput {
@@ -439,25 +464,47 @@ export interface UnwrapInput {
  * key from the unlocked vault and wipes it after; a locked vault makes the call throw.
  */
 export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: string, repoKeyContractId: string): Promise<EncryptionOps | null> {
-  const keyId = await storedEncryptionKeyId(network, identityId)
-  if (keyId === null) return null
+  const keyIds = await storedEncryptionKeyIds(network, identityId)
+  const keyId = keyIds[0]
+  if (keyId === undefined) return null
   const facade = (sdk as unknown as { encryptedFor: WrapFacade }).encryptedFor
   const { Document, PrivateKey } = await import('@dashevo/evo-sdk')
   const contract = (await authSdk(sdk).contracts.fetch(repoKeyContractId)) as DataContract | undefined
   if (contract === undefined) throw new Error('forge-collab could not be read')
   const version = (sdk as unknown as { version(): number }).version()
   const net = wasmNetwork(network)
-  const withPrivate = <T>(use: (pk: WasmPrivateKey) => Promise<T>): Promise<T> =>
-    withEncryptionKey(network, identityId, async (heldId, secret) => {
-      // The stored key was replaced since these ops were made: their key id no longer matches.
-      if (heldId !== keyId) throw new VaultLockedError('the encryption key in this browser changed; reload')
-      const pk = PrivateKey.fromBytes(secret, net)
-      try {
-        return await use(pk)
-      } finally {
-        pk.free()
-      }
+  const withPrivate = <T>(id: number, use: (pk: WasmPrivateKey) => Promise<T>): Promise<T> =>
+    withEncryptionKey(
+      network,
+      identityId,
+      async (_heldId, secret) => {
+        const pk = PrivateKey.fromBytes(secret, net)
+        try {
+          return await use(pk)
+        } finally {
+          pk.free()
+        }
+      },
+      id,
+    ).catch((e: unknown) => {
+      // The stored keys changed since these ops were made (removed here or in another tab).
+      throw e instanceof EncryptionKeyNotHeldError ? new VaultLockedError('the encryption keys in this browser changed; reload') : e
     })
+  /** Open `p` with each held key it may be wrapped to, in turn: the first that opens it wins. */
+  const withReader = async <T>(p: UnwrapInput, open: (pk: WasmPrivateKey) => Promise<T>): Promise<T> => {
+    const ids = keysToTry(p.document, keyIds)
+    if (ids.length === 0) throw new WrapError('wrapUnreadable')
+    let last: unknown
+    for (const id of ids) {
+      try {
+        return await withPrivate(id, open)
+      } catch (e) {
+        if (!(e instanceof WrapError)) throw e
+        last = e
+      }
+    }
+    throw last
+  }
   const params = (p: UnwrapInput, pk: WasmPrivateKey) => ({
     dataContract: contract,
     document: Document.fromJSON(p.document as Parameters<typeof Document.fromJSON>[0], version) as Document,
@@ -468,10 +515,12 @@ export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: s
   })
   return {
     keyId,
-    unwrap: (p) => withPrivate((pk) => unwrapKey(facade, params(p, pk))),
-    unwrapRaw: (p) => withPrivate((pk) => unwrapKeyRaw(facade, params(p, pk))),
+    keyIds,
+    unwrap: (p) => withReader(p, (pk) => unwrapKey(facade, params(p, pk))),
+    unwrapRaw: (p) => withReader(p, (pk) => unwrapKeyRaw(facade, params(p, pk))),
+    // Sent from the held key the caller named as the sender (the identity's newest usable one).
     wrap: (p) =>
-      withPrivate((pk) =>
+      withPrivate(p.senderKey.keyId, (pk) =>
         sealWrap(facade, p.keys, p.raw, { dataContract: contract, senderKey: p.senderKey, senderPrivateKey: pk, recipientKey: p.recipientKey }),
       ),
   }
@@ -494,12 +543,15 @@ export type WebhookSealer =
  * the vault and wipes it; a locked vault makes the call throw.
  */
 export async function webhookSealer(sdk: EvoSDK, network: Network, identityId: string, communityId: string): Promise<WebhookSealer> {
-  const keyId = await storedEncryptionKeyId(network, identityId)
-  if (keyId === null) return { kind: 'no-key' }
+  const held = await storedEncryptionKeyIds(network, identityId)
+  if (held.length === 0) return { kind: 'no-key' }
   const mine = await requireIdentityKeys(sdk, identityId)
-  const senderKey = mine.find((k) => k.keyId === keyId)
-  if (senderKey === undefined || senderKey.disabledAt !== undefined || senderKey.purposeNumber !== PURPOSE_ENCRYPTION) return { kind: 'unusable' }
-  if (!isUsableEncryptionKey(senderKey, communityId)) return { kind: 'wrong-contract' }
+  // The highest held key that is still an enabled ENCRYPTION key of the identity, usable here.
+  const live = held.map((id) => mine.find((k) => k.keyId === id)).filter((k): k is NonNullable<typeof k> => k !== undefined && k.disabledAt === undefined && k.purposeNumber === PURPOSE_ENCRYPTION)
+  if (live.length === 0) return { kind: 'unusable' }
+  const senderKey = live.find((k) => isUsableEncryptionKey(k, communityId))
+  if (senderKey === undefined) return { kind: 'wrong-contract' }
+  const keyId = senderKey.keyId
   const facade = (sdk as unknown as { encryptedFor: WrapFacade }).encryptedFor
   const { PrivateKey } = await import('@dashevo/evo-sdk')
   const net = wasmNetwork(network)
@@ -510,22 +562,28 @@ export async function webhookSealer(sdk: EvoSDK, network: Network, identityId: s
     if (recipientKey === null) throw new Error(`relay ${recipientIdentityId} has no enabled ECDSA_SECP256K1 ENCRYPTION key to encrypt the secret to`)
     const contract = (await authSdk(sdk).contracts.fetch(communityId)) as DataContract | undefined
     if (contract === undefined) throw new Error('forge-community could not be read')
-    return withEncryptionKey(network, identityId, async (heldId, secret) => {
-      if (heldId !== keyId) throw new VaultLockedError('the encryption key in this browser changed; reload')
-      const pk = PrivateKey.fromBytes(secret, net)
-      try {
-        return await facade.encrypt({
-          dataContract: contract,
-          documentTypeName: 'webhook',
-          property: 'secret',
-          plaintext,
-          senderKey,
-          senderPrivateKey: pk,
-          recipientKey,
-        })
-      } finally {
-        pk.free()
-      }
+    return withEncryptionKey(
+      network,
+      identityId,
+      async (_heldId, secret) => {
+        const pk = PrivateKey.fromBytes(secret, net)
+        try {
+          return await facade.encrypt({
+            dataContract: contract,
+            documentTypeName: 'webhook',
+            property: 'secret',
+            plaintext,
+            senderKey,
+            senderPrivateKey: pk,
+            recipientKey,
+          })
+        } finally {
+          pk.free()
+        }
+      },
+      keyId,
+    ).catch((e: unknown) => {
+      throw e instanceof EncryptionKeyNotHeldError ? new VaultLockedError('the encryption keys in this browser changed; reload') : e
     })
   }
   return { kind: 'ready', seal }

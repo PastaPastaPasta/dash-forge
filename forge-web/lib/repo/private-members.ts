@@ -519,7 +519,7 @@ async function readOwnWrap(
   )
   const doc = documents[0]
   const w = doc === undefined ? null : parseWrapDoc(doc)
-  if (w === null || w.senderKeyId !== c.ops.keyId) return null
+  if (w === null || !c.ops.keyIds.includes(w.senderKeyId)) return null
   const recipient = (session.memberKeys.get(identity) ?? (await fetchIdentityKeys(c.sdk, identity)) ?? []).find((k) => k.keyId === w.row.recipientKeyId)
   if (recipient === undefined) return null
   try {
@@ -806,7 +806,7 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
     // encryption key (§5.2), which must be the one this browser holds, or the repo would be
     // created unreadable to its own owner.
     const pending = pendingSelfWrap(session, c.auth.identityId, 0)
-    if (pending !== null && pending.row.recipientKeyId !== c.ops.keyId) throw notHeldKey(0, pending.row.recipientKeyId)
+    if (pending !== null && !c.ops.keyIds.includes(pending.row.recipientKeyId)) throw notHeldKey(0, pending.row.recipientKeyId)
     if (pending === null && selfKey.keyId !== c.ops.keyId) {
       throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds key ${c.ops.keyId}; add key ${selfKey.keyId} here (Settings → Private repos)`, 'E306')
     }
@@ -849,7 +849,7 @@ async function ownEpochKey(
     if (outcome.kind === 'not-a-member') throw new PrivateMembersError('you are not a maintainer of this repo any more; ask the owner to add you again, or rotate from another maintainer', 'E310')
     const standing = await readOwnWrap(c, session, epoch, self.identity)
     if (standing === null) throw unusableWrap({ kind: 'unreadable' }, self.identity, epoch)
-    if (standing.recipientKeyId !== c.ops.keyId) {
+    if (!c.ops.keyIds.includes(standing.recipientKeyId)) {
       standing.raw.fill(0)
       throw notHeldKey(epoch, standing.recipientKeyId)
     }
