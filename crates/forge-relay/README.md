@@ -19,8 +19,9 @@ dg webhook add <owner>/<repo> --url https://ci.example/hook \
 
 This writes a forge-community `webhook` document. **The URL and event list are public on
 chain**; the contract accepts only `https://` to a DNS name (no IP address, `localhost` or
-`user:password@`), and `dg` refuses a query string unless `--force`, so do not put tokens in
-it (the signature authenticates deliveries). Private repositories cannot have webhooks. For
+`user:password@`), and `dg` refuses a query string or a token after `/webhook/` unless
+`--force`, so do not put tokens in it (the signature authenticates deliveries). `dg` and the
+web app refuse a chat service's webhook URL outright: see [Chat services](#chat-services). Private repositories cannot have webhooks. For
 local tests against `http://127.0.0.1`, use a static `[[webhook]]` block in `--config`
 (below): it never goes on chain. The `secret` (32–96 printable
 ASCII characters) is encrypted (`encryptedFor`, `ecdh-secp256k1-aes256-cbc`) from the
@@ -104,7 +105,33 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 | `--allow-private` | off | Deliver to private and loopback addresses. **Local testing only**: without it, any maintainer of any repo could make a public relay probe its network. |
 | `--state-dir <dir>` | `$FORGE_RELAY_STATE_DIR` (`/state` in the images), else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay` | Where the retry queue lives (`<dir>/deliveries`: a real directory owned by the relay user, created or tightened to mode 0700). Setting it explicitly makes an unusable dir fatal instead of a fallback to memory. One relay per state dir: a second relay on the same dir refuses to start. |
 | `--web-base-url <url>` | `https://forge.dashhq.org` | The forge-web origin that the payloads' `html_url`, `compare` and profile links point at. Include the base path of a sub-path deploy (`https://<owner>.github.io/dash-forge`). File key: `web-base-url`. See [Payloads](#payloads). |
-| `--config <toml>` | none | The same settings as a file, plus `[wake]` ([Wake a runner](#wake-a-runner)), static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing, and `retry-schedule-secs = [60, 300, ...]`. |
+| `--config <toml>` | none | The same settings as a file, plus `[wake]` ([Wake a runner](#wake-a-runner)), static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing or a URL that must stay private ([Chat services](#chat-services)), and `retry-schedule-secs = [60, 300, ...]`. |
+
+## Chat services
+
+Discord, Slack, Microsoft Teams, Google Chat and Power Automate webhook URLs contain their token. A hook's URL
+is public on chain and stays in its history, so anyone who read it could post to your channel,
+even after you remove the hook. `dg webhook add` and the web app refuse these URLs, even with
+`--force`.
+
+Keep the URL in your own relay's config instead. A static `[[webhook]]` block is read from the
+file and never written on chain:
+
+```toml
+# relay.toml (forge-relay run --config relay.toml); keep this file private (chmod 600)
+[[webhook]]
+repo = "alice/project"
+url = "https://discord.com/api/webhooks/<id>/<token>/github"
+events = ["push", "pull_request", "issues", "release"]
+secret = "<openssl rand -hex 32>"   # required, though Discord ignores the signature
+```
+
+- **Discord** accepts the relay's GitHub-shaped deliveries at its GitHub-compatible endpoint:
+  add `/github` to the webhook URL, as above.
+- **Slack, Teams and Google Chat** expect their own message format, not GitHub's. Point the
+  block at a small forwarder you run that reformats each delivery and holds the chat URL.
+
+Run the relay without `--identity` to serve only these blocks. It then needs no keys at all.
 
 ## Wake a runner
 

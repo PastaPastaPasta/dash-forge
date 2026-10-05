@@ -1,0 +1,12 @@
+{
+  "name": "short_segment",
+  "description": "A segment under 24 characters is not treated as a token.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://ci.example.com/webhook/abc123"
+  },
+  "expected": {
+    "secret": null
+  }
+}
