@@ -16,11 +16,12 @@
  *   as is; the description and topics are public by design (`private-repos.md` §7).
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Archive, Globe, GitBranch, Info, Lock, Plus, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isLive, plural } from '@/lib/view'
 import {
+  CONFIG_LAG_MS,
   DEFAULT_CONFIG,
   MAX_PATTERN_CHARS,
   MAX_PROTECTED_PATTERNS,
@@ -555,7 +556,14 @@ function readDismissed(key: string): boolean {
 function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: ReturnType<typeof useConfigWrite> }): JSX.Element | null {
   const key = PROTECTION_DISMISSED(home.repo.repoId)
   const [dismissed, setDismissed] = useState(() => typeof window !== 'undefined' && readDismissed(key))
-  const [now] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  // A page opened while a missing config may still be on its way looks again once it can't be.
+  const waitUntil = home.config === null ? home.v2.createdAt + CONFIG_LAG_MS + 1 : null
+  useEffect(() => {
+    if (waitUntil === null || waitUntil <= now) return
+    const t = window.setTimeout(() => setNow(Date.now()), waitUntil - now)
+    return () => window.clearTimeout(t)
+  }, [waitUntil, now])
   const known = suggestionConfig({
     config: home.config,
     sealed: home.repo.visibility === 'private',
