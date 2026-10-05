@@ -172,7 +172,8 @@ export function sameConfig(a: RepoConfig, b: RepoConfig): boolean {
     a.protectedPatterns.length === b.protectedPatterns.length &&
     a.protectedPatterns.every((p, i) => p === b.protectedPatterns[i]) &&
     a.backendUris.length === b.backendUris.length &&
-    a.backendUris.every((u, i) => u === b.backendUris[i])
+    a.backendUris.every((u, i) => u === b.backendUris[i]) &&
+    a.movedTo === b.movedTo
   )
 }
 
@@ -196,6 +197,8 @@ export function configData(next: RepoConfig): Record<string, unknown> {
   }
   // An empty list is the same as none (`is_well_formed`), and omitting it is smaller.
   if (next.protectedPatterns.length > 0) data['protectedPatterns'] = [...next.protectedPatterns]
+  // A move carries over every later write, like the other fields (a public repo's only).
+  if (next.movedTo !== undefined) data['movedTo'] = decodeIdentifier(next.movedTo)
   return data
 }
 

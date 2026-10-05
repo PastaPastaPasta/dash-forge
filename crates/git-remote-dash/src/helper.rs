@@ -267,6 +267,19 @@ impl Helper {
             .read_default_branch(&conn.repo)
             .await?
             .unwrap_or_else(|| "main".to_string());
+        // A fetch or clone of a public repository a maintainer marked as moved says where it
+        // went (best effort, one small read); nothing is redirected.
+        if !for_push {
+            if let Ok(Some(id)) = svc.moved_to(&conn.repo).await {
+                let to = forge_core::resolve::resolve_id(&conn.client, &id)
+                    .await
+                    .map_or(id, |r| r.remote_url());
+                eprintln!(
+                    "hint: {} has moved to {to}; to follow it, run `git remote set-url origin {to}`",
+                    conn.repo.remote_url()
+                );
+            }
+        }
         Ok(list_lines(&refs, &default_branch, for_push))
     }
 
