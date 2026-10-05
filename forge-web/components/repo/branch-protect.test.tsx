@@ -39,6 +39,8 @@ const home = {
   branches: [{ refName: 'refs/heads/main', state: { state: 'resolved', oid: 'a'.repeat(40), createdAt: 1 } }],
   tags: [],
   config: null,
+  // Created just now: its missing config is still on its way, so no protection suggestion.
+  v2: { createdAt: Date.now(), forkOf: null },
 } as unknown as RepoHome
 
 let root: Root

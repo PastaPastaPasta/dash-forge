@@ -22,6 +22,7 @@ import type { RepoHome } from '@/lib/view'
 import { isLive, plural } from '@/lib/view'
 import {
   DEFAULT_CONFIG,
+  MAX_PATTERN_CHARS,
   MAX_PROTECTED_PATTERNS,
   MERGE_METHODS,
   applyConfigChange,
@@ -37,6 +38,7 @@ import {
   previewConfig,
   previewRepoEdit,
   readTopicDocNames,
+  suggestionConfig,
   readConfig,
   readMembershipsCached,
   readPolicy,
@@ -536,16 +538,32 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
 /** Where a maintainer's "not now" on the protection suggestion is kept, per repo and browser. */
 const PROTECTION_DISMISSED = (repoId: string): string => `forge:protection-suggestion-dismissed:${repoId}`
 
+function readDismissed(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) !== null
+  } catch {
+    return false
+  }
+}
+
 /**
  * The one-click offer to complete the new-repository default (the default branch and every tag)
  * on a repo created before it, or one whose maintainers dropped it. Not offered on a fork or a
- * mirror (they follow their source, so they start unprotected), before the repo's config is
- * readable (its patterns are unknown), or once a maintainer dismissed it in this browser.
+ * mirror (they follow their source, so they start unprotected), while the repo's patterns are
+ * unknown (`suggestionConfig`), or once a maintainer dismissed it in this browser.
  */
 function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: ReturnType<typeof useConfigWrite> }): JSX.Element | null {
   const key = PROTECTION_DISMISSED(home.repo.repoId)
-  const [dismissed, setDismissed] = useState(() => typeof window !== 'undefined' && window.localStorage.getItem(key) !== null)
-  const missing = home.config === null ? [] : missingDefaultProtection(cfg.current.defaultBranch, cfg.current.protectedPatterns)
+  const [dismissed, setDismissed] = useState(() => typeof window !== 'undefined' && readDismissed(key))
+  const [now] = useState(() => Date.now())
+  const known = suggestionConfig({
+    config: home.config,
+    sealed: home.repo.visibility === 'private',
+    unlocked: home.private?.access === 'member',
+    repoCreatedAt: home.v2.createdAt,
+    now,
+  })
+  const missing = known === null ? [] : missingDefaultProtection(known.defaultBranch, known.protectedPatterns)
   if (missing.length === 0 || dismissed || home.v2.forkOf !== null || mirrorSourceOfRepo(home.v2, 'issue') !== null) return null
   const branch = missing.find((p) => p.startsWith('refs/heads/'))?.slice('refs/heads/'.length) ?? null
   const tags = missing.some((p) => p.startsWith('refs/tags/'))
@@ -556,9 +574,15 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
       : branch !== null
         ? `Any writer can push to ${branch}.`
         : 'Any writer can create or move tags that no pattern protects yet.'
-  const tooMany = patternsProblem([...cfg.current.protectedPatterns, ...missing])
+  const tooLong = branch !== null && missing.some((p) => [...p].length > MAX_PATTERN_CHARS)
+  const full = tooLong ? null : patternsProblem([...(known?.protectedPatterns ?? []), ...missing])
+  const blocked = tooLong ? `${branch} is too long to protect by name.` : full !== null ? `${full} Remove one to make room.` : null
   const dismiss = (): void => {
-    window.localStorage.setItem(key, '1')
+    try {
+      window.localStorage.setItem(key, '1')
+    } catch {
+      // Storage blocked: the dismissal lasts until the page reloads.
+    }
     setDismissed(true)
   }
   return (
@@ -569,14 +593,14 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
     >
       <p className="flex-1 text-dense text-anvil-700 dark:text-anvil-200">
         {exposure} New repositories protect the default branch and every tag.
-        {tooMany !== null ? ` ${tooMany} Remove one to make room.` : null}
+        {blocked !== null ? ` ${blocked}` : null}
       </p>
       <div className="flex shrink-0 items-center gap-1.5">
         {cfg.sealed ? (
           <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
             Run <span className="break-all font-mono">dg repo protect defaults {home.repo.ownerId}/{home.repo.name}</span>
           </p>
-        ) : tooMany === null ? (
+        ) : blocked === null ? (
           <Button
             size="sm"
             variant="primary"
