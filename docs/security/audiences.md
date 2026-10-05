@@ -82,7 +82,7 @@ In the web app, **Turn on members-only content** is **coming soon**. Use `dg` fo
 
 ## Post and read members-only content
 
-From `dg`, add `--members` <!-- PENDING #398 (dg --members) -->:
+From `dg`, add `--members`:
 
 ```sh
 dg issue create <owner>/<repo> --members --title "Spam wave from new accounts" --body "…"
@@ -206,7 +206,7 @@ Fix: a maintainer runs `dg repo members enable <owner>/<repo>` (it shows the cos
 
 ### E313
 
-**Members-only.** That issue or pull request is members-only, and you can't read it. Everyone can see that it exists, its number, who opened it and when. `dg issue view` and `dg pr view` show that as a row and exit normally <!-- PENDING #398: before it, view also stops with E313 -->. E313 comes from commands that need the content, such as commenting on it or checking it out.
+**Members-only.** That issue or pull request is members-only, and you can't read it. Everyone can see that it exists, its number, who opened it and when. `dg issue view` and `dg pr view` show that as a row and exit normally. E313 comes from commands that need the content, such as commenting on it or checking it out.
 
 Fix: ask the repository's owner to make you a member (run `dg collab accept <owner>/<repo>` first: that is your consent). If you are a member already, see [E311](#e311). If your key is locked (a key protected by a passphrase, with no terminal to ask for it), set `DASH_FORGE_PASSPHRASE` or run the command in a terminal.
 

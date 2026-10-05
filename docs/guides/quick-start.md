@@ -336,7 +336,7 @@ docs/examples/**/*.pem
 
 Paths match from the repository's root: `.env` is the root `.env` only, and `config/*.env` is a file in `config`. Start with `**/` to match at any depth (`**/*.pem`). `*` stays within a folder, `**` crosses folders, and a folder's path covers everything in it. Each branch or tag is checked against the allow file at its own tip.
 
-The check is a safety net, not a guarantee: it knows a handful of formats, and it never runs on a private repository, whose content is encrypted. Keep secrets out of git altogether.
+The check is a safety net, not a guarantee: it knows a handful of formats, and it never runs on a private repository, whose content is encrypted. Keep secrets out of git altogether: an [environment](environments.md) keeps a `.env`'s values encrypted for your maintainers or members, outside git (`dg env import .env --env dev`, then `dg env run --env dev -- <command>`). <!-- PENDING #397 (environments lite) -->
 
 ---
 

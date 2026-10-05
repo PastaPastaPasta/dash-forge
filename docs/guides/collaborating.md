@@ -178,9 +178,7 @@ dg pr comment    <owner>/<repo> 7 --members --body "…"
 dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 ```
 
-<!-- PENDING #398 (dg --members): the four --members commands and the outputs below. -->
-
-**Turning it on** shares a members key with every member who has an encryption key: about 0.0004 DASH plus about 0.0007 DASH per member (about 0.004 DASH for 5 members). Members without an encryption key are named. They get the key once they set one up (`dg auth keys add --encryption`) and a maintainer runs `dg repo keys repair`. Anyone else who asks for members-only content gets [`E312`](../errors.md#e312). In the web app, turning it on is **coming soon**. <!-- PENDING web UX stream (1D) -->
+**Turning it on** shares a members key with every member who has an encryption key: about 0.0004 DASH plus about 0.0007 DASH per member (about 0.004 DASH for 5 members). Members without an encryption key are listed. They get the key once they set one up (`dg auth keys add --encryption`) and a maintainer runs `dg repo keys repair`. Anyone else who asks for members-only content gets [`E312`](../errors.md#e312). In the web app, turning it on is **coming soon**. <!-- PENDING web UX stream (1D) -->
 
 **Replies follow what they answer.** Without `--members`, a comment on a members-only issue, or a reply to a members-only comment, is members-only. A public reply inside a members-only conversation is refused before anything is signed. Edits keep the audience.
 

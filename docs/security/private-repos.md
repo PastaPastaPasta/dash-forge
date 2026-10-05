@@ -890,7 +890,7 @@ Two independent security reviews read revision 1 of this section: a Fable review
 
 ## 17. Mixed repositories: members-only content in a public repository
 
-A **public** repository may hold **members-only** content beside its public content: issues, comments and reviews only its members can read (DESIGN `mixed-visibility/DESIGN.md` §4.1, phase 1). This section is the rule level; the `enc` v0x03 / v0x04 envelopes, their key commitment and padding are §4.x. Nothing here changes a private repository.
+A **public** repository may hold **members-only** content beside its public content: issues, comments and reviews only its members can read (DESIGN `mixed-visibility/DESIGN.md` §4.1, phase 1). This section is the rule level; the `enc` v0x03 / v0x04 envelopes, their key commitment and padding are §4.x. Nothing here changes a private repository. The user-facing account, with what stays public and what can still leak, is [Who can read what](audiences.md); the contract-level summary is forge-v2.md §5.1.
 
 ### 17.1 The members key ("lane 0")
 
@@ -908,7 +908,7 @@ Vectors `mixed_anchor__*`. Every membership change keys on **"this repository ha
 
 ### 17.3 Reads are per document
 
-Whether a document is sealed is read from the document (`enc` present, and `enc[0]`), never from the repository. A plaintext document is read as it is whatever keys the reader holds; a sealed one is opened with the members key, and a reader who cannot open it gets a **placeholder**: its id, author, time, number (an issue's or PR's), audience and `asMember`, and the reason (not a member; a member whose key source holds no encryption key; a member the key was not shared with yet, **E311**; or keys that do not open it). A public repository's keys are loaded only when a sealed document is met, and an outsider never gets an error (E306, E307) or "not found" for one: an issue or PR read by number is "members-only" (**E313** where an error is the only answer). Placeholders are shown for documents carrying `asMember` or a thread's root; the rest are hidden and counted (DESIGN D14).
+Whether a document is sealed is read from the document (`enc` present, and `enc[0]`), never from the repository. A plaintext document is read as it is whatever keys the reader holds; a sealed one is opened with the members key, and a reader who cannot open it gets a **placeholder**: its id, author, time, number (an issue's or PR's), audience and `asMember`, and the reason (not a member; a member whose key source holds no encryption key; a member the key was not shared with yet, **E311**; a member whose key is locked, with no way to ask for its passphrase; or keys that do not open it, filed with a `badTag` or `CommitMismatch` under "not encrypted for this repository"). `dg view` of a members-only issue or PR prints its row and exits 0. A removed member's client still loads the members key when the reader holds a wrap from an earlier epoch, so content written before the removal stays readable to them, as in a private repository. A public repository's keys are loaded only when a sealed document is met, and an outsider never gets an error (E306, E307) or "not found" for one: an issue or PR read by number is "members-only" (**E313** where an error is the only answer). Placeholders are shown for documents carrying `asMember` or a thread's root; the rest are hidden and counted (DESIGN D14).
 
 ### 17.4 Approvals (D15)
 
@@ -919,5 +919,20 @@ A members-only review's plaintext `verdict` counts for **every reader** when it 
 - **Audience fixed at creation.** An edit keeps the document's audience: a members-only document is re-sealed as a whole; a plaintext edit of it, and a members-only edit of a public document, are refused before signing (vectors `mixed_edit__*`). Consensus `noPlain` admits an `enc` → `body` replace of a `comment`, so this is the clients' rule.
 - **A child's audience is a subset of its parent's.** Before sealing a comment, a reply, a review or an event value, the writer reads the parent (the target issue or PR, and a reply's thread root): a members-only comment on a public thread is allowed, a public reply to a members-only comment or a public comment on a members-only issue is refused, and an event value is sealed exactly when its target is. Without a request the default is the parent's audience.
 - **`asMember` on every sealed write by a member**, and a write whose proof consensus refuses is never retried without it when it is sealed (a member removed meanwhile is told so).
-- **No members-only text at rest or in public storage.** The create journal's fingerprint is keyed for anything not public, and a members-only text that does not fit its field is refused (its full text would otherwise be stored as a public artifact) until kind-70 sealed long bodies exist.
+- **No members-only text at rest or in public storage.** The create journal's fingerprint is keyed for anything not public. A members-only pending review that `dg` keeps on disk is the draft sealed under the members key (`{"dashForgeMembersReviewDraft":1,"sealed":…}`), never plaintext; the web keeps a members-only draft in memory only. A members-only text that does not fit its field (the v0x03 room, 32 bytes less than v0x01's) is a **kind-70** artifact (§17.6) in `dg`; the web refuses it before signing until it writes kind 70 too. It is never stored as a public kind-6 artifact.
 - Only members write members-only content: a non-member is refused before signing, a repository without a members key with **E312**, a member without a shared key with **E311**.
+
+### 17.6 Artifacts: pack manifest kinds
+
+`packManifest.kind` is an open integer (forge-v2.md §2); readers skip a kind they do not know, so the kinds below need no contract change (DESIGN D6). Sealed artifacts are DFPK files (§3): version `0x01` under an epoch key, or `0x02` with the specific-people slot header (§3.7).
+
+| Kind | What | Status |
+|---|---|---|
+| 7 | reveal bundle: per-object keys that make members-only documents public | reserved (phase 2) |
+| 8 | **environment snapshot**: one environment's canonical JSON, padded to 512-byte buckets, sealed as DFPK `0x01` under the members key at the write epoch (audience Members) or DFPK `0x02` to the current maintainers' encryption keys, the writer first (audience Maintainers). `supersedes` names earlier counted snapshots of the same environment. Readers check the bytes against the owner-signed `packHash` before decrypting, and count a snapshot only when its `$ownerId` is a current maintainer (DESIGN D24); vectors `env_snapshot__*` | used <!-- PENDING #397 (environments lite) --> |
+| 9 | environment registry | reserved (phase 4) |
+| 10 | branch grant (the keys of one members-only branch, sealed to one recipient) | reserved (phase 3) |
+| 64 + k | the members-only (sealed) form of plain kind k in a public repository: 64 git pack, 65 object locator, 66 flat index, 67 history index, 68 release assets, 69 history version lists | reserved (phase 3) |
+| 70 | **members-only long body** (64 + 6): the full text of a members-only issue, comment or review longer than its field, sealed as DFPK `0x01` under the members key at the write epoch, re-read before the write. A members-only field's trailer resolves only to a kind-70 copy, a public field's only to kind 6. The reader checks `packHash`, then the late-content rule on the copy's `$ownerId` and height, then opens it with any epoch it holds | used by `dg`; the web refuses members-only long text for now |
+
+In a private repository every artifact is sealed under its usual kind (§3): kinds 64–70 are for the members-only side of a public repository only. `dg repo view` counts kind 0 only; `dg storage status` lists every kind and names 70 `members-only-long-body`.

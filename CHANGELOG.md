@@ -8,13 +8,24 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+Members-only content in public repositories, Environments and the secret scan. People using older Forge builds see fewer things until they update: they leave members-only items out, and they don't count a members-only review's approval, so they may refuse a merge an up-to-date build allows. **Update to see and count members-only reviews.** [Who can read what](docs/security/audiences.md) explains the audiences, what stays public and what can still leak.
+
 ### Added
 
-- **Members-only discussion from `dg`** in public repositories with members-only content turned on: `--members` on `dg issue create`, `dg issue comment`, `dg pr comment` and `dg pr review`. Members read it in `dg issue view/list` and `dg pr view/list`; everyone else sees "#3 · members-only issue by @alice · open" and "3 members-only comments hidden". Every item in `--json` carries `"audience"` and `"readable"`.
+- **Members-only content in public repositories.** A maintainer turns it on once with `dg repo members enable` (it shows the cost first: about 0.004 DASH for 5 members), and `dg repo members status` shows who has the key. Members can then post issues, comments and reviews only members can read: maintainers, writers, triage members and readers, including members added later. Removed members keep what they could already read. CI runners are not members. Everyone can still see that something was posted, by whom, when and how large, and a review's verdict.
+- **Members-only discussion from `dg`** in public repositories with members-only content turned on: `--members` on `dg issue create`, `dg issue comment`, `dg pr comment` and `dg pr review`. Members read it in `dg issue view/list` and `dg pr view/list`; everyone else sees "#3 · members-only issue by @alice · open" and "3 members-only comments hidden". Every item in `--json` carries `"audience"` and `"readable"`. A members-only text longer than its field is stored encrypted, and a members-only pending review is kept encrypted on disk.
+- **Readers on public repositories.** `dg collab add --role reader` works on public repositories: a reader follows the members-only discussion without pushing or merging.
+- **Membership changes follow the members key.** On a repository with members-only content, `dg collab add` shares the key with the new member and `dg collab remove` changes it, as on a private repository. `dg repo keys status`, `repair` and `rotate` work there too. A member added by an older build sees E311 until a maintainer's repair shares the key.
+- **A members-only review's approval counts for everyone**, member or not, so everyone sees the same merge button.
+- **The web app** reads members-only issues, comments and reviews for members after one unlock per tab, keeps a reply in a members-only conversation members-only, offers the reader role on public repositories, and shares or changes the key when members are added or removed. <!-- PENDING #400 (weblane) -->
+- **Environments** (`dg env`): configuration and secrets kept outside git, encrypted for a repository's **Maintainers** (the default for `production`, `prod*`, `staging` and `release*`) or its **Members**, changed by maintainers only, injected with `dg env run` or written to a git-ignored file with `dg env export -o .env`. Two changes at once fail closed (E608) until a maintainer keeps one. `dg collab remove` lists the values the removed member could read. See [Environments](docs/guides/environments.md). <!-- PENDING #397 (environments lite) -->
+- **Secrets in a public push.** `git push` to a public repository checks every file it publishes for the first time. It refuses a new `.env` file, a PEM private key, an AWS key pair or a GitHub or GitLab token with a valid checksum (E807), and warns about `.envrc` files, random-looking values and keys in test folders. `-o allow-secret=<fingerprint>` or `.forge/secret-scan-allow` lets a checked finding through. See [Secrets in a push](docs/guides/quick-start.md#secrets-in-a-push).
+- **Wallet sign-in keeps your encryption key.** The web app stores the encryption key the Dash Wallet registers in the browser's vault, every one of them across approvals, so private repositories and members-only content open after one unlock per tab. "Your encryption key is held elsewhere. Import it under Settings → Private repos." when the identity's key came from somewhere else.
 
 ### Changed
 
 - `dg repo view` counts git packs only: `packCount` and `packBytes` (and the `packs:` line) no longer include browse indexes, history indexes, release-asset lists or long bodies. `dg storage status` still lists every artifact.
+- Notifications and `forge-relay` webhooks never carry members-only text: they say that something happened, by whom and where. An encrypted post from someone who is not a member is not shown and notifies nobody.
 
 ## [0.1.0] - 2026-10-04
 

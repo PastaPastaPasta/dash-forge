@@ -225,7 +225,7 @@ Fix: a maintainer runs `dg repo members enable <owner>/<repo>`, which sets up a 
 
 **Members-only.** This issue or pull request is members-only: only members of the repository can read it. Everyone can see that it exists, its number, who opened it and when; nothing else.
 
-`dg issue view` and `dg pr view` show such an item as a row (`#3 · members-only issue by @alice · open`) and exit 0 instead. <!-- PENDING #398 --> E313 comes from commands that need its content, such as commenting on it or checking it out.
+`dg issue view` and `dg pr view` show such an item as a row (`#3 · members-only issue by @alice · open`) and exit 0 instead. E313 comes from commands that need its content, such as commenting on it or checking it out.
 
 Fix: ask the repository's owner to add you as a member (`dg collab accept <owner>/<repo>` first, your consent). If you are a member already, see [E311](#e311). If your key is protected by a passphrase and there is no terminal to ask for it, set `DASH_FORGE_PASSPHRASE` and try again. [Who can read what](security/audiences.md) explains members-only content.
 
