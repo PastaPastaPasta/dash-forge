@@ -39,11 +39,11 @@ pub enum KeysCommand {
         #[arg(long)]
         force: bool,
     },
-    /// Replace the ENCRYPTION key (a lost device, a leaked key): add a new one derived from the
-    /// recovery words, rotate every private repository you maintain to it, then disable the old
-    /// one. Repositories where you are not a maintainer are named: a maintainer rotates them.
-    /// Run it again to continue after a failure. A limited key is replaced with `dg auth keys
-    /// add --replace <id>` instead.
+    /// Replace the encryption key after a lost device or a leak: add a new one from the recovery
+    /// phrase, move every private repository you maintain to it, then disable the old one.
+    ///
+    /// Repositories you don't maintain are listed, for a maintainer to move. Run it again to
+    /// continue after a failure. To replace a limited key, use `dg auth keys add --replace <id>`.
     Rotate {
         /// Replace the ENCRYPTION key (the only key this command rotates).
         #[arg(long, required = true)]
@@ -51,8 +51,8 @@ pub enum KeysCommand {
         /// Keep the old key enabled (it still opens what was sealed for it).
         #[arg(long)]
         keep_old: bool,
-        /// The identity file with the master key and the recovery words (else you are asked for
-        /// the words).
+        /// The identity file with the master key and the recovery phrase (else you are asked for
+        /// the phrase).
         #[arg(long, value_name = "FILE")]
         master: Option<PathBuf>,
         #[command(flatten)]

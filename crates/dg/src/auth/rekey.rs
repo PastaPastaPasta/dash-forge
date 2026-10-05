@@ -330,7 +330,7 @@ fn print_plan(plan: &Plan, price: Option<f64>) {
     let estimate = identity_keys::ADD_KEY_ESTIMATE_CREDITS
         + maintained.len() as u64 * crate::keys::rotation_estimate(2).0;
     println!(
-        "Replace the ENCRYPTION key {} of {id} with a new key #{new_id}, derived from the recovery words:",
+        "Replace the encryption key {} of {id} with a new key #{new_id}, derived from the recovery phrase:",
         ids(&plan.old_ids)
     );
     println!("  1. add key #{new_id} (one identity update, signed by the master key)");
