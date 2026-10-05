@@ -275,15 +275,41 @@ pub fn resolve_ref(
     ref_name_hash: &str,
     is_ancestor: impl Fn(&str, &str) -> bool,
 ) -> RefState {
+    let mut heads = live_heads(updates, config_history, ref_name_hash, is_ancestor);
+    // (5) resolve. `heads[0]` is the provisional read-only tip of a diverged ref (§2.3).
+    match heads.len() {
+        0 => RefState::Unborn,
+        1 => {
+            let h = heads.pop().expect("len checked");
+            RefState::Resolved {
+                oid: h.oid,
+                author: h.author,
+                created_at: h.created_at,
+            }
+        }
+        _ => RefState::Diverged { heads },
+    }
+}
+
+/// Steps 1–4 of [`resolve_ref`]: the ref's live heads, newest first, each with the `$id` of
+/// the update that set it. Empty when the ref is unborn or deleted. For a reader that must
+/// name the document behind a tip (a mirror's manifest, `dg verify-mirror`), which
+/// [`RefState::Resolved`] does not carry.
+pub fn live_heads(
+    updates: &[RefUpdate],
+    config_history: &[ConfigDoc],
+    ref_name_hash: &str,
+    is_ancestor: impl Fn(&str, &str) -> bool,
+) -> Vec<RefHead> {
     // (1) validity filter, keeping only this ref's updates; (2) the causal order.
     let valid = valid_updates(updates, config_history, ref_name_hash);
 
     // (3) unborn / deleted.
     let Some(newest) = valid.last() else {
-        return RefState::Unborn;
+        return Vec::new();
     };
     if is_null_oid(&newest.new_oid) {
-        return RefState::Unborn;
+        return Vec::new();
     }
 
     // (4) live heads: `v` (later in the causal order) supersedes `u`.
@@ -308,20 +334,25 @@ pub fn resolve_ref(
             created_at: u.created_at,
         });
     }
+    heads
+}
 
-    // (5) resolve. `heads[0]` is the provisional read-only tip of a diverged ref (§2.3).
-    match heads.len() {
-        0 => RefState::Unborn, // unreachable given step 3, but total.
-        1 => {
-            let h = heads.pop().expect("len checked");
-            RefState::Resolved {
-                oid: h.oid,
-                author: h.author,
-                created_at: h.created_at,
-            }
-        }
-        _ => RefState::Diverged { heads },
-    }
+/// Every tip `ref_name_hash` has validly pointed at (non-null `newOid` of a valid update), and
+/// the `$createdAt` of its newest valid update (a deletion included): what a mirror served
+/// from an older snapshot can show, and since when it is out of date.
+pub fn valid_tips(
+    updates: &[RefUpdate],
+    config_history: &[ConfigDoc],
+    ref_name_hash: &str,
+) -> (std::collections::BTreeSet<Oid>, Option<u64>) {
+    let valid = valid_updates(updates, config_history, ref_name_hash);
+    let newest = valid.last().map(|u| u.created_at);
+    let tips = valid
+        .into_iter()
+        .filter(|u| !is_null_oid(&u.new_oid))
+        .map(|u| u.new_oid.clone())
+        .collect();
+    (tips, newest)
 }
 
 /// Whether `v` recorded `u`'s tip as its `prevOid` (a fast-forward, or a force naming the
