@@ -50,6 +50,16 @@ pub struct Workflow {
 }
 
 impl Workflow {
+    /// The workflow's `on`. A key named `on` parses as the string "on" in YAML 1.2; YAML 1.1
+    /// readers may make it true.
+    pub fn on(&self) -> Value {
+        self.doc
+            .get("on")
+            .or_else(|| self.doc.get("true"))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
     /// The workflow as act should see it: the refused jobs removed, and every remaining job's
     /// `needs` cut to the jobs that remain. `None` when nothing was refused (act reads the
     /// file itself).
@@ -99,13 +109,16 @@ pub struct Plan {
     pub run: Vec<Workflow>,
     /// The files that could not be read (each reported as one failed check).
     pub broken: Vec<Broken>,
-    /// The files that would run on this pull request but for their `paths` / `paths-ignore`
-    /// filter ([`Facts::runs_without_paths`]). A required check among their jobs is reported
-    /// `skipped`, so it does not wait forever for a run that will never come.
+    /// The files that would run on this pull request or push but for their `paths` /
+    /// `paths-ignore` filter ([`Facts::runs_without_paths`]). A required check
+    /// among their jobs is reported `skipped`, so it does not wait forever for a run that will
+    /// never come (a push's only when the whole pull request it is the head of is left out too:
+    /// [`push_filtered_for_all`]).
     pub path_filtered: Vec<Workflow>,
 }
 
 /// The push a workflow's `on.push` filter is judged against.
+#[derive(Clone, Copy)]
 pub struct PushFacts<'a> {
     /// `refs/heads/main` / `refs/tags/v1`.
     pub refname: &'a str,
@@ -143,16 +156,24 @@ pub enum Facts<'a> {
 }
 
 impl Facts<'_> {
-    /// Whether a workflow whose `on` is `on` would run on this pull request whatever paths it
-    /// changes: for a workflow that does not run ([`Self::runs`]), that its `paths` /
-    /// `paths-ignore` filter alone left it out. Pull requests only: their changes are the whole
-    /// PR (`base...head`). A push's are only that push's commits, so a skip there could pass a
-    /// required check on a head whose earlier commits it never ran on.
+    /// Whether a workflow whose `on` is `on` would run on this pull request or push whatever
+    /// paths it changes: for a workflow that does not run ([`Self::runs`]), that its `paths` /
+    /// `paths-ignore` filter alone left it out. A pull request's changes are the whole PR
+    /// (`base...head`); a push's are only that push's own commits, so a push's filtered
+    /// workflow is skipped only when the whole PR it is the head of is left out as well
+    /// ([`push_filtered_for_all`]).
     pub fn runs_without_paths(&self, on: &Value) -> bool {
         match self {
             Facts::PullRequest(p) if p.changed.is_some() => runs_on_pull_request(
                 on,
                 &PullFacts {
+                    changed: None,
+                    ..*p
+                },
+            ),
+            Facts::Push(p) if p.changed.is_some() => runs_on_push(
+                on,
+                &PushFacts {
                     changed: None,
                     ..*p
                 },
@@ -281,21 +302,14 @@ pub fn read_workflow(
                 .or_else(|| unknown_label(job, labels)),
         });
     }
-    // A key named `on` parses as the string "on" in YAML 1.2; YAML 1.1 readers may make it true.
-    let on = v
-        .get("on")
-        .or_else(|| v.get("true"))
-        .cloned()
-        .unwrap_or(Value::Null);
-    Ok((
-        Workflow {
-            file: rel.to_path_buf(),
-            name,
-            jobs: out,
-            doc: v.clone(),
-        },
-        on,
-    ))
+    let wf = Workflow {
+        file: rel.to_path_buf(),
+        name,
+        jobs: out,
+        doc: v,
+    };
+    let on = wf.on();
+    Ok((wf, on))
 }
 
 /// The keys a job's `container`, or one of its `services`, may have. Anything else (`options`,
@@ -472,6 +486,24 @@ pub fn runs_on_push(on: &Value, push: &PushFacts<'_>) -> bool {
         (None, None) => !has_any_ref_filter,
     };
     ref_ok && paths_ok(filters, push.changed)
+}
+
+/// Whether a push workflow (`on`) that the paths filter left out of a push of `refname` would
+/// leave out each of `changes` too: the whole change of every open pull request whose head the
+/// pushed branch is (`merge-base(base, head)..head`, one list per PR). `false` when there is no
+/// such PR: then nothing waits on the check. Conservative: one PR that touches a selected path
+/// keeps the check unreported, as before.
+pub fn push_filtered_for_all(on: &Value, refname: &str, changes: &[Vec<String>]) -> bool {
+    !changes.is_empty()
+        && changes.iter().all(|ch| {
+            !runs_on_push(
+                on,
+                &PushFacts {
+                    refname,
+                    changed: Some(ch),
+                },
+            )
+        })
 }
 
 /// `paths` / `paths-ignore` against the changed files (unknown changes run the workflow).
@@ -850,12 +882,30 @@ jobs:
         assert!(!filtered(&pr(Some(&docs)), &on("on: push")));
         let push_paths = on("on:\n  push:\n    paths: ['src/**']");
         assert!(
-            !filtered(
+            filtered(
                 &Facts::Push(facts("refs/heads/main", Some(&docs))),
                 &push_paths
             ),
-            "a push's changes are only its own commits, so a push is never skipped"
+            "a push that changes no watched path is path-filtered…"
         );
+        assert!(
+            !filtered(&Facts::Push(facts("refs/heads/main", None)), &push_paths),
+            "…but not a new branch, whose changes are unknown"
+        );
+        // …and skipped only when every open PR whose head it is changes no watched path either:
+        // a push's changes are only its own commits.
+        let pr_docs = vec!["docs/a.md".to_string()];
+        let pr_src = vec!["docs/a.md".to_string(), "src/a.rs".to_string()];
+        let skip = |changes: &[Vec<String>]| {
+            push_filtered_for_all(&push_paths, "refs/heads/main", changes)
+        };
+        assert!(skip(std::slice::from_ref(&pr_docs)));
+        assert!(
+            !skip(std::slice::from_ref(&pr_src)),
+            "an earlier commit of the PR changed src/"
+        );
+        assert!(!skip(&[pr_docs, pr_src]), "every PR must leave it out");
+        assert!(!skip(&[]), "no PR: nothing waits on the check, nothing is reported");
 
         let d = tempfile::tempdir().unwrap();
         let w = d.path().join(".forge/workflows");

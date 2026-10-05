@@ -19,6 +19,8 @@
 //!   needs a maintainer), then post the `merge` event. The branch policy is checked first
 //!   (E804). Each step is reported; a failure names what already happened. `--event-only`
 //!   just posts the event.
+//! * `revert` builds the inverse of a recorded merge the same way and opens a PR for it
+//!   ([`revert`]).
 //! * `update-branch` and `suggestion apply` commit to the PR's source branch and move its
 //!   head ([`branch`]).
 //! * `checkout` / `diff` fetch the head from the source repo (`dash://<repoId>`).
@@ -29,6 +31,7 @@ pub mod branch;
 pub mod inline;
 pub mod owners;
 pub mod review;
+mod revert;
 pub mod state;
 pub mod threads;
 pub(crate) mod verify;
@@ -162,6 +165,11 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
             limit,
         } => state::commits(ctx, repo, *number, *limit).await,
         PrCommand::Merge(a) => Box::pin(merge(ctx, a)).await,
+        PrCommand::Revert {
+            repo,
+            number,
+            branch,
+        } => Box::pin(revert::run(ctx, repo, *number, branch.as_deref())).await,
         PrCommand::UpdateBranch { repo, number } => {
             Box::pin(branch::update_branch(ctx, repo, *number)).await
         }
@@ -1660,10 +1668,14 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     if let Some(oid) = &merge_oid {
         require_merge_contains_pr(ctx, handle, &view, oid)?;
     }
-    // `--delete-branch` needs write access to the source repo: refuse before merging rather
-    // than after.
-    let delete = if a.delete_branch {
-        Some(branch::deletable_source(&s, &view, number).await?)
+    // `--delete-branch` needs write access to the source repo, and must not pull the branch
+    // from under another open PR: refuse before merging rather than after.
+    let delete = if a.delete_branch || a.force_delete_branch {
+        let src = branch::deletable_source(&s, &view, number).await?;
+        if !a.force_delete_branch {
+            branch::refuse_dependents(&collab, handle, &view, &src).await?;
+        }
+        Some(src)
     } else {
         None
     };
@@ -2897,7 +2909,7 @@ async fn default_branch_of(s: &Session, handle: &Repo) -> Option<String> {
 /// resolves its storage: the current repository's `dash.storage` resolved against the storage
 /// profiles (Platform when nothing is set), or a Platform fallback. A policy that cannot be read
 /// or resolved counts as Platform, the dearer case.
-fn merge_stores_on_platform() -> bool {
+pub(crate) fn merge_stores_on_platform() -> bool {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let Ok(policy) = crate::storage::push_policy_in(&cwd) else {
         return true;

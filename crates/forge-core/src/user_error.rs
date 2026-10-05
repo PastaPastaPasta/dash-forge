@@ -153,6 +153,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::CANCELLED, "cancelled at the confirmation prompt"),
     (codes::POLICY_NOT_MET, "branch policy not met"),
     (codes::SECRET_IN_PUSH, "possible secret in a public push"),
+    (codes::BRANCH_IN_USE, "branch other pull requests use"),
 ];
 
 /// The stable codes. The first digit is the exit code.
@@ -268,6 +269,9 @@ pub mod codes {
     /// A public push adds a file that looks like a secret (`forge-secrets`), and nothing
     /// allows it.
     pub const SECRET_IN_PUSH: &str = "E807";
+    /// `dg pr merge --delete-branch` would delete a branch other open pull requests use as
+    /// their head or base.
+    pub const BRANCH_IN_USE: &str = "E808";
 }
 
 /// An error a person can act on.

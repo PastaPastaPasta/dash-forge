@@ -749,6 +749,111 @@ pub async fn deletable_source(s: &Session, view: &PatchView, number: u64) -> Res
     Ok(src)
 }
 
+/// How an open PR uses a branch that is about to be deleted ([`dependent`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Uses {
+    /// The PR merges into it (its base, after any retarget): a stacked PR.
+    Base,
+    /// The PR's changes are on it (its head).
+    Head,
+}
+
+/// How `v` uses the branch `ref_name` of repository `repo_id` (in the PR's own repository,
+/// `target_id`), when it is an open PR other than `merging`'s: `None` when it does not.
+pub fn dependent(
+    v: &PatchView,
+    merging: u32,
+    target_id: &str,
+    repo_id: &str,
+    ref_name: &str,
+) -> Option<Uses> {
+    if !v.state.open || v.patch.number == merging {
+        return None;
+    }
+    if v.patch.source_repo_id == repo_id
+        && v.patch.source_ref_name.as_deref().map(git::full_ref) == Some(ref_name.to_string())
+    {
+        return Some(Uses::Head);
+    }
+    (target_id == repo_id && git::full_ref(&v.merge_base.ref_name) == ref_name).then_some(Uses::Base)
+}
+
+/// The most PRs [`refuse_dependents`] reads: one page, the newest.
+const DEPENDENTS_READ: u32 = 100;
+
+/// Refuse `--delete-branch` (E808) before merging when other open PRs of the repository use
+/// the branch it would delete: a PR based on it (a stack) would be left with no base, and one
+/// whose head it is would lose its changes. One read of the repository's newest
+/// [`DEPENDENTS_READ`] PRs. `--force-delete-branch` skips this.
+pub async fn refuse_dependents(
+    collab: &forge_core::collab::v2::Collab<'_>,
+    handle: &Repo,
+    view: &PatchView,
+    src: &SourceBranch,
+) -> Result<()> {
+    let page = collab
+        .list_patch_views(handle, DEPENDENTS_READ)
+        .await
+        .context("reading which open pull requests use the branch --delete-branch would delete")?;
+    let using: Vec<(u32, String, Uses)> = page
+        .rows
+        .iter()
+        .filter_map(|(v, _)| {
+            dependent(v, view.patch.number, handle.id(), src.repo.id(), &src.ref_name)
+                .map(|u| (v.patch.number, v.patch.title.clone(), u))
+        })
+        .collect();
+    match dependents_refusal(&using, &handle.display(), view, &src.ref_name) {
+        Some(u) => Err(u.into()),
+        None => Ok(()),
+    }
+}
+
+/// The E808 for the open PRs `using` the branch `ref_name` that merging `view` with
+/// `--delete-branch` would delete; `None` when there are none.
+pub fn dependents_refusal(
+    using: &[(u32, String, Uses)],
+    repo: &str,
+    view: &PatchView,
+    ref_name: &str,
+) -> Option<UserError> {
+    if using.is_empty() {
+        return None;
+    }
+    let branch = safe(forge_core::repo::short_branch_name(ref_name));
+    let base = safe(forge_core::repo::short_branch_name(&view.merge_base.ref_name));
+    let listed: Vec<String> = using
+        .iter()
+        .map(|(n, title, how)| {
+            let how = match how {
+                Uses::Base => "based on it",
+                Uses::Head => "its head",
+            };
+            format!("#{n} {} ({how})", safe(title))
+        })
+        .collect();
+    let (count, verb) = if using.len() == 1 {
+        ("1 other open pull request".to_string(), "uses")
+    } else {
+        (format!("{} other open pull requests", using.len()), "use")
+    };
+    let mut u = UserError::new(
+        codes::BRANCH_IN_USE,
+        format!("merge not attempted: {count} {verb} {branch}, which --delete-branch would delete"),
+    )
+    .cause(listed.join("; "));
+    if let Some((n, _, _)) = using.iter().find(|(_, _, how)| *how == Uses::Base) {
+        u = u.fix(format!(
+            "retarget the PRs based on it first: `dg pr edit {repo} {n} --base {base}`"
+        ));
+    }
+    Some(
+        u.fix("or merge without --delete-branch, and delete the branch once they no longer need it")
+            .fix("or pass --force-delete-branch to delete it anyway")
+            .note("checked before anything was pushed or written"),
+    )
+}
+
 /// Delete the source branch (a push of `:<ref>`).
 pub fn delete_source_branch(ctx: &Ctx, src: &SourceBranch) -> Result<()> {
     let scratch = super::scratch_repo()?;
