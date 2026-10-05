@@ -46,6 +46,10 @@ pub enum RelayError {
     #[error("forge-core: {0}")]
     Core(#[from] forge_core::error::Error),
 
+    /// A private repository: the relay is no member, so it never serves one.
+    #[error("{0} is a private repository; the relay does not serve private repositories")]
+    PrivateRepo(String),
+
     /// An I/O failure.
     #[error("io error: {0}")]
     Io(String),
