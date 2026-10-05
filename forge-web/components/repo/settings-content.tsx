@@ -114,6 +114,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const memberRows = members.data ?? []
   // The identity the owner tried to add before they accepted: the invite is pending on them.
   const [awaiting, setAwaiting] = useState<string | null>(null)
+  // A member added to a repo with members-only content before they have an encryption key.
+  const [noKeyYet, setNoKeyYet] = useState<string | null>(null)
   const [memberId, setMemberId] = useState('')
   const [role, setRole] = useState<MemberRole>('writer')
   const [action, setAction] = useState<MemberAction | null>(null)
@@ -135,7 +137,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     if (action.kind === 'change') {
       try {
-        await changeMemberRole(sdk, signer, repo, action.member, action.role, action.to, intent, ops)
+        const changed = await changeMemberRole(sdk, signer, repo, action.member, action.role, action.to, intent, ops)
+        setNoKeyYet(changed.keyShared === false ? action.member : null)
       } catch (e) {
         if (!(e instanceof ConsentMissingError)) throw e
         // Nothing was signed: their consent is gone, so the change waits on them accepting again.
@@ -146,7 +149,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       setChanging(null)
     } else if (action.kind === 'grant') {
       try {
-        await grantMember(sdk, signer, repo, action.member, action.role, intent, ops)
+        const granted = await grantMember(sdk, signer, repo, action.member, action.role, intent, ops)
+        setNoKeyYet(granted.keyShared === false ? action.member : null)
       } catch (e) {
         if (!(e instanceof ConsentMissingError)) throw e
         // Nothing was signed: show the invitation as pending on them instead of an error.
@@ -158,7 +162,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       setAwaiting(null)
       setMemberId('')
     } else {
-      await revokeMember(sdk, signer, repo, action.member, action.role, ops, intent)
+      await revokeMember(sdk, signer, repo, action.member, action.role, intent, ops)
     }
     // The members key changed hands: re-read the repo's key state (the page stays up meanwhile).
     if (keyed) write.done()
@@ -292,6 +296,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                 if (guard.check(previewCreate(memberDocOf(r)))) setAction({ kind: 'grant', member: id, role: r })
               }}
             />
+            {noKeyYet !== null ? (
+              <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400" data-testid="member-key-not-shared">
+                {shortId(noKeyYet)} has no encryption key yet, so they can&apos;t read members-only content. Once they add one, run Repair on the
+                repo page to share the key with them.
+              </p>
+            ) : null}
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
               People join only after accepting your invitation. Only maintainers&apos; and writers&apos; approvals count toward merging.
             </p>

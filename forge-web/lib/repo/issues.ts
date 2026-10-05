@@ -142,6 +142,8 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: numbe
 /** A PR (patch) with its folded state. */
 export interface PullView {
   readonly id: string
+  /** Who it was written for (a members-only PR reads as `members`). Absent: public. */
+  readonly audience?: 'members'
   readonly number: number
   readonly title: string
   /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
@@ -877,6 +879,7 @@ export async function readPull(
 
   return {
     id,
+    ...(admittedAudience(patchDoc) === 'members' ? { audience: 'members' as const } : {}),
     number: num(patchDoc, 'number'),
     title: titleOf(patchDoc),
     body: str(patchDoc, 'body'),

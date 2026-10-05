@@ -21,7 +21,7 @@ import { isLegalRefName, isRc1OidHex } from '../rules'
 import { RoleRefusedError } from '../rules/roles'
 import { rerunFields } from '../rules/ci-rerun'
 import { isMemberGateRefusal } from './role-claim'
-import { anchorOf, editKeepsAudience, groupReviewComments, isAuthorKind, type AnchorFields, type Policy } from '../rules/v2'
+import { anchorOf, editKeepsAudience, groupReviewComments, isAuthorKind, type AnchorFields, type Audience, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
 import {
   precheckEdit,
@@ -30,11 +30,12 @@ import {
   queryAllDocuments,
   replaceDocumentIdempotent,
   type ReplaceResult,
+  type PlainDocument,
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, contentDocOf, num, str, type RepoRef } from './contract'
-import { childAudience, membersWriter, sealMembersEdit, storedAudience, type MembersWriter } from './members-writes'
+import { childAudience, membersWriter, repoHasMembersKey, sealMembersEdit, storedAudience, type MembersWriter } from './members-writes'
 import { invalidateRepoFeed, readReviews } from './issues'
 import { readMemberships } from './members'
 import { readRunners } from './checks'
@@ -764,6 +765,24 @@ const REFERENCE_FIELDS: readonly string[] = ['reviewId', 'replyTo', 'asMember']
 /** The content fields a sealed replace clears when a legacy plaintext copy sits next to `enc`. */
 const PLAINTEXT_OF: Readonly<Record<'issue' | 'patch' | 'comment', readonly string[]>> = { issue: ['title', 'body'], patch: ['title', 'body'], comment: ['body'] }
 
+/** Who an edited document is for, and the stored document it was read from (null: nothing to read). */
+interface EditAudience {
+  readonly audience: Audience
+  readonly doc: PlainDocument | null
+}
+
+/**
+ * The audience of `repo`'s stored `documentType` document `id`, which an edit keeps (DESIGN
+ * §2.4): members-only in a private repo; in a public one read from the stored document, failing
+ * closed (it cannot be read: an error, never "public"). A public repo with no members key holds
+ * no members-only content: nothing is read.
+ */
+async function editAudience(sdk: EvoSDK, repo: RepoRef, documentType: string, id: string): Promise<EditAudience> {
+  if (repo.visibility === 'private') return { audience: 'members', doc: null }
+  if (!(await repoHasMembersKey(sdk, repo))) return { audience: 'public', doc: null }
+  return storedAudience(sdk, repo, documentType, id)
+}
+
 /**
  * Replace one of the signer's documents of `repo`, dropping the caches the edit invalidates.
  * In a private repo the content is re-sealed as a whole (`sealEdit`) and the replace sets only
@@ -778,13 +797,14 @@ async function replace(
   changes: Record<string, unknown>,
   expectedRevision: bigint | undefined,
   seal: SealContext | undefined,
+  read: EditAudience,
 ): Promise<ReplaceResult> {
   let replaced = changes
   // A public repo's document keeps the audience it was written for (DESIGN §2.4): a members-only
   // one is re-sealed as a whole under the members key, never replaced with plaintext; a public
-  // one stays plaintext. Read from the stored document, failing closed.
-  if (repo.visibility === 'public') {
-    const { audience, doc: stored } = await storedAudience(sdk, repo, documentType, documentId)
+  // one stays plaintext. Read from the stored document, failing closed ({@link editAudience}).
+  if (repo.visibility === 'public' && read.doc !== null) {
+    const { audience, doc: stored } = read
     if (audience !== 'public') {
       if (seal === undefined) throw new PrivateWriteError(`this ${documentType} is members-only, and an edit keeps who can read it; nothing was written`)
       if (expectedRevision === undefined) throw new Error(`a members-only ${documentType} edit needs the revision it was read at`)
@@ -845,8 +865,11 @@ export async function updateTarget(
     changes['title'] = input.title
   }
   const others = { ...(input.seal?.current ?? {}), ...changes, imported: input.seal?.imported }
+  // Who it is for, read before anything is stored: a members-only issue's long body must never
+  // go to a plaintext artifact (an artifact stored is public for good).
+  const read = await editAudience(sdk, repo, input.type, input.id)
   if (input.body !== undefined && input.body !== '') {
-    changes['body'] = await longBodyField(sdk, auth, repo, input.type, input.body, others, input.intent)
+    changes['body'] = await longBodyField(sdk, auth, repo, input.type, input.body, others, input.intent, read.audience, { type: input.type, id: input.id })
   } else if (input.body !== undefined) changes['body'] = undefined
   else if (repo.visibility === 'private' && typeof input.seal?.current['body'] === 'string') {
     // A longer title leaves a private long body less room: its prefix is cut again (same artifact).
@@ -855,7 +878,7 @@ export async function updateTarget(
     if (refit !== null && refit !== kept) changes['body'] = refit
   }
   if (Object.keys(changes).length === 0) throw new Error('nothing to change')
-  return replace(sdk, auth, repo, input.type, input.id, changes, input.expectedRevision, input.seal)
+  return replace(sdk, auth, repo, input.type, input.id, changes, input.expectedRevision, input.seal, read)
 }
 
 /**
@@ -873,14 +896,17 @@ export async function updateComment(
   input: { id: string; body: string; dropReviewId?: boolean; dropReplyTo?: boolean; dropProof?: boolean; expectedRevision?: bigint; seal?: SealContext; intent?: string },
 ): Promise<ReplaceResult> {
   if (input.body.trim() === '') throw new Error('a comment needs a body')
+  // Who it is for, read before anything is stored: a members-only comment's long body must never
+  // go to a plaintext artifact (an artifact stored is public for good).
+  const read = await editAudience(sdk, repo, 'comment', input.id)
   // A body longer than its field: its full text stored first (forge-v2.md §6.3); an inline
   // comment's path shares a private comment's room.
-  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, input.seal?.current ?? {}, input.intent)
+  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, input.seal?.current ?? {}, input.intent, read.audience, { type: 'comment', id: input.id })
   const changes: Record<string, unknown> = { body }
   if (input.dropReviewId) changes['reviewId'] = undefined
   if (input.dropReplyTo) changes['replyTo'] = undefined
   if (input.dropProof) changes['asMember'] = undefined
-  return replace(sdk, auth, repo, 'comment', input.id, changes, input.expectedRevision, input.seal)
+  return replace(sdk, auth, repo, 'comment', input.id, changes, input.expectedRevision, input.seal, read)
 }
 
 /**

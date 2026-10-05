@@ -38,7 +38,6 @@ import {
   repoSource,
   str,
   titleOf,
-  wellFormed,
   type IssueView,
   type PullView,
   type LabelDef,
@@ -186,13 +185,12 @@ export async function readComments(
       ],
     }),
   )
-  // Private repo: only comments that open with the reader's keys, decrypted (§8), which also
-  // covers well-formedness and a stranger's ciphertext; the rest are counted, never shown.
-  if (repo.visibility === 'private') {
-    const { docs } = await admitAll(gateFor(repo), 'comment', documents, tally)
-    return docs.map(toCommentView)
-  }
-  return documents.filter((d) => wellFormed(repo, 'comment', d)).map(toCommentView)
+  // Through the repo's gate, per document: a private repo's comments that open with the reader's
+  // keys, a public repo's plaintext ones and the members-only ones the reader's members key opens
+  // (decrypted, §8). Anything else (malformed, a stranger's ciphertext, members-only without the
+  // key) is counted, never shown as a blank comment.
+  const { docs } = await admitAll(gateFor(repo), 'comment', documents, tally)
+  return docs.map(toCommentView)
 }
 
 /** A merged timeline item: a comment or a state event. */

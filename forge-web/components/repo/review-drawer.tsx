@@ -66,7 +66,8 @@ export const VERDICT_WORDS: Readonly<Record<VerdictInput, string>> = { comment: 
  * offered until the stored draft has loaded (adding a comment earlier would start a second
  * draft over it), and every change reads the latest draft, never a render's stale copy.
  */
-export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string): {
+/** `membersOnly`: the PR is members-only, so its pending review never goes to disk. */
+export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, membersOnly = false): {
   draft: ReviewDraft | null
   loaded: boolean
   pending: PendingReview | undefined
@@ -106,9 +107,9 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string): 
       setDraft(d)
       if (identity === null) return
       if (d === null || draftIsEmpty(d)) void discardReviewDraft(network, identity, pullId)
-      else void saveReviewDraft(d, repo)
+      else void saveReviewDraft(membersOnly && repo.visibility === 'public' ? { ...d, audience: 'members' } : d, repo)
     },
-    [identity, network, pullId, repo],
+    [identity, network, pullId, repo, membersOnly],
   )
 
   const ensure = useCallback(
@@ -116,8 +117,8 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string): 
       identity === null
         ? null
         : latest.current ??
-          newReviewDraft({ draftId: newIntent(), network, identity, repoId: repo.repoId, prId: pullId, headOid, private: repo.visibility === 'private', now: Date.now() }),
-    [identity, network, repo, pullId, headOid],
+          newReviewDraft({ draftId: newIntent(), network, identity, repoId: repo.repoId, prId: pullId, headOid, private: repo.visibility === 'private', membersOnly, now: Date.now() }),
+    [identity, network, repo, pullId, headOid, membersOnly],
   )
 
   const pending = useMemo<PendingReview | undefined>(
@@ -157,7 +158,10 @@ export function ReviewDrawer({
   locked,
   lineExists,
   onSubmitted,
+  membersOnly = false,
 }: {
+  /** The PR is members-only: its pending review lives in this tab only. */
+  membersOnly?: boolean
   repo: RepoRef
   pullId: string
   headOid: string
@@ -218,7 +222,7 @@ export function ReviewDrawer({
   const working: ReviewDraft | null =
     identity === null
       ? null
-      : draft ?? newReviewDraft({ draftId: 'preview', network, identity, repoId: repo.repoId, prId: pullId, headOid, private: repo.visibility === 'private', now: 0 })
+      : draft ?? newReviewDraft({ draftId: 'preview', network, identity, repoId: repo.repoId, prId: pullId, headOid, private: repo.visibility === 'private', membersOnly, now: 0 })
   const planned = working === null ? null : frozen ? working : { ...working, summary, verdict }
   const { documents, cost } = planned === null ? { documents: 0, cost: null } : draftCost(planned)
 
@@ -286,7 +290,7 @@ export function ReviewDrawer({
         >
           <h3 className="text-dense font-semibold">Finish your review</h3>
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="draft-whereabouts">
-            {draftWhereabouts(repo.visibility === 'private')} Nothing is on Platform until you submit.
+            {draftWhereabouts(repo.visibility === 'private', membersOnly)} Nothing is on Platform until you submit.
           </p>
           {headMoved && draft ? (
             <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" data-testid="draft-head-moved">
