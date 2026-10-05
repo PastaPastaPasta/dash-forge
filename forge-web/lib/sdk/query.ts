@@ -242,12 +242,18 @@ export async function refreshStaleContract(contractId: string, e: unknown): Prom
   return cause !== null && staleContractHandler !== null && (await staleContractHandler(contractId, cause, staleDocumentVersion(e)))
 }
 
-/** `read()`, retried once after its contract was refreshed when it failed on a stale one. */
-export async function retryOnStaleContract<T>(contractId: string, read: () => Promise<T>): Promise<T> {
+/**
+ * `read()`, retried once after its contract was refreshed when it failed on a stale one. A read
+ * over several contracts (a composite) names them all: the error does not say which one is
+ * stale, so each is refreshed, and the read retries when any of them was.
+ */
+export async function retryOnStaleContract<T>(contractIds: string | readonly string[], read: () => Promise<T>): Promise<T> {
   try {
     return await read()
   } catch (e) {
-    if (!(await refreshStaleContract(contractId, e))) throw e
+    const ids = typeof contractIds === 'string' ? [contractIds] : [...new Set(contractIds)]
+    const refreshed = await Promise.all(ids.map((id) => refreshStaleContract(id, e)))
+    if (!refreshed.includes(true)) throw e
     return read()
   }
 }
@@ -363,7 +369,7 @@ export function ungroupedRangeProblem(query: DocumentQuery & { readonly groupBy?
 }
 
 async function readCount(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
-  const grouped = await documentsOf(sdk).count(query)
+  const grouped = await retryOnStaleContract(query.dataContractId, () => documentsOf(sdk).count(query))
   let total = 0n
   if (grouped instanceof Map) {
     for (const v of grouped.values()) total += v
@@ -382,7 +388,9 @@ export type GroupedQuery = DocumentQuery & { readonly groupBy: readonly string[]
 export function countDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery): Promise<Map<string, number>> {
   const problem = ungroupedRangeProblem(query)
   if (problem !== null) return Promise.reject(new Error(problem))
-  return joinInFlight(sdk, 'countGrouped', query, async () => bigintMap(await documentsOf(sdk).count(query as DocumentQuery)))
+  return joinInFlight(sdk, 'countGrouped', query, async () =>
+    bigintMap(await retryOnStaleContract(query.dataContractId, () => documentsOf(sdk).count(query as DocumentQuery))),
+  )
 }
 
 /**
@@ -392,7 +400,9 @@ export function countDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery): Promise
 export function sumDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery, property: string): Promise<Map<string, number>> {
   const problem = ungroupedRangeProblem(query)
   if (problem !== null) return Promise.reject(new Error(problem))
-  return joinInFlight(sdk, `sum:${property}`, query, async () => bigintMap(await documentsOf(sdk).sum(query as DocumentQuery, property)))
+  return joinInFlight(sdk, `sum:${property}`, query, async () =>
+    bigintMap(await retryOnStaleContract(query.dataContractId, () => documentsOf(sdk).sum(query as DocumentQuery, property))),
+  )
 }
 
 function bigintMap(m: Map<string, bigint> | unknown): Map<string, number> {
@@ -456,15 +466,17 @@ export interface RankedPage {
  * group key descending.
  */
 export async function rankedDocuments(sdk: EvoSDK, query: RankedQuery): Promise<RankedPage> {
-  const res = await documentsOf(sdk).ranked({
-    dataContractId: query.dataContractId,
-    documentTypeName: query.documentTypeName,
-    groupBy: query.groupBy,
-    aggregate: { type: 'count' },
-    limit: query.limit,
-    direction: 'desc',
-    ...(query.timeRange ? { timeRange: [{ field: query.timeRange.field, selector: query.timeRange.selector }] } : {}),
-  })
+  const res = await retryOnStaleContract(query.dataContractId, () =>
+    documentsOf(sdk).ranked({
+      dataContractId: query.dataContractId,
+      documentTypeName: query.documentTypeName,
+      groupBy: query.groupBy,
+      aggregate: { type: 'count' },
+      limit: query.limit,
+      direction: 'desc',
+      ...(query.timeRange ? { timeRange: [{ field: query.timeRange.field, selector: query.timeRange.selector }] } : {}),
+    }),
+  )
   return {
     entries: res.entries.map((e) => ({
       group: String(e.groupValue ?? ''),

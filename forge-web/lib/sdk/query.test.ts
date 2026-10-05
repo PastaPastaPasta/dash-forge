@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { countDocuments, countDocumentsGrouped, noteSdkWrite, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler, staleContractCause, staleDocumentVersion, sumDocumentsGrouped, ungroupedRangeProblem, type DocumentQuery } from './query'
+import { countDocuments, countDocumentsGrouped, noteSdkWrite, queryAllDocuments, queryDocuments, retryOnStaleContract, setPlatformVersion, setStaleContractHandler, staleContractCause, staleDocumentVersion, sumDocumentsGrouped, ungroupedRangeProblem, type DocumentQuery } from './query'
 
 const CONTRACT = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 
@@ -58,6 +58,35 @@ describe('reads against a seeded contract that went stale (M3)', () => {
     expect(staleContractCause(new Error('transport error'))).toBeNull()
     expect(staleDocumentVersion(new Error(NEWER))).toBe(2)
     expect(staleDocumentVersion({ message: 'document type not found: packMirror' })).toBeUndefined()
+  })
+
+  it('retries counts and sums the same way: an update can add the type they read', async () => {
+    const stale = { message: 'document type not found: milestone' }
+    const count = vi.fn().mockRejectedValueOnce(stale).mockResolvedValue(new Map([['k', 3n]]))
+    const sum = vi.fn().mockRejectedValueOnce(stale).mockResolvedValueOnce(new Map([['k', 5n]]))
+    const handler = vi.fn(async () => true)
+    setStaleContractHandler(handler)
+    const sdk = { documents: { count, sum }, version: () => 14 } as unknown as EvoSDK
+    const grouped = { dataContractId: CONTRACT, documentTypeName: 'milestone', where: [['state', 'in', [0]]] as const, groupBy: ['state'] }
+    expect(await countDocuments(sdk, { dataContractId: CONTRACT, documentTypeName: 'milestone' })).toBe(3)
+    expect(await countDocumentsGrouped(sdk, grouped)).toEqual(new Map([['k', 3]]))
+    expect(await sumDocumentsGrouped(sdk, grouped, 'weight')).toEqual(new Map([['k', 5]]))
+    expect(handler).toHaveBeenCalledTimes(2)
+    expect(count).toHaveBeenCalledTimes(3)
+    expect(sum).toHaveBeenCalledTimes(2)
+  })
+
+  it('a read over several contracts refreshes each (the error does not name one) and retries when any was', async () => {
+    const OTHER = 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec'
+    const read = vi.fn().mockRejectedValueOnce({ __wbg_ptr: 1, message: NEWER }).mockResolvedValueOnce('rows')
+    const handler = vi.fn(async (id: string) => id === OTHER)
+    setStaleContractHandler(handler)
+    expect(await retryOnStaleContract([CONTRACT, OTHER, CONTRACT], read)).toBe('rows')
+    expect(handler.mock.calls).toEqual([
+      [CONTRACT, 'newerDocument', 2],
+      [OTHER, 'newerDocument', 2],
+    ])
+    expect(read).toHaveBeenCalledTimes(2)
   })
 
   it('does not retry other errors', async () => {
