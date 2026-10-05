@@ -126,7 +126,7 @@ export function UpstreamAliasClient(): JSX.Element {
   return (
     <section aria-labelledby="alias-heading" className="mx-auto max-w-3xl space-y-3" data-testid="alias-mirrors">
       <h1 id="alias-heading" className="text-2xl">
-        Mirrors of {source}
+        Repos that say they mirror {source}
       </h1>
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
         Anyone can describe a repo as a mirror, so check who owns one before you rely on it.
