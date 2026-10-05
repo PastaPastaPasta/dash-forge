@@ -189,118 +189,116 @@ export function EncryptionKeyPanel(): JSX.Element | null {
         <div className="mt-3">
           <UnlockMore title="Unlock this tab to manage your encryption key" testId="encryption-unlock" />
         </div>
-      ) : keyIds === undefined ? null : (
-        <>
-          {keyIds !== null ? (
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-dense" data-testid="encryption-key-stored">
-                {storage === 'session'
-                  ? `${heldKeys(keyIds)} held for this tab only; ${keyIds.length === 1 ? 'it is' : 'they are'} forgotten on reload or lock.`
-                  : `${heldKeys(keyIds)} stored in this browser and unlocked now: private repos you're a member of open here. It locks again with this browser's key (Lock, or after 12 hours).`}
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  void confirm({
-                    title: 'Remove the encryption key from this browser?',
-                    body: 'Private repos stop opening here until you add it again (from your identity file, the key itself or your recovery phrase). The key stays on your identity.',
-                    confirmLabel: 'Remove key',
-                  }).then((ok) => {
-                    if (ok) removeEncryptionKey(network, identity).catch((e: unknown) => setError(errorMessage(e)))
-                  })
-                }}
+      ) : keyIds !== null && keyIds !== undefined ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-dense" data-testid="encryption-key-stored">
+            {storage === 'session'
+              ? `${heldKeys(keyIds)} held for this tab only; ${keyIds.length === 1 ? 'it is' : 'they are'} forgotten on reload or lock.`
+              : `${heldKeys(keyIds)} stored in this browser and unlocked now: private repos you're a member of open here. It locks again with this browser's key (Lock, or after 12 hours).`}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              void confirm({
+                title: 'Remove the encryption key from this browser?',
+                body: 'Private repos stop opening here until you add it again (from your identity file, the key itself or your recovery phrase). The key stays on your identity.',
+                confirmLabel: 'Remove key',
+              }).then((ok) => {
+                if (ok) removeEncryptionKey(network, identity).catch((e: unknown) => setError(errorMessage(e)))
+              })
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" aria-hidden /> Remove from this browser
+          </Button>
+        </div>
+      ) : null}
+      {/* Another key can always be added: one held here never blocks a newer one (DESIGN D27). */}
+      {unlockScope !== 'signing' && keyIds !== undefined ? (
+        <div className="mt-3 space-y-3">
+          <p className="text-dense font-medium">{keyIds === null ? 'Enable private repos' : 'Add another encryption key'}</p>
+          <div role="tablist" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+            {(
+              [
+                ['phrase', 'Recovery phrase'],
+                ['file', 'Identity file'],
+                ['paste', 'Paste key'],
+                ['register', 'Register a new key'],
+              ] as const
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                role="tab"
+                aria-selected={mode === m}
+                type="button"
+                onClick={() => setMode(m)}
+                className={'rounded px-3 py-1.5 text-dense font-medium coarse:min-h-11 ' + (mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
               >
-                <Trash2 className="h-3.5 w-3.5" aria-hidden /> Remove from this browser
+                {label}
+              </button>
+            ))}
+          </div>
+          {mode === 'phrase' ? (
+            <div className="space-y-2">
+              <Field
+                label="Recovery phrase (12 or 24 words)"
+                htmlFor="enc-phrase"
+                hint="Derives your identity's encryption key, checks it against the identity, and stores it here. Nothing is signed or paid; the words are not stored."
+              >
+                <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
+              </Field>
+              <Button variant="primary" loading={busy} onClick={fromPhrase}>
+                Use my encryption key
               </Button>
             </div>
           ) : null}
-          {/* Another key can always be added: one held here never blocks a newer one (DESIGN D27). */}
-          <div className="mt-3 space-y-3">
-            <p className="text-dense font-medium">{keyIds === null ? 'Enable private repos' : 'Add another encryption key'}</p>
-            <div role="tablist" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
-              {(
-                [
-                  ['phrase', 'Recovery phrase'],
-                  ['file', 'Identity file'],
-                  ['paste', 'Paste key'],
-                  ['register', 'Register a new key'],
-                ] as const
-              ).map(([m, label]) => (
-                <button
-                  key={m}
-                  role="tab"
-                  aria-selected={mode === m}
-                  type="button"
-                  onClick={() => setMode(m)}
-                  className={'rounded px-3 py-1.5 text-dense font-medium coarse:min-h-11 ' + (mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
-                >
-                  {label}
-                </button>
-              ))}
+          {mode === 'file' ? (
+            <Field label="Identity file" htmlFor="enc-file" hint="Its encryption key (or one derived from its recovery phrase) is checked against your identity, then stored.">
+              <input
+                id="enc-file"
+                type="file"
+                accept="application/json,.json,.txt"
+                disabled={busy}
+                className="max-w-full text-dense coarse:min-h-11"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) fromFile(f)
+                  e.target.value = ''
+                }}
+              />
+            </Field>
+          ) : null}
+          {mode === 'paste' ? (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              <div className="flex-1">
+                <Field label="Encryption private key (WIF or hex)" htmlFor="enc-paste">
+                  <Input id="enc-paste" ref={pasted} type="password" autoComplete="off" spellCheck={false} className="font-mono" />
+                </Field>
+              </div>
+              <Button variant="primary" loading={busy} onClick={fromPaste}>
+                Store key
+              </Button>
             </div>
-            {mode === 'phrase' ? (
-              <div className="space-y-2">
-                <Field
-                  label="Recovery phrase (12 or 24 words)"
-                  htmlFor="enc-phrase"
-                  hint="Derives your identity's encryption key, checks it against the identity, and stores it here. Nothing is signed or paid; the words are not stored."
-                >
-                  <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
-                </Field>
-                <Button variant="primary" loading={busy} onClick={fromPhrase}>
-                  Use my encryption key
-                </Button>
-              </div>
-            ) : null}
-            {mode === 'file' ? (
-              <Field label="Identity file" htmlFor="enc-file" hint="Its encryption key (or one derived from its recovery phrase) is checked against your identity, then stored.">
-                <input
-                  id="enc-file"
-                  type="file"
-                  accept="application/json,.json,.txt"
-                  disabled={busy}
-                  className="max-w-full text-dense coarse:min-h-11"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0]
-                    if (f) fromFile(f)
-                    e.target.value = ''
-                  }}
-                />
+          ) : null}
+          {mode === 'register' ? (
+            <div className="space-y-2">
+              <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
+                Only for an identity with no encryption key yet. If yours has one, use Recovery phrase above: it is free.
+              </p>
+              <Field
+                label="Recovery phrase (12 or 24 words)"
+                htmlFor="enc-phrase"
+                hint={`Derives the new key and your master key, which signs one identity update (${REGISTER_COST}, one master-key signature). Neither is stored. An existing encryption key is used instead, at no cost.`}
+              >
+                <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
               </Field>
-            ) : null}
-            {mode === 'paste' ? (
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                <div className="flex-1">
-                  <Field label="Encryption private key (WIF or hex)" htmlFor="enc-paste">
-                    <Input id="enc-paste" ref={pasted} type="password" autoComplete="off" spellCheck={false} className="font-mono" />
-                  </Field>
-                </div>
-                <Button variant="primary" loading={busy} onClick={fromPaste}>
-                  Store key
-                </Button>
-              </div>
-            ) : null}
-            {mode === 'register' ? (
-              <div className="space-y-2">
-                <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
-                  Only for an identity with no encryption key yet. If yours has one, use Recovery phrase above: it is free.
-                </p>
-                <Field
-                  label="Recovery phrase (12 or 24 words)"
-                  htmlFor="enc-phrase"
-                  hint={`Derives the new key and your master key, which signs one identity update (${REGISTER_COST}, one master-key signature). Neither is stored. An existing encryption key is used instead, at no cost.`}
-                >
-                  <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
-                </Field>
-                <Button variant="primary" loading={busy} onClick={() => void register()}>
-                  Register and store
-                </Button>
-              </div>
-            ) : null}
-          </div>
-        </>
-      )}
+              <Button variant="primary" loading={busy} onClick={() => void register()}>
+                Register and store
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {note ? <p className="mt-2 text-[12px] text-verify-700 dark:text-verify-400">{note}</p> : null}
       {error ? (
         <p role="alert" className="mt-2 text-[12px] text-danger-700 dark:text-danger-400 break-words">
