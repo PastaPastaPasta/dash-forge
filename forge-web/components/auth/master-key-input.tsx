@@ -16,6 +16,7 @@ import { Field, Textarea } from '@/components/ui/input'
 import { masterMaterialFromFile, type MasterInput } from '@/lib/auth'
 import { otherIdentityFileMessage } from '@/lib/auth/controller'
 import { cn, errorMessage } from '@/lib/utils'
+import { PhraseWarning } from '@/components/auth/phrase-warning'
 
 export interface MasterKeyInput {
   /** The fieldset to render. */
@@ -114,17 +115,20 @@ export function useMasterKeyInput(identityId: string | null, { id, fileLabel }: 
           />
         </>
       ) : (
-        <Field label="Recovery phrase (12 or 24 words)" htmlFor={`${id}-mnemonic`}>
-          <Textarea
-            id={`${id}-mnemonic`}
-            ref={phraseRef}
-            defaultValue=""
-            onChange={(e) => setPhraseTyped(e.target.value.trim() !== '')}
-            className="min-h-[64px] font-mono"
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </Field>
+        <>
+          <PhraseWarning />
+          <Field label="Recovery phrase (12 or 24 words)" htmlFor={`${id}-mnemonic`}>
+            <Textarea
+              id={`${id}-mnemonic`}
+              ref={phraseRef}
+              defaultValue=""
+              onChange={(e) => setPhraseTyped(e.target.value.trim() !== '')}
+              className="min-h-[64px] font-mono"
+              spellCheck={false}
+              autoComplete="off"
+            />
+          </Field>
+        </>
       )}
     </fieldset>
   )

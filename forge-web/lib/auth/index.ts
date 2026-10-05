@@ -39,10 +39,13 @@ export {
 } from './vault'
 export {
   BROWSER_KEY_DEFAULTS,
+  KEY_LIFETIME_DAYS,
   TOP_UP_DEFAULTS,
   TOP_UP_MAX_DAYS,
   TopUpPendingError,
   defaultLimits,
+  lifetimeLabel,
+  limitsFor,
   parseDashAmount,
   topUpExpiry,
   type LimitedKey,

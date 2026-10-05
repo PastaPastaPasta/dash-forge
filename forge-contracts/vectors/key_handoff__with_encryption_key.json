@@ -1,0 +1,17 @@
+{
+  "name": "with_encryption_key",
+  "description": "a reply that also carries the identity's encryption key (the user passed --with-encryption-key).",
+  "case": "key_handoff",
+  "rules": "v2",
+  "input": {
+    "network": "sakura",
+    "browserSecret": "0707070707070707070707070707070707070707070707070707070707070707",
+    "ephemeralSecret": "2222222222222222222222222222222222222222222222222222222222222222",
+    "nonce": "0b0a09080706050403020100",
+    "plaintext": "{\"v\":1,\"network\":\"sakura\",\"identityId\":\"8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB\",\"keyId\":9,\"wif\":\"cTestWif2\",\"encryptionKey\":{\"keyId\":4,\"privateKeyHex\":\"f16baad1b1863c015869f5a6a2db471537d06a31d3bd78d961300f13f6b14239\"}}"
+  },
+  "expected": {
+    "request": "dfkr1:sakura:ApicC3bLVjlx_cm-8x7AbDVg8ySdbunl2DxXYlWW4F9v",
+    "reply": "dfkh1:sakura:AkZtf8rlY-XLCaDRhwu1gDRIBGF4eaFJSc8iKF8brj8nCwoJCAcGBQQDAgEAFNFgvJAR7AiTMcsUcZNO77eeLTrxlx_rVMvslD1fDj7bjgYQiKkQTxwSKIsz678fr1vCTm-td9g38u9INrNtZvvKA0pdhT2zV3v-WSSOwBKI3cUgk1jLRe1QkZUGumSY1c4QF0rlo3k2dLpNsJx-V5FDNWuSWmIvGh35ktMT7n222yTFjX27p4fkECZrSoXWi9G1jsgqszeXa9ktUIavmHtdW0o9OsraO0TXYIiTB0DpdYs5VcqLg15DqU1gllKSZUl0AQq1uWD6UzJRPqgTeJ-Q7Mgi_hI2Xs4bAIP29oc_L07h8EE7VisZx9dKNRUzvg"
+  }
+}

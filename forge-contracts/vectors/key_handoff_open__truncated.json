@@ -1,0 +1,14 @@
+{
+  "name": "truncated",
+  "description": "a reply cut short (no room for a tag) is malformed.",
+  "case": "key_handoff_open",
+  "rules": "v2",
+  "input": {
+    "network": "sakura",
+    "browserSecret": "0707070707070707070707070707070707070707070707070707070707070707",
+    "reply": "dfkh1:sakura:A081W9y3zAr3KO88zrlhXZBoS7Wyyl-FmrDwtwQHWHGqAAECAwQFBgcICQoLy62Tl33"
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

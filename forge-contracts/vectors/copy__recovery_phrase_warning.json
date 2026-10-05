@@ -1,0 +1,12 @@
+{
+  "name": "recovery_phrase_warning",
+  "description": "The fixed warning dg and the web app show before every recovery-phrase prompt (trust and safety TS-06).",
+  "case": "copy",
+  "rules": "v2",
+  "input": {
+    "id": "recoveryPhraseWarning"
+  },
+  "expected": {
+    "text": "Your recovery phrase controls your identity. Forge asks for it only after you start a key action yourself, never because a message, an email or a pop-up says so. If you didn't start this, stop here."
+  }
+}

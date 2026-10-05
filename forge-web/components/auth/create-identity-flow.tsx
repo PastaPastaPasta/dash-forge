@@ -44,6 +44,7 @@ import {
 } from '@/lib/auth/create-identity'
 import { invalidMnemonicMessage, isValidMnemonic, newMnemonic, normalizeMnemonic, quizAnswerOk, quizPositions } from '@/lib/auth/hd'
 import { errorMessage } from '@/lib/utils'
+import { PhraseWarning } from '@/components/auth/phrase-warning'
 
 type Step = 'loading' | 'words' | 'quiz' | 'protect' | 'fund' | 'resume'
 
@@ -312,6 +313,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
           An identity creation is in progress on this device (deposit address <span className="font-mono">{address}</span>). Type
           your 12 words to finish it.
         </p>
+        <PhraseWarning />
         <Field label="Your 12 words" htmlFor="resume-words">
           <Textarea id="resume-words" ref={bindResume} onChange={(e) => setResumeWordsState(e.target.value)} className="min-h-[72px] font-mono" spellCheck={false} autoComplete="off" />
         </Field>

@@ -68,8 +68,9 @@ Do this once:
 If you lose a laptop but still have the words or a backup of the file, nothing is lost. Your repositories, issues and history are on Platform, not on your laptop:
 
 1. On the new machine run `dg auth login --mnemonic` (type the 12 words) or `dg auth login <file>` with your backup. It registers a new limited key and stores only that, with the encryption key beside it.
-2. Disable the lost machine's key: `dg auth keys list` shows it, `dg auth keys disable <id>` disables it (or pass `--replace <id>` to the login above to do both in one update). A limited key can only spend its remaining budget, and only on Forge, until then.
+2. Disable the lost machine's key: in the web app, **Settings → Devices & keys** lists every key and has **Disable** (your identity file or recovery phrase signs once); in the terminal, `dg auth keys list` shows it and `dg auth keys disable <id>` disables it (or pass `--replace <id>` to the login above to do both in one update). A limited key can only spend its remaining budget, and only on Forge, until then.
 3. In a browser, **Sign in → Import an identity file or recovery phrase** registers a fresh limited key for that browser; the words alone are enough.
+4. If you use private repositories, the lost machine also held your **encryption key**, which a disabled signing key does not protect. Replace it: `dg auth keys rotate --encryption` ([below](#replacing-it-after-a-lost-device)).
 
 Your **repository data** needs no backup of its own. Refs, issues and PRs are on Platform. Pack bytes are on Platform or in the storage you chose. Any clone also holds a full copy of the history, and [`dg reseed --from-local`](bring-your-own-storage.md#restoring-a-lost-copy) can restore a lost pack copy from it.
 
@@ -105,7 +106,8 @@ Things to know:
 A web page is whoever served it. If the page, or a script it loads, is compromised, anything you paste into it is gone.
 
 - **Never paste your MASTER key, your 12 words, or your main identity file into a website.** That includes forge.dashhq.org. Nothing on Forge needs them.
-- The web app's **Import** reads your identity file (or recovery phrase) once: its master key signs one update that registers a [limited key](#limited-keys) for this browser, and is not retained. If you would rather not load the master key into a web page at all, use **Use my Dash wallet** instead (the wallet registers the key), or register a key for the browser from the terminal: `dg auth export --new-key --reveal-secrets --format dfk1 -o key.dfk1`, then under **Advanced** enter the identity id and the key's WIF (the last `:`-separated field of the `dfk1` value). It signs for that tab only.
+- The web app's **Import** reads your identity file (or recovery phrase) once: its master key signs one update that registers a [limited key](#limited-keys) for this browser, and is not retained. If you would rather not load the master key into a web page at all, use **Sign in → Use dg on your computer**: the page shows a `dg auth keys add --for-browser …` command, `dg` registers the key with your master key on the terminal and prints a line that only that tab can open ([below](#a-browser-key-from-dg)). **Use my Dash wallet** also keeps the master key out of the page (the wallet registers the key).
+- Forge asks for your recovery phrase only after you start a key action yourself. Every phrase prompt, in the web app and in `dg`, shows the same warning: *"Your recovery phrase controls your identity. Forge asks for it only after you start a key action yourself, never because a message, an email or a pop-up says so. If you didn't start this, stop here."* A page that asks for your words without it, or because a message told you to, is not Forge.
 - For CI, give a pipeline its own limited key: `dg auth export --new-key --budget 0.5 --expires 365d --format dfk1 --reveal-secrets -o runner.dfk1` makes one, and the file's one line is the `DASH_FORGE_KEY` secret.
 - Prefer a copy of the web app that you [serve yourself](verify-forge.md#run-your-own-copy-of-the-web-app) if you do not want to trust the one on forge.dashhq.org.
 
@@ -120,7 +122,9 @@ Platform lets the MASTER key add new keys to an identity and disable old ones. A
 ```sh
 dg auth keys list                        # every key: purpose, level, budget left, expiry, this computer's
 dg auth keys add [--budget 0.25 --expires 180d] [--replace <id> | --keep-current]   # a new key for this computer; disables the one it replaces
+dg auth keys add --for-browser <request> [--replace <id>] [--with-encryption-key]   # a key for a browser tab, printed sealed to it
 dg auth keys disable <id>                # disable one (limited keys; --force for others)
+dg auth keys rotate --encryption [--keep-old]   # replace the ENCRYPTION key and move your private repos to it
 dg auth logout [--disable]               # forget the key here (and disable it on chain)
 ```
 
@@ -128,7 +132,7 @@ dg auth logout [--disable]               # forget the key here (and disable it o
 
 When to rotate:
 
-- a laptop or CI secret that held a key was lost or leaked: **disable that key**;
+- a laptop or CI secret that held a key was lost or leaked: **disable that key**, and if it also held the encryption key (any `dg auth login` with private repos, a browser with private repos enabled), **replace the encryption key** too;
 - a limited key's budget is nearly spent or it is about to expire: `dg auth keys add` registers a fresh one and disables this computer's current key in the same update (`--replace <id>` names another key to disable, `--keep-current` keeps the current one live on chain, though this computer no longer stores it; `dg auth login … --replace <old id>` does the same at sign-in).
 
 A browser's own key is managed in the web app: **Settings → This browser's key** can top it up, renew it or revoke it ([below](#limited-keys)).
@@ -155,6 +159,21 @@ dg auth keys add --encryption
 
 **What it can read.** This key can read every private repo you're a member of, and every key you've handed out as a maintainer. Keep it as carefully as your signing keys.
 
+### Replacing it after a lost device
+
+```sh
+dg auth keys rotate --encryption [--master <identity file>] [--keep-old]
+```
+
+It runs the rekey of [private-repos.md §5.2](../security/private-repos.md#52-encryption-keys-derivation-custody-blast-radius-rekey), in this order, and prints the plan and its cost before anything is signed:
+
+1. Adds a new ENCRYPTION key, derived from the recovery phrase at the next key id, so the words alone recover it (one identity update, signed by the MASTER key).
+2. Rotates the key of every private repository you **maintain**: a new key epoch, wrapped to every member, you first, to your new key. Each costs one wrap per member plus one anchor.
+3. Names the private repositories where you are only a writer, triage or reader. You cannot rotate those. A maintainer's next visit (or `dg repo keys repair <repo>`) wraps the current key to your new one. Until then, new content there is sealed for the old key.
+4. Disables the old key, unless `--keep-old` is given or a repository failed to rotate. A disabled key still opens what was sealed for it, so nothing you could read is lost. Whoever holds the old key keeps what was sealed before, but nothing sealed from now on.
+
+The key `dg` stores beside your limited key (`dg auth login`) gets the new key too. A repository counts as moved only when a fresh read shows your wrap for its current epoch on the new key. If one is not, every old key stays enabled and nothing is lost. Run the command again: each run adds a fresh key and treats every enabled encryption key as old, since a lost device may have held an earlier run's key too. Other computers and browsers need the new key: sign in again with the words, or in the web app add it from **Settings → Private repos**.
+
 **In the web app** this will be **Settings → Keys → Enable private repos**, with the web release of private repositories.
 
 ---
@@ -170,7 +189,7 @@ A limited key is an identity key with four restrictions:
 
 | Where | Budget | Expires |
 |---|---|---|
-| Browser | 0.05 DASH | 90 days |
+| Browser | 0.05 DASH | 90 days (30 days to 1 year) |
 | CLI (`dg auth new` / `login` / `keys add`) | 0.25 DASH | 180 days |
 | CI runner (`dg auth export --new-key`, Mirror Action) | 0.5 DASH | 365 days |
 
@@ -196,11 +215,27 @@ dg auth name register <label>                   # a DPNS username
 
 `dg auth new` shows the 12 words once and asks you to type three of them back. It then shows the deposit address as a QR code and as text. Fund it from any Dash wallet (the faucet on devnets), and `dg` does the rest: the asset lock, its proof (InstantSend where the network offers one, else a chain lock), and one IdentityCreate that registers the standard keys plus this computer's limited key. The limited key is stored in the keychain *before* the identity exists, so an interruption never leaves a key nobody holds. An interrupted run resumes with `dg auth new --resume` (type the words again); the deposit address stays the same. The words are shown only in a terminal, and never with `--json` or in CI. Without a terminal, `--backup-file <new file>` is required: the words and keys go only to that passphrase-sealed file (0600, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`) and only its path is printed. `--skip-backup-check` skips the three-word check in a terminal and needs `--backup-file`; it never prints or writes the words anywhere else.
 
+### A browser key from dg
+
+On a computer where `dg` is signed in, a browser can get its key without the recovery phrase:
+
+1. In the web app, **Sign in → Use dg on your computer** (or **Settings → This browser's key → Renew key → With dg**). Pick how long the key lives (30 days to a year) and whether the browser should also open private repos. The page shows a command with a one-time request in it:
+
+   ```sh
+   dg auth keys add --devnet-name sakura --for-browser dfkr1:devnet-sakura:Ap… --budget 0.05 --expires 365d [--replace 7] [--with-encryption-key]
+   ```
+
+2. Run it. `dg` shows what the key can spend and what the update costs, asks, signs with your master key (the stored identity file, `--master <file>`, or your words), and prints one line starting with `dfkh1:`.
+3. Paste that line into the page and choose a passphrase or passkey. The browser checks the key on chain and keeps it in its vault.
+
+When the page knows your identity (a renewal, or a key this browser already holds), the command carries `--for-identity <id>` and `--replace <key>`, and `dg` refuses before signing if it would make the key for another identity. The printed line is sealed to the tab that showed the request: anyone else who sees it cannot open it, and it opens on that network only. `--replace <id>` (filled in by Renew) disables the browser's old key in the same update; `--with-encryption-key` hands over the identity's encryption key too, for private repos. This computer keeps signing with its own key. A key that came from `dg` renews with `dg` by default, so renewing never asks for the recovery phrase.
+
 Ways to get one in the web app (**Sign in**):
 
 | Route | What happens |
 |---|---|
-| Import an identity file or recovery phrase | Your master key signs one IdentityUpdate that adds the limited key. It is used once and not retained. |
+| Use dg on your computer | `dg` registers the key and prints it sealed to this tab ([above](#a-browser-key-from-dg)). The recovery phrase stays out of the browser. |
+| Import an identity file or recovery phrase | Your master key signs one IdentityUpdate that adds the limited key. It is used once and not retained. You choose how long the key lives: 30 days, 90 days (the default), 6 months or 1 year. |
 | Create a new identity | 12 words, a check on three of them, a choice of passkey or passphrase, then a deposit from any Dash wallet (the faucet on devnets). One IdentityCreate registers the standard key set plus this browser's limited key, so no second signature is needed. The key is stored in the vault *before* it is registered, and an interrupted creation resumes when you type the same words again. |
 | Use my Dash wallet | **Not a limited key**, and **testnet only**: Dash Wallet's sign-in feature (DashConnect, More → Tools → Connections in the DashPay app) answers on testnet, is not in a released version yet, and Forge is not on testnet yet. On sakura only an internal iOS build with the login contract entered by hand can answer ([below](#signing-in-with-the-dash-wallet-app-what-works-today)). Scan the QR code with the wallet (or tap **Open in DashPay (Dash Wallet)** on the phone) and approve; the first time, scan (or open) a second code, and the wallet adds Forge's key to your identity (iOS asks for your PIN). Your wallet hands the key over encrypted. **Check that the username and identity shown match what your wallet showed**: a response does not prove who answered, and anyone who saw the QR code could answer. On the App Connect contract the app refuses if more than one identity answers; on the key-exchange contract today's wallets use, the first answer wins. Today's Dash Wallet grants a key with **no spending limit or expiry** (on iOS, for one contract per approval, so issues and pull requests take one more approval), and Settings offers to replace the key with a limited one or disable it. See [wallet-login](../design/wallet-login.md). |
 | Advanced: paste a key | A HIGH or CRITICAL key, for this tab only, lost on reload. It has no limits Forge set. Never paste a master key. |
@@ -208,7 +243,7 @@ Ways to get one in the web app (**Sign in**):
 The header shows your balance and the key's remaining budget. It turns amber when the budget drops under 20 % or expiry is less than 7 days away, and red when the key is spent or expired. A write that would overrun either is refused before it is signed, and the sheet that opens says which one blocks. **Settings → This browser's key** shows the budget and expiry and has these actions:
 
 - **Top up key budget** adds budget to the same key (0.05 DASH by default) and can push its expiry out, up to 365 days. It is an `IdentityKeyLimitsUpdate` (Dash Platform v5), signed once by your master key from the identity file or recovery phrase, and costs about 0.00002 DASH.
-- **Renew key** opens **Renew this browser's key**: your identity file or recovery phrase registers a fresh key and disables the previous one in the same update (about 0.00028 DASH). An encryption key this browser holds moves to the new key.
+- **Renew key** opens **Renew this browser's key**: **With dg** (the default for a key that came from `dg`) or **With identity file or phrase** registers a fresh key and disables the previous one in the same update (about 0.00028 DASH). An encryption key this browser holds moves to the new key.
 - **Lock** drops the unlocked key in every open tab and ends the kept session; unlock again with the passkey or passphrase.
 - **Settings → Security → Stay signed in for public repos (up to 12 h)** (on by default): reloads and new tabs keep only the spend-capped signing key, for up to 12 hours after the unlock and until 4 hours pass without use. Private repos, storage credentials and wallet grants still ask you to unlock, once per tab. Turn it off and every reload or new tab starts locked.
 - **Revoke on chain** disables this browser's key (about 0.00002 DASH). It needs your identity file or recovery phrase once. After a reload it first asks you to unlock this tab, so it can disable every key the browser holds.
@@ -243,6 +278,14 @@ Drafts of the wallet-side fixes (group-scoped, limited grants; a signature that 
 CI gets one pasteable value, `DASH_FORGE_KEY=dfk1:<network>:<identity id>:<key id>:<wif>`, in place of a file. `dg auth export --format dfk1` writes only limited keys.
 
 ---
+
+## Devices & keys
+
+**Settings → Devices & keys** lists every key on your identity as the network has it: what each is for (master, a Forge key with a budget and an expiry, a key for one Forge contract, encryption, transfer), what is left of its budget, when it expires, and which one this browser signs with. Name a key ("work laptop") to tell them apart; names stay in this browser. **Disable** turns off a lost device's key for good; your identity file or recovery phrase signs once (about 0.00002 DASH). The master key cannot be disabled, this browser's own key goes through **Revoke on Platform**, and the encryption key is not disabled here, because your private repos open with it: **Lost a device?** on the same page gives the `dg auth keys rotate --encryption` command that replaces it ([below](#replacing-it-after-a-lost-device)). Platform does not record when a key was last used: a budget that went down was used, and the page shows when this browser last wrote.
+
+**New-key alert.** Each browser remembers which keys your identity had when it last looked. When you sign in or unlock and a key has appeared that this browser did not add, a red bar names it. Added it yourself (with `dg`, another browser, a CI runner)? Choose **It was me**. If not, choose **Review keys** and disable it: whoever holds your recovery phrase or master key can add keys, so a key you did not add is the first sign of a leak. A new **master** key means someone else may control the identity ([below](#rotating-and-disabling-keys)). The check reuses the identity read every sign-in makes; it costs nothing.
+
+**Storage.** The vault lives in the browser's storage, which a browser may clear under storage pressure, and Safari clears after 7 days without a visit. Forge asks the browser to keep it when it stores a key (`navigator.storage.persist()`), and Devices & keys says whether it agreed. If the vault is cleared, sign in again with `dg`, your identity file or your recovery phrase.
 
 ## The browser vault and its limits
 

@@ -1,0 +1,14 @@
+{
+  "name": "a_request_is_not_a_reply",
+  "description": "pasting the request back is refused as malformed.",
+  "case": "key_handoff_open",
+  "rules": "v2",
+  "input": {
+    "network": "sakura",
+    "browserSecret": "0707070707070707070707070707070707070707070707070707070707070707",
+    "reply": "dfkr1:sakura:ApicC3bLVjlx_cm-8x7AbDVg8ySdbunl2DxXYlWW4F9v"
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}
