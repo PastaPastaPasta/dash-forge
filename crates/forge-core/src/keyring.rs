@@ -790,9 +790,18 @@ impl Keyring {
         let Some(enc) = d.field_bytes("enc").filter(|e| !e.is_empty()) else {
             return Opened::Malformed;
         };
-        let Some(header) = header_of(kind, d) else {
+        let Some(mut header) = header_of(kind, d) else {
             return Opened::Malformed;
         };
+        // Which envelope a document may carry follows its repository (private-repos.md §17):
+        // v0x01 in a private one, v0x03 (members-only) in a public one. The document's own
+        // `vis` (consensus holds it equal to the repository's) says which; a type without one
+        // (an `event`) is the repository's. A `vis` that is not this repository's is malformed.
+        match d.field_str("vis").as_deref() {
+            None => header.vis = self.visibility,
+            Some(v) if v == self.visibility.as_str() => {}
+            Some(_) => return Opened::Malformed,
+        }
         let opened = open_content(&self.ctx, &header, &enc);
         // judged by the newest write, as the late rule is: an edit re-seals the text
         let written = match (
@@ -802,10 +811,16 @@ impl Keyring {
             (Some(c), Some(u)) => Some(c.max(u)),
             (c, u) => c.or(u),
         };
-        let earlier = matches!(
-            opened,
-            Opened::Unreadable(Unreadable::BadTag | Unreadable::CommitMismatch)
-        ) && self.earlier_use(header.epoch, written);
+        // A members-only (v0x03) document's commitment is to its own key: a mismatch is a
+        // forged, relabelled or moved document, never an earlier use of the epoch number, so it
+        // stays `CommitMismatch` and is counted, never dropped silently (DESIGN §4.1).
+        let members = enc.first() == Some(&crate::private::doc::V3);
+        let earlier = !members
+            && matches!(
+                opened,
+                Opened::Unreadable(Unreadable::BadTag | Unreadable::CommitMismatch)
+            )
+            && self.earlier_use(header.epoch, written);
         if earlier {
             Opened::Unreadable(Unreadable::EarlierUse)
         } else {
@@ -1050,6 +1065,11 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
     let owner = platform::decode_identifier(&d.owner_id).ok()?;
     let epoch = u32::try_from(d.field_u64("epoch")?).ok()?;
     let mut h = DocHeader::new(kind, owner, epoch);
+    // the document's own `vis` (consensus-checked to be its repository's): which envelope it
+    // may carry (§17); a type without one keeps the default and the reader sets it
+    if d.field_str("vis").as_deref() == Some(Visibility::Public.as_str()) {
+        h.vis = Visibility::Public;
+    }
     h.id = platform::decode_identifier(&d.id).ok();
     h.created_at_block_height = d.created_at_block_height;
     h.updated_at_block_height = d.updated_at_block_height;
@@ -1105,7 +1125,9 @@ pub fn stored_release(d: &FetchedDocument) -> Option<release::StoredRelease> {
 pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
     match o {
         Opened::Readable(_) => None,
-        Opened::Malformed | Opened::Unreadable(Unreadable::BadTag) => {
+        // a commitment that does not match is a document made for another key (forged,
+        // relabelled or moved), like a failed tag
+        Opened::Malformed | Opened::Unreadable(Unreadable::BadTag | Unreadable::CommitMismatch) => {
             Some("not encrypted for this repo")
         }
         Opened::Unreadable(Unreadable::Late) => Some("written after the key was rotated"),
@@ -3469,6 +3491,10 @@ mod tests {
         assert_eq!(
             hidden_bucket(&Opened::Unreadable(Unreadable::NoKey)),
             Some("wrong or missing key")
+        );
+        assert_eq!(
+            hidden_bucket(&Opened::Unreadable(Unreadable::CommitMismatch)),
+            Some("not encrypted for this repo")
         );
         assert_eq!(hidden_bucket(&Opened::Readable(Box::default())), None);
     }

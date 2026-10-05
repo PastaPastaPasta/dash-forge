@@ -76,6 +76,38 @@ pub fn seal_props(
     })
 }
 
+/// [`seal_props`] for a **members-only** document of a public repository
+/// (`docs/security/private-repos.md` §17): the same transform, sealed in `enc` v0x03 (a
+/// per-object key under the members key's epoch `keys`, its commitment, the padding) by
+/// [`crate::private::doc::seal_members`]. A patch is refused by the caller (members-only pull
+/// requests come with members-only branches).
+pub fn seal_members_props(
+    keys: &EpochKeys,
+    kind: DocKind,
+    owner: [u8; 32],
+    props: BTreeMap<String, FieldValue>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    seal_props_inner(keys, kind, owner, props, |h, f| {
+        let mut h = h.clone();
+        h.vis = crate::rules::v2::Visibility::Public;
+        crate::private::doc::seal_members(keys, &h, f)
+    })
+}
+
+/// [`reseal_edit`] for a members-only issue or comment of a public repository: the whole
+/// content re-sealed in `enc` v0x03 ([`seal_members_props`]); only `enc` / `epoch` change.
+pub fn reseal_members_edit(
+    keys: &EpochKeys,
+    kind: DocKind,
+    owner: [u8; 32],
+    opened: &FetchedDocument,
+    changes: &BTreeMap<String, Option<String>>,
+) -> Result<BTreeMap<String, Option<FieldValue>>> {
+    let props = edited_props(opened, changes);
+    let sealed = seal_members_props(keys, kind, owner, props)?;
+    Ok(enc_and_epoch(&sealed))
+}
+
 /// The `enc` / `epoch` a replace of a private issue, PR or comment sets (the web's
 /// `sealEdit`): `opened` is the stored document as [`open_doc`] gave it (its content in
 /// place), `changes` the text fields the edit sets (`None` clears one). The whole content is
@@ -414,6 +446,62 @@ mod tests {
             assert_eq!(back.fields.get(f), public.get(f), "{f}");
         }
         assert!(back.field_bool("draft"), "plaintext fields are untouched");
+    }
+
+    /// §17: a members-only comment of a public repository is sealed in `enc` v0x03 with no
+    /// plaintext left, is well-formed public content, opens for a member (the header says the
+    /// repository is public), and an edit re-seals it as v0x03 again.
+    #[test]
+    fn a_members_only_comment_seals_opens_and_reseals_as_v03() {
+        let public: BTreeMap<String, FieldValue> = [
+            ("targetId".to_string(), FieldValue::identifier([7; 32])),
+            ("body".to_string(), FieldValue::text("members only")),
+            ("path".to_string(), FieldValue::text("src/a.rs")),
+        ]
+        .into();
+        let sealed = seal_members_props(&keys(), DocKind::Comment, OWNER, public).unwrap();
+        assert!(!sealed.contains_key("body") && !sealed.contains_key("path"));
+        let d = fetched(sealed);
+        assert_eq!(
+            d.field_bytes("enc").unwrap()[0],
+            crate::private::doc::V3,
+            "members-only content is enc v0x03"
+        );
+        assert!(crate::collab::v2::well_formed(
+            ContentKind::Comment,
+            &d,
+            Visibility::Public
+        ));
+        let mut header = header_of(DocKind::Comment, &d).unwrap();
+        // read as a private repository's document, v0x03 is refused
+        assert!(matches!(
+            open_content(&ctx(), &header, &d.field_bytes("enc").unwrap()),
+            crate::private::Opened::Malformed
+        ));
+        header.vis = Visibility::Public;
+        let back = open_doc(
+            open_content(&ctx(), &header, &d.field_bytes("enc").unwrap()),
+            d.clone(),
+        )
+        .unwrap();
+        assert_eq!(back.field_str("body").as_deref(), Some("members only"));
+        assert_eq!(back.field_str("path").as_deref(), Some("src/a.rs"));
+        let changes = BTreeMap::from([("body".to_string(), Some("edited".to_string()))]);
+        let replace =
+            reseal_members_edit(&keys(), DocKind::Comment, OWNER, &back, &changes).unwrap();
+        assert_eq!(replace.keys().collect::<Vec<_>>(), ["enc", "epoch"]);
+        let enc = replace["enc"]
+            .as_ref()
+            .and_then(FieldValue::as_bytes)
+            .unwrap();
+        assert_eq!(enc[0], crate::private::doc::V3);
+        let mut after = d;
+        after
+            .fields
+            .insert("enc".into(), FieldValue::bytes(enc.clone()));
+        let back = open_doc(open_content(&ctx(), &header, &enc), after).unwrap();
+        assert_eq!(back.field_str("body").as_deref(), Some("edited"));
+        assert_eq!(back.field_str("path").as_deref(), Some("src/a.rs"));
     }
 
     #[test]

@@ -53,13 +53,6 @@ pub enum BodyField<'s> {
     Release,
 }
 
-/// The framing of a members-only `enc` (v0x03, DESIGN §4.1): version, nonce, key commitment,
-/// GCM tag.
-const MEMBERS_FRAMING: usize = 1 + 12 + 32 + 16;
-/// A members-only TLV is padded to a multiple of this (DESIGN D28), with a pad record of at
-/// least its 3-byte header.
-const MEMBERS_PAD_BLOCK: usize = 64;
-
 impl BodyField<'_> {
     /// How many UTF-8 bytes of text the field holds in a `visibility` repository, next to the
     /// document's other sealed text and an importer's `imported` author and URL (sealed too):
@@ -73,8 +66,9 @@ impl BodyField<'_> {
     /// How many UTF-8 bytes of text the field holds in a document of a `visibility` repository
     /// written for `audience`: 5,120 for public text; the private-repository `enc` (v0x01)'s room
     /// in a private repository whatever `audience` says; and in a public repository a
-    /// members-only document's (`enc` v0x03 with its 61 bytes of framing and the 64-byte padding,
-    /// conservatively). A release's notes are 5,120 either way.
+    /// members-only document's (`enc` v0x03, whose 61 bytes of framing leave 32 bytes less; its
+    /// padding is dropped when it does not fit, `private-repos.md` §4.1). A release's notes are
+    /// 5,120 either way.
     #[must_use]
     pub fn room_for(
         &self,
@@ -105,12 +99,12 @@ impl BodyField<'_> {
             Self::Review | Self::Release => 0,
         };
         let provenance = imported.map_or(0, |i| record(&i.author) + record(&i.url));
-        let tlv = if members {
-            // the padded TLV, less the pad record's header
-            (kind.max_enc() - MEMBERS_FRAMING) / MEMBERS_PAD_BLOCK * MEMBERS_PAD_BLOCK - 3
-        } else {
-            kind.max_enc() - crate::private::doc::MIN_V1
-        };
+        let tlv = kind.max_enc()
+            - if members {
+                crate::private::doc::MIN_V3
+            } else {
+                crate::private::doc::MIN_V1
+            };
         tlv.saturating_sub(3 + others + provenance).min(FIELD_MAX)
     }
 }

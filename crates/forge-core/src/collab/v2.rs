@@ -205,26 +205,6 @@ fn content_kind_of(kind: DocKind) -> Option<ContentKind> {
     })
 }
 
-/// `props` of a new members-only `kind` document sealed under `keys` (the members key's write
-/// epoch) in `enc` v0x03 (DESIGN §4.1): the per-object envelope of the crypto stream, wired in
-/// once it lands. Until then nothing members-only is written: refused before signing.
-fn seal_members_props(
-    _keys: &crate::private::EpochKeys,
-    kind: DocKind,
-    _owner: [u8; 32],
-    _props: BTreeMap<String, FieldValue>,
-) -> Result<BTreeMap<String, FieldValue>> {
-    Err(UserError::new(
-        codes::USAGE,
-        format!(
-            "members-only {} are not available in this build",
-            kind.type_name()
-        ),
-    )
-    .note("nothing was written")
-    .into())
-}
-
 /// A well-formed document as the public codecs read it, **per document** (DESIGN §4.1): a
 /// plaintext one as it is, a sealed one opened with `keys`, or its placeholder when it does not
 /// open. Which form a document takes is decided by the document, never by the repository: a
@@ -2038,27 +2018,6 @@ fn proof_required(props: &BTreeMap<String, FieldValue>) -> bool {
             .is_some_and(|v| Verdict::from_code(v).needs_member_proof())
 }
 
-/// The `enc` / `epoch` a replace of a members-only issue or comment of a public repository sets
-/// (`enc` v0x03, DESIGN §4.1; the counterpart of [`private::reseal_edit`]): the crypto
-/// stream's re-sealer, wired in once it lands. Until then the edit is refused before signing.
-fn reseal_members_edit(
-    _keys: &crate::private::EpochKeys,
-    kind: DocKind,
-    _owner: [u8; 32],
-    _opened: &FetchedDocument,
-    _changes: &BTreeMap<String, Option<String>>,
-) -> Result<BTreeMap<String, Option<FieldValue>>> {
-    Err(UserError::new(
-        codes::USAGE,
-        format!(
-            "editing a members-only {} is not available in this build",
-            kind.type_name()
-        ),
-    )
-    .note("nothing was written")
-    .into())
-}
-
 /// The refusal of an edit that would change a document's audience (DESIGN §2.4: fixed at
 /// creation). Nothing is written.
 fn audience_fixed(doc_type: &str, audience: Audience) -> Error {
@@ -2922,7 +2881,7 @@ impl<'a> Collab<'a> {
                 let kr = self.members_writer(repo).await?;
                 let w = kr.writer(repo)?;
                 let owner = platform::decode_identifier(&self.signer_id()?)?;
-                seal_members_props(w.write_keys(), kind, owner, props)
+                private::seal_members_props(w.write_keys(), kind, owner, props)
             }
             Audience::SpecificPeople => Err(UserError::new(
                 codes::USAGE,
@@ -3993,6 +3952,26 @@ impl<'a> Collab<'a> {
             .await?;
         let (docs, hidden) = self.readable_all(repo, ContentKind::Comment, docs).await?;
         Ok((docs.iter().map(comment_from_doc).collect(), hidden))
+    }
+
+    /// [`Self::comments_counted`] with the members-only comments this reader cannot open as
+    /// placeholders (DESIGN D14: shown when they carry `asMember`, else hidden and counted), and
+    /// how many were malformed.
+    pub async fn comments_read(
+        &self,
+        repo: &RepoRef,
+        target_id: &str,
+    ) -> Result<(Vec<Comment>, Vec<MembersOnly>, usize)> {
+        let collab = self.collab_contract(repo).await?;
+        let docs = self
+            .by_target(&collab, DOC_COMMENT, "targetId", target_id)
+            .await?;
+        let read = self.readable(repo, ContentKind::Comment, docs).await?;
+        Ok((
+            read.rows.iter().map(comment_from_doc).collect(),
+            read.members_only,
+            read.malformed,
+        ))
     }
 
     /// Every well-formed review on a patch, oldest first. In a private repo only reviews this
@@ -5411,7 +5390,7 @@ impl<'a> Collab<'a> {
         };
         let owner = platform::decode_identifier(&self.signer_id()?)?;
         let sealed = if members {
-            reseal_members_edit(keys, kind, owner, &opened, &text)?
+            private::reseal_members_edit(keys, kind, owner, &opened, &text)?
         } else {
             private::reseal_edit(keys, kind, owner, &opened, &text)?
         };
