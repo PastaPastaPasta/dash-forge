@@ -102,7 +102,7 @@ export function DgHandoffFlow({ onDone, renew = false, target }: { readonly onDo
     if (!ready || request === null || protection === null) return
     setError(null)
     try {
-      await adoptHandoffKey(replyRef.current?.value ?? '', request, protection, { renew })
+      await adoptHandoffKey(replyRef.current?.value ?? '', request, protection, { renew, ...(replace !== undefined ? { identityId: replace.identityId } : {}) })
       if (replyRef.current) replyRef.current.value = ''
       onDone()
     } catch (e) {

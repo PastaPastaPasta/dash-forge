@@ -643,6 +643,14 @@ export async function stageInVault(network: Network, secret: VaultSecret, protec
 }
 
 /** A key renewal on this device may have landed and is not finished: unlock to finish it first. */
+/** Another tab stored a key for the identity after the caller checked ({@link storeInVault}). */
+export class VaultChangedError extends Error {
+  constructor() {
+    super('Another tab saved a key for this identity meanwhile.')
+    this.name = 'VaultChangedError'
+  }
+}
+
 export class PendingRenewalError extends VaultLockedError {
   constructor() {
     super('A key renewal on this device is not finished yet (it may already be on Platform). Unlock with the passphrase or passkey you chose for that renewal to finish it, then try again.')
@@ -911,6 +919,11 @@ export async function storeInVault(
     readonly dropStagedKeyId?: number
     /** Where the key came from ({@link VaultRecord.origin}). */
     readonly origin?: 'dg'
+    /**
+     * The key id of the record the caller found for this identity (null: none), checked in the
+     * write's own transaction: a key another tab stored meanwhile aborts it ({@link VaultChangedError}).
+     */
+    readonly expectHeldKeyId?: number | null
   } = {},
 ): Promise<StoreOutcome> {
   const lockMarkerAt = lockMarker()
@@ -951,13 +964,23 @@ export async function storeInVault(
     // THIS key (the renewal that registered it) is done; a stage of another key (a renewal
     // from another tab, not finished) stays, for its unlock to finish.
     const at = stagedKey(network, identityId)
-    await idbUpdate<VaultRecord>('vault', at, (staged) => [
-      [key(network, identityId), record],
-      [storageBlobKey(network, identityId), blob],
-      [extraBlobKey(network, identityId), extraBlob],
-      [encryptionBlobKey(network, identityId), encBlob],
-      ...(staged !== undefined && (staged.keyId === secret.keyId || staged.keyId === options.dropStagedKeyId) ? ([[at, undefined]] as const) : []),
-    ])
+    await idbUpdate<VaultRecord>(
+      'vault',
+      at,
+      (staged, [held]) => {
+        if (options.expectHeldKeyId !== undefined && ((held as VaultRecord | undefined)?.keyId ?? null) !== options.expectHeldKeyId) {
+          throw new VaultChangedError()
+        }
+        return [
+          [key(network, identityId), record],
+          [storageBlobKey(network, identityId), blob],
+          [extraBlobKey(network, identityId), extraBlob],
+          [encryptionBlobKey(network, identityId), encBlob],
+          ...(staged !== undefined && (staged.keyId === secret.keyId || staged.keyId === options.dropStagedKeyId) ? ([[at, undefined]] as const) : []),
+        ]
+      },
+      [key(network, identityId)],
+    )
     // The key is on chain and was staged and read back first: a failed read-back here is not a
     // reason to fail the sign-in (the staged copy, when there was one, is still the safe copy).
     readBackOk = await readsBack(network, key(network, identityId), main, dataKey).catch(() => false)

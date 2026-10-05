@@ -90,6 +90,7 @@ import {
   watchOtherTabs,
   clearSignedWrites,
   storeInVault,
+  VaultChangedError,
   stageInVault,
   hasStaged,
   recoverStaged,
@@ -748,9 +749,9 @@ export class AuthController {
    * Move a registered key into the vault's main record. Registered and staged (D-016) but not
    * moved: the key is safe on this device, and the next unlock finishes the move.
    */
-  private async commitKey(secret: VaultSecret, protection: Protection, origin?: 'dg'): Promise<StoreOutcome> {
+  private async commitKey(secret: VaultSecret, protection: Protection, options: Parameters<typeof storeInVault>[3] = {}): Promise<StoreOutcome> {
     try {
-      return await storeInVault(this.network, secret, protection, origin ? { origin } : {})
+      return await storeInVault(this.network, secret, protection, options)
     } catch (e) {
       if (await hasStaged(this.network, secret.identityId).catch(() => false)) {
         throw new Error(`The new key is registered and saved on this device, but finishing sign-in failed (${errorMessage(e)}). Unlock to continue.`)
@@ -950,9 +951,10 @@ export class AuthController {
    * `./key-handoff`): open the reply, check the key on chain (live, Forge-bound, limited, and
    * controlled by the private key it carries) before anything is stored, then keep it in the
    * vault like an imported key. Nothing is signed here: dg paid for and registered the key.
-   * Renewing (`renew`) takes only a key for the signed-in identity.
+   * Renewing (`renew`) takes only a key for the signed-in identity, and `identityId` (the key
+   * the page asked dg to replace) only a key for that identity.
    */
-  async adoptHandoffKey(reply: string, request: HandoffRequest, protection: Protection, options: { readonly renew?: boolean } = {}): Promise<AuthSession> {
+  async adoptHandoffKey(reply: string, request: HandoffRequest, protection: Protection, options: { readonly renew?: boolean; readonly identityId?: string } = {}): Promise<AuthSession> {
     return this.run(async () => {
       const network = NETWORKS[this.network].key
       const payload = parseHandoffPayload(await openHandoffReply(reply, network, request.secret), network)
@@ -960,6 +962,11 @@ export class AuthController {
       const signedIn = this.state.session?.identityId ?? null
       if (options.renew === true && signedIn !== null && identityId !== signedIn) {
         throw new WriteAuthError(`dg made this key for ${shortId(identityId)}, but you are renewing the key of ${shortId(signedIn)}. Sign dg in as ${shortId(signedIn)} (or pass --master with its identity file) and run the command again.`)
+      }
+      if (options.identityId !== undefined && identityId !== options.identityId) {
+        throw new WriteAuthError(
+          `dg made this key for ${shortId(identityId)}, but this page asked for one for ${shortId(options.identityId)}. Nothing was stored. Disable the new key with "dg auth keys disable ${payload.keyId}", then run the command shown here again.`,
+        )
       }
       this.requireFullUnlock(identityId)
       const sdk = await this.getSdk()
@@ -982,7 +989,15 @@ export class AuthController {
       }
       this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
       const key: LimitedKey = { keyId: payload.keyId, wif: payload.wif, limits }
-      const committed = await this.commitKey({ identityId, keyId: key.keyId, wif: key.wif }, protection, 'dg')
+      // Checked again in the vault write's own transaction: another tab may have stored a key
+      // for the identity since `previous` was read.
+      let committed: StoreOutcome
+      try {
+        committed = await this.commitKey({ identityId, keyId: key.keyId, wif: key.wif }, protection, { origin: 'dg', expectHeldKeyId: previous?.keyId ?? null })
+      } catch (e) {
+        if (!(e instanceof VaultChangedError)) throw e
+        throw new WriteAuthError(`Another tab saved a key for ${shortId(identityId)} meanwhile. Nothing was stored; disable the new key with "dg auth keys disable ${payload.keyId}".`)
+      }
       const core = NETWORKS[this.network].v2?.core
       const bringsEncryption = payload.encryptionKey !== undefined && core !== undefined
       // A reply that brings the encryption key again: the copy the replacement could not carry
