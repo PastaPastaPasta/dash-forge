@@ -55,11 +55,16 @@ import { readRepoCounts, readStateCodes, readTransitions, transitionOf, type Tra
 import { ISSUE_CLOSE } from '../rules/transition'
 import type { LongBodyState } from '../rules/long-body'
 
-/** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
-export function titleOf(doc: PlainDocument): string {
+/**
+ * A row's title; ciphertext says what it is: a public repo's members-only issue or PR by name
+ * (DESIGN D14, `type` says which), a private repo's (which this client cannot decrypt) as encrypted.
+ */
+export function titleOf(doc: PlainDocument, type: 'issue' | 'patch' = 'issue'): string {
   const title = str(doc, 'title')
   if (title !== '') return title
-  return byteFieldToHex(doc, 'enc') !== '' ? 'Encrypted (not readable here)' : ''
+  if (byteFieldToHex(doc, 'enc') === '') return ''
+  if (str(doc, 'vis') === 'public') return type === 'patch' ? 'Members-only pull request' : 'Members-only issue'
+  return 'Encrypted (not readable here)'
 }
 
 /** An issue with its folded state. */
@@ -900,7 +905,7 @@ export async function readPull(
     id,
     ...audienceOf(patchDoc),
     number: num(patchDoc, 'number'),
-    title: titleOf(patchDoc),
+    title: titleOf(patchDoc, 'patch'),
     body: str(patchDoc, 'body'),
     author,
     createdAt,
@@ -998,7 +1003,7 @@ export function incompletePullView(doc: PlainDocument, code: number): PullView {
     id: str(doc, '$id'),
     ...audienceOf(doc),
     number: num(doc, 'number'),
-    title: titleOf(doc),
+    title: titleOf(doc, 'patch'),
     body: str(doc, 'body'),
     author: str(doc, '$ownerId'),
     createdAt: num(doc, '$createdAt'),

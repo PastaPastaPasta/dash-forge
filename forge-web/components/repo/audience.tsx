@@ -449,12 +449,10 @@ export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Elem
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-dashed border-anvil-300 px-4 py-2 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="members-only-placeholder" data-type={item.type}>
       <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span>{membersOnlyTitle(item.type)}</span>
-      <span aria-hidden>·</span>
-      <Author identityId={item.author} link={false} className="align-middle" />
-      {did !== null ? <span>{did}</span> : null}
-      <span aria-hidden>·</span>
-      <span className={MUTED}>{timeAgo(item.createdAt)}</span>
+      <span>
+        {membersOnlyTitle(item.type)} · <Author identityId={item.author} link={false} className="align-middle" />
+        {did !== null ? ` ${did}` : ''} · <span className={MUTED}>{timeAgo(item.createdAt)}</span>
+      </span>
     </div>
   )
 }
@@ -475,14 +473,14 @@ export function MembersOnlySummary({ entries, lane }: { entries: readonly Member
         <span>{lockedCount(entries.map((e) => e.item))}</span>
         {why === 'locked' ? (
           <>
-            <span aria-hidden>·</span>
+            <span aria-hidden> · </span>
             <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" aria-expanded={unlocking} onClick={() => setUnlocking((u) => !u)} data-testid="members-only-unlock">
               Unlock to read
             </button>
           </>
         ) : why === 'no-key' ? (
           <>
-            <span aria-hidden>·</span>
+            <span aria-hidden> · </span>
             <Link href={PRIVATE_REPOS_SETTINGS} className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400">
               {SET_UP_KEY}
             </Link>
@@ -523,25 +521,16 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
   const why = memberCantRead(home.lane)
   return (
     <div className="space-y-4" data-testid="members-only-target" data-kind={kind}>
-      <h1 className="flex flex-wrap items-center gap-2 text-2xl">
-        <span className="font-mono">#{target.number}</span>
-        <span className="text-anvil-500 dark:text-anvil-400">· members-only</span>
+      <h1 className="text-2xl">
+        <span className="font-mono">#{target.number}</span> <span className="text-anvil-500 dark:text-anvil-400">· members-only</span>
       </h1>
-      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-dense text-anvil-600 dark:text-anvil-300">
-        <Icon className="h-4 w-4 shrink-0" aria-hidden />
-        <span>{membersOnlyTitle(target.placeholder.type)}</span>
-        <span aria-hidden>·</span>
-        <span>opened by</span>
-        <Author identityId={target.placeholder.author} link={false} className="align-middle" />
-        <span className={MUTED}>{timeAgo(target.placeholder.createdAt)}</span>
-        <span aria-hidden>·</span>
-        <span data-testid="members-only-state">{state}</span>
-        {target.comments > 0 ? (
-          <>
-            <span aria-hidden>·</span>
-            <span>{plural(target.comments, 'comment')}</span>
-          </>
-        ) : null}
+      <p className="flex items-start gap-2 text-dense text-anvil-600 dark:text-anvil-300">
+        <Icon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+        <span>
+          {membersOnlyTitle(target.placeholder.type)} · opened by <Author identityId={target.placeholder.author} link={false} className="align-middle" />{' '}
+          <span className={MUTED}>{timeAgo(target.placeholder.createdAt)}</span> · <span data-testid="members-only-state">{state}</span>
+          {target.comments > 0 ? ` · ${plural(target.comments, 'comment')}` : ''}
+        </span>
       </p>
       <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700">
         {why === 'locked' ? (
