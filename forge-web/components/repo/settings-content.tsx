@@ -43,6 +43,7 @@ import { WebhookSettings } from '@/components/repo/webhook-settings'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
+import { shortId } from '@/lib/utils'
 
 /** A Collaborators write awaiting its confirm; `change` (public repos) deletes `role`'s document, then adds `to`. */
 type MemberAction =
@@ -290,9 +291,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
             action?.kind === 'grant'
-              ? `Adds ${action.member.slice(0, 8)}… as ${ROLE_NOUN[action.role]}.`
+              ? `Adds ${shortId(action.member)} as ${ROLE_NOUN[action.role]}.`
               : action?.kind === 'change'
-                ? `Makes ${action.member.slice(0, 8)}… ${ROLE_NOUN[action.to]} instead of ${ROLE_NOUN[action.role]}. They don't need to accept again.`
+                ? `Makes ${shortId(action.member)} ${ROLE_NOUN[action.to]} instead of ${ROLE_NOUN[action.role]}. They don't need to accept again.`
                 : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
           cost={
@@ -331,19 +332,19 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
           <DetailRow label="Repo id">
-            <Oid value={repo.repoId} chars={12} label="repo id" />
+            <Oid value={repo.repoId} label="repo id" />
           </DetailRow>
           <DetailRow label="Owner identity">
-            <Oid value={repo.ownerId} chars={12} label="owner identity id" />
+            <Oid value={repo.ownerId} label="owner identity id" />
           </DetailRow>
           <DetailRow label="forge-core">
-            <Oid value={repo.forge.core} chars={12} label="forge-core contract id" />
+            <Oid value={repo.forge.core} label="forge-core contract id" />
           </DetailRow>
           <DetailRow label="forge-collab">
-            <Oid value={repo.forge.collab} chars={12} label="forge-collab contract id" />
+            <Oid value={repo.forge.collab} label="forge-collab contract id" />
           </DetailRow>
           <DetailRow label="forge-community">
-            <Oid value={repo.forge.community} chars={12} label="forge-community contract id" />
+            <Oid value={repo.forge.community} label="forge-community contract id" />
           </DetailRow>
           <DetailRow label="Network">
             <NetworkBadge always />

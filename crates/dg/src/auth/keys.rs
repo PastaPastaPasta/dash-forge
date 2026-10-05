@@ -19,14 +19,16 @@ use forge_core::user_error::{codes, UserError};
 pub enum KeysCommand {
     /// List the identity's keys with purpose, level, limits and state.
     List,
-    /// Register a key: a limited key this computer then signs with (default: 0.25 DASH / 180
+    /// Register a limited key for this computer, or an encryption key.
+    ///
+    /// A limited key is what this computer then signs with (default: 0.25 DASH / 180
     /// days, bound to dash-forge; `--replace <id>` disables the old one in the same update), or
     /// with --encryption the ENCRYPTION key private repositories need. Needs the master key once.
     /// For a key to hand to CI use `dg auth export --new-key`. With `--for-browser <request>`
     /// the key is for a browser tab instead: dg prints it sealed to that tab, so the recovery
     /// phrase never goes into a web page.
     Add(AddArgs),
-    /// Disable a key on chain. Needs the master key once.
+    /// Disable a key on Platform. Needs the master key once.
     Disable {
         /// The key id (`dg auth keys list`).
         id: u32,
@@ -97,7 +99,7 @@ pub struct AddArgs {
     /// none with --for-browser).
     #[arg(long, value_name = "KEY_ID")]
     pub replace: Option<u32>,
-    /// Keep the key this computer signs with now live on chain (it is no longer stored here).
+    /// Keep the key this computer signs with now valid on Platform (it is no longer stored here).
     #[arg(long, conflicts_with = "replace")]
     pub keep_current: bool,
     /// The identity file with the master key (else you are asked for the words).
@@ -247,14 +249,14 @@ async fn add_encryption(
             codes::KEY_CANNOT_SIGN,
             "the ENCRYPTION key cannot be derived from what was given",
         )
-        .cause("the key must come from the identity's recovery words, so that they alone recover it; the source given does not reproduce the identity's keys from its words")
-        .fix("run it again and type the recovery words when asked, or pass --master <identity file> with the words")
+        .cause("the key must come from the identity's recovery phrase, so that it alone recovers the key; the source given does not reproduce the identity's keys from its phrase")
+        .fix("run it again and type the recovery phrase when asked, or pass --master <identity file> with the phrase")
         .note("nothing was sent")
     })?;
     let price = ctx.usd_price();
     if !ctx.json {
         println!(
-            "Add ENCRYPTION key #{key_id} to {} (derived from the recovery words), {}",
+            "Add ENCRYPTION key #{key_id} to {} (derived from the recovery phrase), {}",
             master.identity_id,
             crate::fmt::cost_line(identity_keys::ADD_KEY_ESTIMATE_CREDITS, price)
         );
@@ -273,7 +275,7 @@ async fn add_encryption(
             "derived": true,
         }),
         || {
-            println!("✓ added ENCRYPTION key #{added}; the recovery words re-derive it");
+            println!("✓ added ENCRYPTION key #{added}; the recovery phrase re-derives it");
             println!("  to use it from this computer: `dg auth login <identity file>` (or --mnemonic) stores it beside a limited key");
         },
     );

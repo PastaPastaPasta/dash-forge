@@ -201,7 +201,7 @@ pub fn no_encryption_key_held_because(action: &str, why: &str) -> Error {
         crate::user_error::FIX_FULL_KEY_LOGIN
     ))
     .fix("for one command: DASH_FORGE_KEY=<identity file>")
-    .fix(format!("if it has none: `{FIX_ADD_ENCRYPTION_KEY}` (from the recovery words)"))
+    .fix(format!("if it has none: `{FIX_ADD_ENCRYPTION_KEY}` (from the recovery phrase)"))
     .into()
 }
 
@@ -3251,6 +3251,7 @@ mod tests {
             public_key: hex::decode(&e.public_key_hex).unwrap(),
             disabled: false,
             bound_to: None,
+            bounds: None,
         };
         let chain = [on_chain(&entry(7, 4))];
         let kept = EncryptionKeys::held(&bridge, &chain, "CORE", &net).to_identity_keys(&net);
@@ -3283,6 +3284,7 @@ mod tests {
             public_key: vec![2; 33],
             disabled,
             bound_to: None,
+            bounds: None,
         };
         let keys = vec![
             k(4, false, "ENCRYPTION"),

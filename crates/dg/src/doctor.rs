@@ -251,7 +251,7 @@ pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
     }
     let mut err = UserError::new(
         codes::CHECKS_FAILED,
-        format!("{} check(s) failed", failing.len()),
+        format!("{} failed", crate::fmt::plural(failing.len(), "check")),
     )
     .cause(format!("failing: {}", failing.join(", ")))
     .fix("apply the fix shown next to each ✗ row, then run `dg doctor` again");
@@ -311,8 +311,12 @@ fn print_report(ctx: &Ctx, sections: &[Section], counts: &Counts, fix: bool) {
         "\n{}",
         match (counts.failed, counts.warned) {
             (0, 0) => "Everything checks out.".to_string(),
-            (0, w) => format!("{w} warning(s); nothing is broken."),
-            (f, w) => format!("{f} problem(s), {w} warning(s)."),
+            (0, w) => format!("{}. Nothing is broken.", crate::fmt::plural(w, "warning")),
+            (f, w) => format!(
+                "{}, {}.",
+                crate::fmt::plural(f, "problem"),
+                crate::fmt::plural(w, "warning")
+            ),
         }
     );
     if counts.fixable > 0 && !fix {
@@ -643,6 +647,15 @@ fn keys_check(
     let also = crate::auth::private_line(Some(access), report.doc_type.is_some(), Some(key_id))
         .map(|l| format!("; {l}"))
         .unwrap_or_default();
+    if !report.is_capped() {
+        // An unlimited key can spend the whole balance: only dg's own confirm step caps a
+        // write it signs (client-only-rules §11).
+        return Check::warn(
+            "keys",
+            format!("{line}{also}: it can spend the whole balance"),
+            "`dg auth login <identity file>` registers a key with a budget and expiry and stores only that",
+        );
+    }
     Check::ok("keys", format!("{line}{also}"))
 }
 
@@ -778,7 +791,7 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
             if dapi_addresses.is_empty() {
                 "discovered from the quorum service at connect".to_string()
             } else {
-                format!("{} address(es)", dapi_addresses.len())
+                crate::fmt::plural_with(dapi_addresses.len(), "address", "addresses")
             },
         ),
         _ => format!("{network}, {source} (DAPI: built-in seed list; quorums: {quorums})"),
@@ -1494,6 +1507,30 @@ fn in_git_repo() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unlimited key can spend the whole balance: doctor warns and names the fix.
+    #[test]
+    fn an_unlimited_key_is_a_warning() {
+        use crate::auth::{KeyReport, PrivateAccess};
+        let access = PrivateAccess::for_test(&[4], true);
+        let unlimited = keys_check(&KeyReport::for_test(3, false), &access, 0);
+        assert!(
+            matches!(unlimited.status, Status::Warn),
+            "{}",
+            unlimited.detail
+        );
+        assert!(
+            unlimited.detail.contains("whole balance"),
+            "{}",
+            unlimited.detail
+        );
+        assert!(unlimited
+            .fix
+            .as_deref()
+            .is_some_and(|f| f.contains("dg auth login")));
+        let limited = keys_check(&KeyReport::for_test(5, true), &access, 0);
+        assert!(matches!(limited.status, Status::Ok), "{}", limited.detail);
+    }
 
     /// QW2-081: a repository set to `platform` says so; only a missing value is "unset".
     #[test]

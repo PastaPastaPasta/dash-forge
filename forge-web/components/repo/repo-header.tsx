@@ -17,7 +17,7 @@ import { StarButton } from '@/components/repo/star-button'
 import { WatchButton } from '@/components/repo/watch-button'
 import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
-import { cn } from '@/lib/utils'
+import { cn, shortId } from '@/lib/utils'
 import { TabStrip } from '@/components/ui/tab-strip'
 import { bareRoute, ownerLabel } from '@/lib/page-title'
 import { LookalikeNote } from '@/components/lookalike-note'
@@ -54,7 +54,7 @@ function ForkedFrom({ home }: { home: RepoHome }): JSX.Element {
           </Link>
         </>
       ) : (
-        <span className="font-mono">{parentId.slice(0, 8)}…</span>
+        <span className="font-mono">{shortId(parentId)}</span>
       )}
     </p>
   )

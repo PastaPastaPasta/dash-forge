@@ -54,6 +54,7 @@ pub mod mirror;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
+pub mod ref_collision;
 pub mod review;
 pub mod search;
 pub mod signature;
@@ -2460,6 +2461,24 @@ mod tests {
         assert_eq!(got, expected::<v2::Approvals>(v), "vector `{}`", v.name);
     }
 
+    fn run_ref_collision_case(v: &Vector) {
+        use super::ref_collision::{collision_reason, ref_collision};
+        #[derive(Serialize, Deserialize)]
+        struct In {
+            existing: Vec<String>,
+            name: String,
+        }
+        let inp: In = input(v);
+        let collision = ref_collision(inp.existing.iter().map(String::as_str), &inp.name);
+        let reason = collision.as_deref().map(|c| collision_reason(&inp.name, c));
+        assert_eq!(
+            serde_json::json!({ "collision": collision, "reason": reason }),
+            v.expected,
+            "vector `{}`",
+            v.name
+        );
+    }
+
     fn run_merge_content_case(v: &Vector) {
         use super::merge_check;
         let got = merge_check::merge_content(&input::<merge_check::MergeFacts>(v));
@@ -2513,6 +2532,7 @@ mod tests {
                 );
                 assert_eq!(got, expected::<v2::MergeBase>(v), "vector `{ctx}`");
             }
+            "ref_collision" => run_ref_collision_case(v),
             "merge_content" => run_merge_content_case(v),
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);
@@ -2529,6 +2549,7 @@ mod tests {
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
             "pubkey_entry" | "commit_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),
+            "webhook_url" => run_webhook_url_case(v),
             "role_oracle" => run_role_oracle(v),
             "code_owners" | "code_owner_requests" => run_code_owners_case(v),
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
@@ -2672,6 +2693,25 @@ mod tests {
         sha256: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blob_hex: Option<String>,
+    }
+
+    /// `webhook_url`: the secret a webhook URL carries in its path, by its shape.
+    fn run_webhook_url_case(v: &Vector) {
+        use crate::webhooks::{url_secret, UrlSecret};
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            url: String,
+        }
+        let inp: Input = input(v);
+        let got = match url_secret(&inp.url) {
+            Some(UrlSecret::ChatService(name)) => {
+                serde_json::json!({ "secret": "chatService", "service": name })
+            }
+            Some(UrlSecret::PathToken) => serde_json::json!({ "secret": "pathToken" }),
+            None => serde_json::json!({ "secret": null }),
+        };
+        assert_eq!(got, v.expected, "vector `{}`", v.name);
     }
 
     /// `long_body__*` (forge-v2.md §6.3): `{stored}` reads a field, `{full, room, sha256}`

@@ -30,11 +30,14 @@ afterEach(() => {
 const q = (id: string): Element | null => host.querySelector(`[data-testid="${id}"]`)
 
 describe('ProfileAvatar', () => {
-  it('draws the initial with no config, or one no convention reads', () => {
-    act(() => root.render(<ProfileAvatar identityId={ID} name="alice" />))
-    expect(q('avatar-initial')?.textContent).toBe('A')
-    act(() => root.render(<ProfileAvatar identityId={ID} name="alice" config="gravatar:abc" />))
-    expect(q('avatar-initial')).not.toBeNull()
+  it('draws the identicon of the identity id with no config, or one no convention reads', () => {
+    act(() => root.render(<ProfileAvatar identityId={ID} />))
+    const drawn = q('avatar-identicon')?.innerHTML
+    expect(drawn).toBeTruthy()
+    act(() => root.render(<ProfileAvatar identityId={ID} config="identicon" />))
+    expect(q('avatar-identicon')?.innerHTML).toBe(drawn)
+    act(() => root.render(<ProfileAvatar identityId={ID} config="gravatar:abc" />))
+    expect(q('avatar-identicon')?.innerHTML).toBe(drawn)
     expect(q('avatar-image')).toBeNull()
   })
 
@@ -43,10 +46,21 @@ describe('ProfileAvatar', () => {
     expect(q('avatar-identicon')?.querySelectorAll('rect').length).toBeGreaterThan(1)
   })
 
+  it("never borrows another identity's pattern through a seed that is its id", () => {
+    const other = '9CVMSjkxXqpjNnb93AR4mzk6SRp95ZNP6J3xDNTvEmpv'
+    act(() => root.render(<ProfileAvatar identityId={other} />))
+    const theirs = q('avatar-identicon')?.innerHTML
+    act(() => root.render(<ProfileAvatar identityId={ID} />))
+    const own = q('avatar-identicon')?.innerHTML
+    act(() => root.render(<ProfileAvatar identityId={ID} config={`identicon:${other}`} />))
+    expect(q('avatar-identicon')?.innerHTML).toBe(own)
+    expect(q('avatar-identicon')?.innerHTML).not.toBe(theirs)
+  })
+
   it('asks before loading an image link, then loads it with no referrer', () => {
-    act(() => root.render(<ProfileAvatar identityId={ID} name="alice" config="https://img.example/me.png" />))
+    act(() => root.render(<ProfileAvatar identityId={ID} config="https://img.example/me.png" />))
     expect(q('avatar-image')).toBeNull()
-    expect(q('avatar-initial')).not.toBeNull()
+    expect(q('avatar-identicon')).not.toBeNull()
     const ask = q('avatar-load') as HTMLButtonElement
     expect(ask.textContent).toContain('img.example')
     act(() => ask.click())

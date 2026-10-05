@@ -41,6 +41,7 @@ import { backlinkFile, readBacklink } from './mirror-backlink'
 import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
 import { HandoffError, RECOVERY_PHRASE_WARNING, handoffRequest, openHandoffReply } from '../auth/key-handoff'
 import { planRefs, syncDecision } from '../repo/fork'
+import { webhookUrlSecret } from '../repo/webhooks'
 import { matchesText, mentions } from '../repo/issue-index'
 import { parseSearchText, unresolvedQualifiers } from '../view/issue-query'
 import { parsePullSearch, unresolvedPullQualifiers } from '../view/pull-query'
@@ -535,6 +536,13 @@ function runCaseV2(v: Vector): void {
       expect(v2.prMergeBase(inp.baseRefName, inp.openedAt, inp.events, inp.mergedAt ?? null)).toEqual(v.expected)
       break
     }
+    case 'ref_collision': {
+      onlyKeys(v, ['existing', 'name'])
+      const inp = v.input as { readonly existing: readonly string[]; readonly name: string }
+      const collision = v2.refCollision(inp.existing, inp.name)
+      expect({ collision, reason: collision === null ? null : v2.collisionReason(inp.name, collision) }).toEqual(v.expected)
+      break
+    }
     case 'merge_content': {
       onlyKeys(v, ['headOid', 'mergeOid', 'tipBefore', 'mergeParents', 'headInMerge', 'tipBeforeInMerge', 'mergeChange', 'prChange', 'baseChange'])
       expect(v2.mergeContent(v.input as v2.MergeFacts)).toEqual(v.expected)
@@ -555,6 +563,11 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['config', 'identityId'])
       const inp = v.input as { readonly config: string | null; readonly identityId: string }
       expect(avatarSpec(inp.config, inp.identityId)).toEqual(v.expected)
+      break
+    }
+    case 'webhook_url': {
+      onlyKeys(v, ['url'])
+      expect(webhookUrlSecret((v.input as { readonly url: string }).url)).toEqual(v.expected)
       break
     }
     case 'repo_name': {

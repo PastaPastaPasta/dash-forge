@@ -203,14 +203,13 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
   const profile = data.profile === 'unread' ? null : data.profile
   const fields = profile?.fields ?? {}
   const heading = fields.displayName ?? data.name ?? identityId
-  const initialFrom = data.name ?? fields.displayName ?? null
 
   return (
     <div className="space-y-6 md:grid md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] md:gap-8 md:space-y-0">
       <aside aria-label="Profile" className="min-w-0 space-y-4" data-testid="profile-card">
         <div className="flex items-center gap-4 md:flex-col md:items-start">
           {/* A phone shows the avatar beside the name; from `md` it heads the column, full width. */}
-          <ProfileAvatar identityId={identityId} name={initialFrom} config={fields.avatarConfig} className="[--avatar:72px] md:[--avatar:256px]" />
+          <ProfileAvatar identityId={identityId} config={fields.avatarConfig} className="[--avatar:72px] md:[--avatar:256px]" />
           {/* The page's one h1: whose profile this is (QW4-044: its only heading was "Repositories"). */}
           <div className="min-w-0 flex-1 md:w-full">
             <h1 className="min-w-0 max-w-full font-normal">
@@ -275,7 +274,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
         </div>
         <ProfileFacts fields={fields} />
         <p className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Identity <Oid value={identityId} chars={10} label="identity id" />
+          Identity <Oid value={identityId} label="identity id" />
         </p>
         {data.profile === 'unread' ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="profile-unread">

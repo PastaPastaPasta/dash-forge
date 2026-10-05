@@ -12,5 +12,20 @@
   "type": "review",
   "index": "author",
   "expect": "absent"
+ },
+ {
+  "item": "U1",
+  "name": "every ban of a repo, one per maintainer and identity",
+  "type": "ban",
+  "index": "byRepo",
+  "expect": "present",
+  "properties": [
+   "repoId",
+   "identityId",
+   "$ownerId"
+  ],
+  "has": {
+   "unique": true
+  }
  }
 ]

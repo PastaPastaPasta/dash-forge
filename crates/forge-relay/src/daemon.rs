@@ -20,6 +20,15 @@
 //!   event is lost to a timeout. The event feed is read only in a cycle whose pushes and config
 //!   were read, so merges are judged against current base-ref tips.
 //!
+//! **Sinks and watch mode** ([`crate::sinks`]): every event is also handed to the sinks
+//! ([`EventSink`]), the relay's own `[[sink]]`s and an embedder's. Watch subscriptions
+//! ([`subscriptions::watch_subscription`]) make a repo served with no `webhook` document: a
+//! sink's `repos`, `[watch] repos`, the repos `[watch] identity` watches (re-read at every
+//! discovery), and an embedder's watch feed ([`Embed::watch_feed`]). A private repo is never
+//! served; one that appears in a watch set is refused once and skipped after that. A `[[sink]]`
+//! without `repos` gets the repos chosen in the config or by the embedder, polled for its
+//! events too ([`unscoped_watch`]), never a repo served only for a `webhook` document.
+//!
 //! **Merge tips** are tracked only for refs that are the base of a known PR: backfilled from
 //! that ref's history (by `refNameHash`) when the PR is first seen, then fed by the ref streams.
 //!
@@ -55,6 +64,7 @@ use crate::ingest::{
 };
 use crate::payload::{CheckRunAction, RepositoryMeta, ALL_EVENTS};
 use crate::queue::RetryQueue;
+use crate::sinks::{EventSink, NameCache, SinkHub};
 use crate::subscriptions::{self, RelayIdentity, WebhookSub};
 use crate::wake::{WakeHub, WakeRepo};
 
@@ -111,7 +121,9 @@ impl Contracts {
 
 /// What every task shares.
 struct Shared {
-    client: PlatformClient,
+    client: Arc<PlatformClient>,
+    /// Every event goes to these too: the `[[sink]]`s and an embedder's.
+    sinks: Vec<Arc<dyn EventSink>>,
     contracts: Contracts,
     dispatcher: Dispatcher,
     cfg: RelayConfig,
@@ -205,32 +217,41 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// What an embedder (forge-notify) adds to the relay: its own sink, and a watch set it
+/// updates while the relay runs.
+#[derive(Default)]
+pub struct Embed {
+    /// Sinks that get every event, beside the `[[sink]]`s of the config.
+    pub sinks: Vec<Arc<dyn EventSink>>,
+    /// Repo ids to serve with no `webhook` document, read at every discovery. A repo added
+    /// later is read from when it was added; a private repo is refused.
+    pub watch_feed: Option<tokio::sync::watch::Receiver<BTreeSet<String>>>,
+    /// The events the watch feed's repos are polled for (empty = all).
+    pub watch_events: Vec<String>,
+}
+
 /// Run the relay daemon until the process is stopped.
 pub async fn run(cfg: RelayConfig) -> Result<()> {
+    run_with(cfg, Embed::default()).await
+}
+
+/// Run the relay daemon with an embedder's sinks and watch feed, until the process is stopped
+/// (SIGTERM or ctrl-c).
+pub async fn run_with(cfg: RelayConfig, embed: Embed) -> Result<()> {
     let forge = cfg.target.v2.clone().ok_or_else(|| {
         RelayError::Config(format!(
             "forge-v2 is not deployed on {}; the relay serves forge-v2 repositories only",
             cfg.target.network
         ))
     })?;
-    let client = PlatformClient::connect(cfg.target.clone()).await?;
+    let client = Arc::new(PlatformClient::connect(cfg.target.clone()).await?);
     let contracts = Contracts {
         core: client.fetch_contract(&forge.core).await?,
         collab: client.fetch_contract(&forge.collab).await?,
         community: client.fetch_contract(&forge.community).await?,
     };
 
-    let identity = match &cfg.identity_path {
-        Some(path) if cfg.use_platform_webhooks => {
-            let id = RelayIdentity::load(&client, path, &forge.community).await?;
-            tracing::info!(relay_identity = %id.id, encryption_keys = ?id.key_ids(), "loaded relay identity");
-            Some(id)
-        }
-        _ => {
-            tracing::warn!("no relay identity (or use-platform-webhooks = false): serving static webhooks only");
-            None
-        }
-    };
+    let identity = load_identity(&client, &cfg, &forge.community).await?;
 
     let mut repo_filter = BTreeSet::new();
     for r in &cfg.repos {
@@ -245,33 +266,37 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         Some(w) => Some(wake_hub(&client, w, &mut statics).await?),
         None => None,
     };
-    if identity.is_none() && statics.is_empty() {
+    let watch_identity = static_watch(&client, &cfg, &mut statics).await?;
+    let dynamic_watch = watch_identity.is_some() || embed.watch_feed.is_some();
+    let (sinks, unscoped) =
+        all_sinks(&client, &cfg, embed.sinks, &mut statics, dynamic_watch).await?;
+    if identity.is_none()
+        && statics.is_empty()
+        && watch_identity.is_none()
+        && embed.watch_feed.is_none()
+    {
         return Err(RelayError::Config(
             "nothing to serve: pass --identity <relay key file> (webhooks come from Platform), \
-             or add [[webhook]] blocks or [wake] repos to the config"
+             or add [[webhook]] blocks, [wake] repos, or [[sink]]s with [watch] to the config"
                 .into(),
         ));
     }
 
-    let queue = Arc::new(open_queue(&cfg)?);
+    // Without a relay identity or a static webhook nothing is ever queued for a retry: a
+    // watch-only relay (or an embedder) without a state dir needs no warning about one.
+    let hooks_possible = identity.is_some() || !cfg.static_webhooks.is_empty();
+    let queue = Arc::new(open_queue(&cfg, hooks_possible)?);
     // Only in a state dir this relay holds (the queue's lock): two relays must not share it.
     let check_runs = if queue.is_durable() {
         checkruns::Store::open(cfg.state_dir.as_deref())
     } else {
         checkruns::Store::default()
     };
-    if let Some(addr) = cfg.listen.clone() {
-        let durable = queue.is_durable();
-        let wake = wake.clone();
-        tokio::spawn(async move {
-            if let Err(e) = crate::health::serve(&addr, durable, wake).await {
-                tracing::error!(error = %e, "listener stopped");
-            }
-        });
-    }
+    spawn_listener(&cfg, queue.is_durable(), wake.clone());
 
     let shared = Arc::new(Shared {
         client,
+        sinks,
         contracts,
         dispatcher: Dispatcher::with_queue(
             Deliverer::new(DeliverConfig {
@@ -302,6 +327,14 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         statics,
         subs: Vec::new(),
         resume_at: BTreeMap::new(),
+        watch: DynamicWatch::new(
+            watch_identity,
+            &shared.cfg,
+            embed.watch_feed,
+            embed.watch_events,
+        ),
+        refused: BTreeSet::new(),
+        unscoped,
     });
 
     tokio::select! {
@@ -312,6 +345,188 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     shared.dispatcher.shutdown(SHUTDOWN_GRACE).await;
     tracing::info!("stopped");
     Ok(())
+}
+
+/// The optional listener (`listen`): liveness and runner wake-ups.
+fn spawn_listener(cfg: &RelayConfig, durable: bool, wake: Option<Arc<WakeHub>>) {
+    if let Some(addr) = cfg.listen.clone() {
+        tokio::spawn(async move {
+            if let Err(e) = crate::health::serve(&addr, durable, wake).await {
+                tracing::error!(error = %e, "listener stopped");
+            }
+        });
+    }
+}
+
+/// The relay identity (`--identity`), when Platform webhooks are on.
+async fn load_identity(
+    client: &PlatformClient,
+    cfg: &RelayConfig,
+    community: &str,
+) -> Result<Option<RelayIdentity>> {
+    match &cfg.identity_path {
+        Some(path) if cfg.use_platform_webhooks => {
+            let id = RelayIdentity::load(client, path, community).await?;
+            tracing::info!(relay_identity = %id.id, encryption_keys = ?id.key_ids(), "loaded relay identity");
+            Ok(Some(id))
+        }
+        _ if cfg.sinks.is_empty() && cfg.watch.is_none() && cfg.wake.is_none() => {
+            tracing::warn!("no relay identity (or use-platform-webhooks = false): serving static webhooks only");
+            Ok(None)
+        }
+        _ => {
+            tracing::info!("no relay identity: serving the config's static webhooks, wake-ups, sinks and watch only");
+            Ok(None)
+        }
+    }
+}
+
+/// `[watch] repos`, resolved and added to `statics`; and `[watch] identity`, resolved.
+async fn static_watch(
+    client: &PlatformClient,
+    cfg: &RelayConfig,
+    statics: &mut Vec<WebhookSub>,
+) -> Result<Option<String>> {
+    let Some(watch) = &cfg.watch else {
+        return Ok(None);
+    };
+    for r in &watch.repos {
+        let id = resolve_repo(client, r).await?.id().to_string();
+        statics.push(subscriptions::watch_subscription(&id, &watch.events, 0));
+    }
+    match watch.identity.as_deref() {
+        Some(who) => Ok(Some(resolve_identity(client, who).await?)),
+        None => Ok(None),
+    }
+}
+
+/// The events `[watch]` polls for (empty = all).
+fn watch_events(cfg: &RelayConfig) -> Vec<String> {
+    cfg.watch
+        .as_ref()
+        .map(|w| w.events.clone())
+        .unwrap_or_default()
+}
+
+/// The `[[sink]]`s, started: each sink's `repos` resolved, and watched for it. Also the union
+/// of the events of the sinks without `repos`, if any: the chosen repos are polled for them
+/// ([`unscoped_watch`]).
+async fn sink_hub(
+    client: &Arc<PlatformClient>,
+    cfg: &RelayConfig,
+    statics: &mut Vec<WebhookSub>,
+) -> Result<(Arc<SinkHub>, Option<Vec<String>>)> {
+    let mut specs = Vec::new();
+    let mut unscoped: Option<Vec<String>> = None;
+    for spec in &cfg.sinks {
+        let mut ids = BTreeSet::new();
+        for r in &spec.repos {
+            let id = resolve_repo(client, r).await?.id().to_string();
+            statics.push(subscriptions::watch_subscription(&id, &spec.events, 0));
+            ids.insert(id);
+        }
+        if spec.repos.is_empty() {
+            unscoped = Some(match unscoped {
+                Some(events) => union_events(&events, &spec.events),
+                None => spec.events.clone(),
+            });
+        }
+        specs.push((spec.clone(), ids));
+    }
+    tracing::info!(sinks = specs.len(), "sinks configured");
+    let hub = SinkHub::start(specs, Some(&Arc::new(NameCache::new(Arc::clone(client)))))?;
+    Ok((Arc::new(hub), unscoped))
+}
+
+/// The embedder's sinks and the `[[sink]]`s ([`sink_hub`]), and the sinks without `repos`.
+/// Warns when those get nothing: the config chooses no repo (`statics` holds the static
+/// webhooks, `[wake]`, `[watch] repos` and the sinks' repos) and nothing is watched dynamically.
+async fn all_sinks(
+    client: &Arc<PlatformClient>,
+    cfg: &RelayConfig,
+    mut sinks: Vec<Arc<dyn EventSink>>,
+    statics: &mut Vec<WebhookSub>,
+    dynamic_watch: bool,
+) -> Result<(Vec<Arc<dyn EventSink>>, Option<Unscoped>)> {
+    if cfg.sinks.is_empty() {
+        return Ok((sinks, None));
+    }
+    let (hub, events) = sink_hub(client, cfg, statics).await?;
+    sinks.push(Arc::clone(&hub) as Arc<dyn EventSink>);
+    let unscoped = events.map(|events| Unscoped { hub, events });
+    if unscoped.is_some() && statics.is_empty() && !dynamic_watch {
+        tracing::warn!(
+            "a [[sink]] without repos gets only the repos chosen in the config ([watch], [wake], \
+             [[webhook]], the sinks' repos), never those of webhook documents, and none is \
+             chosen: it gets nothing. Give it repos or add [watch]"
+        );
+    }
+    Ok((sinks, unscoped))
+}
+
+/// The sinks without `repos`: the hub to tell which repos they get, and the union of their
+/// events.
+struct Unscoped {
+    hub: Arc<SinkHub>,
+    events: Vec<String>,
+}
+
+/// The repos the sinks without `repos` get ([`subscriptions::chosen_repos`]), and a watch
+/// subscription for each, so it is polled for those sinks' `events` (from when it was chosen).
+fn unscoped_watch(subs: &[WebhookSub], events: &[String]) -> (BTreeSet<String>, Vec<WebhookSub>) {
+    let chosen = subscriptions::chosen_repos(subs);
+    let watch = chosen
+        .iter()
+        .map(|(repo, since)| subscriptions::watch_subscription(repo, events, *since))
+        .collect();
+    (chosen.into_keys().collect(), watch)
+}
+
+/// An identity id, or a DPNS name (`alice`, `alice.dash`) resolved to one.
+async fn resolve_identity(client: &PlatformClient, who: &str) -> Result<String> {
+    if decode_identifier(who).is_ok() {
+        return Ok(who.to_string());
+    }
+    client.resolve_dpns_name(who).await?.ok_or_else(|| {
+        RelayError::Config(format!(
+            "[watch] identity: no DPNS name {who:?} is registered"
+        ))
+    })
+}
+
+/// The most watched repos read for `[watch] identity`; past this a warning says so.
+const MAX_WATCHED_REPOS: usize = 1000;
+
+/// The repos `identity` watches: its public forge-community `watch` documents (the `byOwner`
+/// index, every page up to [`MAX_WATCHED_REPOS`]), bounded by [`DISCOVERY_TIMEOUT`].
+async fn watched_repos(shared: &Shared, identity: &str) -> Result<BTreeSet<String>> {
+    let filter = [QueryFilter::eq(
+        "$ownerId",
+        FieldValue::identifier(decode_identifier(identity)?),
+    )];
+    let read = shared.client.query_documents_up_to(
+        &shared.contracts.community,
+        forge_core::collab::v2::DOC_WATCH,
+        &filter,
+        &[],
+        MAX_WATCHED_REPOS,
+    );
+    let docs = tokio::time::timeout(DISCOVERY_TIMEOUT, read)
+        .await
+        .map_err(|_| RelayError::Config("reading the watched repos timed out".into()))??;
+    if docs.len() > MAX_WATCHED_REPOS {
+        tracing::warn!(
+            identity,
+            max = MAX_WATCHED_REPOS,
+            "[watch] identity watches more repos than the relay follows; the rest are skipped"
+        );
+    }
+    Ok(docs
+        .iter()
+        .take(MAX_WATCHED_REPOS)
+        .filter_map(|d| d.field_bytes32("repoId"))
+        .map(forge_core::platform::encode_identifier)
+        .collect())
 }
 
 /// Runner wake-ups (`[wake]`): resolve each repo and serve it like a static hook that is never
@@ -435,7 +650,12 @@ fn shared_refresh_interval(cfg: &RelayConfig) -> Duration {
 ///   endpoint: webhooks are delivered and retried, but pending retries are lost on restart.
 /// * Another relay holding the queue is always fatal (two relays would deliver the same
 ///   retries).
-fn open_queue(cfg: &RelayConfig) -> Result<RetryQueue> {
+fn open_queue(cfg: &RelayConfig, hooks_possible: bool) -> Result<RetryQueue> {
+    // Nothing is ever queued for a retry without a hook: a watch-only relay (or an embedder)
+    // must not take, and lock, the default state dir another relay of this user may own.
+    if !hooks_possible && !cfg.state_dir_explicit {
+        return Ok(RetryQueue::in_memory(cfg.retry_schedule.clone()));
+    }
     let not_durable = "the delivery queue is NOT durable: the default state dir cannot be used, \
                        so failed deliveries are retried from memory only and lost when the \
                        relay restarts. Give the relay a writable state dir it owns: \
@@ -533,6 +753,98 @@ struct Discovery {
     subs: Vec<WebhookSub>,
     /// Repos that were served and dropped out: where to resume if they come back.
     resume_at: BTreeMap<String, u64>,
+    /// The watch sets that change while running.
+    watch: DynamicWatch,
+    /// Repos refused for good (private): never set up again.
+    refused: BTreeSet<String>,
+    /// The sinks without `repos`, if any.
+    unscoped: Option<Unscoped>,
+}
+
+/// The union of two event filters, where empty (or `*`) means every event.
+fn union_events(a: &[String], b: &[String]) -> Vec<String> {
+    let all = |e: &[String]| e.is_empty() || e.iter().any(|x| x == "*");
+    if all(a) || all(b) {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = a.iter().chain(b).cloned().collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The watch sets read at every discovery: `[watch] identity`'s watched repos and an
+/// embedder's feed.
+struct DynamicWatch {
+    /// `[watch] identity`, resolved.
+    identity: Option<String>,
+    /// The events its repos are polled for.
+    identity_events: Vec<String>,
+    /// Its repos as last read (kept when a read fails).
+    identity_repos: BTreeSet<String>,
+    /// The embedder's feed.
+    feed: Option<tokio::sync::watch::Receiver<BTreeSet<String>>>,
+    /// The events the feed's repos are polled for.
+    feed_events: Vec<String>,
+    /// When each watched repo joined the set (0: at startup).
+    since: BTreeMap<String, u64>,
+}
+
+impl DynamicWatch {
+    fn new(
+        identity: Option<String>,
+        cfg: &RelayConfig,
+        feed: Option<tokio::sync::watch::Receiver<BTreeSet<String>>>,
+        feed_events: Vec<String>,
+    ) -> Self {
+        Self {
+            identity,
+            identity_events: watch_events(cfg),
+            identity_repos: BTreeSet::new(),
+            feed,
+            feed_events,
+            since: BTreeMap::new(),
+        }
+    }
+
+    /// The watch subscriptions now. A repo that joined after startup is read from then.
+    async fn subscriptions(&mut self, shared: &Shared, startup: bool) -> Vec<WebhookSub> {
+        let mut wanted: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        if let Some(who) = &self.identity {
+            match watched_repos(shared, who).await {
+                Ok(repos) => self.identity_repos = repos,
+                Err(e) => {
+                    tracing::warn!(error = %e, "reading the watched repos failed; keeping the previous set");
+                }
+            }
+            for r in &self.identity_repos {
+                wanted.insert(r.clone(), self.identity_events.clone());
+            }
+        }
+        if let Some(feed) = &self.feed {
+            for r in feed.borrow().iter() {
+                match wanted.get_mut(r) {
+                    Some(events) => *events = union_events(events, &self.feed_events),
+                    None => {
+                        wanted.insert(r.clone(), self.feed_events.clone());
+                    }
+                }
+            }
+        }
+        let now = now_ms();
+        self.since.retain(|r, _| wanted.contains_key(r));
+        wanted
+            .into_iter()
+            .map(|(repo, events)| {
+                let since =
+                    *self
+                        .since
+                        .entry(repo.clone())
+                        .or_insert(if startup { 0 } else { now });
+                subscriptions::watch_subscription(&repo, &events, since)
+            })
+            .collect()
+    }
 }
 
 impl Discovery {
@@ -540,6 +852,7 @@ impl Discovery {
     async fn refresh(&mut self, startup: bool) -> Result<()> {
         let shared = Arc::clone(&self.shared);
         let mut subs = self.statics.clone();
+        subs.extend(self.watch.subscriptions(&shared, startup).await);
         let mut failed = BTreeSet::new();
         if let Some(identity) = &self.identity {
             let found = tokio::time::timeout(
@@ -563,6 +876,14 @@ impl Discovery {
                 .filter(|s| failed.contains(&s.repo_id) && s.document_id.is_some())
                 .cloned(),
         );
+        // A private repo is refused for good, whichever subscription named it.
+        subs.retain(|s| !self.refused.contains(&s.repo_id));
+        // Sinks without `repos` get the chosen repos, never those of webhook documents only.
+        if let Some(u) = &self.unscoped {
+            let (covered, watch) = unscoped_watch(&subs, &u.events);
+            u.hub.set_covered(covered);
+            subs.extend(watch);
+        }
         let wanted = subscriptions::repos_of(&subs);
 
         // Stop serving repos with no hook left, remembering where they stopped.
@@ -617,9 +938,16 @@ impl Discovery {
             .filter(|r| self.repo_filter.is_empty() || self.repo_filter.contains(*r))
             .cloned()
             .collect();
-        // Wake-up subscriptions only make a repo served; they are never delivered.
-        let hooks: Vec<WebhookSub> = subs.iter().filter(|s| !s.is_wake()).cloned().collect();
+        // Wake-up and watch subscriptions only make a repo served; they are never delivered.
+        let hooks: Vec<WebhookSub> = subs.iter().filter(|s| !s.is_internal()).cloned().collect();
         shared.dispatcher.sync(&hooks, &authoritative);
+        let hooked: BTreeSet<&str> = hooks.iter().map(|h| h.repo_id.as_str()).collect();
+        shared.dispatcher.set_hookless(
+            subs.iter()
+                .filter(|s| !hooked.contains(s.repo_id.as_str()))
+                .map(|s| s.repo_id.clone())
+                .collect(),
+        );
         for (repo_id, slot) in repos.iter().chain(ready.iter().map(|(k, v)| (k, v))) {
             *lock(&slot.wants) = wants_of(&subs, repo_id, shared.started_ms);
         }
@@ -630,7 +958,7 @@ impl Discovery {
         if before != after || startup {
             tracing::info!(
                 repos = after.len(),
-                hooks = self.subs.iter().filter(|s| !s.is_wake()).count(),
+                hooks = self.subs.iter().filter(|s| !s.is_internal()).count(),
                 added = ?after.difference(&before).collect::<Vec<_>>(),
                 removed = ?before.difference(&after).collect::<Vec<_>>(),
                 "webhook subscriptions refreshed"
@@ -673,6 +1001,10 @@ impl Discovery {
                             high_water: AtomicU64::new(high),
                         }),
                     ));
+                }
+                Ok(Err(RelayError::PrivateRepo(_))) => {
+                    tracing::info!(repo = %repo_id, "a private repository: the relay does not serve it (not retried)");
+                    self.refused.insert(repo_id);
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(repo = %repo_id, error = %e, "cannot serve repo; retrying at the next discovery");
@@ -823,9 +1155,7 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
         .ok_or_else(|| RelayError::Config(format!("repo {repo_id} has no name")))?;
     if forge_core::scope::visibility_of(&repo_doc) == Visibility::Private {
         // A private repo's content is encrypted to its members; the relay is not one.
-        return Err(RelayError::Config(format!(
-            "{repo_id} is a private repository; the relay does not serve private repositories"
-        )));
+        return Err(RelayError::PrivateRepo(repo_id.to_string()));
     }
     let config_docs = read_all(shared, core, "config", repo_id).await?;
     let configs: Vec<ConfigDoc> = config_docs.iter().map(config_doc).collect();
@@ -1055,6 +1385,9 @@ impl RepoState {
         if let Some(event) = event {
             if subscriptions::WAKE_EVENTS.contains(&event.event) {
                 self.wake(shared);
+            }
+            for sink in &shared.sinks {
+                sink.accept(&self.meta.repo_id, &event);
             }
             shared.dispatcher.enqueue(&self.meta.repo_id, event);
         }
@@ -1668,6 +2001,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unscoped_sinks_watch_the_chosen_repos_only() {
+        let v = |e: &[&str]| e.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let mut hook = subscriptions::watch_subscription("HOOKED", &[], 5);
+        hook.document_id = Some("doc".into());
+        hook.url = "https://ci.example/h".into();
+        let subs = vec![
+            hook,
+            subscriptions::watch_subscription("WATCHED", &v(&["push"]), 40),
+            subscriptions::wake_subscription("WAKE"),
+        ];
+        let (covered, watch) = unscoped_watch(&subs, &v(&["issues"]));
+        assert_eq!(
+            covered,
+            BTreeSet::from(["WAKE".to_string(), "WATCHED".to_string()])
+        );
+        let got: Vec<_> = watch
+            .iter()
+            .map(|w| {
+                (
+                    w.repo_id.as_str(),
+                    w.created_at,
+                    w.events.clone(),
+                    w.is_internal(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("WAKE", 0, v(&["issues"]), true),
+                ("WATCHED", 40, v(&["issues"]), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn watch_event_filters_union_with_empty_meaning_all() {
+        let v = |e: &[&str]| e.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(union_events(&v(&["push"]), &[]).is_empty());
+        assert!(union_events(&v(&["*"]), &v(&["push"])).is_empty());
+        assert_eq!(
+            union_events(&v(&["push", "issues"]), &v(&["release", "push"])),
+            v(&["issues", "push", "release"])
+        );
+    }
+
+    #[test]
     fn an_unusable_default_state_dir_falls_back_to_memory_but_not_an_explicit_one() {
         let base = std::env::temp_dir().join(format!("relay-openq-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -1687,15 +2067,18 @@ mod tests {
         let file = base.join("not-a-dir");
         std::fs::write(&file, "x").unwrap();
         let mut cfg = cfg_for(file);
-        assert!(matches!(open_queue(&cfg), Err(RelayError::Config(_))));
+        assert!(matches!(open_queue(&cfg, true), Err(RelayError::Config(_))));
         cfg.state_dir_explicit = false;
-        let q = open_queue(&cfg).unwrap();
+        let q = open_queue(&cfg, true).unwrap();
         assert!(!q.is_durable(), "runs, in memory");
         // A usable dir is durable; a second relay on it does not start.
         let cfg = cfg_for(base.join("state"));
-        let held = open_queue(&cfg).unwrap();
+        let held = open_queue(&cfg, true).unwrap();
         assert!(held.is_durable());
-        assert!(matches!(open_queue(&cfg), Err(RelayError::StateLocked(_))));
+        assert!(matches!(
+            open_queue(&cfg, true),
+            Err(RelayError::StateLocked(_))
+        ));
         drop(held);
         std::fs::remove_dir_all(&base).ok();
     }

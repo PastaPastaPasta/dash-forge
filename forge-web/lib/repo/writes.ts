@@ -42,6 +42,7 @@ import {
   previewCredits,
   queryAllDocuments,
   queryDocumentsWithProof,
+  retryOnStaleContract,
   sumDocumentsGrouped,
   type DeleteResult,
   type PlainDocument,
@@ -846,16 +847,18 @@ async function findOwnIndexOnly(
   targetId: string,
 ): Promise<unknown | null> {
   const field = targetField(type)
-  const rows = await (sdk as unknown as { documents: RawDocumentsFacade }).documents.query({
-    dataContractId: forge.community,
-    documentTypeName: type,
-    where: [
-      ['$ownerId', '==', ownerId],
-      [field, '==', targetId],
-    ],
-    orderBy: [['$ownerId', 'asc']],
-    limit: 1,
-  })
+  const rows = await retryOnStaleContract(forge.community, () =>
+    (sdk as unknown as { documents: RawDocumentsFacade }).documents.query({
+      dataContractId: forge.community,
+      documentTypeName: type,
+      where: [
+        ['$ownerId', '==', ownerId],
+        [field, '==', targetId],
+      ],
+      orderBy: [['$ownerId', 'asc']],
+      limit: 1,
+    }),
+  )
   for (const doc of rows.values()) if (doc) return doc
   return null
 }
