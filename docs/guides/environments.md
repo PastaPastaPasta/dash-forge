@@ -104,7 +104,7 @@ A save is skipped when someone changed that environment in the meantime. If you 
 
 ### Making someone a maintainer
 
-Changes saved by someone who wasn't a maintainer are ignored, but they stay on Platform. If that person becomes a maintainer, those changes start counting and could replace the values in use. `dg collab add --role maintainer` checks for this first. For every environment that would change it saves the current values again as you, naming their earlier changes as replaced, before it grants the role. The confirmation lists those environments and the cost. An environment that only they saved, which nobody could use before, is listed as one that appears once they are a maintainer.
+Changes saved by someone who wasn't a maintainer are ignored, but they stay on Platform. If that person becomes a maintainer, those changes start counting and could replace the values in use. `dg collab add --role maintainer` checks for this first. For every environment that would change it saves the current values again as you, naming their earlier changes as replaced, before it grants the role. Before its question, the confirmation lists those environments and the cost of saving them. An environment that only they saved, which nobody could use before, is listed as one that appears once they are a maintainer.
 
 ### On the web
 

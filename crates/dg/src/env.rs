@@ -2004,7 +2004,7 @@ pub struct Promotion {
 
 impl Promotion {
     /// Print to stderr what would change and what is saved first; the sentence the add prompt
-    /// adds (empty when nothing is saved).
+    /// starts with (empty when nothing is saved).
     #[must_use]
     pub fn explain(&self, member: &str, price: Option<f64>) -> String {
         explain_pins(&self.pins, &self.cannot, "When the role lands");
@@ -2015,7 +2015,7 @@ impl Promotion {
             return String::new();
         }
         format!(
-            ". First it saves {} as you, as listed above ({})",
+            "First this saves {} as you, as listed above ({}). ",
             count(self.pins.len(), "environment"),
             cost_line(self.pins.iter().map(Pin::credits).sum(), price)
         )

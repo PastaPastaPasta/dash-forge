@@ -273,7 +273,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         None
     };
     let question = match &promotion {
-        Some(p) => format!("{question}{}", p.explain(member, ctx.usd_price())),
+        Some(p) => format!("{}{question}", p.explain(member, ctx.usd_price())),
         None => question,
     };
     if !ctx.confirm(&question)? {
