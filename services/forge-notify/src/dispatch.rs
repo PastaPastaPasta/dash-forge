@@ -141,19 +141,24 @@ impl Dispatcher {
         if !self.store.mark_sent(identity, &n.id)? {
             return Ok(());
         }
-        // A daily digest, and the notices past the daily cap, need a working address. Without
-        // one (a push-only subscriber) they go as pushes now, within the daily budget, rather
-        // than into a digest that is never sent.
-        let digest = s.mail_ok()
-            && self.mailer.is_some()
-            && (s.prefs.delivery == Delivery::Daily
-                || !self
-                    .store
-                    .take_quota(&format!("user:{identity}"), self.per_user_daily)?);
-        if digest {
+        // A daily digest needs a working address. Without one (a push-only subscriber) the
+        // notices go as pushes when they happen, rather than into a digest that is never sent.
+        let can_digest = s.mail_ok() && self.mailer.is_some();
+        let daily = can_digest && s.prefs.delivery == Delivery::Daily;
+        let over_cap = !daily
+            && !self
+                .store
+                .take_quota(&format!("user:{identity}"), self.per_user_daily)?;
+        if daily || (over_cap && can_digest) {
             let item = serde_json::to_string(n)
                 .map_err(|e| crate::error::NotifyError::Internal(e.to_string()))?;
             self.store.push_digest(identity, &item)?;
+            return Ok(());
+        }
+        if over_cap {
+            // Past the cap with no digest to hold it: the cap bounds what one identity can
+            // draw from the shared daily budget.
+            tracing::debug!("a push-only subscriber is past the daily cap; notice skipped");
             return Ok(());
         }
         if s.mail_ok() {
@@ -434,14 +439,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_push_only_subscriber_gets_daily_and_over_cap_notices_as_pushes() {
+    async fn a_push_only_subscriber_on_daily_gets_pushes_up_to_the_cap() {
         let pusher = Arc::new(CapturePusher::default());
         let mailer: Arc<dyn Mailer> = Arc::new(CaptureMailer::default());
         let d = dispatcher(Some(mailer), Arc::clone(&pusher));
         subscribe(&d, None, Delivery::Daily);
         d.deliver(ID, &notice("1")).await.unwrap();
         d.deliver(ID, &notice("2")).await.unwrap(); // past the cap of 1
-        assert_eq!(pusher.sent.lock().unwrap().len(), 2);
+        assert_eq!(pusher.sent.lock().unwrap().len(), 1);
         assert!(d.store.digest(ID).unwrap().0.is_empty());
     }
 }

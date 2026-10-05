@@ -26,7 +26,7 @@ pub enum Delivery {
     #[default]
     Instant,
     /// One mail a day ([`crate::config::Config::digest_hour`]); pushes are not sent. Without a
-    /// working address (push only) notices go as pushes when they happen.
+    /// working address (push only) notices go as pushes when they happen, up to the daily cap.
     Daily,
 }
 
