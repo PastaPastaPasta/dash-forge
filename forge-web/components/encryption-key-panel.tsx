@@ -14,6 +14,7 @@
  * dropped after use.
  */
 
+import { BuildIntegrityNotice } from '@/components/build-integrity-notice'
 import { useEffect, useRef, useState } from 'react'
 import { KeyRound, Trash2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -176,6 +177,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
         <KeyRound className="h-3.5 w-3.5" aria-hidden /> Private repos
       </h2>
       <p className="text-[12px] text-anvil-600 dark:text-anvil-300">{ENCRYPTION_KEY_BLAST_RADIUS}</p>
+      <BuildIntegrityNotice className="mt-2" />
       {unlockScope === 'signing' ? (
         <div className="mt-3">
           <UnlockMore title="Unlock this tab to manage your encryption key" testId="encryption-unlock" />

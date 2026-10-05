@@ -7,6 +7,7 @@
 #         forge-web.cid   the site's root CID (CIDv1), one line
 #         forge-web.car   the whole site as a CAR (`ipfs dag import` it to pin it)
 #         site.tar        the files, for serving or diffing
+#         forge-web.manifest.json  every file's SHA-256 (the site's own forge-manifest.json)
 #       Needs git and Docker. This is what the release workflow runs, and what you run to
 #       check a release: the same tag gives the same CID. It builds with REF's own copy of this
 #       script (its pins and network), whichever checkout you run it from.
@@ -121,6 +122,10 @@ reproduce() {
     | in_container "$NODE_IMAGE" _build -e FORGE_BUILD_COMMIT="$commit" -e SOURCE_DATE_EPOCH="$epoch" \
     > "$out/site.tar"
   [ -s "$out/site.tar" ] || die "the build produced nothing"
+  # The build's per-file manifest, published next to the CAR (`dg verify-app`). A commit from
+  # before the manifest has none.
+  rm -f "$out/forge-web.manifest.json"
+  if tar -xOf "$out/site.tar" ./forge-manifest.json > "$out/forge-web.manifest.json" 2>/dev/null; then :; else rm -f "$out/forge-web.manifest.json"; fi
   cid_of_tar "$out/site.tar" "$out"
   printf '%s\n' "$cid"
 }

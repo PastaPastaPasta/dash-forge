@@ -1,0 +1,14 @@
+{
+  "name": "case_sensitive",
+  "description": "Repo ids are case-sensitive base58: a different case is a different id.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "{\"mirrors\": [\"bcranpjyupbp3hjeff9tnvz546dhif8sfzwwwpebptyq\"]}",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": true,
+    "listed": false
+  }
+}
