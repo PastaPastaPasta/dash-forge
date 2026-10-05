@@ -518,14 +518,15 @@ impl PlatformClient {
         let dashcore_network = to_dashcore(network);
         let cache_size = NonZeroUsize::new(100).expect("cache size is non-zero");
 
-        let context_provider = match network {
-            Network::Devnet { .. } => TrustedHttpContextProvider::new_with_url(
-                dashcore_network,
-                network.quorum_base_url(),
-                cache_size,
-            ),
-            _ => TrustedHttpContextProvider::new(dashcore_network, None, cache_size),
-        }
+        // Proofs are checked against quorum keys from a quorum service: the network's, or one
+        // the user chose (`target.quorum_url`). The SDK takes quorum keys from nowhere else
+        // (rs-sdk-trusted-context-provider `TrustedHttpContextProvider::new_with_url`, which
+        // also refuses a plain-http URL on testnet and mainnet).
+        let context_provider = TrustedHttpContextProvider::new_with_url(
+            dashcore_network,
+            target.checked_quorum_base_url()?,
+            cache_size,
+        )
         .map_err(|e| Error::Platform(format!("building context provider for {network}: {e}")))?;
 
         let builder = match network {
@@ -541,7 +542,7 @@ impl PlatformClient {
                                 "devnet {network} has no DAPI addresses configured and \
                                  discovery from {} failed ({e}); pass --dapi-addresses \
                                  (or set dash.dapiAddresses / DASH_FORGE_DAPI_ADDRESSES)",
-                                network.quorum_base_url()
+                                target.quorum_base_url()
                             ))
                         })?
                         .iter()
@@ -693,6 +694,98 @@ impl PlatformClient {
         let loaded = LoadedContract(Arc::new(contract));
         self.memo().insert(contract_id, loaded.clone());
         loaded
+    }
+
+    /// The contract to build a query of `contract` with: `contract` itself, or the newer
+    /// version of it this process has refreshed to since ([`Self::refreshed_after`]). A caller
+    /// may hold a [`LoadedContract`] for as long as it likes (a daemon holds one for days).
+    fn current(&self, contract: &LoadedContract) -> Arc<DataContract> {
+        match self.memo().get(&contract.id()) {
+            Some(held) if held.version() > contract.version() => Arc::clone(&held.0),
+            _ => Arc::clone(&contract.0),
+        }
+    }
+
+    /// After a read of `contracts` failed with `e`: when `e` is a document written under a newer
+    /// version of one of them than the read was built with ([`is_stale_contract`]: an in-place
+    /// contract update gave its type a property), refresh each ([`Self::refresh_contract`]) and
+    /// say whether any moved on, so the read may be retried once. Anything else is `false`,
+    /// without a request.
+    async fn refreshed_after<'c>(
+        &self,
+        contracts: impl IntoIterator<Item = &'c LoadedContract>,
+        e: &Error,
+    ) -> bool {
+        if !matches!(e, Error::Platform(m) if is_stale_contract(m)) {
+            return false;
+        }
+        let mut seen = BTreeSet::new();
+        let mut moved = false;
+        for contract in contracts {
+            let id = contract.id();
+            if seen.insert(id.clone()) {
+                // The version the failed read was built with ([`Self::current`]), which may
+                // already be newer than the caller's after an earlier update.
+                let used = self.current(contract).version();
+                moved |= self.refresh_contract(&id, used).await;
+            }
+        }
+        moved
+    }
+
+    /// When the network holds a newer version of contract `contract_id` than `held` (one proved
+    /// version read decides), fetch it (proved), past this process's memo and the disk cache,
+    /// and keep it in both. True when the version now held is newer than `held` (also when
+    /// another read of this process refreshed it first).
+    pub(crate) async fn refresh_contract(&self, contract_id: &str, held: u32) -> bool {
+        if self
+            .memo()
+            .get(contract_id)
+            .is_some_and(|c| c.version() > held)
+        {
+            return true;
+        }
+        let Ok(id) = parse_id(contract_id, "contract id") else {
+            return false;
+        };
+        if !matches!(self.latest_contract_version(id).await, Ok(Some(v)) if v > held) {
+            return false;
+        }
+        let fetched =
+            retry_transient_read("fetch contract", || DataContract::fetch(&self.sdk, id)).await;
+        let Ok(Some(contract)) = fetched else {
+            return false;
+        };
+        let newer = contract.version() > held;
+        if newer {
+            tracing::info!(
+                contract_id,
+                from = held,
+                to = contract.version(),
+                "the contract was updated in place; reading with the new version"
+            );
+            self.store_contract(contract_id, &contract);
+            self.remember(contract_id.to_string(), contract);
+        }
+        newer
+    }
+
+    /// [`Self::refresh_contract`] the contract of a write's `transition` from the version this
+    /// process holds: after the write's proof held a document newer than that version.
+    pub(crate) async fn refresh_contract_of(&self, transition: &StateTransition) {
+        use dash_sdk::dpp::state_transition::batch_transition::accessors::DocumentsBatchTransitionAccessorsV0;
+        let StateTransition::Batch(batch) = transition else {
+            return;
+        };
+        let Some(first) = batch.first_transition() else {
+            return;
+        };
+        let contract_id = first.data_contract_id().to_string(Encoding::Base58);
+        let held = self
+            .memo()
+            .get(&contract_id)
+            .map_or(0, LoadedContract::version);
+        self.refresh_contract(&contract_id, held).await;
     }
 
     fn memo(&self) -> std::sync::MutexGuard<'_, HashMap<String, LoadedContract>> {
@@ -875,8 +968,21 @@ impl PlatformClient {
         document_type: &str,
         document_id: &str,
     ) -> Result<Option<FetchedDocument>> {
+        let fetch = || Box::pin(self.fetch_document_once(contract, document_type, document_id));
+        match fetch().await {
+            Err(e) if Box::pin(self.refreshed_after([contract], &e)).await => fetch().await,
+            found => found,
+        }
+    }
+
+    async fn fetch_document_once(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+    ) -> Result<Option<FetchedDocument>> {
         let doc_id = parse_id(document_id, "document id")?;
-        let query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
+        let query = DocumentQuery::new(self.current(contract), document_type)
             .map_err(|e| Error::Platform(format!("building document query: {e}")))?
             .with_document_id(&doc_id);
         let found = retry_transient_read("fetch document", || {
@@ -955,7 +1061,32 @@ impl PlatformClient {
         limit: u32,
         start_after: Option<&str>,
     ) -> Result<Vec<FetchedDocument>> {
-        let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
+        let page = || {
+            Box::pin(self.query_page_once(
+                contract,
+                document_type,
+                filters,
+                order,
+                limit,
+                start_after,
+            ))
+        };
+        match page().await {
+            Err(e) if Box::pin(self.refreshed_after([contract], &e)).await => page().await,
+            documents => documents,
+        }
+    }
+
+    async fn query_page_once(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        order: &[QueryOrder],
+        limit: u32,
+        start_after: Option<&str>,
+    ) -> Result<Vec<FetchedDocument>> {
+        let mut query = DocumentQuery::new(self.current(contract), document_type)
             .map_err(|e| Error::Platform(format!("building document query: {e}")))?;
 
         for f in filters {
@@ -1099,19 +1230,38 @@ impl PlatformClient {
         filters: &[QueryFilter],
         order: &[QueryOrder],
     ) -> Result<Vec<FetchedDocument>> {
+        // (Its pages refresh and retry one by one.)
         if !order.iter().all(|o| o.ascending) || tie_probe_allowed(filters, order) {
             return self
                 .query_all_documents(contract, document_type, filters, order)
                 .await;
         }
+        // A document newer than the held contract restarts the read once, under the new
+        // version: once per update per process.
+        let read = || {
+            Box::pin(self.query_all_large_documents_once(contract, document_type, filters, order))
+        };
+        match read().await {
+            Err(e) if Box::pin(self.refreshed_after([contract], &e)).await => read().await,
+            documents => documents,
+        }
+    }
+
+    async fn query_all_large_documents_once(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        order: &[QueryOrder],
+    ) -> Result<Vec<FetchedDocument>> {
         let what = format!("querying {document_type} documents");
         let what = what.as_str();
         page_adaptively(
             document_type,
             AdaptivePager::new(LARGE_PAGE_START, LARGE_PAGE_MAX),
             |start_after: Option<String>, limit: u32, timeout: std::time::Duration| async move {
-                let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
-                    .map_err(|e| {
+                let mut query =
+                    DocumentQuery::new(self.current(contract), document_type).map_err(|e| {
                         PageFailure::Other(Error::Platform(format!("building document query: {e}")))
                     })?;
                 for f in filters {
@@ -1237,7 +1387,16 @@ impl PlatformClient {
         use std::sync::atomic::Ordering as AtomicOrdering;
         let composite_ok = reads.len() > 1 && !self.no_composite.load(AtomicOrdering::Relaxed);
         if composite_ok {
-            match self.query_composite(reads).await {
+            let composite = match Box::pin(self.query_composite(reads)).await {
+                Err(e)
+                    if Box::pin(self.refreshed_after(reads.iter().map(|r| r.contract), &e))
+                        .await =>
+                {
+                    Box::pin(self.query_composite(reads)).await
+                }
+                other => other,
+            };
+            match composite {
                 Ok(r) => return Ok(r),
                 Err(Error::CompositeRefused {
                     unsupported,
@@ -1308,10 +1467,10 @@ impl PlatformClient {
         let (page, rest) = reads
             .split_first()
             .ok_or_else(|| Error::Config("an empty batch".into()))?;
-        let mut query = Self::document_query(page)?;
+        let mut query = self.document_query(page)?;
         for read in rest {
             let mut sub =
-                CompositeSubQuery::documents(Arc::clone(&read.contract.0), read.document_type)
+                CompositeSubQuery::documents(self.current(read.contract), read.document_type)
                     .map_err(|e| Error::Platform(format!("building a sub-query: {e}")))?
                     .with_limit(read.limit);
             for f in &read.filters {
@@ -1357,13 +1516,13 @@ impl PlatformClient {
     }
 
     /// The plain `DocumentQuery` of one read (no cursor).
-    fn document_query(read: &BatchRead<'_>) -> Result<DocumentQuery> {
+    fn document_query(&self, read: &BatchRead<'_>) -> Result<DocumentQuery> {
         if read.limit == 0 || read.limit > PAGE_SIZE {
             return Err(Error::Config(format!(
                 "a batched read needs a limit of 1 to {PAGE_SIZE}"
             )));
         }
-        let mut query = DocumentQuery::new(Arc::clone(&read.contract.0), read.document_type)
+        let mut query = DocumentQuery::new(self.current(read.contract), read.document_type)
             .map_err(|e| Error::Platform(format!("building document query: {e}")))?;
         for f in &read.filters {
             query = query.with_where(f.to_where_clause());
@@ -1385,7 +1544,7 @@ impl PlatformClient {
         document_type: &str,
         filters: &[QueryFilter],
     ) -> Result<u64> {
-        let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
+        let mut query = DocumentQuery::new(self.current(contract), document_type)
             .map_err(|e| Error::Platform(format!("building count query: {e}")))?;
         for f in filters {
             query = query.with_where(f.to_where_clause());
@@ -1419,7 +1578,8 @@ impl PlatformClient {
         filters: &[QueryFilter],
         group_field: &str,
     ) -> Result<BTreeMap<Vec<u8>, u64>> {
-        let query = Self::grouped_query(contract, document_type, filters, group_field)?
+        let query = self
+            .grouped_query(contract, document_type, filters, group_field)?
             .with_select(SelectProjection::count_star());
         let counts = retry_transient_read("grouped count", || {
             DocumentSplitCounts::fetch(&self.sdk, query.clone())
@@ -1447,7 +1607,8 @@ impl PlatformClient {
         group_field: &str,
         sum_field: &str,
     ) -> Result<BTreeMap<Vec<u8>, i64>> {
-        let query = Self::grouped_query(contract, document_type, filters, group_field)?
+        let query = self
+            .grouped_query(contract, document_type, filters, group_field)?
             .with_select(SelectProjection::sum(sum_field));
         let sums = retry_transient_read("grouped sum", || {
             DocumentSplitSums::fetch(&self.sdk, query.clone())
@@ -1465,6 +1626,7 @@ impl PlatformClient {
 
     /// The query of a grouped aggregate: `filters`, grouped by `group_field`, no limit.
     fn grouped_query(
+        &self,
         contract: &LoadedContract,
         document_type: &str,
         filters: &[QueryFilter],
@@ -1478,7 +1640,7 @@ impl PlatformClient {
                 "a grouped aggregate groups by an `in` filter; none on {group_field}"
             )));
         }
-        let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
+        let mut query = DocumentQuery::new(self.current(contract), document_type)
             .map_err(|e| Error::Platform(format!("building grouped query: {e}")))?;
         for f in filters {
             query = query.with_where(f.to_where_clause());
@@ -2205,10 +2367,24 @@ impl<'a> WriteEngine<'a> {
             // delete wait this way for an indexOnly type, but this engine broadcasts and waits
             // itself, and the strict `wait_for_response` still refuses such an outcome.
             || async {
-                st.wait_for_affected_state::<StateTransitionProofResult>(sdk, Some(wait_settings()))
+                match st
+                    .wait_for_affected_state::<StateTransitionProofResult>(
+                        sdk,
+                        Some(wait_settings()),
+                    )
                     .await
-                    .map(|_proof| ())
-                    .map_err(|e| classify_write_error(&e, document_type))
+                {
+                    Ok(_proof) => Ok(()),
+                    // The proof holds a document written under a newer version of its contract
+                    // than this process loaded (an in-place update since): the transition is in
+                    // a block. Hold the new version from here on, and let the spent nonce
+                    // settle it (`NonceConsumed`: the caller's proved read decides).
+                    Err(e) if is_stale_contract(&e.to_string()) => {
+                        Box::pin(self.client.refresh_contract_of(st)).await;
+                        Err(WriteFailure::Retryable(e.to_string()))
+                    }
+                    Err(e) => Err(classify_write_error(&e, document_type)),
+                }
             },
             || self.nonce_spent(st, prepared.signed.nonce),
             RETRY_BACKOFF_BASE,
@@ -2606,6 +2782,32 @@ impl<'a> WriteEngine<'a> {
             .await
     }
 
+    /// The stored document `document_id` of `document_type` (the SDK's own type, which a
+    /// replace is built from), read with the newest version of `contract` this process holds,
+    /// and again once after a refresh when it was written under a newer one.
+    async fn fetch_stored(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+    ) -> Result<Option<Document>> {
+        let doc_id = parse_id(document_id, "document id")?;
+        let fetch = || async {
+            let query = DocumentQuery::new(self.client.current(contract), document_type)
+                .map_err(|e| Error::Platform(format!("building document query: {e}")))?
+                .with_document_id(&doc_id);
+            retry_transient_read("fetch document", || {
+                Document::fetch(self.client.sdk(), query.clone())
+            })
+            .await
+            .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))
+        };
+        match fetch().await {
+            Err(e) if Box::pin(self.client.refreshed_after([contract], &e)).await => fetch().await,
+            found => found,
+        }
+    }
+
     /// [`Self::replace_document`], refused (E607, nothing signed) when the stored document is
     /// no longer at `expected_revision`, the revision the caller read and built `changes`
     /// from: another edit landed since, and replacing it would silently drop that edit. A
@@ -2618,21 +2820,13 @@ impl<'a> WriteEngine<'a> {
         changes: &BTreeMap<String, Option<FieldValue>>,
         expected_revision: Option<u64>,
     ) -> Result<bool> {
-        let doc_id = parse_id(document_id, "document id")?;
-        let data_contract = &contract.0;
-        let doc_type_ref = data_contract
+        // The newest version of the contract this process holds, taken again at each use: a
+        // fetch below may refresh it (an in-place update since `contract` was loaded).
+        let current = || self.client.current(contract);
+        current()
             .document_type_for_name(document_type)
             .map_err(|e| Error::Config(format!("unknown document type '{document_type}': {e}")))?;
-        let fetch = || async {
-            let query = DocumentQuery::new(Arc::clone(data_contract), document_type)
-                .map_err(|e| Error::Platform(format!("building document query: {e}")))?
-                .with_document_id(&doc_id);
-            retry_transient_read("fetch document", || {
-                Document::fetch(self.client.sdk(), query.clone())
-            })
-            .await
-            .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))
-        };
+        let fetch = || Box::pin(self.fetch_stored(contract, document_type, document_id));
         let holds = |doc: &Document| {
             changes.iter().all(|(k, v)| {
                 let stored = doc.properties().get(k).and_then(FieldValue::from_value);
@@ -2676,9 +2870,15 @@ impl<'a> WriteEngine<'a> {
             let nonce = self
                 .client
                 .sdk()
-                .get_identity_contract_nonce(self.owner_id, data_contract.id(), true, None)
+                .get_identity_contract_nonce(self.owner_id, contract.0.id(), true, None)
                 .await
                 .map_err(|e| Error::Platform(format!("fetching identity-contract nonce: {e}")))?;
+            let data_contract = current();
+            let doc_type_ref = data_contract
+                .document_type_for_name(document_type)
+                .map_err(|e| {
+                    Error::Config(format!("unknown document type '{document_type}': {e}"))
+                })?;
             let state_transition =
                 BatchTransition::new_document_replacement_transition_from_document(
                     doc,
@@ -3780,6 +3980,15 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
     WriteFailure::Fatal(Error::Platform(e.to_string()))
 }
 
+/// Whether an error's text is rs-dpp refusing to decode a document written under a newer
+/// version of its contract than the reader holds: an in-place update (forge-v2 UPDATE-1) gave
+/// the type a property, and every document of it written since carries that property's
+/// presence byte (v5.0.0-beta.1 packages/rs-dpp/src/document/v0/serialize/v3.rs:557-570). The
+/// cure is to refetch the contract; no node answers otherwise.
+pub(crate) fn is_stale_contract(message: &str) -> bool {
+    message.contains("trailing bytes") && message.contains("refetch the contract")
+}
+
 /// Drive refused a read because the contract it names does not exist: gRPC `InvalidArgument`
 /// carrying `QuerySyntaxError::DataContractNotFound` ("contract not found error: …"). An answer,
 /// not a flake: no node has the contract.
@@ -3805,6 +4014,10 @@ fn is_contract_missing(e: &dash_sdk::Error) -> bool {
 /// a minute (the SDK's default base ban period), so a backed-off retry does not just ask
 /// the same dead nodes again.
 fn is_transient_node_error(e: &dash_sdk::Error) -> bool {
+    // Every node answers the same: the document is newer than the contract read it with.
+    if is_stale_contract(&e.to_string()) {
+        return false;
+    }
     match e {
         dash_sdk::Error::NoAvailableAddressesToRetry(_) => true,
         dash_sdk::Error::DapiClientError(d) => d.can_retry() || d.is_no_available_addresses(),
@@ -4548,10 +4761,10 @@ impl PushJournal {
 #[cfg(test)]
 mod tests {
     use super::{
-        ascending_equivalent, is_contract_missing, is_transient_node_error, page_to_exhaustion,
-        page_until, retry_with_backoff, tie_probe_allowed, FetchedDocument, FieldValue,
-        JournalStore, PushJournal, QueryFilter, QueryOrder, SignedTransition, WriteIntent, WriteOp,
-        MAX_PAGES, MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
+        ascending_equivalent, is_contract_missing, is_stale_contract, is_transient_node_error,
+        page_to_exhaustion, page_until, retry_with_backoff, tie_probe_allowed, FetchedDocument,
+        FieldValue, JournalStore, PushJournal, QueryFilter, QueryOrder, SignedTransition,
+        WriteIntent, WriteOp, MAX_PAGES, MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
     };
     use crate::error::{Error, Result};
     use std::cell::RefCell;
@@ -5378,6 +5591,26 @@ mod tests {
         assert!(!is_transient_node_error(&dash_sdk::Error::Config(
             "bad".into()
         )));
+    }
+
+    #[test]
+    fn a_document_newer_than_the_held_contract_is_stale_and_not_transient() {
+        // What the SDK answers a reader holding version 1 of a contract for a document written
+        // under version 2 of an updated type (measured on sakura: update1-probe.mjs).
+        let text = "serialized document has trailing bytes: it was serialized under contract \
+                    version 2 with properties this document type does not know; refetch the contract";
+        let e = dash_sdk::Error::Protocol(dash_sdk::dpp::ProtocolError::CorruptedSerialization(
+            text.to_string(),
+        ));
+        assert!(is_stale_contract(&e.to_string()), "{e}");
+        assert!(!is_transient_node_error(&e), "every node answers the same");
+        // The crate error a read maps it to keeps the text, so the read refreshes and retries.
+        assert!(is_stale_contract(&format!(
+            "querying release documents: {e}"
+        )));
+        assert!(!is_stale_contract(
+            "Corrupted Serialization: error probing for trailing bytes in serialized document"
+        ));
     }
 
     #[test]

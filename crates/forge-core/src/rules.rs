@@ -50,6 +50,7 @@ pub mod ci_rerun;
 pub mod codeowners;
 pub mod long_body;
 pub mod merge_check;
+pub mod mirror;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
@@ -883,30 +884,23 @@ pub fn routes_protected(
     }
 }
 
-/// Tag names unlike each other in their first character, shape and depth: one pattern that
-/// matches all of them is taken to cover every tag ([`missing_default_protection`]).
-const TAG_PROBES: [&str; 5] = [
-    "refs/tags/v1.0.0",
-    "refs/tags/1.0",
-    "refs/tags/release-2",
-    "refs/tags/Z_9",
-    "refs/tags/a/b/c",
-];
+/// The patterns that cover every tag ([`missing_default_protection`]). A list, not a test
+/// against sample tags: a glob can match any finite sample and still miss a tag
+/// (`refs/tags/**/[!q]*` misses `q1`).
+const ALL_TAG_PATTERNS: [&str; 3] = ["refs/tags/**", "refs/**", "**"];
 
 /// What of the default protection `patterns` leave uncovered on a repository whose default
 /// branch is `default_branch`: the default patterns still needed, empty when existing patterns
-/// cover both the branch and every tag. Every tag counts as covered only when one pattern matches
-/// a set of unlike tag names (`refs/tags/**`, `refs/**`): `refs/tags/*` misses nested tags and
-/// `refs/tags/v*` misses `1.0`, so either still needs `refs/tags/**`. Parity:
+/// cover both the branch and every tag. Every tag counts as covered only by a pattern that names
+/// them all (`refs/tags/**`, `refs/**`, `**`): `refs/tags/*` misses nested tags and `refs/tags/v*`
+/// misses `1.0`, so either still needs `refs/tags/**`. Parity:
 /// `missingDefaultProtection` in `forge-web/lib/rules/matchesProtected.ts` (vectors
 /// `missing_default_protection__*`).
 #[must_use]
 pub fn missing_default_protection(default_branch: &str, patterns: &[String]) -> Vec<String> {
-    let all_tags = patterns.iter().any(|p| {
-        TAG_PROBES
-            .iter()
-            .all(|t| matches_protected(t, std::slice::from_ref(p)))
-    });
+    let all_tags = patterns
+        .iter()
+        .any(|p| ALL_TAG_PATTERNS.contains(&p.as_str()));
     default_protected_patterns(default_branch)
         .into_iter()
         .filter(|d| {
@@ -2520,6 +2514,41 @@ mod tests {
         }
     }
 
+    /// `repo_name`: [`v2::is_valid_repo_name`] and [`v2::normalize_repo_name`].
+    fn run_repo_name_case(v: &Vector) {
+        let inp: RepoNameInput = input(v);
+        let got = serde_json::json!({
+            "valid": v2::is_valid_repo_name(&inp.name),
+            "normalized": v2::normalize_repo_name(&inp.name),
+        });
+        assert_eq!(got, v.expected, "vector `{}`", v.name);
+    }
+
+    /// `mirror_backlink` and `mirror_backlink_file`: the mirror back-link ([`super::mirror`]).
+    fn run_mirror_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct BacklinkInput {
+            file: String,
+            repo_id: String,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct BacklinkFileInput {
+            repo_ids: Vec<String>,
+        }
+        let ctx = &v.name;
+        let got = if v.case == "mirror_backlink" {
+            let inp: BacklinkInput = input(v);
+            serde_json::to_value(super::mirror::read_backlink(&inp.file, &inp.repo_id))
+                .expect("serialises")
+        } else {
+            let inp: BacklinkFileInput = input(v);
+            serde_json::json!({ "file": super::mirror::backlink_file(&inp.repo_ids) })
+        };
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+    }
+
     /// `profile_input` and `avatar_config`: the profile rules ([`super::profile`]).
     fn run_profile_case(v: &Vector) {
         #[derive(Deserialize, Serialize)]
@@ -2655,15 +2684,9 @@ mod tests {
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "profile_input" | "avatar_config" => run_profile_case(v),
+            "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
             "pubkey_entry" | "commit_signature" | "tag_signature" => run_signature_case(v),
-            "repo_name" => {
-                let inp: RepoNameInput = input(v);
-                let got = serde_json::json!({
-                    "valid": v2::is_valid_repo_name(&inp.name),
-                    "normalized": v2::normalize_repo_name(&inp.name),
-                });
-                assert_eq!(got, v.expected, "vector `{ctx}`");
-            }
+            "repo_name" => run_repo_name_case(v),
             "role_oracle" => {
                 let inp: RoleOracleInput = input(v);
                 let oracle = v2::RoleOracle::new(inp.memberships);

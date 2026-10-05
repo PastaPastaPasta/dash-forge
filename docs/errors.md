@@ -268,6 +268,8 @@ Fix: run the command again; other copies are tried. `dg storage status <owner>/<
 
 `dg release download` also stops with E504, before downloading anything, when the release asset records **no SHA-256** (releases mirrored by a `forge-import` older than the D-517 fix recorded `""` for assets their source gave no digest for). There is nothing to check the bytes against, and nothing is downloaded unverified. Fix: a maintainer re-runs the import with a current `forge-import`, which hashes each such asset and republishes the release, or publishes it again with the file (`dg release create <repo> --tag <tag> --asset <file>`).
 
+`dg verify-app <url>` stops with E504 when the site **does not match a published build**: it serves no `forge-manifest.json`, GitHub holds no attestation of the one it serves from this repository's CI, or a file the manifest lists is missing or has other bytes (each is named). Fix: don't unlock a private repository on that copy. Use a release's IPFS build, or check the copy against a manifest you trust with `--manifest <file>` ([Verify the app you loaded](guides/verify-the-app.md#check-a-deployed-copy-dg-verify-app)).
+
 ## E505
 
 **Storage credentials unavailable.** A profile's secret reference does not resolve: the `env:` variable is unset in the environment that git or `dg` runs in, or the `keychain:` entry does not exist.

@@ -513,6 +513,16 @@ async fn private_epoch_zero(
 /// `opts` with the name normalized to its slug, or why it cannot be created.
 fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
     crate::repo::check_default_branch(&opts.default_branch)?;
+    // The first config's patterns: `refs/heads/<branch>` can outgrow a pattern's 100
+    // characters, and the config is written after the repo and its maintainer.
+    if opts.protect {
+        crate::repo::check_patterns(&opts.protected_patterns()).map_err(|_| {
+            Error::Config(format!(
+                "the default branch name is too long to protect (a protected pattern is at most {} characters); choose a shorter one, or create the repository unprotected",
+                crate::repo::MAX_PATTERN_CHARS
+            ))
+        })?;
+    }
     // RC1 `repo_shape`: a fork is public (`forkIsPublic`).
     if opts.fork_of.is_some() && opts.visibility != Visibility::Public {
         return Err(Error::Config(
@@ -763,6 +773,22 @@ mod tests {
         assert!(validated(&opts).is_ok());
         opts.backend_uris = vec!["https://x".into(); 5];
         assert!(validated(&opts).is_err(), "more than 4 uris");
+    }
+
+    /// CodeRabbit (PR #372): a default branch whose protected pattern would outgrow 100
+    /// characters is refused before anything is written, unless protection is off.
+    #[test]
+    fn a_branch_too_long_to_protect_is_refused_before_writing() {
+        let mut opts = CreateRepoOpts::public("demo");
+        opts.default_branch = "b".repeat(90);
+        opts.protect = true;
+        let err = validated(&opts).unwrap_err().to_string();
+        assert!(err.contains("too long to protect"), "{err}");
+        opts.protect = false;
+        assert!(validated(&opts).is_ok());
+        opts.default_branch = "b".repeat(89);
+        opts.protect = true;
+        assert!(validated(&opts).is_ok(), "refs/heads/ + 89 is exactly 100");
     }
 
     #[test]

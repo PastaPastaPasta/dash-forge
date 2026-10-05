@@ -1,0 +1,14 @@
+{
+  "name": "non_string_entries_ignored",
+  "description": "Entries that are not strings are skipped, not fatal.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "{\"mirrors\": [1, null, {\"id\": \"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"}, \"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"]}",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": true,
+    "listed": true
+  }
+}

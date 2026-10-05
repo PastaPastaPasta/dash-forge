@@ -426,7 +426,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
     <Section id="branches" title="Branches" icon={<GitBranch className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="flex items-center gap-2 text-dense font-medium">
-          <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden /> Protected branches and tags
+          <ShieldCheck className="h-4 w-4 text-fg-muted" aria-hidden /> Protected branches and tags
         </h3>
         <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense text-anvil-600 dark:text-anvil-300">
           <span>Only maintainers can update a protected branch or tag.</span>
@@ -551,10 +551,10 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
   const what = branch !== null && tags ? `${branch} and tags` : (branch ?? 'tags')
   const exposure =
     branch !== null && tags
-      ? `Any writer can push to ${branch} and create or move tags, including the tags your releases point to.`
+      ? `Any writer can push to ${branch} and create or move tags that no pattern protects yet.`
       : branch !== null
         ? `Any writer can push to ${branch}.`
-        : 'Any writer can create or move tags, including the tags your releases point to.'
+        : 'Any writer can create or move tags that no pattern protects yet.'
   const tooMany = patternsProblem([...cfg.current.protectedPatterns, ...missing])
   const dismiss = (): void => {
     window.localStorage.setItem(key, '1')

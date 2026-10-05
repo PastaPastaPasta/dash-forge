@@ -89,6 +89,7 @@ export {
   queryDocumentsWithProof,
   RANGE_OPERATORS,
   rankedDocuments,
+  retryOnStaleContract,
   shareInFlight,
   tieProbeAllowed,
   type DocumentQuery,
