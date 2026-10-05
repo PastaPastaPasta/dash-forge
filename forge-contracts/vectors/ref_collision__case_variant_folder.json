@@ -1,0 +1,16 @@
+{
+  "name": "case_variant_folder",
+  "description": "refs/heads/Feature exists; a new refs/heads/feature/x would put a folder named feature next to the file Feature, which is one name on macOS and Windows.",
+  "case": "ref_collision",
+  "rules": "v2",
+  "input": {
+    "existing": [
+      "refs/heads/Feature"
+    ],
+    "name": "refs/heads/feature/x"
+  },
+  "expected": {
+    "collision": "refs/heads/Feature",
+    "reason": "refs/heads/Feature exists, so refs/heads/feature/x cannot be created under it"
+  }
+}
