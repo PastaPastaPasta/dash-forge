@@ -9,13 +9,16 @@ name: Survivability drill
 #            replication engine to a bucket, kubo and recorded Platform chunks, then cloned
 #            through the production reader rule after the bucket is DELETED and after kubo is
 #            STOPPED (`docker stop` of the service container). Asserts the data and the exact
-#            `warning:` lines git-remote-dash prints. Also: no read-path crate links the relay.
+#            `warning:` lines git-remote-dash prints. Also: no read-path crate links the relay
+#            or the optional git gateway (services/forge-gateway).
 #   browse — forge-web `lib/view/survivability.drill.test.ts`: the same breaks against the
 #            browser reader (in-browser clone and ranged reads) and its trust-panel source row;
 #            then `e2e-drill/web-host.spec.ts`: the static build's host is killed and the app
 #            runs from a second host and from its IPFS build (kubo's subdomain and path gateways), and
-#            reads the bucket (CORS) and the gateway from there. "notify down": Settings →
-#            Notifications with an unreachable notification service (`notify-panel.test.tsx`).
+#            reads the bucket (CORS) and the gateway from there. "forge-gateway down": the clone
+#            box with an unreachable git gateway configured (`clone-box-gateway.test.tsx`). "notify
+#            down": Settings → Notifications with an unreachable notification service
+#            (`notify-panel.test.tsx`).
 #
 # The S3 store is RustFS, not MinIO: the minio/minio images stopped pulling in 2026-04 (see
 # infra/docker-compose.yml); RustFS is the S3 fixture everywhere else in this repo. Images are
@@ -35,6 +38,7 @@ on:
       - 'crates/forge-core/src/survivability_tests.rs'
       - 'crates/forge-core/src/repo_roundtrip_tests.rs'
       - 'crates/git-remote-dash/src/helper.rs'
+      - 'services/forge-gateway/**'
       # The web reader, its source indicator, and the static build.
       - 'forge-web/lib/view/browse-source.ts'
       - 'forge-web/lib/view/browse-fallback.ts'
@@ -42,6 +46,9 @@ on:
       - 'forge-web/lib/view/storage-status.ts'
       - 'forge-web/lib/view/trust.ts'
       - 'forge-web/lib/view/survivability.drill.test.ts'
+      - 'forge-web/lib/gateway.ts'
+      - 'forge-web/components/repo/clone-box.tsx'
+      - 'forge-web/components/repo/clone-box-gateway.test.tsx'
       - 'forge-web/lib/notify/**'
       - 'forge-web/components/notify-panel.tsx'
       - 'forge-web/components/notify-panel.test.tsx'
@@ -188,11 +195,11 @@ jobs:
           cache-dependency-path: forge-web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
 
-      - name: Browse drill (bucket deleted, gateway stopped, notify down)
+      - name: Browse drill (bucket deleted, gateway stopped, forge-gateway down, notify down)
         env:
           FORGE_DRILL: '1'
           FORGE_DRILL_KUBO_CONTAINER: ${{ job.services.kubo.id }}
-        run: pnpm exec vitest run lib/view/survivability.drill.test.ts components/notify-panel.test.tsx
+        run: pnpm exec vitest run lib/view/survivability.drill.test.ts components/repo/clone-box-gateway.test.tsx components/notify-panel.test.tsx
 
       # Any network works: the spec refuses every request but the page's own origin and the
       # storage fixture, so it never reads a chain.
