@@ -711,6 +711,7 @@ mod tests {
             public_key: hex::decode(public).unwrap(),
             disabled: false,
             bound_to: None,
+            bounds: None,
         }
     }
 
@@ -740,6 +741,7 @@ mod tests {
             public_key: hex::decode(PUB_4).unwrap(),
             disabled: false,
             bound_to: None,
+            bounds: None,
         };
         assert!(file_holds_key(&b, &info));
         info.public_key = hex::decode(PUB_5).unwrap();
