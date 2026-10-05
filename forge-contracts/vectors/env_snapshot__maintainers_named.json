@@ -1,0 +1,227 @@
+{
+  "name": "maintainers_named",
+  "description": "a Maintainers snapshot is sealed under a DFPK 0x02 header to the current maintainers' highest usable ENCRYPTION keys, the sender first, and lists them in `to` in slot order: each maintainer opens it with the manifest owner's key; a writer and an outsider are not recipients.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "snapshot": {
+      "env": "production",
+      "audience": "maintainers",
+      "generatedAt": 1767225600000,
+      "vars": {
+        "STRIPE_KEY": {
+          "type": "secret",
+          "value": "sk_test_fake_1",
+          "note": ""
+        },
+        "DB_URL": {
+          "type": "secret",
+          "value": "postgres://fake:fake@db.example/prod",
+          "note": ""
+        },
+        "SENTRY_DSN": {
+          "type": "secret",
+          "value": "https://fake@sentry.example/1",
+          "note": "error reporting"
+        }
+      },
+      "to": [
+        "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+        "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX"
+      ]
+    },
+    "seal": {
+      "senderKeyId": 4,
+      "sender": {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "keys": [
+          "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+        ]
+      },
+      "recipients": [
+        {
+          "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+        },
+        {
+          "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "pub": "02bf17b1a250a78519af75826803dc13b2182a3ce97a7badb50135cb3194e2388a"
+        },
+        {
+          "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "pub": "026e30ff71fd069a535f7f75eee8118a4342cb224934cc4fb34959ca59814c9feb"
+        }
+      ],
+      "kObj": "aea5dd253f629630e0380eb3e931bc05d8e3025ee74227b85401708a05fdf5d9",
+      "fileId": "a59c7d8c6b607adea62fb8e2b3e8634a",
+      "ivs": [
+        "b55388f83e5127636bdba3e57e42d38a",
+        "a97faaff911f115b2a4586fb772721da",
+        "4abc26685bb5e519fba00b8a0129d9d9"
+      ]
+    },
+    "manifest": {
+      "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "packHash": "a1a5ad6fe92798b940ddbf4b380e456f5ec432cb1b33a8d548dcf3b6537e1c0a",
+      "sizeBytes": 789
+    },
+    "sealed": "4446504b020e00000300000004e0ff7ac0cc2fbd9b7a20093d5f3964a69e73c81fcc4f79ddf39e5380a770c06ab55388f83e5127636bdba3e57e42d38a3225a49eeb56aaf50e62e462217a15fd16da95b74a5f004e126ff77ec1cdd00626defc89a25380a814bd9b443429e901a97faaff911f115b2a4586fb772721da0873b4b97227ed4976174de6af867f7411c28013a59598d6e601dfba3b5829074a3bb4eb733f5d857ca5280f81a507314abc26685bb5e519fba00b8a0129d9d940d41689a98433abd9cbb08e9acf202630cf3378ccc8ec6dac5ab8a3223d62adef7270a2b9a886022f391ab6a4b8ec050000000000000200a59c7d8c6b607adea62fb8e2b3e8634a49ae031959e03befb94fa4fd34a6447b40987bfa885fbd7c0eab47c647bf3d6c044a0c45e7da96c8710b7ee2f2058657e3aafd5bd0ce5385916446637ee74b32a12084bdc6389f79651b0314f38ec53744e1470cf1c05642d5198b88916d1eff244186f9d8b84b540b59b8b56f517a140b85424016c6be89f33ea24c91a24a6fa63024da91df73511bb37199170f8bb388cbc0b5f8bdffaddbec92f8691bf78649b48ea8fc5723722e43b6e8b35d96a0f9184a385fb463047e0de8f04a6111d6477b39c78a1b16f680b2344538da62410026cb17bda305b809f114fccba41cf7d87ca4ce7a1f5a980e79d4e9a72b25e9360a004e6e316aecb23f7db3dd9d4bcc64d4ea4e1f774d490c01ef76185dd61cfbebc43b5f18cefcc04916f6bd8d7e33dfa4f38708deda3cf3e507e1f69694edf9ac61f15f540308ec7b7d7d393a725290fc47506ddce0540e958bea27d3fdfd641b47234615d8f2413c0434254a195b69d71fd51998a533911490a959862b6354622534d0fdda997035d5e66e03d9f87dc213dbb6e4632e89668b9b71003a39bc1bc12af7c25c808dc691db31ba147e25a1259b449b8e324e7b9fdef9e2263ac10d2b0e4652e3cf406b4875f349bdbc4216c5c70dd7911de93c453b82cd4cb0a7244fa3724cf2316991fb74829178ba85dc7173ba4489c53d51ff8f6a71a9e443125811de8316f94a33a0997652f93e7fa997f485a1e3460311f56d15834063",
+    "ownerKeys": [
+      {
+        "id": 4,
+        "purpose": 1,
+        "keyType": 0,
+        "data": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      }
+    ],
+    "readers": [
+      {
+        "reader": {
+          "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "keys": [
+            "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "keys": [
+            "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "keys": [
+            "800419f853a2e11eeb44d05d603918884d93a42258c72df493c7d252e30130e8"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "keys": [
+            "0abadf5fa1f7846dfa8e073bd9b40da5c2d54e1b0b6b9a0139fc4077bd25f155"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "57ac62e92e47a65079dd33aa33abbbe3434824ff864261f7c56531e92cb21bef",
+          "keys": [
+            "4960c41071d54b6daf47871e2349e514b5b66717abe00281a2ca8ae4efcbf91e"
+          ]
+        },
+        "epochKeys": []
+      }
+    ]
+  },
+  "expected": {
+    "plaintextHex": "7b2261756469656e6365223a226d61696e7461696e657273222c22656e76223a2270726f64756374696f6e222c2267656e6572617465644174223a313736373232353630303030302c22746f223a5b22374c685666684b6a524d58766662557257367754457956704b353641563645614e346b576f31374b6b764466222c2241674e4c68573848476a544678564e4d72504344697952516d726b4e365a52594572784c5438485850386133222c2235364a726f764c4b6a4731746d644a4d6664785343507070446b6a48664c766b546f65787a63556746766b58225d2c2276223a312c2276617273223a7b2244425f55524c223a7b2274797065223a22736563726574222c2276616c7565223a22706f7374677265733a2f2f66616b653a66616b654064622e6578616d706c652f70726f64227d2c2253454e5452595f44534e223a7b226e6f7465223a226572726f72207265706f7274696e67222c2274797065223a22736563726574222c2276616c7565223a2268747470733a2f2f66616b654073656e7472792e6578616d706c652f31227d2c225354524950455f4b4559223a7b2274797065223a22736563726574222c2276616c7565223a22736b5f746573745f66616b655f31227d7d7d2020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020",
+    "packHash": "a1a5ad6fe92798b940ddbf4b380e456f5ec432cb1b33a8d548dcf3b6537e1c0a",
+    "results": [
+      {
+        "snapshot": {
+          "env": "production",
+          "audience": "maintainers",
+          "generatedAt": 1767225600000,
+          "vars": {
+            "DB_URL": {
+              "type": "secret",
+              "value": "postgres://fake:fake@db.example/prod",
+              "note": ""
+            },
+            "SENTRY_DSN": {
+              "type": "secret",
+              "value": "https://fake@sentry.example/1",
+              "note": "error reporting"
+            },
+            "STRIPE_KEY": {
+              "type": "secret",
+              "value": "sk_test_fake_1",
+              "note": ""
+            }
+          },
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX"
+          ]
+        }
+      },
+      {
+        "snapshot": {
+          "env": "production",
+          "audience": "maintainers",
+          "generatedAt": 1767225600000,
+          "vars": {
+            "DB_URL": {
+              "type": "secret",
+              "value": "postgres://fake:fake@db.example/prod",
+              "note": ""
+            },
+            "SENTRY_DSN": {
+              "type": "secret",
+              "value": "https://fake@sentry.example/1",
+              "note": "error reporting"
+            },
+            "STRIPE_KEY": {
+              "type": "secret",
+              "value": "sk_test_fake_1",
+              "note": ""
+            }
+          },
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX"
+          ]
+        }
+      },
+      {
+        "snapshot": {
+          "env": "production",
+          "audience": "maintainers",
+          "generatedAt": 1767225600000,
+          "vars": {
+            "DB_URL": {
+              "type": "secret",
+              "value": "postgres://fake:fake@db.example/prod",
+              "note": ""
+            },
+            "SENTRY_DSN": {
+              "type": "secret",
+              "value": "https://fake@sentry.example/1",
+              "note": "error reporting"
+            },
+            "STRIPE_KEY": {
+              "type": "secret",
+              "value": "sk_test_fake_1",
+              "note": ""
+            }
+          },
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX"
+          ]
+        }
+      },
+      {
+        "error": "notARecipient"
+      },
+      {
+        "error": "notARecipient"
+      }
+    ]
+  }
+}

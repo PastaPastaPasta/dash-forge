@@ -1,0 +1,101 @@
+{
+  "name": "writer_reuses_pack_hash",
+  "description": "a writer records copies of both fork heads' artifacts (the unique index is per owner, so the same packHash is admitted), each naming the other head, to make the fork look resolved: the writer's manifests are never links, so production stays a conflict.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+    ],
+    "manifests": [
+      {
+        "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "supersedes": [],
+        "height": 1000
+      },
+      {
+        "id": "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+        "supersedes": [
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "height": 2000
+      },
+      {
+        "id": "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB",
+        "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+        "packHash": "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde",
+        "supersedes": [
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "height": 2001
+      },
+      {
+        "id": "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "packHash": "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+        "supersedes": [
+          "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde"
+        ],
+        "height": 3000
+      },
+      {
+        "id": "BhZrYuaTJPDQcNGzfVmZZW1sDuWB843KA59w2mUrvZwH",
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "packHash": "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde",
+        "supersedes": [
+          "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02"
+        ],
+        "height": 3001
+      }
+    ],
+    "opened": {
+      "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c": {
+        "env": "production"
+      },
+      "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02": {
+        "env": "production"
+      },
+      "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde": {
+        "env": "production"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [
+      {
+        "id": "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+        "reason": "notAMaintainer"
+      },
+      {
+        "id": "BhZrYuaTJPDQcNGzfVmZZW1sDuWB843KA59w2mUrvZwH",
+        "reason": "notAMaintainer"
+      }
+    ],
+    "environments": [
+      {
+        "env": "production",
+        "state": "conflict",
+        "heads": [
+          "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
+          "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB"
+        ],
+        "snapshots": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+          "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
+          "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB"
+        ],
+        "ignoredNewer": [
+          "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+          "BhZrYuaTJPDQcNGzfVmZZW1sDuWB843KA59w2mUrvZwH"
+        ]
+      }
+    ],
+    "hidden": []
+  }
+}
