@@ -1303,6 +1303,9 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
             );
             for i in &items {
                 let what = match &i.unreadable {
+                    _ if i.by_former_maintainer => {
+                        "saved by someone who is no longer a maintainer, so not used".to_owned()
+                    }
                     Some(why) => format!("can't be read by you: {why}"),
                     None => format!(
                         "{:<12} {}",

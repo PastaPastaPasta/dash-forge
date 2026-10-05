@@ -143,6 +143,8 @@ pub struct HistoryItem {
     pub changes: Vec<(String, Change)>,
     /// Why it cannot be read, when it cannot.
     pub unreadable: Option<String>,
+    /// Saved by someone who is no longer a maintainer (never opened, never used).
+    pub by_former_maintainer: bool,
 }
 
 impl Book {
@@ -225,9 +227,24 @@ impl Book {
             .map(|id| {
                 let m = self.manifest(id);
                 let opened = self.snapshot(id);
-                let before = m
-                    .and_then(|m| m.supersedes.iter().find_map(|h| hash_to_id.get(h)))
-                    .and_then(|p| self.snapshot(p));
+                // compared with the nearest earlier version this reader can open (through a
+                // former maintainer's change, which is never opened)
+                let mut before = None;
+                let mut todo: Vec<[u8; 32]> = m.map(|m| m.supersedes.clone()).unwrap_or_default();
+                let mut seen = BTreeSet::new();
+                while let Some(h) = todo.pop() {
+                    let Some(p) = hash_to_id.get(&h).filter(|_| seen.insert(h)) else {
+                        continue;
+                    };
+                    if let Some(snap) = self.snapshot(p) {
+                        before = Some(snap);
+                        break;
+                    }
+                    if let Some(pm) = self.manifest(p) {
+                        todo.extend(pm.supersedes.iter().copied());
+                    }
+                }
+                let by_former_maintainer = m.is_some_and(|m| self.former.contains(&m.owner_id));
                 HistoryItem {
                     head: self.head(id),
                     pack_hash: m.map(|m| hex::encode(m.pack_hash)).unwrap_or_default(),
@@ -237,6 +254,7 @@ impl Book {
                     unreadable: opened
                         .is_none()
                         .then(|| self.opened.get(id).map(Opened::reason).unwrap_or_default()),
+                    by_former_maintainer,
                 }
             })
             .collect()
