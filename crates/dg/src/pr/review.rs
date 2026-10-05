@@ -512,10 +512,10 @@ fn pending(
         }),
         || {
             println!(
-                "✓ pending {}review on PR #{}: {} comment(s), kept on this machine{} until you submit",
+                "✓ pending {}review on PR #{}: {}, kept on this machine{} until you submit",
                 if members { "members-only " } else { "" },
                 a.number,
-                draft.comments.len(),
+                crate::fmt::plural(draft.comments.len(), "comment"),
                 if members { " (encrypted)" } else { "" }
             );
             for c in &draft.comments {
@@ -674,12 +674,12 @@ async fn submit(
         // after the write says the same (QW4-065: the review printed twice).
         if !ctx.yes {
             eprintln!(
-                "{} {}review on PR #{} at {}: {} inline comment(s)",
+                "{} {}review on PR #{} at {}: {}",
                 v.label(),
                 if members { "members-only " } else { "" },
                 a.number,
                 short(&draft.head_oid),
-                n
+                crate::fmt::plural(n, "inline comment")
             );
         }
         if moved {
@@ -691,12 +691,13 @@ async fn submit(
         }
     }
     ctx.confirm_or_cancel(&format!(
-        "{}{todo} document(s), {}. Submit?",
+        "{}{}, {}. Submit?",
         if resumed {
             "Finish the interrupted submit: "
         } else {
             ""
         },
+        crate::fmt::plural(todo, "write"),
         cost_line(est, price)
     ))?;
 
@@ -771,11 +772,12 @@ async fn submit(
     body["counts"] = json!(counts);
     ctx.emit(body, || {
         println!(
-            "✓ {} PR #{} at {}{} · {n} inline comment(s) · {}",
+            "✓ {} PR #{} at {}{} · {} · {}",
             v.label(),
             a.number,
             short(&draft.head_oid),
             if resumed { " (finished an interrupted submit)" } else { "" },
+            crate::fmt::plural(n, "inline comment"),
             cost_line(spent, price)
         );
         if members {

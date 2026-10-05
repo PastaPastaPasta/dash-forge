@@ -102,7 +102,7 @@ export default function SettingsPage(): JSX.Element {
           </div>
           <div className="mt-3 flex items-center justify-between gap-3 border-t border-anvil-100 pt-3 dark:border-anvil-850">
             <span className="text-dense text-anvil-500 dark:text-anvil-400">Identity ID</span>
-            <span data-testid="settings-identity" data-identity={identity}><Oid value={identity} chars={12} label="identity id" /></span>
+            <span data-testid="settings-identity" data-identity={identity}><Oid value={identity} label="identity id" /></span>
           </div>
           {username === null ? <UsernameHint className="mt-3 border-t border-anvil-100 pt-3 dark:border-anvil-850" /> : null}
         </section>

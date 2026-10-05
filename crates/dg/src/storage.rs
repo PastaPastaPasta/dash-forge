@@ -901,9 +901,9 @@ async fn check_shared_gateways(
 ) {
     if r.live {
         println!(
-            "  ....   {:<14} asking {} shared gateway(s) for the probe (up to {} s)…",
+            "  ....   {:<14} asking {} for the probe (up to {} s)…",
             "shared gateway",
-            gateways.len(),
+            crate::fmt::plural(gateways.len(), "shared gateway"),
             SHARED_GATEWAY_FETCH.as_secs()
         );
     }
@@ -1003,12 +1003,15 @@ impl ExistingCopies {
     /// One line: how many live packs have fewer copies than the policy asks for.
     pub fn summary(&self) -> String {
         format!(
-            "{} of {} live pack(s) of {} have fewer than {} ({} byte(s))",
+            "{} of {} of {} have fewer than {} ({})",
             self.count.thin.len(),
-            self.count.live,
+            crate::fmt::plural(self.count.live, "live pack"),
             self.repo,
             self.required_copies(),
-            self.count.thin.iter().map(|t| t.size_bytes).sum::<u64>()
+            crate::fmt::plural(
+                self.count.thin.iter().map(|t| t.size_bytes).sum::<u64>(),
+                "byte"
+            )
         )
     }
 }
@@ -1405,12 +1408,12 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
         }),
         || match &doc {
             Some(id) => println!(
-                "Advertised mode {mode} with {} read URL(s) (config doc {id}).",
-                uris.len()
+                "Advertised mode {mode} with {} (config doc {id}).",
+                crate::fmt::plural(uris.len(), "read URL")
             ),
             None => println!(
-                "Mode {mode} with these {} read URL(s) is already advertised; nothing was written.",
-                uris.len()
+                "Mode {mode} with these {} is already advertised; nothing was written.",
+                crate::fmt::plural(uris.len(), "read URL")
             ),
         },
     );

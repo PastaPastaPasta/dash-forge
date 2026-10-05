@@ -36,6 +36,7 @@ import { DiffView } from '@/components/repo/diff-view'
 import { Button } from '@/components/ui/button'
 import { Oid } from '@/components/ui/oid'
 import { Spinner } from '@/components/ui/states'
+import { shortId } from '@/lib/utils'
 
 /**
  * The PR's source repo when it is not the base repo: the `repo` document `sourceRepoId` names
@@ -65,7 +66,7 @@ export function useSourceRepo(base: RepoRef, sourceId: string | null): SourceRep
   }
   if (sourceRepo.data) return { kind: 'found', repo: sourceRepo.data }
   if (sourceRepo.settled && !sourceRepo.loading) {
-    return { kind: 'missing', message: `The source repo ${sourceId.slice(0, 8)}… this PR names does not exist.` }
+    return { kind: 'missing', message: `The source repo ${shortId(sourceId)} this PR names does not exist.` }
   }
   return { kind: 'loading' }
 }

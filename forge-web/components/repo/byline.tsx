@@ -5,10 +5,12 @@
  * trusted mirror (`trustedOrigin`) shows its ORIGINAL author as plain text with the source
  * host (`@bob on github.com`), never linked to a Forge profile of that name (L-38: any Forge
  * identity may register any name), and its original date, with "mirrored" naming who copied it
- * and when. Everything else shows its signer and the chain time, as before.
+ * and when. Everything else shows its signer, their role badge on a conversation page
+ * (`author-roles.tsx`), and the chain time.
  */
 
 import { Author } from '@/components/author'
+import { RoleBadge } from '@/components/repo/author-roles'
 import { formatDate, timeAgo } from '@/lib/view'
 import type { Origin } from '@/lib/repo/provenance'
 
@@ -68,6 +70,7 @@ export function Byline({
   return (
     <>
       <ItemAuthor author={author} origin={origin} link={link} />
+      {origin === null ? <RoleBadge identity={author} /> : null}
       <span className="text-anvil-500 dark:text-anvil-400">
         {verb ? `${verb} ` : ''}
         <Time ms={origin !== null ? origin.createdAt : createdAt} />

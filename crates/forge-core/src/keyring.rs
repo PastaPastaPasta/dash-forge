@@ -278,7 +278,7 @@ pub fn no_encryption_key_held_because(action: &str, why: &str) -> Error {
         crate::user_error::FIX_FULL_KEY_LOGIN
     ))
     .fix("for one command: DASH_FORGE_KEY=<identity file>")
-    .fix(format!("if it has none: `{FIX_ADD_ENCRYPTION_KEY}` (from the recovery words)"))
+    .fix(format!("if it has none: `{FIX_ADD_ENCRYPTION_KEY}` (from the recovery phrase)"))
     .into()
 }
 

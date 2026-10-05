@@ -194,10 +194,10 @@ export interface ProofedDocuments {
 export type StaleContractCause = 'unknownType' | 'newerDocument'
 
 /**
- * Called when a read failed against a contract older than the network's. Resolves true when
- * the contract was refreshed and the read may be retried once. Set by the SDK service.
+ * Called when a read of `contractIds` failed against a contract older than the network's.
+ * Resolves true when one was refreshed and the read may be retried once. Set by the SDK service.
  */
-type StaleContractHandler = (contractId: string, cause: StaleContractCause, documentVersion?: number) => Promise<boolean>
+type StaleContractHandler = (contractIds: readonly string[], cause: StaleContractCause, documentVersion?: number) => Promise<boolean>
 let staleContractHandler: StaleContractHandler | null = null
 
 /** Install (or clear) the handler for reads against a possibly stale contract. */
@@ -234,20 +234,23 @@ export function staleDocumentVersion(e: unknown): number | undefined {
 }
 
 /**
- * Refresh `contractId` for the reason `e` gives, when it gives one: true when the caller may
- * retry its read once (or settle its write by reading).
+ * Refresh the contract(s) a read used for the reason `e` gives, when it gives one: true when
+ * the caller may retry its read once (or settle its write by reading). A read over several
+ * contracts (a composite) names them all: the error does not say which one is stale.
  */
-export async function refreshStaleContract(contractId: string, e: unknown): Promise<boolean> {
+export async function refreshStaleContract(contractIds: string | readonly string[], e: unknown): Promise<boolean> {
   const cause = staleContractCause(e)
-  return cause !== null && staleContractHandler !== null && (await staleContractHandler(contractId, cause, staleDocumentVersion(e)))
+  if (cause === null || staleContractHandler === null) return false
+  const ids = typeof contractIds === 'string' ? [contractIds] : [...new Set(contractIds)]
+  return staleContractHandler(ids, cause, staleDocumentVersion(e))
 }
 
-/** `read()`, retried once after its contract was refreshed when it failed on a stale one. */
-export async function retryOnStaleContract<T>(contractId: string, read: () => Promise<T>): Promise<T> {
+/** `read()`, retried once after its contract(s) were refreshed when it failed on a stale one. */
+export async function retryOnStaleContract<T>(contractIds: string | readonly string[], read: () => Promise<T>): Promise<T> {
   try {
     return await read()
   } catch (e) {
-    if (!(await refreshStaleContract(contractId, e))) throw e
+    if (!(await refreshStaleContract(contractIds, e))) throw e
     return read()
   }
 }
@@ -363,7 +366,7 @@ export function ungroupedRangeProblem(query: DocumentQuery & { readonly groupBy?
 }
 
 async function readCount(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
-  const grouped = await documentsOf(sdk).count(query)
+  const grouped = await retryOnStaleContract(query.dataContractId, () => documentsOf(sdk).count(query))
   let total = 0n
   if (grouped instanceof Map) {
     for (const v of grouped.values()) total += v
@@ -382,7 +385,9 @@ export type GroupedQuery = DocumentQuery & { readonly groupBy: readonly string[]
 export function countDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery): Promise<Map<string, number>> {
   const problem = ungroupedRangeProblem(query)
   if (problem !== null) return Promise.reject(new Error(problem))
-  return joinInFlight(sdk, 'countGrouped', query, async () => bigintMap(await documentsOf(sdk).count(query as DocumentQuery)))
+  return joinInFlight(sdk, 'countGrouped', query, async () =>
+    bigintMap(await retryOnStaleContract(query.dataContractId, () => documentsOf(sdk).count(query as DocumentQuery))),
+  )
 }
 
 /**
@@ -392,7 +397,9 @@ export function countDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery): Promise
 export function sumDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery, property: string): Promise<Map<string, number>> {
   const problem = ungroupedRangeProblem(query)
   if (problem !== null) return Promise.reject(new Error(problem))
-  return joinInFlight(sdk, `sum:${property}`, query, async () => bigintMap(await documentsOf(sdk).sum(query as DocumentQuery, property)))
+  return joinInFlight(sdk, `sum:${property}`, query, async () =>
+    bigintMap(await retryOnStaleContract(query.dataContractId, () => documentsOf(sdk).sum(query as DocumentQuery, property))),
+  )
 }
 
 function bigintMap(m: Map<string, bigint> | unknown): Map<string, number> {
@@ -456,15 +463,17 @@ export interface RankedPage {
  * group key descending.
  */
 export async function rankedDocuments(sdk: EvoSDK, query: RankedQuery): Promise<RankedPage> {
-  const res = await documentsOf(sdk).ranked({
-    dataContractId: query.dataContractId,
-    documentTypeName: query.documentTypeName,
-    groupBy: query.groupBy,
-    aggregate: { type: 'count' },
-    limit: query.limit,
-    direction: 'desc',
-    ...(query.timeRange ? { timeRange: [{ field: query.timeRange.field, selector: query.timeRange.selector }] } : {}),
-  })
+  const res = await retryOnStaleContract(query.dataContractId, () =>
+    documentsOf(sdk).ranked({
+      dataContractId: query.dataContractId,
+      documentTypeName: query.documentTypeName,
+      groupBy: query.groupBy,
+      aggregate: { type: 'count' },
+      limit: query.limit,
+      direction: 'desc',
+      ...(query.timeRange ? { timeRange: [{ field: query.timeRange.field, selector: query.timeRange.selector }] } : {}),
+    }),
+  )
   return {
     entries: res.entries.map((e) => ({
       group: String(e.groupValue ?? ''),

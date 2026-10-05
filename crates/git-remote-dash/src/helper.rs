@@ -3012,7 +3012,7 @@ fn archived_refusal(repo: &str) -> Denied {
             "ask a maintainer to run `dg repo unarchive {repo}`"
         ))
         .fix(format!(
-            "push anyway: `git push -o {ALLOW_ARCHIVED_PUSH_OPTION} …` (archiving is a client rule; consensus does not enforce it)"
+            "push anyway: `git push -o {ALLOW_ARCHIVED_PUSH_OPTION} …` (Forge apps enforce archiving, not Platform)"
         ))
         .note(NOTE_PRECHECK),
         wire: "repository archived",

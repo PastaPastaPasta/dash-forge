@@ -72,7 +72,7 @@ pub fn archived_refusal(repo: &str, action: &str) -> UserError {
         .fix(format!(
             "ask a maintainer to run `dg repo unarchive {repo}`"
         ))
-        .fix("pass --allow-archived (archiving is a client rule; consensus does not enforce it)")
+        .fix("pass --allow-archived (Forge apps enforce archiving, not Platform)")
         .note("checked before anything was signed; nothing was written or paid")
 }
 
@@ -194,8 +194,8 @@ impl Session {
     }
 
     /// E606 before anything is signed when the repository is archived, unless
-    /// `--allow-archived`. Archiving is a client rule (`config.archived`): consensus still admits
-    /// a member's writes, so every Forge client refuses them instead. An unreadable config
+    /// `--allow-archived`. Forge apps enforce archiving (`config.archived`), not Platform, so
+    /// every Forge app refuses the writes instead. An unreadable config
     /// proceeds (the check is advisory, like the role pre-checks).
     pub async fn refuse_if_archived(&self, ctx: &crate::context::Ctx, action: &str) -> Result<()> {
         if ctx.allow_archived {

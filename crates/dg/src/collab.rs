@@ -679,13 +679,19 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             "roles": true,
         }),
         || {
-            println!("{} member(s) of {}:", members.len(), handle.display());
-            for m in &members {
-                println!(
-                    "  {}  {}",
-                    crate::fmt::with_name(&m.identity_id, &names),
-                    m.role
-                );
+            println!(
+                "{} of {}:",
+                crate::fmt::plural(members.len(), "member"),
+                handle.display()
+            );
+            // Names and full ids differ in width, so pad the first column to keep roles aligned.
+            let shown: Vec<String> = members
+                .iter()
+                .map(|m| crate::fmt::with_name(&m.identity_id, &names))
+                .collect();
+            let width = shown.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+            for (who, m) in shown.iter().zip(&members) {
+                println!("  {who:<width$}  {}", m.role);
             }
         },
     );
