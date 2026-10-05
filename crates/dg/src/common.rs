@@ -250,6 +250,12 @@ impl Session {
 /// file with no terminal, a locked keychain) is never touched. A private repository's
 /// documents are sealed to its members' keys, so only then is the identity loaded, and without
 /// one the read stops with E301 saying why.
+///
+/// A public repository with members-only content (mixed-visibility DESIGN §4.1) loads the
+/// identity only when the reader is one of its members (known from the key source without
+/// opening it): a passphrase-sealed key then asks on the terminal, and with none to ask on
+/// (or a key that does not open) the read goes on with members-only content as placeholders
+/// and a hint on stderr, never an error.
 pub struct Reader {
     /// The connection.
     pub client: PlatformClient,
@@ -298,6 +304,12 @@ impl Reader {
             }
             signer = Some(ctx.signer_on(&client).await?);
         }
+        if sealed && repo.visibility == Visibility::Public && signer.is_none() {
+            if let Some(viewer) = owner.as_deref() {
+                // boxed: every read command awaits this, and it is rarely taken
+                signer = Box::pin(members_signer(ctx, &client, &repo, viewer)).await;
+            }
+        }
         let viewer = signer.as_ref().map(|(_, i)| i.id()).or(owner);
         Ok(Self {
             client,
@@ -341,6 +353,57 @@ impl Reader {
             None => Ok(ctx.load_bridge()?.identity_id),
         }
     }
+}
+
+/// The identity of `viewer` (the configured key source's, known without opening it) for a read
+/// of public `repo`, when `viewer` is a member of it and members-only content is on there:
+/// their keys open the members-only documents (DESIGN §4.1). `None` otherwise, and whenever
+/// the key cannot be opened here (a passphrase with no terminal to ask on, a locked keychain, a
+/// wrong passphrase): the read shows placeholders, and a hint on stderr says why. A failed
+/// membership read is `None` too: a public read never fails for its members-only part.
+async fn members_signer(
+    ctx: &crate::context::Ctx,
+    client: &PlatformClient,
+    repo: &Repo,
+    viewer: &str,
+) -> Option<(forge_core::keystore::BridgeIdentity, LoadedIdentity)> {
+    let path = ctx.identity_path.as_ref()?;
+    let members = forge_core::members::MemberReader::new(client);
+    let (role, lane) = futures::join!(
+        members.best_role(repo, viewer),
+        forge_core::keyring::has_members_key(client, repo)
+    );
+    if !matches!((role, lane), (Ok(Some(_)), Ok(true))) {
+        return None;
+    }
+    let hint = |why: &str| {
+        eprintln!(
+            "note: members-only content of {} stays hidden: {why}",
+            repo.display()
+        );
+    };
+    if ctx.unlocked_key().is_none()
+        && key_needs_passphrase(path)
+        && !forge_core::sealed::passphrase_available()
+    {
+        hint("your key is protected by a passphrase and there is no terminal to ask on (set DASH_FORGE_PASSPHRASE, or run it in a terminal)");
+        return None;
+    }
+    match ctx.signer_on(client).await {
+        Ok(s) => Some(s),
+        Err(e) => {
+            hint(&format!("your key could not be opened ({e:#})"));
+            None
+        }
+    }
+}
+
+/// Whether the key source `path` is a passphrase-sealed file (its passphrase is asked for when
+/// it is opened). A keychain entry or an inline key is not.
+fn key_needs_passphrase(path: &std::path::Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(zeroize::Zeroizing::new)
+        .is_ok_and(|raw| forge_core::sealed::is_sealed(&raw))
 }
 
 /// What `identity_id` has paid since its balance was `before`: the balance read again, a few

@@ -89,6 +89,46 @@ pub fn members_only_off(repo: &RepoRef) -> Error {
     .into()
 }
 
+/// E312 for a members-only write by `maintainer` or another member: a maintainer is told to
+/// turn it on (and that the command shows the cost first), anyone else to ask a maintainer
+/// (DESIGN §4.1 failure modes, §10).
+#[must_use]
+pub fn members_only_off_for(repo: &RepoRef, maintainer: bool) -> Error {
+    if maintainer {
+        return members_only_off(repo);
+    }
+    UserError::new(
+        codes::MEMBERS_ONLY_OFF,
+        format!(
+            "members-only content is not turned on in {}",
+            repo.display()
+        ),
+    )
+    .cause("no maintainer has turned on members-only content for this repository yet")
+    .fix(format!(
+        "ask a maintainer to turn on members-only content for {}",
+        repo.display()
+    ))
+    .note("nothing was written")
+    .into()
+}
+
+/// E306 for members-only content when the signer's identity has no usable `ENCRYPTION` key on
+/// chain at all (DESIGN D25: "Set up your encryption key", separate from turning members-only
+/// content on in a repository).
+#[must_use]
+pub fn no_encryption_key_set_up(action: &str) -> Error {
+    UserError::new(
+        codes::NO_ENCRYPTION_KEY,
+        format!("{action}: set up your encryption key first"),
+    )
+    .cause("members-only content is encrypted to each member's encryption key, and your identity has none yet")
+    .fix(format!("set up your encryption key: `{FIX_ADD_ENCRYPTION_KEY}` (from your recovery words)"))
+    .fix("or in the web app: Settings → Private repos")
+    .note("nothing was written")
+    .into()
+}
+
 /// The fix every "no encryption key" error carries.
 pub const FIX_ADD_ENCRYPTION_KEY: &str = "dg auth keys add --encryption";
 

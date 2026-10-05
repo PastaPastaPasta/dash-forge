@@ -15,6 +15,11 @@
 //!   at most once. Nothing is ever written twice.
 //! * `--discard` throws the draft away.
 //!
+//! A members-only review's draft (`--members`) never holds its text in the clear: the file is
+//! the draft sealed under the repository's members key (DFPK, as a members-only artifact), and
+//! is opened with the reviewer's keys when the command runs again (mixed-visibility DESIGN §4.1:
+//! no members-only text at rest).
+//!
 //! `dg pr comment` posts one comment at once (GitHub's "Add single comment"), inline, a
 //! reply, or general.
 
@@ -28,7 +33,7 @@ use forge_core::collab::v2::{comment_props, review_props, Collab, PatchView};
 use forge_core::collab::{CommentAnchor, Verdict};
 use forge_core::create::default_journal_dir;
 use forge_core::platform::WriteIntent;
-use forge_core::rules::v2::ContentKind;
+use forge_core::rules::v2::{Audience, ContentKind};
 use forge_core::user_error::{codes, UserError};
 
 use super::inline::{read_body_file, InlineSpec};
@@ -78,6 +83,10 @@ pub struct ReviewDraft {
     /// The review's id once it landed.
     #[serde(default)]
     pub review_id: Option<String>,
+    /// Members-only (`--members`): the review and its inline comments are for the repository's
+    /// members, and this draft is stored sealed ([`DraftFile`]).
+    #[serde(default)]
+    pub members: bool,
 }
 
 impl From<&InlineSpec> for DraftComment {
@@ -102,6 +111,7 @@ impl ReviewDraft {
             comments: Vec::new(),
             review_intent: None,
             review_id: None,
+            members: false,
         }
     }
 
@@ -138,21 +148,112 @@ fn draft_path(network: &str, repo_id: &str, pr_id: &str, identity: &str) -> Resu
         .join(format!("{network}-{repo_id}-{pr_id}-{identity}.json")))
 }
 
-fn load_draft(path: &Path) -> Result<Option<ReviewDraft>> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
-            format!(
-                "reading the pending review {} (delete it to start over)",
-                path.display()
-            )
-        })?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+/// A members-only draft on disk: the draft's JSON sealed under the repository's members key.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedDraft {
+    /// The format (1).
+    dash_forge_members_review_draft: u32,
+    /// The sealed draft (DFPK, hex).
+    sealed: String,
+}
+
+/// Where a draft lives and, for a members-only one, the key it is sealed under.
+struct DraftFile {
+    path: PathBuf,
+    /// The members key a members-only draft is sealed under; `None` for a public draft.
+    lane: Option<forge_core::private::Lane>,
+}
+
+impl DraftFile {
+    /// Save `draft`: in the clear when public, else sealed (and refused without the key).
+    fn save(&self, draft: &ReviewDraft) -> std::io::Result<()> {
+        if !draft.members {
+            return save_draft(&self.path, &serde_json::to_vec_pretty(draft)?);
+        }
+        let lane = self.lane.as_ref().ok_or_else(|| {
+            std::io::Error::other("a members-only review is never saved without its key")
+        })?;
+        let plain = zeroize::Zeroizing::new(serde_json::to_vec(draft)?);
+        let sealed = lane
+            .seal_artifact(&plain)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let file = SealedDraft {
+            dash_forge_members_review_draft: 1,
+            sealed: hex::encode(sealed),
+        };
+        save_draft(&self.path, &serde_json::to_vec_pretty(&file)?)
     }
 }
 
-/// Save atomically (write + rename), created readable by the user only.
-fn save_draft(path: &Path, draft: &ReviewDraft) -> std::io::Result<()> {
+/// A draft file as stored: the draft itself, or a members-only one sealed.
+enum RawDraft {
+    Plain(Vec<u8>),
+    Sealed(Vec<u8>),
+}
+
+/// The draft file at `path`, as stored (`None`: there is none).
+fn read_raw_draft(path: &Path) -> Result<Option<RawDraft>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    Ok(Some(match serde_json::from_slice::<SealedDraft>(&bytes) {
+        Ok(f) => RawDraft::Sealed(hex::decode(&f.sealed).with_context(|| unreadable(path))?),
+        Err(_) => RawDraft::Plain(bytes),
+    }))
+}
+
+fn unreadable(path: &Path) -> String {
+    format!(
+        "reading the pending review {} (delete it to start over)",
+        path.display()
+    )
+}
+
+/// The draft at `path`: a public one as it is, a members-only one opened with `open` (the
+/// reviewer's keys).
+fn decode_draft(
+    path: &Path,
+    raw: RawDraft,
+    open: impl FnOnce(&[u8]) -> Result<Vec<u8>>,
+) -> Result<ReviewDraft> {
+    let plain = zeroize::Zeroizing::new(match raw {
+        RawDraft::Plain(b) => b,
+        RawDraft::Sealed(sealed) => open(&sealed).with_context(|| {
+            format!(
+                "opening your members-only pending review (`--discard` drops it): {}",
+                path.display()
+            )
+        })?,
+    });
+    serde_json::from_slice(&plain).with_context(|| unreadable(path))
+}
+
+/// The draft at `path`: a public one as it is, a members-only one opened with the signer's keys
+/// of `repo` (read through `collab`, only for a sealed file).
+async fn load_draft(
+    path: &Path,
+    collab: &Collab<'_>,
+    repo: &forge_core::scope::RepoRef,
+) -> Result<Option<ReviewDraft>> {
+    let Some(raw) = read_raw_draft(path)? else {
+        return Ok(None);
+    };
+    let kr = match raw {
+        RawDraft::Sealed(_) => Some(collab.keyring(repo).await?),
+        RawDraft::Plain(_) => None,
+    };
+    decode_draft(path, raw, |sealed| {
+        let kr = kr.ok_or_else(|| anyhow::anyhow!("no keys"))?;
+        Ok(kr.open_pack(repo, sealed, sealed.len() as u64)?)
+    })
+    .map(Some)
+}
+
+/// Save `bytes` atomically (write + rename), created readable by the user only.
+fn save_draft(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -166,7 +267,7 @@ fn save_draft(path: &Path, draft: &ReviewDraft) -> std::io::Result<()> {
         open.mode(0o600);
     }
     let mut f = open.open(&tmp)?;
-    f.write_all(&serde_json::to_vec_pretty(draft)?)?;
+    f.write_all(bytes)?;
     f.sync_all()?;
     std::fs::rename(&tmp, path)
 }
@@ -272,11 +373,52 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
         &view.patch.document_id,
         &me,
     )?;
-    let existing = load_draft(&path)?;
+    let existing = match load_draft(&path, &collab, &s.repo).await {
+        Ok(d) => d,
+        // a members-only draft this identity can no longer open is still thrown away
+        Err(e) if matches!(mode, Mode::Discard) && path.exists() => {
+            tracing::warn!(error = %e, "the pending review could not be read; removing it");
+            None
+        }
+        Err(e) => return Err(e),
+    };
+    if let Mode::Discard = mode {
+        if existing.is_none() && path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            ctx.emit(
+                json!({ "status": "discarded", "pr": a.number, "discarded": null }),
+                || {
+                    println!(
+                        "✓ discarded the pending review on PR #{} (it could not be read)",
+                        a.number
+                    )
+                },
+            );
+            return Ok(());
+        }
+        return discard(ctx, &path, existing, a.number);
+    }
+    // Members-only (`--members`, or a members-only draft): refused here when it cannot be, and
+    // the draft is kept sealed under the members key, never in the clear.
+    let members = a.members || existing.as_ref().is_some_and(|d| d.members);
+    if let Some(d) = existing
+        .as_ref()
+        .filter(|d| d.attempted() && d.members != members)
+    {
+        return Err(refuse_attempted(d, &a.repo, a.number));
+    }
+    let lane = if members {
+        crate::audience::requested(&collab, &s.repo, true, Some(&view.patch.document_id), None)
+            .await?;
+        Some(collab.keyring(&s.repo).await?.lane(&s.repo)?)
+    } else {
+        None
+    };
+    let file = DraftFile { path, lane };
     match mode {
-        Mode::Discard => discard(ctx, &path, existing, a.number),
-        Mode::Pending => pending(ctx, a, &view, &path, existing),
-        Mode::Submit(v) => submit(ctx, a, &s, &view, &path, existing, v).await,
+        Mode::Discard => unreachable!("handled above"),
+        Mode::Pending => pending(ctx, a, &view, &file, existing, members),
+        Mode::Submit(v) => submit(ctx, a, (&s, &collab), &view, &file, existing, v, members).await,
     }
 }
 
@@ -339,15 +481,19 @@ fn pending(
     ctx: &Ctx,
     a: &PrReviewArgs,
     view: &PatchView,
-    path: &Path,
+    file: &DraftFile,
     existing: Option<ReviewDraft>,
+    members: bool,
 ) -> Result<()> {
     if let Some(d) = existing.as_ref().filter(|d| d.attempted()) {
         return Err(refuse_attempted(d, &a.repo, a.number));
     }
+    let path = &file.path;
     let mut draft = existing.unwrap_or_else(|| ReviewDraft::new(view));
+    draft.members = members;
     draft.add_args(a)?;
-    save_draft(path, &draft).with_context(|| format!("saving {}", path.display()))?;
+    file.save(&draft)
+        .with_context(|| format!("saving {}", path.display()))?;
     let moved = draft.head_oid != view.head;
     ctx.emit(
         json!({
@@ -361,13 +507,16 @@ fn pending(
             }).collect::<Vec<_>>(),
             "anchoredTo": draft.head_oid,
             "headMoved": moved,
+            "audience": crate::audience::json(if members { Audience::Members } else { Audience::Public }),
             "draftFile": path.display().to_string(),
         }),
         || {
             println!(
-                "✓ pending review on PR #{}: {} comment(s), kept on this machine until you submit",
+                "✓ pending {}review on PR #{}: {} comment(s), kept on this machine{} until you submit",
+                if members { "members-only " } else { "" },
                 a.number,
-                draft.comments.len()
+                draft.comments.len(),
+                if members { " (encrypted)" } else { "" }
             );
             for c in &draft.comments {
                 println!("  {}  {}", c.spec.location(), first_line(&c.spec.body));
@@ -446,16 +595,22 @@ fn same_submit(d: &ReviewDraft, verdict: Option<VerdictArg>, a: &PrReviewArgs) -
     Ok(verdict_same && summary_same && comments_same)
 }
 
-#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    clippy::too_many_arguments
+)]
 async fn submit(
     ctx: &Ctx,
     a: &PrReviewArgs,
-    s: &Session,
+    (s, collab): (&Session, &Collab<'_>),
     view: &PatchView,
-    path: &Path,
+    file: &DraftFile,
     existing: Option<ReviewDraft>,
     verdict: Option<VerdictArg>,
+    members: bool,
 ) -> Result<()> {
+    let path = &file.path;
     let resumed = existing.as_ref().is_some_and(ReviewDraft::attempted);
     let mut draft = match existing {
         Some(d) if d.attempted() => {
@@ -475,11 +630,11 @@ async fn submit(
             refuse_own_verdict(v, &view.patch.author, &s.identity.id(), &a.repo, a.number)?;
             let mut d = pending.unwrap_or_else(|| ReviewDraft::new(view));
             d.verdict = Some(v.code());
+            d.members = members;
             d.add_args(a)?;
             d
         }
     };
-    let collab = s.collab();
     // A locked PR takes reviews from members only (`lockGate`): refused before the prompt.
     collab
         .require_unlocked_or_member(&s.repo, &view.patch.document_id)
@@ -519,8 +674,9 @@ async fn submit(
         // after the write says the same (QW4-065: the review printed twice).
         if !ctx.yes {
             eprintln!(
-                "{} review on PR #{} at {}: {} inline comment(s)",
+                "{} {}review on PR #{} at {}: {} inline comment(s)",
                 v.label(),
+                if members { "members-only " } else { "" },
                 a.number,
                 short(&draft.head_oid),
                 n
@@ -548,7 +704,7 @@ async fn submit(
     // Not saved here: the first save is the one that records the review's signed transition
     // (`write_all`). Until then the file keeps what `--pending` saved, so a submit that fails
     // before anything was signed can be run again as it was, without adding its comments twice.
-    let result = write_all(&collab, s, &mut draft, path, &head, v, count).await;
+    let result = write_all(collab, s, &mut draft, file, &head, v, count).await;
     let spent = s.spent_since(before).await;
     let landed = draft.landed();
     let comments_json: Vec<_> = draft
@@ -570,6 +726,7 @@ async fn submit(
         "pr": a.number,
         "verdict": v.code(),
         "verdictLabel": v.label(),
+        "audience": crate::audience::json(if members { Audience::Members } else { Audience::Public }),
         "commitOid": draft.head_oid,
         "reviewId": draft.review_id,
         "comments": comments_json,
@@ -621,6 +778,9 @@ async fn submit(
             if resumed { " (finished an interrupted submit)" } else { "" },
             cost_line(spent, price)
         );
+        if members {
+            println!("  review text visible to members; the verdict counts for everyone");
+        }
         for c in &draft.comments {
             println!(
                 "  {}  {}",
@@ -646,7 +806,7 @@ async fn write_all(
     collab: &Collab<'_>,
     s: &Session,
     draft: &mut ReviewDraft,
-    path: &Path,
+    file: &DraftFile,
     head: &[u8],
     v: Verdict,
     count: u16,
@@ -686,12 +846,12 @@ async fn write_all(
                 saved.as_ref(),
                 |intent| {
                     draft.review_intent = Some(intent.clone());
-                    save_draft(path, draft).map_err(io_core)
+                    file.save(draft).map_err(io_core)
                 },
             )
             .await?;
         draft.review_id = Some(id);
-        save_draft(path, draft)?;
+        file.save(draft)?;
     }
     let review_id = draft.review_id.clone().expect("set above");
     for i in 0..draft.comments.len() {
@@ -715,12 +875,12 @@ async fn write_all(
                 saved.as_ref(),
                 |intent| {
                     draft.comments[i].intent = Some(intent.clone());
-                    save_draft(path, draft).map_err(io_core)
+                    file.save(draft).map_err(io_core)
                 },
             )
             .await?;
         draft.comments[i].landed_id = Some(id);
-        save_draft(path, draft)?;
+        file.save(draft)?;
     }
     Ok(())
 }
@@ -792,13 +952,15 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     let path_len = spec.as_ref().map_or(0, |s| s.path.len());
     // Who it is for: the PR's, the comment replied to and its thread root's, as the write reads
     // them (DESIGN §3.3); `--reply-to` names any comment of the thread.
-    let audience = collab
-        .new_audience(
-            &s.repo,
-            Some(&view.patch.document_id),
-            a.reply_to.as_deref(),
-        )
-        .await?;
+    // `--members` asks for members-only; refused here, before the price, when it cannot be.
+    let audience = crate::audience::requested(
+        &collab,
+        &s.repo,
+        a.members,
+        Some(&view.patch.document_id),
+        a.reply_to.as_deref(),
+    )
+    .await?;
     // A body longer than the field is stored as a repository artifact (forge-v2.md §6.3).
     let planned = crate::long_body::Planned::new(
         &s.repo,
@@ -812,7 +974,8 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     let field_bytes = usize::try_from(planned.field_bytes()).unwrap_or(usize::MAX);
     let est = estimate(Est::Comment, field_bytes + path_len) + planned.extra_credits(&s.repo);
     ctx.confirm_or_cancel(&format!(
-        "Post a {kind} comment on PR #{}? (one document, {}{})",
+        "Post a {}{kind} comment on PR #{}? (one document, {}{})",
+        crate::audience::prefix(&s.repo, audience),
         a.number,
         cost_line(est, price),
         planned.clause()
@@ -834,19 +997,21 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
             "pr": a.number,
             "commentId": id,
             "kind": kind,
+            "audience": crate::audience::json(audience),
             "replyTo": anchor.as_ref().and_then(|a| a.reply_to.as_ref()),
             "location": location,
             "commitOid": (kind == "inline").then(|| view.head.clone()),
         }),
         || {
             println!(
-                "✓ commented on PR #{}{} ({})",
+                "✓ commented on PR #{}{} ({}){}",
                 a.number,
                 location
                     .as_deref()
                     .map(|l| format!(" at {l}"))
                     .unwrap_or_default(),
-                short(&id)
+                short(&id),
+                crate::audience::suffix(&s.repo, audience)
             );
         },
     );
@@ -896,6 +1061,7 @@ mod tests {
                 .collect(),
             review_intent: None,
             review_id: None,
+            members: false,
         }
     }
 
@@ -906,11 +1072,68 @@ mod tests {
         let mut d = draft(3);
         d.review_id = Some("r".into());
         d.comments[0].landed_id = Some("c0".into());
-        save_draft(&path, &d).unwrap();
-        let back = load_draft(&path).unwrap().unwrap();
+        let file = DraftFile {
+            path: path.clone(),
+            lane: None,
+        };
+        file.save(&d).unwrap();
+        let back = load_plain(&path).unwrap();
         assert_eq!(back.landed(), 2);
         assert_eq!(back.comments[1].spec, spec("f", 2));
-        assert!(load_draft(&dir.path().join("none.json")).unwrap().is_none());
+        assert!(read_raw_draft(&dir.path().join("none.json"))
+            .unwrap()
+            .is_none());
+    }
+
+    /// The draft of a public review, read back as it was saved.
+    fn load_plain(path: &Path) -> Option<ReviewDraft> {
+        let raw = read_raw_draft(path).unwrap()?;
+        Some(decode_draft(path, raw, |_| anyhow::bail!("not sealed")).unwrap())
+    }
+
+    /// A members-only draft is never on disk in the clear: the file holds it sealed under the
+    /// members key, opens with that key, and is refused without one.
+    #[test]
+    fn a_members_only_draft_is_stored_sealed() {
+        use forge_core::private::{EpochKey, EpochResolution, Lane};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.json");
+        let mut res = EpochResolution::default();
+        res.keys.insert(0, EpochKey::from_bytes([5; 32]));
+        res.write_epoch = Some(0);
+        let lane = Lane::from_resolution(&[9; 32], &res).unwrap();
+        let mut d = draft(2);
+        d.members = true;
+        d.summary = "SECRET-MEMBERS-SUMMARY".into();
+        d.comments[0].spec.body = "SECRET-MEMBERS-COMMENT".into();
+        DraftFile {
+            path: path.clone(),
+            lane: Some(lane),
+        }
+        .save(&d)
+        .unwrap();
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!on_disk.contains("SECRET-MEMBERS"), "{on_disk}");
+        assert!(on_disk.contains("dashForgeMembersReviewDraft"));
+        let lane = Lane::from_resolution(&[9; 32], &res).unwrap();
+        let raw = read_raw_draft(&path).unwrap().unwrap();
+        let back = decode_draft(&path, raw, |sealed| {
+            Ok(lane.open_artifact(sealed, sealed.len() as u64)?)
+        })
+        .unwrap();
+        assert!(back.members);
+        assert_eq!(back.summary, "SECRET-MEMBERS-SUMMARY");
+        assert_eq!(back.comments[0].spec.body, "SECRET-MEMBERS-COMMENT");
+        // without the key it is not read (and not mistaken for a public draft)
+        let raw = read_raw_draft(&path).unwrap().unwrap();
+        assert!(decode_draft(&path, raw, |_| anyhow::bail!("no key")).is_err());
+        // and without a key it is never saved in the clear
+        let keyless = DraftFile {
+            path: dir.path().join("k.json"),
+            lane: None,
+        };
+        assert!(keyless.save(&d).is_err());
+        assert!(!dir.path().join("k.json").exists());
     }
 
     /// A submit that fails before the review's transition is saved leaves the draft file as
@@ -921,7 +1144,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("d.json");
         let pending = draft(1);
-        save_draft(&path, &pending).unwrap();
+        DraftFile {
+            path: path.clone(),
+            lane: None,
+        }
+        .save(&pending)
+        .unwrap();
         let cli = crate::Cli::parse_from([
             "dg",
             "pr",
@@ -942,7 +1170,7 @@ mod tests {
         // What `submit` builds, twice (a run that failed before signing, then its re-run):
         // each starts from the file, which the failed run did not touch.
         for _ in 0..2 {
-            let mut d = load_draft(&path).unwrap().unwrap();
+            let mut d = load_plain(&path).unwrap();
             assert!(!d.attempted());
             d.verdict = Some(2);
             d.add_args(&a).unwrap();
