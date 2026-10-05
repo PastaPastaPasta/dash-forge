@@ -100,7 +100,7 @@ test.beforeAll(() => {
   execFileSync('git', ['add', '.'], { cwd: SRC })
   execFileSync('git', ['commit', '-qm', 'first'], { cwd: SRC })
   execFileSync('git', ['tag', 'v1'], { cwd: SRC })
-  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform')
+  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--no-protect')
   git('OWNER', SRC, ['push', '-q', `dash://${SLUG}`, 'main:refs/heads/main', 'v1'])
   const forked = dg('CONTRIB', 'repo', 'fork', SLUG, '--name', FORK, '--default-branch-only')
   // The default branch alone: no tag.

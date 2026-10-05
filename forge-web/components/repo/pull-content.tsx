@@ -21,6 +21,7 @@
  */
 
 import { Byline, ItemAuthor, Time } from '@/components/repo/byline'
+import { AuthorRolesProvider } from '@/components/repo/author-roles'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { pullOriginOf, trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from 'react'
@@ -166,7 +167,7 @@ import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
 import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
-import { abbreviate, cn } from '@/lib/utils'
+import { cn, shortId } from '@/lib/utils'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 
 /** No pending review comments (a stable empty list). */
@@ -481,7 +482,7 @@ function PullPage({
   const forkRef = crossRepo ? sourceRef : null
   const forkOwnerName = useDpnsName(forkRef?.ownerId ?? '')
   // The owner as the page's identity pills show one: the DPNS name, else the id's first characters.
-  const forkOwnerLabel = forkRef === null ? '' : forkOwnerName ?? abbreviate(forkRef.ownerId)
+  const forkOwnerLabel = forkRef === null ? '' : forkOwnerName ?? shortId(forkRef.ownerId)
   const sourcePrefix = forkSourcePrefix(forkRef === null ? null : { ownerId: forkRef.ownerId, ownerLabel: forkOwnerLabel, name: forkRef.name }, repo)
   const sourceState = useAsync<RefState | null>(
     () =>
@@ -1149,6 +1150,7 @@ function PullPage({
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
   return (
+    <AuthorRolesProvider owner={repo.ownerId} members={thread.members}>
     <div className="space-y-4" data-testid="pull-page">
       {/* Header */}
       <div>
@@ -1949,6 +1951,7 @@ function PullPage({
 
       <ConfirmDialog open={pending !== null} onClose={() => setPending(null)} title={confirm.title} description={confirm.description} cost={pendingCost} confirmLabel={confirm.label} onConfirm={runPending} />
     </div>
+    </AuthorRolesProvider>
   )
 }
 
@@ -2068,10 +2071,10 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       }
     case 'request':
       return pending.remove
-        ? { title: 'Remove the review request', description: `Appends ${via} naming ${pending.who.slice(0, 10)}….`, label: 'Sign & remove' }
+        ? { title: 'Remove the review request', description: `Appends ${via} naming ${shortId(pending.who)}.`, label: 'Sign & remove' }
         : {
             title: 'Request a review',
-            description: `Appends ${via} naming ${pending.who.slice(0, 10)}… as a requested reviewer. They see it under "review requested"; nothing notifies them otherwise.`,
+            description: `Appends ${via} naming ${shortId(pending.who)} as a requested reviewer. They see it under "review requested"; nothing notifies them otherwise.`,
             label: 'Sign & request',
           }
     case 'dismiss':

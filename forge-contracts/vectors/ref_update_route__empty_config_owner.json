@@ -1,0 +1,11 @@
+{
+  "name": "empty_config_owner",
+  "description": "A config read with no patterns protects nothing, even for the owner.",
+  "case": "ref_update_route",
+  "input": {
+    "refName": "refs/heads/main",
+    "patterns": [],
+    "pusherIsOwner": true
+  },
+  "expected": "refUpdate"
+}

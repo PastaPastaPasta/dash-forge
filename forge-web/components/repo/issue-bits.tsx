@@ -9,11 +9,11 @@
 import { useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 import { Check } from 'lucide-react'
 import { labelTextColor, type LabelDef } from '@/lib/repo'
-import { avatarFill, avatarHue } from '@/lib/design/avatar'
+import { Identicon } from '@/components/ui/identicon'
 import { timeAgo } from '@/lib/view'
 import { MarkdownView, type MarkdownLinks, type SuggestionContext } from '@/components/markdown-view'
 import { Textarea } from '@/components/ui/input'
-import { cn } from '@/lib/utils'
+import { cn, shortId } from '@/lib/utils'
 
 /** A label chip: the definition's colour when it has one, the theme's accent otherwise. */
 export function LabelChip({
@@ -45,23 +45,16 @@ export function LabelChip({
   )
 }
 
-/** Assignee avatars (initial swatches, as the identity pill), overlapping, with a count past three. */
+/** Assignee avatars (identicons, as the identity pill draws them), overlapping, with a count past three. */
 export function AssigneeAvatars({ ids, names }: { ids: readonly string[]; names?: ReadonlyMap<string, string | null> }): JSX.Element | null {
   if (ids.length === 0) return null
   const shown = ids.slice(0, 3)
-  const label = `Assigned to ${ids.map((id) => names?.get(id) ?? id.slice(0, 8)).join(', ')}`
+  const label = `Assigned to ${ids.map((id) => names?.get(id) ?? shortId(id)).join(', ')}`
   // role="img": a plain span may not carry aria-label (QW2-066), and the swatches are one picture.
   return (
     <span className="inline-flex items-center" role="img" aria-label={label} title={label} data-testid="assignees">
       {shown.map((id, i) => (
-        <span
-          key={id}
-          className={cn('flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white ring-2 ring-white dark:ring-anvil-950', i > 0 && '-ml-1.5')}
-          style={{ backgroundColor: avatarFill(avatarHue(id)) }}
-          aria-hidden
-        >
-          {(names?.get(id) ?? id).charAt(0).toUpperCase()}
-        </span>
+        <Identicon key={id} seed={id} size={20} className={cn('ring-2 ring-white dark:ring-anvil-950', i > 0 && '-ml-1.5')} />
       ))}
       {ids.length > shown.length ? <span className="ml-1 text-[11px] text-anvil-500 dark:text-anvil-400">+{ids.length - shown.length}</span> : null}
     </span>

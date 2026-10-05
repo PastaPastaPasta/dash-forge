@@ -1,0 +1,12 @@
+{
+  "name": "full_ref_with_slash",
+  "description": "A default branch given as a full ref, with a slash in its name, is protected by exactly that name.",
+  "case": "default_protection",
+  "input": {
+    "defaultBranch": "refs/heads/release/1.x"
+  },
+  "expected": [
+    "refs/heads/release/1.x",
+    "refs/tags/**"
+  ]
+}

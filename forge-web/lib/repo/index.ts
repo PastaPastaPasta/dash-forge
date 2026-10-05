@@ -345,6 +345,7 @@ export {
   newestPolicy,
   policyFromDocs,
   parseTopics,
+  matchList,
   patternMatches,
   patternsProblem,
   previewConfig,

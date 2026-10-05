@@ -264,7 +264,7 @@ describe('write engine', () => {
       }
       const r = await createDocumentIdempotent(sdkOf(script, []), auth([]), { ...write, contractId: 'N9', confirmTimeoutMs: 1000 })
       expect(r.documentId).toBeTruthy()
-      expect(handler).toHaveBeenCalledWith('N9', 'newerDocument', 2)
+      expect(handler).toHaveBeenCalledWith(['N9'], 'newerDocument', 2)
     } finally {
       setStaleContractHandler(null)
     }

@@ -8,6 +8,7 @@ members = [
     "crates/forge-import",
     "crates/forge-runner",
     "crates/forge-secrets",
+    "services/forge-notify",
 ]
 
 [workspace.package]

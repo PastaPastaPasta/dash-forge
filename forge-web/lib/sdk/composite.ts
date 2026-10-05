@@ -31,6 +31,7 @@ import {
   followSdkVersion,
   normalizeDocument,
   queryDocumentsWithProof,
+  retryOnStaleContract,
   type DocumentQuery,
   type OrderByClause,
   type PlainDocument,
@@ -171,9 +172,13 @@ export async function queryComposite(
   check(q)
   const facade = (sdk as unknown as { documents: CompositeFacadeLike }).documents
   if (typeof facade.composite !== 'function' && opts.plainFallback === false) throw new Error('composite queries are not available in this SDK')
-  if (typeof facade.composite === 'function') {
+  const composite = facade.composite?.bind(facade)
+  if (typeof composite === 'function') {
     try {
-      const raw = await facade.composite({
+      // Every contract it reads: a sub-query's document of a type an update gave a property fails
+      // the whole read (and the error does not say which contract), so each is refreshed.
+      const contracts = [q.dataContractId, ...q.subQueries.map((s) => s.dataContractId ?? q.dataContractId)]
+      const raw = await retryOnStaleContract(contracts, () => composite({
         dataContractId: q.dataContractId,
         documentType: q.documentType,
         ...(q.where ? { where: q.where } : {}),
@@ -188,7 +193,7 @@ export async function queryComposite(
           ...(s.limit !== undefined ? { limit: s.limit } : {}),
           ...(s.bind ? { bind: s.bind } : {}),
         })),
-      })
+      }))
       followSdkVersion(sdk)
       return {
         page: raw.pageDocuments.filter((d) => d != null).map(normalizeDocument),

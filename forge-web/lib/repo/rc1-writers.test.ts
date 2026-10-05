@@ -210,7 +210,7 @@ describe('forge-core writers are RC1-valid', () => {
   it('topics, a label and a config change', async () => {
     await syncTopicDocs(sdk, auth(ALICE), REPO, ['web-dev', 'rust'])
     await defineLabel(sdk, auth(ALICE), REPO, { name: 'good first issue', color: '#00ff00', description: 'd' })
-    await updateConfig(sdk, auth(ALICE), REPO, null, { addPattern: 'refs/heads/main' }, undefined, async () => null)
+    await updateConfig(sdk, auth(ALICE), REPO, null, { addPatterns: ['refs/heads/main'] }, undefined, async () => null)
     const made = await judged()
     expect(types(made)).toEqual(['topic', 'topic', 'label', 'config'])
     expect(made[0]?.data).toMatchObject({ vis: 'public' })
