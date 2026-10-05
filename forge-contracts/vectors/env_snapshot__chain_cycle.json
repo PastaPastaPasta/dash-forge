@@ -1,6 +1,6 @@
 {
   "name": "chain_cycle",
-  "description": "two snapshots that supersede each other leave production with no head: a conflict listing both; a snapshot naming itself is not superseded by itself.",
+  "description": "links count only strictly back in block height: s1 naming the later s2 is no link, so s2 is production's head; a snapshot naming itself supersedes nothing; two snapshots in one block naming each other supersede nothing either (a conflict).",
   "case": "env_snapshot",
   "rules": "v2",
   "input": {
@@ -8,7 +8,6 @@
     "maintainers": [
       "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
     ],
-    "formerMaintainers": [],
     "manifests": [
       {
         "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
@@ -17,7 +16,7 @@
         "supersedes": [
           "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02"
         ],
-        "createdAt": 1000
+        "height": 1000
       },
       {
         "id": "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
@@ -26,7 +25,7 @@
         "supersedes": [
           "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
         ],
-        "createdAt": 1001
+        "height": 1001
       },
       {
         "id": "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
@@ -35,7 +34,25 @@
         "supersedes": [
           "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19"
         ],
-        "createdAt": 1100
+        "height": 1100
+      },
+      {
+        "id": "Er6uxNJgJMF8qSCvVQRZvU5dX6WzPgpkwa4TgLkhrr6X",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "8bf4749b2aef75d0658aa2d606d6c4ff74fa1886c61362e079d9e556df9ce4ad",
+        "supersedes": [
+          "1e2617354e1788273f902412012d424d1128a7f32e2624f9a8da1a0ff5eafdc0"
+        ],
+        "height": 1200
+      },
+      {
+        "id": "7xU1hvYL913Tgr1ihwL5fhfemZyYGmm8PewVdpLVNkzp",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "1e2617354e1788273f902412012d424d1128a7f32e2624f9a8da1a0ff5eafdc0",
+        "supersedes": [
+          "8bf4749b2aef75d0658aa2d606d6c4ff74fa1886c61362e079d9e556df9ce4ad"
+        ],
+        "height": 1200
       }
     ],
     "opened": {
@@ -47,6 +64,12 @@
       },
       "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19": {
         "env": "dev"
+      },
+      "8bf4749b2aef75d0658aa2d606d6c4ff74fa1886c61362e079d9e556df9ce4ad": {
+        "env": "staging"
+      },
+      "1e2617354e1788273f902412012d424d1128a7f32e2624f9a8da1a0ff5eafdc0": {
+        "env": "staging"
       }
     }
   },
@@ -61,19 +84,33 @@
         ],
         "snapshots": [
           "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
-        ]
+        ],
+        "ignoredNewer": []
       },
       {
         "env": "production",
-        "state": "conflict",
+        "state": "current",
         "heads": [
-          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
           "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc"
         ],
         "snapshots": [
           "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
           "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc"
-        ]
+        ],
+        "ignoredNewer": []
+      },
+      {
+        "env": "staging",
+        "state": "conflict",
+        "heads": [
+          "7xU1hvYL913Tgr1ihwL5fhfemZyYGmm8PewVdpLVNkzp",
+          "Er6uxNJgJMF8qSCvVQRZvU5dX6WzPgpkwa4TgLkhrr6X"
+        ],
+        "snapshots": [
+          "7xU1hvYL913Tgr1ihwL5fhfemZyYGmm8PewVdpLVNkzp",
+          "Er6uxNJgJMF8qSCvVQRZvU5dX6WzPgpkwa4TgLkhrr6X"
+        ],
+        "ignoredNewer": []
       }
     ],
     "hidden": []

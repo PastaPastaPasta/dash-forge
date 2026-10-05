@@ -46,14 +46,13 @@ dg env run     <owner>/<repo> --env dev -- npm test   # the values go to the com
 dg env export  <owner>/<repo> --env dev -o .env       # a file only you can read, ignored by git
 dg env export  <owner>/<repo> --env dev | ./deploy    # .env text on stdout, for piping
 dg env history <owner>/<repo> --env production        # who changed what, and when
-dg env resave  <owner>/<repo> --env production        # save it again after a maintainer left (below)
 ```
 
 - `set` takes several names at once and saves them as one change. A value on the command line can be seen by other users of your computer, so give the name alone to be asked for the value, or pipe it in: `printf %s "$TOKEN" | dg env set API_TOKEN --env dev`.
 - `--secret` marks entries as secrets. Every value is encrypted either way. The type tells Forge what to mask by default.
-- `run` adds the values to the command's environment variables and writes nothing to disk. Its exit code is the command's.
-- `export -o` creates the file with mode 0600, adds it to `.git/info/exclude` and checks it with `git check-ignore`. It refuses a file git already tracks, and an existing file unless you pass `--force`.
-- `edit` opens `$VISUAL` or `$EDITOR` on a temporary file only you can read, and erases it afterwards. Delete a line to remove an entry.
+- `run` adds the values to the command's environment variables and writes nothing to disk. Its exit code is the command's. An environment that sets `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`, `BASH_ENV`, `ENV` or `NODE_OPTIONS` changes which program runs or what it loads, so `run` refuses it unless you pass `--allow-env-override`.
+- `export -o` first adds the file to `.git/info/exclude` and checks with `git check-ignore` that git ignores it, then creates it with mode 0600. It refuses a file git already tracks, a path a `.gitignore` rule un-ignores, and an existing file unless you pass `--force` (which replaces a symlink rather than writing through it). The text quotes values so that `source .env` in a shell never runs anything inside them.
+- `edit` opens `$VISUAL` or `$EDITOR` on a temporary file only you can read, and removes it afterwards, also when the terminal closes. Your editor may keep its own swap or backup copies elsewhere. Ctrl-C goes to the editor. Delete a line to remove an entry.
 - Every command takes `--json`.
 
 ## Changing an environment
@@ -66,7 +65,13 @@ error: change production: only maintainers can change environments      [E601]
 
 Each change saves the whole environment again, encrypted for its audience, and records which change it replaces. Before it saves, `dg` shows who will be able to read it and the cost, about 0.0025 DASH (one chunk and one record on Dash Platform, measured on devnet sakura), and asks you to confirm.
 
-Forge counts a change only when its author is a current maintainer. A change by anyone else is ignored by every reader, `dg env run` included, even though Platform lets a writer store it. A removed maintainer's latest change is the exception: it blocks the environment until it is saved again ([below](#removing-a-member)).
+Forge counts a change only when its author is a current maintainer. A change by anyone else is ignored by every reader, `dg env run` included, even though Platform lets a writer store it. That includes a former maintainer's changes, from the moment they stop being one. When such a change claims to replace an environment's latest version, `dg env ls`, `get`, `run` and `export` keep using the latest version by a maintainer and say so in one line:
+
+```
+warning: production has a newer change by someone who isn't a maintainer now; it was ignored. Ask a maintainer to check production's values.
+```
+
+`dg env ls` shows who saved the version in use and when.
 
 ## When two people change it at once
 
@@ -92,9 +97,9 @@ Removed <identity> (writer) from alice/shop.
 
 Removing someone stops them reading changes saved afterwards. It cannot take back what they could already read.
 
-When you remove a maintainer, `dg collab remove` also saves again, as you, every environment whose latest change they made: the same values, one change each, with the cost shown before you confirm. Otherwise their change would stop counting once they are gone.
+When you remove a maintainer, their changes stop counting, so an environment whose latest version they saved would go back to the version before it. `dg collab remove` shows, for each such environment, what their latest change did (entry names only, values hidden) and the cost, and asks you to confirm. After the removal it saves those values again as you, one change each, unless someone changed the environment in the meantime. If you can't read one of them, it says so: ask a maintainer who can to save it again. A maintainer removed some other way (an older Forge build, for example) leaves their environments at the version before their last change, and readers see the warning above.
 
-If a maintainer was removed some other way (an older Forge build, for example), an environment whose latest change they saved is not used at all, and never falls back to older values, which may hold a credential that was since rotated. `dg env run`, `get` and `export` refuse it ([`E609`](../errors.md#e609)), and `dg env ls` shows it as needing to be saved again. A maintainer who can read it runs `dg env resave --env production`: it shows who saved the change and when, then saves the same values as you.
+The list also notes how many environments you can't read yourself: the removed member may have been able to read values there.
 
 ## What is public
 

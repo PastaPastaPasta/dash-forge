@@ -36,7 +36,13 @@
 //!
 //! A snapshot counts only when its manifest's `$ownerId` is a **current maintainer**; consensus
 //! admits a `packManifest` from any role-1 writer, so this is a client rule (security review
-//! H5), applied by people and runners alike ([`chain::resolve`]). An authorized artifact is
+//! H5), applied by people and runners alike ([`chain::resolve`]). Nothing else about a manifest
+//! by anyone else is used: not its values, not its links. A removed or demoted maintainer's
+//! snapshots stop counting the moment their role ends, which is why `dg collab remove` saves
+//! their environments again (after showing what changed) and why every snapshot names the
+//! environment's recent counted chain in `supersedes`, not only its head. When an ignored
+//! manifest names an environment's head from a higher block, readers say so in one line and keep
+//! using the counted head. An authorized artifact is
 //! fetched, checked against the owner-signed manifest's `packHash` **before** it is opened (a
 //! DFPK 0x02 header alone proves only that some key holder wrote it), and a 0x02 artifact is
 //! opened with the sender key taken from that manifest owner's identity only ([`codec::open`]).
@@ -46,22 +52,12 @@
 //! # The chain and forks (`env_snapshot__chain_*`)
 //!
 //! [`chain::resolve`] groups the authorized snapshots into environments and finds each one's
-//! heads, the snapshots no other snapshot of it supersedes. One readable head is the current
+//! heads, the snapshots no other snapshot of it supersedes (links count only between counted
+//! snapshots and strictly back in block height). One readable head is the current
 //! state; one unreadable head means the latest change is not readable here, and values are never
 //! served from an older snapshot; two or more heads are a conflict, shown to people with both
 //! heads and refused by `dg env run`, `get` and `export` (fail closed), never merged
 //! automatically. A maintainer resolves it by writing a snapshot that supersedes every head.
-//!
-//! # A removed maintainer's latest change (`env_snapshot__head_by_removed_maintainer`)
-//!
-//! Consensus cannot tell a removed maintainer's snapshot from a writer's (both carry `r` 1, and
-//! the maintainer document is deleted on removal), so readers look for evidence that its owner was
-//! a maintainer ([`chain::former_maintainers`]: a `config` or `repoKey` document they own, or a
-//! current maintainer's snapshot listing them in `maintainers`). Such a snapshot joins the chain
-//! unopened; when it is an environment's newest, the environment is `stale` and fails closed
-//! until a maintainer saves it again (`dg env resave`), so a removal never resurrects older
-//! values. Without evidence it is ignored like any writer's. `dg collab remove` saves again,
-//! before the rotation, every environment whose latest change the removed maintainer made.
 //!
 //! # What stays public
 //!
@@ -77,8 +73,7 @@ pub mod service;
 pub(crate) mod conformance;
 
 pub use chain::{
-    exposure, former_maintainers, resolve, EnvState, Exposure, HiddenEnv, Ignored, Resolution,
-    SnapshotRef, State,
+    exposure, resolve, EnvState, Exposure, HiddenEnv, Ignored, Resolution, SnapshotRef,
 };
 pub use codec::{open, owner_keys, seal_maintainers, seal_members, OpenError, OpenKeys};
 pub use format::{Snapshot, Var, VarType};
@@ -158,9 +153,6 @@ pub const ACCESS_SENTENCE: &str = "Access is granted, not logged.";
 /// At most this many people receive a Maintainers snapshot, the writer included (the
 /// specific-people header's limit, [`crate::private::named::MAX_RECIPIENTS`]).
 pub const MAX_RECIPIENTS: usize = crate::private::named::MAX_RECIPIENTS;
-
-/// A snapshot lists at most this many maintainers (its `maintainers` field).
-pub const MAX_MAINTAINERS: usize = 64;
 
 /// Whether `name` is a valid environment name: 1 to 64 of `A-Z a-z 0-9 . _ -`, starting with a
 /// letter or digit.

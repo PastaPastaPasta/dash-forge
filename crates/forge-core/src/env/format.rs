@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{valid_env_name, valid_var_name, Audience, MAX_MAINTAINERS, MAX_RECIPIENTS};
+use super::{valid_env_name, valid_var_name, Audience, MAX_RECIPIENTS};
 
 /// Snapshots are padded to a multiple of this many bytes.
 pub const BUCKET: usize = 512;
@@ -79,12 +79,8 @@ pub struct Snapshot {
     pub env: String,
     /// Who can read it.
     pub audience: Audience,
-    /// When the writer made it (ms since the epoch; informational, `$createdAt` orders).
+    /// When the writer made it (ms since the epoch; informational: block height orders).
     pub generated_at: u64,
-    /// The repository's maintainers when it was saved (base58), the writer among them: what lets
-    /// a reader tell a removed maintainer's change from a writer's ([`super::chain`]). Encoded
-    /// sorted.
-    pub maintainers: Vec<String>,
     /// The recipients of a Maintainers snapshot in slot order (base58 identity ids, the writer
     /// first), "as listed by the writer"; empty for Members.
     pub to: Vec<String>,
@@ -137,19 +133,6 @@ impl Snapshot {
         if self.generated_at > MAX_SAFE_INT {
             return bad("generatedAt is out of range".into());
         }
-        if self.maintainers.is_empty() || self.maintainers.len() > MAX_MAINTAINERS {
-            return bad(format!(
-                "a snapshot lists 1 to {MAX_MAINTAINERS} maintainers, not {}",
-                self.maintainers.len()
-            ));
-        }
-        for (i, m) in self.maintainers.iter().enumerate() {
-            if !canonical_id(m) || self.maintainers[..i].contains(m) {
-                return bad(format!(
-                    "{m:?} is not a maintainer identity id, or is listed twice"
-                ));
-            }
-        }
         if let Some(n) = self.vars.keys().find(|n| !valid_var_name(n)) {
             return bad(format!(
                 "{n:?} is not a variable name (letters, digits and `_`, not starting with a digit)"
@@ -187,16 +170,6 @@ impl Snapshot {
         out.push_str(",\"env\":");
         push_str(&mut out, &self.env);
         let _ = write!(out, ",\"generatedAt\":{}", self.generated_at);
-        let mut maintainers: Vec<&String> = self.maintainers.iter().collect();
-        maintainers.sort();
-        out.push_str(",\"maintainers\":[");
-        for (i, m) in maintainers.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            push_str(&mut out, m);
-        }
-        out.push(']');
         if self.audience == Audience::Maintainers {
             out.push_str(",\"to\":[");
             for (i, t) in self.to.iter().enumerate() {
@@ -260,15 +233,7 @@ impl Snapshot {
     }
 
     fn from_value(v: &serde_json::Value) -> Option<Self> {
-        const KEYS: [&str; 7] = [
-            "audience",
-            "env",
-            "generatedAt",
-            "maintainers",
-            "to",
-            "v",
-            "vars",
-        ];
+        const KEYS: [&str; 6] = ["audience", "env", "generatedAt", "to", "v", "vars"];
         let obj = v.as_object()?;
         if obj.keys().any(|k| !KEYS.contains(&k.as_str())) || obj.get("v")?.as_u64()? != 1 {
             return None;
@@ -304,17 +269,10 @@ impl Snapshot {
                 },
             );
         }
-        let maintainers = obj
-            .get("maintainers")?
-            .as_array()?
-            .iter()
-            .map(|x| x.as_str().map(str::to_owned))
-            .collect::<Option<Vec<_>>>()?;
         let snap = Self {
             env: obj.get("env")?.as_str()?.to_owned(),
             audience,
             generated_at: obj.get("generatedAt")?.as_u64()?,
-            maintainers,
             to,
             vars,
         };
@@ -375,7 +333,8 @@ pub struct DotenvError {
 
 /// Parse `.env` text: `NAME=value` lines, an optional `export ` prefix, `#` comments and blank
 /// lines; a value bare (trimmed, an unquoted ` #` starts a comment), in single quotes (taken as
-/// is) or in double quotes (`\n`, `\r`, `\t`, `\"`, `\\` and `\$` escapes; may span lines).
+/// is) or in double quotes (`\n`, `\r`, `\t`, `\"`, `\\`, `\$` and `` \` `` escapes; may span
+/// lines).
 /// A name given twice keeps the last value. Values are returned in a zeroized map.
 pub fn parse_dotenv(text: &str) -> Result<BTreeMap<String, Zeroizing<String>>, DotenvError> {
     let mut out = BTreeMap::new();
@@ -424,7 +383,7 @@ pub fn parse_dotenv(text: &str) -> Result<BTreeMap<String, Zeroizing<String>>, D
                             Some('n') => value.push('\n'),
                             Some('r') => value.push('\r'),
                             Some('t') => value.push('\t'),
-                            Some(c @ ('"' | '\\' | '$')) => value.push(c),
+                            Some(c @ ('"' | '\\' | '$' | '`')) => value.push(c),
                             Some(c) => {
                                 value.push('\\');
                                 value.push(c);
@@ -456,9 +415,12 @@ pub fn parse_dotenv(text: &str) -> Result<BTreeMap<String, Zeroizing<String>>, D
     Ok(out)
 }
 
-/// `vars` as `.env` text, one `NAME=value` line each in name order: a value of only
-/// `A-Z a-z 0-9 _ . / : @ % + , -` bare, any other in double quotes with `\n`, `\r`, `\t`,
-/// `\"`, `\\` and `\$` escaped, so [`parse_dotenv`] reads back exactly what was written.
+/// `vars` as `.env` text, one `NAME=value` line each in name order, safe to `source` in a shell
+/// (nothing in a value is expanded or run) and read back exactly by [`parse_dotenv`]: a value of
+/// only `A-Z a-z 0-9 _ . / : @ % + , -` bare; one with no `'`, newline or carriage return in
+/// single quotes (taken literally by both); any other in double quotes with `\`, `"`, `$` and
+/// `` ` `` escaped and newlines, carriage returns and tabs as `\n`, `\r`, `\t` (a shell then reads
+/// those three as the two characters, never as a command).
 #[must_use]
 pub fn render_dotenv(vars: &BTreeMap<String, Var>) -> Zeroizing<String> {
     let mut out = Zeroizing::new(String::new());
@@ -471,6 +433,10 @@ pub fn render_dotenv(vars: &BTreeMap<String, Var>) -> Zeroizing<String> {
         });
         if bare {
             out.push_str(&v.value);
+        } else if !v.value.contains(['\'', '\n', '\r']) {
+            out.push('\'');
+            out.push_str(&v.value);
+            out.push('\'');
         } else {
             out.push('"');
             for c in v.value.chars() {
@@ -481,6 +447,7 @@ pub fn render_dotenv(vars: &BTreeMap<String, Var>) -> Zeroizing<String> {
                     '"' => out.push_str("\\\""),
                     '\\' => out.push_str("\\\\"),
                     '$' => out.push_str("\\$"),
+                    '`' => out.push_str("\\`"),
                     c => out.push(c),
                 }
             }
@@ -508,7 +475,6 @@ mod tests {
             env: "dev".into(),
             audience: Audience::Members,
             generated_at: 1,
-            maintainers: vec![crate::platform::encode_identifier([7; 32])],
             to: Vec::new(),
             vars: vars
                 .iter()
@@ -585,6 +551,38 @@ mod tests {
         let vars: BTreeMap<String, Var> = got.iter().map(|(k, v)| (k.clone(), var(v))).collect();
         let back = parse_dotenv(&render_dotenv(&vars)).unwrap();
         assert_eq!(back.len(), vars.len());
+        for (k, v) in &vars {
+            assert_eq!(back[k].as_str(), v.value);
+        }
+    }
+
+    #[test]
+    fn dotenv_output_runs_nothing_in_a_shell() {
+        let mut vars = BTreeMap::new();
+        for (k, v) in [
+            ("SUB", "$(touch PWNED)"),
+            ("TICK", "`touch PWNED`"),
+            ("MIX", "it's $(touch PWNED) `x`\nnext"),
+            ("PLAIN", "a-b"),
+        ] {
+            vars.insert(k.to_owned(), var(v));
+        }
+        let text = render_dotenv(&vars);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("env");
+        std::fs::write(&file, text.as_bytes()).unwrap();
+        let out = std::process::Command::new("sh")
+            .current_dir(dir.path())
+            .arg("-c")
+            .arg(". ./env; printf '%s|%s|%s' \"$SUB\" \"$TICK\" \"$PLAIN\"")
+            .output()
+            .unwrap();
+        assert!(!dir.path().join("PWNED").exists(), "a value ran a command");
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "$(touch PWNED)|`touch PWNED`|a-b"
+        );
+        let back = parse_dotenv(&text).unwrap();
         for (k, v) in &vars {
             assert_eq!(back[k].as_str(), v.value);
         }

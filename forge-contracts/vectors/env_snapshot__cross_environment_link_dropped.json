@@ -8,14 +8,13 @@
     "maintainers": [
       "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
     ],
-    "formerMaintainers": [],
     "manifests": [
       {
         "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
         "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
         "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
         "supersedes": [],
-        "createdAt": 1000
+        "height": 1000
       },
       {
         "id": "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
@@ -24,7 +23,7 @@
         "supersedes": [
           "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
         ],
-        "createdAt": 2000
+        "height": 2000
       }
     ],
     "opened": {
@@ -47,7 +46,8 @@
         ],
         "snapshots": [
           "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
-        ]
+        ],
+        "ignoredNewer": []
       },
       {
         "env": "production",
@@ -57,7 +57,8 @@
         ],
         "snapshots": [
           "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th"
-        ]
+        ],
+        "ignoredNewer": []
       }
     ],
     "hidden": []

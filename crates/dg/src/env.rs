@@ -20,8 +20,7 @@ use zeroize::Zeroizing;
 
 use forge_core::env::format::{diff, parse_dotenv, render_dotenv, Change};
 use forge_core::env::service::{
-    conflict_error, conflict_headline, stale_error, utc, Blocked, Book, Draft, Environments,
-    Prepared,
+    conflict_error, conflict_headline, utc, Blocked, Book, Draft, Environments, Prepared,
 };
 use forge_core::env::{
     default_audience, valid_env_name, valid_var_name, Audience, Snapshot, Var, VarType,
@@ -123,7 +122,8 @@ pub enum EnvCommand {
     /// Edit an environment in your editor
     ///
     /// Opens $VISUAL or $EDITOR on the whole environment and saves it as one change. The
-    /// temporary file is private to you and erased afterwards.
+    /// temporary file is private to you and removed afterwards. Your editor may keep its own
+    /// swap or backup copies elsewhere.
     Edit {
         /// The repository.
         repo: String,
@@ -171,6 +171,10 @@ pub enum EnvCommand {
         /// The environment.
         #[arg(long)]
         env: String,
+        /// Let the environment set variables that change how programs start (PATH, LD_PRELOAD,
+        /// LD_LIBRARY_PATH, DYLD_*, BASH_ENV, ENV, NODE_OPTIONS).
+        #[arg(long)]
+        allow_env_override: bool,
         /// The command and its arguments, after `--`.
         #[arg(last = true, required = true, value_name = "COMMAND")]
         command: Vec<String>,
@@ -191,17 +195,6 @@ pub enum EnvCommand {
         /// Replace the file when it exists.
         #[arg(long, requires = "output")]
         force: bool,
-    },
-    /// Save an environment again as you
-    ///
-    /// For an environment whose latest change was saved by someone who is no longer a
-    /// maintainer: shows who saved it and when, then saves the same values as you.
-    Resave {
-        /// The repository.
-        repo: String,
-        /// The environment.
-        #[arg(long)]
-        env: String,
     },
     /// Show who changed an environment, and when
     ///
@@ -227,7 +220,6 @@ impl EnvCommand {
             }
             Self::Run { repo, .. } => ("command not run", Some(repo)),
             Self::Set { repo, .. }
-            | Self::Resave { repo, .. }
             | Self::Unset { repo, .. }
             | Self::Edit { repo, .. }
             | Self::Import { repo, .. } => ("environment not changed", Some(repo)),
@@ -286,7 +278,12 @@ pub async fn run(ctx: &Ctx, cmd: &EnvCommand) -> Result<()> {
             audience,
             keep,
         } => import(ctx, repo, file, env, *secret, *audience, keep.as_deref()).await,
-        EnvCommand::Run { repo, env, command } => run_with(ctx, repo, env, command).await,
+        EnvCommand::Run {
+            repo,
+            env,
+            command,
+            allow_env_override,
+        } => run_with(ctx, repo, env, command, *allow_env_override).await,
         EnvCommand::Export {
             repo,
             env,
@@ -294,7 +291,6 @@ pub async fn run(ctx: &Ctx, cmd: &EnvCommand) -> Result<()> {
             force,
         } => export(ctx, repo, env, output.as_deref(), *force).await,
         EnvCommand::History { repo, env } => history(ctx, repo, env).await,
-        EnvCommand::Resave { repo, env } => resave(ctx, repo, env).await,
     }
 }
 
@@ -350,8 +346,19 @@ async fn book(s: &Session) -> Result<Book> {
 
 /// The values of `env`, or the error that says why they cannot be used (fail closed).
 fn current<'b>(book: &'b Book, s: &Session, env: &str) -> Result<&'b Snapshot> {
+    warn_ignored(book, env);
     book.current(env)
         .map_err(|b| blocked_error(&s.repo, env, b, book.maintainers.contains(&s.identity.id())))
+}
+
+/// One stderr line when someone who isn't a maintainer now posted a change naming `env`'s head:
+/// it is ignored (D24), and a maintainer should look (never used, never offered to save).
+fn warn_ignored(book: &Book, env: &str) {
+    if !book.ignored_newer(env).is_empty() {
+        eprintln!(
+            "warning: {env} has a newer change by someone who isn't a maintainer now; it was ignored. Ask a maintainer to check {env}'s values."
+        );
+    }
 }
 
 fn blocked_error(repo: &Repo, env: &str, blocked: Blocked, maintainer: bool) -> anyhow::Error {
@@ -379,7 +386,6 @@ fn blocked_error(repo: &Repo, env: &str, blocked: Blocked, maintainer: bool) -> 
             .into()
         }
         Blocked::Conflict(heads) => conflict_error(repo, env, &heads).into(),
-        Blocked::Stale { head } => stale_error(repo, env, &head).into(),
         Blocked::Unreadable { head, reason } => {
             let u = UserError::new(
                 codes::NOT_A_KEY_HOLDER,
@@ -480,11 +486,17 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
                 "updatedBy": head.as_ref().map(|h| h.author.clone()),
                 "updatedAt": head.as_ref().map(|h| h.created_at),
                 "versions": e.heads.len(),
+                "ignoredNewer": e.ignored_newer.len(),
             })
         })
         .collect();
     let hidden = book.resolution.hidden.len();
-    let ignored = book.resolution.ignored.len();
+    let ignored = book
+        .resolution
+        .ignored
+        .iter()
+        .filter(|i| i.reason == forge_core::env::chain::IgnoredReason::NotAMaintainer)
+        .count();
     ctx.emit(
         json!({ "environments": rows, "hidden": hidden, "ignored": ignored }),
         || {
@@ -493,6 +505,7 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
                 return;
             }
             for e in &book.resolution.environments {
+                warn_ignored(&book, &e.env);
                 let head = book.heads(&e.env).pop();
                 let when = head
                     .as_ref()
@@ -508,10 +521,6 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
                     Err(Blocked::Conflict(h)) => format!(
                         "changed at the same time: {} versions, one must be kept",
                         h.len()
-                    ),
-                    Err(Blocked::Stale { .. }) => format!(
-                        "needs saving again by a maintainer: `dg env resave --env {}`",
-                        e.env
                     ),
                     Err(_) => "latest change can't be read by you".into(),
                 };
@@ -752,9 +761,11 @@ fn edit_header(repo: &Repo, env: &str, audience: Audience) -> String {
     )
 }
 
-/// Open `text` in the user's editor in a private temporary file and return what they saved.
-/// The file is overwritten and removed afterwards.
-fn run_editor(text: &str) -> Result<Zeroizing<String>> {
+/// Open `text` in the user's editor in a private temporary file and return what they saved
+/// (`signals` installed by the caller while the editor runs).
+/// The file is overwritten with zeros and removed afterwards, also after a hangup or
+/// termination; the editor's own swap or backup copies elsewhere are beyond `dg`'s reach.
+fn run_editor(text: &str, signals: &mut EditorSignals) -> Result<Zeroizing<String>> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".into());
@@ -771,12 +782,21 @@ fn run_editor(text: &str) -> Result<Zeroizing<String>> {
         .arg(&path)
         .status()
         .with_context(|| format!("starting the editor ({editor})"));
+    let terminated = signals.stopped();
     let saved = std::fs::read_to_string(&path).map(Zeroizing::new);
     // overwrite before removing: the file held every value
     if let Ok(meta) = std::fs::metadata(&path) {
         let _ = std::fs::write(&path, vec![0u8; usize::try_from(meta.len()).unwrap_or(0)]);
     }
     let _ = std::fs::remove_file(&path);
+    drop(dir);
+    if terminated {
+        return Err(
+            UserError::new(codes::CANCELLED, "stopped while the editor was open")
+                .note("nothing was written, and the temporary file was removed")
+                .into(),
+        );
+    }
     let status = status?;
     if !status.success() {
         return Err(
@@ -814,7 +834,9 @@ async fn edit(
         .unwrap_or_else(|| default_audience(env));
     let mut text = Zeroizing::new(edit_header(&s.repo, env, shown));
     text.push_str(&render_dotenv(&base.vars));
-    let saved = run_editor(&text)?;
+    // Ctrl-C and Ctrl-\\ belong to the editor; a hangup or termination still reaches the cleanup
+    let mut signals = EditorSignals::install()?;
+    let saved = run_editor(&text, &mut signals)?;
     let parsed = parse_dotenv(&saved).map_err(|e| {
         anyhow::Error::from(
             UserError::new(
@@ -883,7 +905,6 @@ async fn commit(
         env: env.to_owned(),
         audience: base.audience.unwrap_or(Audience::Members),
         generated_at: 0,
-        maintainers: Vec::new(),
         to: Vec::new(),
         vars: base.vars.clone(),
     };
@@ -897,7 +918,6 @@ async fn commit(
         env: env.to_owned(),
         audience,
         generated_at: 0,
-        maintainers: Vec::new(),
         to: Vec::new(),
         vars,
     };
@@ -1039,11 +1059,47 @@ fn child_vars(vars: &BTreeMap<String, Var>) -> Vec<(String, Zeroizing<String>)> 
         .collect()
 }
 
-async fn run_with(ctx: &Ctx, repo: &str, env: &str, command: &[String]) -> Result<()> {
+/// Variables that decide which program runs or what it loads: an environment may set them only
+/// with `--allow-env-override`.
+const STARTUP_VARS: [&str; 6] = [
+    "PATH",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "BASH_ENV",
+    "ENV",
+    "NODE_OPTIONS",
+];
+
+/// The names in `vars` that change how programs start ([`STARTUP_VARS`], `DYLD_*`).
+fn startup_overrides(vars: &BTreeMap<String, Var>) -> Vec<&str> {
+    vars.keys()
+        .map(String::as_str)
+        .filter(|n| STARTUP_VARS.contains(n) || n.starts_with("DYLD_"))
+        .collect()
+}
+
+async fn run_with(
+    ctx: &Ctx,
+    repo: &str,
+    env: &str,
+    command: &[String],
+    allow_override: bool,
+) -> Result<()> {
     check_env_name(env)?;
     let s = Session::open(ctx, repo).await?;
     let book = book(&s).await?;
     let snap = current(&book, &s, env)?;
+    let risky = startup_overrides(&snap.vars);
+    if !risky.is_empty() && !allow_override {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("{env} sets {}, which change how programs start", risky.join(", ")),
+        )
+        .cause("a maintainer's value there decides which program runs or what it loads, on this computer")
+        .fix("pass --allow-env-override if you mean to use them")
+        .note("nothing was run")
+        .into());
+    }
     let vars = child_vars(&snap.vars);
     let (program, args) = command
         .split_first()
@@ -1071,42 +1127,100 @@ async fn run_with(ctx: &Ctx, repo: &str, env: &str, command: &[String]) -> Resul
     std::process::exit(status.code().unwrap_or(1));
 }
 
-/// Create (or with `replace`, replace) `path` holding `bytes`, readable by its owner only.
-fn write_private(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true);
-    if replace {
-        opts.create(true).truncate(true);
-    } else {
-        opts.create_new(true);
-    }
+/// Signals while the editor runs (Unix): SIGINT and SIGQUIT are taken from `dg`'s default
+/// (it no longer dies on them; the editor, in the same process group, gets them), and SIGHUP
+/// and SIGTERM are noted so the temporary file is still removed before `dg` stops.
+struct EditorSignals {
+    /// SIGINT and SIGQUIT: held only so `dg` keeps ignoring them while the editor runs.
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            anyhow::Error::from(
-                UserError::new(
-                    codes::ALREADY_EXISTS,
-                    format!("{} already exists", path.display()),
-                )
-                .fix("pass --force to replace it, or choose another file with -o"),
-            )
-        } else {
-            anyhow::Error::new(e).context(format!("creating {}", path.display()))
+    _held: Vec<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    stop: Vec<tokio::signal::unix::Signal>,
+}
+
+impl EditorSignals {
+    fn install() -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let held = [SignalKind::interrupt(), SignalKind::quit()]
+                .into_iter()
+                .map(signal)
+                .collect::<std::io::Result<Vec<_>>>()
+                .context("watching signals")?;
+            let stop = [SignalKind::hangup(), SignalKind::terminate()]
+                .into_iter()
+                .map(signal)
+                .collect::<std::io::Result<Vec<_>>>()
+                .context("watching signals")?;
+            Ok(Self { _held: held, stop })
         }
-    })?;
-    #[cfg(unix)]
-    {
-        // an existing file keeps its mode on open: tighten it
-        use std::os::unix::fs::PermissionsExt as _;
-        f.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("restricting {}", path.display()))?;
+        #[cfg(not(unix))]
+        Ok(Self {})
     }
-    f.write_all(bytes)
+
+    /// Whether a hangup or termination arrived.
+    fn stopped(&mut self) -> bool {
+        #[cfg(unix)]
+        {
+            use futures::FutureExt as _;
+            self.stop
+                .iter_mut()
+                .any(|s| s.recv().now_or_never().flatten().is_some())
+        }
+        #[cfg(not(unix))]
+        false
+    }
+}
+
+/// Create `path` holding `bytes`, readable by its owner only: a new file (an existing one, or a
+/// symlink, is refused), or with `replace` a new file renamed over it, so a symlink at `path` is
+/// replaced, never followed.
+fn write_private(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
+    let create = |at: &Path| -> std::io::Result<std::fs::File> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        opts.open(at)
+    };
+    if !replace {
+        let mut f = create(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                anyhow::Error::from(
+                    UserError::new(
+                        codes::ALREADY_EXISTS,
+                        format!("{} already exists", path.display()),
+                    )
+                    .fix("pass --force to replace it, or choose another file with -o"),
+                )
+            } else {
+                anyhow::Error::new(e).context(format!("creating {}", path.display()))
+            }
+        })?;
+        return f
+            .write_all(bytes)
+            .with_context(|| format!("writing {}", path.display()));
+    }
+    if path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+        return Err(
+            UserError::new(codes::USAGE, format!("{} is a directory", path.display())).into(),
+        );
+    }
+    // a private (0600) file beside it, renamed over it
+    let mut temp = tempfile::Builder::new()
+        .prefix(".dg-env-")
+        .tempfile_in(dir_of(path))
+        .with_context(|| format!("writing beside {}", path.display()))?;
+    temp.write_all(bytes)
+        .and_then(|()| temp.as_file().sync_all())
         .with_context(|| format!("writing {}", path.display()))?;
+    temp.persist(path).map_err(|e| {
+        anyhow::Error::new(e.error).context(format!("replacing {}", path.display()))
+    })?;
     Ok(())
 }
 
@@ -1174,13 +1288,18 @@ fn exclude_from_git(path: &Path) -> Result<GitGuard> {
     if ignored() {
         return Ok(GitGuard::Ignored { added: None });
     }
-    let abs =
-        std::fs::canonicalize(path).with_context(|| format!("resolving {}", path.display()))?;
+    // the file need not exist yet: its directory does
+    let abs = std::fs::canonicalize(&dir)
+        .with_context(|| format!("resolving {}", dir.display()))?
+        .join(&name);
     let top = std::fs::canonicalize(&top).unwrap_or(top);
     let rel = abs
         .strip_prefix(&top)
         .context("the output file is outside its git work tree")?;
-    let entry = format!("/{}", rel.to_string_lossy().replace('\\', "/"));
+    let entry = format!(
+        "/{}",
+        ignore_pattern(&rel.to_string_lossy().replace('\\', "/"))
+    );
     let exclude = git_in(&dir, &["rev-parse", "--git-path", "info/exclude"])
         .filter(|o| o.status.success())
         .map(|o| dir.join(String::from_utf8_lossy(&o.stdout).trim()))
@@ -1206,7 +1325,25 @@ fn exclude_from_git(path: &Path) -> Result<GitGuard> {
     })
 }
 
-/// Write the export file and keep it out of git.
+/// `path` (from the work tree's top) as a gitignore pattern that matches exactly it: the
+/// pattern characters and a leading `#` or `!` escaped.
+fn ignore_pattern(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for (i, c) in path.chars().enumerate() {
+        if matches!(c, '\\' | '*' | '?' | '[' | ']') || (i == 0 && matches!(c, '#' | '!')) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    if out.ends_with(' ') {
+        out.insert(out.len() - 1, '\\');
+    }
+    out
+}
+
+/// Keep `path` out of git, then write it: refused when git tracks it, or when it is still not
+/// ignored after the `info/exclude` entry (a `.gitignore` rule un-ignores it). Inside no git
+/// repository it is simply written.
 fn write_export(path: &Path, text: &str, force: bool) -> Result<GitGuard> {
     if tracked(path) {
         return Err(UserError::new(
@@ -1220,8 +1357,19 @@ fn write_export(path: &Path, text: &str, force: bool) -> Result<GitGuard> {
         .note("nothing was written")
         .into());
     }
+    let guard = exclude_from_git(path)?;
+    if guard == GitGuard::NotIgnored {
+        return Err(UserError::new(
+            codes::REJECTED,
+            format!("git would not ignore {}", path.display()),
+        )
+        .cause("a .gitignore rule un-ignores it, so the values could be committed")
+        .fix("choose a path git ignores, or fix the .gitignore rule, then export again")
+        .note("nothing was written")
+        .into());
+    }
     write_private(path, text.as_bytes(), force)?;
-    exclude_from_git(path)
+    Ok(guard)
 }
 
 async fn export(
@@ -1246,9 +1394,15 @@ async fn export(
     let guard = write_export(path, &text, force)?;
     let (ignored, note) = match &guard {
         GitGuard::NoRepository => (Value::Null, "not inside a git repository".to_owned()),
-        GitGuard::Ignored { added: Some(e) } => (json!(true), format!("added {e} to .git/info/exclude, and git check-ignore confirms it")),
-        GitGuard::Ignored { added: None } => (json!(true), "already ignored by git (git check-ignore)".to_owned()),
-        GitGuard::NotIgnored => (json!(false), "WARNING: git still does not ignore it, because a .gitignore rule un-ignores it. Don't commit it.".to_owned()),
+        GitGuard::Ignored { added: Some(e) } => (
+            json!(true),
+            format!("added {e} to .git/info/exclude, and git check-ignore confirms it"),
+        ),
+        GitGuard::Ignored { added: None } => (
+            json!(true),
+            "already ignored by git (git check-ignore)".to_owned(),
+        ),
+        GitGuard::NotIgnored => (json!(false), "git does not ignore it".to_owned()),
     };
     ctx.emit(
         json!({
@@ -1269,12 +1423,6 @@ async fn export(
             println!("  {note}");
         },
     );
-    if guard == GitGuard::NotIgnored {
-        eprintln!(
-            "warning: {} is not ignored by git. Check your .gitignore before committing.",
-            path.display()
-        );
-    }
     Ok(())
 }
 
@@ -1294,7 +1442,6 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
     };
     let items = book.history(env);
     let conflict = matches!(book.current(env), Err(Blocked::Conflict(_)));
-    let needs_resave = matches!(book.current(env), Err(Blocked::Stale { .. }));
     ctx.emit(
         json!({ "env": env, "state": state.state, "heads": state.heads, "changes": items }),
         || {
@@ -1305,9 +1452,6 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
             );
             for i in &items {
                 let what = match &i.unreadable {
-                    _ if i.by_former_maintainer => {
-                        "saved by someone who is no longer a maintainer, so not used".to_owned()
-                    }
                     Some(why) => format!("can't be read by you: {why}"),
                     None => format!(
                         "{:<12} {}",
@@ -1329,122 +1473,70 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
                     conflict_headline(env, &book.heads(env))
                 );
             }
-            if needs_resave {
-                println!(
-                    "The latest change was saved by someone who is no longer a maintainer. A maintainer needs to save it again: `dg env resave --env {env}`."
-                );
-            }
             println!("{ACCESS_SENTENCE}");
         },
     );
     Ok(())
 }
 
-/// `dg env resave`: save a stale environment's newest values again as this maintainer.
-async fn resave(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
-    check_env_name(env)?;
-    let s = Session::open_for_write(ctx, repo, "environment not saved again").await?;
-    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
-    envs.require_maintainer(&s.repo, &format!("save {env} again"))
-        .await?;
-    let book = envs.read(&s.repo).await?;
-    let (base, head) = book.resave_base(&s.repo, env)?;
-    let audience = base.audience.unwrap_or_else(|| default_audience(env));
-    let names: Vec<&str> = base.vars.keys().map(String::as_str).collect();
-    let draft = Draft {
-        env: env.to_owned(),
-        audience,
-        vars: base.vars.clone(),
-        supersedes: base.supersedes.clone(),
-    };
-    let prepared = envs.prepare(&s.repo, &draft).await?;
-    let quote = prepared.credits();
-    eprintln!(
-        "  {env}'s latest change was saved by {} at {} ({}), who is no longer a maintainer.",
-        head.author,
-        utc(head.created_at),
-        head.short()
-    );
-    eprintln!(
-        "  It holds {}: {}.",
-        count(names.len(), "entry"),
-        names.join(", ")
-    );
-    eprintln!(
-        "  One chunk and one record, {}.",
-        cost_line(quote, ctx.usd_price())
-    );
-    ctx.confirm_or_cancel(&format!(
-        "Save these values again as you, for {}?",
-        audience_phrase(&prepared, audience)
-    ))?;
-    let (saved, spent) = s.metered(|| envs.store(&s.repo, &prepared)).await?;
-    ctx.emit(
-        json!({
-            "status": "saved",
-            "env": env,
-            "audience": saved.audience,
-            "to": saved.to,
-            "skipped": saved.skipped,
-            "from": head,
-            "id": saved.id,
-            "packHash": saved.pack_hash,
-            "spent": cost_json(spent, ctx.usd_price()),
-        }),
-        || {
-            println!(
-                "✓ saved {env} again ({}), with the values {} saved",
-                audience_phrase(&prepared, audience),
-                head.author
-            );
-            println!("  spent {}", cost_line(spent, ctx.usd_price()));
-        },
-    );
-    Ok(())
+/// An environment whose counted head a removed maintainer wrote, pinned before the removal:
+/// saved again afterwards, with these values, only if nothing changed meanwhile.
+struct Pin {
+    env: String,
+    pack_hash: [u8; 32],
+    height: u64,
+    size: u64,
+    snapshot: Snapshot,
+    /// What that head changed against the newest earlier version by someone else (names only).
+    changes: Vec<(String, Change)>,
 }
 
 /// What removing a member does to environments, worked out before the confirmation: the
-/// checklist of what they could read, and (for a maintainer) the environments whose latest
-/// change they made, saved again after the removal so they keep working.
+/// checklist of what they could read, and (for a maintainer) the environments whose counted head
+/// they wrote, pinned to be saved again after the removal. Their snapshots stop counting once
+/// they are not a maintainer, so without this those environments would go back to an earlier
+/// version (or to a conflict).
 pub struct Removal {
     /// The checklist, as JSON.
     pub exposed: Value,
     checklist: String,
-    /// Environments to save again, with their current sealed size.
-    resave: Vec<(String, u64)>,
-    /// Environments whose latest change they made that the remover cannot read.
+    pins: Vec<Pin>,
+    /// Environments whose head they wrote that the remover cannot open.
     cannot: Vec<String>,
 }
 
 impl Removal {
-    /// The sentence the removal prompt adds (empty when nothing is saved again).
+    /// Print to stderr what the removal saves again (per environment: what the removed
+    /// maintainer's latest change did, values hidden) and what the remover cannot read; return
+    /// the sentence the confirmation prompt adds (empty when nothing is saved again).
     #[must_use]
-    pub fn prompt_note(&self, member: &str, price: Option<f64>) -> String {
-        let mut out = String::new();
-        if !self.resave.is_empty() {
-            let credits: u64 = self
-                .resave
-                .iter()
-                .map(|(_, size)| forge_core::env::service::snapshot_credits(*size))
-                .sum();
-            let names: Vec<&str> = self.resave.iter().map(|(e, _)| e.as_str()).collect();
-            let _ = write!(
-                out,
-                ". It also saves {} again as you ({}), whose latest change {member} made, so they keep working: {}",
-                count(names.len(), "environment"),
-                names.join(", "),
-                cost_line(credits, price)
+    pub fn explain(&self, member: &str, price: Option<f64>) -> String {
+        for p in &self.pins {
+            eprintln!(
+                "  {} will be saved again as you with the values {member} last saved ({}). Their change: {}. Values are not shown.",
+                p.env,
+                p.snapshot.audience.label(),
+                summary(&p.changes)
             );
         }
-        if !self.cannot.is_empty() {
-            let _ = write!(
-                out,
-                ". {} can't be saved again by you and will need a maintainer it was sent to: {}",
-                count(self.cannot.len(), "environment"),
-                self.cannot.join(", ")
+        for env in &self.cannot {
+            eprintln!(
+                "  {env}'s latest change is by {member} and can't be read by you, so it can't be saved again by you. After the removal it goes back to the version before it. Ask a maintainer who can read it."
             );
         }
-        out
+        if self.pins.is_empty() {
+            return String::new();
+        }
+        let credits: u64 = self
+            .pins
+            .iter()
+            .map(|p| forge_core::env::service::snapshot_credits(p.size))
+            .sum();
+        format!(
+            ". It also saves {} again as you, as listed above: {}",
+            count(self.pins.len(), "environment"),
+            cost_line(credits, price)
+        )
     }
 }
 
@@ -1463,7 +1555,7 @@ pub async fn prepare_removal(
             return Removal {
                 exposed: Value::Null,
                 checklist: format!("\ncouldn't list the environments {member} could read: {e}"),
-                resave: Vec::new(),
+                pins: Vec::new(),
                 cannot: Vec::new(),
             }
         }
@@ -1486,48 +1578,79 @@ pub async fn prepare_removal(
             e.names.join(", ")
         );
     }
-    let (mut resave, mut cannot) = (Vec::new(), Vec::new());
+    let unreadable = book.resolution.hidden.len()
+        + book
+            .resolution
+            .environments
+            .iter()
+            .filter(|e| book.current(&e.env).is_err())
+            .count();
+    if unreadable > 0 {
+        let _ = write!(
+            checklist,
+            "\nYou can't read {} here, so it isn't listed. {member} may have been able to read values there.",
+            count(unreadable, "environment")
+        );
+    }
+    let (mut pins, mut cannot) = (Vec::new(), Vec::new());
     if maintainer {
-        for (env, readable, size) in book.heads_by(member) {
-            if readable {
-                resave.push((env, size));
-            } else {
-                cannot.push(env);
+        for h in book.heads_by(member) {
+            match h.snapshot {
+                Some(snap) => pins.push(Pin {
+                    changes: diff(h.previous, snap),
+                    env: h.env,
+                    pack_hash: h.pack_hash,
+                    height: h.height,
+                    size: h.size_bytes,
+                    snapshot: snap.clone(),
+                }),
+                None => cannot.push(h.env),
             }
         }
     }
     Removal {
         exposed: serde_json::to_value(&exposed).unwrap_or(Value::Null),
         checklist,
-        resave,
+        pins,
         cannot,
     }
 }
 
-/// After `member` is removed: save again every environment of [`Removal`] whose latest change
-/// is now theirs, one snapshot each (the same values, as the remover), then the checklist.
-/// Returns the environments saved again as JSON, and the text to print after the removal line.
+/// After `member` is removed (and the key rotated): save again each pinned environment, as the
+/// remover, with the values the removed maintainer last saved, one snapshot each, but only when
+/// its pinned head is still there and no maintainer has changed the environment since. Returns
+/// the environments saved again as JSON, and the text to print after the removal line (then the
+/// checklist).
 pub async fn finish_removal(s: &Session, member: &str, removal: &Removal) -> (Value, String) {
     let mut text = String::new();
     let mut saved_envs = Vec::new();
-    if !removal.resave.is_empty() {
+    if !removal.pins.is_empty() {
         let envs = Environments::new(&s.client, &s.identity, &s.bridge);
-        match envs.read_with(&s.repo, &[member.to_owned()]).await {
+        match envs.read(&s.repo).await {
             Ok(book) => {
-                for (env, _) in &removal.resave {
-                    match resave_now(&envs, s, &book, env).await {
-                        Ok(audience) => {
+                for pin in &removal.pins {
+                    match resave_pinned(&envs, s, &book, member, pin).await {
+                        Ok(true) => {
                             let _ = write!(
                                 text,
-                                "\nSaved {env} again as you ({}), so it keeps working.",
-                                audience.label()
+                                "\nSaved {} again as you ({}), with the values {member} last saved.",
+                                pin.env,
+                                pin.snapshot.audience.label()
                             );
-                            saved_envs.push(env.clone());
+                            saved_envs.push(pin.env.clone());
+                        }
+                        Ok(false) => {
+                            let _ = write!(
+                                text,
+                                "\n{} changed after the plan was shown, so it wasn't saved again. Check it: `dg env history --env {}`.",
+                                pin.env, pin.env
+                            );
                         }
                         Err(e) => {
                             let _ = write!(
                                 text,
-                                "\ncouldn't save {env} again: {e}. Its values aren't used until a maintainer runs `dg env resave --env {env}`."
+                                "\ncouldn't save {} again: {e}. It now holds the version before {member}'s change.",
+                                pin.env
                             );
                         }
                     }
@@ -1545,24 +1668,41 @@ pub async fn finish_removal(s: &Session, member: &str, removal: &Removal) -> (Va
     (json!(saved_envs), text)
 }
 
-/// Save stale `env` again from `book`, already confirmed.
-async fn resave_now(
+/// Save `pin` again from the post-removal `book`, already confirmed: `false` (nothing written)
+/// when the pinned head is gone or a counted change of the environment is newer than it.
+async fn resave_pinned(
     envs: &Environments<'_>,
     s: &Session,
     book: &Book,
-    env: &str,
-) -> Result<Audience> {
-    let (base, _) = book.resave_base(&s.repo, env)?;
-    let audience = base.audience.unwrap_or_else(|| default_audience(env));
+    member: &str,
+    pin: &Pin,
+) -> Result<bool> {
+    let still_there = book
+        .manifests
+        .iter()
+        .any(|m| m.pack_hash == pin.pack_hash && m.owner_id == member);
+    let newer = book.state(&pin.env).is_some_and(|st| {
+        st.snapshots.iter().any(|id| {
+            book.manifests
+                .iter()
+                .any(|m| &m.document_id == id && m.created_at_block_height > pin.height)
+        })
+    });
+    if !still_there || newer {
+        return Ok(false);
+    }
+    let mut supersedes = book.window(&pin.env);
+    supersedes.truncate(forge_core::env::service::MAX_SUPERSEDES - 1);
+    supersedes.push(pin.pack_hash);
     let draft = Draft {
-        env: env.to_owned(),
-        audience,
-        vars: base.vars,
-        supersedes: base.supersedes,
+        env: pin.env.clone(),
+        audience: pin.snapshot.audience,
+        vars: pin.snapshot.vars.clone(),
+        supersedes,
     };
     let prepared = envs.prepare(&s.repo, &draft).await?;
     envs.store(&s.repo, &prepared).await?;
-    Ok(audience)
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1699,7 +1839,6 @@ mod tests {
             env: "dev".into(),
             audience: Audience::Members,
             generated_at: 0,
-            maintainers: Vec::new(),
             to: Vec::new(),
             vars: BTreeMap::new(),
         };
@@ -1715,6 +1854,58 @@ mod tests {
         assert_eq!(count(1, "entry"), "1 entry");
         assert_eq!(count(3, "entry"), "3 entries");
         assert_eq!(count(2, "environment"), "2 environments");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_force_replaces_a_symlink_instead_of_following_it() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        let victim = dir.path().join("victim.txt");
+        std::fs::write(&victim, "keep me\n").unwrap();
+        let link = dir.path().join(".env");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(
+            write_export(&link, "A=1\n", false).is_err(),
+            "no --force: refused"
+        );
+        write_export(&link, "A=1\n", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me\n");
+        assert!(!link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "A=1\n");
+    }
+
+    #[test]
+    fn export_is_refused_when_a_gitignore_un_ignores_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        std::fs::write(dir.path().join(".gitignore"), "!/.env\n").unwrap();
+        let path = dir.path().join(".env");
+        assert!(write_export(&path, "A=1\n", false).is_err());
+        assert!(!path.exists(), "nothing written");
+    }
+
+    #[test]
+    fn ignore_patterns_match_only_the_path() {
+        assert_eq!(ignore_pattern(".env"), ".env");
+        assert_eq!(ignore_pattern("a*b/[x]?"), "a\\*b/\\[x\\]\\?");
+        assert_eq!(ignore_pattern("#x"), "\\#x");
+        assert_eq!(ignore_pattern("!x "), "\\!x\\ ");
+    }
+
+    #[test]
+    fn startup_variables_are_named() {
+        let vars: BTreeMap<String, Var> = [
+            ("PATH".into(), var("/tmp")),
+            ("DYLD_INSERT_LIBRARIES".into(), var("x")),
+            ("NODE_OPTIONS".into(), var("--require x")),
+            ("API_TOKEN".into(), var("t")),
+        ]
+        .into();
+        assert_eq!(
+            startup_overrides(&vars),
+            vec!["DYLD_INSERT_LIBRARIES", "NODE_OPTIONS", "PATH"]
+        );
     }
 
     #[test]

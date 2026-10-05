@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 import { EpochKeys, bytesToHex, hexToBytes, type EpochKeyring, type OwnerKey } from '../private'
 import { sealLetterArtifactWith, sealPackWithFileId } from '../private/testing'
-import { exposureOf, formerMaintainers, resolveSnapshots, type SnapshotRef } from './chain'
+import { exposureOf, resolveSnapshots, type SnapshotRef } from './chain'
 import { openSnapshot, recipientsMatch, SnapshotOpenError } from './codec'
 import { decodeSnapshot, defaultAudience, encodeSnapshot, type EnvVar, type Snapshot } from './format'
 
@@ -44,7 +44,6 @@ function snapshotOf(v: Obj): Snapshot {
     env: s(v.env),
     audience: s(v.audience) as Snapshot['audience'],
     generatedAt: n(v.generatedAt),
-    maintainers: arr(v.maintainers).map(s),
     to: v.to === undefined ? [] : arr(v.to).map(s),
     vars,
   }
@@ -53,8 +52,7 @@ function snapshotOf(v: Obj): Snapshot {
 function snapshotJson(snap: Snapshot): Obj {
   const vars: Obj = {}
   for (const [k, v] of snap.vars) Object.defineProperty(vars, k, { value: { type: v.type, value: v.value, note: v.note }, enumerable: true })
-  const maintainers = [...snap.maintainers].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-  const out: Obj = { env: snap.env, audience: snap.audience, generatedAt: snap.generatedAt, maintainers, vars }
+  const out: Obj = { env: snap.env, audience: snap.audience, generatedAt: snap.generatedAt, vars }
   if (snap.audience === 'maintainers') out.to = [...snap.to]
   return out
 }
@@ -142,11 +140,10 @@ function runResolve(inp: Obj): Json {
     ownerId: s(o(m).ownerId),
     packHash: s(o(m).packHash),
     supersedes: arr(o(m).supersedes).map(s),
-    createdAt: n(o(m).createdAt),
+    height: n(o(m).height),
   }))
   const opened = o(inp.opened)
-  const former = new Set(arr(inp.formerMaintainers).map(s))
-  const r = resolveSnapshots(maintainers, former, manifests, (h) => {
+  const r = resolveSnapshots(maintainers, manifests, (h) => {
     const e = opened[h]
     return e !== undefined && o(e).env !== undefined ? s(o(e).env) : null
   })
@@ -157,7 +154,7 @@ function runExposure(inp: Obj): Json {
   const snap = (v: Json): Snapshot => {
     const x = o(v)
     const vars = new Map<string, EnvVar>(Object.entries(o(x.vars)).map(([k, val]) => [k, { value: s(val), type: 'secret', note: '' }]))
-    return { env: 'x', audience: s(x.audience) as Snapshot['audience'], generatedAt: 0, maintainers: [], to: x.to === undefined ? [] : arr(x.to).map(s), vars }
+    return { env: 'x', audience: s(x.audience) as Snapshot['audience'], generatedAt: 0, to: x.to === undefined ? [] : arr(x.to).map(s), vars }
   }
   const envs = arr(inp.environments).map((e) => ({
     env: s(o(e).env),
@@ -196,16 +193,6 @@ async function run(v: Vector): Promise<Json> {
       return runResolve(inp)
     case 'exposure':
       return runExposure(inp)
-    case 'former':
-      return {
-        results: formerMaintainers(
-          new Set(arr(inp.maintainers).map(s)),
-          arr(inp.configOwners).map(s),
-          arr(inp.wrapOwners).map(s),
-          arr(inp.snapshots).map((x) => ({ ownerId: s(o(x).ownerId), maintainers: arr(o(x).maintainers).map(s) })),
-          arr(inp.extra).map(s),
-        ),
-      }
     case 'defaultAudience':
       return { results: arr(inp.names).map((x) => defaultAudience(s(x))) }
     default:

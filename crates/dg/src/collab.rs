@@ -362,9 +362,10 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
         format!("Remove {member} as a {shown} of {repo}? Their next write is refused at once")
     };
     // Environments (DESIGN §4.5), read before they go: what they could read (keyed = held the
-    // key), and those whose latest change a removed maintainer made, saved again afterwards.
+    // key), and those whose counted head a removed maintainer wrote, pinned and saved again
+    // after the rotation (their snapshots stop counting when they go).
     let removal = crate::env::prepare_removal(&s, member, keyed, role == Role::Maintainer).await;
-    let prompt = format!("{prompt}{}", removal.prompt_note(member, ctx.usd_price()));
+    let prompt = format!("{prompt}{}", removal.explain(member, ctx.usd_price()));
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
     }
@@ -409,7 +410,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     } else {
         None
     };
-    // after the rotation: the environments whose latest change they made, saved again
+    // after the rotation: the pinned environments saved again, unless changed meanwhile
     let (resaved, exposed_lines) = if removed {
         crate::env::finish_removal(&s, member, &removal).await
     } else {

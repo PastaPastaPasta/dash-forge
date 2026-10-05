@@ -404,12 +404,6 @@ Fix: read it again (`dg issue view`, `dg pr view --comments`) and redo the edit 
 
 Fix: `dg env history --env <name>` shows what each changed; a maintainer keeps one with `dg env edit --env <name> --keep <id>` (or `set`, `unset`, `import` with `--keep`). See [Environments](guides/environments.md#when-two-people-change-it-at-once).
 
-## E609
-
-**Environment needs saving again.** The environment's latest change was saved by someone who is no longer a maintainer (they were removed by a client that did not save it again). Its values aren't used, and older values are never used instead: they may hold a credential that was rotated.
-
-Fix: a maintainer runs `dg env resave <owner>/<repo> --env <name>`, which shows who saved the change and when, then saves the same values as them. See [Environments](guides/environments.md#removing-a-member).
-
 ## E701
 
 **Dash Platform unreachable.** No DAPI node answered, or the quorum service could not be reached. Nodes that fail are skipped for about a minute, so an immediate retry often reaches the same dead nodes.

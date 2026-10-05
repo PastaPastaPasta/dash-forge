@@ -1,6 +1,6 @@
 {
   "name": "chain_linear",
-  "description": "three changes to production, each superseding the last, and a separate dev: one head each.",
+  "description": "three changes to production, each naming the earlier ones (a writer lists every counted snapshot of the environment, newest first, up to 32), and a separate dev: one head each.",
   "case": "env_snapshot",
   "rules": "v2",
   "input": {
@@ -9,14 +9,13 @@
       "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
       "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
     ],
-    "formerMaintainers": [],
     "manifests": [
       {
         "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
         "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
         "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
         "supersedes": [],
-        "createdAt": 1000
+        "height": 1000
       },
       {
         "id": "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
@@ -25,23 +24,24 @@
         "supersedes": [
           "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
         ],
-        "createdAt": 2000
+        "height": 2000
       },
       {
         "id": "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
         "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
         "packHash": "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19",
         "supersedes": [],
-        "createdAt": 2500
+        "height": 2500
       },
       {
         "id": "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB",
         "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
         "packHash": "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde",
         "supersedes": [
-          "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02"
+          "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
         ],
-        "createdAt": 3000
+        "height": 3000
       }
     ],
     "opened": {
@@ -70,7 +70,8 @@
         ],
         "snapshots": [
           "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
-        ]
+        ],
+        "ignoredNewer": []
       },
       {
         "env": "production",
@@ -82,7 +83,8 @@
           "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
           "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
           "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB"
-        ]
+        ],
+        "ignoredNewer": []
       }
     ],
     "hidden": []

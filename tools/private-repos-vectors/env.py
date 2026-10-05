@@ -30,12 +30,11 @@ from gen import (  # noqa: E402
 BUCKET = 512
 MAX_SNAPSHOT = 12288
 SAFE_INT = (1 << 53) - 1
-ENV_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+ENV_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")  # fullmatch: `$` would admit a trailing newline
+VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 TYPES = ("secret", "variable")
 AUDIENCES = ("members", "maintainers")
 MAX_RECIPIENTS = 16
-MAX_MAINTAINERS = 64
 # The one name rule (owner question 3): these names default to Maintainers, every other to Members.
 MAINTAINERS_BY_DEFAULT = ("production", "prod*", "staging", "release*")
 
@@ -67,7 +66,6 @@ def default_audience(name):
 def snapshot_obj(s):
     """The JSON object of snapshot `s` (`note` left out when empty; `to` only for maintainers)."""
     obj = {"v": 1, "env": s["env"], "audience": s["audience"], "generatedAt": s["generatedAt"],
-           "maintainers": sorted(s["maintainers"]),
            "vars": {k: dict({"type": v["type"], "value": v["value"]}, **({"note": v["note"]} if v.get("note") else {}))
                     for k, v in s["vars"].items()}}
     if s["audience"] == "maintainers":
@@ -85,14 +83,10 @@ def encode(s):
 def valid(obj):
     """Whether `obj` (parsed JSON) is a version-1 snapshot; returns the snapshot dict or None."""
     is_int = lambda x: isinstance(x, int) and not isinstance(x, bool)
-    if not isinstance(obj, dict) or not set(obj) <= {"v", "env", "audience", "generatedAt", "maintainers", "to", "vars"}:
-        return None
-    ms = obj.get("maintainers")
-    if not isinstance(ms, list) or not 1 <= len(ms) <= MAX_MAINTAINERS or len(set(map(str, ms))) != len(ms) \
-            or any(b58decode(m) is None for m in ms):
+    if not isinstance(obj, dict) or not set(obj) <= {"v", "env", "audience", "generatedAt", "to", "vars"}:
         return None
     if obj.get("v") != 1 or not is_int(obj.get("v")) or not isinstance(obj.get("env"), str) \
-            or not ENV_NAME.match(obj["env"]) or obj.get("audience") not in AUDIENCES \
+            or not ENV_NAME.fullmatch(obj["env"]) or obj.get("audience") not in AUDIENCES \
             or not is_int(obj.get("generatedAt")) or not 0 <= obj["generatedAt"] <= SAFE_INT \
             or not isinstance(obj.get("vars"), dict):
         return None
@@ -105,14 +99,13 @@ def valid(obj):
         return None
     out_vars = {}
     for k, v in obj["vars"].items():
-        if not VAR_NAME.match(k) or not isinstance(v, dict) or not set(v) <= {"type", "value", "note"}:
+        if not VAR_NAME.fullmatch(k) or not isinstance(v, dict) or not set(v) <= {"type", "value", "note"}:
             return None
         if v.get("type") not in TYPES or not isinstance(v.get("value"), str) \
                 or not isinstance(v.get("note", ""), str):
             return None
         out_vars[k] = dict(type=v["type"], value=v["value"], note=v.get("note", ""))
-    s = dict(env=obj["env"], audience=obj["audience"], generatedAt=obj["generatedAt"], maintainers=list(ms),
-             vars=out_vars)
+    s = dict(env=obj["env"], audience=obj["audience"], generatedAt=obj["generatedAt"], vars=out_vars)
     if obj["audience"] == "maintainers":
         s["to"] = list(obj["to"])
     return s
@@ -139,7 +132,6 @@ def decode(pt):
 def snapshot_json(s):
     """A decoded snapshot as the vectors carry it (`note` always present)."""
     out = dict(env=s["env"], audience=s["audience"], generatedAt=s["generatedAt"],
-               maintainers=sorted(s["maintainers"]),
                vars={k: dict(type=v["type"], value=v["value"], note=v.get("note", "")) for k, v in s["vars"].items()})
     if s["audience"] == "maintainers":
         out["to"] = list(s["to"])
@@ -197,7 +189,7 @@ def open_snapshot(manifest, sealed, owner_keys, reader, epoch_keys):
     else:
         return dict(error="sealedPackCorrupt")
     s = decode(plain)
-    if s is None or s["audience"] != audience or manifest["ownerId"] not in s["maintainers"]:
+    if s is None or s["audience"] != audience:
         return dict(error="malformed")
     if audience == "maintainers" and (len(s["to"]) != sealed[8] or s["to"][0] != manifest["ownerId"]):
         return dict(error="malformed")
@@ -207,43 +199,35 @@ def open_snapshot(manifest, sealed, owner_keys, reader, epoch_keys):
 # --- authorization, the chain and forks (D24) -----------------------------------------------------------
 
 
-def resolve(maintainers, former, manifests, opened):
-    """`manifests`: [{id, ownerId, packHash, supersedes: [hex], createdAt}]; `former`: identities shown to have
-    been maintainers (never opened: their snapshots join the chain unread, and a chain they end is `stale`);
-    `opened`: packHash → {env, ...} (readable) or {unreadable: reason}. Returns the resolution the vectors expect."""
-    order = sorted(manifests, key=lambda m: (m["createdAt"], m["id"]))
-    nodes, ignored, passthrough = {}, [], {}
+def resolve(maintainers, manifests, opened):
+    """D24, strictly. `manifests`: [{id, ownerId, packHash, supersedes: [hex], height}] (`height` =
+    $createdAtBlockHeight); `opened`: packHash → {env, ...} (readable) or {unreadable: reason}.
+
+    Only a current maintainer's snapshot counts; every other manifest is ignored and none of its
+    links is followed. A link counts only between counted snapshots and only strictly back in block
+    height (so a snapshot cannot supersede itself or anything later, and there are no cycles). An
+    ignored manifest that names an environment's counted head and is higher is reported per
+    environment (`ignoredNewer`), never used."""
+    order = sorted(manifests, key=lambda m: (m["height"], m["id"]))
+    nodes, ignored, others = {}, [], []
     for m in order:
-        if m["ownerId"] not in maintainers and m["ownerId"] not in former:
+        if m["ownerId"] not in maintainers:
             ignored.append(dict(id=m["id"], reason="notAMaintainer"))
-            passthrough.setdefault(m["packHash"], []).extend(m["supersedes"])
+            others.append(m)
         elif m["packHash"] in nodes:
             ignored.append(dict(id=m["id"], reason="duplicate"))
         else:
             nodes[m["packHash"]] = m
-    stale = lambda h: nodes[h]["ownerId"] not in maintainers
-    env_of = lambda h: None if stale(h) else opened.get(h, {}).get("env")
-
-    def targets(t):
-        out, seen, todo = [], {t["packHash"]}, list(t["supersedes"])
-        while todo:
-            h = todo.pop(0)
-            if h in seen:
-                continue
-            seen.add(h)
-            if h in nodes:
-                out.append(h)
-            elif h in passthrough:
-                todo.extend(passthrough[h])
-        return out
-
+    env_of = lambda h: opened.get(h, {}).get("env")
     edges = set()
     for h, t in nodes.items():
-        for s in targets(t):
-            a, b = env_of(h), env_of(s)
+        for s_ in t["supersedes"]:
+            if s_ not in nodes or nodes[s_]["height"] >= t["height"]:
+                continue
+            a, b = env_of(h), env_of(s_)
             if a is not None and b is not None and a != b:
                 continue
-            edges.add((h, s))
+            edges.add((h, s_))
     parent = {h: h for h in nodes}
 
     def find(x):
@@ -259,7 +243,7 @@ def resolve(maintainers, former, manifests, opened):
     comps = {}
     for h in nodes:
         comps.setdefault(find(h), []).append(h)
-    key = lambda h: (nodes[h]["createdAt"], nodes[h]["id"])
+    key = lambda h: (nodes[h]["height"], nodes[h]["id"])
     envs, hidden = {}, []
     for members in comps.values():
         names = sorted({env_of(h) for h in members if env_of(h) is not None})
@@ -269,40 +253,25 @@ def resolve(maintainers, former, manifests, opened):
             envs.setdefault(e, set()).update(h for h in members if env_of(h) in (e, None))
 
     def heads_of(group):
-        heads = sorted((n for n in group if not any((t, n) in edges for t in group)), key=key)
-        return heads or sorted(group, key=key)
+        return sorted((n for n in group if not any((t, n) in edges for t in group)), key=key)
 
     def ids(hs):
         return [nodes[h]["id"] for h in sorted(hs, key=key)]
+
+    def newer(heads):
+        return sorted(m["id"] for m in others
+                      if any(h in m["supersedes"] and m["height"] > nodes[h]["height"] and m["packHash"] != h
+                             for h in heads))
 
     out_envs = []
     for e in sorted(envs):
         group = envs[e]
         heads = heads_of(group)
-        no_heads = not any(not any((t, n) in edges for t in group) for n in group)
-        if len(heads) == 1 and not no_heads:
-            state = "stale" if stale(heads[0]) else "current" if env_of(heads[0]) is not None else "unreadable"
-        else:
-            state = "conflict"
-        out_envs.append(dict(env=e, state=state, heads=ids(heads), snapshots=ids(group)))
+        state = ("current" if env_of(heads[0]) is not None else "unreadable") if len(heads) == 1 else "conflict"
+        out_envs.append(dict(env=e, state=state, heads=ids(heads), snapshots=ids(group), ignoredNewer=newer(heads)))
     out_hidden = [dict(heads=ids(heads_of(set(g))), snapshots=ids(g))
                   for g in sorted(hidden, key=lambda g: min(key(h) for h in g))]
     return dict(ignored=ignored, environments=out_envs, hidden=out_hidden)
-
-
-# --- who was a maintainer ------------------------------------------------------------------------
-
-
-def former_maintainers(maintainers, config_owners, wrap_owners, snapshots, extra):
-    """Identities shown to have been maintainers, minus the current ones: owners of the repo's `config` and
-    `repoKey` documents (consensus admits both only from a maintainer, and neither can be deleted), every
-    `maintainers` entry of a snapshot a current maintainer wrote (opened), and `extra` (what the caller knows:
-    the maintainer it is removing)."""
-    out = set(config_owners) | set(wrap_owners) | set(extra)
-    for snap in snapshots:
-        if snap["ownerId"] in maintainers:
-            out |= set(snap["maintainers"])
-    return sorted(out - set(maintainers))
 
 
 # --- the removal checklist --------------------------------------------------------------------------
@@ -350,13 +319,12 @@ def var(value, type_="secret", note=""):
 
 def format_vectors():
     cases = []
-    MS = [B(ALICE)]
-    small = dict(env="dev", audience="members", generatedAt=GENERATED_AT, maintainers=MS, vars={})
+    small = dict(env="dev", audience="members", generatedAt=GENERATED_AT, vars={})
     pt = encode(small)
     assert len(pt) == 512 and decode(pt) is not None
     cases.append(dict(snapshot=snapshot_json(small), plaintextHex=H(pt), sizeBytes=len(pt)))
     # canonical JSON of exactly 512 bytes: no padding at all
-    base = dict(env="dev", audience="members", generatedAt=GENERATED_AT, maintainers=MS, vars={"FILL": var("")})
+    base = dict(env="dev", audience="members", generatedAt=GENERATED_AT, vars={"FILL": var("")})
     fill = 512 - len(canonical_json(snapshot_obj(base)))
     exact = dict(base, vars={"FILL": var("x" * fill)})
     pt = encode(exact)
@@ -367,7 +335,6 @@ def format_vectors():
     assert len(pt) == 1024
     cases.append(dict(snapshot=snapshot_json(over), plaintextHex=H(pt), sizeBytes=len(pt)))
     named = dict(env="production", audience="maintainers", generatedAt=GENERATED_AT, to=[B(ALICE), B(BOB)],
-                 maintainers=[B(BOB), B(ALICE), B(CAROL)],
                  vars={"DB_URL": var("postgres://fake:fake@db.example/app", note="primary"),
                        "LOG_LEVEL": var("info", "variable"),
                        "GREETING": var("héllo \"wörld\"\n\ttab\u0001\\  ", "variable")})
@@ -378,22 +345,23 @@ def format_vectors():
     assert encode(big) is None
     cases.append(dict(snapshot=snapshot_json(big), tooLarge=True))
     vector("padding", "the artifact is canonical JSON (sorted keys, no whitespace, UTF-8 unescaped, `note` left out "
-           "when empty, `to` only for Maintainers, `maintainers` sorted) padded with spaces to a multiple of 512 bytes; exactly 512 needs no "
+           "when empty, `to` only for Maintainers) padded with spaces to a multiple of 512 bytes; exactly 512 needs no "
            "padding, one byte more takes 1,024; over 12,288 bytes is refused by the writer.",
            dict(op="format", cases=[dict(snapshot=c["snapshot"]) for c in cases]),
            dict(results=[{k: v for k, v in c.items() if k != "snapshot"} for c in cases]))
 
 
 def decode_vectors():
-    good = encode(dict(env="dev", audience="members", generatedAt=GENERATED_AT, maintainers=[B(ALICE)],
-                       vars={"A": var("1")}))
+    good = encode(dict(env="dev", audience="members", generatedAt=GENERATED_AT, vars={"A": var("1")}))
     raw = good.rstrip(b" ")
-    MA = b'"maintainers":["' + B(ALICE).encode() + b'"],'
-    two = sorted([B(ALICE), B(BOB)])
-    MS2 = b'"maintainers":["' + two[1].encode() + b'","' + two[0].encode() + b'"],'
 
     def pad(b, n=512):
         return b + b" " * (n - len(b))
+
+    one = lambda v: encode(dict(env="dev", audience="members", generatedAt=GENERATED_AT, vars={"A": var(v)}))
+    ctl = one("x\u001fy")
+    wide = one("a\u2028b\U0001F600")
+    assert b"\\u001f" in ctl and "\u2028".encode() in wide and "\U0001F600".encode() in wide
 
     cases = [
         ("canonical", good, True),
@@ -401,33 +369,38 @@ def decode_vectors():
         ("tab_in_padding", raw + b"\t" + b" " * (511 - len(raw)), False),
         ("nul_padding", raw + b"\x00" * (512 - len(raw)), False),
         ("whitespace_inside", pad(raw.replace(b",", b", ", 1)), False),
-        ("keys_unsorted", pad(b'{"v":1,"audience":"members","env":"dev","generatedAt":1767225600000,' + MA
-                              + b'"vars":{}}'), False),
-        ("empty_note", pad(b'{"audience":"members","env":"dev","generatedAt":1767225600000,' + MA + b'"v":1,'
+        ("keys_unsorted", pad(b'{"v":1,"audience":"members","env":"dev","generatedAt":1767225600000,"vars":{}}'), False),
+        ("empty_note", pad(b'{"audience":"members","env":"dev","generatedAt":1767225600000,"v":1,'
                            b'"vars":{"A":{"note":"","type":"secret","value":"1"}}}'), False),
         ("unknown_key", pad(raw[:-1] + b',"x":1}'), False),
         ("unknown_type", pad(raw.replace(b'"secret"', b'"file"')), False),
-        ("members_with_to", pad(b'{"audience":"members","env":"dev","generatedAt":1767225600000,' + MA + b'"to":["'
+        ("members_with_to", pad(b'{"audience":"members","env":"dev","generatedAt":1767225600000,"to":["'
                                 + B(ALICE).encode() + b'"],"v":1,"vars":{}}'), False),
-        ("maintainers_without_to", pad(b'{"audience":"maintainers","env":"dev","generatedAt":1767225600000,' + MA
-                                       + b'"v":1,"vars":{}}'), False),
-        ("no_maintainers", pad(raw.replace(MA, b"")), False),
-        ("maintainers_unsorted", pad(raw.replace(MA, MS2)), False),
-        ("maintainers_empty", pad(raw.replace(MA, b'"maintainers":[],')), False),
+        ("maintainers_without_to", pad(b'{"audience":"maintainers","env":"dev","generatedAt":1767225600000,"v":1,'
+                                       b'"vars":{}}'), False),
         ("bad_var_name", pad(raw.replace(b'"A"', b'"1A"')), False),
         ("bad_env_name", pad(raw.replace(b'"dev"', b'"-dev"')), False),
         ("version_2", pad(raw.replace(b'"v":1', b'"v":2')), False),
         ("escaped_ascii", pad(raw.replace(b'"1"', b'"\\u0031"')), False),
         ("float_time", pad(raw.replace(b"1767225600000", b"1767225600000.0")), False),
         ("not_json", pad(b"KEY=value"), False),
+        ("env_name_trailing_newline", pad(raw.replace(b'"dev"', b'"dev\\n"')), False),
+        ("duplicate_key", pad(raw.replace(b'"vars":{', b'"vars":{"A":{"type":"secret","value":"0"},', 1)), False),
+        ("control_escaped_lowercase", ctl, True),
+        ("control_escaped_uppercase", pad(ctl.rstrip(b" ").replace(b"\\u001f", b"\\u001F")), False),
+        ("line_separator_and_astral_raw", wide, True),
+        ("astral_escaped", pad(wide.rstrip(b" ").replace("\U0001F600".encode(), b"\\ud83d\\ude00")), False),
+        ("negative_zero_time", pad(raw.replace(b"1767225600000", b"-0")), False),
+        ("exponent_time", pad(raw.replace(b"1767225600000", b"1e3")), False),
     ]
     for name, pt, ok in cases:
         assert (decode(pt) is not None) == ok, name
     vector("decode_refused", "a reader takes only the exact canonical bytes: a length that is not a multiple of 512, "
            "padding other than spaces, any whitespace or key order other than canonical, an empty `note`, an unknown "
-           "key or type, `to` on a Members snapshot or none on a Maintainers one, a missing, empty or unsorted "
-           "`maintainers` list, a bad name, another version, an "
-           "escape the writer never makes or a non-integer time is malformed.",
+           "key or type, `to` on a Members snapshot or none on a Maintainers one, a bad name, another version, an "
+           "escape the writer never makes (an uppercase \\u, an escaped astral character), a duplicate key, `-0` or an "
+           "exponent is malformed. Raw U+2028 and astral characters, and a lowercase \\u00XX control escape, are "
+           "the canonical form.",
            dict(op="decode", cases=[dict(name=n, plaintextHex=H(pt)) for n, pt, _ in cases]),
            dict(results=[dict(name=n, snapshot=snapshot_json(decode(pt))) if ok else dict(name=n, error="malformed")
                          for n, pt, ok in cases]))
@@ -458,7 +431,7 @@ def open_case(manifest, sealed, owner_keys, reader, epoch_keys):
 
 
 def open_vectors():
-    dev = dict(env="dev", audience="members", generatedAt=GENERATED_AT, maintainers=[B(ALICE), B(BOB), B(CAROL)],
+    dev = dict(env="dev", audience="members", generatedAt=GENERATED_AT,
                vars={"API_URL": var("https://api.example.test", "variable"), "API_TOKEN": var("fake-token-1")})
     plain, file_id, sealed = sealed_members(dev)
     man = manifest_of(ALICE, sealed)
@@ -474,7 +447,6 @@ def open_vectors():
 
     recipients = [ALICE, BOB, CAROL]
     prod = dict(env="production", audience="maintainers", generatedAt=GENERATED_AT, to=[B(p) for p in recipients],
-                maintainers=[B(p) for p in recipients],
                 vars={"STRIPE_KEY": var("sk_test_fake_1"), "DB_URL": var("postgres://fake:fake@db.example/prod"),
                       "SENTRY_DSN": var("https://fake@sentry.example/1", note="error reporting")})
     plain, k_obj, file_id, ivs, sealed = sealed_maintainers(prod, ALICE, recipients)
@@ -527,40 +499,34 @@ def open_vectors():
     _, _, _, _, lsealed = sealed_maintainers(lying, ALICE, recipients, label=b"lying to")
     man2 = manifest_of(ALICE, lsealed)
     r2 = open_case(man2, lsealed, okeys, reader_json(BOB), [])
-    unlisted = dict(dev, maintainers=[B(BOB)])
-    _, _, usealed = sealed_members(unlisted, label=b"owner not listed")
-    man3 = manifest_of(ALICE, usealed)
-    r3 = open_case(man3, usealed, [], reader_json(BOB), k0)
-    assert r1 == r2 == r3 == dict(error="malformed")
-    vector("audience_mismatch", "an artifact that opens but disagrees with its envelope or its manifest is malformed: "
-           "Maintainers content in a Members (DFPK 0x01) file, a DFPK 0x02 snapshot whose `to` does not list its owner "
-           "first, and a snapshot whose `maintainers` does not list its owner (the writer was a maintainer).",
+    assert r1 == r2 == dict(error="malformed")
+    vector("audience_mismatch", "an artifact that opens but disagrees with its envelope is malformed: Maintainers "
+           "content in a Members (DFPK 0x01) file, and a DFPK 0x02 snapshot whose `to` does not list its owner first.",
            dict(op="open", repoId=H(repoId), cases=[
                dict(manifest=man, sealed=H(wsealed), ownerKeys=[], reader=reader_json(BOB), epochKeys=k0),
-               dict(manifest=man2, sealed=H(lsealed), ownerKeys=okeys, reader=reader_json(BOB), epochKeys=[]),
-               dict(manifest=man3, sealed=H(usealed), ownerKeys=[], reader=reader_json(BOB), epochKeys=k0)]),
-           dict(results=[r1, r2, r3]))
+               dict(manifest=man2, sealed=H(lsealed), ownerKeys=okeys, reader=reader_json(BOB), epochKeys=[])]),
+           dict(results=[r1, r2]))
 
 
 def hx(label):
     return H(sha256(b"dash-forge vectors: env snapshot packHash " + label.encode()))
 
 
-def m(label, owner, at, sup=()):
+def m(label, owner, height, sup=(), pack=None):
     return dict(id=b58(sha256(b"dash-forge vectors: env manifest " + label.encode())), ownerId=B(owner),
-                packHash=hx(label), supersedes=[hx(s) for s in sup], createdAt=at, label=label)
+                packHash=hx(pack or label), supersedes=[hx(x) for x in sup], height=height, label=label)
 
 
-def resolve_vector(name, desc, maintainers, manifests, opened, check, former=()):
+def resolve_vector(name, desc, maintainers, manifests, opened, check):
     op = {hx(k): v for k, v in opened.items()}
-    res = resolve({B(p) for p in maintainers}, {B(p) for p in former}, manifests, op)
+    res = resolve({B(p) for p in maintainers}, manifests, op)
     by_id = {mm["id"]: mm["label"] for mm in manifests}
-    check({e["env"]: dict(e, heads=[by_id[i] for i in e["heads"]], snapshots=[by_id[i] for i in e["snapshots"]])
+    lab = lambda xs: [by_id[i] for i in xs]
+    check({e["env"]: dict(e, heads=lab(e["heads"]), snapshots=lab(e["snapshots"]), ignoredNewer=lab(e["ignoredNewer"]))
            for e in res["environments"]},
           [dict(i, id=by_id[i["id"]]) for i in res["ignored"]],
-          [dict(heads=[by_id[i] for i in g["heads"]], snapshots=[by_id[i] for i in g["snapshots"]]) for g in res["hidden"]])
+          [dict(heads=lab(g["heads"]), snapshots=lab(g["snapshots"])) for g in res["hidden"]])
     vector(name, desc, dict(op="resolve", maintainers=sorted(B(p) for p in maintainers),
-                            formerMaintainers=sorted(B(p) for p in former),
                             manifests=[{k: v for k, v in mm.items() if k != "label"} for mm in manifests], opened=op),
            res)
 
@@ -574,9 +540,11 @@ def resolve_vectors():
         assert envs["production"]["state"] == "current" and envs["production"]["heads"] == ["s3"]
         assert envs["dev"]["state"] == "current" and envs["dev"]["heads"] == ["d1"]
         assert envs["production"]["snapshots"] == ["s1", "s2", "s3"] and not ign and not hid
-    resolve_vector("chain_linear", "three changes to production, each superseding the last, and a separate dev: one "
-                   "head each.", [ALICE, BOB],
-                   [m("s1", ALICE, 1000), m("s2", BOB, 2000, ["s1"]), m("d1", ALICE, 2500), m("s3", ALICE, 3000, ["s2"])],
+    resolve_vector("chain_linear", "three changes to production, each naming the earlier ones (a writer lists every "
+                   "counted snapshot of the environment, newest first, up to 32), and a separate dev: one head each.",
+                   [ALICE, BOB],
+                   [m("s1", ALICE, 1000), m("s2", BOB, 2000, ["s1"]), m("d1", ALICE, 2500),
+                    m("s3", ALICE, 3000, ["s2", "s1"])],
                    {"s1": P, "s2": P, "s3": P, "d1": D}, lin)
 
     def fork(envs, ign, hid):
@@ -598,41 +566,51 @@ def resolve_vectors():
     resolve_vector("chain_resolved", "a fork resolved by a maintainer's snapshot that supersedes both heads (supersedes "
                    "is a list): one head again.", [ALICE, BOB],
                    [m("s1", ALICE, 1000), m("s2", ALICE, 2000, ["s1"]), m("s3", BOB, 2001, ["s1"]),
-                    m("s4", ALICE, 3000, ["s2", "s3"])], {"s1": P, "s2": P, "s3": P, "s4": P}, resolved)
+                    m("s4", ALICE, 3000, ["s2", "s3", "s1"])], {"s1": P, "s2": P, "s3": P, "s4": P}, resolved)
 
     def unauthorized(envs, ign, hid):
         assert envs["production"]["state"] == "current" and envs["production"]["heads"] == ["s1"]
+        assert envs["production"]["ignoredNewer"] == ["w1"]
         assert "staging" not in envs and [i["id"] for i in ign] == ["w1", "w2"]
         assert all(i["reason"] == "notAMaintainer" for i in ign)
     resolve_vector("unauthorized_writer_ignored", "a role-1 writer (consensus admits their packManifest) posts a "
                    "snapshot superseding production's head and a new staging: neither counts, whatever they would "
                    "open to, because their owner is not a current maintainer; production stays at s1 and there is no "
-                   "fork.", [ALICE],
+                   "fork. Readers are told a newer change was ignored (`ignoredNewer`), and never use it.", [ALICE],
                    [m("s1", ALICE, 1000), m("w1", WRITER, 2000, ["s1"]), m("w2", WRITER, 2100)],
                    {"s1": P, "w1": P, "w2": R("staging")}, unauthorized)
 
+    def demoted(envs, ign, hid):
+        assert envs["production"]["state"] == "current" and envs["production"]["heads"] == ["s1"]
+        assert envs["production"]["ignoredNewer"] == ["c1"] and [i["id"] for i in ign] == ["c1"]
+    resolve_vector("post_demotion_snapshot_ignored", "carol was a maintainer and is now a writer; a snapshot she "
+                   "posts naming production's head counts no more than any writer's: production stays at s1 and "
+                   "readers are warned that a newer change was ignored.", [ALICE],
+                   [m("s1", ALICE, 1000), m("c1", CAROL, 2000, ["s1"])], {"s1": P, "c1": P}, demoted)
+
     def removed(envs, ign, hid):
         assert envs["production"]["state"] == "current" and envs["production"]["heads"] == ["s3"]
-        assert envs["production"]["snapshots"] == ["s1", "s2", "s3"] and not ign
-    resolve_vector("removed_maintainer_mid_chain", "carol, no longer a maintainer but shown to have been one, saved s2; "
-                   "alice's later s3 superseded it, so production has one head, s3, and carol's change is history "
-                   "(never opened, never served).", [ALICE],
-                   [m("s1", ALICE, 1000), m("s2", CAROL, 2000, ["s1"]), m("s3", ALICE, 3000, ["s2"])],
-                   {"s1": P, "s3": P}, removed, former=[CAROL])
+        assert envs["production"]["snapshots"] == ["s1", "s3"] and [i["id"] for i in ign] == ["s2", "t2"]
+        assert envs["production"]["ignoredNewer"] == []
+        assert envs["staging"]["state"] == "conflict" and envs["staging"]["heads"] == ["t1", "t3"]
+    resolve_vector("removed_maintainer_mid_chain", "carol, no longer a maintainer, saved s2; alice's later s3 names "
+                   "s2 and s1, so production has one head without following carol's link (links are read only from "
+                   "counted snapshots). staging's t3 named only carol's t2, so t1 and t3 are both heads: a conflict a "
+                   "maintainer resolves; it never falls back to t1 silently.", [ALICE],
+                   [m("s1", ALICE, 1000), m("t1", ALICE, 1001), m("s2", CAROL, 2000, ["s1"]), m("t2", CAROL, 2001, ["t1"]),
+                    m("s3", ALICE, 3000, ["s2", "s1"]), m("t3", ALICE, 3001, ["t2"])],
+                   {"s1": P, "s3": P, "t1": R("staging"), "t3": R("staging")}, removed)
 
-    def stale_head(envs, ign, hid):
-        assert envs["production"]["state"] == "stale" and envs["production"]["heads"] == ["s2"]
-        assert envs["dev"]["state"] == "current" and envs["dev"]["heads"] == ["d2"]
-        assert [i["id"] for i in ign] == ["w1"]
-    resolve_vector("head_by_removed_maintainer", "carol saved production's latest change (s2) and was then removed "
-                   "(by a client that did not save it again): production's head is a change by someone who is no "
-                   "longer a maintainer, so production is `stale` and fails closed until a maintainer saves it again; "
-                   "it never falls back to alice's older s1 (which could hold a rotated credential). A writer's "
-                   "snapshot on top (w1) is still ignored. carol's change in the middle of dev (d1) does not matter.",
-                   [ALICE],
-                   [m("s1", ALICE, 1000), m("d0", ALICE, 1100), m("d1", CAROL, 1200, ["d0"]), m("s2", CAROL, 2000, ["s1"]),
-                    m("d2", ALICE, 2100, ["d1"]), m("w1", WRITER, 3000, ["s2"])],
-                   {"s1": P, "d0": D, "d2": D, "w1": P}, stale_head, former=[CAROL])
+    def reuse(envs, ign, hid):
+        assert envs["production"]["state"] == "conflict" and envs["production"]["heads"] == ["s2", "s3"]
+        assert [i["id"] for i in ign] == ["w1", "w2"]
+        assert envs["production"]["ignoredNewer"] == ["w1", "w2"]
+    resolve_vector("writer_reuses_pack_hash", "a writer records copies of both fork heads' artifacts (the unique index is "
+                   "per owner, so the same packHash is admitted), each naming the other head, to make the fork look "
+                   "resolved: the writer's manifests are never links, so production stays a conflict.", [ALICE, BOB],
+                   [m("s1", ALICE, 1000), m("s2", ALICE, 2000, ["s1"]), m("s3", BOB, 2001, ["s1"]),
+                    m("w1", WRITER, 3000, ["s3"], pack="s2"), m("w2", WRITER, 3001, ["s2"], pack="s3")],
+                   {"s1": P, "s2": P, "s3": P}, reuse)
 
     def unreadable(envs, ign, hid):
         assert envs["production"]["state"] == "unreadable" and envs["production"]["heads"] == ["s2"]
@@ -649,18 +627,21 @@ def resolve_vectors():
                    {"x1": U(), "x2": U(), "d1": D}, hidden)
 
     def cycle(envs, ign, hid):
-        assert envs["production"]["state"] == "conflict" and envs["production"]["heads"] == ["s1", "s2"]
+        assert envs["production"]["state"] == "current" and envs["production"]["heads"] == ["s2"]
         assert envs["dev"]["state"] == "current" and envs["dev"]["heads"] == ["d1"]
-    resolve_vector("chain_cycle", "two snapshots that supersede each other leave production with no head: a conflict "
-                   "listing both; a snapshot naming itself is not superseded by itself.", [ALICE],
-                   [m("s1", ALICE, 1000, ["s2"]), m("s2", ALICE, 1001, ["s1"]), m("d1", ALICE, 1100, ["d1"])],
-                   {"s1": P, "s2": P, "d1": D}, cycle)
+        assert envs["staging"]["state"] == "conflict" and sorted(envs["staging"]["heads"]) == ["t1", "t2"]
+    resolve_vector("chain_cycle", "links count only strictly back in block height: s1 naming the later s2 is no link, "
+                   "so s2 is production's head; a snapshot naming itself supersedes nothing; two snapshots in one "
+                   "block naming each other supersede nothing either (a conflict).", [ALICE],
+                   [m("s1", ALICE, 1000, ["s2"]), m("s2", ALICE, 1001, ["s1"]), m("d1", ALICE, 1100, ["d1"]),
+                    m("t1", ALICE, 1200, ["t2"]), m("t2", ALICE, 1200, ["t1"])],
+                   {"s1": P, "s2": P, "d1": D, "t1": R("staging"), "t2": R("staging")}, cycle)
 
     def dup(envs, ign, hid):
         assert envs["production"]["state"] == "current" and ign == [dict(id="s1b", reason="duplicate")]
     s1b = dict(m("s1", BOB, 1500, ["zz"]), id=b58(sha256(b"dash-forge vectors: env manifest s1b")), label="s1b")
-    resolve_vector("duplicate_copy", "a second manifest of the same artifact counts once, the earliest.", [ALICE, BOB],
-                   [m("s1", ALICE, 1000), s1b], {"s1": P}, dup)
+    resolve_vector("duplicate_copy", "a second maintainer's manifest of the same artifact counts once, the earliest.",
+                   [ALICE, BOB], [m("s1", ALICE, 1000), s1b], {"s1": P}, dup)
 
     def cross(envs, ign, hid):
         assert envs["production"]["heads"] == ["s1"] and envs["dev"]["heads"] == ["d1"]
@@ -691,21 +672,6 @@ def exposure_vectors():
            dict(op="exposure", environments=envs, cases=cases), dict(results=results))
 
 
-def former_vectors():
-    cur = [B(ALICE)]
-    inp = dict(maintainers=cur, configOwners=[B(ALICE), B(CAROL)], wrapOwners=[B(BOB)],
-               snapshots=[dict(ownerId=B(ALICE), maintainers=[B(ALICE), B(NAMED_OTHERS[3])]),
-                          dict(ownerId=B(WRITER), maintainers=[B(WRITER), B(NAMED_OUTSIDER)])],
-               extra=[B(NAMED_OTHERS[4])])
-    res = former_maintainers(set(inp["maintainers"]), inp["configOwners"], inp["wrapOwners"], inp["snapshots"],
-                             inp["extra"])
-    assert B(WRITER) not in res and B(NAMED_OUTSIDER) not in res and B(ALICE) not in res and len(res) == 4
-    vector("former_maintainers", "who was a maintainer: owners of config and repoKey documents (maintainer-only and "
-           "undeletable), the `maintainers` a current maintainer's snapshot lists, and the maintainer being removed; "
-           "never what a non-maintainer's snapshot claims, and never a current maintainer.",
-           dict(op="former", **inp), dict(results=res))
-
-
 def default_audience_vectors():
     names = ["production", "Production", "prod", "prod-eu", "products", "staging", "staging-2", "release",
              "release-1.2", "releases", "dev", "test", "preview", "my-production", "qa"]
@@ -720,7 +686,6 @@ def build():
     open_vectors()
     resolve_vectors()
     exposure_vectors()
-    former_vectors()
     default_audience_vectors()
 
 

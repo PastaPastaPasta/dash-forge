@@ -1,13 +1,12 @@
 {
-  "name": "duplicate_copy",
-  "description": "a second maintainer's manifest of the same artifact counts once, the earliest.",
+  "name": "post_demotion_snapshot_ignored",
+  "description": "carol was a maintainer and is now a writer; a snapshot she posts naming production's head counts no more than any writer's: production stays at s1 and readers are warned that a newer change was ignored.",
   "case": "env_snapshot",
   "rules": "v2",
   "input": {
     "op": "resolve",
     "maintainers": [
-      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
-      "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
     ],
     "manifests": [
       {
@@ -18,17 +17,20 @@
         "height": 1000
       },
       {
-        "id": "GpVsRyrCmsBaApL7rMar6DJwtWPy2SFt1HiDFArUeSQ",
-        "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
-        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "id": "KYyhq6rt9auyeCNfTYVpPg8QhicodDboDo1C3PJPWdN",
+        "ownerId": "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+        "packHash": "796c3aec9f05024ce6b8a03c0ee5384bc7bbffec7f5f3daa0613011fa9c822ac",
         "supersedes": [
-          "3534f3c550db2d274abadee12c9f66c9e043edebe01ba32242956329fd1d3543"
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
         ],
-        "height": 1500
+        "height": 2000
       }
     ],
     "opened": {
       "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c": {
+        "env": "production"
+      },
+      "796c3aec9f05024ce6b8a03c0ee5384bc7bbffec7f5f3daa0613011fa9c822ac": {
         "env": "production"
       }
     }
@@ -36,8 +38,8 @@
   "expected": {
     "ignored": [
       {
-        "id": "GpVsRyrCmsBaApL7rMar6DJwtWPy2SFt1HiDFArUeSQ",
-        "reason": "duplicate"
+        "id": "KYyhq6rt9auyeCNfTYVpPg8QhicodDboDo1C3PJPWdN",
+        "reason": "notAMaintainer"
       }
     ],
     "environments": [
@@ -50,7 +52,9 @@
         "snapshots": [
           "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th"
         ],
-        "ignoredNewer": []
+        "ignoredNewer": [
+          "KYyhq6rt9auyeCNfTYVpPg8QhicodDboDo1C3PJPWdN"
+        ]
       }
     ],
     "hidden": []

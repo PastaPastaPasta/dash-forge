@@ -148,7 +148,6 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::ARCHIVED, "repository archived"),
     (codes::EDIT_CONFLICT, "edited by someone else meanwhile"),
     (codes::ENV_CONFLICT, "environment changed at the same time"),
-    (codes::ENV_RESAVE, "environment needs saving again"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
         codes::NOT_DEPLOYED,
@@ -268,9 +267,6 @@ pub mod codes {
     /// An environment two people changed at once: its values are not used until a maintainer
     /// keeps one version.
     pub const ENV_CONFLICT: &str = "E608";
-    /// An environment whose latest change was saved by someone who is no longer a maintainer:
-    /// its values are not used until a maintainer saves it again.
-    pub const ENV_RESAVE: &str = "E609";
     /// DAPI / the quorum service could not be reached.
     pub const UNREACHABLE: &str = "E701";
     /// The selected network has no Dash Forge deployment.

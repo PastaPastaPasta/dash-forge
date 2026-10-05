@@ -16,12 +16,12 @@ export interface SnapshotRef {
   readonly packHash: string
   /** `supersedes`, lowercase hex. */
   readonly supersedes: readonly string[]
-  /** `$createdAt` (ms). */
-  readonly createdAt: number
+  /** `$createdAtBlockHeight`: what orders snapshots and links. */
+  readonly height: number
 }
 
 export type IgnoredReason = 'notAMaintainer' | 'duplicate'
-export type EnvStateKind = 'current' | 'unreadable' | 'stale' | 'conflict'
+export type EnvStateKind = 'current' | 'unreadable' | 'conflict'
 
 export interface Ignored {
   readonly id: string
@@ -31,16 +31,17 @@ export interface Ignored {
 /** One environment this reader can name. */
 export interface EnvState {
   readonly env: string
-  /**
-   * `current` (one readable head), `unreadable` (one head that does not open here), `stale` (one
-   * head saved by someone who is no longer a maintainer: a maintainer must save it again; older
-   * values are never used instead) or `conflict`.
-   */
+  /** `current` (one readable head), `unreadable` (one head that does not open here) or `conflict`. */
   readonly state: EnvStateKind
   /** The heads' document ids, oldest first. */
   readonly heads: readonly string[]
   /** Every snapshot's document id, oldest first. */
   readonly snapshots: readonly string[]
+  /**
+   * Ignored manifests (by people who are not maintainers now) that name a head from a higher
+   * block: never used; readers warn about them.
+   */
+  readonly ignoredNewer: readonly string[]
 }
 
 /** An environment none of whose snapshots open for this reader: counted, never named. */
@@ -58,51 +59,36 @@ export interface Resolution {
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
 /**
- * Resolve `manifests` (kind 8 only) against the current `maintainers` and the `former` ones
- * (base58; {@link formerMaintainers}) and `envOf`: the environment a current maintainer's
- * snapshot (by `packHash`) opened to, `null` when it did not open. A former maintainer's
- * snapshot joins the chain unopened; when it is an environment's newest, the state is `stale`.
+ * D24, strictly. Only a current maintainer's snapshot counts; every other manifest is ignored and
+ * none of its links is read. A link counts only between counted snapshots, strictly back in block
+ * height, and within one environment. `envOf`: the environment a counted snapshot (by `packHash`)
+ * opened to, `null` when it did not open. The Rust module docs give the steps.
  */
 export function resolveSnapshots(
   maintainers: ReadonlySet<string>,
-  former: ReadonlySet<string>,
   manifests: readonly SnapshotRef[],
-  openedEnv: (packHash: string) => string | null,
+  envOf: (packHash: string) => string | null,
 ): Resolution {
-  const order = [...manifests].sort((a, b) => a.createdAt - b.createdAt || cmp(a.id, b.id))
+  const order = [...manifests].sort((a, b) => a.height - b.height || cmp(a.id, b.id))
   const nodes = new Map<string, SnapshotRef>()
-  const passthrough = new Map<string, string[]>()
+  const others: SnapshotRef[] = []
   const ignored: Ignored[] = []
   for (const m of order) {
-    if (!maintainers.has(m.ownerId) && !former.has(m.ownerId)) {
+    if (!maintainers.has(m.ownerId)) {
       ignored.push({ id: m.id, reason: 'notAMaintainer' })
-      passthrough.set(m.packHash, [...(passthrough.get(m.packHash) ?? []), ...m.supersedes])
+      others.push(m)
     } else if (nodes.has(m.packHash)) {
       ignored.push({ id: m.id, reason: 'duplicate' })
     } else {
       nodes.set(m.packHash, m)
     }
   }
-
-  const byFormer = (h: string) => !maintainers.has((nodes.get(h) as SnapshotRef).ownerId)
-  const envOf = (h: string) => (byFormer(h) ? null : openedEnv(h))
-  const targets = (t: SnapshotRef): string[] => {
-    const out: string[] = []
-    const seen = new Set([t.packHash])
-    const todo = [...t.supersedes]
-    while (todo.length > 0) {
-      const h = todo.shift() as string
-      if (seen.has(h)) continue
-      seen.add(h)
-      if (nodes.has(h)) out.push(h)
-      else todo.push(...(passthrough.get(h) ?? []))
-    }
-    return out
-  }
+  const node = (h: string) => nodes.get(h) as SnapshotRef
   const edges = new Set<string>()
   const edge = (t: string, s: string) => `${t}>${s}`
   for (const [h, t] of nodes) {
-    for (const s of targets(t)) {
+    for (const s of t.supersedes) {
+      if (!nodes.has(s) || node(s).height >= t.height) continue
       const a = envOf(h)
       const b = envOf(s)
       if (a !== null && b !== null && a !== b) continue
@@ -129,17 +115,15 @@ export function resolveSnapshots(
     comps.set(r, [...(comps.get(r) ?? []), h])
   }
 
-  const byKey = (a: string, b: string) => {
-    const x = nodes.get(a) as SnapshotRef
-    const y = nodes.get(b) as SnapshotRef
-    return x.createdAt - y.createdAt || cmp(x.id, y.id)
-  }
-  const ids = (hs: Iterable<string>) => [...hs].sort(byKey).map((h) => (nodes.get(h) as SnapshotRef).id)
-  const headsOf = (group: ReadonlySet<string>): [string[], boolean] => {
-    const heads = [...group].filter((n) => ![...group].some((t) => edges.has(edge(t, n))))
-    const any = heads.length > 0
-    return [(any ? heads : [...group]).sort(byKey), any]
-  }
+  const byKey = (a: string, b: string) => node(a).height - node(b).height || cmp(node(a).id, node(b).id)
+  const ids = (hs: Iterable<string>) => [...hs].sort(byKey).map((h) => node(h).id)
+  const headsOf = (group: ReadonlySet<string>): string[] =>
+    [...group].filter((n) => ![...group].some((t) => edges.has(edge(t, n)))).sort(byKey)
+  const newer = (heads: readonly string[]): string[] =>
+    others
+      .filter((m) => heads.some((h) => m.supersedes.includes(h) && m.height > node(h).height && m.packHash !== h))
+      .map((m) => m.id)
+      .sort(cmp)
 
   const envs = new Map<string, Set<string>>()
   const hidden: string[][] = []
@@ -157,40 +141,15 @@ export function resolveSnapshots(
   }
   const environments: EnvState[] = [...envs.keys()].sort(cmp).map((env) => {
     const group = envs.get(env) as Set<string>
-    const [heads, any] = headsOf(group)
-    const state: EnvStateKind =
-      heads.length === 1 && any
-        ? byFormer(heads[0] as string)
-          ? 'stale'
-          : envOf(heads[0] as string) !== null
-            ? 'current'
-            : 'unreadable'
-        : 'conflict'
-    return { env, state, heads: ids(heads), snapshots: ids(group) }
+    const heads = headsOf(group)
+    const state: EnvStateKind = heads.length === 1 ? (envOf(heads[0] as string) !== null ? 'current' : 'unreadable') : 'conflict'
+    return { env, state, heads: ids(heads), snapshots: ids(group), ignoredNewer: newer(heads) }
   })
   const minKey = (g: readonly string[]) => [...g].sort(byKey)[0] as string
   const hiddenOut: HiddenEnv[] = hidden
     .sort((a, b) => byKey(minKey(a), minKey(b)))
-    .map((g) => ({ heads: ids(headsOf(new Set(g))[0]), snapshots: ids(g) }))
+    .map((g) => ({ heads: ids(headsOf(new Set(g))), snapshots: ids(g) }))
   return { ignored, environments, hidden: hiddenOut }
-}
-
-/**
- * Who was a maintainer, beside the current `maintainers`: owners of the repository's `config` and
- * `repoKey` documents (maintainer-only at consensus, undeletable), every `maintainers` entry of a
- * snapshot a current maintainer wrote, and `extra` (the maintainer being removed). Never what a
- * non-maintainer's snapshot claims; never a current maintainer. Sorted.
- */
-export function formerMaintainers(
-  maintainers: ReadonlySet<string>,
-  configOwners: Iterable<string>,
-  wrapOwners: Iterable<string>,
-  snapshots: Iterable<{ readonly ownerId: string; readonly maintainers: readonly string[] }>,
-  extra: Iterable<string>,
-): string[] {
-  const out = new Set<string>([...configOwners, ...wrapOwners, ...extra])
-  for (const s of snapshots) if (maintainers.has(s.ownerId)) for (const m of s.maintainers) out.add(m)
-  return [...out].filter((m) => !maintainers.has(m)).sort(cmp)
 }
 
 /** One environment's readable snapshots, as the removal checklist reads them. */

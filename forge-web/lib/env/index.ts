@@ -12,7 +12,6 @@ export {
   ACCESS_SENTENCE,
   BUCKET,
   MAINTAINERS_BY_DEFAULT,
-  MAX_MAINTAINERS,
   MAX_RECIPIENTS,
   MAX_SNAPSHOT,
   MEMBERS_SENTENCE,
@@ -43,7 +42,6 @@ export {
 } from './codec'
 export {
   exposureOf,
-  formerMaintainers,
   resolveSnapshots,
   type EnvHistory,
   type EnvState,

@@ -1,6 +1,6 @@
 {
-  "name": "chain_fork",
-  "description": "two maintainers changed production at the same time: both snapshots supersede s1, so production has two heads, a conflict that is never merged automatically (run, get and export fail closed naming both); dev is unaffected.",
+  "name": "writer_reuses_pack_hash",
+  "description": "a writer records copies of both fork heads' artifacts (the unique index is per owner, so the same packHash is admitted), each naming the other head, to make the fork look resolved: the writer's manifests are never links, so production stays a conflict.",
   "case": "env_snapshot",
   "rules": "v2",
   "input": {
@@ -16,13 +16,6 @@
         "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
         "supersedes": [],
         "height": 1000
-      },
-      {
-        "id": "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
-        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
-        "packHash": "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19",
-        "supersedes": [],
-        "height": 1500
       },
       {
         "id": "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
@@ -41,6 +34,24 @@
           "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
         ],
         "height": 2001
+      },
+      {
+        "id": "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "packHash": "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+        "supersedes": [
+          "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde"
+        ],
+        "height": 3000
+      },
+      {
+        "id": "BhZrYuaTJPDQcNGzfVmZZW1sDuWB843KA59w2mUrvZwH",
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "packHash": "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde",
+        "supersedes": [
+          "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02"
+        ],
+        "height": 3001
       }
     ],
     "opened": {
@@ -52,26 +63,21 @@
       },
       "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde": {
         "env": "production"
-      },
-      "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19": {
-        "env": "dev"
       }
     }
   },
   "expected": {
-    "ignored": [],
-    "environments": [
+    "ignored": [
       {
-        "env": "dev",
-        "state": "current",
-        "heads": [
-          "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
-        ],
-        "snapshots": [
-          "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
-        ],
-        "ignoredNewer": []
+        "id": "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+        "reason": "notAMaintainer"
       },
+      {
+        "id": "BhZrYuaTJPDQcNGzfVmZZW1sDuWB843KA59w2mUrvZwH",
+        "reason": "notAMaintainer"
+      }
+    ],
+    "environments": [
       {
         "env": "production",
         "state": "conflict",
@@ -84,7 +90,10 @@
           "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
           "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB"
         ],
-        "ignoredNewer": []
+        "ignoredNewer": [
+          "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+          "BhZrYuaTJPDQcNGzfVmZZW1sDuWB843KA59w2mUrvZwH"
+        ]
       }
     ],
     "hidden": []

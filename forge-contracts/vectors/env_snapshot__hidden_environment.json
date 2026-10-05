@@ -8,21 +8,20 @@
     "maintainers": [
       "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
     ],
-    "formerMaintainers": [],
     "manifests": [
       {
         "id": "BY3JvH2dg453QX3ghMZxSsp99fAPE4Q7kvhkoGHnMjJC",
         "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
         "packHash": "9aa71454fe3b0ef7e430de77c0ccb8e449e7611906d7e8b06c7799d8fa5a4bf1",
         "supersedes": [],
-        "createdAt": 1000
+        "height": 1000
       },
       {
         "id": "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
         "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
         "packHash": "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19",
         "supersedes": [],
-        "createdAt": 1100
+        "height": 1100
       },
       {
         "id": "5pRmChXHKNTaNL8C19qyPEGYKp1u2fGYXWKkjLUeRK1o",
@@ -31,7 +30,7 @@
         "supersedes": [
           "9aa71454fe3b0ef7e430de77c0ccb8e449e7611906d7e8b06c7799d8fa5a4bf1"
         ],
-        "createdAt": 2000
+        "height": 2000
       }
     ],
     "opened": {
@@ -57,7 +56,8 @@
         ],
         "snapshots": [
           "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
-        ]
+        ],
+        "ignoredNewer": []
       }
     ],
     "hidden": [
