@@ -50,6 +50,7 @@ import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
 import { TriageNav } from '@/components/repo/triage-nav'
+import { BulkBar, BulkRowCheckbox, useBulkAllowed, useBulkSelection } from '@/components/repo/bulk-actions'
 import {
   AuthorLoginNote,
   CommentCount,
@@ -156,6 +157,10 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const hiddenIds = useHiddenThreads(sdk, ready, home.repo, network, data?.rows)
   const rows = (data?.rows ?? []).filter((r) => showHidden || !hiddenIds.has(r.id))
   const hiddenOnPage = (data?.rows ?? []).filter((r) => hiddenIds.has(r.id)).length
+  // Bulk close and label (members who may close and label; nothing read until they act).
+  const bulkAllowed = useBulkAllowed(home)
+  const bulkRows = useMemo(() => rows.map((r) => ({ id: r.id, number: r.number, title: r.title, author: r.author, open: r.state.open, merged: r.state.merged, labels: r.state.labels })), [rows])
+  const bulk = useBulkSelection(bulkRows)
   const filtered = hasPullFilters(query)
   const lastPage = data !== null && data.rows.length === 0 ? pastLastPage(query.page, data.matching, PULL_PAGE_SIZE) : null
   const counts = data?.counts
@@ -198,6 +203,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
+          {bulkAllowed && bulkRows.length > 0 ? <BulkBar kind="pull" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} /> : null}
           <StateTabs label="Pull request state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
               <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.open)}Open
@@ -247,6 +253,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
               const st = pullStatus(p)
               return (
                 <li key={p.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="pull-row" data-number={p.number}>
+                  {bulkAllowed ? <BulkRowCheckbox kind="pull" number={p.number} checked={bulk.selected.has(p.id)} onChange={(on) => bulk.toggle(p.id, on)} /> : null}
                   <span className={cn('mt-0.5 shrink-0', st.klass)}>{st.icon}</span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
