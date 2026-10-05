@@ -753,6 +753,7 @@ export class AuthController {
     try {
       return await storeInVault(this.network, secret, protection, options)
     } catch (e) {
+      if (e instanceof VaultChangedError) throw e
       if (await hasStaged(this.network, secret.identityId).catch(() => false)) {
         throw new Error(`The new key is registered and saved on this device, but finishing sign-in failed (${errorMessage(e)}). Unlock to continue.`)
       }
@@ -996,7 +997,7 @@ export class AuthController {
         committed = await this.commitKey({ identityId, keyId: key.keyId, wif: key.wif }, protection, { origin: 'dg', expectHeldKeyId: previous?.keyId ?? null })
       } catch (e) {
         if (!(e instanceof VaultChangedError)) throw e
-        throw new WriteAuthError(`Another tab saved a key for ${shortId(identityId)} meanwhile. Nothing was stored; disable the new key with "dg auth keys disable ${payload.keyId}".`)
+        throw new WriteAuthError(`Another tab changed the key stored for ${shortId(identityId)} meanwhile. Nothing was stored; disable the new key with "dg auth keys disable ${payload.keyId}".`)
       }
       const core = NETWORKS[this.network].v2?.core
       const bringsEncryption = payload.encryptionKey !== undefined && core !== undefined

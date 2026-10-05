@@ -64,6 +64,7 @@ describe('vault', () => {
     await storeInVault('devnet', SECRET, protection)
     await expect(storeInVault('devnet', { ...SECRET, keyId: 6 }, protection, { expectHeldKeyId: null })).rejects.toBeInstanceOf(VaultChangedError)
     expect((await listVaults('devnet')).map((v) => v.keyId)).toEqual([5])
+    expect(unlockedSecret('devnet', ID)?.keyId).toBe(5)
     // The caller saw key 5 and it is still there: the write goes ahead.
     await storeInVault('devnet', { ...SECRET, keyId: 6 }, protection, { expectHeldKeyId: 5 })
     expect((await listVaults('devnet')).map((v) => v.keyId)).toEqual([6])

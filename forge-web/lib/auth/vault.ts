@@ -642,15 +642,15 @@ export async function stageInVault(network: Network, secret: VaultSecret, protec
   }
 }
 
-/** A key renewal on this device may have landed and is not finished: unlock to finish it first. */
-/** Another tab stored a key for the identity after the caller checked ({@link storeInVault}). */
+/** Another tab stored or removed a key for the identity after the caller checked ({@link storeInVault}). */
 export class VaultChangedError extends Error {
   constructor() {
-    super('Another tab saved a key for this identity meanwhile.')
+    super('Another tab changed the key stored for this identity meanwhile.')
     this.name = 'VaultChangedError'
   }
 }
 
+/** A key renewal on this device may have landed and is not finished: unlock to finish it first. */
 export class PendingRenewalError extends VaultLockedError {
   constructor() {
     super('A key renewal on this device is not finished yet (it may already be on Platform). Unlock with the passphrase or passkey you chose for that renewal to finish it, then try again.')
