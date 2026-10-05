@@ -68,6 +68,13 @@ pub async fn run(cfg: Config) -> Result<()> {
     let relay_cfg = relay_config(&cfg)?;
     let client = Arc::new(PlatformClient::connect(relay_cfg.target.clone()).await?);
     let chain = Arc::new(PlatformChain::connect(Arc::clone(&client)).await?);
+    // Present: connecting the chain needs forge-v2.
+    let forge = relay_cfg.target.v2.clone().ok_or_else(|| {
+        NotifyError::Config(format!(
+            "forge-v2 is not deployed on {}",
+            relay_cfg.target.network
+        ))
+    })?;
 
     let (mailer, pusher) = channels(&cfg)?;
     tracing::info!(
@@ -144,7 +151,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         limiter: RateLimiter::new(cfg.limits.per_ip_per_minute),
         reindex,
         ready,
-        settings: api_settings(&cfg),
+        settings: api_settings(&cfg, forge),
     });
     serve(cfg.listen, app, relay).await
 }
@@ -212,9 +219,10 @@ fn channels(cfg: &Config) -> Result<Channels> {
 }
 
 /// The API's view of the configuration.
-pub fn api_settings(cfg: &Config) -> ApiSettings {
+pub fn api_settings(cfg: &Config, forge: forge_core::network::ForgeIds) -> ApiSettings {
     ApiSettings {
         operator: cfg.operator.clone(),
+        forge,
         public_url: cfg.public_url.clone(),
         allowed_origins: cfg.allowed_origins.clone(),
         privacy_url: cfg.privacy_url.clone(),

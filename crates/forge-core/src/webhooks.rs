@@ -889,6 +889,7 @@ mod tests {
             public_key: private.public_key().to_vec(),
             disabled,
             bound_to: None,
+            bounds: None,
         }
     }
 

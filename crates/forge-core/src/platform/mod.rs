@@ -356,6 +356,22 @@ impl LoadedIdentity {
                     }
                     ContractBounds::ContractGroup { .. } => "contract-group".to_string(),
                 }),
+                bounds: k.contract_bounds().map(|b| match b {
+                    ContractBounds::SingleContract { id } => KeyBounds::Contract {
+                        id: id.to_string(Encoding::Base58),
+                        document_type: None,
+                    },
+                    ContractBounds::SingleContractDocumentType {
+                        id,
+                        document_type_name,
+                    } => KeyBounds::Contract {
+                        id: id.to_string(Encoding::Base58),
+                        document_type: Some(document_type_name.clone()),
+                    },
+                    ContractBounds::ContractGroup { id } => KeyBounds::ContractGroup {
+                        id: id.to_string(Encoding::Base58),
+                    },
+                }),
             })
             .collect()
     }
@@ -411,8 +427,28 @@ pub struct IdentityKeyInfo {
     /// Whether the key is disabled.
     pub disabled: bool,
     /// The contract (base58) the key is bound to, `contract-group` for a group bound key,
-    /// `None` for an unbound key.
+    /// `None` for an unbound key. [`IdentityKeyInfo::bounds`] has the group's id and the
+    /// document type.
     pub bound_to: Option<String>,
+    /// What the key is bound to, in full; `None` for an unbound key.
+    pub bounds: Option<KeyBounds>,
+}
+
+/// What a contract-bound key may sign for ([`IdentityKeyInfo::bounds`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyBounds {
+    /// One contract (base58), and one of its document types when the key is bound to one.
+    Contract {
+        /// The contract id.
+        id: String,
+        /// The document type, for a key bound to one.
+        document_type: Option<String>,
+    },
+    /// A contract group (base58): the contracts it holds when the key signs.
+    ContractGroup {
+        /// The group id.
+        id: String,
+    },
 }
 
 impl IdentityKeyInfo {

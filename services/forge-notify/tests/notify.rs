@@ -19,7 +19,8 @@ use tokio::sync::watch;
 use tower::ServiceExt as _;
 use web_push_native::p256::elliptic_curve::sec1::ToEncodedPoint as _;
 
-use forge_core::platform::IdentityKeyInfo;
+use forge_core::network::ForgeIds;
+use forge_core::platform::{IdentityKeyInfo, KeyBounds};
 use forge_notify::api::{self, ApiSettings, App};
 use forge_notify::auth::{sign, KeySource, KeysFuture};
 use forge_notify::chain::{
@@ -153,6 +154,7 @@ fn world() -> World {
             .to_vec(),
         disabled: false,
         bound_to: Some("contract-group".into()),
+        bounds: Some(KeyBounds::ContractGroup { id: "G".into() }),
     };
     let store = Store::memory().unwrap();
     let vault = Arc::new(Vault::new(&[3; 32]));
@@ -180,6 +182,7 @@ fn world() -> World {
         ready: Arc::new(AtomicBool::new(true)),
         settings: ApiSettings {
             operator: OP.into(),
+            forge: ForgeIds::test_forge(),
             public_url: "https://notify.test".into(),
             allowed_origins: vec!["https://forge.test".into()],
             privacy_url: Some("https://notify.test/privacy".into()),

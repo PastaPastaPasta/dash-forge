@@ -79,6 +79,8 @@ pub struct App {
 pub struct ApiSettings {
     /// The operator name.
     pub operator: String,
+    /// The Forge contracts and group: a signing key bound elsewhere is refused.
+    pub forge: forge_core::network::ForgeIds,
     /// This service's public URL.
     pub public_url: String,
     /// Allowed browser origins.
@@ -220,7 +222,14 @@ async fn signed(
     State(app): State<Arc<App>>,
     Json(env): Json<SignedEnvelope>,
 ) -> Result<Json<Value>> {
-    let req = auth::verify(&env, &app.settings.operator, app.keys.as_ref(), now_secs()).await?;
+    let req = auth::verify(
+        &env,
+        &app.settings.operator,
+        app.keys.as_ref(),
+        &app.settings.forge,
+        now_secs(),
+    )
+    .await?;
     let expires = (req.time + auth::MAX_SKEW_SECS * 2) * 1000;
     if !app
         .store

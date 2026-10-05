@@ -416,6 +416,20 @@ impl ForgeIds {
         self.all().iter().any(|(_, id)| *id == contract_id)
     }
 
+    /// Whether a key with `bounds` is unbound or bound to Forge: a Forge contract (current, or
+    /// superseded in the group), any document type of one, or the Forge contract group. A key
+    /// bound to another app's contract or group is not Forge's to use.
+    pub fn allows_key_bounds(&self, bounds: Option<&crate::platform::KeyBounds>) -> bool {
+        use crate::platform::KeyBounds;
+        match bounds {
+            None => true,
+            Some(KeyBounds::Contract { id, .. }) => {
+                self.contains(id) || self.superseded_in_group.contains(id)
+            }
+            Some(KeyBounds::ContractGroup { id }) => *id == self.group,
+        }
+    }
+
     /// Placeholder ids for tests: `CORE`, `COLLAB`, `COMMUNITY`, group `G`.
     #[doc(hidden)]
     pub fn test_forge() -> Self {
@@ -1493,5 +1507,25 @@ mod tests {
 
     fn layer_err(network: &str) -> String {
         layer(network).resolve().unwrap_err().to_string()
+    }
+
+    #[test]
+    fn only_unbound_or_forge_bound_keys_are_forge_keys() {
+        use crate::platform::KeyBounds;
+        let mut forge = ForgeIds::test_forge();
+        forge.superseded_in_group = vec!["OLD".into()];
+        let contract = |id: &str, doc: Option<&str>| KeyBounds::Contract {
+            id: id.into(),
+            document_type: doc.map(Into::into),
+        };
+        let group = |id: &str| KeyBounds::ContractGroup { id: id.into() };
+        assert!(forge.allows_key_bounds(None));
+        assert!(forge.allows_key_bounds(Some(&contract("CORE", None))));
+        assert!(forge.allows_key_bounds(Some(&contract("COMMUNITY", Some("watch")))));
+        assert!(forge.allows_key_bounds(Some(&contract("OLD", None))));
+        assert!(forge.allows_key_bounds(Some(&group("G"))));
+        assert!(!forge.allows_key_bounds(Some(&contract("OTHER_APP", None))));
+        assert!(!forge.allows_key_bounds(Some(&contract("OTHER_APP", Some("note")))));
+        assert!(!forge.allows_key_bounds(Some(&group("OTHER_GROUP"))));
     }
 }

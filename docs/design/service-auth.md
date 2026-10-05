@@ -55,7 +55,8 @@ The service accepts the request when **all** of these hold:
    - enabled (not disabled);
    - purpose `AUTHENTICATION`;
    - security level `HIGH` or `CRITICAL` (never `MASTER`);
-   - type `ECDSA_SECP256K1`.
+   - type `ECDSA_SECP256K1`;
+   - unbound, or bound to Forge: one of the network's Forge contracts (any document type of it, or a superseded one still in the group) or the Forge contract group. A key bound to another app's contract or group is refused: that app holds the key, and it must not be able to read or change the identity's email or delete its data.
 4. That key's public key verifies the signature over `digest`.
 5. The nonce has not been used before.
 

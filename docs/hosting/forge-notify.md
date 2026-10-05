@@ -29,7 +29,7 @@ dashhq runs one for forge.dashhq.org. Anyone can run their own from the same ima
 
 Delivery only. Every notice is a hint that links back to forge-web, which reads the chain again with proofs.
 
-- **No account, no password.** A subscriber proves control of a Forge identity with a request signed by one of its `AUTHENTICATION` keys, read from Platform with proofs (`docs/design/service-auth.md`). The web app signs with the browser's limited key. That signature can never be a state transition.
+- **No account, no password.** A subscriber proves control of a Forge identity with a request signed by one of its `AUTHENTICATION` keys (unbound, or bound to Forge's contracts or contract group: a key another app holds is refused), read from Platform with proofs (`docs/design/service-auth.md`). The web app signs with the browser's limited key. That signature can never be a state transition.
 - **No repository keys.** The service reads public data anonymously. For a **private** repository it reads only public metadata: that a document of some type was written in a repository at some time. If the subscriber opted in, it sends "new activity in a private repository you belong to" with the repository's name and never a title or text. Review requests and assignments in a private repository name the repository and the thread number only.
 - **Addresses never go on chain** and are encrypted at rest (AES-256-GCM under a key derived from `FORGE_NOTIFY_DATA_KEY`). A keyed blind index finds "is this address already used" without decrypting.
 - **Double opt-in.** Nothing is mailed to an address until someone opens the confirmation link sent to it. The confirmation page needs a button press, so a mail scanner that follows links does not confirm.

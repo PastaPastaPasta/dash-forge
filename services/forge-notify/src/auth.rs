@@ -14,7 +14,8 @@
 //! The service accepts it when `service` is its operator name, `time` is within
 //! [`MAX_SKEW_SECS`] of its clock, the nonce is new, and key `key` of `identity`, read from
 //! Platform with proofs, is enabled, `AUTHENTICATION`, `HIGH` or `CRITICAL`, `ECDSA_SECP256K1`,
-//! and verifies the signature. The domain line means the signed bytes can never be a state
+//! unbound or bound to Forge (a Forge contract or the Forge contract group, never another
+//! app's), and verifies the signature. The domain line means the signed bytes can never be a state
 //! transition; the operator name means a request for one operator is refused by another.
 //!
 //! This is an off-chain convention of Dash Forge's services, not a Platform protocol feature.
@@ -30,6 +31,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use forge_core::network::ForgeIds;
 use forge_core::platform::{IdentityKeyInfo, PlatformClient};
 
 use crate::error::{NotifyError, Result};
@@ -173,12 +175,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Whether `k` may sign service requests.
-pub fn usable_signing_key(k: &IdentityKeyInfo) -> bool {
+/// Whether `k` may sign service requests. A key bound to another app's contract or group is
+/// refused: that app holds it, and it must not reach this identity's email or data.
+pub fn usable_signing_key(k: &IdentityKeyInfo, forge: &ForgeIds) -> bool {
     !k.disabled
         && k.purpose == "AUTHENTICATION"
         && matches!(k.security_level.as_str(), "HIGH" | "CRITICAL")
         && k.key_type == "ECDSA_SECP256K1"
+        && forge.allows_key_bounds(k.bounds.as_ref())
 }
 
 /// A plausible identity id: base58 of 32 bytes.
@@ -192,6 +196,7 @@ pub async fn verify(
     env: &SignedEnvelope,
     operator: &str,
     keys: &dyn KeySource,
+    forge: &ForgeIds,
     now_secs: u64,
 ) -> Result<SignedRequest> {
     if env.request.len() > MAX_REQUEST_BYTES {
@@ -246,10 +251,10 @@ pub async fn verify(
         .iter()
         .find(|k| k.id == req.key)
         .ok_or_else(|| NotifyError::Unauthorized(format!("the identity has no key {}", req.key)))?;
-    if !usable_signing_key(key) {
+    if !usable_signing_key(key, forge) {
         return Err(NotifyError::Unauthorized(format!(
             "key {} cannot sign service requests (it must be an enabled ECDSA_SECP256K1 \
-             AUTHENTICATION key of HIGH or CRITICAL level)",
+             AUTHENTICATION key of HIGH or CRITICAL level, unbound or bound to Forge)",
             req.key
         )));
     }
@@ -289,6 +294,7 @@ pub mod tests {
                 .to_vec(),
             disabled: false,
             bound_to: None,
+            bounds: None,
         }
     }
 
@@ -311,7 +317,7 @@ pub mod tests {
             request: request.to_string(),
             signature,
         };
-        verify(&env, operator, keys, now).await
+        verify(&env, operator, keys, &ForgeIds::test_forge(), now).await
     }
 
     #[tokio::test]
@@ -349,6 +355,51 @@ pub mod tests {
         assert!(unauthorized(
             check(&req, sign(&req, &s), op, &keys, 1_000_100).await
         ));
+    }
+
+    #[tokio::test]
+    async fn a_key_bound_to_another_apps_contract_or_group_is_refused() {
+        use forge_core::platform::KeyBounds;
+        let s = secp256k1::SecretKey::from_slice(&[0x11; 32]).unwrap();
+        let op = "notify.example.org";
+        let req = request(1_000_000, op);
+        let with = |bounds: KeyBounds| {
+            let mut k = key_info(2, &s);
+            k.bounds = Some(bounds);
+            StaticKeys(IDENTITY.into(), vec![k])
+        };
+        let foreign = [
+            KeyBounds::Contract {
+                id: "OTHER_APP".into(),
+                document_type: None,
+            },
+            KeyBounds::Contract {
+                id: "OTHER_APP".into(),
+                document_type: Some("note".into()),
+            },
+            KeyBounds::ContractGroup {
+                id: "OTHER_GROUP".into(),
+            },
+        ];
+        for bounds in foreign {
+            let r = check(&req, sign(&req, &s), op, &with(bounds.clone()), 1_000_100).await;
+            assert!(
+                matches!(r, Err(NotifyError::Unauthorized(_))),
+                "{bounds:?} was accepted"
+            );
+        }
+        let forge = [
+            KeyBounds::ContractGroup { id: "G".into() },
+            KeyBounds::Contract {
+                id: "COMMUNITY".into(),
+                document_type: None,
+            },
+        ];
+        for bounds in forge {
+            check(&req, sign(&req, &s), op, &with(bounds), 1_000_100)
+                .await
+                .unwrap();
+        }
     }
 
     /// The vector in `docs/design/service-auth.md` (and forge-web's test): RFC 6979 makes the
