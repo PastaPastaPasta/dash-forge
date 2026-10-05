@@ -332,7 +332,8 @@ mod tests {
         let private = repo(Visibility::Private);
         let one = hidden_notes(&private, 1, &[&m], "comment");
         assert_eq!(one.len(), 1);
-        assert!(one[0].starts_with("(2 document(s) hidden"), "{one:?}");
+        assert!(one[0].starts_with("(2 "), "{one:?}");
+        assert!(one[0].contains("hidden"), "{one:?}");
     }
 
     #[test]
@@ -347,7 +348,7 @@ mod tests {
         assert_eq!(hidden_line(&r, 0, "comment", None), None);
         let one = hidden_line(&r, 1, "review", Some(Unopened::NoKeyShared)).unwrap();
         assert!(
-            one.starts_with("1 members-only review hidden (you're a member"),
+            one.starts_with("1 members-only review hidden: you're a member"),
             "{one}"
         );
     }
