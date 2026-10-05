@@ -350,6 +350,11 @@ async fn subscribe_confirm_route_unsubscribe_export_delete() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert!(page.contains("Confirm") && page.contains("alice@example.org"));
+    // The form posts to the public URL, which may carry a path prefix.
+    assert!(
+        page.contains("action=\"https://notify.test/v1/verify\""),
+        "{page}"
+    );
     let (_, v) = signed(&w, "account.get", json!({})).await;
     assert_eq!(v["email"]["verified"], false, "a GET does not confirm");
     let (s, page) = call(
@@ -459,6 +464,9 @@ async fn subscribe_confirm_route_unsubscribe_export_delete() {
     // One-click unsubscribe (RFC 8058): any POST body, no login.
     let unsub = p.unsubscribe.clone().unwrap();
     let path = unsub.trim_start_matches("https://notify.test");
+    let (s, page) = call(&w, Request::get(path).body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(page.contains(&format!("action=\"{unsub}\"")), "{page}");
     let (s, _) = call(
         &w,
         Request::post(path)

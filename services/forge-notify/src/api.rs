@@ -605,12 +605,13 @@ async fn verify_page(
         "Confirm your email",
         &format!(
             "<p>Send Dash Forge notifications for the identity <code>{id}</code> to \
-             <strong>{addr}</strong>?</p><form method=\"post\" action=\"/v1/verify\">\
+             <strong>{addr}</strong>?</p><form method=\"post\" action=\"{base}/v1/verify\">\
              <input type=\"hidden\" name=\"token\" value=\"{tok}\"><button type=\"submit\">\
              Confirm</button></form><p class=\"s\">Sent by {op}. If you did not ask for this, \
              close this page: nothing will be sent.</p>",
             id = esc(&p.identity),
             addr = esc(&addr),
+            base = esc(&app.settings.public_url),
             tok = esc(&q.token),
             op = esc(&app.settings.operator),
         ),
@@ -646,8 +647,9 @@ async fn unsubscribe_page(State(app): State<Arc<App>>, Path(token): Path<String>
         &format!(
             "<p>Stop all email from {op}? Your address is deleted from the service. Push \
              notifications in your browsers are not affected.</p><form method=\"post\" \
-             action=\"/u/{tok}\"><button type=\"submit\">Unsubscribe</button></form>",
+             action=\"{base}/u/{tok}\"><button type=\"submit\">Unsubscribe</button></form>",
             op = esc(&app.settings.operator),
+            base = esc(&app.settings.public_url),
             tok = esc(&token),
         ),
     )
