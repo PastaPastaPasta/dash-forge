@@ -68,6 +68,8 @@ SCENARIOS=(
   "35-ci-runner-report"
   "36-history-index"
   "37-forge-runner"
+  "38-members-key-reader"
+  "39-members-only-discussion"
 )
 
 # Optional subset filter (match by leading number or substring).

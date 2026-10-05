@@ -802,6 +802,7 @@ mod tests {
             created_at: 1,
             imported: None,
             diff_hunk: None,
+            audience: forge_core::rules::v2::Audience::Public,
         }
     }
 

@@ -167,6 +167,7 @@ impl SealedDest for CollabDest<'_, '_> {
                     platform: false,
                     required: store.required,
                 },
+                forge_core::rules::v2::Audience::Public,
             )
             .await
     }

@@ -7,7 +7,9 @@
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
-use forge_core::collab::v2::{Comment, IssueView, Target};
+use forge_core::collab::v2::{
+    Comment, IssueView, MembersOnly, SealedIssue, Target, TargetKind, TargetRead,
+};
 use forge_core::create::default_journal_dir;
 use forge_core::rules::v2::{
     close_reason_of, current_close_reason, status_of_code, CloseReason, ClosedAs, StateAction,
@@ -34,7 +36,12 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             number,
             show_hidden,
         } => view(ctx, repo, *number, *show_hidden).await,
-        IssueCommand::Create { repo, title, body } => create(ctx, repo, title, body).await,
+        IssueCommand::Create {
+            repo,
+            title,
+            body,
+            members,
+        } => create(ctx, repo, title, body, *members).await,
         IssueCommand::Edit {
             repo,
             number,
@@ -58,7 +65,12 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             )
             .await
         }
-        IssueCommand::Comment { repo, number, body } => comment(ctx, repo, *number, body).await,
+        IssueCommand::Comment {
+            repo,
+            number,
+            body,
+            members,
+        } => comment(ctx, repo, *number, body, *members).await,
         IssueCommand::EditComment {
             repo,
             comment_id,
@@ -326,6 +338,7 @@ fn issue_matches(
             .is_none_or(|q| title_matches(q, v.issue.number, &v.issue.title))
 }
 
+#[allow(clippy::too_many_lines)] // the reads, then the JSON and the human list
 async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     if args.limit == 0 || args.limit > 100 {
         return Err(crate::errors::usage("--limit is 1-100"));
@@ -333,7 +346,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     if args.page == 0 {
         return Err(crate::errors::usage("--page starts at 1"));
     }
-    let s = Reader::open(ctx, &args.repo).await?;
+    let s = Reader::open_discussion(ctx, &args.repo).await?;
     let author = match &args.author {
         Some(a) => Some(identity_arg(&s.client, || s.me(ctx), a).await?),
         None => None,
@@ -345,48 +358,88 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     };
     // Every issue and the whole feed, folded once: the filters see the whole repo, not the
     // newest page (SR-04), and there is no per-row read. A private repo's issues open with
-    // the reader's keys.
-    let (all, hidden) = s.collab().issues_with_state(&s.repo).await?;
-    let mut matching: Vec<(IssueView, bool)> = all
+    // the reader's keys; a public repo's members-only issues a reader cannot open are rows of
+    // their own ("#3 · members-only issue by @alice · open", DESIGN D14).
+    let mut read = s.collab().issues_with_state_read(&s.repo).await?;
+    // In a private repository an issue this member cannot open (another key, written late) is
+    // counted as before, not shown as a members-only row: everything there is for members.
+    let private = s.repo.visibility == forge_core::rules::v2::Visibility::Private;
+    let sealed = if private {
+        Vec::new()
+    } else {
+        std::mem::take(&mut read.members_only)
+            .into_iter()
+            .map(|mut x| {
+                x.placeholder = s
+                    .placeholders(vec![x.placeholder])
+                    .pop()
+                    .expect("one in, one out");
+                x
+            })
+            .collect()
+    };
+    let hidden = read.malformed + read.members_only.len();
+    let mut all: Vec<ListRow> = read
+        .rows
         .into_iter()
-        .filter(|v| issue_matches(args, author.as_deref(), assignee.as_ref(), v))
-        .map(|v| {
-            let pinned = forge_core::rules::v2::fold_thread_meta_v2(&v.log.events).pinned;
-            (v, pinned)
+        .map(ListRow::Issue)
+        .chain(sealed.into_iter().map(ListRow::Sealed))
+        .collect();
+    // newest first, as read (the two kinds interleave by creation)
+    all.sort_by_key(|r| std::cmp::Reverse((r.created_at(), r.id().to_string())));
+    let mut matching: Vec<(ListRow, bool)> = all
+        .into_iter()
+        .filter(|r| match r {
+            ListRow::Issue(v) => issue_matches(args, author.as_deref(), assignee.as_ref(), v),
+            ListRow::Sealed(x) => sealed_matches(args, author.as_deref(), assignee.as_ref(), x),
+        })
+        .map(|r| {
+            let pinned = forge_core::rules::v2::fold_thread_meta_v2(r.events()).pinned;
+            (r, pinned)
         })
         .collect();
     // Pinned issues first (a member's pin, kinds 19/20), each group newest first as read.
     matching.sort_by_key(|r| !r.1);
     let total = matching.len();
+    let total_sealed = matching
+        .iter()
+        .filter(|(r, _)| matches!(r, ListRow::Sealed(_)))
+        .count();
     let per = args.limit as usize;
     let pages = total.div_ceil(per).max(1);
     let start = (args.page as usize - 1) * per;
-    let page: Vec<&(IssueView, bool)> = matching.iter().skip(start).take(per).collect();
+    let page: Vec<&(ListRow, bool)> = matching.iter().skip(start).take(per).collect();
     // RC2 MOD: the page's issues a maintainer hid, from the events already read (the feed).
     // Paged first, as on the web: the totals stay the consensus ones.
-    let threads: Vec<(Target, &[Event])> = page
-        .iter()
-        .map(|(v, _)| (v.issue.target(), v.log.events.as_slice()))
-        .collect();
+    let threads: Vec<(Target, &[Event])> =
+        page.iter().map(|(r, _)| (r.target(), r.events())).collect();
     let hides = s.collab().hidden_threads(&s.repo, &threads).await;
-    let (rows, omitted) = crate::fmt::split_hidden(
-        page,
-        &hides,
-        |(v, _)| v.issue.document_id.as_str(),
-        args.include_hidden,
-    );
-    let names =
-        crate::common::hider_names(ctx, &s.client, rows.iter().filter_map(|(_, h)| *h)).await;
+    let (rows, omitted) =
+        crate::fmt::split_hidden(page, &hides, |(r, _)| r.id(), args.include_hidden);
+    let names = if ctx.json {
+        std::collections::BTreeMap::new()
+    } else {
+        let moderators = rows.iter().filter_map(|(_, h)| h.map(|h| h.by.as_str()));
+        let sealed = rows.iter().filter_map(|((r, _), _)| match r {
+            ListRow::Sealed(x) => Some(x.placeholder.author.as_str()),
+            ListRow::Issue(_) => None,
+        });
+        s.client.dpns_first_names(moderators.chain(sealed)).await
+    };
     let who = |id: &str| with_name(id, &names);
 
     let json_rows: Vec<_> = rows
         .iter()
-        .map(|((v, pinned), h)| issue_row_json(v, *pinned, *h))
+        .map(|((r, pinned), h)| match r {
+            ListRow::Issue(v) => issue_row_json(v, *pinned, *h),
+            ListRow::Sealed(x) => sealed_row_json(x, *pinned, *h),
+        })
         .collect();
     ctx.emit(
         json!({
             "count": rows.len(),
             "total": total,
+            "membersOnly": total_sealed,
             "page": args.page,
             "pages": pages,
             "issues": json_rows,
@@ -398,12 +451,27 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
             if rows.is_empty() && omitted == 0 {
                 println!("{}", empty_issues_line(args, total, pages));
             }
-            for ((v, pinned), h) in &rows {
+            for ((r, pinned), h) in &rows {
                 let hid = h.map(|h| crate::fmt::hidden_row_mark(h, &who));
-                println!("{}", issue_line(v, *pinned, &hid.unwrap_or_default()));
+                match r {
+                    ListRow::Issue(v) => {
+                        let mark = crate::audience::suffix(&s.repo, v.issue.audience);
+                        println!("{}{mark}", issue_line(v, *pinned, &hid.unwrap_or_default()));
+                    }
+                    ListRow::Sealed(x) => println!(
+                        "{}",
+                        sealed_line(x, *pinned, &crate::audience::at_name(&x.placeholder.author, &names), &hid.unwrap_or_default())
+                    ),
+                }
             }
             if let Some(note) = crate::fmt::hidden_rows_note(omitted) {
                 println!("{note}");
+            }
+            if total_sealed > 0 {
+                println!(
+                    "Issues {total} ({total_sealed} members-only; only members of {} can read them)",
+                    s.repo.display()
+                );
             }
             if pages > 1 {
                 println!(
@@ -418,6 +486,106 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// One row of `dg issue list`: an issue, or a members-only one this reader cannot open.
+enum ListRow {
+    Issue(IssueView),
+    Sealed(SealedIssue),
+}
+
+impl ListRow {
+    fn id(&self) -> &str {
+        match self {
+            ListRow::Issue(v) => &v.issue.document_id,
+            ListRow::Sealed(x) => &x.placeholder.document_id,
+        }
+    }
+
+    fn created_at(&self) -> u64 {
+        match self {
+            ListRow::Issue(v) => v.issue.created_at,
+            ListRow::Sealed(x) => x.placeholder.created_at,
+        }
+    }
+
+    fn events(&self) -> &[Event] {
+        match self {
+            ListRow::Issue(v) => &v.log.events,
+            ListRow::Sealed(x) => &x.log.events,
+        }
+    }
+
+    fn target(&self) -> Target {
+        match self {
+            ListRow::Issue(v) => v.issue.target(),
+            ListRow::Sealed(x) => Target {
+                kind: TargetKind::Issue,
+                id: x.placeholder.document_id.clone(),
+                number: x.placeholder.number.unwrap_or_default(),
+                author: x.placeholder.author.clone(),
+            },
+        }
+    }
+}
+
+/// Whether a members-only issue this reader cannot open passes the filters: its state and
+/// author are public; its title, labels and assignees are not, so a filter on them leaves it
+/// out (search covers no members-only issue, DESIGN D30).
+fn sealed_matches(
+    args: &IssueListArgs,
+    author: Option<&str>,
+    assignee: Option<&Option<String>>,
+    x: &SealedIssue,
+) -> bool {
+    args.state.matches(x.state.open)
+        && args.labels.is_empty()
+        && assignee.is_none()
+        && args.search.is_none()
+        && author.is_none_or(|a| x.placeholder.author == a)
+}
+
+/// One `dg issue list --json` row of a members-only issue this reader cannot open: its number,
+/// author and state, never its title.
+fn sealed_row_json(
+    x: &SealedIssue,
+    pinned: bool,
+    h: Option<&forge_core::rules::v2::Hidden>,
+) -> serde_json::Value {
+    let m = &x.placeholder;
+    crate::fmt::with_hidden_by(
+        json!({
+            "number": m.number,
+            "title": null,
+            "author": m.author,
+            "open": x.state.open,
+            "state": state_word(x.state.open),
+            "labels": [],
+            "assignees": [],
+            "pinned": pinned,
+            "audience": crate::audience::json(m.audience),
+            "readable": false,
+            "why": crate::audience::why_word(m.why),
+        }),
+        h,
+    )
+}
+
+/// One `dg issue list` row of a members-only issue this reader cannot open:
+/// "#3    open   · members-only issue by @alice".
+fn sealed_line(x: &SealedIssue, pinned: bool, who: &str, hid: &str) -> String {
+    let mark = state_word(x.state.open);
+    let mark = if pinned {
+        format!("{mark}, pinned")
+    } else {
+        mark.to_string()
+    };
+    format!(
+        "#{:<4} {mark:<6} · {} by {who}{}",
+        x.placeholder.number.unwrap_or_default(),
+        crate::audience::sealed_noun(x.placeholder.audience, "issue"),
+        safe(hid)
+    )
 }
 
 /// One `dg issue list --json` row, with its `hiddenBy`.
@@ -437,6 +605,8 @@ fn issue_row_json(
             "labels": st.labels,
             "assignees": st.assignees,
             "pinned": pinned,
+            "audience": crate::audience::json(v.issue.audience),
+            "readable": true,
         }),
         h,
     )
@@ -473,24 +643,43 @@ fn issue_line(v: &IssueView, pinned: bool, hid: &str) -> String {
 
 #[allow(clippy::too_many_lines)] // one view: the reads, then its JSON and its human rendering
 async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<()> {
-    let s = Reader::open(ctx, repo).await?;
+    let s = Reader::open_discussion(ctx, repo).await?;
 
     let collab = s.collab();
+    let num = number_arg(number)?;
+    // A members-only issue this reader cannot open is its row ("#3 · members-only issue by
+    // @alice · open"), exit 0: its number is public, and an outsider reading it is expected.
+    match collab.target_read(&s.repo, TargetKind::Issue, num).await? {
+        None => return Err(not_found(repo, number)),
+        Some(TargetRead::MembersOnly(m)) => {
+            return crate::audience::target_view(ctx, &s, TargetKind::Issue, num, &m).await
+        }
+        Some(TargetRead::Readable(_)) => {}
+    }
     let view = collab
-        .issue_view(&s.repo, number_arg(number)?)
+        .issue_view(&s.repo, num)
         .await?
         .ok_or_else(|| not_found(repo, number))?;
-    let (mut comments, hidden) = collab
-        .comments_counted(&s.repo, &view.issue.document_id)
+    let (mut comments, members_only, malformed) = collab
+        .comments_read(&s.repo, &view.issue.document_id)
         .await?;
+    let members_only = s.placeholders(members_only);
+    let hidden = malformed + members_only.len();
+    // DESIGN D14: a members-only comment this reader cannot open shows as a placeholder when it
+    // carries `asMember`; every one is counted in the note under the timeline.
+    let (placeholders, _) = crate::audience::shown(&s.repo, &members_only);
+    let issue_audience = view.issue.audience;
     // Long bodies (forge-v2.md §6.3): the full text each field's trailer names, fetched and
     // checked; a text whose rest cannot be read keeps its first part and says why.
     let mut body = view.issue.body.clone();
     let mut why = crate::long_body::read_in_place(
         &collab,
         &s.repo,
-        std::iter::once(&mut body)
-            .chain(comments.iter_mut().map(|c| &mut c.body))
+        std::iter::once((&mut body, issue_audience))
+            .chain(comments.iter_mut().map(|c| {
+                let aud = c.audience;
+                (&mut c.body, aud)
+            }))
             .collect(),
     )
     .await
@@ -519,7 +708,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
         .cloned()
         .collect();
     let transitions = view.log.transitions.clone();
-    let timeline = timeline(&comments, &events, &transitions);
+    let timeline = timeline(&comments, &events, &transitions, &placeholders);
     let issue_number = u32::try_from(number).unwrap_or(u32::MAX);
     // "closed this as completed in #3" (QW4-065): the merged PR each close followed, as the
     // web's timeline reads it. Only closes are looked up; a failed read leaves the line bare.
@@ -549,6 +738,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
         std::collections::BTreeMap::default()
     } else {
         let actors = comments.iter().map(|c| c.author.as_str());
+        let actors = actors.chain(placeholders.iter().map(|m| m.author.as_str()));
         let actors = actors.chain(events.iter().map(|e| e.actor.as_str()));
         let actors = actors.chain(transitions.iter().map(|t| t.actor.as_str()));
         let actors = actors.chain(state.assignees.iter().map(String::as_str));
@@ -574,13 +764,18 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             "author": author,
             "documentId": id,
             "id": id,
+            "audience": crate::audience::json(issue_audience),
+            "readable": true,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
             "stateReason": state_reason,
             "duplicateOf": duplicate_of,
             "milestone": meta.milestone,
             "pinned": meta.pinned,
             "locked": locked,
-            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id)})).collect::<Vec<_>>(),
+            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id), "audience": crate::audience::json(c.audience)})).collect::<Vec<_>>(),
+            // members-only comments this reader cannot open: the ones D14 shows, and how many
+            "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),
+            "membersOnlyHidden": members_only.len(),
             "events": events.iter().map(|e| json!({
                 "id": e.id,
                 "kind": e.kind,
@@ -604,6 +799,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             };
             println!("#{number} [{mark}] {}", safe(&title));
             println!("author: {}", who(&author));
+            if crate::audience::marked(&s.repo, issue_audience) {
+                println!("members-only: visible to members of {}", s.repo.display());
+            }
             let labels: Vec<&str> = state.labels.iter().map(String::as_str).collect();
             let assignees: Vec<String> = state.assignees.iter().map(|a| who(a)).collect();
             for line in crate::fmt::triage_lines(&labels, &assignees, meta.milestone.as_deref()) {
@@ -623,16 +821,28 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             }
             for item in &timeline {
                 match item {
+                    Item::Placeholder(m) => println!(
+                        "\n— {} ({}): [{}]",
+                        who(&m.author),
+                        m.document_id,
+                        crate::audience::sealed_noun(m.audience, "comment")
+                    ),
                     Item::Comment(c) => {
                         let author = who(&c.author);
+                        // "— alice (id) · members-only:" for a members-only comment
+                        let mark = if crate::audience::marked(&s.repo, c.audience) {
+                            " · members-only"
+                        } else {
+                            ""
+                        };
                         match moderation.item(&c.document_id) {
                             Some(h) if !show_hidden => println!(
-                                "\n— {author} ({}): {}",
+                                "\n— {author} ({}){mark}: {}",
                                 c.document_id,
                                 crate::fmt::hidden_line("comment", h, &who, false)
                             ),
                             h => {
-                                println!("\n— {author} ({}):", c.document_id);
+                                println!("\n— {author} ({}){mark}:", c.document_id);
                                 if let Some(h) = h {
                                     println!("{}", crate::fmt::hidden_line("comment", h, &who, true));
                                 }
@@ -660,8 +870,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
                     }
                 }
             }
-            if hidden > 0 {
-                println!("\n{}", crate::fmt::hidden_note(&s.repo, hidden));
+            let unread: Vec<_> = members_only.iter().collect();
+            for note in crate::audience::hidden_notes(&s.repo, malformed, &unread, "comment") {
+                println!("\n{note}");
             }
             if let Some(n) = &values_note {
                 println!("\n{n}");
@@ -688,20 +899,28 @@ fn transition_json(t: &Transition, closed_in: Option<u32>) -> serde_json::Value 
 /// One entry of an issue's timeline.
 enum Item<'a> {
     Comment(&'a Comment),
+    /// A members-only comment this reader cannot open (DESIGN D14).
+    Placeholder(&'a MembersOnly),
     Event(&'a Event),
     Transition(&'a Transition),
 }
 
-/// Comments, events and state changes in one `(createdAt, id)` order, as the web's issue
-/// timeline has them.
+/// Comments (and the placeholders of members-only ones), events and state changes in one
+/// `(createdAt, id)` order, as the web's issue timeline has them.
 fn timeline<'a>(
     comments: &'a [Comment],
     events: &'a [Event],
     transitions: &'a [Transition],
+    placeholders: &[&'a MembersOnly],
 ) -> Vec<Item<'a>> {
     let mut items: Vec<(u64, &str, Item<'a>)> = comments
         .iter()
         .map(|c| (c.created_at, c.document_id.as_str(), Item::Comment(c)))
+        .chain(
+            placeholders
+                .iter()
+                .map(|m| (m.created_at, m.document_id.as_str(), Item::Placeholder(m))),
+        )
         .chain(
             events
                 .iter()
@@ -793,6 +1012,8 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
         },
         stored.imported.as_ref(),
         body,
+        // an edit keeps the comment's audience, as read with it
+        stored.audience,
     )?;
     ctx.confirm_or_cancel(&format!(
         "Edit comment {comment_id}? (one document replace{})",
@@ -863,16 +1084,21 @@ async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
+async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str, members: bool) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "issue not created").await?;
+    // One `Collab` for the command: the audience it asks for applies to every write it makes.
+    let collab = s.collab();
+    let audience = crate::audience::requested(&collab, &s.repo, members, None, None).await?;
     let planned = crate::long_body::Planned::new(
         &s.repo,
         forge_core::collab::long_body::BodyField::Issue { title },
         None,
         body,
+        audience,
     )?;
     ctx.confirm_or_cancel(&format!(
-        "Open issue {title:?} in {}? (one document, {}{})",
+        "Open {}issue {title:?} in {}? (one document, {}{})",
+        crate::audience::prefix(&s.repo, audience),
         s.repo.display(),
         cost_line(
             crate::quote::target_create(title.len() as u64 + planned.field_bytes())
@@ -882,7 +1108,6 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
         planned.clause()
     ))?;
     let before = s.balance().await;
-    let collab = s.collab();
     let journal = default_journal_dir()?;
     // An interrupted create of this issue that landed is finished first, before a long body's
     // artifact would be stored (and paid for) again.
@@ -905,6 +1130,7 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
             "documentId": created.document_id,
             "id": created.document_id,
             "title": title,
+            "audience": audience,
             "resumed": created.resumed,
             "cost": cost_json(spent, price),
         }),
@@ -915,7 +1141,8 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
                 ""
             };
             println!(
-                "✓ opened issue #{} in {}{how} · {}",
+                "✓ opened {}issue #{} in {}{how} · {}",
+                crate::audience::prefix(&s.repo, audience),
                 created.number,
                 s.repo.display(),
                 cost_line(spent, price)
@@ -975,13 +1202,16 @@ async fn hide(
     Ok(())
 }
 
-/// Resolve a v2 issue as an event target.
+/// Resolve a v2 issue as an event or transition target. A members-only issue the signer
+/// cannot read is still a target (its id, number and author are public): a maintainer closes,
+/// locks or labels it by number without reading it.
 async fn target(s: &Session, repo: &str, number: u64) -> Result<Target> {
+    let n = number_arg(number)?;
     Ok(s.collab()
-        .issue(&s.repo, number_arg(number)?)
+        .target_read(&s.repo, forge_core::collab::v2::TargetKind::Issue, n)
         .await?
         .ok_or_else(|| not_found(repo, number))?
-        .target())
+        .target(forge_core::collab::v2::TargetKind::Issue, n))
 }
 
 /// A body from a file, or stdin for `-`.
@@ -1029,11 +1259,27 @@ async fn edit(
         title: title.unwrap_or(&issue.title),
     };
     let long = body
-        .map(|b| crate::long_body::Planned::new(&s.repo, field, issue.imported.as_ref(), b))
+        .map(|b| {
+            crate::long_body::Planned::new(
+                &s.repo,
+                field,
+                issue.imported.as_ref(),
+                b,
+                issue.audience,
+            )
+        })
         .transpose()?;
     // a longer title leaves a private long body less room: its prefix is cut again
     let refit = (title.is_some() && body.is_none())
-        .then(|| crate::long_body::refit_kept(&s.repo, field, issue.imported.as_ref(), &issue.body))
+        .then(|| {
+            crate::long_body::refit_kept(
+                &s.repo,
+                field,
+                issue.imported.as_ref(),
+                &issue.body,
+                issue.audience,
+            )
+        })
         .flatten();
     let edit = crate::meta::Edit {
         noun: "issue",
@@ -1052,26 +1298,31 @@ async fn edit(
     crate::meta::run_edit(ctx, &s, edit).await
 }
 
-async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
+async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str, members: bool) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "comment not posted").await?;
     let target = target(&s, repo, number).await?;
     refuse_if_locked(&s, number, &target.id).await?;
     let price = ctx.usd_price();
+    // One `Collab` for the command: the audience it asks for applies to the comment it writes.
+    let collab = s.collab();
+    let audience =
+        crate::audience::requested(&collab, &s.repo, members, Some(&target.id), None).await?;
     let planned = crate::long_body::Planned::new(
         &s.repo,
         forge_core::collab::long_body::BodyField::Comment { path: None },
         None,
         body,
+        audience,
     )?;
     ctx.confirm_or_cancel(&format!(
-        "Comment on issue #{number}? (one comment, {}{})",
+        "Post a {}comment on issue #{number}? (one comment, {}{})",
+        crate::audience::prefix(&s.repo, audience),
         cost_line(
             crate::quote::comment(planned.field_bytes()) + planned.extra_credits(&s.repo),
             price
         ),
         planned.clause()
     ))?;
-    let collab = s.collab();
     let (id, spent) = s
         .metered(|| async {
             let body = planned.field_text(&collab, &s.repo, None).await?;
@@ -1083,8 +1334,14 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
         })
         .await?;
     ctx.emit(
-        json!({ "status": "commented", "issue": number, "commentId": id, "cost": cost_json(spent, price) }),
-        || println!("✓ commented on issue #{number} · {}", cost_line(spent, price)),
+        json!({ "status": "commented", "issue": number, "commentId": id, "audience": audience, "cost": cost_json(spent, price) }),
+        || {
+            println!(
+                "✓ commented on issue #{number}{} · {}",
+                crate::audience::suffix(&s.repo, audience),
+                cost_line(spent, price)
+            );
+        },
     );
     Ok(())
 }
@@ -1602,6 +1859,7 @@ mod tests {
             created_at: at,
             imported: None,
             diff_hunk: None,
+            audience: forge_core::rules::v2::Audience::Public,
         }
     }
 
@@ -1679,10 +1937,11 @@ mod tests {
         };
         let transitions = [transition("t3", 30, 1), transition("t4", 40, 2)];
         let comments = [comment("c2", 20)];
-        let order: Vec<String> = timeline(&comments, &events, &transitions)
+        let order: Vec<String> = timeline(&comments, &events, &transitions, &[])
             .iter()
             .map(|i| match i {
                 Item::Comment(c) => c.document_id.clone(),
+                Item::Placeholder(m) => m.document_id.clone(),
                 Item::Event(e) => event_phrase(e),
                 Item::Transition(t) => transition_phrase(t.kind).to_string(),
             })

@@ -1,0 +1,19 @@
+{
+  "name": "reseal_kept",
+  "description": "A members-only comment re-sealed by its edit keeps its audience.",
+  "case": "mixed_edit",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "kind": "comment",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "comment",
+      "enc": "03111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+      "epoch": 1
+    }
+  },
+  "expected": true
+}

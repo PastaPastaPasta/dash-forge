@@ -1,0 +1,15 @@
+{
+  "name": "config_members_envelope",
+  "description": "A config with enc v0x03 is never a settings row either.",
+  "case": "git_plane_well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "config",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}
