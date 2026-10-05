@@ -89,6 +89,46 @@ pub fn members_only_off(repo: &RepoRef) -> Error {
     .into()
 }
 
+/// E312 for a members-only write by `maintainer` or another member: a maintainer is told to
+/// turn it on (and that the command shows the cost first), anyone else to ask a maintainer
+/// (DESIGN §4.1 failure modes, §10).
+#[must_use]
+pub fn members_only_off_for(repo: &RepoRef, maintainer: bool) -> Error {
+    if maintainer {
+        return members_only_off(repo);
+    }
+    UserError::new(
+        codes::MEMBERS_ONLY_OFF,
+        format!(
+            "members-only content is not turned on in {}",
+            repo.display()
+        ),
+    )
+    .cause("no maintainer has turned on members-only content for this repository yet")
+    .fix(format!(
+        "ask a maintainer to turn on members-only content for {}",
+        repo.display()
+    ))
+    .note("nothing was written")
+    .into()
+}
+
+/// E306 for members-only content when the signer's identity has no usable `ENCRYPTION` key on
+/// chain at all (DESIGN D25: "Set up your encryption key", separate from turning members-only
+/// content on in a repository).
+#[must_use]
+pub fn no_encryption_key_set_up(action: &str) -> Error {
+    UserError::new(
+        codes::NO_ENCRYPTION_KEY,
+        format!("{action}: set up your encryption key first"),
+    )
+    .cause("members-only content is encrypted to each member's encryption key, and your identity has none yet")
+    .fix(format!("set up your encryption key: `{FIX_ADD_ENCRYPTION_KEY}` (from your recovery words)"))
+    .fix("or in the web app: Settings → Private repos")
+    .note("nothing was written")
+    .into()
+}
+
 /// The fix every "no encryption key" error carries.
 pub const FIX_ADD_ENCRYPTION_KEY: &str = "dg auth keys add --encryption";
 
@@ -222,6 +262,15 @@ pub fn no_encryption_key_held(action: &str) -> Error {
     no_encryption_key_held_because(
         action,
         "private repositories encrypt their content to each member's identity ENCRYPTION key",
+    )
+}
+
+/// [`no_encryption_key_held`] for members-only content of a public repository (DESIGN D25: no
+/// "private repo" wording where nothing is private).
+pub fn no_members_encryption_key_held(action: &str) -> Error {
+    no_encryption_key_held_because(
+        action,
+        "members-only content is encrypted to each member's encryption key",
     )
 }
 
@@ -556,7 +605,37 @@ impl Keyring {
     /// Never a private repository's seams: a lane answers for no git-plane seam.
     pub fn lane(&self, repo: &RepoRef) -> Result<crate::private::Lane> {
         crate::private::Lane::from_resolution(&self.repo_id, &self.resolution)
-            .ok_or_else(|| self.no_write(repo))
+            .ok_or_else(|| self.no_members_write(repo))
+    }
+
+    /// [`Self::no_write`] in the words of members-only content (DESIGN D25: no "private repo"
+    /// or "key epoch" where nothing is private): no key shared yet (E311), an alert on the key
+    /// (its own code), or a key change a maintainer's client has not finished (E310).
+    fn no_members_write(&self, repo: &RepoRef) -> Error {
+        if self.resolution.keys.is_empty() {
+            return no_key_shared(repo);
+        }
+        let (code, cause) = match self.alert_error(repo) {
+            Some(Error::User(u)) => (
+                u.code,
+                "the key a maintainer shared with you does not match this repository's",
+            ),
+            _ => (
+                codes::ROTATION_PENDING,
+                "a maintainer's client has not finished changing the members' key",
+            ),
+        };
+        UserError::new(
+            code,
+            format!(
+                "members-only content of {} can't be written right now",
+                repo.display()
+            ),
+        )
+        .cause(cause)
+        .fix(fix_repair(repo))
+        .note("nothing was written")
+        .into()
     }
 
     /// The resolution: epochs, anchors, alerts, the repair check.
@@ -1230,6 +1309,29 @@ pub async fn has_members_key(client: &PlatformClient, repo: &RepoRef) -> Result<
         )
         .await?;
     Ok(configs.iter().any(|d| config_row(d).is_some()))
+}
+
+/// Whether `member` holds any wrap (`repoKey`) of `repo`'s members key: one read of the
+/// `memberEpoch` index. A member, and also a removed member, who can still open what was
+/// written while they were one (DESIGN §9 phase 1: "a removed member ... can read earlier
+/// ones").
+pub async fn holds_wrap(client: &PlatformClient, repo: &RepoRef, member: &str) -> Result<bool> {
+    let scope = repo.scope()?;
+    let collab = client.fetch_contract(&repo.forge().collab).await?;
+    let docs = client
+        .query_documents(
+            &collab,
+            DOC_REPO_KEY,
+            &scope.filters([QueryFilter::eq(
+                "memberId",
+                FieldValue::identifier(platform::decode_identifier(member)?),
+            )]),
+            &[],
+            1,
+            None,
+        )
+        .await?;
+    Ok(!docs.is_empty())
 }
 
 /// A signer's view of a private repository: its client, identity, key file and the keys that
