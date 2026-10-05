@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 forge-core = { path = "../forge-core", features = ["cli-logging"] }
+forge-secrets = { path = "../forge-secrets" }
 anyhow.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["time"] }

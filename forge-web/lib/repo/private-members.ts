@@ -795,11 +795,11 @@ async function skipBelow(session: PrivateSession, c: PrivateWriteContext, burned
 /**
  * The last step of a private create (§5.3 epoch 0; parity: forge-core
  * `keyring::create_private_state`): the owner's self-wrap of a fresh epoch-0 key, then the
- * epoch-0 anchor `config` (`defaultBranch`, no protected patterns, backend in plaintext). A
+ * epoch-0 anchor `config` (`defaultBranch`, `protectedPatterns`, backend in plaintext). A
  * resumed create reuses its own standing epoch-0 self-wrap; one whose anchor already exists
  * does nothing. Returns whether it wrote the anchor.
  */
-export async function createEpochZero(c: PrivateWriteContext, defaultBranch: string, intent: string): Promise<boolean> {
+export async function createEpochZero(c: PrivateWriteContext, defaultBranch: string, intent: string, protectedPatterns: readonly string[] = []): Promise<boolean> {
   return withFreshSession(c, async (read) => {
     if (read.resolution.anchors.has(0)) return false
     // The maintainer document was just written: a member-list read may not show it yet, so the
@@ -819,7 +819,7 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
     }
     const k0 = await ownEpochKey(c, session, { identity: c.auth.identityId, keyId: pending?.row.recipientKeyId ?? selfKey.keyId }, 0, intent)
     try {
-      const fields = { defaultBranch: shortBranch(defaultBranch), protectedPatterns: [] as string[] }
+      const fields = { defaultBranch: shortBranch(defaultBranch), protectedPatterns: [...protectedPatterns] }
       const enc = await sealDoc(k0.keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch: 0 }, fields, { anchor: true })
       await postConfig(c, { repoId: decodeIdentifier(c.repo.repoId), epoch: 0, enc, backend: { mode: 0 }, archived: false }, `${intent}:anchor:0:${keyTag(k0.keys)}`)
       return true

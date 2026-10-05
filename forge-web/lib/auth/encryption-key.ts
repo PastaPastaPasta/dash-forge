@@ -13,23 +13,51 @@
  *   the master key, adding the next key id, derived from the recovery phrase at
  *   `m/9'/<coin>'/5'/0'/0'/<identityIndex>'/<keyId>'` (the CLI's path, so either client can
  *   re-derive it).
- * - Using it: {@link encryptionOps} returns operations only (unwrap a `repoKey`, seal a wrap).
- *   Each opens the key from the vault, hands it to the SDK and wipes it. The raw key never
- *   reaches React, storage outside the vault, a URL or a log.
+ * - Using it: {@link encryptionOps} returns operations only (unwrap a `repoKey`, seal a wrap);
+ *   {@link sealLetterAs} and {@link openLetterAs} seal and open a specific-people letter.
+ *   Each opens the key from the vault, hands it to the SDK or `lib/private/named` and wipes it.
+ *   The raw key never reaches React, storage outside the vault, a URL or a log.
  */
 
 import * as secp from '@noble/secp256k1'
 import type { DataContract, Document, EvoSDK, IdentityPublicKey, PrivateKey as WasmPrivateKey } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { WrapError, bytesToHex, unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type WrapFacade } from '../private'
+import {
+  WrapError,
+  bytesToHex,
+  openLetter,
+  privateId,
+  sealLetter,
+  unwrapKey,
+  unwrapKeyRaw,
+  sealWrap,
+  type DocFields,
+  type EpochKeys,
+  type LetterOpenResult,
+  type LetterRecipient,
+  type OwnerKey,
+  type PrivateDoc,
+  type StoredPrivateDoc,
+  type WrapFacade,
+} from '../private'
 import { authSdk, sleep } from '../sdk/facade'
 import { timed } from '../step-timing'
 import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, invalidMnemonicMessage, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
 import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate } from './limited-key'
 import { shortId } from '../utils'
-import { EncryptionKeyNotHeldError, VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, storedEncryptionKeyIds, unlockScope, unlockedSecret, withEncryptionKey } from './vault'
+import {
+  EncryptionKeyNotHeldError,
+  VaultLockedError,
+  storeEncryptionKey,
+  storedEncryptionKeyId,
+  storedEncryptionKeyIds,
+  unlockScope,
+  unlockedSecret,
+  withEncryptionKey,
+  withEncryptionKeys,
+} from './vault'
 
 /** The step-timing flow of enabling private repos at sign-in (L-20). */
 export const PRIVATE_REPOS_FLOW = 'enable-private-repos'
@@ -535,6 +563,42 @@ export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: s
         sealWrap(facade, p.keys, p.raw, { dataContract: contract, senderKey: p.senderKey, senderPrivateKey: pk, recipientKey: p.recipientKey }),
       ),
   }
+}
+
+/**
+ * Seal a specific-people letter (`enc` v0x04, `lib/private/named`) from this browser's stored
+ * encryption key for (network, identity): the sender's slot is `recipients[0]`, which must be
+ * this identity, and the held key whose public key it names sends it (this browser may hold
+ * several, DESIGN D27). The keys are opened from the vault for the call and wiped after; a locked
+ * vault makes the call throw, and so does a sender key this browser does not hold.
+ */
+export function sealLetterAs(
+  network: Network,
+  identityId: string,
+  p: { readonly repoId: Uint8Array; readonly doc: PrivateDoc; readonly fields: DocFields; readonly recipients: readonly LetterRecipient[] },
+): Promise<Uint8Array> {
+  const senderPub = p.recipients[0] === undefined ? '' : bytesToHex(p.recipients[0].publicKey)
+  return withEncryptionKeys(network, identityId, async (keys) => {
+    const sender = keys.find((k) => bytesToHex(secp.getPublicKey(k.secret, true)) === senderPub)
+    if (sender === undefined) throw new VaultLockedError("this browser does not hold the encryption key the letter's sender slot names")
+    return sealLetter(p.repoId, sender.secret, sender.keyId, p.doc, p.fields, p.recipients)
+  })
+}
+
+/**
+ * Open a specific-people letter as (network, identity) with every encryption key this browser
+ * holds for it (a letter does not say which of the reader's keys it was sealed to); `ownerKeys`
+ * are the document owner's identity keys, where the sender key is looked up. The keys are wiped
+ * after the call; a locked vault makes the call throw.
+ */
+export function openLetterAs(
+  network: Network,
+  identityId: string,
+  p: { readonly repoId: Uint8Array; readonly doc: StoredPrivateDoc; readonly ownerKeys: readonly OwnerKey[] },
+): Promise<LetterOpenResult> {
+  return withEncryptionKeys(network, identityId, (keys) =>
+    openLetter(p.repoId, p.doc, p.ownerKeys, { identityId: privateId(identityId), secrets: keys.map((k) => k.secret) }),
+  )
 }
 
 /** Why a webhook's secret cannot be sealed from this browser (QW-071), or the sealer. */

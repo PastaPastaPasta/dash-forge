@@ -92,7 +92,7 @@ test.beforeAll(() => {
   g('add', '.')
   g('commit', '-q', '-m', 'first')
   g('branch', 'trunk')
-  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--description', 'Dash Forge e2e: repo settings from the web')
+  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--no-protect', '--description', 'Dash Forge e2e: repo settings from the web')
   const push = git('OWNER', ['push', REMOTE, 'main', 'trunk'])
   if (!push.ok) throw new Error(`owner push failed:\n${push.out}`)
   // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
@@ -107,7 +107,7 @@ test('s1. the owner protects main from Settings → Branches', async ({ browser 
   const page = await signedIn(browser, 'OWNER', repoPath('settings'))
   await waitForRepoResolved(page)
   const branches = page.getByRole('region', { name: 'Branches' })
-  await expect(branches.getByText('No protected branches')).toBeVisible({ timeout: 60_000 })
+  await expect(branches.getByText('Nothing is protected')).toBeVisible({ timeout: 60_000 })
   await branches.getByLabel('Branch or pattern').fill('main')
   await expect(branches.getByTestId('pattern-preview')).toHaveText(/refs\/heads\/main\s+protects main/)
   await expect(branches.getByTestId('cost-preview')).toContainText('DASH')
@@ -119,9 +119,23 @@ test('s1. the owner protects main from Settings → Branches', async ({ browser 
   await shot(page, 'settings-02-main-protected')
 })
 
+test('s1b. the one-click suggestion completes the default: every tag', async ({ browser }) => {
+  const page = await signedIn(browser, 'OWNER', repoPath('settings'))
+  await waitForRepoResolved(page)
+  const branches = page.getByRole('region', { name: 'Branches' })
+  // main is protected (s1), so only tags are missing.
+  const suggestion = branches.getByTestId('protection-suggestion')
+  await expect(suggestion).toContainText('Any writer can create or move tags', { timeout: 60_000 })
+  await suggestion.getByRole('button', { name: /^protect tags$/i }).click()
+  await confirmWrite(page, /sign & protect/i)
+  await expect(branches.getByTestId('protected-pattern').filter({ hasText: 'refs/tags/**' })).toBeVisible({ timeout: 60_000 })
+  await expect(suggestion).toHaveCount(0)
+  await shot(page, 'settings-02b-tags-protected')
+})
+
 test("s2. the writer's CLI push to main is refused (E601), at consensus too", () => {
   const listed = dg('COLLAB', 'repo', 'protect', 'list', SLUG)
-  expect(listed['protectedPatterns']).toEqual(['refs/heads/main'])
+  expect(listed['protectedPatterns']).toEqual(['refs/heads/main', 'refs/tags/**'])
   writeFileSync(join(SRC, 'writer.txt'), 'a writer change\n')
   execFileSync('git', ['add', 'writer.txt'], { cwd: SRC })
   execFileSync('git', ['commit', '-q', '-m', 'writer change'], { cwd: SRC })

@@ -65,14 +65,14 @@ export const MAX_TOPIC_CHARS = 30
 export const DESCRIPTION_LIMITS = { chars: 500, bytes: 1000 } as const
 
 /**
- * A change to a repo's config, as a delta: set the default branch, add or remove one protected
- * pattern, set the archived flag. Every other field carries over from the config it is applied
+ * A change to a repo's config, as a delta: set the default branch, add protected patterns or
+ * remove one, set the archived flag. Every other field carries over from the config it is applied
  * to, which {@link updateConfig} reads fresh at write time, so a change made elsewhere since the
  * page loaded (another pattern, the storage backend) is kept, not overwritten.
  */
 export interface ConfigChange {
   readonly defaultBranch?: string
-  readonly addPattern?: string
+  readonly addPatterns?: readonly string[]
   readonly removePattern?: string
   readonly archived?: boolean
 }
@@ -122,7 +122,7 @@ export function patternsProblem(patterns: readonly string[]): string | null {
 /** `current` with `change` applied (the next config). */
 export function applyConfigChange(current: RepoConfig, change: ConfigChange): RepoConfig {
   let patterns = [...current.protectedPatterns]
-  if (change.addPattern !== undefined && !patterns.includes(change.addPattern)) patterns.push(change.addPattern)
+  for (const p of change.addPatterns ?? []) if (!patterns.includes(p)) patterns.push(p)
   if (change.removePattern !== undefined) patterns = patterns.filter((p) => p !== change.removePattern)
   return {
     ...current,
@@ -140,7 +140,7 @@ export function changeHolds(config: RepoConfig, change: ConfigChange): boolean {
   return (
     (change.defaultBranch === undefined || config.defaultBranch === shortBranch(change.defaultBranch.trim())) &&
     (change.archived === undefined || config.archived === change.archived) &&
-    (change.addPattern === undefined || config.protectedPatterns.includes(change.addPattern)) &&
+    (change.addPatterns ?? []).every((p) => config.protectedPatterns.includes(p)) &&
     (change.removePattern === undefined || !config.protectedPatterns.includes(change.removePattern))
   )
 }
@@ -159,7 +159,7 @@ export function staleProblem(seen: RepoConfig, fresh: RepoConfig, change: Config
   const moved =
     (change.defaultBranch !== undefined && seen.defaultBranch !== fresh.defaultBranch) ||
     (change.archived !== undefined && seen.archived !== fresh.archived) ||
-    ((change.addPattern !== undefined || change.removePattern !== undefined) && patternsMoved)
+    ((change.addPatterns !== undefined || change.removePattern !== undefined) && patternsMoved)
   return moved ? STALE_SETTINGS : null
 }
 
@@ -207,9 +207,18 @@ export function previewConfig(next: RepoConfig, first: FirstWrite = {}): CostPre
   return previewCreate(DOC.config, configData(next), first)
 }
 
-/** The branches (short names) each pattern matches, in `branches` order. */
-export function patternMatches(pattern: string, branches: readonly string[]): string[] {
-  return branches.filter((b) => matchesProtected(`refs/heads/${b}`, [pattern]))
+/**
+ * The refs a pattern matches, in `refNames` order, by short name (`main`, `v1.0`): `refNames`
+ * are full ref names (`refs/heads/main`, `refs/tags/v1.0`).
+ */
+export function patternMatches(pattern: string, refNames: readonly string[]): string[] {
+  return refNames.filter((r) => matchesProtected(r, [pattern])).map((r) => r.replace(/^refs\/(heads|tags)\//, ''))
+}
+
+/** "main", "main, dev and 3 more": a short list of matched names for one line. */
+export function matchList(names: readonly string[], shown = 3): string {
+  if (names.length <= shown) return names.join(', ')
+  return `${names.slice(0, shown).join(', ')} and ${names.length - shown} more`
 }
 
 /** Why `topics` would be refused by the `repo` schema (or its `topic` documents), or null. */

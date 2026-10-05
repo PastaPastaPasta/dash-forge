@@ -255,7 +255,17 @@ fn owner_only(repo: &str) -> anyhow::Error {
 // dg repo protect
 // ---------------------------------------------------------------------------------------
 
-/// `dg repo protect list | add | remove`.
+/// What a `dg repo protect` write changes.
+enum ProtectEdit<'a> {
+    /// Add one pattern (already a full ref pattern).
+    Add(String),
+    /// Add whatever the new-repository default (the default branch and every tag) is missing.
+    Defaults,
+    /// Remove one pattern (as listed, or a bare branch name).
+    Remove(&'a str),
+}
+
+/// `dg repo protect list | add | defaults | remove`.
 pub async fn protect(ctx: &Ctx, cmd: &RepoProtectCommand) -> Result<()> {
     match cmd {
         RepoProtectCommand::List { repo } => {
@@ -270,6 +280,10 @@ pub async fn protect(ctx: &Ctx, cmd: &RepoProtectCommand) -> Result<()> {
                 || {
                     if cfg.protected_patterns.is_empty() {
                         println!("no protected patterns: every member can update every ref");
+                        println!(
+                            "  protect the default branch and tags with `dg repo protect defaults {}`",
+                            s.repo.display()
+                        );
                     }
                     for p in &cfg.protected_patterns {
                         println!("{}", safe(p));
@@ -279,39 +293,75 @@ pub async fn protect(ctx: &Ctx, cmd: &RepoProtectCommand) -> Result<()> {
             Ok(())
         }
         RepoProtectCommand::Add { repo, pattern } => {
-            change_protection(ctx, repo, &full_pattern(pattern), true).await
+            change_protection(ctx, repo, ProtectEdit::Add(full_pattern(pattern))).await
+        }
+        RepoProtectCommand::Defaults { repo } => {
+            change_protection(ctx, repo, ProtectEdit::Defaults).await
         }
         RepoProtectCommand::Remove { repo, pattern } => {
-            change_protection(ctx, repo, pattern, false).await
+            change_protection(ctx, repo, ProtectEdit::Remove(pattern)).await
         }
     }
 }
 
-async fn change_protection(ctx: &Ctx, repo: &str, pattern: &str, add: bool) -> Result<()> {
+/// The protected patterns `edit` leaves on `current`, and what the messages name (the pattern,
+/// or the patterns `defaults` adds); `None` when a removal names no protected pattern.
+fn protect_edit(current: &CurrentConfig, edit: ProtectEdit<'_>) -> Option<(Vec<String>, String)> {
+    let mut patterns = current.protected_patterns.clone();
+    let named = match edit {
+        ProtectEdit::Remove(pattern) => {
+            // `remove main` finds `refs/heads/main` too.
+            let full = full_pattern(pattern);
+            let before = patterns.len();
+            patterns.retain(|p| p != pattern && *p != full);
+            if patterns.len() == before {
+                return None;
+            }
+            pattern.to_string()
+        }
+        ProtectEdit::Add(pattern) => {
+            if !patterns.contains(&pattern) {
+                patterns.push(pattern.clone());
+            }
+            pattern
+        }
+        ProtectEdit::Defaults => {
+            let missing = forge_core::rules::missing_default_protection(
+                &current.default_branch,
+                &current.protected_patterns,
+            );
+            if missing.is_empty() {
+                format!("{} and every tag", current.default_branch)
+            } else {
+                patterns.extend(missing.iter().cloned());
+                missing.join(" and ")
+            }
+        }
+    };
+    Some((patterns, named))
+}
+
+async fn change_protection(ctx: &Ctx, repo: &str, edit: ProtectEdit<'_>) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    let add = !matches!(edit, ProtectEdit::Remove(_));
     let verb = if add { "protect" } else { "unprotect" };
     s.collab()
         .require_role(&s.repo, Role::Maintainer, &format!("{verb} branches"))
         .await?;
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
     let current = svc.current_config(&s.repo).await?;
-    let mut patterns = current.protected_patterns.clone();
-    if add {
-        if !patterns.iter().any(|p| p == pattern) {
-            patterns.push(pattern.to_string());
-        }
-    } else {
-        // `remove main` finds `refs/heads/main` too.
-        let full = full_pattern(pattern);
-        let before = patterns.len();
-        patterns.retain(|p| p != pattern && *p != full);
-        if patterns.len() == before {
-            return Err(crate::errors::usage(format!(
-                "{pattern:?} is not a protected pattern of {} (see `dg repo protect list {repo}`)",
-                s.repo.display()
-            )));
-        }
-    }
+    let removing = match &edit {
+        ProtectEdit::Remove(p) => Some((*p).to_string()),
+        _ => None,
+    };
+    let Some((patterns, pattern)) = protect_edit(&current, edit) else {
+        return Err(crate::errors::usage(format!(
+            "{:?} is not a protected pattern of {} (see `dg repo protect list {repo}`)",
+            removing.unwrap_or_default(),
+            s.repo.display()
+        )));
+    };
+    let pattern = pattern.as_str();
     check_patterns(&patterns)?;
     let change = ConfigChange {
         protected_patterns: Some(patterns),
@@ -746,6 +796,29 @@ pub(crate) fn capitalize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn protect_defaults_adds_only_what_is_missing() {
+        use super::{protect_edit, CurrentConfig, ProtectEdit};
+        let cfg = |patterns: &[&str]| CurrentConfig {
+            default_branch: "main".into(),
+            protected_patterns: patterns.iter().map(|p| (*p).to_string()).collect(),
+            ..CurrentConfig::default()
+        };
+        let (got, named) = protect_edit(&cfg(&[]), ProtectEdit::Defaults).expect("defaults");
+        assert_eq!(got, ["refs/heads/main", "refs/tags/**"]);
+        assert_eq!(named, "refs/heads/main and refs/tags/**");
+        let (got, _) =
+            protect_edit(&cfg(&["refs/heads/main"]), ProtectEdit::Defaults).expect("defaults");
+        assert_eq!(got, ["refs/heads/main", "refs/tags/**"]);
+        let full = cfg(&["refs/heads/main", "refs/tags/**"]);
+        let (got, named) = protect_edit(&full, ProtectEdit::Defaults).expect("defaults");
+        assert_eq!(got, full.protected_patterns, "nothing to add");
+        assert_eq!(named, "main and every tag");
+        assert!(protect_edit(&full, ProtectEdit::Remove("dev")).is_none());
+        let (got, _) = protect_edit(&full, ProtectEdit::Remove("main")).expect("remove");
+        assert_eq!(got, ["refs/tags/**"]);
+    }
     use super::{
         approvers, full_pattern, method_names, parse_methods, parse_topics, required_checks,
     };

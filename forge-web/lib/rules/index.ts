@@ -31,7 +31,7 @@ export {
   isRc1RefName,
   isRc1TagName,
 } from './oid'
-export { matchesProtected, neutralizeWildmatch, wildmatch } from './matchesProtected'
+export { ALL_TAGS_PATTERN, defaultProtectedPatterns, matchesProtected, missingDefaultProtection, neutralizeWildmatch, wildmatch } from './matchesProtected'
 export { displayRefName, mergeBaseTips, prBaseTips, resolveRef } from './resolveRef'
 export { overlayTree } from './overlay'
 // FORGE_RULES_V2: the forge-v2 membership, event-fold, pack and numbering rules

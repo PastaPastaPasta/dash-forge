@@ -24,8 +24,10 @@ import { describe, expect, it } from 'vitest'
 
 import {
   ancestryFromPairs,
+  defaultProtectedPatterns,
   displayRefName,
   matchesProtected,
+  missingDefaultProtection,
   mergeBaseTips,
   overlayTree,
   prBaseTips,
@@ -33,6 +35,7 @@ import {
   v2,
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
+import { refUpdateType } from '../repo/push'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
@@ -160,6 +163,20 @@ function runCaseBase(v: Vector): void {
     case 'matches_protected': {
       const inp = v.input as MatchesProtectedInput
       expect(matchesProtected(inp.refName, inp.patterns)).toEqual(v.expected)
+      break
+    }
+    case 'ref_update_route': {
+      const inp = v.input as { readonly refName: string; readonly patterns: readonly string[] | null; readonly pusherIsOwner: boolean }
+      expect(refUpdateType(inp.refName, inp.patterns, inp.pusherIsOwner)).toEqual(v.expected)
+      break
+    }
+    case 'missing_default_protection': {
+      const inp = v.input as { readonly defaultBranch: string; readonly patterns: readonly string[] }
+      expect(missingDefaultProtection(inp.defaultBranch, inp.patterns)).toEqual(v.expected)
+      break
+    }
+    case 'default_protection': {
+      expect(defaultProtectedPatterns((v.input as { readonly defaultBranch: string }).defaultBranch)).toEqual(v.expected)
       break
     }
     case 'overlay': {
@@ -727,8 +744,9 @@ async function runSignatureVector(v: Vector): Promise<void> {
 describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
   const base = vectors.filter((v) => v.rules === undefined)
-  // `private_*` cases (private-repos.md §11) run in `lib/private/conformance.test.ts`.
-  const isPrivate = (v: Vector) => v.case.startsWith('private_')
+  // `private_*` cases (private-repos.md §11) and the mixed-visibility envelope cases
+  // (`mixed_doc_*`, `named_envelope*`, `named_artifact*`) run in `lib/private/conformance.test.ts`.
+  const isPrivate = (v: Vector) => ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact'].some((p) => v.case.startsWith(p))
   const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
   const privateVectors = vectors.filter(isPrivate)
 

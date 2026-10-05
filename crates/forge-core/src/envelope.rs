@@ -152,15 +152,63 @@ fn encrypt_with_iv(
     plaintext: &[u8],
     iv: &[u8; IV_LEN],
 ) -> Result<Vec<u8>> {
-    let shared = Zeroizing::new(platform_encryption::derive_shared_key_ecdh(
-        &sender.0,
-        &public_key(recipient_public)?,
-    ));
-    let mut out = iv.to_vec();
-    out.extend(platform_encryption::encrypt_aes_256_cbc(
-        &shared, iv, plaintext,
-    ));
-    Ok(out)
+    Ok(SharedKey::derive(sender, recipient_public)?.encrypt_with_iv(plaintext, iv))
+}
+
+/// [`encrypt`] with a caller-chosen IV, for the conformance vectors only (a release build never
+/// has it).
+#[cfg(any(test, feature = "vectors"))]
+pub fn encrypt_with_iv_for_vectors(
+    sender: &PrivateKey,
+    recipient_public: &[u8],
+    plaintext: &[u8],
+    iv: &[u8; IV_LEN],
+) -> Result<Vec<u8>> {
+    encrypt_with_iv(sender, recipient_public, plaintext, iv)
+}
+
+/// The scheme's shared key between one private key and one public key,
+/// `SHA256((y & 1 | 2) || x)` of their product (`derive_shared_key_ecdh`, no further KDF). One
+/// ECDH serves every ciphertext between the two keys, so a reader trying several slots of a
+/// specific-people letter pays for one. Wiped on drop, never printed.
+pub struct SharedKey(Zeroizing<[u8; 32]>);
+
+impl SharedKey {
+    /// The shared key of `own` and `other_public` (compressed or uncompressed secp256k1).
+    pub fn derive(own: &PrivateKey, other_public: &[u8]) -> Result<Self> {
+        Ok(Self(Zeroizing::new(
+            platform_encryption::derive_shared_key_ecdh(&own.0, &public_key(other_public)?),
+        )))
+    }
+
+    /// `IV ‖ AES-256-CBC-PKCS7(shared, IV, plaintext)` under a caller-chosen IV.
+    fn encrypt_with_iv(&self, plaintext: &[u8], iv: &[u8; IV_LEN]) -> Vec<u8> {
+        let mut out = iv.to_vec();
+        out.extend(platform_encryption::encrypt_aes_256_cbc(
+            &self.0, iv, plaintext,
+        ));
+        out
+    }
+
+    /// The plaintext of `IV ‖ CBC` bytes, or `None` for a wrong shape or a padding failure
+    /// (which, the scheme having no tag, a wrong key also passes about once in 256: callers
+    /// recognise their plaintext).
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Option<SecretBytes> {
+        if !is_valid_ciphertext_length(ciphertext.len()) {
+            return None;
+        }
+        let (iv, blocks) = ciphertext.split_at(IV_LEN);
+        let iv: [u8; IV_LEN] = iv.try_into().expect("split at IV_LEN");
+        platform_encryption::decrypt_aes_256_cbc(&self.0, &iv, blocks)
+            .ok()
+            .map(SecretBytes::new)
+    }
+}
+
+impl fmt::Debug for SharedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SharedKey(<redacted>)")
+    }
 }
 
 /// Decrypt `ciphertext` with the recipient's private key and the sender's public key (or, the
@@ -181,15 +229,9 @@ pub fn decrypt(
             ciphertext.len()
         )));
     }
-    let (iv, blocks) = ciphertext.split_at(IV_LEN);
-    let iv: [u8; IV_LEN] = iv.try_into().expect("split at IV_LEN");
-    let shared = Zeroizing::new(platform_encryption::derive_shared_key_ecdh(
-        &recipient.0,
-        &public_key(sender_public)?,
-    ));
-    platform_encryption::decrypt_aes_256_cbc(&shared, &iv, blocks)
-        .map(SecretBytes::new)
-        .map_err(|_| {
+    SharedKey::derive(recipient, sender_public)?
+        .decrypt(ciphertext)
+        .ok_or_else(|| {
             Error::Config(
                 "decryption failed: the keys are not the ones the bytes were encrypted with".into(),
             )

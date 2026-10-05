@@ -23,8 +23,16 @@ const SKIP_EPOCH_KEY: u8 = 12;
 const IMPORTED_AUTHOR: u8 = 13;
 const IMPORTED_URL: u8 = 14;
 const EVENT_VALUE: u8 = 15;
+/// Tag 25 (`enc` v0x04 only, repeatable): a specific-people letter's recipient identity ids, 32
+/// bytes each, in slot order. In every other envelope it stays reserved, so malformed.
+pub const RECIPIENT: u8 = 25;
 /// Tags 16..=63 are reserved (malformed); 64..=255 are extensions (skipped).
 const FIRST_EXTENSION: u8 = 64;
+/// Tag 64, the first extension tag: the padding record of a members or specific-people document
+/// (§4.3). Readers skip it like any extension record.
+pub const PAD: u8 = FIRST_EXTENSION;
+/// Members and specific-people documents pad their TLV to a multiple of this many bytes (D28).
+pub const PAD_BUCKET: usize = 64;
 const MAX_PATTERNS: usize = 8;
 
 /// The content fields carried in `enc`, decoded. An absent field is `None` (a zero-length
@@ -202,9 +210,29 @@ fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool) -> bool {
 /// Parse `pt` as the TLV plaintext of a `kind` document. `anchor_with_prev` is true for a
 /// config of an epoch `e ≥ 1` and false otherwise (where tags 8, 9, 11 and 12 are refused). Such
 /// a config carries tag 8; a burned one (tag 11) carries neither 9 nor 12, any other carries 9
-/// and may carry 12. `None` is `Malformed`.
+/// and may carry 12. `None` is `Malformed`. Tag 25 is refused: it belongs to `enc` v0x04 only
+/// ([`parse_letter`]).
 #[must_use]
 pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields> {
+    parse_inner(pt, kind, anchor_with_prev, None)
+}
+
+/// Parse the TLV of a specific-people letter (`enc` v0x04): the content records of `kind`, then
+/// one tag-25 record per recipient (32 bytes each, consecutive, in slot order), then extension
+/// records. Returns the fields and the recipient ids. `None` is `Malformed`.
+#[must_use]
+pub fn parse_letter(pt: &[u8], kind: DocKind) -> Option<(Fields, Vec<[u8; 32]>)> {
+    let mut recipients = Vec::new();
+    let fields = parse_inner(pt, kind, false, Some(&mut recipients))?;
+    Some((fields, recipients))
+}
+
+fn parse_inner(
+    pt: &[u8],
+    kind: DocKind,
+    anchor_with_prev: bool,
+    mut recipients: Option<&mut Vec<[u8; 32]>>,
+) -> Option<Fields> {
     let mut f = Fields::default();
     let mut last: Option<u8> = None;
     let mut patterns = 0usize;
@@ -217,9 +245,9 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
         let value = tail.get(2..2 + len)?;
         rest = &tail[2 + len..];
 
-        // strictly ascending, except consecutive tag-7 records
+        // strictly ascending, except consecutive tag-7 records (and tag-25 records in a letter)
         if let Some(prev) = last {
-            if tag < prev || (tag == prev && tag != PROTECTED_PATTERN) {
+            if tag < prev || (tag == prev && tag != PROTECTED_PATTERN && tag != RECIPIENT) {
                 return None;
             }
         }
@@ -227,6 +255,15 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
 
         if tag >= FIRST_EXTENSION {
             continue; // forward compatibility: skipped, never interpreted
+        }
+        if tag == RECIPIENT {
+            // only a letter's TLV may carry recipients; everywhere else 25 is reserved
+            let ids = recipients.as_deref_mut()?;
+            if !letter_kind(kind) {
+                return None;
+            }
+            ids.push(value.try_into().ok()?);
+            continue;
         }
         if !allowed(kind, tag, anchor_with_prev) {
             return None; // reserved 16..=63, tag 0, or not a field of this kind
@@ -297,19 +334,56 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
     required.then_some(f)
 }
 
+/// The kinds a specific-people letter (`enc` v0x04) may carry: the discussion types and an
+/// event (whose value follows its target's audience).
+#[must_use]
+pub fn letter_kind(kind: DocKind) -> bool {
+    matches!(
+        kind,
+        DocKind::Issue | DocKind::Patch | DocKind::Comment | DocKind::Review | DocKind::Event
+    )
+}
+
+/// One record `tag ‖ u16(len) ‖ value`. A value longer than u16 cannot be represented;
+/// truncating the length would corrupt the framing, so it is written as-is and refused by the
+/// parse every writer runs on its own output.
+fn push_record(out: &mut Vec<u8>, tag: u8, v: &[u8]) {
+    let len = u16::try_from(v.len()).unwrap_or(u16::MAX);
+    out.push(tag);
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(v);
+}
+
+/// The padding record (§4.3, D28) a TLV of `n` bytes gets so that it ends on a multiple of
+/// [`PAD_BUCKET`]: one tag-64 record of zero bytes. It never takes the TLV past `max` (the room
+/// the envelope leaves), and is empty when not even its 3-byte header fits. Like a sealed
+/// release's (§16.2), it is always written when it fits, so an exact multiple gains a whole
+/// bucket.
+#[must_use]
+pub fn pad_record(n: usize, max: usize) -> Vec<u8> {
+    if n + 3 > max {
+        return Vec::new();
+    }
+    let fill = ((PAD_BUCKET - (n + 3) % PAD_BUCKET) % PAD_BUCKET).min(max - 3 - n);
+    let mut out = Vec::with_capacity(3 + fill);
+    push_record(&mut out, PAD, &vec![0; fill]);
+    out
+}
+
+/// Append one tag-25 record per recipient id, in slot order: the TLV tail of a letter before its
+/// padding.
+pub fn push_recipients(out: &mut Vec<u8>, recipients: &[[u8; 32]]) {
+    for r in recipients {
+        push_record(out, RECIPIENT, r);
+    }
+}
+
 /// Encode `fields` in ascending tag order. The result is not validated; the sealer parses it
 /// back with [`parse`] so a writer can never emit bytes a reader refuses.
 #[must_use]
 pub fn encode(f: &Fields) -> Zeroizing<Vec<u8>> {
     let mut out = Zeroizing::new(Vec::new());
-    let mut rec = |tag: u8, v: &[u8]| {
-        // a value longer than u16 cannot be represented; truncating the length would corrupt
-        // the framing, so it is written as-is and refused by the parse that follows
-        let len = u16::try_from(v.len()).unwrap_or(u16::MAX);
-        out.push(tag);
-        out.extend_from_slice(&len.to_be_bytes());
-        out.extend_from_slice(v);
-    };
+    let mut rec = |tag: u8, v: &[u8]| push_record(&mut out, tag, v);
     let text = [
         (TITLE, &f.title),
         (BODY, &f.body),

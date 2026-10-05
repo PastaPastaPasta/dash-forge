@@ -144,7 +144,7 @@ test.beforeAll(() => {
   g('add', '.')
   g('-c', 'user.name=G5G18', '-c', 'user.email=g5g18@invalid', 'commit', '-q', '-m', 'README on Platform')
   // The README's pack on Platform, then a second file's pack on S3 (the same repo, two places).
-  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--description', 'G5/G18 e2e: storage default, trust summary, inbox backfill')
+  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--no-protect', '--description', 'G5/G18 e2e: storage default, trust summary, inbox backfill')
   git('OWNER', 'push', REMOTE, 'main')
   dg('OWNER', 'storage', 'add', PROFILE, '--kind', 's3', '--endpoint', 'http://127.0.0.1:9000', '--region', 'us-east-1', '--bucket', 'forge-byo', '--public-url', PUBLIC, '--prefix', `g5g18-${RUN}`, '--access-key-id', 'minioadmin', '--secret-access-key', 'env:E2E_S3_SECRET', '--allow-private-uri')
   execFileSync('git', ['config', 'dash.storage', PROFILE], { cwd: SRC })

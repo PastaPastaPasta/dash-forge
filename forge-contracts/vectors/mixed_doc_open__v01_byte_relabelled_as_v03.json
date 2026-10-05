@@ -1,0 +1,34 @@
+{
+  "name": "v01_byte_relabelled_as_v03",
+  "description": "the same v0x01 bytes with enc[0] rewritten to 0x03 read as a v0x03 envelope whose commitment is not the derived one: CommitMismatch.",
+  "case": "mixed_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "03000102030405060708090a0b1c700a9fa65f8e1c2d0f39dcae478434996917a3459466ff79fff17cf0f3e58274031fe8a4240e26a8d168d11cbb3b7d7d8be123a827f075",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "commitMismatch"
+  }
+}

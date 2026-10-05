@@ -1625,6 +1625,28 @@ export async function withEncryptionKey<T>(network: Network, identityId: string,
 }
 
 /**
+ * Run `use` with every held encryption private key of (network, identity), highest key id first
+ * (fresh copies, all wiped afterwards): for a reader that cannot tell from a document which of its
+ * keys it was sealed to. An entry that does not open is left out. Module internal, as
+ * {@link withEncryptionKey}; throws {@link VaultLockedError} when locked or none is stored.
+ */
+export async function withEncryptionKeys<T>(network: Network, identityId: string, use: (keys: readonly { readonly keyId: number; readonly secret: Uint8Array }[]) => Promise<T>): Promise<T> {
+  const src = await encryptionSource(network, identityId)
+  if (src === null) {
+    const scope = unlockScope(network, identityId)
+    throw new VaultLockedError(
+      scope === null ? 'unlock this browser to read private repos' : scope === 'signing' ? 'unlock to use your encryption key in this tab' : 'no encryption key is stored in this browser',
+    )
+  }
+  const keys = await readEncryptionBlobs(network, identityId)
+  try {
+    return await use(keys)
+  } finally {
+    for (const k of keys) k.secret.fill(0)
+  }
+}
+
+/**
  * Lock (sign-out, Lock, forget, revoke, a key found disabled on chain): forget the unlocked
  * secret here, delete the kept session, and lock every other tab. The stored record stays.
  */
