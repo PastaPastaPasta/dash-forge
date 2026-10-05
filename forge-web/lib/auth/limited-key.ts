@@ -25,7 +25,7 @@ import { authSdk, type WasmKey } from '../sdk/facade'
 import { isQuorumMiss } from '../sdk/unreachable'
 import type { KeyLimits } from '../view/funds'
 import { retryWhileMissing } from '../view/retry'
-import { abbreviate, errorMessage } from '../utils'
+import { errorMessage, shortId } from '../utils'
 import { assertGroupHolds } from './group-trust'
 import { controlsKey } from './wif'
 
@@ -59,11 +59,6 @@ export function lifetimeLabel(days: number): string {
 /** The default budget for `days` from `now`. */
 export function limitsFor(days: number, now = Date.now()): LimitedKeyRequest {
   return { ...defaultLimits(now), expiresAt: now + days * DAY_MS }
-}
-
-/** An identity id as the key-mismatch copy names it: `DhRR5hs…` ({@link abbreviate}'s 7 characters). */
-export function shortId(id: string): string {
-  return id.length > 8 ? `${abbreviate(id)}…` : id
 }
 
 /**

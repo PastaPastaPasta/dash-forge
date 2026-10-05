@@ -1,0 +1,52 @@
+# Self-host forge-notify: `docker compose up -d` in this directory, with a `.env` next to it and
+# the three secret files below (see docs/hosting/forge-notify.md for every variable; at least
+# FORGE_NOTIFY_NETWORK, FORGE_NOTIFY_PUBLIC_URL and SMTP and/or VAPID settings). The service
+# listens on 127.0.0.1:8080 of the host: put TLS in front of it (a Cloudflare tunnel, Caddy,
+# nginx), never expose it as plain HTTP.
+#
+# Build the image first from the repository root:
+#   docker build -f services/forge-notify/Dockerfile -t forge-notify .
+#
+# Make the keys once, and keep them (losing the data key loses every stored address):
+#   docker run --rm forge-notify keys > keys.env   # then split into the files below, chmod 600
+
+services:
+  forge-notify:
+    image: ${NOTIFY_IMAGE:-forge-notify}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${NOTIFY_HOST_PORT:-8080}:8080"
+    # Every FORGE_NOTIFY_* setting comes from .env (docs/hosting/forge-notify.md, "Settings"):
+    # only what is set there is passed, so an unset setting keeps its built-in default.
+    env_file:
+      - .env
+    environment:
+      # Secrets come from the files below, never from .env.
+      FORGE_NOTIFY_DATA_KEY_FILE: /run/secrets/data_key
+      FORGE_NOTIFY_VAPID_PRIVATE_KEY_FILE: /run/secrets/vapid_private_key
+      FORGE_NOTIFY_SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+      # Behind a Cloudflare tunnel; set forwarded (nginx, Caddy) or none (direct) in .env.
+      FORGE_NOTIFY_TRUST_PROXY: ${FORGE_NOTIFY_TRUST_PROXY:-cloudflare}
+    secrets:
+      - data_key
+      - vapid_private_key
+      - smtp_password
+    volumes:
+      - notify-data:/data
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+secrets:
+  data_key:
+    file: ./secrets/data_key
+  vapid_private_key:
+    file: ./secrets/vapid_private_key
+  smtp_password:
+    file: ./secrets/smtp_password
+
+volumes:
+  notify-data:

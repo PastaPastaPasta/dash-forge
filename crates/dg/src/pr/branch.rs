@@ -558,8 +558,8 @@ pub async fn apply_suggestions(
     let est = branch_commit_estimate(route);
     if !ctx.json {
         eprintln!(
-            "Apply {} suggestion(s) to {} in {}:",
-            plans.len(),
+            "Apply {} to {} in {}:",
+            crate::fmt::plural(plans.len(), "suggestion"),
             src.ref_name,
             src.repo_display
         );
@@ -596,7 +596,11 @@ pub async fn apply_suggestions(
     )?;
     steps.ok(
         "commit",
-        format!("{} ({} file(s))", short(&commit), edited.len()),
+        format!(
+            "{} ({})",
+            short(&commit),
+            crate::fmt::plural(edited.len(), "file")
+        ),
     );
     let event = commit_push_move(ctx, &pr, &src, dir, &commit, &mut steps, repo).await?;
     ctx.emit(
@@ -612,8 +616,8 @@ pub async fn apply_suggestions(
         }),
         || {
             println!(
-                "✓ applied {} suggestion(s) as {} on {}; PR #{number} follows it",
-                plans.len(),
+                "✓ applied {} as {} on {}; PR #{number} follows it",
+                crate::fmt::plural(plans.len(), "suggestion"),
                 short(&commit),
                 src.ref_name
             );

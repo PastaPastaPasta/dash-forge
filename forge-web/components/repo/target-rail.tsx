@@ -14,7 +14,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 import Link from 'next/link'
 import { Plus, Settings2, X, type LucideIcon } from 'lucide-react'
 import { LABEL_COLORS, LABEL_LIMITS, type LabelDef } from '@/lib/repo'
-import { isIdentityId } from '@/lib/utils'
+import { isIdentityId, shortId } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -463,8 +463,7 @@ export function labelsConfirm(change: SetChange): { title: string; description: 
 /** The confirm for an assignee picker's change. */
 export function assigneesConfirm(change: SetChange): { title: string; description: string; label: string } {
   const n = change.add.length + change.remove.length
-  const short = (id: string): string => `${id.slice(0, 10)}…`
-  const parts = [change.add.length > 0 ? `assigns ${nameList(change.add, short)}` : null, change.remove.length > 0 ? `unassigns ${nameList(change.remove, short)}` : null].filter((x) => x !== null)
+  const parts = [change.add.length > 0 ? `assigns ${nameList(change.add, shortId)}` : null, change.remove.length > 0 ? `unassigns ${nameList(change.remove, shortId)}` : null].filter((x) => x !== null)
   const one = n === 1
   return {
     title: one ? (change.add.length === 1 ? 'Assign' : 'Remove assignee') : `Change ${n} assignees`,

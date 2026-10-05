@@ -51,7 +51,7 @@ import { withTimeout } from '@/lib/timeout'
 import { KEY_ADD_FLOOR_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
 import { writesPausedReason } from '@/lib/devnet-notice'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
-import { cn, errorMessage } from '@/lib/utils'
+import { cn, errorMessage, shortId } from '@/lib/utils'
 
 type View = 'choose' | 'unlock' | 'advanced' | LoginView
 
@@ -476,12 +476,12 @@ function UnlockView({
           >
             {vaults.map((x, i) => (
               <option key={x.identityId} value={i}>
-                {x.identityId.slice(0, 10)}…
+                {shortId(x.identityId)}
               </option>
             ))}
           </select>
         ) : (
-          <span className="font-mono">{v.identityId.slice(0, 10)}…</span>
+          <span className="font-mono">{shortId(v.identityId)}</span>
         )}
       </div>
       {v.methods.includes('passkey') ? (

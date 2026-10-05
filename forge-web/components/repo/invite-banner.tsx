@@ -31,6 +31,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { shortId } from '@/lib/utils'
 
 /** The query parameter an invite link carries: the role the owner means to add them as (`1`: unstated). */
 export const INVITE_PARAM = 'invite'
@@ -322,7 +323,7 @@ function PendingInvite({
       <Author identityId={id} link={false} />
       <div className="ml-auto flex items-center gap-2">
         <label htmlFor={selectId} className="sr-only">
-          Role for {id.slice(0, 8)}…
+          Role for {shortId(id)}
         </label>
         <select
           id={selectId}
