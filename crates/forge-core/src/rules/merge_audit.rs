@@ -135,6 +135,7 @@ pub enum AuditVerdict {
 }
 
 /// The rules in force at a merge and how the merge stood against them.
+#[allow(clippy::struct_excessive_bools)] // a report: each flag is one finding readers show
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeAudit {
@@ -161,7 +162,7 @@ pub struct MergeAudit {
 }
 
 /// The newest of `items` written at or before `at`, by `(created_at, id)`.
-fn newest_at<'a, T>(items: &'a [T], at: u64, key: impl Fn(&T) -> (u64, &str)) -> Option<&'a T> {
+fn newest_at<T>(items: &[T], at: u64, key: impl Fn(&T) -> (u64, &str)) -> Option<&T> {
     items
         .iter()
         .filter(|x| key(x).0 <= at)
@@ -190,6 +191,46 @@ fn changed_before<T>(
     })
 }
 
+/// The approvals standing at the merge (reviews and dismissals written no later, the membership
+/// `then`) against `policy`.
+fn approvals_at(input: &MergeAuditInput, then: &RoleOracle, policy: &Policy) -> PolicyStatus {
+    let at = input.merged_at;
+    let dismissed: BTreeSet<String> = input
+        .dismissals
+        .iter()
+        .filter(|d| d.created_at <= at)
+        .map(|d| d.review_id.clone())
+        .collect();
+    let reviews: Vec<Review> = input
+        .reviews
+        .iter()
+        .filter(|r| r.created_at <= at)
+        .cloned()
+        .collect();
+    let counted = count_approvals(
+        &reviews,
+        then,
+        &input.merge_head,
+        &dismissed,
+        &input.pr_author,
+    );
+    meets_policy(&counted, then, policy)
+}
+
+/// The first bypass recorded for this merge: only a maintainer's record naming the merge's
+/// commit counts (the merge box and `dg` write it right after the merge).
+fn recorded_bypass(input: &MergeAuditInput, oracle: &RoleOracle) -> Option<BypassEvent> {
+    input
+        .bypasses
+        .iter()
+        .filter(|b| {
+            b.oid.eq_ignore_ascii_case(&input.merge_oid)
+                && oracle.role_at(&b.actor, b.created_at) == Some(Role::Maintainer)
+        })
+        .min_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))
+        .cloned()
+}
+
 /// Judge a merge against the branch rules in force when it was recorded (see the module docs).
 #[must_use]
 pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
@@ -211,28 +252,9 @@ pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
     let merger_role = oracle.role_at(&input.merger, at);
     let protection_unmet = protected && merger_role != Some(Role::Maintainer);
 
-    let approvals = policy.as_ref().map(|policy| {
-        let dismissed: BTreeSet<String> = input
-            .dismissals
-            .iter()
-            .filter(|d| d.created_at <= at)
-            .map(|d| d.review_id.clone())
-            .collect();
-        let reviews: Vec<Review> = input
-            .reviews
-            .iter()
-            .filter(|r| r.created_at <= at)
-            .cloned()
-            .collect();
-        let counted = count_approvals(
-            &reviews,
-            &then,
-            &input.merge_head,
-            &dismissed,
-            &input.pr_author,
-        );
-        meets_policy(&counted, &then, policy)
-    });
+    let approvals = policy
+        .as_ref()
+        .map(|policy| approvals_at(input, &then, policy));
 
     let checks_required = policy
         .as_ref()
@@ -256,18 +278,7 @@ pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
     };
     let checks_unread = checks_required && input.runs.is_none();
 
-    // Only a maintainer's record for this merge's commit counts (the merge box and `dg` write it
-    // right after the merge).
-    let mut bypasses: Vec<&BypassEvent> = input
-        .bypasses
-        .iter()
-        .filter(|b| {
-            b.oid.eq_ignore_ascii_case(&input.merge_oid)
-                && oracle.role_at(&b.actor, b.created_at) == Some(Role::Maintainer)
-        })
-        .collect();
-    bypasses.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
-    let bypass = bypasses.first().map(|b| (*b).clone());
+    let bypass = recorded_bypass(input, &oracle);
 
     let policy_changed = changed_before(
         &input.policies,

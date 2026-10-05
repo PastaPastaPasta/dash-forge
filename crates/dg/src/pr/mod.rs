@@ -94,7 +94,7 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
             comments,
             show_hidden,
         } => view(ctx, repo, *number, *comments, *show_hidden).await,
-        PrCommand::Verify { repo, number } => verify::run(ctx, repo, *number).await,
+        PrCommand::Verify { repo, number } => Box::pin(verify::run(ctx, repo, *number)).await,
         PrCommand::Checkout { repo, number } => checkout(ctx, repo, *number).await,
         PrCommand::Review(a) => review::review(ctx, a).await,
         PrCommand::Comment(a) => review::comment(ctx, a).await,

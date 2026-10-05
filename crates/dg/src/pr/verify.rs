@@ -230,7 +230,7 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let content = merge_content(&facts);
     // The branch rules at the merge: Platform reads only (policy and config timelines, reviews,
     // members, and the runs on the merged head when the policy required checks).
-    let audit = collab.merge_audit(handle, &view).await;
+    let audit = Box::pin(collab.merge_audit(handle, &view)).await;
     let base = forge_core::repo::short_branch_name(&view.merge_base.ref_name).to_string();
     let merger = forge_core::rules::v2::merge_transition(&view.log.transitions)
         .map(|t| t.actor.clone())
