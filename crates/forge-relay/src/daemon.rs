@@ -1594,6 +1594,11 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
 /// delta-0 revision needs to tell a fresh yank from a further edit of one already yanked
 /// ([`ingest::translate_release`]).
 fn note_release_yanked(s: &mut RepoState, d: &FetchedDocument) -> bool {
+    // A members-only revision's `tagName` is keyed, and may equal a public tag: it is not
+    // reported and must not move the public tag's yanked state.
+    if ingest::is_sealed(d) {
+        return false;
+    }
     let tag = d.field_str("tagName").unwrap_or_default();
     let was_yanked = s.yanked_tags.contains(&tag);
     if d.field_bool("yanked") {
@@ -1783,6 +1788,7 @@ mod tests {
                         last_activity: 0,
                         draft: false,
                         merged: false,
+                        members_only: false,
                     },
                 )
             })
@@ -1864,6 +1870,7 @@ mod tests {
             last_activity: 0,
             draft: false,
             merged: false,
+            members_only: false,
         };
         st.tips
             .entry(hash.clone())
@@ -1914,6 +1921,7 @@ mod tests {
             last_activity: 0,
             draft: false,
             merged: false,
+            members_only: false,
         };
         st.targets.insert(target.clone(), pr);
         st.tips

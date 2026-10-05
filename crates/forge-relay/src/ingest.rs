@@ -270,7 +270,10 @@ pub async fn poll_stream(
 
 /// What an `event`/`comment`/`review` `targetId` points at: enough to fill the embedded
 /// issue or PR object without a fetch per event.
+/// Its flags are independent facts about the target (kind, draft, merged, audience), not states
+/// of one machine.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct TargetInfo {
     /// Whether the target is a pull request (`patch`) rather than an issue.
     pub is_pr: bool,
@@ -309,6 +312,10 @@ pub struct TargetInfo {
     /// since). Kept so a later lock/unlock on an already-merged PR reports `merged: true`
     /// rather than the lock/unlock's own hardcoded `false` ([`translate_transition`]).
     pub merged: bool,
+    /// A members-only issue or PR in a public repo (its document carries `enc`): every event
+    /// about it is marked [`MEMBERS_ONLY_KEY`] and embeds it with no title, body or head
+    /// ([`Self::issue_obj`], [`Self::pr_obj`]).
+    pub members_only: bool,
 }
 
 impl TargetInfo {
@@ -329,6 +336,7 @@ impl TargetInfo {
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
             merged: false,
+            members_only: is_sealed(d),
         }
     }
 
@@ -349,6 +357,7 @@ impl TargetInfo {
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
             merged: false,
+            members_only: is_sealed(d),
         }
     }
 
@@ -448,22 +457,35 @@ impl TargetInfo {
             number: self.number,
             document_id: id.to_string(),
             author: self.author.clone(),
-            title: self.title.clone(),
+            title: if self.members_only {
+                String::new()
+            } else {
+                self.title.clone()
+            },
             body: String::new(),
             open,
             is_pr: self.is_pr,
         }
     }
 
+    /// A members-only PR's head is a blind (DESIGN D4), not a commit a consumer can fetch, and
+    /// its base ref name is sealed: both are left empty.
     fn pr_obj(&self, id: &str, open: bool, merged: bool) -> PullRequestObj {
+        let public = |s: &String| {
+            if self.members_only {
+                String::new()
+            } else {
+                s.clone()
+            }
+        };
         PullRequestObj {
             number: self.number,
             document_id: id.to_string(),
             author: self.author.clone(),
-            title: self.title.clone(),
+            title: public(&self.title),
             body: String::new(),
-            base_ref: self.base_ref.clone(),
-            head_oid: self.head_oid.clone(),
+            base_ref: public(&self.base_ref),
+            head_oid: public(&self.head_oid),
             open,
             merged,
             draft: self.draft,
@@ -474,6 +496,75 @@ impl TargetInfo {
 /// A 32-byte identifier field as base58.
 fn id_field(d: &FetchedDocument, field: &str) -> Option<String> {
     d.field_bytes32(field).map(encode_identifier)
+}
+
+// ===========================================================================
+// Members-only content in a public repo (DESIGN D14)
+// ===========================================================================
+
+/// The top-level payload key, `true`, of an event about members-only content in a public repo:
+/// a members-only comment or review, a members-only issue or PR, or anything that happened on
+/// one. Its content fields (`title`, `body`, a PR's `head.sha` and `base.ref`, a label's
+/// `name`) are empty strings on purpose, and nothing else in the payload came from inside
+/// `enc`. Absent on every other event. The event name, action and every other field are what
+/// a public event of the same kind carries, so a consumer that does not know the key still
+/// parses it and sees an empty text.
+pub const MEMBERS_ONLY_KEY: &str = "dash_members_only";
+
+/// Whether `d` is sealed: it carries `enc`, so its content is ciphertext the relay cannot read
+/// (it holds no repository key) and never forwards.
+pub fn is_sealed(d: &FetchedDocument) -> bool {
+    d.fields.contains_key("enc")
+}
+
+/// Whether `d` carries `asMember` naming its writer: consensus admits it only from a current
+/// member (`m_self` and its membership reference; a stranger's claim is refused with 40120).
+fn as_member(d: &FetchedDocument) -> bool {
+    id_field(d, "asMember").is_some_and(|m| m == d.owner_id)
+}
+
+/// Whether the relay may report a document of `doc_type` at all (DESIGN D14). A plaintext
+/// document: yes. A sealed one only as content-free members-only activity, and only when it
+/// is
+///
+/// * a thread's root (`issue`, `patch`): its number is public and takes a place in the dense
+///   sequence, so it gets "#N · members-only" whoever wrote it;
+/// * a `comment` or `review` carrying `asMember` (a member wrote it); without it, it is a
+///   stranger's ciphertext that no member's client shows, and the relay says nothing;
+/// * an `event`: only a maintainer or writer can write one (its `ownerRefersTo`), the same
+///   proof `asMember` gives, so its sealed value (a label name, a retarget's base) is a
+///   member's.
+///
+/// A sealed `release` revision is never reported: the public release fold ignores it, and a
+/// `release` event with no tag would mislead a consumer that deploys on releases. A sealed ref
+/// update has no `refName` and was never reported ([`translate_ref_update`]).
+pub fn reportable(doc_type: &str, d: &FetchedDocument) -> bool {
+    if !is_sealed(d) {
+        return true;
+    }
+    match doc_type {
+        DOC_ISSUE | DOC_PATCH | DOC_EVENT => true,
+        DOC_COMMENT | DOC_REVIEW => as_member(d),
+        _ => false,
+    }
+}
+
+/// Mark `e` as members-only activity ([`MEMBERS_ONLY_KEY`]) when `members_only`.
+fn mark(mut e: WebhookEvent, members_only: bool) -> WebhookEvent {
+    if members_only {
+        e.payload[MEMBERS_ONLY_KEY] = serde_json::Value::Bool(true);
+    }
+    e
+}
+
+/// A plaintext text field, or empty when `d` is sealed (consensus `noPlain` already keeps the
+/// plaintext fields absent beside `enc`; this does not depend on it).
+fn plain_str(d: &FetchedDocument, field: &str) -> String {
+    if is_sealed(d) {
+        String::new()
+    } else {
+        d.field_str(field).unwrap_or_default()
+    }
 }
 
 // ===========================================================================
@@ -512,45 +603,60 @@ pub fn is_ref_deletion(d: &FetchedDocument) -> bool {
     d.field_hex("newOid").is_none_or(|o| is_zero_oid(&o))
 }
 
-/// An `issue` → `issues` opened.
+/// An `issue` → `issues` opened. A members-only issue is reported with its number and author
+/// and no title or body ([`MEMBERS_ONLY_KEY`]).
 pub fn translate_issue(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
     let issue = IssueObj {
         number: d.field_u64("number")?,
         document_id: d.id.clone(),
         author: d.owner_id.clone(),
-        title: d.field_str("title").unwrap_or_default(),
-        body: d.field_str("body").unwrap_or_default(),
+        title: plain_str(d, "title"),
+        body: plain_str(d, "body"),
         open: true,
         is_pr: false,
     };
-    Some(issues_event(repo, &d.id, "opened", &issue))
+    Some(mark(
+        issues_event(repo, &d.id, "opened", &issue),
+        is_sealed(d),
+    ))
 }
 
-/// A `patch` → `pull_request` opened.
+/// A `patch` → `pull_request` opened. A members-only PR is reported with its number and author
+/// and no title, body, base ref or head (its `headOid` is a blind, not a fetchable commit).
 pub fn translate_patch(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
+    let sealed = is_sealed(d);
     let pr = PullRequestObj {
         number: d.field_u64("number")?,
         document_id: d.id.clone(),
         author: d.owner_id.clone(),
-        title: d.field_str("title").unwrap_or_default(),
-        body: d.field_str("body").unwrap_or_default(),
-        base_ref: d.field_str("baseRefName").unwrap_or_default(),
-        head_oid: d.field_hex("headOid").unwrap_or_default(),
+        title: plain_str(d, "title"),
+        body: plain_str(d, "body"),
+        base_ref: plain_str(d, "baseRefName"),
+        head_oid: if sealed {
+            String::new()
+        } else {
+            d.field_hex("headOid").unwrap_or_default()
+        },
         open: true,
         merged: false,
         draft: false,
     };
-    Some(pull_request_event(repo, &d.id, "opened", &pr))
+    Some(mark(pull_request_event(repo, &d.id, "opened", &pr), sealed))
 }
 
-/// A `comment` → `issue_comment` created. An unknown target yields a minimal stub.
+/// A `comment` → `issue_comment` created. An unknown target yields a minimal stub. A
+/// members-only comment is reported with no body, and only when [`reportable`].
 pub fn translate_comment(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
 ) -> Option<WebhookEvent> {
+    if !reportable(DOC_COMMENT, d) {
+        return None;
+    }
     let target_id = id_field(d, "targetId")?;
-    let issue = targets.get(&target_id).map_or_else(
+    let target = targets.get(&target_id);
+    let issue = target.map_or_else(
         || IssueObj {
             number: 0,
             document_id: target_id.clone(),
@@ -562,48 +668,68 @@ pub fn translate_comment(
         },
         |t| t.issue_obj(&target_id, true),
     );
-    Some(issue_comment_event(
-        repo,
-        &d.id,
-        &issue,
-        &d.id,
-        &d.owner_id,
-        &d.field_str("body").unwrap_or_default(),
+    Some(mark(
+        issue_comment_event(
+            repo,
+            &d.id,
+            &issue,
+            &d.id,
+            &d.owner_id,
+            &plain_str(d, "body"),
+        ),
+        is_sealed(d) || target.is_some_and(|t| t.members_only),
     ))
 }
 
 /// A `review` → `pull_request_review` submitted. Needs its PR in `targets`. Its embedded PR's
 /// `open`/`merged` are the relay's last-seen fold (`closed`) and [`TargetInfo::merged`], same
-/// as [`translate_event`] -- a review carries no fold of its own either.
+/// as [`translate_event`] -- a review carries no fold of its own either. A members-only review
+/// is reported with its verdict (plaintext, and it counts for every reader: DESIGN D15) and no
+/// body, and only when [`reportable`]; on a members-only PR its `commit_id` (a blind) is empty.
 pub fn translate_review(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
     closed: &BTreeSet<String>,
 ) -> Option<WebhookEvent> {
+    if !reportable(DOC_REVIEW, d) {
+        return None;
+    }
     let patch_id = id_field(d, "patchId")?;
     let target = targets.get(&patch_id).filter(|t| t.is_pr)?;
     let open = !closed.contains(&patch_id);
-    Some(pull_request_review_event(
-        repo,
-        &d.id,
-        &target.pr_obj(&patch_id, open, target.merged),
-        &d.owner_id,
-        d.field_u64("verdict")?,
-        &d.field_hex("commitOid").unwrap_or_default(),
-        &d.field_str("body").unwrap_or_default(),
+    let commit = if target.members_only {
+        String::new()
+    } else {
+        d.field_hex("commitOid").unwrap_or_default()
+    };
+    Some(mark(
+        pull_request_review_event(
+            repo,
+            &d.id,
+            &target.pr_obj(&patch_id, open, target.merged),
+            &d.owner_id,
+            d.field_u64("verdict")?,
+            &commit,
+            &plain_str(d, "body"),
+        ),
+        is_sealed(d) || target.members_only,
     ))
 }
 
 /// A `release` → `release` published, or `unpublished` when it newly marks the tag yanked.
 /// `was_yanked` is whether the tag's previous revision was already yanked (the caller's own
 /// per-tag cache, so this stays a pure function of its arguments): a further delta-0 revision on
-/// an already-yanked tag is `edited`, not a repeated `unpublished`.
+/// an already-yanked tag is `edited`, not a repeated `unpublished`. A members-only revision is
+/// not reported ([`reportable`]).
 pub fn translate_release(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     was_yanked: bool,
 ) -> Option<WebhookEvent> {
+    if !reportable(DOC_RELEASE, d) {
+        return None;
+    }
     let assets = d
         .field_str("assets")
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -769,7 +895,7 @@ pub fn translate_transition(
         };
         e.payload[obj]["locked"] = serde_json::Value::Bool(locked);
         e.payload["sender"] = repo.user_json(&d.owner_id);
-        return Some(e);
+        return Some(mark(e, target.members_only));
     }
     let (action, open, merged) = transition_action(kind)?;
     let mut e = if target.is_pr {
@@ -789,7 +915,7 @@ pub fn translate_transition(
             "not_on_base"
         });
     }
-    Some(e)
+    Some(mark(e, target.members_only))
 }
 
 /// An `event` or `authorEvent` → `issues` / `pull_request` with the matching action. Needs
@@ -797,13 +923,18 @@ pub fn translate_transition(
 /// own `open` is always `true`, so it is not used here), so `open` is the relay's last-seen
 /// fold (`closed`), and a PR's `merged` is [`TargetInfo::merged`] -- matching how
 /// [`translate_transition`]'s lock arm reads the same two facts. A label or assignee event
-/// adds GitHub's `label` / `assignee` object.
+/// adds GitHub's `label` / `assignee` object. A members-only event (its `value` sealed) or an
+/// event on a members-only thread is marked [`MEMBERS_ONLY_KEY`]: its label `name` is empty and
+/// its assignee is the plaintext `refId` (public: `forge-v2.md` `needAssignee`).
 pub fn translate_event(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
     closed: &BTreeSet<String>,
 ) -> Option<WebhookEvent> {
+    if !reportable(DOC_EVENT, d) {
+        return None;
+    }
     let target_id = id_field(d, "targetId")?;
     let target = targets.get(&target_id)?;
     let kind = d.field_u64("kind")?;
@@ -821,14 +952,21 @@ pub fn translate_event(
     };
     // The actor is the event's writer, not the target's author.
     e.payload["sender"] = repo.user_json(&d.owner_id);
-    if let Some(value) = d.field_str("value") {
-        match kind {
-            4 | 5 => e.payload["label"] = serde_json::json!({ "name": value }),
-            6 | 7 => e.payload["assignee"] = repo.user_json(&value),
-            _ => {}
+    // Consensus requires `value` or `enc` on a label event and `refId` on an assignment.
+    let sealed = is_sealed(d);
+    let value = d.field_str("value").filter(|_| !sealed);
+    match kind {
+        4 | 5 if sealed || value.is_some() => {
+            e.payload["label"] = serde_json::json!({ "name": value.unwrap_or_default() });
         }
+        6 | 7 => {
+            if let Some(who) = value.or_else(|| id_field(d, "refId")) {
+                e.payload["assignee"] = repo.user_json(&who);
+            }
+        }
+        _ => {}
     }
-    Some(e)
+    Some(mark(e, sealed || target.members_only))
 }
 
 #[cfg(test)]
@@ -881,6 +1019,7 @@ mod tests {
             last_activity: 0,
             draft: false,
             merged: false,
+            members_only: false,
         }
     }
 
@@ -1610,5 +1749,323 @@ mod tests {
         // Never yanked: was_yanked false, yanked false -> edited.
         let e = translate_release(&meta(), &rel(false), false).unwrap();
         assert_eq!(e.payload["action"], "edited");
+    }
+
+    // -----------------------------------------------------------------------
+    // Members-only content in a public repo (DESIGN D14), with the shapes spike S2 wrote live
+    // on sakura (`spikes/mixed-visibility/s2/seal-fixture.mjs`): `vis: "public"`, a v0x03 or
+    // v0x04 `enc` of random bytes, `epoch` 0, and `asMember` on a member's write.
+    // -----------------------------------------------------------------------
+
+    const MEMBER: &str = "MEMBER";
+    const OUTSIDER: &str = "OUTSIDER";
+    /// `asMember` is an identifier; the tests' owner ids are short strings, so `as_member`
+    /// compares base58 forms: the fixtures use the base58 of `[0x4d; 32]` as the member's id.
+    fn member_id() -> String {
+        encode_identifier([0x4d; 32])
+    }
+
+    /// An S2-shaped `enc`: version byte, then deterministic "random" bytes.
+    fn enc(version: u8, len: usize) -> Vec<u8> {
+        let mut v = vec![version];
+        v.extend((1..len).map(|i| u8::try_from(i * 37 % 251).unwrap()));
+        v
+    }
+
+    /// `enc[1..13]` as hex: S2's leak probe. A payload must not contain it.
+    fn probe(e: &[u8]) -> String {
+        hex::encode(&e[1..13])
+    }
+
+    fn sealed(
+        id: &str,
+        owner: &str,
+        e: &[u8],
+        mut fields: Vec<(&'static str, FieldValue)>,
+    ) -> FetchedDocument {
+        fields.extend([
+            ("vis", FieldValue::text("public")),
+            ("enc", FieldValue::bytes(e.to_vec())),
+            ("epoch", FieldValue::integer(0)),
+        ]);
+        doc(id, owner, fields)
+    }
+
+    fn with_as_member(mut d: FetchedDocument) -> FetchedDocument {
+        d.owner_id = member_id();
+        d.fields
+            .insert("asMember".into(), FieldValue::identifier([0x4d; 32]));
+        d
+    }
+
+    fn assert_content_free(e: &WebhookEvent, enc: &[u8]) {
+        assert_eq!(e.payload[MEMBERS_ONLY_KEY], true, "{}", e.payload);
+        let text = e.payload.to_string();
+        assert!(
+            !text.contains(&probe(enc)),
+            "sealed bytes in the payload: {text}"
+        );
+    }
+
+    #[test]
+    fn a_strangers_sealed_comment_is_not_reported() {
+        let issues = targets([1; 32], target(false, 1));
+        for e in [enc(3, 93), enc(4, 234)] {
+            let d = sealed(
+                "c-outsider",
+                OUTSIDER,
+                &e,
+                vec![("targetId", FieldValue::identifier([1; 32]))],
+            );
+            assert!(!reportable(DOC_COMMENT, &d));
+            assert!(translate_comment(&meta(), &d, &issues).is_none());
+            assert!(translate_comment(&meta(), &d, &BTreeMap::new()).is_none());
+        }
+        // `asMember` naming someone else than the writer (consensus refuses it): still nothing.
+        let mut d = sealed(
+            "c-claim",
+            OUTSIDER,
+            &enc(3, 93),
+            vec![("targetId", FieldValue::identifier([1; 32]))],
+        );
+        d.fields
+            .insert("asMember".into(), FieldValue::identifier([0x4d; 32]));
+        assert!(translate_comment(&meta(), &d, &issues).is_none());
+    }
+
+    #[test]
+    fn a_members_sealed_comment_is_content_free_activity() {
+        let issues = targets([1; 32], target(false, 1));
+        for e in [enc(3, 93), enc(4, 302)] {
+            let d = with_as_member(sealed(
+                "c-member",
+                MEMBER,
+                &e,
+                vec![("targetId", FieldValue::identifier([1; 32]))],
+            ));
+            let ev = translate_comment(&meta(), &d, &issues).unwrap();
+            assert_eq!(ev.event, "issue_comment");
+            assert_eq!(ev.payload["action"], "created");
+            assert_eq!(ev.payload["issue"]["number"], 1);
+            // The public issue keeps its public title; the comment has no body.
+            assert_eq!(ev.payload["issue"]["title"], "T");
+            assert_eq!(ev.payload["comment"]["body"], "");
+            assert_eq!(ev.payload["sender"]["login"], member_id());
+            assert_content_free(&ev, &e);
+        }
+        // An inline comment in a sealed review (S2 `inline`): line, side and commitOid are
+        // public; still no body.
+        let e = enc(3, 93);
+        let d = with_as_member(sealed(
+            "inline",
+            MEMBER,
+            &e,
+            vec![
+                ("targetId", FieldValue::identifier([9; 32])),
+                ("reviewId", FieldValue::identifier([8; 32])),
+                ("line", FieldValue::integer(5)),
+                ("side", FieldValue::integer(1)),
+                ("commitOid", FieldValue::bytes(vec![0x12; 20])),
+            ],
+        ));
+        let ev = translate_comment(&meta(), &d, &targets([9; 32], target(true, 2))).unwrap();
+        assert_eq!(ev.payload["comment"]["body"], "");
+        assert_content_free(&ev, &e);
+    }
+
+    #[test]
+    fn a_members_sealed_review_keeps_its_verdict_and_drops_its_body() {
+        let prs = targets([3; 32], target(true, 2));
+        let none = BTreeSet::new();
+        let e = enc(3, 77);
+        let fields = || {
+            vec![
+                ("patchId", FieldValue::identifier([3; 32])),
+                ("verdict", FieldValue::integer(1)),
+                ("commitOid", FieldValue::bytes(vec![0x12; 20])),
+            ]
+        };
+        let ev = translate_review(
+            &meta(),
+            &with_as_member(sealed("rv", MEMBER, &e, fields())),
+            &prs,
+            &none,
+        )
+        .unwrap();
+        assert_eq!(ev.payload["review"]["state"], "approved");
+        assert_eq!(ev.payload["review"]["body"], "");
+        assert_eq!(ev.payload["review"]["commit_id"], "12".repeat(20));
+        assert_eq!(ev.payload["pull_request"]["title"], "T");
+        assert_content_free(&ev, &e);
+        // A stranger's sealed review (no `asMember`): nothing.
+        let d = sealed("rv-x", OUTSIDER, &e, fields());
+        assert!(translate_review(&meta(), &d, &prs, &none).is_none());
+    }
+
+    #[test]
+    fn a_sealed_top_level_issue_or_pr_is_numbered_members_only_activity() {
+        // S2 `issue`: a member's, with `asMember`; a stranger's root is reported too (its
+        // number is public and takes a place in the dense sequence).
+        let e = enc(3, 109);
+        for d in [
+            with_as_member(sealed(
+                "i3",
+                MEMBER,
+                &e,
+                vec![
+                    ("number", FieldValue::integer(3)),
+                    ("tk", FieldValue::integer(0)),
+                ],
+            )),
+            sealed(
+                "i3x",
+                OUTSIDER,
+                &e,
+                vec![("number", FieldValue::integer(3))],
+            ),
+        ] {
+            assert!(reportable(DOC_ISSUE, &d));
+            let ev = translate_issue(&meta(), &d).unwrap();
+            assert_eq!((ev.event, ev.action), ("issues", Some("opened")));
+            assert_eq!(ev.payload["issue"]["number"], 3);
+            assert_eq!(ev.payload["issue"]["title"], "");
+            assert_eq!(ev.payload["issue"]["body"], "");
+            assert_eq!(ev.payload["sender"]["login"], d.owner_id);
+            assert_content_free(&ev, &e);
+        }
+
+        // S2 `pr`: blinded head, keyed source hash, public base hash. No head a CI could fetch.
+        let e = enc(3, 125);
+        let blind = vec![0xb1; 20];
+        let pr = with_as_member(sealed(
+            "p4",
+            MEMBER,
+            &e,
+            vec![
+                ("number", FieldValue::integer(4)),
+                ("headOid", FieldValue::bytes(blind.clone())),
+                ("baseRefNameHash", FieldValue::bytes(vec![0xba; 32])),
+                ("sourceRefNameHash", FieldValue::bytes(vec![0x5e; 32])),
+            ],
+        ));
+        let ev = translate_patch(&meta(), &pr).unwrap();
+        assert_eq!(ev.event, "pull_request");
+        assert_eq!(ev.payload["pull_request"]["number"], 4);
+        assert_eq!(ev.payload["pull_request"]["title"], "");
+        assert_eq!(ev.payload["pull_request"]["head"]["sha"], "");
+        assert_eq!(ev.payload["pull_request"]["base"]["ref"], "");
+        assert_content_free(&ev, &e);
+        assert!(!ev.payload.to_string().contains(&hex::encode(&blind)));
+
+        // What happens on it later is marked too, and never shows the blind.
+        let t = TargetInfo::from_patch(&pr, Baseline::Beginning);
+        assert!(t.members_only);
+        let prs = targets([4; 32], t);
+        let close = doc(
+            "t",
+            "ACTOR",
+            vec![
+                ("targetId", FieldValue::identifier([4; 32])),
+                ("kind", FieldValue::integer(11)),
+            ],
+        );
+        let ev = translate_transition(&meta(), &close, &prs, true, &BTreeSet::new()).unwrap();
+        assert_eq!(ev.payload["action"], "closed");
+        assert_eq!(ev.payload["pull_request"]["number"], 4);
+        assert_content_free(&ev, &e);
+        assert!(!ev.payload.to_string().contains(&hex::encode(&blind)));
+        // A member's sealed comment on it: content-free; a stranger's: nothing.
+        let c = enc(3, 93);
+        let on = || vec![("targetId", FieldValue::identifier([4; 32]))];
+        let ev = translate_comment(
+            &meta(),
+            &with_as_member(sealed("c", MEMBER, &c, on())),
+            &prs,
+        )
+        .unwrap();
+        assert_eq!(ev.payload["issue"]["title"], "");
+        assert_content_free(&ev, &c);
+        assert!(translate_comment(&meta(), &sealed("cx", OUTSIDER, &c, on()), &prs).is_none());
+    }
+
+    #[test]
+    fn a_sealed_event_value_is_reported_without_it() {
+        let issues = targets([1; 32], target(false, 1));
+        let none = BTreeSet::new();
+        let e = enc(3, 61);
+        let label = sealed(
+            "l",
+            MEMBER,
+            &e,
+            vec![
+                ("targetId", FieldValue::identifier([1; 32])),
+                ("kind", FieldValue::integer(4)),
+            ],
+        );
+        let ev = translate_event(&meta(), &label, &issues, &none).unwrap();
+        assert_eq!(ev.payload["action"], "labeled");
+        assert_eq!(ev.payload["label"]["name"], "");
+        assert_content_free(&ev, &e);
+        // An assignment's addressee is the plaintext `refId`.
+        let assign = sealed(
+            "a",
+            MEMBER,
+            &e,
+            vec![
+                ("targetId", FieldValue::identifier([1; 32])),
+                ("kind", FieldValue::integer(6)),
+                ("refId", FieldValue::identifier([0xb0; 32])),
+            ],
+        );
+        let ev = translate_event(&meta(), &assign, &issues, &none).unwrap();
+        assert_eq!(
+            ev.payload["assignee"]["login"],
+            encode_identifier([0xb0; 32])
+        );
+        assert_content_free(&ev, &e);
+    }
+
+    #[test]
+    fn a_sealed_release_revision_is_not_reported() {
+        // S2 `release`: a keyed tagName, delta 0.
+        let d = sealed(
+            "rel",
+            "MAINT",
+            &enc(3, 125),
+            vec![
+                ("tagName", FieldValue::text("k3yedTagNameFromTheSpike")),
+                ("delta", FieldValue::signed(0)),
+            ],
+        );
+        assert!(!reportable(DOC_RELEASE, &d));
+        assert!(translate_release(&meta(), &d, false).is_none());
+    }
+
+    /// Plaintext documents are reported exactly as before: no key, the text kept.
+    #[test]
+    fn public_documents_are_unchanged() {
+        let c = doc(
+            "c1",
+            "COMMENTER",
+            vec![
+                ("targetId", FieldValue::identifier([7; 32])),
+                ("body", FieldValue::text("nice")),
+            ],
+        );
+        let e = translate_comment(&meta(), &c, &targets([7; 32], target(false, 42))).unwrap();
+        assert_eq!(e.payload["comment"]["body"], "nice");
+        assert!(e.payload.get(MEMBERS_ONLY_KEY).is_none());
+        let i = doc(
+            "i",
+            "A",
+            vec![
+                ("number", FieldValue::integer(5)),
+                ("title", FieldValue::text("Bug")),
+            ],
+        );
+        let e = translate_issue(&meta(), &i).unwrap();
+        assert_eq!(e.payload["issue"]["title"], "Bug");
+        assert!(e.payload.get(MEMBERS_ONLY_KEY).is_none());
+        assert!(!TargetInfo::from_issue(&i, Baseline::Beginning).members_only);
     }
 }
