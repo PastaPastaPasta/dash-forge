@@ -562,7 +562,7 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
         return <del key={key} className="text-anvil-500 dark:text-anvil-400">{renderInline(n.c, key)}</del>
       case 'code':
         return (
-          <code key={key} className={cn('rounded bg-anvil-100 px-1 py-0.5 text-[0.9em] text-forge-700 dark:bg-anvil-800 dark:text-forge-300', WRAP)}>
+          <code key={key} className={cn('rounded bg-anvil-100 px-1 py-0.5 text-[0.9em] dark:bg-anvil-800', WRAP)}>
             {n.v}
           </code>
         )

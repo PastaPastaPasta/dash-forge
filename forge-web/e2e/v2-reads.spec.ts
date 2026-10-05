@@ -5,6 +5,7 @@ import {
   E2E_DEVNET,
   EMPTY,
   expectLanded,
+  firstRecentCard,
   loadSeedPulls,
   MAINTAINER,
   repoUrl as url,
@@ -46,16 +47,15 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible()
     await expect(page.getByLabel(/jump to a repo/i).first()).toBeVisible()
     await expect(page.getByRole('group', { name: /verification status/i })).toBeVisible()
-    const feed = page.locator('section').filter({ hasText: 'Recent repos' }).first()
     // The live write specs keep creating repos, so the fixture may have scrolled off the
     // newest 24: assert on whatever is newest, then on the fixture's counts by name.
-    const card = feed.locator('a[href*="/repo"]').first()
-    await expectLanded(page, card)
+    const card = await firstRecentCard(page)
     // The composite read brought the counts along for every row.
     const row = card.locator('xpath=ancestor::div[contains(@class,"rounded-lg")][1]')
     await expect(row.getByTitle(/Stars/)).toBeVisible()
     await expect(row.getByTitle(/Issues/)).toBeVisible()
-    const demo = feed.locator('a', { hasText: 'forge-v2 demo' }).first()
+    // The fixture is featured on sakura (above the feed, which then leaves it out).
+    const demo = page.locator('main a', { hasText: 'forge-v2 demo' }).first()
     if (await demo.count()) {
       const demoRow = demo.locator('xpath=ancestor::div[contains(@class,"rounded-lg")][1]')
       // Issues #1-#4 (seed-v2-fixture.mjs; #4 came with the review-parity fixture).
@@ -177,8 +177,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible()
     await expect(page.getByTestId('network-badge')).toBeVisible()
     // Measure once the feed has settled on its terminal state (cards, not the skeleton).
-    const feed = page.locator('section').filter({ hasText: 'Recent repos' }).first()
-    await expectLanded(page, feed.locator('a[href*="/repo"]').first())
+    await firstRecentCard(page)
     const overflow = await page.evaluate(() => {
       const de = document.documentElement
       return { scrollW: de.scrollWidth, clientW: de.clientWidth }

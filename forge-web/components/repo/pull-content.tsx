@@ -54,7 +54,9 @@ import {
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
+import { EditBase } from './edit-base'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
@@ -101,7 +103,7 @@ import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { pendingReruns, rerunCounts } from '@/lib/rules/ci-rerun'
-import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { firstPushers, headUpdatePhrases, sourceBranchEvents, type HeadUpdatePhrase } from '@/lib/view/head-updates'
@@ -224,6 +226,8 @@ type Pending =
   | { kind: 'restore-branch'; label: string; run: () => Promise<void> }
   | { kind: 'define-label'; name: string; color: string; description: string }
   | { kind: 'edit-pull'; title: string; body: string }
+  /** Change the branch an open PR merges into (event kind 8). */
+  | { kind: 'retarget'; base: string }
   | { kind: 'edit-comment'; id: string; body: string }
   | { kind: 'delete-comment'; id: string }
   | { kind: 'resolve'; root: string; resolve: boolean }
@@ -580,7 +584,8 @@ function PullPage({
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
-  const [comment, setComment] = useState('')
+  // The unsent comment survives a reload (never stored for a private repo).
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity))
   const commentIntent = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -767,17 +772,24 @@ function PullPage({
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
+    // Until the outcome is known, a reload must not bring the text back to be posted again.
+    holdDraft(true, comment)
     try {
       const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent, post: postContext })
       setComment('')
+      holdDraft(false, '')
       commentIntent.renew()
       refresh((t) => t.comments.some((c) => c.id === r.documentId))
     } catch (e) {
       // Another tab of this identity wrote it: the composer's text is on chain, clear it.
       if (e instanceof SupersededWriteError) {
         setComment('')
+        holdDraft(false, '')
         commentIntent.renew()
         refresh()
+      } else if (!(e instanceof UnconfirmedWriteError)) {
+        // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays held.)
+        holdDraft(false, comment)
       }
       setCommentError(guard.failed(e))
     } finally {
@@ -891,6 +903,17 @@ function PullPage({
         await setLabel(sdk, signer, repo, { target, label: p.name, add: true, intent: `${intent}:apply` })
         refresh((t) => t.pull.state.labels.includes(p.name))
         return
+      case 'retarget': {
+        // Read the branch again (dg does): a retarget to a branch deleted since the page loaded
+        // would never count for a merge. A private repo's refs are not read from here.
+        if (repo.visibility !== 'private') {
+          const now = await readBranchState(sdk, repo, p.base)
+          if (now === null || now.state === 'unborn') throw new Error(`${shortBranch(p.base)} is no longer a branch of this repo; reload to see its branches`)
+        }
+        await post('retarget', intent, { value: p.base })
+        refresh((t) => t.pull.mergeBaseRefName === p.base)
+        return
+      }
       case 'edit-pull': {
         const changes: { title?: string; body?: string } = {}
         if (p.title !== pull.title) changes.title = p.title
@@ -983,6 +1006,8 @@ function PullPage({
         return rerunCost(pending.check)
       case 'milestone':
         return previewCreate('event', pending.title === null ? {} : { value: pending.title })
+      case 'retarget':
+        return previewCreate('event', { value: pending.base })
       case 'delete-branch':
       case 'restore-branch':
         return previewCreate('refUpdate')
@@ -1124,7 +1149,7 @@ function PullPage({
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4" data-testid="pull-page">
+    <div className="space-y-4" data-testid="pull-page">
       {/* Header */}
       <div>
         {editing ? (
@@ -1173,7 +1198,17 @@ function PullPage({
                 {open ? 'wants to merge into' : 'wanted to merge into'}
               </>
             )}{' '}
-            <span className="font-mono">{shortBranch(pull.mergeBaseRefName) || '?'}</span>
+            <span className="font-mono" data-testid="pr-base">{shortBranch(pull.mergeBaseRefName) || '?'}</span>
+            {open && canMember && caps.canRetarget ? (
+              <EditBase
+                branches={home.branches.filter(isLive).map((b) => b.refName)}
+                current={pull.mergeBaseRefName}
+                source={crossRepo ? null : pull.sourceRefName}
+                defaultBranch={home.defaultBranch}
+                disabledReason={guard.disabledReason}
+                onPick={(b) => setPending({ kind: 'retarget', base: b })}
+              />
+            ) : null}
             {pullOrigin?.headLabel ? (
               // A mirrored PR's head branch at the source, a fork's as `owner:branch` (L-37); the
               // mirror's own `refs/mirror/pull/<n>/head` names no branch anyone knows.
@@ -1567,7 +1602,7 @@ function PullPage({
                     <PrivateComposeNote reason={composeBlock} />
                   ) : (
                     <>
-                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} />
                       <SealedLimit repo={repo} kind="comment" text={comment.trim()} long={commentLong} />
                       <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} />
                     </>
@@ -2067,6 +2102,12 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       }
     case 'define-label':
       return { title: `Create label "${pending.name}"`, description: 'Creates the label for this repo and adds it here.', label: 'Sign & create' }
+    case 'retarget':
+      return {
+        title: `Change the base of PR #${number} to ${shortBranch(pending.base)}`,
+        description: `It will merge into ${shortBranch(pending.base)} instead of ${base}. Its commits, reviews and checks stay; the changed files are compared with the new base.`,
+        label: 'Sign & change base',
+      }
     case 'edit-pull':
       return { title: `Edit PR #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'edit-comment':
@@ -2247,7 +2288,7 @@ function BranchRules({
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
         <p className="flex items-center gap-2" data-testid="protected-base">
-          <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />
+          <ShieldCheck className="h-4 w-4 text-fg-muted" aria-hidden />
           <span>
             <span className="font-mono">{short}</span> is protected. Only maintainers can merge into it.
           </span>

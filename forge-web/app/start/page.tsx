@@ -57,7 +57,7 @@ export default function GettingStartedPage(): JSX.Element {
           </p>
         </div>
 
-        <Section icon={<UserRound className="h-4 w-4 text-forge-500" aria-hidden />} title="Your identity is your account">
+        <Section icon={<UserRound className="h-4 w-4 text-fg-muted" aria-hidden />} title="Your identity is your account">
           <p>
             Instead of a username and password, you have a <strong>Dash Platform identity</strong> made from a <strong>12-word recovery phrase</strong>.
             Keep it offline. Nobody can reset it for you. You can add a username later.
@@ -67,7 +67,7 @@ export default function GettingStartedPage(): JSX.Element {
           </p>
         </Section>
 
-        <Section icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />} title="Writes cost a little; reading is free">
+        <Section icon={<Coins className="h-4 w-4 text-fg-muted" aria-hidden />} title="Writes cost a little; reading is free">
           <p>
             Every write (a repo, an issue, a comment, a push) is stored on Dash Platform for a small fee from your identity&apos;s{' '}
             <strong>balance</strong>: about {creditsAsDash(typicalIssueCredits())} DASH for an issue, and {pushCostPhrase()}. You see the
@@ -87,14 +87,14 @@ export default function GettingStartedPage(): JSX.Element {
           ) : null}
         </Section>
 
-        <Section icon={<KeyRound className="h-4 w-4 text-forge-500" aria-hidden />} title="Signing in gives this browser a limited key">
+        <Section icon={<KeyRound className="h-4 w-4 text-fg-muted" aria-hidden />} title="Signing in gives this browser a limited key">
           <p>
             Your master key is used once, to give this browser a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on
             Forge, for {BROWSER_KEY_DEFAULTS.days} days. A passkey or passphrase protects it. The master key and recovery phrase are never stored.
           </p>
         </Section>
 
-        <Section icon={<Terminal className="h-4 w-4 text-forge-500" aria-hidden />} title="From the terminal">
+        <Section icon={<Terminal className="h-4 w-4 text-fg-muted" aria-hidden />} title="From the terminal">
           <p>
             <code className="font-mono">dg</code> is the command-line tool (shaped like GitHub&apos;s <code className="font-mono">gh</code>), and plain{' '}
             <code className="font-mono">git push</code> works against <code className="font-mono">dash://</code> remotes. The{' '}
@@ -102,7 +102,7 @@ export default function GettingStartedPage(): JSX.Element {
           </p>
         </Section>
 
-        <Section icon={<BookOpen className="h-4 w-4 text-forge-500" aria-hidden />} title="Guides">
+        <Section icon={<BookOpen className="h-4 w-4 text-fg-muted" aria-hidden />} title="Guides">
           {/* Touch: rows 44 px apart, so each guide's 44 px hit area does not overlap the next (QW2-068). */}
           <ul className="list-disc space-y-1 pl-5 coarse:space-y-6">
             <li>

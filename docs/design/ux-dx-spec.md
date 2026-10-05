@@ -188,11 +188,11 @@ At 0: reads, clones and browsing are unaffected (free); drafts stay local; nothi
 - Owner page `/alice`: profile, repos, stars, follower counts (countable indexes), cross-repo activity (`$ownerId` indexes).
 
 ### 5.3 Repo home
-Left: ref bar (branch switcher, `n commits`, `Go to file`), file list (36 px rows: name · last commit subject · time; the commit column loads lazily and never blocks the list), README. Rail (296 px): **Verification** (§6), **Clone**, **About** (description, default branch, branches, tags, stars, storage badge `⛓ platform` / `🌐 r2.dev + ipfs`), **Members**, **Latest release**.
+Left: ref bar (branch switcher, `n commits`, `Go to file`), file list (36 px rows: name · last commit subject · time; the commit column loads lazily and never blocks the list), README. Rail (296 px): **Verification** (§6), **Clone**, **About** (description, default branch, branches, tags, stars, storage badge: a line icon and `platform` / `ipfs` / `s3` / `https` / `mixed`, never an emoji), **Members**, **Latest release**.
 
 ### 5.4 Clone box
 ```
-Clone                                  🌐 r2.dev · ⛓ manifests
+Clone                                  [storage badge: mixed]
 ┌ dash://alice/project              ⧉ ┐
 └──────────────────────────────────────┘
 git clone dash://alice/project        (needs git-remote-dash — install)
