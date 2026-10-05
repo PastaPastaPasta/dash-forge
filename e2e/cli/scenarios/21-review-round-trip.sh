@@ -68,7 +68,7 @@ view_until() { # view_until <identity> <out> <label> <python predicate on d>
 }
 
 step "OWNER creates ${REPO} and pushes ${BASE} with src/greet.rs"
-_retry "$LOG-create.err" _dg_read "$S_OWNER" "$LOG-create.json" "$LOG-create.err" --yes --json repo create "$NAME" --storage platform \
+_retry "$LOG-create.err" _dg_read "$S_OWNER" "$LOG-create.json" "$LOG-create.err" --yes --json repo create "$NAME" --no-protect --storage platform \
   || fail_with "$LOG-create" "repo create"
 SRC="${WORKROOT}/s21-src"
 rm -rf "$SRC"; git init -q -b "$BASE" "$SRC"
