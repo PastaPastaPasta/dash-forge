@@ -56,11 +56,35 @@ use config::Config;
 use context::Ctx;
 use forge_core::user_error::{codes, ErrorContext, UserError};
 
+/// What `dg --version` prints (`-V` prints the first line only): the build, then the Forge
+/// contracts it uses on each network, named by their contract group. A dg built before a
+/// network's contracts were registered cannot use them, and this is how a user tells.
+static LONG_VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(long_version);
+
+fn long_version() -> String {
+    use std::fmt::Write as _;
+    let mut out = format!("{}\nForge contracts:", env!("DASH_FORGE_VERSION"));
+    for key in forge_core::network::deployment_keys() {
+        let Ok(Some(d)) = forge_core::network::deployment(key) else {
+            continue;
+        };
+        if d.retired {
+            continue;
+        }
+        let _ = match d.v2 {
+            Some(ids) => write!(out, "\n  {key:<15} contract group {}", ids.group),
+            None => write!(out, "\n  {key:<15} not deployed"),
+        };
+    }
+    out
+}
+
 /// Dash Forge command-line interface.
 #[derive(Debug, Parser)]
 #[command(
     name = "dg",
     version = env!("DASH_FORGE_VERSION"),
+    long_version = LONG_VERSION.as_str(),
     about = "Dash Forge CLI (gh-shaped)",
     after_help = "Inside a dash:// clone, leave out <REPO> to use the clone's repository \
                   (`dg issue label 3 add bug`), or name one anywhere on the line with \
@@ -2624,6 +2648,18 @@ mod tests {
         assert!(v.contains(env!("CARGO_PKG_VERSION")), "{v}");
         assert!(v.contains(env!("DASH_FORGE_TARGET")), "{v}");
         assert!(v.contains(env!("DASH_FORGE_GIT_SHA")), "{v}");
+        // --version also names the contract set per network; a retired devnet is left out.
+        let long = Cli::command().render_long_version();
+        assert!(long.starts_with(&v.trim_end().to_string()), "{long}");
+        let sakura = forge_core::network::deployment("devnet-sakura")
+            .unwrap()
+            .unwrap();
+        let group = sakura.v2.unwrap().group;
+        assert!(
+            long.contains(&format!("devnet-sakura   contract group {group}")),
+            "{long}"
+        );
+        assert!(!long.contains("devnet-moutai"), "{long}");
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //   (cd forge-contracts/sdk-v2 && npm ci)           # the @dashevo/evo-sdk sdk-v2/package.json pins
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name sakura [--addresses https://ip:1443,...] [--dry-run]
-//        [--only collab|community] [--force-new [--same-group]] [--update core]
+//        [--only collab|community] [--force-new [--same-group]] [--update core|collab|community|all]
 //   node forge-contracts/scripts/deploy-v2.mjs --self-test    # offline: ids, schemas, sizes of the group fields
 //
 // --only collab (or --only community) registers that contract alone, against the forge-core and
@@ -28,7 +28,10 @@
 // <registered schema>`. The record keeps the registration's fields and gains `version`,
 // `schemaHash` (now the updated schema's), and an `updates` list (version, nonce, size, cost,
 // the previous schema hash). A rerun after it landed finds the on-chain version already at the
-// target and the hash already recorded, and broadcasts nothing.
+// target and the hash already recorded, and broadcasts nothing. --update collab and --update
+// community do the same for forge-collab and forge-community (the recorded ids replace their
+// placeholders), and --update all updates the three in registration order (UPDATE-1, roadmap D4;
+// check each with contract-validate --expect-update registered/<contract>.v1.json first).
 //
 // --force-new without --only does the same for the set: when the recorded forge-core was
 // registered from a different schema (a change such as a new `required` system field, which the
@@ -267,8 +270,8 @@ async function main() {
   const onlyValues = DEPENDENT_CONTRACTS.map((c) => c.only);
   if (only !== null && !onlyValues.includes(only)) throw new Error(`--only accepts ${onlyValues.map((v) => `"${v}"`).join(' or ')}, got ${only}`);
   const update = args.update === undefined ? null : String(args.update);
-  if (update !== null && update !== 'core') throw new Error(`--update accepts "core", got ${update}`);
-  if (update !== null && (only !== null || args['force-new'])) throw new Error('--update core runs alone: no --only, no --force-new');
+  if (update !== null && !['core', 'collab', 'community', 'all'].includes(update)) throw new Error(`--update accepts "core", "collab", "community" or "all", got ${update}`);
+  if (update !== null && (only !== null || args['force-new'])) throw new Error('--update runs alone: no --only, no --force-new');
   const forceNew = Boolean(args['force-new']);
   // A new contract registered into the EXISTING group adds a member that every key already bound
   // to the group can sign for, and a group never drops members. dg accepts superseded contracts
@@ -471,49 +474,57 @@ async function main() {
     return id;
   }
 
-  // --update core: an in-place DataContractUpdate of the recorded forge-core to the current
-  // schema, as the next version. Returns the step to report; resumable (see the header).
-  async function updateCore() {
-    const coreRec = v2.forgeCore;
-    if (!coreRec?.contractId || coreRec.status !== 'registered') throw new Error('--update core: no registered forge-core recorded for this network');
-    const json = loadSchema('forge-core');
+  // --update <core|collab|community|all>: an in-place DataContractUpdate of each recorded contract
+  // to its current schema, as the next version (in registration order: core, collab, community).
+  // Returns the step to report; resumable (see the header).
+  async function updateContract({ key, schemaName, substitutions }) {
+    const rec = v2[key];
+    if (!rec?.contractId || rec.status !== 'registered') throw new Error(`--update: no registered ${schemaName} recorded for this network`);
+    const json = loadSchema(schemaName, substitutions);
     const hash = schemaHash(json);
-    const onChain = await sdk.contracts.fetch(coreRec.contractId);
-    if (!onChain) throw new Error(`--update core: ${coreRec.contractId} is recorded but not on chain`);
+    const onChain = await sdk.contracts.fetch(rec.contractId);
+    if (!onChain) throw new Error(`--update: ${rec.contractId} is recorded but not on chain`);
     const chainVersion = Number(onChain.version);
     // Close an update out: the version and schema it took the contract to, and what it cost.
     const complete = (pending, cost, extra) => {
-      coreRec.updates = [...(coreRec.updates ?? []), { ...pending, status: 'updated', costCredits: cost.toString(), costDash: Number(cost) / CREDITS_PER_DASH, ...extra }];
-      coreRec.version = pending.version;
-      coreRec.schemaHash = pending.schemaHash;
-      delete coreRec.pendingUpdate;
+      rec.updates = [...(rec.updates ?? []), { ...pending, status: 'updated', costCredits: cost.toString(), costDash: Number(cost) / CREDITS_PER_DASH, ...extra }];
+      rec.version = pending.version;
+      rec.schemaHash = pending.schemaHash;
+      delete rec.pendingUpdate;
       record();
     };
-    if (coreRec.schemaHash === hash) {
-      log(`forgeCore: ${coreRec.contractId} is already at the current schema (version ${chainVersion}); nothing to update`);
-      return { key: 'forgeCore', ...coreRec, resumed: true };
-    }
-    const pending = coreRec.pendingUpdate;
-    if (pending && pending.schemaHash === hash && chainVersion >= pending.version) {
-      // An earlier run broadcast this update and it landed; finish the record.
-      complete(pending, BigInt(pending.balanceBefore) - (await balance()), { confirmedAt: new Date().toISOString(), costNote: 'balance delta since the recorded pre-broadcast balance' });
-      log(`forgeCore: found version ${chainVersion} on chain; record completed`);
-      return { key: 'forgeCore', ...coreRec, resumed: true };
+    // An earlier run's broadcast is settled first, and only for the schema it broadcast: with the
+    // schema edited since, or the chain past the version it named, the record cannot say what is
+    // on chain, so the run stops rather than broadcast another version or mark the wrong one done.
+    const pending = rec.pendingUpdate;
+    if (pending) {
+      if (pending.schemaHash !== hash) throw new Error(`${key}: an earlier --update broadcast version ${pending.version} of schema ${pending.schemaHash.slice(0, 12)}…, not the current one; check the chain and settle v2.${key}.pendingUpdate by hand`);
+      if (chainVersion > pending.version) throw new Error(`${key}: the chain is at version ${chainVersion}, past the pending update's ${pending.version}; settle v2.${key}.pendingUpdate by hand`);
+      if (chainVersion === pending.version) {
+        // It landed; finish the record.
+        complete(pending, BigInt(pending.balanceBefore) - (await balance()), { confirmedAt: new Date().toISOString(), costNote: 'balance delta since the recorded pre-broadcast balance' });
+        log(`${key}: found version ${chainVersion} on chain; record completed`);
+        return { key, ...rec, resumed: true };
+      }
+      log(`${key}: the pending update to version ${pending.version} did not land; broadcasting it again`);
+    } else if (rec.schemaHash === hash) {
+      log(`${key}: ${rec.contractId} is already at the current schema (version ${chainVersion}); nothing to update`);
+      return { key, ...rec, resumed: true };
     }
     const version = chainVersion + 1;
-    const contract = DataContract.fromJSON(contractJson(json, coreRec.contractId, version), true, PROTOCOL_VERSION);
+    const contract = DataContract.fromJSON(contractJson(json, rec.contractId, version), true, PROTOCOL_VERSION);
     // A contract update is checked against the identity-CONTRACT nonce (drive-abci
     // data_contract_update/identity_contract_nonce), not the identity nonce registration uses: a
     // deployer with more than 23 transitions would be refused with the wrong one.
-    const nonce = ((BigInt((await sdk.identities.contractNonce(ownerId, coreRec.contractId)) ?? 0n)) & NONCE_MASK) + 1n;
+    const nonce = ((BigInt((await sdk.identities.contractNonce(ownerId, rec.contractId)) ?? 0n)) & NONCE_MASK) + 1n;
     const st = new DataContractUpdateTransition(contract, nonce, PROTOCOL_VERSION).toStateTransition();
     st.sign(privateKey, publicKey);
     const size = st.toBytes().length;
-    log(`forgeCore: update ${coreRec.contractId} v${chainVersion} -> v${version}, nonce ${nonce}, signed transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
-    if (size > MAX_STATE_TRANSITION_SIZE) throw new Error('forgeCore: update transition exceeds max_state_transition_size');
-    if (dryRun) return { key: 'forgeCore', contractId: coreRec.contractId, update: { from: chainVersion, to: version }, sizeBytes: size, schemaHash: hash, dryRun: true };
+    log(`${key}: update ${rec.contractId} v${chainVersion} -> v${version}, nonce ${nonce}, signed transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
+    if (size > MAX_STATE_TRANSITION_SIZE) throw new Error(`${key}: update transition exceeds max_state_transition_size`);
+    if (dryRun) return { key, contractId: rec.contractId, update: { from: chainVersion, to: version }, sizeBytes: size, schemaHash: hash, dryRun: true };
     const before = await balance();
-    coreRec.pendingUpdate = { version, identityNonce: nonce.toString(), sizeBytes: size, schemaHash: hash, previousSchemaHash: coreRec.schemaHash ?? null, balanceBefore: before.toString() };
+    rec.pendingUpdate = { version, identityNonce: nonce.toString(), sizeBytes: size, schemaHash: hash, previousSchemaHash: rec.schemaHash ?? null, balanceBefore: before.toString() };
     record();
     try {
       await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
@@ -523,14 +534,21 @@ async function main() {
       if (!/affected state only|VerifiedDataContract snapshot/i.test(String(e?.message ?? e))) throw e;
     }
     const after = await settledBalance(before);
-    const fetched = await sdk.contracts.fetch(coreRec.contractId);
-    if (!fetched || Number(fetched.version) !== version) throw new Error(`forgeCore: update broadcast but the chain shows version ${fetched ? fetched.version : 'none'}`);
-    complete(coreRec.pendingUpdate, before - after, { updatedAt: new Date().toISOString() });
-    log(`forgeCore: updated to version ${version}; cost ${(Number(before - after) / CREDITS_PER_DASH).toFixed(6)} DASH`);
-    return { key: 'forgeCore', ...coreRec };
+    // The SDK cached the contract fetched above: drop it, so the check reads the new version
+    sdk.wasm?.removeCachedContract?.(onChain.id);
+    const fetched = await sdk.contracts.fetch(rec.contractId);
+    if (!fetched || Number(fetched.version) !== version) throw new Error(`${key}: update broadcast but the chain shows version ${fetched ? fetched.version : 'none'}`);
+    complete(rec.pendingUpdate, before - after, { updatedAt: new Date().toISOString() });
+    log(`${key}: updated to version ${version}; cost ${(Number(before - after) / CREDITS_PER_DASH).toFixed(6)} DASH`);
+    return { key, ...rec };
   }
-  if (update === 'core') {
-    report.steps.push(await updateCore());
+  if (update !== null) {
+    // The recorded ids stand in for the placeholders (a dependent's schema names the earlier ones)
+    const ids = { [PLACEHOLDER]: v2.forgeCore?.contractId, [placeholderFor('forge-collab')]: v2.forgeCollab?.contractId };
+    const all = [{ key: 'forgeCore', schemaName: 'forge-core', only: 'core' }, ...DEPENDENT_CONTRACTS];
+    for (const c of all.filter((x) => update === 'all' || x.only === update)) {
+      report.steps.push(await updateContract({ key: c.key, schemaName: c.schemaName, substitutions: c.key === 'forgeCore' ? {} : ids }));
+    }
     console.log(JSON.stringify(report, null, 2));
     return;
   }

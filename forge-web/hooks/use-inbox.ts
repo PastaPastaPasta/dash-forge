@@ -20,12 +20,14 @@ import {
   refreshesSubscriptions,
   threadKey,
   POLL_MS,
+  loadHides,
   loadItems,
   loadPrefs,
   loadSubs,
   markRead,
   pollOnce,
   savePrefs,
+  visibleItems,
   type InboxItem,
   type InboxPrefs,
   type Subscriptions,
@@ -75,7 +77,9 @@ export function useUnreadCount(): number {
 }
 
 async function reloadLocal(owner: string, network: Network, me: string): Promise<void> {
-  const [items, subs, prefs] = await Promise.all([loadItems(network, me), loadSubs(network, me), loadPrefs(network, me)])
+  const [stored, subs, prefs, hides] = await Promise.all([loadItems(network, me), loadSubs(network, me), loadPrefs(network, me), loadHides(network, me)])
+  // What a maintainer hid stays out, as in the issue and PR lists.
+  const items = visibleItems(stored, hides, subs ?? null)
   const state = useInboxStore.getState()
   // Prefs are the store's once loaded: a poll finishing mid-toggle must not revert them.
   if (state.owner === owner) set({ items, subs: subs ?? null, prefs: state.prefs ?? prefs })
