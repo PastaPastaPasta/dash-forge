@@ -1410,11 +1410,12 @@ impl PlatformClient {
         use std::sync::atomic::Ordering as AtomicOrdering;
         let composite_ok = reads.len() > 1 && !self.no_composite.load(AtomicOrdering::Relaxed);
         if composite_ok {
+            // A Vec, not the `map` iterator: a closure over `&BatchRead` held across the await
+            // makes this future not `Send` for every lifetime, which callers that spawn it
+            // (forge-gateway's handlers) need.
+            let contracts: Vec<&LoadedContract> = reads.iter().map(|r| r.contract).collect();
             let composite = match Box::pin(self.query_composite(reads)).await {
-                Err(e)
-                    if Box::pin(self.refreshed_after(reads.iter().map(|r| r.contract), &e))
-                        .await =>
-                {
+                Err(e) if Box::pin(self.refreshed_after(contracts, &e)).await => {
                     Box::pin(self.query_composite(reads)).await
                 }
                 other => other,
