@@ -660,6 +660,8 @@ The P2 items of RULES-PROPOSAL and OPPORTUNITIES that RC1 does not take are left
 
 **UPDATE-1** (roadmap D4, owner decision 2026-10-04; dash-forge-qa `design/v5/CONTRACT-UPDATE-1.md`) is one in-place `DataContractUpdate` of all three contracts (version 1 → 2 on devnet sakura). The mainnet registration includes the same additions from the start. Each item is a `build.py` flag (`UPDATE1_FLAGS`). With every one of them off, the build reproduces the schemas sakura registered (`contracts/registered/<contract>.v1.json`, checked by `build.py --check`). CI validates each contract as an update of its registered schema (`contract-validate --expect-update`).
 
+It was applied on sakura on 2026-10-05 at 05:41 UTC with `deploy-v2.mjs --update all`: forge-core, forge-collab and forge-community are at version 2. The fees were 0.681, 0.460 and 0.570 DASH, and the update1 live vectors (`rc1-live.mjs --only update1`) passed 32 of 32. `deployments/devnet-sakura.json` records each update, and `deployments/contracts/devnet-sakura.json` holds the version-2 snapshot the web app seeds.
+
 An update may add only optional properties, `enum` values appended at the end, and new document types with their own indexes and references. Sources (v5.0.0-beta.1): `rs-json-schema-compatibility-validator/src/rules/rule_set.rs:699-710` (`properties`: inner addition allowed), `:964-973` (`enum`: element addition allowed), `:631-640` (`required`: no addition); and `rs-dpp/src/data_contract/methods/validate_update/v1/mod.rs:91-115` (`requiredSince` only on a property the update adds). So the items are:
 
 | Item | Contract | What it adds | Read by |
