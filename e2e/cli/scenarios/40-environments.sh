@@ -7,7 +7,7 @@
 # .git/info/exclude and `git check-ignore` confirms it, and `git status` does not list it.
 # CONTRIB (not a maintainer) is refused a change before signing (E601) and cannot read the
 # environment. The values are fake, made for the run.
-SCENARIO_NAME="39 environments (import, run, export -o, check-ignore)"
+SCENARIO_NAME="40 environments (import, run, export -o, check-ignore)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 [[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"

@@ -256,7 +256,7 @@ async fn names_of<'a>(
 #[allow(clippy::too_many_lines)] // read, filter, sort, print: one search
 async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
     let (repo, words) = target(a)?;
-    let s = Reader::open(ctx, &repo).await?;
+    let s = Reader::open_discussion(ctx, &repo).await?;
     let text = resolve_names(&s.client, &text_of(&words)).await?;
     let base = IssueQuery {
         state: "all".into(),
@@ -275,12 +275,16 @@ async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
             _ => None,
         }
     };
-    let issues = async { Ok::<_, anyhow::Error>(s.collab().issues_with_state(&s.repo).await?) };
+    // members-only issues this reader cannot open are not searched (D30), only counted
+    let issues = async {
+        let read = s.collab().issues_with_state_read(&s.repo).await?;
+        Ok::<_, anyhow::Error>((read.rows, read.malformed, read.members_only.len()))
+    };
     let (my_name, reads) = futures::join!(
         my_name,
         futures::future::try_join(issues, mirror_trust(&s, &q))
     );
-    let ((all, hidden), oracle) = reads?;
+    let ((all, hidden, members_only), oracle) = reads?;
     let f = Filters::of(
         &q,
         me.as_deref(),
@@ -348,6 +352,7 @@ async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
             "total": total,
             "count": rows.len(),
             "hidden": hidden,
+            "membersOnly": members_only,
             "hiddenOmitted": omitted,
             "issues": rows.iter().map(|((v, m), h)| crate::fmt::with_hidden_by(json!({
                 "number": v.issue.number,
@@ -381,6 +386,9 @@ async fn issues(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
                 println!("({} of {total} shown; --limit for more)", rows.len());
             }
             print_hidden_omitted(omitted);
+            if members_only > 0 {
+                println!("({members_only} members-only issue(s) you can't read are not searched)");
+            }
         },
     );
     Ok(())
@@ -414,7 +422,7 @@ fn pr_state_matches(state: &str, v: &PatchView) -> bool {
 #[allow(clippy::too_many_lines)] // read, filter, sort, print: one search
 async fn prs(ctx: &Ctx, a: &crate::SearchArgs) -> Result<()> {
     let (repo, words) = target(a)?;
-    let s = Reader::open(ctx, &repo).await?;
+    let s = Reader::open_discussion(ctx, &repo).await?;
     let text = resolve_names(&s.client, &text_of(&words)).await?;
     let base = PullQuery {
         state: "all".into(),

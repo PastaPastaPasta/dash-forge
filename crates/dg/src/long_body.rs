@@ -1,7 +1,8 @@
 //! Long bodies in `dg` (`docs/contracts/forge-v2.md` §6.3): a body, comment, review or set of
-//! release notes longer than its field holds (5,120 bytes, less in a private repository) is
-//! stored as a repository artifact, and the field keeps its first part and a line naming the
-//! artifact. Writers store it on the repository's storage policy (`dash.storage`, as a push
+//! release notes longer than its field holds (5,120 bytes, less in a private repository and for
+//! members-only text) is stored as a repository artifact, and the field keeps its first part and
+//! a line naming the artifact. A members-only text is stored sealed under the repository's
+//! members key (kind 70), never as a public artifact. Writers store it on the repository's storage policy (`dash.storage`, as a push
 //! reads it), else on Platform; readers fetch and check it. The rule itself is forge-core's
 //! (`rules::long_body`, `collab::long_body`).
 
@@ -87,11 +88,12 @@ impl BodyTargets {
         }
     }
 
-    /// An upper bound on the credits of storing `bytes` of text in `repo`.
-    pub fn credits(&self, repo: &RepoRef, bytes: u64) -> u64 {
+    /// An upper bound on the credits of storing `bytes` of text in `repo` for `audience`
+    /// (sealed, so a little larger, in a private repository and when members-only).
+    pub fn credits(&self, repo: &RepoRef, audience: Audience, bytes: u64) -> u64 {
         forge_core::cost::push_fees::long_body(
             bytes,
-            repo.visibility == Visibility::Private,
+            repo.visibility == Visibility::Private || audience != Audience::Public,
             self.external.len() as u64,
             self.platform,
         )
@@ -141,9 +143,9 @@ impl<'f> Planned<'f> {
 
     /// What storing the full text adds to the write, in credits (0 when it fits the field).
     pub fn extra_credits(&self, repo: &RepoRef) -> u64 {
-        self.targets
-            .as_ref()
-            .map_or(0, |t| t.credits(repo, self.full.len() as u64))
+        self.targets.as_ref().map_or(0, |t| {
+            t.credits(repo, self.audience, self.full.len() as u64)
+        })
     }
 
     /// A clause for the confirmation, or "" when the text fits: "; the text (23,456 bytes) is
@@ -151,9 +153,14 @@ impl<'f> Planned<'f> {
     pub fn clause(&self) -> String {
         self.targets.as_ref().map_or_else(String::new, |t| {
             format!(
-                "; the text ({} bytes, over the field's {}) is stored as a repository artifact on {}",
+                "; the text ({} bytes, over the field's {}) is stored as a {}repository artifact on {}",
                 self.full.len(),
                 self.room,
+                if self.audience == Audience::Public {
+                    ""
+                } else {
+                    "members-only (encrypted) "
+                },
                 t.describe()
             )
         })
@@ -195,20 +202,23 @@ impl<'f> Planned<'f> {
     }
 }
 
-/// The body a private issue's or PR's edit of its other text alone (a new title) writes:
-/// its stored long body cut again to the room `field` now leaves (`rules::long_body::refit`),
-/// naming the same artifact. `None` when the stored body is kept as it is: a public
-/// repository, a body that still fits, or one that cannot (the edit is then refused as before).
+/// The body a sealed issue's or PR's edit of its other text alone (a new title) writes: its
+/// stored long body cut again to the room `field` now leaves (`rules::long_body::refit`), naming
+/// the same artifact. `None` when the stored body is kept as it is: a public document, a body
+/// that still fits, or one that cannot (the edit is then refused as before). `audience` is the
+/// stored document's: a members-only one in a public repository shares its room with its title
+/// as a private one does.
 pub fn refit_kept(
     repo: &RepoRef,
     field: BodyField<'_>,
     imported: Option<&Imported>,
     stored: &str,
+    audience: Audience,
 ) -> Option<String> {
-    if repo.visibility != Visibility::Private {
+    if repo.visibility != Visibility::Private && audience == Audience::Public {
         return None;
     }
-    forge_core::rules::long_body::refit(stored, field.room(repo.visibility, imported))
+    forge_core::rules::long_body::refit(stored, field.room_for(repo.visibility, audience, imported))
         .filter(|f| f != stored)
 }
 
@@ -220,20 +230,21 @@ pub fn partial_line(why: &str) -> String {
 /// Read every text in `texts` (each field with no trailer as it is, each continued one fetched
 /// and checked; the repository's manifests and members read once) and put it in place of its
 /// field; returns, in order, why only the first part of a text could be read (`None` for a
-/// whole one).
+/// whole one). Each text comes with the audience of the document it was read from: a
+/// members-only text continues only in a members-only artifact, opened with the reader's keys.
 pub async fn read_in_place(
     collab: &Collab<'_>,
     repo: &RepoRef,
-    texts: Vec<&mut String>,
+    texts: Vec<(&mut String, Audience)>,
 ) -> Vec<Option<String>> {
     let reads = {
-        let refs: Vec<&str> = texts.iter().map(|t| t.as_str()).collect();
-        collab.read_long_bodies(repo, &refs).await
+        let refs: Vec<(&str, Audience)> = texts.iter().map(|(t, a)| (t.as_str(), *a)).collect();
+        collab.read_long_bodies_for(repo, &refs).await
     };
     texts
         .into_iter()
         .zip(reads)
-        .map(|(t, r)| {
+        .map(|((t, _), r)| {
             *t = r.text().to_string();
             r.incomplete().map(str::to_string)
         })

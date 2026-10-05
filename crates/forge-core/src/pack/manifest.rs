@@ -52,6 +52,14 @@ pub const KIND_LONG_BODY: u8 = 6;
 /// a fork it resolves, or none for an environment's first). Unlike kinds 1-6, a newer snapshot
 /// never supersedes every older one of its kind: [`plan_supersedes`] is not for it.
 pub const KIND_ENV_SNAPSHOT: u8 = 8;
+/// `packManifest.kind == 64 + k`: the members-only (sealed) form of plain kind `k` in a public
+/// repository (mixed-visibility DESIGN D6). Shipped readers skip a kind they do not know.
+pub const KIND_SEALED_BASE: u8 = 64;
+/// `packManifest.kind == 70`: a members-only long body in a public repository, the UTF-8 text a
+/// members-only field's trailer names, sealed under the repository's members key (DFPK version
+/// 0x01, `docs/security/private-repos.md` §3). Never a public artifact: a members-only text is
+/// stored only in this form. `objectCount` 0, no `tips`, no `supersedes`.
+pub const KIND_MEMBERS_LONG_BODY: u8 = KIND_SEALED_BASE + KIND_LONG_BODY;
 
 /// The `packManifest` document fields (data-contracts §2.3). List fields serialize as
 /// JSON-in-string / packed byteArray at the platform layer, not native arrays.
