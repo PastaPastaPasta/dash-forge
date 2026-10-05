@@ -187,7 +187,7 @@ People using older Forge builds see fewer things until they update. Nothing leak
 
 Change members only with an up-to-date Forge (`dg`, and the web app from its update with members-only support <!-- PENDING #400 (weblane) -->), so the key follows every change:
 
-- a member added by an older build has no key yet, and sees [E311](#e311). Nothing shares it automatically: a maintainer chooses **Repair** in the repository's Settings <!-- PENDING #400 (weblane): the web Repair --> or runs `dg repo keys repair`;
+- a member added by an older build has no key yet, and sees [E311](#e311). Nothing shares it automatically: a maintainer chooses **Repair** on the repository page <!-- PENDING #400 (weblane): the web Repair --> or runs `dg repo keys repair`;
 - a member removed by an older build can still read new members-only content until the key changes. `dg repo keys status` flags it, and `dg repo keys repair` changes the key.
 
 ## Errors
@@ -196,9 +196,9 @@ Change members only with an up-to-date Forge (`dg`, and the web app from its upd
 
 **No key has been shared with you yet.** You're a member, but no maintainer has shared the members key with your encryption key. This happens when an older Forge build added you. You can still read and do everything public. The members-only items show as placeholders.
 
-Forge says: "You're a member, but no key has been shared with you yet. Ask a maintainer to share it: Repair in the repo's Settings, or `dg repo keys repair`."
+Forge says: "You're a member, but no key has been shared with you yet. Ask a maintainer to share it: Repair on the repo page, or `dg repo keys repair`."
 
-Fix: ask a maintainer to share it. They choose **Repair** in the repository's Settings <!-- PENDING #400 (weblane) --> (it shows the cost first), or run `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, set one up first: `dg auth keys add --encryption`.
+Fix: ask a maintainer to share it. They choose **Repair** on the repository page <!-- PENDING #400 (weblane) --> (it shows the cost first), or run `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, set one up first: `dg auth keys add --encryption`.
 
 ### E312
 

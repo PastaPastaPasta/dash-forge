@@ -196,7 +196,7 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 - `dg collab remove` changes the key (about 0.0007 DASH per remaining member, plus about 0.0006 DASH), and says so before you confirm: new members-only issues, comments and reviews will be unreadable to them, and what they could already read stays readable to them.
 - A role change between writer, triage and reader keeps the key: every role holds it, readers included.
 - The web app's **Settings → Members** does the same from its update with members-only support. <!-- PENDING #400 (weblane) (1F web): on master the web refuses membership changes on a repository with members-only content -->
-- Change members only with an up-to-date Forge. A member added by an older build has no key yet and sees [`E311`](../errors.md#e311) until a maintainer shares it: **Repair** in the repo's Settings <!-- PENDING #400 (weblane) -->, or `dg repo keys repair`. Nothing shares it automatically. A member removed by an older build keeps reading new content until `dg repo keys repair` changes the key. `dg repo keys status` shows both.
+- Change members only with an up-to-date Forge. A member added by an older build has no key yet and sees [`E311`](../errors.md#e311) until a maintainer shares it: **Repair** on the repo page <!-- PENDING #400 (weblane) -->, or `dg repo keys repair`. Nothing shares it automatically. A member removed by an older build keeps reading new content until `dg repo keys repair` changes the key. `dg repo keys status` shows both.
 
 **CI runners are not members.** A runner key (`dg ci runner add`) reports check runs and never receives the members key. If you make a runner's identity a reader, it reads everything members-only.
 

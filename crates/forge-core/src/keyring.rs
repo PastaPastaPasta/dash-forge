@@ -65,7 +65,7 @@ pub fn no_key_shared(repo: &RepoRef) -> Error {
     )
     .cause("members-only content is encrypted to each member's key, and no maintainer has shared that key with you yet")
     .fix(format!(
-        "ask a maintainer to share it: Repair in the repo's Settings, or `dg repo keys repair {}`",
+        "ask a maintainer to share it: Repair on the repo page, or `dg repo keys repair {}`",
         repo.display()
     ))
     .into()
