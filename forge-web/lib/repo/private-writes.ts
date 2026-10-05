@@ -65,6 +65,8 @@ export class PrivateWriteError extends Error {
 export interface PrivateWriter {
   readonly keys: EpochKeys
   readonly protectedPatterns: readonly string[]
+  /** The signer holds a membership of the repo now: its sealed writes carry `asMember` (DESIGN D14). */
+  readonly isMember?: boolean
 }
 
 /**
@@ -83,8 +85,9 @@ export function sealedIntent(intent: string | undefined, keys: EpochKeys): strin
 async function freshSession(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<PrivateSession> {
   const ops = await encryptionOps(sdk, auth.network, auth.identityId, repo.forge.collab)
   if (ops === null) throw new PrivateWriteError('add your encryption key to this browser (Settings → Private repos) to write to a private repo', 'E306')
-  const { session: _page, ...plain } = repo
+  const { session: _page, lane: _lane, ...plain } = repo
   void _page
+  void _lane
   return loadPrivateSessionUncached(sdk, plain, auth.network, auth.identityId, sessionUnwrapper(ops))
 }
 
@@ -111,7 +114,8 @@ export async function privateWriterWithSession(sdk: EvoSDK, auth: WriteAuth, rep
     s.close()
     throw new PrivateWriteError(writeBlockReason(r) as string, r.currentEpoch !== null && !r.keys.has(r.currentEpoch) ? 'E307' : 'E310')
   }
-  return { writer: { keys, protectedPatterns: s.config?.protectedPatterns ?? [] }, session: s }
+  const isMember = s.members.some((m) => m.identity === auth.identityId)
+  return { writer: { keys, protectedPatterns: s.config?.protectedPatterns ?? [], isMember }, session: s }
 }
 
 /** The keys of the patch's own epoch `epoch` (a PR edit keeps its epoch, §4.5): readable, anchored, not burned. */

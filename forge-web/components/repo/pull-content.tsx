@@ -84,6 +84,7 @@ import {
   postTargetEvent,
   readViewerPermissions,
   repoContractIds,
+  contentKey,
   repoKey,
   setAssignee,
   setLabel,
@@ -283,7 +284,7 @@ export function PullContent({
       }
       return t
     },
-    [ready, repoKey(home.repo), number, network],
+    [ready, contentKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
   const refresh = useCallback(

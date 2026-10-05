@@ -31,6 +31,14 @@ const NEW_ID = '8rSFEyS7gidGdS4r8m22YtMEc519otpDNQ242Zw9c1Gb'
 
 // A lag retry waits about a block: no real time in tests.
 vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk/facade')>()), sleep: () => Promise.resolve() }))
+// Who a new document is for is read from its stored parents (members-writes.test.ts covers it);
+// these fixtures write to public threads.
+vi.mock('./members-writes', async (orig) => ({
+  ...(await orig<typeof import('./members-writes')>()),
+  targetAudience: async () => 'public',
+  childAudience: async () => 'public',
+  storedAudience: async () => ({ audience: 'public', doc: {} }),
+}))
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {

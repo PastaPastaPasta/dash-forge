@@ -47,7 +47,7 @@ import {
 import { repoChromeTimelines, type ChromeTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
-import { HiddenTally, SEALED_EPOCH, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
+import { HiddenTally, SEALED_EPOCH, admittedAudience, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -65,6 +65,8 @@ export function titleOf(doc: PlainDocument): string {
 /** An issue with its folded state. */
 export interface IssueView {
   readonly id: string
+  /** Who it was written for (a public repo's members-only issue reads as `members`). Absent: public. */
+  readonly audience?: 'members'
   readonly number: number
   readonly title: string
   /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
@@ -123,6 +125,7 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: numbe
   const author = str(issueDoc, '$ownerId')
   return {
     id: str(issueDoc, '$id'),
+    ...(admittedAudience(issueDoc) === 'members' ? { audience: 'members' as const } : {}),
     number: num(issueDoc, 'number'),
     title: titleOf(issueDoc),
     body: str(issueDoc, 'body'),

@@ -15,7 +15,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ExternalLink, Hash, type LucideIcon } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { readMembershipsCached, repoContractIds, repoKey } from '@/lib/repo'
+import { readMembershipsCached, contentKey, repoContractIds } from '@/lib/repo'
 import { numberTargets } from '@/lib/view/jump'
 import { upstreamItemUrl } from '@/lib/view/ref-targets'
 import { resolveUpstreamNumber } from '@/lib/view/upstream'
@@ -42,7 +42,7 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
       const found = await numberTargets(sdk!, home.repo, number)
       return { issue: found.issue ? number : null, pull: found.pull ? number : null }
     },
-    [ready, repoKey(home.repo), number, checkUpstream, network],
+    [ready, contentKey(home.repo), number, checkUpstream, network],
     { enabled: ready && sdk !== null && valid },
   )
   const issue = data?.issue ?? null
@@ -112,7 +112,7 @@ export function TargetNotFound({
 }): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const router = useRouter()
-  const { data, error } = useAsync(() => numberTargets(sdk!, home.repo, number), [ready, repoKey(home.repo), number], {
+  const { data, error } = useAsync(() => numberTargets(sdk!, home.repo, number), [ready, contentKey(home.repo), number], {
     enabled: ready && sdk !== null && addr !== undefined,
   })
   const other = data === null || addr === undefined ? null : kind === 'issue' ? (data.pull ? pullHref(addr, number) : null) : data.issue ? issueHref(addr, number) : null

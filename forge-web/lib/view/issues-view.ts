@@ -56,7 +56,7 @@ import { prefetchDpnsNames } from './dpns'
 import { withLongBodies, withLongBody, type LongBodyState } from './long-body'
 import type { Membership } from '../rules/v2'
 import type { RerunRequest } from '../rules/ci-rerun'
-import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
+import { HiddenTally, admitAll, admittedAudience, gateFor, type HiddenCounts } from '../repo/private-content'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
@@ -69,6 +69,8 @@ import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, 
 /** One comment on an issue/PR. */
 export interface CommentView {
   readonly id: string
+  /** Who it was written for (a public repo's members-only comment reads as `members`). Absent: public. */
+  readonly audience?: 'members'
   readonly author: string
   /** The text to show: a long body's full text once read (`long`, `forge-v2.md` §6.3). */
   readonly body: string
@@ -130,6 +132,7 @@ export function toCommentView(d: PlainDocument): CommentView {
   const id = (f: string): string | null => asIdentifierString(d[f]) || null
   return {
     id: str(d, '$id'),
+    ...(admittedAudience(d) === 'members' ? { audience: 'members' as const } : {}),
     author: str(d, '$ownerId'),
     body: str(d, 'body'),
     createdAt: num(d, '$createdAt'),

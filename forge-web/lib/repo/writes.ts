@@ -28,7 +28,7 @@ import type { ForgeIds } from '../deployments'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isGitRefName, type EventKind } from '../rules'
-import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
+import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
@@ -56,6 +56,7 @@ import { contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
+import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, membersWriter, sealMembersContent, targetAudience, type MembersWriter } from './members-writes'
 import { invalidateRepoFeed } from './issues'
 import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
@@ -228,15 +229,23 @@ const CONTENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
  * carries `enc` and no content field; an event without a value has nothing to seal). Every
  * private write goes through here.
  */
-export function assertNoPlaintext(repo: RepoRef, documentType: string, data: Readonly<Record<string, unknown>>): void {
-  if (repo.visibility !== 'private') return
+export function assertNoPlaintext(
+  repo: RepoRef,
+  documentType: string,
+  data: Readonly<Record<string, unknown>>,
+  /** A public repo's members-only write: sealed, with no content field beside `enc` either. */
+  membersOnly = false,
+): void {
+  const sealed = data['enc'] !== undefined && data['enc'] !== null
+  if (repo.visibility !== 'private' && !membersOnly && !sealed) return
+  const where = repo.visibility === 'private' ? 'a private repo' : 'members-only content'
   const fields = CONTENT_FIELDS[documentType] ?? []
   const leaked = fields.filter((f) => data[f] !== undefined && data[f] !== null && data[f] !== '')
   if (leaked.length > 0) {
-    throw new Error(`refusing to write ${leaked.join(', ')} in plaintext to a private repo`)
+    throw new Error(`refusing to write ${leaked.join(', ')} in plaintext to ${where}`)
   }
-  if (fields.length > 0 && data['enc'] === undefined && documentType !== DOC.event) {
-    throw new Error(`refusing to write an unencrypted ${documentType} to a private repo`)
+  if ((repo.visibility === 'private' || membersOnly) && fields.length > 0 && !sealed && documentType !== DOC.event) {
+    throw new Error(`refusing to write an unencrypted ${documentType} to ${where}`)
   }
 }
 
@@ -283,6 +292,7 @@ export async function writeRepoDoc(
    * cache compares this instead of `data`, which is encrypted afresh on every attempt.
    */
   sealedContentKey?: string,
+  options: WriteOptions = {},
 ): Promise<WriteResult> {
   // What the action says, before sealing: the retry cache compares this (sealed fields are
   // encrypted afresh on every attempt, so the sealed data never matches itself).
@@ -293,14 +303,24 @@ export async function writeRepoDoc(
   // The claimed role (`r`) of a gated type, and the refusal of a write the signer's role cannot
   // make, before anything is sealed or signed. `r` is plaintext: it goes on beside `enc`.
   const claim = await roleClaim(sdk, auth, repo, documentType, data)
-  const sealedType = repo.visibility === 'private' ? sealedTypeOf(documentType, data) : null
-  if (sealedType !== null) {
+  // Who it is for (DESIGN §3.3): a private repo's everything is members-only; in a public repo
+  // what the caller settled (`audience`), and an event's value follows its target, read now.
+  const audience = await writeAudience(sdk, repo, documentType, data, options.audience)
+  const sealedType = audience === 'public' ? null : sealedTypeOf(documentType, data)
+  if (sealedType !== null && repo.visibility === 'private') {
     contentKey = contentHash(documentType, scoped(repo, data))
     const w = writer ?? (await privateWriter(sdk, auth, repo))
     data = await sealForRepo(sdk, auth, repo, sealedType, data, w)
+    // D14: every sealed write by a member carries `asMember`.
+    if (w.isMember === true) data = withMemberProof(documentType, data, auth.identityId)
+    intent = sealedIntent(intent, w.keys)
+  } else if (sealedType !== null) {
+    contentKey = contentHash(documentType, scoped(repo, data))
+    const w = options.membersWriter ?? (await membersWriter(sdk, auth, repo))
+    data = await sealMembersContent(auth, sealedType, data, w)
     intent = sealedIntent(intent, w.keys)
   }
-  assertNoPlaintext(repo, documentType, data)
+  assertNoPlaintext(repo, documentType, data, sealedType !== null && repo.visibility === 'public')
   let result: WriteResult | undefined
   try {
     const signed = data
@@ -323,6 +343,52 @@ export async function writeRepoDoc(
     if (result?.confirmed && reviewed !== '') void noteParticipation(auth.network, auth.identityId, reviewed, 'reviewed')
     afterWrite(repo, auth.network, documentType)
   }
+}
+
+/** How {@link writeRepoDoc} writes a public repo's content. */
+export interface WriteOptions {
+  /**
+   * Who an issue, comment or review of a public repo is for, as its writer settled it
+   * ({@link childAudience}; default public). An event's value always follows its target.
+   */
+  readonly audience?: Audience
+  /** The action's members key (one fresh read for a review and its comments, a renumbered issue). */
+  readonly membersWriter?: MembersWriter
+}
+
+/** The member types whose writes carry the signer's `asMember` proof (forge-core `MEMBER_PROOF_TYPES`). */
+const MEMBER_PROOF_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
+
+/** `data` with the signer's `asMember` (D14), unless its type carries none or it is a non-member's verdict (4/5). */
+function withMemberProof(documentType: string, data: Record<string, unknown>, signer: string): Record<string, unknown> {
+  if (!MEMBER_PROOF_TYPES.has(documentType)) return data
+  const verdict = data['verdict']
+  if (verdict === OUTSIDER_VERDICT_INT.approve || verdict === OUTSIDER_VERDICT_INT.requestChanges) return data
+  return { ...data, asMember: decodeIdentifier(signer) }
+}
+
+/**
+ * The audience a `documentType` write of `repo` with `data` takes: members-only in a private
+ * repo; in a public one an event with a value follows its target (read from the stored target,
+ * failing closed), and anything else is `requested` (default public).
+ */
+async function writeAudience(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  documentType: string,
+  data: Readonly<Record<string, unknown>>,
+  requested: Audience | undefined,
+): Promise<Audience> {
+  if (repo.visibility === 'private') return 'members'
+  if (documentType === DOC.event) {
+    const value = data['value']
+    if (typeof value !== 'string' || value === '') return 'public'
+    const target = data['targetId']
+    const id = target instanceof Uint8Array ? base58Encode(target) : asIdentifierString(target)
+    if (id === '') throw new PrivateWriteError('an event names no target, so who can read its value is unknown; nothing was written')
+    return targetAudience(sdk, repo, id)
+  }
+  return requested ?? 'public'
 }
 
 /** A write that found its unique slot already held by the signer: success, nothing spent. */
@@ -388,15 +454,17 @@ export async function createIssue(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { title: string; body: string; intent?: string },
+  input: { title: string; body: string; intent?: string; audience?: Audience },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
+  // Who it is for: an issue has no parent (public by default; members-only on request).
+  const audience = audienceFor(repo, input.audience, null)
   const data: Record<string, unknown> = { title: input.title }
   // A body longer than its field: its full text stored first (forge-v2.md §6.3), once for
   // every renumbered attempt.
-  const body = await longBodyField(sdk, auth, repo, 'issue', input.body, { title: input.title }, input.intent)
+  const body = await longBodyField(sdk, auth, repo, 'issue', input.body, { title: input.title }, input.intent, audience)
   if (body.length > 0) data['body'] = body
-  return createNumbered(sdk, auth, repo, 'issue', data, input.intent, onRetry)
+  return createNumbered(sdk, auth, repo, 'issue', data, input.intent, onRetry, audience)
 }
 
 /** A PR to open (forge-core `PatchInput`). */
@@ -493,17 +561,25 @@ async function createNumbered(
   fields: Record<string, unknown>,
   intentBase: string | undefined,
   onRetry?: (taken: number, next: number) => void,
+  audience: Audience = repo.visibility === 'private' ? 'members' : 'public',
 ): Promise<CreateIssueResult> {
   const noun = type === 'issue' ? 'issue' : 'PR'
-  // A private repo: refuse over-long text before numbering, and seal every renumbered retry
-  // under the one writer of this action (the AD binds each new number).
+  // A private repo, or members-only content: refuse over-long text before numbering, and seal
+  // every renumbered retry under the one writer of this action (the AD binds each new number).
   let writer: PrivateWriter | undefined
+  let members: MembersWriter | undefined
   if (repo.visibility === 'private') {
     const { used, limit } = sealedTextUse(type, fields)
     if (limit !== null && used > limit) {
       throw new PrivateWriteError(`the text is too long for a private repo: an encrypted ${type} holds at most ${limit} bytes of text (this one has ${used})`)
     }
     writer = await privateWriter(sdk, auth, repo)
+  } else if (audience === 'members') {
+    const { used } = sealedTextUse(type, fields)
+    if (used > MEMBERS_TEXT_LIMIT[type]) {
+      throw new PrivateWriteError(`the text is too long: a members-only ${type} holds at most ${MEMBERS_TEXT_LIMIT[type]} bytes of text (this one has ${used})`)
+    }
+    members = await membersWriter(sdk, auth, repo)
   }
   const next = (): Promise<number | null> => nextNumber(sdk, repo)
   // A retry of this action first finishes the number its last attempt signed: once that
@@ -517,7 +593,10 @@ async function createNumbered(
       // Each number is its own write: a renumbered retry must not reuse the earlier bytes.
       const intent = intentBase ? `${intentBase}#${number}` : undefined
       writeTriedNumber(triedKey, number)
-      const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, tk: type === 'issue' ? 0 : 1, ...fields }, intent, writer)
+      const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, tk: type === 'issue' ? 0 : 1, ...fields }, intent, writer, undefined, {
+        audience,
+        ...(members ? { membersWriter: members } : {}),
+      })
       writeTriedNumber(triedKey, null)
       return { ...result, number }
     } catch (e) {
@@ -602,14 +681,17 @@ export async function createComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext },
+  input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext; audience?: Audience },
 ): Promise<WriteResult> {
   if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
+  // Who it is for (DESIGN §3.3): the narrowest of the issue or PR, the comment it replies to and
+  // that thread's root, unless the writer asked for a narrower one; read before anything is stored.
+  const audience = await childAudience(sdk, repo, { targetId: input.targetId, ...(input.replyTo ? { replyTo: input.replyTo } : {}), ...(input.audience ? { requested: input.audience } : {}) })
   // A body longer than its field: its full text stored first (forge-v2.md §6.3).
-  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, {}, input.intent)
+  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, {}, input.intent, audience)
   const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
-  return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, ...commentProof(auth.identityId, input.post) }, input.intent)
+  return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, ...commentProof(auth.identityId, input.post) }, input.intent, undefined, undefined, { audience })
 }
 
 /**
@@ -699,19 +781,21 @@ export async function createReview(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext },
+  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext; audience?: Audience },
 ): Promise<WriteResult> {
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
   if (lockedOut(post)) throw new Error(LOCKED_REASON)
+  // Who its text is for (its verdict is always public, D15): the PR's, unless asked narrower.
+  const audience = await childAudience(sdk, repo, { targetId: input.patchId, ...(input.audience ? { requested: input.audience } : {}) })
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),
     ...reviewVerdictFields(input.verdict, auth.identityId, post),
     commitOid: hexToBytes(input.commitOid),
   }
   // A body longer than its field: its full text stored first (forge-v2.md §6.3).
-  if (input.body && input.body.length > 0) data['body'] = await longBodyField(sdk, auth, repo, 'review', input.body, {}, input.intent)
-  return writeRepoDoc(sdk, auth, repo, DOC.review, data, input.intent)
+  if (input.body && input.body.length > 0) data['body'] = await longBodyField(sdk, auth, repo, 'review', input.body, {}, input.intent, audience)
+  return writeRepoDoc(sdk, auth, repo, DOC.review, data, input.intent, undefined, undefined, { audience })
 }
 
 // ---------------------------------------------------------------------------

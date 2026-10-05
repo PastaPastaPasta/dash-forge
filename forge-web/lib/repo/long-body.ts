@@ -21,7 +21,7 @@ import type { RepoRef } from './contract'
 import { SEALED_TEXT_LIMIT, sealArtifact, sealedTextUse, type SealedKind } from './private-writes'
 import { readRoleOracle } from './members'
 import { capabilitiesOf } from '../rules/roles'
-import type { Role } from '../rules/v2'
+import type { Audience, Role } from '../rules/v2'
 
 /** A `body` or `notes` field's own cap (5,120 characters and bytes). */
 export const FIELD_MAX = BODY_LIMIT.bytes
@@ -43,6 +43,12 @@ export function bodyRoom(repo: RepoRef, kind: LongBodyKind, others: Readonly<Rec
   if (repo.visibility !== 'private' || kind === 'release') return FIELD_MAX
   const rest = Object.fromEntries(Object.entries(others).filter(([k]) => k !== 'body'))
   return Math.min(FIELD_MAX, Math.max(0, SEALED_TEXT_LIMIT[kind] - sealedTextUse(kind, rest).used - provenanceBytes(others['imported'])))
+}
+
+/** The text room of a members-only `kind` beside `others` (the v0x03 cap: 32 bytes under a private repo's). */
+function membersBodyRoom(kind: SealedKind, others: Readonly<Record<string, unknown>>): number {
+  const rest = Object.fromEntries(Object.entries(others).filter(([k]) => k !== 'body'))
+  return Math.min(FIELD_MAX, Math.max(0, SEALED_TEXT_LIMIT[kind] - 32 - sealedTextUse(kind, rest).used))
 }
 
 /** The sealed records an importer's `imported.author` and `imported.url` take: 3 bytes of tag and length, then the text. */
@@ -118,9 +124,16 @@ export async function longBodyField(
   full: string,
   others: Readonly<Record<string, unknown>> = {},
   intent?: string,
+  /** A public repo's members-only text: it is never stored as a plaintext artifact. */
+  audience: Audience = 'public',
 ): Promise<string> {
-  const room = bodyRoom(repo, kind, others)
+  const room = audience === 'members' && repo.visibility === 'public' && kind !== 'release' ? membersBodyRoom(kind, others) : bodyRoom(repo, kind, others)
   if (!needsLongBodyArtifact(full, room)) return full
+  // A members-only long body would go to a sealed kind-70 artifact under the members key, which
+  // is not written yet: refused, never stored in plaintext (as `dg` refuses it).
+  if (audience === 'members' && repo.visibility === 'public') {
+    throw new LongBodyRefusedError(`the text is too long: a members-only ${kind} holds at most ${room} bytes of text here (this one has ${utf8Bytes(full)}); shorten it, or split it into comments`)
+  }
   const bytes = utf8Bytes(full)
   if (bytes > LONG_BODY_MAX_BYTES) {
     throw new LongBodyRefusedError(`the text is ${bytes} bytes, and Dash Forge stores at most ${LONG_BODY_MAX_BYTES} bytes of one text`)
