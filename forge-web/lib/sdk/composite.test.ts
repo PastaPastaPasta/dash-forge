@@ -38,10 +38,7 @@ describe('a composite read against a contract an in-place update made stale (UPD
     const sdk = { documents: { composite }, version: () => 14 } as unknown as EvoSDK
     const res = await queryComposite(sdk, QUERY)
     expect(res.page).toEqual([{ $id: 'r' }])
-    expect(handler.mock.calls).toEqual([
-      [CORE, 'newerDocument', 2],
-      [COLLAB, 'newerDocument', 2],
-    ])
+    expect(handler.mock.calls).toEqual([[[CORE, COLLAB], 'newerDocument', 2]])
     expect(composite).toHaveBeenCalledTimes(2)
   })
 

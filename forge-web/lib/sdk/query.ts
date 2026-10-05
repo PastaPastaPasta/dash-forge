@@ -194,10 +194,10 @@ export interface ProofedDocuments {
 export type StaleContractCause = 'unknownType' | 'newerDocument'
 
 /**
- * Called when a read failed against a contract older than the network's. Resolves true when
- * the contract was refreshed and the read may be retried once. Set by the SDK service.
+ * Called when a read of `contractIds` failed against a contract older than the network's.
+ * Resolves true when one was refreshed and the read may be retried once. Set by the SDK service.
  */
-type StaleContractHandler = (contractId: string, cause: StaleContractCause, documentVersion?: number) => Promise<boolean>
+type StaleContractHandler = (contractIds: readonly string[], cause: StaleContractCause, documentVersion?: number) => Promise<boolean>
 let staleContractHandler: StaleContractHandler | null = null
 
 /** Install (or clear) the handler for reads against a possibly stale contract. */
@@ -234,26 +234,23 @@ export function staleDocumentVersion(e: unknown): number | undefined {
 }
 
 /**
- * Refresh `contractId` for the reason `e` gives, when it gives one: true when the caller may
- * retry its read once (or settle its write by reading).
+ * Refresh the contract(s) a read used for the reason `e` gives, when it gives one: true when
+ * the caller may retry its read once (or settle its write by reading). A read over several
+ * contracts (a composite) names them all: the error does not say which one is stale.
  */
-export async function refreshStaleContract(contractId: string, e: unknown): Promise<boolean> {
+export async function refreshStaleContract(contractIds: string | readonly string[], e: unknown): Promise<boolean> {
   const cause = staleContractCause(e)
-  return cause !== null && staleContractHandler !== null && (await staleContractHandler(contractId, cause, staleDocumentVersion(e)))
+  if (cause === null || staleContractHandler === null) return false
+  const ids = typeof contractIds === 'string' ? [contractIds] : [...new Set(contractIds)]
+  return staleContractHandler(ids, cause, staleDocumentVersion(e))
 }
 
-/**
- * `read()`, retried once after its contract was refreshed when it failed on a stale one. A read
- * over several contracts (a composite) names them all: the error does not say which one is
- * stale, so each is refreshed, and the read retries when any of them was.
- */
+/** `read()`, retried once after its contract(s) were refreshed when it failed on a stale one. */
 export async function retryOnStaleContract<T>(contractIds: string | readonly string[], read: () => Promise<T>): Promise<T> {
   try {
     return await read()
   } catch (e) {
-    const ids = typeof contractIds === 'string' ? [contractIds] : [...new Set(contractIds)]
-    const refreshed = await Promise.all(ids.map((id) => refreshStaleContract(id, e)))
-    if (!refreshed.includes(true)) throw e
+    if (!(await refreshStaleContract(contractIds, e))) throw e
     return read()
   }
 }

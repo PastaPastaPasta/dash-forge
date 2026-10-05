@@ -21,7 +21,7 @@ describe('reads against a seeded contract that went stale (M3)', () => {
     setStaleContractHandler(handler)
     const docs = await queryDocuments(fakeSdk(query), { dataContractId: CONTRACT, documentTypeName: 'milestone' })
     expect(docs).toEqual([{ $id: 'a' }])
-    expect(handler).toHaveBeenCalledWith(CONTRACT, 'unknownType', undefined)
+    expect(handler).toHaveBeenCalledWith([CONTRACT], 'unknownType', undefined)
     expect(query).toHaveBeenCalledTimes(2)
   })
 
@@ -47,7 +47,7 @@ describe('reads against a seeded contract that went stale (M3)', () => {
     setStaleContractHandler(handler)
     const docs = await queryDocuments(fakeSdk(query), { dataContractId: CONTRACT, documentTypeName: 'release' })
     expect(docs).toEqual([{ $id: 'a' }])
-    expect(handler).toHaveBeenCalledWith(CONTRACT, 'newerDocument', 2)
+    expect(handler).toHaveBeenCalledWith([CONTRACT], 'newerDocument', 2)
     expect(query).toHaveBeenCalledTimes(2)
   })
 
@@ -76,16 +76,13 @@ describe('reads against a seeded contract that went stale (M3)', () => {
     expect(sum).toHaveBeenCalledTimes(2)
   })
 
-  it('a read over several contracts refreshes each (the error does not name one) and retries when any was', async () => {
+  it('a read over several contracts hands them all to one refresh (the error does not name one)', async () => {
     const OTHER = 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec'
     const read = vi.fn().mockRejectedValueOnce({ __wbg_ptr: 1, message: NEWER }).mockResolvedValueOnce('rows')
-    const handler = vi.fn(async (id: string) => id === OTHER)
+    const handler = vi.fn(async () => true)
     setStaleContractHandler(handler)
     expect(await retryOnStaleContract([CONTRACT, OTHER, CONTRACT], read)).toBe('rows')
-    expect(handler.mock.calls).toEqual([
-      [CONTRACT, 'newerDocument', 2],
-      [OTHER, 'newerDocument', 2],
-    ])
+    expect(handler.mock.calls).toEqual([[[CONTRACT, OTHER], 'newerDocument', 2]])
     expect(read).toHaveBeenCalledTimes(2)
   })
 

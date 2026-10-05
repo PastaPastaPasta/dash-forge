@@ -46,7 +46,7 @@ import { dapiBudget, installDapiFetchGate } from './budget'
 import { isContractMissingError } from './contract-missing'
 import { isQuorumMiss, isStaleConnectionError } from './unreachable'
 import { loadContractSnapshots } from './contract-seed'
-import { followSdkVersion, setStaleContractHandler, type StaleContractCause } from './query'
+import { followSdkVersion, setStaleContractHandler, shareInFlight, type StaleContractCause } from './query'
 import { compileWasm, onWasmProgress, type DownloadProgress } from './wasm-fetch'
 import { setWriteHold } from './write'
 
@@ -559,7 +559,7 @@ export class EvoSdkService {
       this.outdated.add(id)
     }
     // Counted like any call, so a swap does not free the connection under them.
-    setStaleContractHandler((id, cause, documentVersion) => this.track(connection, () => refreshStale(connection, id, cause, replaced, documentVersion)))
+    setStaleContractHandler((ids, cause, documentVersion) => this.track(connection, () => refreshStaleRead(connection, ids, cause, replaced, documentVersion)))
     // Off the critical path, on every connection (at most once an hour while the versions
     // match): are the seeded contracts still the network's current versions?
     if (this.network !== null) {
@@ -1123,6 +1123,54 @@ export function refreshStale(
     else if (recent.get(id) === entry) recent.delete(id)
   })
   return entry.done
+}
+
+/** Each connection's latest-version lookups in flight, by contract set: reads that fail together share one. */
+const latestLookups = new WeakMap<Connection, Map<string, Promise<Map<string, { version?: number } | undefined>>>>()
+
+/**
+ * A read of `ids` failed against a contract older than the network's: true when one was
+ * refreshed and the read may be retried once. One contract goes to {@link refreshStale}, at no
+ * request beyond the refetch. Several (a composite) are placed with one
+ * `getDataContractsLatestVersions` request, as the error does not say which is stale and the
+ * versions of different contracts do not compare: each is refreshed only when the network's
+ * version is past the one held (seeded, or fetched by a recent refresh) and, for a newer
+ * document, at least that document's version. One held at no known version (fetched by the
+ * SDK) is refreshed only for a newer document. One refreshed within {@link STALE_REFRESH_MS}
+ * (by another read, or the seeded-version check) is joined, and refetched only when the network
+ * has moved past the version that refresh fetched.
+ */
+export async function refreshStaleRead(
+  connection: Connection,
+  ids: readonly string[],
+  cause: StaleContractCause,
+  replaced: (id: string) => void,
+  documentVersion?: number,
+): Promise<boolean> {
+  const [only] = ids
+  if (only === undefined) return false
+  if (ids.length === 1) return refreshStale(connection, only, cause, replaced, documentVersion)
+  let latest: Map<string, { version?: number } | undefined>
+  try {
+    const lookups = latestLookups.get(connection) ?? new Map<string, Promise<Map<string, { version?: number } | undefined>>>()
+    latestLookups.set(connection, lookups)
+    latest = await shareInFlight(lookups, [...ids].sort().join(','), () => connection.sdk.contracts.getLatestVersions({ contractIds: [...ids] }))
+  } catch {
+    return false
+  }
+  const recent = staleRefreshes.get(connection)
+  const moved = ids.filter((id) => {
+    const now = latest.get(id)?.version
+    if (now === undefined || (cause === 'newerDocument' && documentVersion !== undefined && now < documentVersion)) return false
+    const refresh = recent?.get(id)
+    // Refreshed lately (or being refreshed), maybe after this read was sent: join that refresh,
+    // which refetches only when the network has moved past it.
+    if (refresh !== undefined && Date.now() - refresh.at < STALE_REFRESH_MS) return true
+    const held = connection.seeded.get(id) ?? refresh?.version
+    return held !== undefined ? now > held : cause === 'newerDocument'
+  })
+  const refreshed = await Promise.all(moved.map((id) => refreshStale(connection, id, 'newerDocument', replaced, latest.get(id)?.version)))
+  return refreshed.includes(true)
 }
 
 /** Drop contract `id` from the SDK's cache and fetch the current one: its version, or null when not found. */
