@@ -7,9 +7,12 @@
 //!
 //! * [`keys`]: the epoch key, its HKDF-SHA256 subkeys (§2), the RNG hedge (§3.6);
 //! * [`tlv`]: the strict TLV plaintext of an encrypted field (§4.3);
-//! * [`doc`]: sealing and opening `enc` (v0x01, and the key-committing v0x02 of config anchors),
-//!   the associated data (§4.4) and [`doc::open_content`] with the ref-name hash check and the
-//!   late-content rule (§4.5, §8);
+//! * [`doc`]: sealing and opening `enc` (v0x01, the key-committing v0x02 of config anchors, and
+//!   v0x03, members-only content of a public repository under a per-object key with a key
+//!   commitment), the associated data (§4.4) and [`doc::open_content`] with the ref-name hash
+//!   check and the late-content rule (§4.5, §8);
+//! * [`named`]: specific-people letters (`enc` v0x04): a per-object key wrapped by ECDH to each
+//!   recipient's ENCRYPTION key, with the reader rule;
 //! * [`pack`]: sealed artifacts: a 36-byte header and 16 KiB AES-GCM STREAM segments with a
 //!   hand-built nonce, whole, streaming and ranged (§3);
 //! * [`wrap`]: the 47-byte `repoKey` wrap plaintext (§5.1);
@@ -30,6 +33,7 @@ compile_error!("the `vectors` feature (deterministic nonces and file ids) is for
 pub mod doc;
 pub mod epoch;
 pub mod keys;
+pub mod named;
 pub mod pack;
 pub mod release;
 pub mod tlv;
@@ -217,11 +221,19 @@ impl RepoKeyReader for Public {
 /// ([`resolve_epochs`]) and the epoch it writes under.
 ///
 /// Seal APIs draw their nonce / fileId through the hedge (§3.6) and take none from the caller.
+///
+/// The same keys serve the **members lane of a public repository** ([`Self::from_resolution_mixed`],
+/// lane 0 of the mixed-visibility design): there [`Self::seal_doc`] writes members-only content
+/// (`enc` v0x03, padded), and the git-plane seams ([`RefNameHasher`], [`RepoCodec`],
+/// [`PackCipher`]) stay the public repository's (sha256 ref hashes, plaintext by default, packs
+/// as-is): in phase 1 the lane seals discussion only, never refs or packs.
 #[derive(Clone)]
 pub struct Private {
     keys: BTreeMap<u32, EpochKeys>,
     raw: BTreeMap<u32, EpochKey>,
     write_epoch: u32,
+    /// The members lane of a public repository, not a private repository.
+    mixed: bool,
 }
 
 impl std::fmt::Debug for Private {
@@ -229,6 +241,7 @@ impl std::fmt::Debug for Private {
         f.debug_struct("Private")
             .field("epochs", &self.keys.keys().collect::<Vec<_>>())
             .field("write_epoch", &self.write_epoch)
+            .field("mixed", &self.mixed)
             .finish_non_exhaustive()
     }
 }
@@ -249,7 +262,26 @@ impl Private {
             keys,
             raw,
             write_epoch,
+            mixed: false,
         })
+    }
+
+    /// The members lane of the **public** repository `repo_id` (lane 0: the epoch chain of
+    /// `private-repos.md` §5 under a settings-free anchor). `None` as for
+    /// [`Self::from_resolution`]. Its [`Self::seal_doc`] writes `enc` v0x03 with the padding of
+    /// [`doc::pads`]; its git-plane seams are the public repository's.
+    #[must_use]
+    pub fn from_resolution_mixed(repo_id: &[u8; 32], resolution: &EpochResolution) -> Option<Self> {
+        let mut p = Self::from_resolution(repo_id, resolution)?;
+        p.mixed = true;
+        Some(p)
+    }
+
+    /// Whether these are a public repository's members-lane keys
+    /// ([`Self::from_resolution_mixed`]).
+    #[must_use]
+    pub fn is_mixed(&self) -> bool {
+        self.mixed
     }
 
     /// The epoch new content is written under.
@@ -272,7 +304,9 @@ impl Private {
             .expect("the write epoch's keys are held by construction")
     }
 
-    /// Seal a document's content under the write epoch (a random, hedged nonce).
+    /// Seal a document's content under the write epoch (a random, hedged nonce): `enc` v0x01 in
+    /// a private repository, v0x03 (padded per [`doc::pads`]) in a public repository's members
+    /// lane; a config is v0x02 in both. The header's `vis` is set to the repository's.
     pub fn seal_doc(
         &self,
         header: &DocHeader,
@@ -280,7 +314,22 @@ impl Private {
     ) -> std::result::Result<Vec<u8>, PrivateError> {
         let mut header = header.clone();
         header.epoch = self.write_epoch;
-        doc::seal(self.write_keys(), &header, fields)
+        header.vis = self.visibility();
+        if self.mixed && header.kind != DocKind::Config {
+            doc::seal_members(self.write_keys(), &header, fields)
+        } else {
+            doc::seal(self.write_keys(), &header, fields)
+        }
+    }
+
+    /// The visibility of the repository these keys belong to.
+    #[must_use]
+    pub fn visibility(&self) -> crate::rules::v2::Visibility {
+        if self.mixed {
+            crate::rules::v2::Visibility::Public
+        } else {
+            crate::rules::v2::Visibility::Private
+        }
     }
 
     /// Open a sealed artifact after checking its length against the manifest's `size_bytes`.
@@ -295,6 +344,9 @@ impl Private {
 
 impl RefNameHasher for Private {
     fn hash(&self, epoch: u32, ref_name: &str) -> Result<[u8; 32]> {
+        if self.mixed {
+            return Public.hash(epoch, ref_name);
+        }
         self.keys
             .get(&epoch)
             .map(|k| k.ref_name_hash(ref_name))
@@ -304,15 +356,22 @@ impl RefNameHasher for Private {
 
 impl RepoCodec for Private {
     fn plaintext(&self) -> bool {
-        false
+        // a public repository's content is plaintext unless its writer chooses Members
+        self.mixed
     }
 }
 
 impl PackCipher for Private {
     fn seal(&self, pack: Vec<u8>) -> Result<Vec<u8>> {
+        if self.mixed {
+            return Public.seal(pack);
+        }
         Ok(pack::seal(self.write_keys(), &pack)?)
     }
     fn open(&self, sealed: Vec<u8>, size_bytes: u64) -> Result<Vec<u8>> {
+        if self.mixed {
+            return Public.open(sealed, size_bytes);
+        }
         Ok(self.open_pack(&sealed, size_bytes)?)
     }
 }

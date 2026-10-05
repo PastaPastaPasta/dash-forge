@@ -229,6 +229,17 @@ impl EpochKeys {
         n
     }
 
+    /// `K_obj = HKDF-Expand(PRK_e, "dash-forge/v2/obj" ‖ 0x00 ‖ u32(e) ‖ nonce ‖ SHA-256(AD), 32)`:
+    /// the per-object key of a members (`enc` v0x03) document, bound to its nonce and to its AD
+    /// (`private-repos.md` §4.1). Binding the AD is what stops a revealed `K_obj` from opening, or
+    /// minting, any other document: a different AD derives a different key.
+    pub(crate) fn obj_key(&self, nonce: &[u8; 12], ad: &[u8]) -> Zeroizing<[u8; 32]> {
+        let mut extra = [0u8; 44];
+        extra[..12].copy_from_slice(nonce);
+        extra[12..].copy_from_slice(&sha256(ad));
+        Zeroizing::new(self.expand("obj", &extra))
+    }
+
     /// The raw subkeys, for the conformance vectors only.
     #[cfg(any(test, feature = "vectors"))]
     #[must_use]
@@ -250,6 +261,57 @@ impl std::fmt::Debug for EpochKeys {
             .field("epoch", &self.epoch)
             .field("kcv", &hex::encode(&self.kcv[..4]))
             .finish_non_exhaustive()
+    }
+}
+
+/// The keys a per-object key `K_obj` yields (`private-repos.md` §4.1), for a members (v0x03) or
+/// specific-people (v0x04) envelope:
+///
+/// ```text
+/// PRK_obj    = HKDF-Extract(salt = repoId, IKM = K_obj)
+/// K_doc,obj  = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-doc" ‖ 0x00, 32)
+/// COMMIT_obj = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-commit" ‖ 0x00, 32)
+/// KCV_obj    = COMMIT_obj[0..14]
+/// ```
+///
+/// GCM runs under `K_doc,obj`, never under `K_obj` itself, so one key never feeds both the
+/// commitment and AES. `COMMIT_obj` is not secret: it is carried in `enc`.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub(crate) struct ObjKeys {
+    doc: [u8; 32],
+    #[zeroize(skip)]
+    commit: [u8; 32],
+}
+
+impl ObjKeys {
+    /// Derive the keys of `k_obj` in the repository `repo_id`.
+    pub(crate) fn derive(repo_id: &[u8; 32], k_obj: &[u8; 32]) -> Self {
+        let (_, hk) = Hkdf::<Sha256>::extract(Some(repo_id), k_obj);
+        let expand = |label: &[u8]| {
+            let mut okm = [0u8; 32];
+            hk.expand(label, &mut okm)
+                .expect("32 bytes is a valid HKDF-SHA256 output length");
+            okm
+        };
+        Self {
+            doc: expand(b"dash-forge/v2/obj-doc\0"),
+            commit: expand(b"dash-forge/v2/obj-commit\0"),
+        }
+    }
+
+    /// `K_doc,obj`, the AES-256-GCM key of the envelope.
+    pub(crate) fn doc_key(&self) -> &[u8; 32] {
+        &self.doc
+    }
+
+    /// `COMMIT_obj`.
+    pub(crate) fn commit(&self) -> &[u8; 32] {
+        &self.commit
+    }
+
+    /// `KCV_obj`: the first 14 bytes of `COMMIT_obj`, the check a specific-people slot carries.
+    pub(crate) fn kcv(&self) -> &[u8] {
+        &self.commit[..14]
     }
 }
 
