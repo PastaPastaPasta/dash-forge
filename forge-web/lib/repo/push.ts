@@ -363,9 +363,17 @@ export function refUpdateData(input: RefUpdateInput): Record<string, unknown> {
   return data
 }
 
-/** Which type a ref update must be, from the repo's current protected patterns. */
-export function refUpdateType(refName: string, protectedPatterns: readonly string[]): 'refUpdate' | 'protectedRefUpdate' {
-  return matchesProtected(refName, protectedPatterns) ? DOC.protectedRefUpdate : DOC.refUpdate
+/**
+ * Which type a ref update must be: `protectedRefUpdate` when the config in force protects the
+ * ref, and when no config is readable yet (`protectedPatterns` null) and the pusher owns the
+ * repo. A new repo protects its default branch and tags by default, so the owner's write right
+ * after the create would otherwise be a plain update that config makes inert; consensus admits
+ * the protected type from the owner (a maintainer since the create). Anyone else's stays plain.
+ * Parity: forge-core `rules::routes_protected` (vectors `ref_update_route__*`).
+ */
+export function refUpdateType(refName: string, protectedPatterns: readonly string[] | null, pusherIsOwner = false): 'refUpdate' | 'protectedRefUpdate' {
+  const isProtected = protectedPatterns === null ? pusherIsOwner : matchesProtected(refName, protectedPatterns)
+  return isProtected ? DOC.protectedRefUpdate : DOC.refUpdate
 }
 
 /**
@@ -390,9 +398,10 @@ export async function writeRefUpdate(
     data = await sealForRepo(sdk, auth, repo, documentType, data, writer)
     options = { ...options, ...(options.intent !== undefined ? { intent: sealedIntent(options.intent, writer.keys) } : {}) }
   } else {
-    // The complete config timeline's newest well-formed config: the one the rules apply.
-    const patterns = options.protectedPatterns ?? (await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? []
-    documentType = refUpdateType(input.refName, patterns)
+    // The complete config timeline's newest well-formed config: the one the rules apply (null:
+    // none readable yet).
+    const patterns = options.protectedPatterns ?? (await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? null
+    documentType = refUpdateType(input.refName, patterns, auth.identityId === repo.ownerId)
   }
   assertNoPlaintext(repo, documentType, data)
   // A plain `refUpdate` claims role 1 (a protected one is maintainer-gated and carries none).

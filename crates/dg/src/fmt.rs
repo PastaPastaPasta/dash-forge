@@ -34,12 +34,21 @@ pub fn safe(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// An identity id for display, with its DPNS name after it when `names` has one
-/// (`Fi8b… (alice.dash)`), as [`forge_core::platform::PlatformClient::dpns_first_names`]
-/// reads them.
+/// An identity for display: its DPNS name with a shortened id when `names` has one
+/// (`alice.dash (Fi8bQ2xk…)`), as [`forge_core::platform::PlatformClient::dpns_first_names`]
+/// reads them, and the full id otherwise. `--json` output keeps full ids.
 pub fn with_name(id: &str, names: &std::collections::BTreeMap<String, String>) -> String {
     match names.get(id) {
-        Some(name) => format!("{id} ({})", safe(name)),
+        Some(name) => format!("{} ({})", safe(name), short_identity(id)),
+        None => id.to_string(),
+    }
+}
+
+/// An identity id shortened for display next to its name (8 characters and an ellipsis).
+pub fn short_identity(id: &str) -> String {
+    // By character: the value may be untrusted document text, not base58.
+    match id.char_indices().nth(8) {
+        Some((i, _)) => format!("{}\u{2026}", &id[..i]),
         None => id.to_string(),
     }
 }
@@ -118,6 +127,55 @@ pub fn dash_amount(dash: f64) -> String {
     }
 }
 
+/// A price for copy: three significant figures, never rounding a fee to 0 (`0.0102`,
+/// `0.000976`, `32.5`). `dg cost` ([`dash_exact`]) and `--json` keep exact amounts.
+pub fn dash_rounded(credits: u64) -> String {
+    if credits == 0 {
+        return "0".into();
+    }
+    let d = credits_to_dash(credits);
+    // Decimals so that three significant digits show: 0.00517 needs 5, 32.5 needs 1.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let decimals = (2.0 - d.log10().floor()).max(0.0) as usize;
+    let s = format!("{d:.decimals$}");
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
+/// A DASH amount to the credit (11 decimals, trailing zeros trimmed), so rows add up to
+/// their total: `0.00000000003` for 3 credits, `1.5` for 150_000_000_000.
+pub fn dash_exact(credits: u64) -> String {
+    let whole = credits / CREDITS_PER_DASH;
+    let frac = credits % CREDITS_PER_DASH;
+    if frac == 0 {
+        return whole.to_string();
+    }
+    let frac = format!("{frac:011}");
+    format!("{whole}.{}", frac.trim_end_matches('0'))
+}
+
+/// "1 asset" / "3 assets": a count and its noun, never "asset(s)". Nouns whose plural is not
+/// a bare `s` go through [`plural_with`].
+pub fn plural<N: Copy + std::fmt::Display + PartialEq + From<u8>>(n: N, one: &str) -> String {
+    plural_with(n, one, &format!("{one}s"))
+}
+
+/// [`plural`] with an explicit plural form ("1 identity" / "2 identities").
+pub fn plural_with<N: Copy + std::fmt::Display + PartialEq + From<u8>>(
+    n: N,
+    one: &str,
+    many: &str,
+) -> String {
+    if n == N::from(1) {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
 /// Set once this process has shown a price ([`cost_line`]): a confirmation that cannot be
 /// asked then says to check that estimate, and otherwise to check what the command does
 /// (QW2-079: "check the estimate" where none was shown).
@@ -127,11 +185,19 @@ pub static ESTIMATE_SHOWN: std::sync::atomic::AtomicBool =
 /// A one-line cost display: DASH primary, USD secondary on mainnet, e.g.
 /// `~0.0003 DASH ≈ $0.01` (`~0.0003 DASH` where [`usd_price`] is `None`).
 pub fn cost_line(credits: u64, price_usd: Option<f64>) -> String {
+    priced(credits, price_usd, &dash_rounded(credits))
+}
+
+/// [`cost_line`] to the credit ([`dash_exact`]), for `dg cost`, whose rows must add up.
+pub fn cost_line_exact(credits: u64, price_usd: Option<f64>) -> String {
+    priced(credits, price_usd, &dash_exact(credits))
+}
+
+fn priced(credits: u64, price_usd: Option<f64>, amount: &str) -> String {
     ESTIMATE_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
-    let dash = credits_to_dash(credits);
     match price_usd {
-        Some(price) => format!("~{} DASH ≈ ${:.2}", dash_amount(dash), dash * price),
-        None => format!("~{} DASH", dash_amount(dash)),
+        Some(price) => format!("~{amount} DASH ≈ ${:.2}", credits_to_dash(credits) * price),
+        None => format!("~{amount} DASH"),
     }
 }
 
@@ -218,10 +284,11 @@ pub fn balance_json(identity_id: &str, credits: u64, network: &str) -> Value {
 pub fn hidden_note(repo: &forge_core::scope::RepoRef, hidden: usize) -> String {
     if repo.visibility == Visibility::Private {
         format!(
-            "({hidden} document(s) hidden: malformed, written after a key rotation, or not readable with your keys; `dg repo keys status` explains)"
+            "({} hidden: malformed, written after a key rotation, or not readable with your keys; `dg repo keys status` explains)",
+            plural(hidden, "item")
         )
     } else {
-        format!("({hidden} malformed document(s) hidden)")
+        format!("({} hidden)", plural(hidden, "malformed item"))
     }
 }
 
@@ -233,12 +300,14 @@ pub fn event_values_note(hidden: usize, plaintext: usize) -> Option<String> {
     let mut parts = Vec::new();
     if hidden > 0 {
         parts.push(format!(
-            "{hidden} event value(s) (labels, assignees, milestones) not readable with your keys"
+            "{} (labels, assignees, milestones) not readable with your keys",
+            plural(hidden, "event value")
         ));
     }
     if plaintext > 0 {
         parts.push(format!(
-            "{plaintext} event value(s) written by an older client, not encrypted"
+            "{} written by an older client, not encrypted",
+            plural(plaintext, "event value")
         ));
     }
     (!parts.is_empty()).then(|| format!("({})", parts.join("; ")))
@@ -382,14 +451,14 @@ mod tests {
     fn triage_lines_show_what_is_set() {
         let lines = triage_lines(
             &["bug", "docs"],
-            &["A (alice.dash)".into(), "B".into()],
+            &["alice.dash (A1b2c3d4…)".into(), "B".into()],
             Some("v1.0"),
         );
         assert_eq!(
             lines,
             vec![
                 "labels: bug, docs",
-                "assignees: A (alice.dash), B",
+                "assignees: alice.dash (A1b2c3d4…), B",
                 "milestone: v1.0"
             ]
         );
@@ -419,8 +488,14 @@ mod tests {
     /// QW-083: an id with a DPNS name shows it; one without (or whose read failed) is bare.
     #[test]
     fn an_identity_shows_its_dpns_name_when_it_has_one() {
-        let names = [("A1".to_string(), "alice.dash\u{1b}[2J".to_string())].into();
-        assert_eq!(with_name("A1", &names), "A1 (alice.dash[2J)");
+        let id = "Fi8bQ2xkPqR7sT9uVwXyZ1a2b3c4d5e6f7g8h9i0jKL";
+        let names = [
+            ("A1".to_string(), "alice.dash\u{1b}[2J".to_string()),
+            (id.to_string(), "bob.dash".to_string()),
+        ]
+        .into();
+        assert_eq!(with_name("A1", &names), "alice.dash[2J (A1)");
+        assert_eq!(with_name(id, &names), "bob.dash (Fi8bQ2xk\u{2026})");
         assert_eq!(with_name("B2", &names), "B2");
     }
 
@@ -559,7 +634,7 @@ mod tests {
         assert_eq!(event_values_note(0, 0), None);
         let n = event_values_note(2, 1).unwrap();
         assert!(
-            n.contains("2 event value(s)") && n.contains("1 event value(s)"),
+            n.contains("2 event values") && n.contains("1 event value "),
             "{n}"
         );
         assert!(n.contains("not encrypted"), "{n}");
@@ -627,6 +702,32 @@ mod tests {
         assert_eq!(usd_price(&Network::Mainnet), Some(FALLBACK_DASH_USD));
     }
 
+    /// Prices are shown to three significant figures, plurals are spelled out.
+    #[test]
+    fn prices_round_and_plurals_spell_out() {
+        assert_eq!(cost_line(1_017_812_000, None), "~0.0102 DASH");
+        assert_eq!(cost_line(97_600_000, None), "~0.000976 DASH");
+        // A fee too small for eight decimals still shows, never as ~0.
+        assert_eq!(cost_line(400, None), "~0.000000004 DASH");
+        assert_eq!(cost_line(0, None), "~0 DASH");
+        assert_eq!(cost_line(50_000_000_000, None), "~0.5 DASH");
+        assert_eq!(cost_line(517_499_000, None), "~0.00517 DASH");
+        assert_eq!(cost_line(104_000_000, None), "~0.00104 DASH");
+        assert_eq!(cost_line(3_254_000_000_000, None), "~32.5 DASH");
+        assert_eq!(cost_line(12_345_000_000_000, None), "~123 DASH");
+        // `dg cost` keeps every credit, so its rows add up to the total.
+        assert_eq!(dash_exact(1_500), "0.000000015");
+        assert_eq!(dash_exact(3), "0.00000000003");
+        assert_eq!(dash_exact(150_000_000_000), "1.5");
+        assert_eq!(dash_exact(200_000_000_000), "2");
+        assert_eq!(dash_exact(0), "0");
+        assert_eq!(cost_line_exact(1_017_812_000, None), "~0.01017812 DASH");
+        assert_eq!(plural(1u64, "asset"), "1 asset");
+        assert_eq!(plural(0u64, "asset"), "0 assets");
+        assert_eq!(plural(3usize, "asset"), "3 assets");
+        assert_eq!(plural_with(2u64, "identity", "identities"), "2 identities");
+    }
+
     /// QW2-075: devnet and testnet DASH has no cash value, so no dollar figure is shown for it,
     /// whatever `DASH_USD` says.
     #[test]
@@ -640,7 +741,7 @@ mod tests {
             assert_eq!(usd_price(&network), None, "{network:?}");
         }
         let line = cost_line(1_017_812_000, None);
-        assert_eq!(line, "~0.01017812 DASH");
+        assert_eq!(line, "~0.0102 DASH");
         let v = cost_json(1_017_812_000, None);
         assert!(v["usd"].is_null() && v["usdPrice"].is_null(), "{v}");
         assert_eq!(v["credits"].as_u64(), Some(1_017_812_000));

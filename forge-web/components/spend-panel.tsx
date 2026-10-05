@@ -35,7 +35,7 @@ import {
 import { measurementPending } from '@/lib/sdk/write'
 import { creditsAsDash, plural, timeAgo } from '@/lib/view/format'
 import { LoadingBlock } from '@/components/ui/states'
-import { cn } from '@/lib/utils'
+import { cn, shortId } from '@/lib/utils'
 
 /** A DASH amount; `signed` marks a positive one "+" too (a balance that grew, a top-up). */
 function Dash({ credits, signed = false }: { credits: number; signed?: boolean }): JSX.Element {
@@ -173,7 +173,7 @@ export function SpendPanel(): JSX.Element {
     }
     return (
       <span className="font-mono text-anvil-600 dark:text-anvil-300" title={id}>
-        {id.slice(0, 8)}…
+        {shortId(id)}
       </span>
     )
   }

@@ -32,6 +32,19 @@ export function abbreviate(value: string, chars = 7): string {
 }
 
 /**
+ * An identity or document id as people read it: the first 7 and the last 5 characters,
+ * `G6D3ejK…7nB2q`, as the Dash wallets show an identity on their approval screens.
+ *
+ * Never the prefix alone: an identity id is a hash of the asset lock that funded it, so an
+ * attacker can try funding transactions offline until the first 7 characters match someone
+ * else's (58⁷ tries) and broadcast only that one. Matching both ends as well costs 58¹² tries.
+ * Short values come back unchanged.
+ */
+export function shortId(id: string): string {
+  return id.length > 13 ? `${id.slice(0, 7)}…${id.slice(-5)}` : id
+}
+
+/**
  * Extract a human-legible message from any thrown value — including the **wasm-bindgen error
  * objects** the evo-sdk rejects with, which are NOT `Error` instances (they carry a
  * `__wbg_ptr` and a `r7`-style ctor). A naive `String(e)` on those yields `"[object Object]"`,
