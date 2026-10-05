@@ -1,0 +1,14 @@
+{
+  "name": "altered",
+  "description": "one changed ciphertext character: the tag fails.",
+  "case": "key_handoff_open",
+  "rules": "v2",
+  "input": {
+    "network": "sakura",
+    "browserSecret": "0707070707070707070707070707070707070707070707070707070707070707",
+    "reply": "dfkh1:sakura:A081W9y3zAr3KO88zrlhXZBoS7Wyyl-FmrDwtwQHWHGqAAECAwQFBgcICQoLy62Tl33AawKZKXYUfqeIV1A9yNb0KoNsxf-v_6DS0Ht_qACL0_aotOhn28rf8bZYqSRPuUWcNjrqaSp3p-cizjWc7jZEN7FtB4y89FFGo9UrXzmss7_bCMcHC3m7Ql0s_Dp86uLgbuiwuY-vYhV07AqRDkFMJeGKqaGM6PQfVW8BWvvjX8MUrFeWK_KMfnXRugxo"
+  },
+  "expected": {
+    "error": "unreadable"
+  }
+}

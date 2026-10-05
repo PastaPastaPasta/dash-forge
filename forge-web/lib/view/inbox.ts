@@ -403,13 +403,18 @@ function asCursor(v: unknown): Cursor | undefined {
   return undefined
 }
 
-const reviewDoc = baseDoc.extend({ verdict: int, body: z.string().optional().catch(undefined) })
+/**
+ * A sealed document's `enc`, and its `asMember` proof (an identifier consensus admits only from a
+ * current member writing as themself): what {@link audienceOf} decides from.
+ */
+const sealable = { enc: z.unknown().optional(), asMember: ident.optional().catch(undefined) }
+const reviewDoc = baseDoc.extend({ verdict: int, body: z.string().optional().catch(undefined), ...sealable })
 /** A review with the PR it is on (the S2 feed spans many). */
 const reviewOnDoc = reviewDoc.extend({ patchId: ident })
 /** A state event, with the identity it addresses (`refId`) when it names one. */
 const addressedEventDoc = eventDoc.extend({ refId: ident.optional().catch(undefined) })
 /** A comment, with its body (for a mention). */
-const commentBodyDoc = baseDoc.extend({ body: z.string().optional().catch(undefined) })
+const commentBodyDoc = baseDoc.extend({ body: z.string().optional().catch(undefined), ...sealable })
 const refDoc = baseDoc.extend({ refName: z.string().optional().catch(undefined) })
 
 /** What a `transition` kind means to a reader of the inbox. */
@@ -474,6 +479,42 @@ function stateReason(kind: number, value: string | undefined, me: string, refId:
 /** Review verdicts as the inbox words them; 4/5 are a non-member's approve and request changes (RC1). */
 const VERDICT_WHAT: Readonly<Record<number, string>> = { 1: 'approved', 2: 'requested changes', 3: 'reviewed', 4: 'approved', 5: 'requested changes' }
 
+/**
+ * Who may read a comment or review in `repo`, as the inbox shows it (DESIGN D14). A private repo's
+ * documents are all sealed and all its members': `'public'`, as before (the inbox never opens
+ * them). In a public repo a sealed one is `'members'` when it carries `asMember` naming its writer,
+ * and `'stranger'` otherwise: ciphertext anyone may post and no member's client shows, which never
+ * becomes an item.
+ */
+export function audienceOf(repo: RepoLite, d: { readonly enc?: unknown; readonly asMember?: string | undefined; readonly $ownerId: string }): 'public' | 'members' | 'stranger' {
+  if (repo.private || d.enc == null) return 'public'
+  return d.asMember === d.$ownerId ? 'members' : 'stranger'
+}
+
+/** A members-only issue or PR's title where the inbox names it ("#12 Members-only issue", §10). */
+export function membersOnlyTitle(kind: 'issue' | 'pull'): string {
+  return kind === 'issue' ? 'Members-only issue' : 'Members-only pull request'
+}
+
+/** What a members-only review did: its verdict is public (D15), its text is not. */
+const MEMBERS_VERDICT_WHAT: Readonly<Record<number, string>> = {
+  1: 'approved in a members-only review',
+  2: 'requested changes in a members-only review',
+  3: 'posted a members-only review',
+}
+
+/** A review's words: a members-only one says so; a stranger's sealed review is no item (null). */
+function reviewWhat(repo: RepoLite, d: z.infer<typeof reviewDoc>): string | null {
+  switch (audienceOf(repo, d)) {
+    case 'stranger':
+      return null
+    case 'members':
+      return MEMBERS_VERDICT_WHAT[d.verdict] ?? 'posted a members-only review'
+    case 'public':
+      return VERDICT_WHAT[d.verdict] ?? 'reviewed'
+  }
+}
+
 function shortRef(name: string | undefined): string {
   if (!name) return 'a branch'
   return name.replace(/^refs\/(heads|tags)\//, '')
@@ -499,7 +540,14 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
       const kind = f.type === 'issue' ? 'issue' : 'pull'
       return parseDocs(targetDoc, docs)
         .filter(notMine)
-        .map((d) => item(d, { kind, repo: f.repo, what: kind === 'issue' ? 'opened an issue' : 'opened a pull request', target: { kind, number: d.number, title: titleOf(d) }, ...mentioned(f.repo, d.body) }))
+        .map((d) => {
+          // A members-only issue or PR in a public repo always gets its row: its number is public
+          // (D14), whoever wrote it. Its title is not.
+          if (!f.repo.private && d.enc != null) {
+            return item(d, { kind, repo: f.repo, what: kind === 'issue' ? 'opened a members-only issue' : 'opened a members-only pull request', target: { kind, number: d.number, title: membersOnlyTitle(kind) } })
+          }
+          return item(d, { kind, repo: f.repo, what: kind === 'issue' ? 'opened an issue' : 'opened a pull request', target: { kind, number: d.number, title: titleOf(d) }, ...mentioned(f.repo, d.body) })
+        })
     }
     case 'push':
       return parseDocs(refDoc, docs)
@@ -528,11 +576,18 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
       if (f.kind === 'comments') {
         return parseDocs(commentBodyDoc, docs)
           .filter((d) => notMine(d) && d.$createdAt > t.since)
-          .map((d) => item(d, { kind: 'comment', repo: t.repo, what: 'commented', target, ...mentioned(t.repo, d.body) }))
+          .flatMap((d) => {
+            const audience = audienceOf(t.repo, d)
+            if (audience === 'stranger') return []
+            return [item(d, { kind: 'comment', repo: t.repo, what: audience === 'members' ? 'posted a members-only comment' : 'commented', target, ...mentioned(t.repo, d.body) })]
+          })
       }
       return parseDocs(reviewDoc, docs)
         .filter(notMine)
-        .map((d) => item(d, { kind: 'review', repo: t.repo, what: VERDICT_WHAT[d.verdict] ?? 'reviewed', target, ...mentioned(t.repo, d.body) }))
+        .flatMap((d) => {
+          const what = reviewWhat(t.repo, d)
+          return what === null ? [] : [item(d, { kind: 'review', repo: t.repo, what, target, ...mentioned(t.repo, d.body) })]
+        })
     }
     case 'myReviews': {
       // A review on a PR the feed cannot name yet is left for the poll to resolve
@@ -542,10 +597,11 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
         .filter(notMine)
         .flatMap((d) => {
           const t = threads.get(d.patchId)
-          if (!t) return []
+          const what = t ? reviewWhat(t.repo, d) : null
+          if (!t || what === null) return []
           // On a PR I opened, whether or not a subscription follows it (past the cap none does).
           const why: Pick<InboxItem, 'reason'> = { reason: 'author', ...mentioned(t.repo, d.body) }
-          return [item(d, { kind: 'review', repo: t.repo, what: VERDICT_WHAT[d.verdict] ?? 'reviewed', target: { kind: t.kind, number: t.number, title: t.title }, ...why })]
+          return [item(d, { kind: 'review', repo: t.repo, what, target: { kind: t.kind, number: t.number, title: t.title }, ...why })]
         })
     }
   }
@@ -595,7 +651,8 @@ export async function reviewIndexes(sdk: EvoSDK, forge: ForgeIds): Promise<Revie
 const EMPTY_PAGE: { rows: never[]; more: boolean } = { rows: [], more: false }
 
 function threadOf(t: TargetRow, repo: RepoLite, reason: ThreadSub['reason'], since: number): ThreadSub {
-  return { id: t.id, kind: t.kind, number: t.number, title: t.title, repo, reason, since, author: t.author }
+  const title = t.sealed === true && !repo.private ? membersOnlyTitle(t.kind) : t.title
+  return { id: t.id, kind: t.kind, number: t.number, title, repo, reason, since, author: t.author }
 }
 
 /**

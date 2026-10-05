@@ -1,0 +1,32 @@
+{
+  "name": "outsider_placeholder",
+  "description": "an outsider holds no lane key: Unreadable(NoKey), which readers show as a members-only placeholder (never not-found, never an error).",
+  "case": "mixed_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {},
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c84f9892eab0fdb7a611874cf68f179a64d1f255e203d2fcd039a43f1e5e4427ffea6920a5296635807834ce89db33640789703539675c630fe4e0e9e440fa0941eba61eeb6f2957e4f93ebbccfe",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "noKey"
+  }
+}

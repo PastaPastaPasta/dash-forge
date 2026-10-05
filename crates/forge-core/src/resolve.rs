@@ -201,6 +201,17 @@ pub async fn fork_parent(client: &PlatformClient, repo: &RepoRef) -> Result<Opti
         .map(platform::encode_identifier))
 }
 
+/// When the repo's `repo` document was created (`$createdAt`, ms), if the network recorded it:
+/// the push helper's import point for its secret scan (commits older than the repository count
+/// as imported history).
+pub async fn repo_created_at(client: &PlatformClient, repo: &RepoRef) -> Result<Option<u64>> {
+    let core = client.fetch_contract(&repo.forge.core).await?;
+    Ok(client
+        .fetch_document(&core, DOC_REPO, &repo.repo_id)
+        .await?
+        .and_then(|d| d.created_at))
+}
+
 /// The `description` of a repo's `repo` document, as [`list_owned`] reads it (`""` when it
 /// has none).
 pub async fn repo_description(client: &PlatformClient, repo: &RepoRef) -> Result<String> {

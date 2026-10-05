@@ -1,0 +1,100 @@
+{
+  "name": "n3",
+  "description": "a specific-people comment to 3 recipient(s), the sender in slot 0: each slot is IV ‖ AES-256-CBC(S, IV, 0x02 ‖ KCV_obj ‖ K_obj) under S = SHA-256 of the compressed ECDH point; AD' = AD(0x04, epoch 0) ‖ SHA-256(H); tag 25 lists the recipients in slot order (§4.1).",
+  "case": "named_envelope",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "fields": {
+      "body": "A letter to 3 people (the sender included): the embargo ends on Friday."
+    },
+    "sender": {
+      "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+      "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082",
+      "keyId": 4
+    },
+    "recipients": [
+      {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+        "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      },
+      {
+        "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+        "priv": "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955",
+        "pub": "02bf17b1a250a78519af75826803dc13b2182a3ce97a7badb50135cb3194e2388a"
+      },
+      {
+        "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+        "priv": "800419f853a2e11eeb44d05d603918884d93a42258c72df493c7d252e30130e8",
+        "pub": "026e30ff71fd069a535f7f75eee8118a4342cb224934cc4fb34959ca59814c9feb"
+      }
+    ],
+    "kObj": "c4245c2ee814320decd5b6250c6f60c3e76d67ff5e6d843eb59a5b947ce3479c",
+    "nonce": "1dfc5ec0c8c829dd5f390066",
+    "ivs": [
+      "a903f59800dc53b0c37ef30bb7eade16",
+      "00557b9d66a8a6e3d64be8c820ed06b6",
+      "18e5bdb5a4a95b3b84c7ffea4e0082af"
+    ]
+  },
+  "expected": {
+    "shared": [
+      "c7524c877dacb46526e61feb3284a734dce449c07bfb0aae69308c5062f8c7f5",
+      "395ac332bd12c170bcabb57015859838f0715f1d95c0cbe8fe27a7a2dbe91182",
+      "f07bef68ec795b682684e4deca440a944703f1f196a43ede3987a3d638a3ed61"
+    ],
+    "commit": "d621f7a2533441093911492768c8b0dedf060a6ccff511d499fc8c8743fd02ee",
+    "kcv": "d621f7a2533441093911492768c8",
+    "headerSha256": "81d244237ec95af45db169bf446136462f5b5a7910c0499a62aedb6add9ae38a",
+    "ad": "646173682d666f7267652f76322f646f63000411111111111111111111111111111111111111111111111111111111111111115e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea00000000636f6d6d656e7400333333333333333333333333333333333333333333333333333333333333333381d244237ec95af45db169bf446136462f5b5a7910c0499a62aedb6add9ae38a",
+    "tlv": "02004741206c657474657220746f20332070656f706c6520287468652073656e64657220696e636c75646564293a2074686520656d626172676f20656e6473206f6e204672696461792e1900205e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea1900208fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e6881900203ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf81040000a00000000000000000000",
+    "enc": "040300000004d621f7a2533441093911492768c8b0dedf060a6ccff511d499fc8c8743fd02eea903f59800dc53b0c37ef30bb7eade1630a8cca3daf2e5d2ad6788c23ee41899cef9431df40365b0aa20c16570888c36ffd4bc7b7148b7d509f1ef8721fd978100557b9d66a8a6e3d64be8c820ed06b68155bb1be4f944d68940aa4020737531cf417e0c78acdc9aa774c3779ef92709eacd16e51655033ec1edbe3ee8b28a3818e5bdb5a4a95b3b84c7ffea4e0082af5ee3856c92bd2b93b0cdc5ff01da3f8165b16c1e8fe7074041b1d7035f2c77bfea3f7aa23c5f1e7a7055a5f72bd94ce71dfc5ec0c8c829dd5f390066f5cb1ed947ca05a054bc8cac3ddc16d2e20eabc5d76e41f6d5ebe6b3ed04b0086a7447757c7bc38c36541df0bf5b80a6bb57249f9548f215f12dbf92e6314fc12c0611f3b302eea4cc939148953b5e7f63a42e1ef4e96fb94aa1262744c986fdc41fb1beee62a308880938cc0c0d8627229c4483ffe33a6a3803f556397a937f37e369e70f9ef4d54a4a4fe57b04301742f37c9c288dab332e82b3b76388d8a4d5eb99ce1ea8ebe0e77992bc5663512702a12805604ccb0c3bdc9112738088d98c3596d42fea319e35f99cd318502ac8",
+    "opened": [
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to 3 people (the sender included): the embargo ends on Friday."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810"
+        ],
+        "slot": 0
+      },
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to 3 people (the sender included): the embargo ends on Friday."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810"
+        ],
+        "slot": 1
+      },
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to 3 people (the sender included): the embargo ends on Friday."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810"
+        ],
+        "slot": 2
+      }
+    ]
+  }
+}

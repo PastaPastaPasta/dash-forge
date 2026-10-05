@@ -9,6 +9,8 @@
  * spend ledger, a toast shows what it actually cost, and the balance is re-read.
  */
 
+import type { HandoffRequest } from '@/lib/auth/key-handoff'
+import type { WatchedKey } from '@/lib/auth/key-watch'
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -99,6 +101,8 @@ interface AuthContextValue {
    * unlock; null when signed out.
    */
   readonly unlockScope: 'full' | 'signing' | null
+  /** Keys added to the identity since this device last looked, other than its own (the new-key alert). */
+  readonly newKeys: readonly WatchedKey[]
   /** The limited-key ceremony: import an identity file or a mnemonic once. */
   importIdentity: (
     input: { fileText: string } | { mnemonic: string; identityId: string },
@@ -107,6 +111,8 @@ interface AuthContextValue {
     options?: { readonly enablePrivateRepos?: boolean; readonly renew?: boolean },
   ) => Promise<void>
   adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
+  /** Keep the key `dg auth keys add --for-browser` sealed to this tab's request (`lib/auth/key-handoff`). */
+  adoptHandoffKey: (reply: string, request: HandoffRequest, protection: Protection, options?: { readonly renew?: boolean }) => Promise<void>
   /** Store the keys a wallet granted (verified on chain) and open the session. */
   adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection, options?: Parameters<AuthController['adoptWalletKeys']>[3]) => Promise<void>
   /** Add a wallet grant for another Forge contract to the signed-in identity. */
@@ -133,6 +139,8 @@ interface AuthContextValue {
   /** The headless controller (identity creation stores its key before registering it). */
   readonly controller: AuthController
 }
+
+const NO_KEYS: readonly WatchedKey[] = []
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
@@ -214,6 +222,7 @@ export function AuthProvider({
     () => ({
       importIdentity: withReload(controller.importIdentity.bind(controller)),
       adoptLimitedKey: withReload(controller.adoptLimitedKey.bind(controller)),
+      adoptHandoffKey: withReload(controller.adoptHandoffKey.bind(controller)),
       adoptWalletKeys: withReload(controller.adoptWalletKeys.bind(controller)),
       addWalletGrant: withReload(controller.addWalletGrant.bind(controller)),
       unlock: withReload(controller.unlock.bind(controller)),
@@ -317,11 +326,12 @@ export function AuthProvider({
       lastIdentity,
       lockedIdentity: locked ? lockedIdentityOf(vaults, lastIdentity) : null,
       unlockScope: session === null ? null : state.scope ?? null,
+      newKeys: session === null ? NO_KEYS : state.newKeys ?? NO_KEYS,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, lastIdentity, locked, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
+    [actions, controller, funds, keyLimits, lastIdentity, locked, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.newKeys, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -301,6 +301,40 @@ octokit) reads them:
   | `push.compare` | the pushed commit, `/repo/commit/?owner=…&name=…&oid=<after>` (forge-web has no compare page); the repo for a branch deletion |
   | `check_run.html_url` | its commit, `/repo/commit/?…&oid=<head_sha>` (no page per check run) |
   | `sender.html_url`, `user.html_url`, `owner.html_url` | `/u/?name=<identity id>` |
+- **Members-only content.** A public repository can hold members-only issues, pull requests,
+  comments and reviews: their text is encrypted for the repository's members, and the relay is
+  not a member. The relay never forwards that text, and it reports members-only activity only
+  where a member's client would show it:
+
+  | Document | Reported as |
+  |---|---|
+  | A members-only issue or pull request | `issues` / `pull_request` `opened`, with its number and author and an empty `title` and `body`. A pull request's `head.sha` (a stand-in for the real commit, not one you can fetch) and `base.ref` are empty too. Reported whoever wrote it: its number is public. |
+  | A members-only comment or review by a member | `issue_comment` `created` / `pull_request_review` `submitted` with an empty `body`. A review keeps its `state` (approved, changes requested, commented): the verdict is public and counts for everyone. |
+  | A members-only comment or review by someone who is not a member | Nothing. Anyone can post one, and no member's client shows it. |
+  | A label, assignment or retarget whose value is members-only | The usual `issues` / `pull_request` event. A label's `name` is empty; an assignment names its assignee, which is public. |
+  | Anything that happens on a members-only issue or pull request (close, merge, lock, a public comment) | The usual event. The embedded issue or pull request has an empty `title`, `body`, `head.sha` and `base.ref`; a public comment keeps its text. |
+  | A members-only release | Nothing. The public release list ignores it, and a `release` event with no tag would mislead a receiver that deploys on releases. |
+  | A members-only branch update | Nothing (as before). |
+
+  `"dash_members_only": true` marks them, in two places, and no other event has the key:
+
+  - at the payload's top level when the event's own document is members-only (a members-only
+    issue, pull request, comment or review, or a members-only label, assignment or retarget):
+    its text (`comment.body`, `review.body`, the issue's `title` and `body`, the label's
+    `name`) is empty on purpose;
+  - on the embedded `issue` or `pull_request` object when that issue or pull request is
+    members-only: its `title`, `body`, `head.sha` and `base.ref` are empty on purpose.
+
+  The event name, action and every other field are the ones a public event of the same kind
+  has, so a GitHub webhook parser reads it unchanged and finds an empty text. A receiver that
+  shows notices should say "posted a members-only comment on #12" (top-level key) or "closed
+  members-only issue #12" (object key) rather than quoting an empty text; the relay's own
+  sinks (and forge-notify, which renders through them) do exactly that. Limits: no
+  `check_run` is reported for a members-only pull request (its head is a stand-in), and a
+  merge of one always carries `dash_merge_check: "not_on_base"`, because its base branch name
+  is members-only. The same holds after a members-only retarget: the relay cannot read the new
+  base, so it still judges the merge against the old one. Either way `dash_merge_unverified`
+  is `true`; check the merge with `dg pr verify` before acting on it.
 
 ## Delivery semantics
 

@@ -501,6 +501,20 @@ The trailer is an HTML comment, which GitHub-flavoured renderers (forge-web's am
 
 **What it does not prove.** The file proves that someone who can push to the source named this repo. It says nothing about whether the mirror's content is current: the branch comparison does that, and only for the branch it compares. A source's maintainers can list several mirrors, and take one off the list. Only GitHub sources are checked; GitLab claims stay "says it mirrors". The check tells github.com the viewer's address, which is why it is a button.
 
+### 6.5 Key handoff: a limited key from `dg` to a browser (client convention, TS-06)
+
+A browser can get its limited key from `dg` instead of from the recovery phrase, so the phrase never enters a web page. Nothing on chain changes: `dg` registers an ordinary limited key (§2, the `dash-forge` group, a budget and an expiry) with one master-key `IdentityUpdate` on the terminal, and hands its private key to the browser sealed. The rules, shared by forge-core (`browser_key`) and forge-web (`lib/auth/key-handoff.ts`) and pinned by the `key_handoff__*` and `key_handoff_open__*` vectors:
+
+| | Rule |
+|---|---|
+| **Request** (the browser shows it) | `dfkr1:<network>:<base64url(33-byte compressed secp256k1 public key)>`, from a one-time key pair drawn for this request and kept only in the tab's memory. `<network>` is the network key (`testnet`, `mainnet`, `devnet-sakura`): 1 to 32 characters of `[A-Za-z0-9-]`. base64url is RFC 4648 §5 without padding, decoded strictly (no `=`, no stray bits). |
+| **Reply** (`dg auth keys add --for-browser <request>` prints it) | `dfkh1:<network>:<base64url(E ‖ N ‖ C)>`: `E` dg's ephemeral compressed public key (33 bytes), `N` a random 12-byte nonce, `C` AES-256-GCM of the payload (tag included). Key: `HKDF-SHA256(ikm = x-coordinate of ECDH(ephemeral, request key), salt = E ‖ request public key, info = "dash-forge/key-handoff/1")`. Associated data: `"dfkh1:" ‖ network`, so a reply relabelled for another network does not open. |
+| **Payload** | JSON `{"v":1,"network","identityId","keyId","wif"}` plus optional `"replacedKeyId"` (the key disabled in the same update) and `"encryptionKey":{"keyId","privateKeyHex"}` (with `--with-encryption-key`). Unknown fields, another version or another network: refused. At most 2,048 bytes. |
+| **Opening** | Not a `dfkh1:` reply, or too short for a tag: *malformed*. Another network: *network*, before decrypting. A tag that fails (another tab's request, an altered reply): *unreadable*. |
+| **Adopting** | The browser reads the key back from the chain before storing anything: live, AUTHENTICATION/HIGH, bound to the group, with a budget and an expiry, and controlled by the private key the payload carries. A renewal takes only a key for the signed-in identity, and a key this browser already holds for the identity must be the one the reply says was replaced (else it would stay live with nothing holding it); wallet keys, which `dg` cannot disable by id, renew with the identity file or phrase instead. The command names the identity when the tab knows it (`--for-identity`), and `dg` refuses another one before signing. `dg` refuses a browser key that lives longer than 365 days. The vault records that the key came from `dg`, and **Renew** then offers `dg` first. |
+
+The reply is useless without the tab's one-time private key, so it may be printed and pasted like any text; what it carries is still only a limited key. A request works once: the tab forgets its private key when the key is stored or the view closes.
+
 ## 7. Measured size and cost
 
 From `tools/contract-validate` (rs-dpp v5.0.0-beta.1, `PlatformVersion` 14) on the RC2 build with every flag on. The signed-shape transitions carry a 65-byte recoverable signature and the contract group fields.

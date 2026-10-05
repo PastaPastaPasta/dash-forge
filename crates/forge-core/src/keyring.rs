@@ -511,6 +511,19 @@ impl Keyring {
         crate::members::best_role(&self.members, &platform::encode_identifier(self.reader))
     }
 
+    /// The `ENCRYPTION` key ids the reader's own opened wraps for the current epoch went to
+    /// (§5.2 rekey: a wrap to the new key means this repository already moved to it).
+    pub fn own_current_wrap_keys(&self) -> Vec<u32> {
+        let Some(n) = self.resolution.current_epoch else {
+            return vec![];
+        };
+        self.wraps
+            .iter()
+            .filter(|w| w.member == self.reader && w.epoch == n && w.key.is_some())
+            .map(|w| w.recipient_key_id)
+            .collect()
+    }
+
     /// Epochs with a wrap to the reader that it could not open.
     pub fn unreadable_wraps(&self) -> &[u32] {
         &self.unreadable_wraps
@@ -1559,6 +1572,65 @@ pub struct Rotation {
     /// An epoch this rotation anchored burned on the way (§5.3): an earlier run's key for it
     /// may have reached someone outside the remaining members, so it only links the chain.
     pub burned: Option<u32>,
+}
+
+/// The private repositories an identity is a current member of (§5.2 rekey), from the
+/// `byMember` index of `maintainer` and `writer`.
+#[derive(Debug, Default)]
+pub struct PrivateMemberships {
+    /// Where it is a maintainer: it can rotate the key itself.
+    pub maintained: Vec<RepoRef>,
+    /// Where it is only a writer, triage or reader: a maintainer must rotate (§5.6 repair).
+    pub member_only: Vec<RepoRef>,
+}
+
+/// [`PrivateMemberships`] of `identity` (base58) on `forge`'s contracts. A membership whose
+/// repository is gone is skipped; public repositories have no keys and are left out.
+pub async fn private_memberships(
+    client: &PlatformClient,
+    forge: &crate::network::ForgeIds,
+    identity: &str,
+) -> Result<PrivateMemberships> {
+    let me = platform::decode_identifier(identity)?;
+    let core = client.fetch_contract(&forge.core).await?;
+    let mut by_type = Vec::new();
+    for doc_type in ["maintainer", "writer"] {
+        let docs = client
+            .query_all_documents(
+                &core,
+                doc_type,
+                &[QueryFilter::eq("memberId", FieldValue::identifier(me))],
+                &[QueryOrder::asc("memberId")],
+            )
+            .await?;
+        // Each membership document records its repository's visibility (`vis`): public ones
+        // have no keys and are not even resolved.
+        by_type.push(
+            docs.iter()
+                .filter(|d| d.field_str("vis").as_deref() == Some("private"))
+                .filter_map(|d| d.field_bytes32("repoId"))
+                .collect::<BTreeSet<_>>(),
+        );
+    }
+    let (maintains, writes) = (&by_type[0], &by_type[1]);
+    let mut out = PrivateMemberships::default();
+    for id in maintains.union(writes) {
+        let repo = match crate::resolve::resolve_id(client, &platform::encode_identifier(*id)).await
+        {
+            Ok(r) => r,
+            Err(Error::NotFound) => continue,
+            Err(e) => return Err(e),
+        };
+        if repo.visibility != crate::rules::v2::Visibility::Private {
+            continue;
+        }
+        if maintains.contains(id) {
+            out.maintained.push(repo);
+        } else {
+            out.member_only.push(repo);
+        }
+    }
+    Ok(out)
 }
 
 /// The epoch a rotation chains from: the current epoch and its key. A burned current epoch

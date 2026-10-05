@@ -1,0 +1,46 @@
+{
+  "name": "refused_sender_not_first",
+  "description": "the sender is not the first recipient: the writer refuses.",
+  "case": "named_envelope",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "fields": {
+      "body": "x"
+    },
+    "sender": {
+      "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+      "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082",
+      "keyId": 4
+    },
+    "recipients": [
+      {
+        "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+        "priv": "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955",
+        "pub": "02bf17b1a250a78519af75826803dc13b2182a3ce97a7badb50135cb3194e2388a"
+      },
+      {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+        "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      }
+    ],
+    "kObj": "c4245c2ee814320decd5b6250c6f60c3e76d67ff5e6d843eb59a5b947ce3479c",
+    "nonce": "1dfc5ec0c8c829dd5f390066",
+    "ivs": [
+      "994c0e1102672882620e4502b1de8d04",
+      "441c27ffa2e4051e1d78195653990f69"
+    ]
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}
