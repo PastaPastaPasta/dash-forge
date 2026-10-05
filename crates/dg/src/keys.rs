@@ -20,17 +20,17 @@ use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line};
 use crate::{RepoKeysCommand, RepoMembersCommand};
 
-/// One `repoKey` wrap costs about this much (a 64-byte encrypted property, three integers).
-pub const WRAP_ESTIMATE_CREDITS: u64 = 30_000_000;
+/// One `repoKey` wrap, as measured on sakura (S1: 57,058,360 to 73,518,360 credits; the first
+/// wrap of an epoch pays more), the upper figure rounded up.
+pub const WRAP_ESTIMATE_CREDITS: u64 = 74_000_000;
 /// One anchor `config` (sealed, up to ~1.5 KB).
 pub const ANCHOR_ESTIMATE_CREDITS: u64 = 60_000_000;
 
 /// One members-key anchor `config` (sealed, settings-free, epoch 0), as measured on sakura (S1:
 /// 36,836,680 credits), rounded up.
 pub const ENABLE_ANCHOR_CREDITS: u64 = 37_000_000;
-/// One `repoKey` wrap, as measured on sakura (S1: 57,058,360 to 73,518,360 credits), the upper
-/// figure rounded up.
-pub const ENABLE_WRAP_CREDITS: u64 = 74_000_000;
+/// One `repoKey` wrap when turning members-only content on ([`WRAP_ESTIMATE_CREDITS`]).
+pub const ENABLE_WRAP_CREDITS: u64 = WRAP_ESTIMATE_CREDITS;
 
 /// Dispatch a `repo keys` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &RepoKeysCommand) -> Result<()> {
@@ -436,7 +436,9 @@ fn enable_prompt(repo: &RepoRef, holders: usize, price: Option<f64>) -> String {
          read. Everyone can still see that something was posted, by whom and when.\n\
          Setting up keys for {holders} member(s) costs {}; each later removal costs about the \
          same again.\n\
-         People using older Forge builds will see fewer things until they update.\n\
+         People using older Forge builds will see fewer things until they update. Change its \
+         members only with an up-to-date Forge (dg, or the web app once it supports this), so \
+         the key follows every change.\n\
          Turn on",
         repo.display(),
         cost_line(enable_estimate(holders), price)
@@ -455,8 +457,36 @@ async fn enable(ctx: &Ctx, repo: &str) -> Result<()> {
         )));
     }
     let kr = signer(&s).keyring(&s.repo).await?;
-    require_maintainer(&kr, &s.repo, "turn on members-only content")?;
-    if kr.has_members_key() && kr.resolution().repair.is_none() {
+    if kr.reader_role() != Some(forge_core::rules::v2::Role::Maintainer) {
+        return Err(forge_core::user_error::UserError::new(
+            forge_core::user_error::codes::NOT_A_WRITER,
+            format!(
+                "only maintainers can turn on members-only content in {}",
+                s.repo.display()
+            ),
+        )
+        .fix(format!(
+            "ask a maintainer of {} to run `dg repo members enable {}`",
+            s.repo.display(),
+            s.repo.display()
+        ))
+        .note("nothing was written")
+        .into());
+    }
+    if kr.has_members_key() {
+        // already on: what is left is the key's own repair (a member with no key yet, a
+        // rotation), with its own cost; never a second "Turn on?"
+        let pending = kr
+            .resolution()
+            .repair
+            .as_ref()
+            .is_some_and(|r| r.rotate || !r.missing_wraps.is_empty());
+        if kr.resolution().anchors.is_empty() {
+            return Err(keyring::unresolved_members_key(&s.repo).into());
+        }
+        if pending {
+            return Box::pin(repair(ctx, repo)).await;
+        }
         ctx.emit(
             json!({ "status": "already_on", "repo": s.repo.display(), "epoch": kr.resolution().current_epoch }),
             || println!("{}: members-only content is already on.", s.repo.display()),
@@ -505,6 +535,11 @@ async fn members_status(ctx: &Ctx, repo: &str) -> Result<()> {
         .await
         .context("reading the repository's keys")?;
     let on = s.repo.visibility == Visibility::Private || kr.has_members_key();
+    // readable means the CURRENT epoch: a removed member still holds the old ones
+    let can_read = kr
+        .resolution()
+        .current_epoch
+        .is_some_and(|e| kr.readable_epochs().contains(&e));
     let missing: Vec<String> = kr
         .resolution()
         .repair
@@ -521,7 +556,7 @@ async fn members_status(ctx: &Ctx, repo: &str) -> Result<()> {
             "repo": s.repo.display(),
             "on": on,
             "epoch": kr.resolution().current_epoch,
-            "youCanRead": !kr.readable_epochs().is_empty(),
+            "youCanRead": can_read,
             "noKeyYet": missing,
         }),
         || {
@@ -534,8 +569,8 @@ async fn members_status(ctx: &Ctx, repo: &str) -> Result<()> {
                 return;
             }
             println!("{}: members-only content is on.", s.repo.display());
-            if kr.readable_epochs().is_empty() {
-                println!("  you can't read it: you're not a member, or no key has been shared with you yet");
+            if !can_read {
+                println!("  you can't read new members-only content: you're not a member, or no key has been shared with you yet");
             }
             for m in &missing {
                 println!("  no key shared with {m} yet: `dg repo keys repair {}` (a maintainer)", s.repo.display());

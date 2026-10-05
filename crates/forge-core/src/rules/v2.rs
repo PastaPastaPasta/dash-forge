@@ -1003,9 +1003,11 @@ impl Audience {
 ///
 /// * **public**: either the plaintext form (no `enc`, the kind's required plaintext field, if it
 ///   has one ([`ContentKind`]), and ref names that hash to their keys
-///   ([`ref_name_hashes_agree`] with `sha256`)), or the members-only / specific-people form:
-///   `enc` version [`ENC_MEMBERS`] or [`ENC_SPECIFIC_PEOPLE`] with an `epoch`, and none of the
-///   kind's plaintext fields. A v0x01 or v0x02 `enc` stays private-only, so it is malformed here;
+///   ([`ref_name_hashes_agree`] with `sha256`)), or, for an issue, patch, comment or review
+///   only, the members-only / specific-people form: `enc` version [`ENC_MEMBERS`] or
+///   [`ENC_SPECIFIC_PEOPLE`] with an `epoch`, and none of the kind's plaintext fields. A v0x01 or
+///   v0x02 `enc` stays private-only, so it is malformed here, as is a sealed ref update, config
+///   or release;
 /// * **private**: a non-empty `enc` with an `epoch`, and none of the kind's plaintext fields.
 ///   The names are inside `enc`, so their binding is checked after decryption
 ///   ([`ref_name_hashes_agree`] with the epoch's `K_ref`).
@@ -1020,8 +1022,17 @@ pub fn content_well_formed(doc: &ContentDoc, visibility: Visibility) -> bool {
     let encrypted = present(doc.enc.as_ref());
     match visibility {
         Visibility::Public if !encrypted => git_plane_well_formed(doc),
+        // members-only content is discussion: issues, patches, comments and reviews (an event's
+        // value is judged by its own reader); a sealed ref update, config or release is never
+        // public content here
         Visibility::Public => {
-            matches!(enc_version(doc), Some(ENC_MEMBERS | ENC_SPECIFIC_PEOPLE))
+            matches!(
+                doc.kind,
+                ContentKind::Issue
+                    | ContentKind::Patch
+                    | ContentKind::Comment
+                    | ContentKind::Review
+            ) && matches!(enc_version(doc), Some(ENC_MEMBERS | ENC_SPECIFIC_PEOPLE))
                 && doc.epoch.is_some()
                 && !plaintext.any
         }
@@ -1223,8 +1234,15 @@ mod mixed_tests {
     #[test]
     fn public_content_admits_only_the_members_and_specific_people_envelopes() {
         for kind in KINDS {
+            let discussion = matches!(
+                kind,
+                ContentKind::Issue
+                    | ContentKind::Patch
+                    | ContentKind::Comment
+                    | ContentKind::Review
+            );
             for version in 0..=u8::MAX {
-                let want = matches!(version, ENC_MEMBERS | ENC_SPECIFIC_PEOPLE);
+                let want = discussion && matches!(version, ENC_MEMBERS | ENC_SPECIFIC_PEOPLE);
                 assert_eq!(
                     content_well_formed(&sealed(kind, version), Visibility::Public),
                     want,

@@ -792,15 +792,16 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
         },
         stored.imported.as_ref(),
         body,
+        // an edit keeps the comment's audience, as read with it
+        stored.audience,
     )?;
     ctx.confirm_or_cancel(&format!(
         "Edit comment {comment_id}? (one document replace{})",
         planned.clause()
     ))?;
     let before = s.balance().await;
-    let audience = collab.audience_of_comment(&s.repo, comment_id).await?;
     let body = planned
-        .field_text(&collab, &s.repo, stored.imported.as_ref(), audience)
+        .field_text(&collab, &s.repo, stored.imported.as_ref())
         .await?;
     let edited = collab.update_comment(&s.repo, comment_id, &body).await?;
     let spent = s.spent_since(before).await;
@@ -865,11 +866,13 @@ async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
 
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "issue not created").await?;
+    let audience = s.collab().new_audience(&s.repo, None, None).await?;
     let planned = crate::long_body::Planned::new(
         &s.repo,
         forge_core::collab::long_body::BodyField::Issue { title },
         None,
         body,
+        audience,
     )?;
     ctx.confirm_or_cancel(&format!(
         "Open issue {title:?} in {}? (one document, {}{})",
@@ -892,8 +895,7 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     {
         created
     } else {
-        let audience = collab.new_audience(&s.repo, None, None).await?;
-        let body = planned.field_text(&collab, &s.repo, None, audience).await?;
+        let body = planned.field_text(&collab, &s.repo, None).await?;
         collab.create_issue(&s.repo, title, &body, &journal).await?
     };
     let spent = s.spent_since(before).await;
@@ -976,13 +978,16 @@ async fn hide(
     Ok(())
 }
 
-/// Resolve a v2 issue as an event target.
+/// Resolve a v2 issue as an event or transition target. A members-only issue the signer
+/// cannot read is still a target (its id, number and author are public): a maintainer closes,
+/// locks or labels it by number without reading it.
 async fn target(s: &Session, repo: &str, number: u64) -> Result<Target> {
+    let n = number_arg(number)?;
     Ok(s.collab()
-        .issue(&s.repo, number_arg(number)?)
+        .target_read(&s.repo, forge_core::collab::v2::TargetKind::Issue, n)
         .await?
         .ok_or_else(|| not_found(repo, number))?
-        .target())
+        .target(forge_core::collab::v2::TargetKind::Issue, n))
 }
 
 /// A body from a file, or stdin for `-`.
@@ -1030,7 +1035,15 @@ async fn edit(
         title: title.unwrap_or(&issue.title),
     };
     let long = body
-        .map(|b| crate::long_body::Planned::new(&s.repo, field, issue.imported.as_ref(), b))
+        .map(|b| {
+            crate::long_body::Planned::new(
+                &s.repo,
+                field,
+                issue.imported.as_ref(),
+                b,
+                issue.audience,
+            )
+        })
         .transpose()?;
     // a longer title leaves a private long body less room: its prefix is cut again
     let refit = (title.is_some() && body.is_none())
@@ -1058,11 +1071,16 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     let target = target(&s, repo, number).await?;
     refuse_if_locked(&s, number, &target.id).await?;
     let price = ctx.usd_price();
+    let audience = s
+        .collab()
+        .new_audience(&s.repo, Some(&target.id), None)
+        .await?;
     let planned = crate::long_body::Planned::new(
         &s.repo,
         forge_core::collab::long_body::BodyField::Comment { path: None },
         None,
         body,
+        audience,
     )?;
     ctx.confirm_or_cancel(&format!(
         "Comment on issue #{number}? (one comment, {}{})",
@@ -1075,8 +1093,7 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     let collab = s.collab();
     let (id, spent) = s
         .metered(|| async {
-            let audience = collab.new_audience(&s.repo, Some(&target.id), None).await?;
-            let body = planned.field_text(&collab, &s.repo, None, audience).await?;
+            let body = planned.field_text(&collab, &s.repo, None).await?;
             Ok::<_, anyhow::Error>(
                 collab
                     .comment(&s.repo, &target.id, &body, None, None)
@@ -1603,6 +1620,7 @@ mod tests {
             created_at: at,
             imported: None,
             diff_hunk: None,
+            audience: forge_core::rules::v2::Audience::Public,
         }
     }
 

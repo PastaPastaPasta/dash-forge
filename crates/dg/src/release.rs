@@ -203,6 +203,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         forge_core::collab::long_body::BodyField::Release,
         None,
         &args.notes,
+        forge_core::rules::v2::Audience::Public,
     )?;
     let quote = release_quote(
         existing.as_ref(),
@@ -234,14 +235,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     let before = s.balance().await;
     let mut input = superseding_input(existing.as_ref(), args, uploaded);
     if !args.notes.is_empty() {
-        input.notes = planned
-            .field_text(
-                &collab,
-                &s.repo,
-                None,
-                forge_core::rules::v2::Audience::Public,
-            )
-            .await?;
+        input.notes = planned.field_text(&collab, &s.repo, None).await?;
     }
     let doc_id = collab.create_release(&s.repo, &input).await.map_err(|e| {
         anyhow::Error::from(e).context(if input.assets.is_empty() {

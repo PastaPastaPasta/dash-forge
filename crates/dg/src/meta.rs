@@ -335,11 +335,8 @@ pub async fn run_edit(ctx: &crate::context::Ctx, s: &Session, e: Edit<'_>) -> Re
         let collab = s.collab();
         // a long body's full text is stored first; a new title alone carries a refit body
         let body = match &e.long {
-            Some(p) => {
-                // an edit keeps the item's audience
-                let audience = collab.audience_of_target(&s.repo, &e.target.id).await?;
-                Some(p.field_text(&collab, &s.repo, e.imported, audience).await?)
-            }
+            // the plan keeps the item's audience, as read with it
+            Some(p) => Some(p.field_text(&collab, &s.repo, e.imported).await?),
             None => e.refit.clone(),
         };
         collab
