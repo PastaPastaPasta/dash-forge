@@ -18,6 +18,20 @@ import { plural } from './format'
 /** Commits a phrase walk reads per update before it falls back to the plain wording. */
 const WALK_CAP = 500
 
+/**
+ * Whether commit `next` contains commit `old` (`old` is `next` or one of its ancestors): a push,
+ * not a force-push. Walks back from `old` until everything it reaches is in `next`'s history,
+ * reading at most `cap` commits; null when that is not enough, or a commit cannot be read.
+ * The PR timeline and a branch's Activity page both decide "force-pushed" with it.
+ */
+export async function tipContains(reader: ObjectReader, old: string, next: string, cap = WALK_CAP): Promise<boolean | null> {
+  try {
+    return (await newCommits(reader, old, [next], cap)).length === 0
+  } catch {
+    return null
+  }
+}
+
 /** A head update's words; `who`, when set, is the identity the words end with ("pushed by …"). */
 export interface HeadUpdatePhrase {
   readonly text: string
@@ -49,16 +63,16 @@ export async function headUpdatePhrases(
       else if (prev !== '') {
         // Without the base when its history is too long to walk past (the plain count then).
         const added = await (base === '' ? newCommits(reader, u.oid, [prev], WALK_CAP) : newCommits(reader, u.oid, [prev, base], WALK_CAP).catch(() => newCommits(reader, u.oid, [prev], WALK_CAP)))
-        // The old head is in the new one's history when walking it back from the new head
-        // finds nothing new.
-        const descends = (await newCommits(reader, prev, [u.oid], WALK_CAP)).length === 0
+        const descends = await tipContains(reader, prev, u.oid)
         const n = plural(added.length, 'commit')
-        phrase =
-          other === null
-            ? { text: descends ? `pushed ${n} ${arrow}` : `force-pushed ${arrow}` }
-            : descends
-              ? { text: `updated the head with ${n} ${arrow} pushed by`, who: other }
-              : { text: `updated the head ${arrow}, force-pushed by`, who: other }
+        if (descends !== null) {
+          phrase =
+            other === null
+              ? { text: descends ? `pushed ${n} ${arrow}` : `force-pushed ${arrow}` }
+              : descends
+                ? { text: `updated the head with ${n} ${arrow} pushed by`, who: other }
+                : { text: `updated the head ${arrow}, force-pushed by`, who: other }
+        }
       }
     } catch {
       // An unreadable commit or a history past the cap: keep the plain wording.
