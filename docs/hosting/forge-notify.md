@@ -137,7 +137,7 @@ Every setting is a flag of `forge-notify serve` or the environment variable name
 | `FORGE_NOTIFY_MAX_SUBSCRIBERS` | 10000 | Subscribers in total |
 | `FORGE_NOTIFY_MAX_REPOS_PER_USER` | 50 | Repositories followed per subscriber |
 | `FORGE_NOTIFY_MAX_REPOS` | 2000 | Repositories followed in total |
-| `FORGE_NOTIFY_DAILY_SEND_BUDGET` | 20000 | Mails and pushes per day, in total |
+| `FORGE_NOTIFY_DAILY_SEND_BUDGET` | 20000 | Mails (confirmation mails included) and pushes per day, in total |
 | `FORGE_NOTIFY_PER_USER_DAILY` | 200 | Instant notices per subscriber per day (more wait for the digest) |
 | `FORGE_NOTIFY_PER_IP_PER_MINUTE` | 60 | API requests per minute per client address |
 | `FORGE_NOTIFY_TRUST_PROXY` | `none` (`cloudflare` in the compose file) | Where the client address for rate limits comes from: `none` (the socket peer), `cloudflare` (`CF-Connecting-IP`, which Cloudflare overwrites) or `forwarded` (the **last** `X-Forwarded-For` entry, the one your proxy appended) |
@@ -228,7 +228,7 @@ A subscriber chooses topics, channels and timing in Settings → Notifications.
 | API requests per client address | 60 per minute (`FORGE_NOTIFY_PER_IP_PER_MINUTE`) |
 | Request body | 16 KiB; signed request text 8 KiB |
 | Signed requests | Fresh time (±300 s), single-use nonce, operator-bound |
-| Confirmation mails | 5 a day per identity, and 5 a day per address |
+| Confirmation mails | 5 a day per identity, and 5 a day per mailbox (`+tags`, and dots in Gmail addresses, count as one); each also counts against the daily send budget |
 | Identities per address | 5 |
 | Push subscriptions | 10 per identity |
 | Test sends | 5 a day per identity |

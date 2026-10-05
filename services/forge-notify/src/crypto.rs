@@ -138,6 +138,17 @@ impl Vault {
         hex::encode(mac.finalize().into_bytes())
     }
 
+    /// The blind key a per-address limit counts under: [`limit_address`] of the address, so
+    /// `a+1@x` and `a+2@x` (and Gmail's dotted spellings) share one limit. Only for limits: the
+    /// stored index ([`Vault::email_index`]) keeps the address as given.
+    pub fn email_limit_key(&self, email: &str) -> String {
+        let mut mac =
+            <HmacSha256 as Mac>::new_from_slice(self.index.as_ref()).expect("any key length");
+        mac.update(b"limit/v1\n");
+        mac.update(limit_address(email).as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
+
     fn unsubscribe_tag(&self, identity: &str, epoch: u32) -> [u8; 16] {
         let mut mac =
             <HmacSha256 as Mac>::new_from_slice(self.tokens.as_ref()).expect("any key length");
@@ -174,9 +185,45 @@ impl Vault {
     }
 }
 
+/// The mailbox an address reaches, as far as a rate limit cares: lowercased, without a
+/// `+tag`, and for Gmail (`gmail.com`, `googlemail.com`) without dots in the local part.
+pub fn limit_address(email: &str) -> String {
+    let e = email.trim().to_lowercase();
+    let Some((local, domain)) = e.rsplit_once('@') else {
+        return e;
+    };
+    let local = local.split('+').next().unwrap_or_default();
+    if matches!(domain, "gmail.com" | "googlemail.com") {
+        format!("{}@gmail.com", local.replace('.', ""))
+    } else {
+        format!("{local}@{domain}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limits_count_one_mailbox_however_it_is_spelled() {
+        assert_eq!(limit_address(" Bob+x@Example.org"), "bob@example.org");
+        assert_eq!(limit_address("b.o.b@example.org"), "b.o.b@example.org");
+        assert_eq!(limit_address("B.o.b+tag@googlemail.com"), "bob@gmail.com");
+        assert_eq!(limit_address("bob@gmail.com"), "bob@gmail.com");
+        let v = Vault::new(&[7; 32]);
+        assert_eq!(
+            v.email_limit_key("b.ob+1@gmail.com"),
+            v.email_limit_key("bob+2@googlemail.com")
+        );
+        assert_ne!(
+            v.email_limit_key("bob@gmail.com"),
+            v.email_index("bob@gmail.com")
+        );
+        assert_ne!(
+            v.email_index("bob+1@example.org"),
+            v.email_index("bob@example.org")
+        );
+    }
 
     #[test]
     fn sealing_is_bound_to_its_row() {

@@ -370,15 +370,25 @@ async fn email_set(app: &App, req: &SignedRequest) -> Result<Json<Value>> {
             "this address is already used by too many identities".into(),
         ));
     }
+    let limit_key = app.vault.email_limit_key(&email);
     if !app
         .store
         .take_quota(&format!("verify:{id}"), VERIFY_PER_DAY)?
         || !app
             .store
-            .take_quota(&format!("verify-addr:{idx}"), VERIFY_PER_DAY)?
+            .take_quota(&format!("verify-addr:{limit_key}"), VERIFY_PER_DAY)?
     {
         return Err(NotifyError::RateLimited(
             "too many confirmation mails today; try tomorrow".into(),
+        ));
+    }
+    // A confirmation mail is a mail: it counts against the service's daily budget too.
+    if !app
+        .store
+        .take_quota("global", app.dispatcher.daily_budget)?
+    {
+        return Err(NotifyError::RateLimited(
+            "the service has sent all the mail it may today; try tomorrow".into(),
         ));
     }
     let token = random_token();
