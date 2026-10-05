@@ -491,6 +491,7 @@ dg release create <owner>/<repo> --tag v1.0.0 --name "1.0.0" --notes "First stab
 dg release list   <owner>/<repo>
 dg release download <owner>/<repo> v1.0.0 [--asset <name>] [-O/--output <dir | file>]
 dg release unpublish <owner>/<repo> v1.0.0
+dg release verify <owner>/<repo> v1.0.0     # has the tag or any asset changed since it was published?
 ```
 
 The tag must exist in the repository first (push it, as above, or publish from the web, which can create it): a release cannot be deleted, only unpublished, so `dg release create` refuses a tag the repository does not have ([E102](../errors.md#e102)) before anything is uploaded or signed. A new revision of an existing release (to yank it or change its notes) is allowed even if its tag was deleted since.
@@ -506,6 +507,18 @@ The tag must exist in the repository first (push it, as above, or publish from t
 `dg release unpublish <owner>/<repo> <tag>` goes further: it takes the tag off the release list entirely (it no longer shows in `dg release list` or counts toward the repo's release total), and only works while the tag currently has a live release — a tag that was never published, or is already unpublished, is refused. Publishing the same tag again afterwards starts a fresh release.
 
 **Releases are never deleted.** Releases are listed by version (highest first), and the latest is the highest that is neither a pre-release nor yanked. Every revision a release ever had — including an unpublish — stays on chain, so a tag's publication history can always be reconstructed.
+
+**Provenance: is this still what was published?** A tag can be moved after its release is published, by a maintainer, or by any writer when tags are not protected (new repositories protect them). Every move stays on chain, so each release's page has a **Provenance** card:
+
+- what the tag pointed at when the release was first published, and who pushed it;
+- every later move or deletion, with who did it and when;
+- whether the assets changed since the first publish (replaced, added or removed);
+- the tag's signature, for an annotated tag signed with a key on a member's profile (`git tag -s`, SSH or OpenPGP, checked as `git verify-tag` checks it);
+- whether tags are protected now.
+
+The card turns red, and the release list marks the release **changed since publish**, when the tag points somewhere else, was deleted, or two pushes race on it, or when the assets changed. A tag that was moved and then moved back is shown in amber.
+
+`dg release verify <owner>/<repo> <tag>` prints the same checks and exits with [E504](../errors.md#e504) when the release changed, so a script can stop before installing from the tag. Run it inside a clone that has fetched the tag (`git fetch --tags`) to check the tag's signature as well. A private repository's sealed release may record its commit; it is checked against that when its tag named nothing at the moment of publish (the tag's own history wins otherwise).
 
 ### Labels
 

@@ -190,6 +190,7 @@ const sdk = {
 /** Fake wrap ops: a wrap "encrypts" the raw key as itself; anyone in the test can open it. */
 const ops: EncryptionOps = {
   keyId: 4,
+  keyIds: [4],
   unwrap: async (p) => (await ops.unwrapRaw(p)).keys,
   unwrapRaw: async (p) => {
     const bytes = p.document['wrapped']

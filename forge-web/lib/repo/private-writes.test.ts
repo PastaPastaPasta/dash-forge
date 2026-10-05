@@ -75,6 +75,7 @@ const encKey = (keyId = 4): EncKeyLike => ({ keyId, purposeNumber: 1, keyTypeNum
 let identityKeys: EncKeyLike[] = [encKey()]
 const ops: EncryptionOps = {
   keyId: 4,
+  keyIds: [4],
   unwrap: async (p) => (await ops.unwrapRaw(p)).keys,
   unwrapRaw: async (p) => {
     const bytes = p.document['wrapped']
@@ -428,6 +429,31 @@ describe('private create, correctness review', () => {
     identityKeys = [encKey(), encKey(5)]
     await expect(createRepo(sdk, auth, FORGE, { name: 'stale', visibility: 'private' }, undefined, { ops, epochZero: createEpochZero })).rejects.toThrow(/key 5/)
     expect(chain['repo']).toBeUndefined()
+  })
+
+  it('holding a newer key since disabled on chain: creates with the newest usable held key, sending and self-wrapping from it (L1)', async () => {
+    identityKeys = [encKey(4), { ...encKey(6), disabledAt: 1n }]
+    const sent: { sender: number; recipient: number }[] = []
+    const both: EncryptionOps = {
+      ...ops,
+      keyId: 6,
+      keyIds: [6, 4],
+      wrap: async (p) => {
+        sent.push({ sender: p.senderKey.keyId, recipient: p.recipientKey.keyId })
+        return { wrapped: new Uint8Array(p.raw), recipientKeyId: p.recipientKey.keyId, senderKeyId: p.senderKey.keyId }
+      },
+    }
+    await createRepo(sdk, auth, FORGE, { name: 'two-keys', visibility: 'private' }, undefined, { ops: both, epochZero: createEpochZero })
+    expect(sent).toEqual([{ sender: 4, recipient: 4 }])
+    expect(chain['repoKey']?.[0]?.['recipientKeyId']).toBe(4)
+  })
+
+  it('refuses when the identity’s usable key is none of the held ones, naming them all', async () => {
+    identityKeys = [encKey(4), encKey(8)]
+    const both: EncryptionOps = { ...ops, keyId: 6, keyIds: [6, 4] }
+    await expect(createRepo(sdk, auth, FORGE, { name: 'stale2', visibility: 'private' }, undefined, { ops: both, epochZero: createEpochZero })).rejects.toThrow(
+      /key 8, but this browser holds encryption keys 4 and 6/,
+    )
   })
 
   it('refuses a private fork', () => {

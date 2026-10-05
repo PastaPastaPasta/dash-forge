@@ -31,7 +31,7 @@ import {
   usableEncryptionKey,
   wipeMaterial,
 } from '@/lib/auth/encryption-key'
-import { onEncryptionKeyChange, removeEncryptionKey, storedEncryptionKeyId } from '@/lib/auth/vault'
+import { onEncryptionKeyChange, removeEncryptionKey, storedEncryptionKeyIds } from '@/lib/auth/vault'
 import { errorMessage } from '@/lib/utils'
 import { otherIdentityFileMessage } from '@/lib/auth/controller'
 import { PRIVATE_REPOS_ANCHOR } from '@/lib/settings-links'
@@ -43,6 +43,13 @@ import { PhraseWarning } from '@/components/auth/phrase-warning'
 
 type Mode = 'phrase' | 'file' | 'paste' | 'register'
 
+/** "Encryption key 6 is" / "Encryption keys 6 and 7 are" / "Encryption keys 4, 6 and 7 are". */
+function heldKeys(ids: readonly number[]): string {
+  const sorted = [...ids].sort((a, b) => a - b)
+  if (sorted.length === 1) return `Encryption key ${sorted[0]} is`
+  return `Encryption keys ${sorted.slice(0, -1).join(', ')} and ${sorted[sorted.length - 1]} are`
+}
+
 /** An identity update adding one key (measured like the limited-key registration). */
 const REGISTER_COST = '~0.0005 DASH'
 
@@ -50,7 +57,8 @@ export function EncryptionKeyPanel(): JSX.Element | null {
   const { identity, storage, controller, unlockScope } = useAuth()
   const { sdk, ready, network } = useSdk()
   const core = NETWORKS[network].v2?.core ?? null
-  const [keyId, setKeyId] = useState<number | null | undefined>(undefined)
+  /** The key ids this browser holds for the identity (null: none; undefined: not read yet). */
+  const [keyIds, setKeyIds] = useState<readonly number[] | null | undefined>(undefined)
   const [mode, setMode] = useState<Mode>('phrase')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -64,9 +72,9 @@ export function EncryptionKeyPanel(): JSX.Element | null {
     if (identity === null) return
     let live = true
     const read = (): void => {
-      storedEncryptionKeyId(network, identity).then(
-        (k) => live && setKeyId(k),
-        () => live && setKeyId(null),
+      storedEncryptionKeyIds(network, identity).then(
+        (k) => live && setKeyIds(k.length > 0 ? k : null),
+        () => live && setKeyIds(null),
       )
     }
     read()
@@ -184,12 +192,12 @@ export function EncryptionKeyPanel(): JSX.Element | null {
         <div className="mt-3">
           <UnlockMore title="Unlock this tab to manage your encryption key" testId="encryption-unlock" />
         </div>
-      ) : keyId !== null && keyId !== undefined ? (
+      ) : keyIds !== null && keyIds !== undefined ? (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <span className="text-dense" data-testid="encryption-key-stored">
             {storage === 'session'
-              ? `Encryption key ${keyId} is held for this tab only; it is forgotten on reload or lock.`
-              : `Encryption key ${keyId} is stored in this browser and unlocked now: private repos you're a member of open here. It locks again with this browser's key (Lock, or after 12 hours).`}
+              ? `${heldKeys(keyIds)} held for this tab only; ${keyIds.length === 1 ? 'it is' : 'they are'} forgotten on reload or lock.`
+              : `${heldKeys(keyIds)} stored in this browser and unlocked now: private repos you're a member of open here. It locks again with this browser's key (Lock, or after 12 hours).`}
           </span>
           <Button
             size="sm"
@@ -207,9 +215,11 @@ export function EncryptionKeyPanel(): JSX.Element | null {
             <Trash2 className="h-3.5 w-3.5" aria-hidden /> Remove from this browser
           </Button>
         </div>
-      ) : keyId === null ? (
+      ) : null}
+      {/* Another key can always be added: one held here never blocks a newer one (DESIGN D27). */}
+      {unlockScope !== 'signing' && keyIds !== undefined ? (
         <div className="mt-3 space-y-3">
-          <p className="text-dense font-medium">Enable private repos</p>
+          <p className="text-dense font-medium">{keyIds === null ? 'Enable private repos' : 'Add another encryption key'}</p>
           <div role="tablist" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
             {(
               [

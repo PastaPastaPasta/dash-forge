@@ -1,0 +1,85 @@
+{
+  "name": "assets_sorted_by_code_point",
+  "description": "Asset names are listed in code-point order on both sides (UTF-16 order differs above U+FFFF).",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      }
+    ],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "aa"
+          }
+        ]
+      },
+      {
+        "id": "r2",
+        "createdAt": 250,
+        "delta": 0,
+        "publisher": "alice",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "aa"
+          },
+          {
+            "name": "😀.zip",
+            "sha256": "bb"
+          },
+          {
+            "name": "Ａ.zip",
+            "sha256": "cc"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "alice"
+    },
+    "baseline": {
+      "oid": "A",
+      "by": "alice",
+      "at": 100
+    },
+    "pinnedBy": "tag",
+    "lateTag": false,
+    "current": {
+      "oid": "A",
+      "by": "alice",
+      "at": 100
+    },
+    "moves": [],
+    "tag": "unchanged",
+    "assets": {
+      "added": [
+        "Ａ.zip",
+        "😀.zip"
+      ],
+      "removed": [],
+      "replaced": []
+    }
+  }
+}
