@@ -53,6 +53,7 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { shortId } from '@/lib/utils'
 
 /** The spec's removal warning, verbatim, with the member's name. */
 /** What the remove dialog says, for what the removal will do. */
@@ -66,10 +67,6 @@ function removalText(effect: RemovalEffect, name: string, role: Role, kept: Role
 
 function removeWarning(name: string): string {
   return `Removing ${name} rotates the repo key. New pushes, issues and comments will be unreadable to ${name}. Everything ${name} could already read stays readable to ${name} — encryption can't take back what was shared.`
-}
-
-function shortId(id: string): string {
-  return id.length > 12 ? `${id.slice(0, 8)}…` : id
 }
 
 function stepText(s: RotationStep): string {

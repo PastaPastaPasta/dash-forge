@@ -25,6 +25,40 @@ export function matchesProtected(refName: string, patterns: readonly string[]): 
   return patterns.some((p) => wildmatch(neutralizeWildmatch(p), refName))
 }
 
+/** Every tag, nested ones included (`refs/tags/v1`, `refs/tags/tools/v1`): `**` crosses `/`. */
+export const ALL_TAGS_PATTERN = 'refs/tags/**'
+
+/**
+ * The protected patterns a new repository starts with unless its creator opts out (a client
+ * convention, `forge-v2.md` §6): its default branch and every tag, so only maintainers can move
+ * what people build and install from. `defaultBranch` is the short name (`main`) or the full ref.
+ * Parity: forge-core `rules::default_protected_patterns` (vectors `default_protection__*`).
+ */
+export function defaultProtectedPatterns(defaultBranch: string): string[] {
+  const short = defaultBranch.startsWith('refs/heads/') ? defaultBranch.slice('refs/heads/'.length) : defaultBranch
+  return [`refs/heads/${short}`, ALL_TAGS_PATTERN]
+}
+
+/**
+ * The patterns that cover every tag (see {@link missingDefaultProtection}). A list, not a test
+ * against sample tags: a glob can match any finite sample and still miss a tag (one that
+ * excludes names starting with `q` misses `q1`).
+ */
+const ALL_TAG_PATTERNS: readonly string[] = ['refs/tags/**', 'refs/**', '**']
+
+/**
+ * What of the default protection `patterns` leave uncovered on a repository whose default branch
+ * is `defaultBranch`: the default patterns still needed, empty when existing patterns cover both
+ * the branch and every tag. Every tag counts as covered only by a pattern that names them all
+ * (`refs/tags/**`, `refs/**`, `**`): `refs/tags/*` misses nested tags and `refs/tags/v*` misses
+ * `1.0`, so either still needs `refs/tags/**`. Parity: forge-core
+ * `rules::missing_default_protection` (vectors `missing_default_protection__*`).
+ */
+export function missingDefaultProtection(defaultBranch: string, patterns: readonly string[]): string[] {
+  const allTags = patterns.some((p) => ALL_TAG_PATTERNS.includes(p))
+  return defaultProtectedPatterns(defaultBranch).filter((d) => (d === ALL_TAGS_PATTERN ? !allTags : !matchesProtected(d, patterns)))
+}
+
 /**
  * Escape the two constructs git `wildmatch` treats as literals but the backing crate
  * would interpret: a leading run of `!` (negation) and every `{`/`}` (alternation).

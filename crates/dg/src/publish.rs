@@ -136,6 +136,9 @@ impl Flow {
         if opts.private {
             words.push("--private".into());
         }
+        if opts.no_protect {
+            words.push("--no-protect".into());
+        }
         words.join(" ")
     }
 }
@@ -718,6 +721,17 @@ fn remote_in_use(remote: &str, urls: &[String], owner: &str, slug: &str) -> anyh
     .into()
 }
 
+/// The plan's protection line: what a new repository protects, and how to opt out.
+fn protection_line(default_branch: &str, no_protect: bool) -> String {
+    if no_protect {
+        format!("leaves {default_branch} and tags unprotected: every writer can move them")
+    } else {
+        format!(
+            "protects {default_branch} and every tag: only maintainers can push to {default_branch} or move tags (--no-protect to skip)"
+        )
+    }
+}
+
 /// Print the plan (§1c), ask `Proceed? [Y/n]`, and print the flags a prompted storage choice
 /// maps to.
 fn confirm_plan(
@@ -760,6 +774,12 @@ fn confirm_plan(
                 cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
             );
         }
+        if plan.existing.is_none() {
+            println!(
+                "  {}",
+                protection_line(&plan.default_branch, opts.no_protect)
+            );
+        }
         println!("  {}", packs_line(&plan.storage.policy, plan.size));
         if plan.storage.source != Source::Flag && plan.existing.is_none() {
             // QW3-072: this is recorded in the repository's public config (the web's storage
@@ -780,16 +800,9 @@ fn confirm_plan(
     Ok(())
 }
 
-async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -> Result<()> {
-    // Every run ends at `Proceed?`: a script without --yes would do all the checks and print
-    // the plan only to stop there, so it stops here instead.
-    ctx.require_confirmable(flow.command())?;
-    let plan = plan(ctx, name, opts, flow).await?;
-    let price = ctx.usd_price();
-    confirm_plan(ctx, &plan, flow, opts, price)?;
-
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let create_opts = CreateRepoOpts {
+/// What the create writes: the plan's name, branch and storage, and the user's options.
+fn create_opts(plan: &Plan, opts: &CreateOptions) -> CreateRepoOpts {
+    CreateRepoOpts {
         display_name: opts.display_name.clone(),
         description: opts.description.clone(),
         default_branch: plan.default_branch.clone(),
@@ -800,8 +813,21 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         } else {
             forge_core::rules::v2::Visibility::Public
         },
+        protect: !opts.no_protect,
         ..CreateRepoOpts::public(plan.slug.clone())
-    };
+    }
+}
+
+async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -> Result<()> {
+    // Every run ends at `Proceed?`: a script without --yes would do all the checks and print
+    // the plan only to stop there, so it stops here instead.
+    ctx.require_confirmable(flow.command())?;
+    let plan = plan(ctx, name, opts, flow).await?;
+    let price = ctx.usd_price();
+    confirm_plan(ctx, &plan, flow, opts, price)?;
+
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let create_opts = create_opts(&plan, opts);
     let result = create_repo(
         &client,
         &identity,
@@ -813,6 +839,12 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
     .context("creating the repository")?;
     let repo = &result.repo;
     let url = web_url(repo.owner_id(), repo.name());
+    // The config is the last step. Only one this run signed is reported: a resumed one was
+    // signed by an earlier run, whose flags this one may not share.
+    let config_written = result
+        .steps
+        .last()
+        .is_some_and(|(_, o)| *o == StepOutcome::Created);
     let steps: serde_json::Map<_, _> = result
         .steps
         .iter()
@@ -829,6 +861,9 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         "storage": plan.storage.json(),
         "network": ctx.network_label(),
         "visibility": if opts.private { "private" } else { "public" },
+        // What the first config this run wrote protects; null when an earlier run wrote it
+        // (`dg repo protect list` shows what is in force).
+        "protectedPatterns": if config_written { json!(create_opts.protected_patterns()) } else { Value::Null },
         "steps": steps,
         "cost": cost_json(result.cost_credits, price),
         "push": Value::Null,
@@ -1258,6 +1293,7 @@ mod tests {
             remote: None,
             private: false,
             allow_private_uri: false,
+            no_protect: false,
         };
         let missing = PathBuf::from("/nonexistent/dash-forge-test/identity.json");
         for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
@@ -1468,6 +1504,7 @@ mod tests {
             remote: Some("forge".into()),
             allow_private_uri: true,
             private: true,
+            no_protect: true,
         };
         for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
             let line = flow.equivalent("proj", "r2,platform", &opts);
@@ -1486,6 +1523,7 @@ mod tests {
             assert_eq!(got.remote(), "forge", "{line}");
             assert!(got.allow_private_uri, "{line}");
             assert!(got.private, "{line}");
+            assert!(got.no_protect, "{line}");
             assert_eq!(pushes, flow.pushes(), "{line}");
         }
     }

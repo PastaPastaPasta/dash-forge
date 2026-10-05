@@ -24,8 +24,10 @@ import { describe, expect, it } from 'vitest'
 
 import {
   ancestryFromPairs,
+  defaultProtectedPatterns,
   displayRefName,
   matchesProtected,
+  missingDefaultProtection,
   mergeBaseTips,
   overlayTree,
   prBaseTips,
@@ -33,12 +35,14 @@ import {
   v2,
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
+import { refUpdateType } from '../repo/push'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
 import { avatarSpec, checkProfile, type ProfileInput } from './profile'
 import { backlinkFile, readBacklink } from './mirror-backlink'
 import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
+import { HandoffError, RECOVERY_PHRASE_WARNING, handoffRequest, openHandoffReply } from '../auth/key-handoff'
 import { planRefs, syncDecision } from '../repo/fork'
 import { webhookUrlSecret } from '../repo/webhooks'
 import { matchesText, mentions } from '../repo/issue-index'
@@ -160,6 +164,20 @@ function runCaseBase(v: Vector): void {
     case 'matches_protected': {
       const inp = v.input as MatchesProtectedInput
       expect(matchesProtected(inp.refName, inp.patterns)).toEqual(v.expected)
+      break
+    }
+    case 'ref_update_route': {
+      const inp = v.input as { readonly refName: string; readonly patterns: readonly string[] | null; readonly pusherIsOwner: boolean }
+      expect(refUpdateType(inp.refName, inp.patterns, inp.pusherIsOwner)).toEqual(v.expected)
+      break
+    }
+    case 'missing_default_protection': {
+      const inp = v.input as { readonly defaultBranch: string; readonly patterns: readonly string[] }
+      expect(missingDefaultProtection(inp.defaultBranch, inp.patterns)).toEqual(v.expected)
+      break
+    }
+    case 'default_protection': {
+      expect(defaultProtectedPatterns((v.input as { readonly defaultBranch: string }).defaultBranch)).toEqual(v.expected)
       break
     }
     case 'overlay': {
@@ -724,11 +742,55 @@ async function runSignatureVector(v: Vector): Promise<void> {
   expect(await verifyCommitSignature(new TextEncoder().encode(inp.commit), inp.signers)).toEqual(v.expected)
 }
 
+/** The key handoff cases (`../auth/key-handoff`): asynchronous, since WebCrypto is. */
+const HANDOFF_CASES: ReadonlySet<string> = new Set(['key_handoff', 'key_handoff_open', 'copy'])
+
+interface KeyHandoffInput {
+  readonly network: string
+  readonly browserSecret: string
+  readonly ephemeralSecret?: string
+  readonly nonce?: string
+  readonly plaintext?: string
+  readonly reply?: string
+}
+
+async function runHandoffVector(v: Vector): Promise<void> {
+  if (v.case === 'copy') {
+    onlyKeys(v, ['id'])
+    const texts: Readonly<Record<string, string>> = { recoveryPhraseWarning: RECOVERY_PHRASE_WARNING }
+    const text = texts[(v.input as { readonly id: string }).id]
+    expect(text, `vector ${v.name}: unknown copy`).toBeDefined()
+    expect({ text }).toEqual(v.expected)
+    return
+  }
+  const inp = v.input as KeyHandoffInput
+  const opened = async (reply: string): Promise<unknown> => {
+    try {
+      return { plaintext: new TextDecoder().decode(await openHandoffReply(reply, inp.network, hexToBytes(inp.browserSecret))) }
+    } catch (e) {
+      if (e instanceof HandoffError) return { error: e.kind }
+      throw e
+    }
+  }
+  if (v.case === 'key_handoff_open') {
+    onlyKeys(v, ['network', 'browserSecret', 'reply'])
+    expect(await opened(inp.reply as string)).toEqual(v.expected)
+    return
+  }
+  // Sealing is dg's half (Rust checks the reply byte for byte); this side checks the request it
+  // would show and that the reply opens to exactly the plaintext sealed.
+  onlyKeys(v, ['network', 'browserSecret', 'ephemeralSecret', 'nonce', 'plaintext'])
+  const expected = v.expected as { readonly request: string; readonly reply: string }
+  expect(handoffRequest(inp.network, hexToBytes(inp.browserSecret)).text).toBe(expected.request)
+  expect(await opened(expected.reply)).toEqual({ plaintext: inp.plaintext })
+}
+
 describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
   const base = vectors.filter((v) => v.rules === undefined)
-  // `private_*` cases (private-repos.md §11) run in `lib/private/conformance.test.ts`.
-  const isPrivate = (v: Vector) => v.case.startsWith('private_')
+  // `private_*` cases (private-repos.md §11) and the mixed-visibility envelope cases
+  // (`mixed_doc_*`, `named_envelope*`, `named_artifact*`) run in `lib/private/conformance.test.ts`.
+  const isPrivate = (v: Vector) => ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact'].some((p) => v.case.startsWith(p))
   const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
   const privateVectors = vectors.filter(isPrivate)
 
@@ -758,6 +820,7 @@ describe('FORGE_RULES conformance vectors', () => {
   for (const v of v2Vectors) {
     it(`v2 ${v.case} :: ${v.name}`, async () => {
       if (SIGNATURE_CASES.has(v.case)) await runSignatureVector(v)
+      else if (HANDOFF_CASES.has(v.case)) await runHandoffVector(v)
       else runVector(v)
     })
   }

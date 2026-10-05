@@ -47,12 +47,24 @@ fn git_output(
     clear_git_dir: bool,
     stdin: Option<&[u8]>,
 ) -> Result<std::process::Output> {
+    git_output_env(args, cwd, clear_git_dir, stdin, &[])
+}
+
+/// [`git_output`] with extra environment variables.
+fn git_output_env(
+    args: &[&str],
+    cwd: Option<&Path>,
+    clear_git_dir: bool,
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
+) -> Result<std::process::Output> {
     let mut cmd = Command::new("git");
     // Use the OS process cwd rather than `git -C` to avoid arg-ordering pitfalls.
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
     cmd.args(args);
+    cmd.envs(env.iter().copied());
     if clear_git_dir {
         cmd.env_remove("GIT_DIR");
         cmd.env_remove("GIT_WORK_TREE");
@@ -62,6 +74,45 @@ fn git_output(
         written.map_err(|e| anyhow!("write git stdin: {e}"))?;
     }
     Ok(out)
+}
+
+/// A read of the local object database, `git --no-replace-objects <args>`, in `repo` (with the
+/// inherited `GIT_DIR` cleared) or in the repo git spawned the helper for when `None`. Replace
+/// refs are ignored (a push packs the real objects, so it is scanned as them), and a partial
+/// clone never lazily fetches a missing blob through this helper mid-push
+/// (`GIT_NO_LAZY_FETCH=1`): a missing object reads as missing. stdout on success, git's stderr
+/// as the error otherwise.
+pub fn git_read_in(repo: Option<&Path>, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+    let out = git_read_output(repo, args, stdin)?;
+    if !out.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.first().copied().unwrap_or_default(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(out.stdout)
+}
+
+/// Whether [`git_read_in`] of `args` exits 0.
+pub fn git_read_ok_in(repo: Option<&Path>, args: &[&str]) -> bool {
+    git_read_output(repo, args, None).is_ok_and(|o| o.status.success())
+}
+
+fn git_read_output(
+    repo: Option<&Path>,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+) -> Result<std::process::Output> {
+    let mut full = vec!["--no-replace-objects"];
+    full.extend_from_slice(args);
+    git_output_env(
+        &full,
+        repo,
+        repo.is_some(),
+        stdin,
+        &[("GIT_NO_LAZY_FETCH", "1")],
+    )
 }
 
 /// What `index-pack --stdin` reported: the pack's sha (its `pack\t<sha>` or `keep\t<sha>`
@@ -219,6 +270,41 @@ impl LocalRepo {
     /// `--get` (see [`forge_core::storage::policy::git_config_scoped`]) — never dropped.
     pub fn config_get_scoped(key: &str) -> Option<(String, String)> {
         forge_core::storage::policy::git_config_scoped(key)
+    }
+
+    /// The repository's common directory (`git rev-parse --git-common-dir`, absolute): the
+    /// `.git` every worktree of a clone shares, where `GIT_DIR` may be `.git/worktrees/<name>`.
+    /// Falls back to [`Self::git_dir`] on a git too old for `--path-format`.
+    pub fn common_dir() -> Result<PathBuf> {
+        let out = run_git(
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            None,
+            false,
+            None,
+        );
+        match out {
+            Ok(out) => {
+                let p = String::from_utf8_lossy(&out).trim().to_string();
+                if p.is_empty() {
+                    Self::git_dir()
+                } else {
+                    std::fs::canonicalize(&p).map_err(|e| anyhow!("resolving {p}: {e}"))
+                }
+            }
+            Err(_) => Self::git_dir(),
+        }
+    }
+
+    /// Whether the local repository has any ref at all (a fresh clone or `git init` has none).
+    /// `true` when git cannot tell, so callers that act on "no refs" stay still.
+    pub fn has_refs() -> bool {
+        run_git(
+            &["for-each-ref", "--count=1", "--format=x"],
+            None,
+            false,
+            None,
+        )
+        .map_or(true, |out| !out.is_empty())
     }
 
     /// Whether object `oid` is present in the local odb.

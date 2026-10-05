@@ -1,0 +1,17 @@
+{
+  "name": "limited_key",
+  "description": "a browser's request for a limited key that replaces key 5: the request text, and the reply sealed to it.",
+  "case": "key_handoff",
+  "rules": "v2",
+  "input": {
+    "network": "sakura",
+    "browserSecret": "0707070707070707070707070707070707070707070707070707070707070707",
+    "ephemeralSecret": "1111111111111111111111111111111111111111111111111111111111111111",
+    "nonce": "000102030405060708090a0b",
+    "plaintext": "{\"v\":1,\"network\":\"sakura\",\"identityId\":\"8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB\",\"keyId\":7,\"wif\":\"cTestWif\",\"replacedKeyId\":5}"
+  },
+  "expected": {
+    "request": "dfkr1:sakura:ApicC3bLVjlx_cm-8x7AbDVg8ySdbunl2DxXYlWW4F9v",
+    "reply": "dfkh1:sakura:A081W9y3zAr3KO88zrlhXZBoS7Wyyl-FmrDwtwQHWHGqAAECAwQFBgcICQoLy62Tl33HawKZKXYUfqeIV1A9yNb0KoNsxf-v_6DS0Ht_qACL0_aotOhn28rf8bZYqSRPuUWcNjrqaSp3p-cizjWc7jZEN7FtB4y89FFGo9UrXzmss7_bCMcHC3m7Ql0s_Dp86uLgbuiwuY-vYhV07AqRDkFMJeGKqaGM6PQfVW8BWvvjX8MUrFeWK_KMfnXRugxo"
+  }
+}

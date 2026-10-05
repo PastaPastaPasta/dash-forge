@@ -1,0 +1,14 @@
+{
+  "name": "protected_ref",
+  "description": "A ref the config in force protects is written as protectedRefUpdate.",
+  "case": "ref_update_route",
+  "input": {
+    "refName": "refs/tags/v1",
+    "patterns": [
+      "refs/heads/main",
+      "refs/tags/**"
+    ],
+    "pusherIsOwner": false
+  },
+  "expected": "protectedRefUpdate"
+}

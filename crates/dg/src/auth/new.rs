@@ -82,7 +82,7 @@ pub struct NewArgs {
 /// How `dg auth new` backs the identity up besides the words shown on screen.
 #[derive(Debug, clap::Args)]
 pub struct BackupArgs {
-    /// Write the full identity (recovery words and every key) to this new file (0600; an
+    /// Write the full identity (recovery phrase and every key) to this new file (0600; an
     /// existing file is refused), encrypted under a passphrase (DASH_FORGE_PASSPHRASE without a
     /// terminal or with --json). Required without a terminal (CI, pipes, --json): the words are
     /// then never printed, only this file's path.
@@ -144,9 +144,9 @@ fn words_destination(args: &BackupArgs, here: Surroundings) -> Result<WordsTo> {
     }
     let why = here.why_not().unwrap_or_default();
     Err(
-        UserError::new(codes::USAGE, "the recovery words have nowhere safe to go")
+        UserError::new(codes::USAGE, "the recovery phrase has nowhere safe to go")
             .cause(format!(
-                "{why}, and dg never prints recovery words where a log or another program could \
+                "{why}, and dg never prints a recovery phrase where a log or another program could \
                  keep them"
             ))
             .fix("run `dg auth new` in a terminal: it shows the words once and checks your copy")
@@ -253,7 +253,7 @@ fn backup_ceremony(screen: &mut dyn std::io::Write, words: &Secret, to: WordsTo)
     writeln!(screen)?;
     writeln!(
         screen,
-        "Your recovery words. Write them down now, in order, and keep them offline."
+        "Your recovery phrase. Write the words down now, in order, and keep them offline."
     )?;
     writeln!(
         screen,
@@ -408,7 +408,7 @@ async fn prove(
     Err(UserError::new(codes::TIMED_OUT, "the asset lock is not provable yet")
         .cause(format!("{} is broadcast but was not locked within {} minutes", lock.txid, PROOF_WAIT.as_secs() / 60))
         .fix("run `dg auth new --resume` later: it reuses this asset lock and spends nothing new")
-        .note("the funds are safe: they belong to the recovery words")
+        .note("the funds are safe: they belong to the recovery phrase")
         .into())
 }
 
@@ -515,7 +515,7 @@ async fn start_or_resume(
     let words = if journal.is_some() {
         say(
             ctx,
-            "Resuming. Type the recovery words of the unfinished identity.",
+            "Resuming. Type the recovery phrase of the unfinished identity.",
         );
         read_mnemonic()?
     } else {

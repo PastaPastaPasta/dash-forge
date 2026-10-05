@@ -47,6 +47,7 @@ use crate::git::{names_missing_object, LocalRepo, ScratchRepo};
 use crate::options::OptionState;
 use crate::policy::{self, PushPolicy};
 use crate::progress::{self, Charge, PlanFacts, PlatformWrites, Progress};
+use crate::secret_scan;
 use crate::url::DashUrl;
 
 /// Packs downloaded concurrently by a fetch — the same window the platform backend
@@ -273,6 +274,9 @@ impl Helper {
     /// into the local odb. Full clone indexes the self-contained packs directly; a
     /// `--filter` partial clone re-packs through a scratch repo and writes `.promisor`.
     pub async fn fetch(&mut self, wants: &[Want], options: &OptionState) -> Result<()> {
+        // The sealed-object ledger, created empty on a clone or a fetch into a repository with
+        // no refs ([`crate::ledger`]).
+        crate::ledger::ensure_for_new_clone(options.cloning);
         // The local git odb is the cache — never re-download objects git already has
         // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
         // already present locally there is nothing to transfer. (A promisor fetch still
@@ -480,6 +484,10 @@ impl Helper {
         };
 
         let mut planned = plan_pushes(specs, &remote_refs, options);
+        // Before anything is built, signed or stored: a public push publishes for good.
+        if conn.repo.visibility == forge_core::rules::v2::Visibility::Public {
+            check_secrets(conn, &mut planned, &remote_refs, options).await;
+        }
         let progress = Progress::new(options.verbosity);
         let balance_before = conn.identity().balance();
         let mut est_credits = push_fees::estimate_ref_updates(
@@ -1549,6 +1557,102 @@ fn plan_pushes(
     }
     reject_collisions(&mut planned, remote_refs);
     planned
+}
+
+/// The secret scan of a public push ([`secret_scan`]): prints its warnings, and refuses (E807)
+/// each ref whose new commits add a likely secret nothing allows. When the full scan cannot run
+/// (git failed), the name-only check still refuses a new `.env`; when that fails too, the push
+/// goes ahead with a warning: the scan is a safety net, and a broken one must not block every
+/// push.
+async fn check_secrets(
+    conn: &Conn,
+    planned: &mut [Planned],
+    remote_refs: &[(String, RefState)],
+    options: &OptionState,
+) {
+    let tips: Vec<secret_scan::Tip> = planned
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.reject.is_none())
+        .filter_map(|(index, p)| {
+            p.new_oid.clone().map(|oid| secret_scan::Tip {
+                index,
+                oid,
+                name: p.spec.dst.clone(),
+            })
+        })
+        .collect();
+    if tips.is_empty() {
+        return;
+    }
+    // Already public: only the remote's tips as Forge lists them. A remote-tracking ref is
+    // what this clone once fetched, not proof that it is still public.
+    let known: Vec<String> = remote_refs.iter().filter_map(|(_, s)| tip_oid(s)).collect();
+    let created_at_ms = forge_core::resolve::repo_created_at(&conn.client, &conn.repo)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read when the repo was created; every new commit counts as new");
+            None
+        });
+    let request = secret_scan::Request {
+        repo: None,
+        tips,
+        known,
+        created_at_ms,
+        mirror: secret_scan::spawned_by_import(),
+        allow: secret_scan::allow_from_options(options),
+    };
+    let progress = Progress {
+        enabled: true,
+        ..Progress::new(options.verbosity)
+    };
+    let scan = match secret_scan::scan(&request) {
+        Ok(scan) => scan,
+        Err(e) => {
+            let names_only = secret_scan::scan_names_only(&request);
+            let (text, outcome) = match &names_only {
+                Ok(_) => (
+                    "couldn't check this push's file contents for secrets; checked its .env files by name only",
+                    "names-only",
+                ),
+                Err(_) => (
+                    "couldn't check this push for secrets, pushing anyway",
+                    "skipped",
+                ),
+            };
+            progress.emit(
+                &format!("dash: warning: {text}: {e:#}"),
+                &serde_json::json!({
+                    "event": "secretScanFailed",
+                    "outcome": outcome,
+                    "message": forge_core::user_error::redact(&format!("{e:#}")),
+                }),
+            );
+            match names_only {
+                Ok(scan) => scan,
+                Err(_) => return,
+            }
+        }
+    };
+    scan.print_warnings(progress.json);
+    let refs: Vec<String> = scan
+        .refused
+        .iter()
+        .map(|&i| planned[i].spec.dst.clone())
+        .collect();
+    let Some(error) = scan.refusal(&refs) else {
+        return;
+    };
+    if !progress.json {
+        scan.print_refusals();
+    }
+    error.eprint("dash: ");
+    let mut event = error.to_json();
+    event["event"] = serde_json::json!("error");
+    progress::report(&event);
+    for &i in &scan.refused {
+        planned[i].reject = Some(secret_scan::WIRE.to_string());
+    }
 }
 
 /// A `--force-with-lease` that no longer holds: the ref is not where the lease expects (`want`,
@@ -2685,7 +2789,7 @@ fn history_skipped(ctx: &PushContext<'_>, why: &str) {
 /// (`DASH_FORGE_SPAWNED_BY=forge-import`): a stray variable in a user's shell never picks the
 /// branch an index describes.
 fn default_branch_hint() -> Option<String> {
-    let spawned = std::env::var("DASH_FORGE_SPAWNED_BY").is_ok_and(|v| v == "forge-import");
+    let spawned = secret_scan::spawned_by_import();
     spawned
         .then(|| std::env::var("DASH_FORGE_DEFAULT_BRANCH").ok())
         .flatten()
@@ -3012,7 +3116,7 @@ fn archived_refusal(repo: &str) -> Denied {
             "ask a maintainer to run `dg repo unarchive {repo}`"
         ))
         .fix(format!(
-            "push anyway: `git push -o {ALLOW_ARCHIVED_PUSH_OPTION} …` (archiving is a client rule; consensus does not enforce it)"
+            "push anyway: `git push -o {ALLOW_ARCHIVED_PUSH_OPTION} …` (Forge apps enforce archiving, not Platform)"
         ))
         .note(NOTE_PRECHECK),
         wire: "repository archived",

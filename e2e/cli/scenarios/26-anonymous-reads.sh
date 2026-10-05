@@ -140,7 +140,7 @@ NAME="$(printf 'e2e-anon-%s' "$RUN_ID" | tr 'A-Z' 'a-z')"; NAME="${NAME:0:60}"
 PNAME="$(printf 'e2e-anon-p-%s' "$RUN_ID" | tr 'A-Z' 'a-z')"; PNAME="${PNAME:0:60}"
 
 step "3. a private repo read with no identity is a clear E301"
-if dg_as "$W" --yes --json repo create "$PNAME" --private --storage platform >"$LOG-pcreate.json" 2>"$LOG-pcreate.err"; then
+if dg_as "$W" --yes --json repo create "$PNAME" --no-protect --private --storage platform >"$LOG-pcreate.json" 2>"$LOG-pcreate.err"; then
   anon_once "$LOG-priv.json" "$LOG-priv.err" -- --json issue list "${WID}/${PNAME}"
   rc=$?
   if [[ $rc -ne 0 ]] && is_flake "$LOG-priv.err"; then
@@ -163,7 +163,7 @@ if ! curl -fsS -o /dev/null "${S3}/health/ready"; then
   finish_scenario
 fi
 if ! _retry "$LOG-create.err" _dg_read "$W" "$LOG-create.json" "$LOG-create.err" \
-    --yes --json repo create "$NAME" --storage platform; then
+    --yes --json repo create "$NAME" --no-protect --storage platform; then
   cat "$LOG-create.err" >&2
   is_flake "$LOG-create.err" && skip_scenario "repo create flaked"
   bad "repo create failed"; finish_scenario

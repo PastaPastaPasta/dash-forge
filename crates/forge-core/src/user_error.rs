@@ -152,6 +152,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::CONFIRMATION_REQUIRED, "confirmation required"),
     (codes::CANCELLED, "cancelled at the confirmation prompt"),
     (codes::POLICY_NOT_MET, "branch policy not met"),
+    (codes::SECRET_IN_PUSH, "possible secret in a public push"),
 ];
 
 /// The stable codes. The first digit is the exit code.
@@ -264,6 +265,9 @@ pub mod codes {
     pub const CANCELLED: &str = "E803";
     /// The repository's branch `policy` (a client rule) is not met by this merge.
     pub const POLICY_NOT_MET: &str = "E804";
+    /// A public push adds a file that looks like a secret (`forge-secrets`), and nothing
+    /// allows it.
+    pub const SECRET_IN_PUSH: &str = "E807";
 }
 
 /// An error a person can act on.
@@ -701,7 +705,7 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         )
         .cause(format!("stopped after {fetched}: {reason}"))
         .fix("try again in a minute: a node served an incomplete page, and another node will be asked")
-        .note("nothing partial was used: an incomplete history is refused rather than folded"),
+        .note("stopped rather than show an incomplete history"),
         CoreError::NotFound => not_found(chain, ctx),
         CoreError::IdentityNotFound {
             identity_id,
@@ -790,7 +794,7 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
 /// keeps the identity's encryption key beside the limited signing key (QW2-004), from its file
 /// or from the recovery words (QW-040). A key stored by an older `dg`, or with
 /// `--signing-only`, is a signing key only: signing in again fixes it.
-pub const FIX_FULL_KEY_LOGIN: &str = "`dg auth login <identity file> --replace <key id>` (the key `dg auth status` shows), or `dg auth login --mnemonic --replace <key id>` with your 12 recovery words: it stores a new limited key with your encryption key beside it (never the master key) and disables the old one";
+pub const FIX_FULL_KEY_LOGIN: &str = "`dg auth login <identity file> --replace <key id>` (the key `dg auth status` shows), or `dg auth login --mnemonic --replace <key id>` with your 12-word recovery phrase: it stores a new limited key with your encryption key beside it (never the master key) and disables the old one";
 
 /// The E601 way in: the owner's add, and before it, for someone not a member yet, their own
 /// consent (`member_consent`: a `member` document naming the add is refused without it, E604;
@@ -1157,7 +1161,7 @@ fn missing_reference(
         .fix(format!(
             "ask a maintainer to do it, or the owner to make you one: `dg collab add {repo} <your identity id> --role maintainer`"
         ))
-        .note("refused at consensus: nothing was written");
+        .note("Platform refused the write, so nothing was written");
     }
     if path == "consentBy" {
         // RC1: a maintainer/writer enrolled by the owner names the member's own `consent`.
@@ -1204,7 +1208,7 @@ fn frozen_field(
     )
     .cause(detail)
     .fix(fix)
-    .note("refused at consensus: nothing was written")
+    .note("Platform refused the write, so nothing was written")
 }
 
 /// `(document type, property)` of a 40128 message: `property 'logUrl' of document … (type
@@ -1455,7 +1459,7 @@ fn role_refused(ctx: &ErrorContext<'_>, refusal: &RoleRefusal, detail: &str) -> 
     u.fix(format!(
         "`dg collab list {repo}` shows your role; ask the owner for the one this needs (`dg collab add {repo} <your identity id> --role {needs}`)"
     ))
-    .note("refused at consensus: nothing was written")
+    .note("Platform refused the write, so nothing was written")
 }
 
 /// The members of a role, for "… cannot make it".
@@ -1506,7 +1510,7 @@ fn not_deployed(ctx: &ErrorContext<'_>, network: &str) -> UserError {
         "forge-contracts/deployments/{network}.json records no forge-v2 contracts"
     ));
     let Some(there) = crate::network::suggested_v2_network() else {
-        return u.note("no network has a forge-v2 deployment in this build");
+        return u.note("Dash Forge isn't available on any network in this build");
     };
     if !ctx.via_git {
         return u.fix(format!("use a network where it is: `{}`", there.dg_flags()));
@@ -1884,6 +1888,11 @@ fn is_key_char(c: char) -> bool {
 
 fn is_secret_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
+    // The helper's `allow-secret=<fingerprint>` push option names a finding of its secret scan
+    // (E807): the fingerprint is a short hash, not a secret, and the fix line must show it.
+    if k == "allow-secret" {
+        return false;
+    }
     (k.starts_with("x-amz-") && k != "x-amz-date" && k != "x-amz-expires")
         || SECRET_KEYS
             .iter()
@@ -2547,7 +2556,7 @@ mod tests {
                 u.note
                     .as_deref()
                     .unwrap_or("")
-                    .contains("no network has a forge-v2 deployment"),
+                    .contains("isn't available on any network in this build"),
                 "{u:?}"
             ),
         }
@@ -2643,7 +2652,7 @@ mod tests {
                 u.note
                     .as_deref()
                     .unwrap_or("")
-                    .contains("no network has a forge-v2 deployment"),
+                    .contains("isn't available on any network in this build"),
                 "{u:?}"
             ),
         }
@@ -3667,6 +3676,12 @@ mod tests {
             redact("monkey=banana apikey=s3cr3t"),
             "monkey=banana apikey=[redacted]"
         );
+        // The secret scan's override names a fingerprint, which the fix line must show.
+        assert_eq!(
+            redact("push with -o allow-secret=3a673ba6830a if you're sure"),
+            "push with -o allow-secret=3a673ba6830a if you're sure"
+        );
+        assert_eq!(redact("client-secret=s3cr3t"), "client-secret=[redacted]");
         assert_eq!(
             redact("Authorization: Basic dXNlcjpwYXNz; next"),
             "Authorization: Basic [redacted]; next"

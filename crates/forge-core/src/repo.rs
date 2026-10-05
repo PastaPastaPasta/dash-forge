@@ -1004,7 +1004,8 @@ impl<'a> RepoService<'a> {
         }
         // The config in force now: this write is routed by it.
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
-        let doc_type = ref_doc_type(ref_name, &current_protected_patterns(&configs));
+        let owner = self.identity_id()? == repo.owner_id();
+        let doc_type = ref_doc_type(ref_name, &configs, owner);
         let mut props = public_ref_props(&scope, ref_name, new_oid, prev_oid, force)?;
         crate::members::stamp_claimed_role(&contract, doc_type, &mut props, 1);
         self.doc_engine()?
@@ -1056,9 +1057,9 @@ impl<'a> RepoService<'a> {
         }
         let (scope, contract) = self.writable(repo).await?;
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
-        let patterns = current_protected_patterns(&configs);
         let engine = self.doc_engine()?;
-        let (scope, contract, patterns, engine) = (&scope, &contract, &patterns, &engine);
+        let owner = self.identity_id()? == repo.owner_id();
+        let (scope, contract, configs, engine) = (&scope, &contract, &configs, &engine);
         let mut landed = futures::stream::iter(updates.iter().map(|u| async move {
             let mut props = public_ref_props(
                 scope,
@@ -1067,7 +1068,7 @@ impl<'a> RepoService<'a> {
                 u.prev_oid.as_deref(),
                 u.force,
             )?;
-            let doc_type = ref_doc_type(&u.ref_name, patterns);
+            let doc_type = ref_doc_type(&u.ref_name, configs, owner);
             crate::members::stamp_claimed_role(contract, doc_type, &mut props, 1);
             engine.create_document(contract, doc_type, props).await
         }))
@@ -4256,10 +4257,11 @@ fn oid_widths_ok(new_oid: &[u8], prev_oid: Option<&[u8]>) -> bool {
     ok(new_oid) && prev_oid.is_none_or(ok)
 }
 
-/// The document type a public ref update is written as: `protectedRefUpdate` for a ref the
-/// current config protects, else `refUpdate`.
-fn ref_doc_type(ref_name: &str, protected_patterns: &[String]) -> &'static str {
-    if rules::matches_protected(ref_name, protected_patterns) {
+/// The document type a public ref update is written as ([`rules::routes_protected`]): no config
+/// read (`configs` empty) counts as "not readable yet".
+fn ref_doc_type(ref_name: &str, configs: &[ConfigDoc], pusher_is_owner: bool) -> &'static str {
+    let patterns = (!configs.is_empty()).then(|| current_protected_patterns(configs));
+    if rules::routes_protected(ref_name, patterns.as_deref(), pusher_is_owner) {
         DOC_PROTECTED_REF_UPDATE
     } else {
         DOC_REF_UPDATE
@@ -4994,12 +4996,28 @@ mod tests {
 
     #[test]
     fn a_ref_update_is_routed_and_checked_like_the_single_write() {
+        let configs = [ConfigDoc {
+            id: "a".into(),
+            created_at: 100,
+            protected_patterns: vec!["refs/heads/main".into()],
+        }];
         assert_eq!(
-            super::ref_doc_type("refs/heads/main", &["refs/heads/main".into()]),
+            super::ref_doc_type("refs/heads/main", &configs, false),
             crate::refs::DOC_PROTECTED_REF_UPDATE
         );
         assert_eq!(
-            super::ref_doc_type("refs/heads/dev", &["refs/heads/main".into()]),
+            super::ref_doc_type("refs/heads/dev", &configs, true),
+            crate::refs::DOC_REF_UPDATE
+        );
+        // No config visible yet (a push right after the create): the owner's update is the
+        // maintainer-gated type, so a default-protected branch is never written as an inert
+        // plain update; anyone else's stays plain.
+        assert_eq!(
+            super::ref_doc_type("refs/heads/dev", &[], true),
+            crate::refs::DOC_PROTECTED_REF_UPDATE
+        );
+        assert_eq!(
+            super::ref_doc_type("refs/heads/dev", &[], false),
             crate::refs::DOC_REF_UPDATE
         );
         let oid = [1u8; 20];

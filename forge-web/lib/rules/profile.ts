@@ -110,7 +110,7 @@ const SEED = /^[A-Za-z0-9._-]{1,64}$/
 
 /** How a reader draws an identity's avatar from `profile.avatarConfig`. */
 export type AvatarSpec =
-  /** No `avatarConfig`: the initial on a colour of the identity's own. */
+  /** No `avatarConfig`: the identicon of the identity id. */
   | { readonly kind: 'default' }
   /** `identicon` or `identicon:<seed>`: a pattern drawn here from the seed (the identity id by default). */
   | { readonly kind: 'identicon'; readonly seed: string }

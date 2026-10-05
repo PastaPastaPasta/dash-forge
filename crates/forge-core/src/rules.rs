@@ -878,6 +878,72 @@ pub fn matches_protected(ref_name: &str, patterns: &[String]) -> bool {
         .any(|p| glob_match::glob_match(&neutralize_wildmatch(p), ref_name))
 }
 
+/// Every tag, nested ones included (`refs/tags/v1`, `refs/tags/tools/v1`): `**` crosses `/`.
+pub const ALL_TAGS_PATTERN: &str = "refs/tags/**";
+
+/// The protected patterns a new repository starts with unless its creator opts out (a client
+/// convention, `docs/contracts/forge-v2.md` §6): its default branch and every tag, so only
+/// maintainers can move what people build and install from. `default_branch` is the short
+/// name (`main`) or the full ref. Parity: `defaultProtectedPatterns` in
+/// `forge-web/lib/rules/matchesProtected.ts` (vectors `default_protection__*`).
+#[must_use]
+pub fn default_protected_patterns(default_branch: &str) -> Vec<String> {
+    let short = default_branch
+        .strip_prefix("refs/heads/")
+        .unwrap_or(default_branch);
+    vec![format!("refs/heads/{short}"), ALL_TAGS_PATTERN.to_string()]
+}
+
+/// Whether a public ref update is written as the maintainer-gated `protectedRefUpdate` (a client
+/// rule, `docs/contracts/forge-v2.md` §6): when the config in force protects `ref_name`; and when
+/// no config is readable yet (`patterns` is `None`) and the pusher owns the repository. Every
+/// client writes a config at create, and a new repository protects its default branch and tags
+/// by default, so the owner's push right after the create (`dg init`) would otherwise go out as
+/// a plain update that config makes inert, and the ref would never appear; consensus admits the
+/// protected type from the owner, who self-enrols as maintainer at create. Anyone else's update
+/// stays plain: nothing they could see protects the ref. Parity: `refUpdateType` in
+/// `forge-web/lib/repo/push.ts` (vectors `ref_update_route__*`).
+#[must_use]
+pub fn routes_protected(
+    ref_name: &str,
+    patterns: Option<&[String]>,
+    pusher_is_owner: bool,
+) -> bool {
+    match patterns {
+        Some(p) => matches_protected(ref_name, p),
+        None => pusher_is_owner,
+    }
+}
+
+/// The patterns that cover every tag ([`missing_default_protection`]). A list, not a test
+/// against sample tags: a glob can match any finite sample and still miss a tag
+/// (`refs/tags/**/[!q]*` misses `q1`).
+const ALL_TAG_PATTERNS: [&str; 3] = ["refs/tags/**", "refs/**", "**"];
+
+/// What of the default protection `patterns` leave uncovered on a repository whose default
+/// branch is `default_branch`: the default patterns still needed, empty when existing patterns
+/// cover both the branch and every tag. Every tag counts as covered only by a pattern that names
+/// them all (`refs/tags/**`, `refs/**`, `**`): `refs/tags/*` misses nested tags and `refs/tags/v*`
+/// misses `1.0`, so either still needs `refs/tags/**`. Parity:
+/// `missingDefaultProtection` in `forge-web/lib/rules/matchesProtected.ts` (vectors
+/// `missing_default_protection__*`).
+#[must_use]
+pub fn missing_default_protection(default_branch: &str, patterns: &[String]) -> Vec<String> {
+    let all_tags = patterns
+        .iter()
+        .any(|p| ALL_TAG_PATTERNS.contains(&p.as_str()));
+    default_protected_patterns(default_branch)
+        .into_iter()
+        .filter(|d| {
+            if d == ALL_TAGS_PATTERN {
+                !all_tags
+            } else {
+                !matches_protected(d, patterns)
+            }
+        })
+        .collect()
+}
+
 /// Escape the two constructs the backing glob crate supports but git `wildmatch` does
 /// not — a leading run of `!` (negation) and every `{`/`}` (brace alternation) — so
 /// they are matched as literals. Preserves UTF-8 (ref names are UTF-8, data-contracts
@@ -1273,10 +1339,10 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        ci_rerun, codeowners, display_ref_name, is_legal_ref_name, long_body, matches_protected,
-        merge_base_tips, overlay_tree, pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event,
-        EventKind, FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff,
-        Verdict,
+        ci_rerun, codeowners, default_protected_patterns, display_ref_name, is_legal_ref_name,
+        long_body, matches_protected, merge_base_tips, missing_default_protection, overlay_tree,
+        pr_base_tips, resolve_ref, routes_protected, v2, Ancestry, ConfigDoc, Event, EventKind,
+        FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
@@ -1507,6 +1573,46 @@ mod tests {
                 let want: bool =
                     serde_json::from_value(v.expected.clone()).expect("matches_protected expected");
                 assert_eq!(got, want, "vector `{ctx}`");
+            }
+            "ref_update_route" => {
+                let name = v.input["refName"]
+                    .as_str()
+                    .expect("ref_update_route input: refName");
+                let patterns: Option<Vec<String>> =
+                    serde_json::from_value(v.input["patterns"].clone())
+                        .expect("ref_update_route input: patterns");
+                let owner = v.input["pusherIsOwner"]
+                    .as_bool()
+                    .expect("ref_update_route input: pusherIsOwner");
+                let want = v.expected.as_str().expect("ref_update_route expected");
+                let got = if routes_protected(name, patterns.as_deref(), owner) {
+                    "protectedRefUpdate"
+                } else {
+                    "refUpdate"
+                };
+                assert_eq!(got, want, "vector `{ctx}`");
+            }
+            "missing_default_protection" => {
+                let branch = v.input["defaultBranch"]
+                    .as_str()
+                    .expect("missing_default_protection input: defaultBranch");
+                let patterns: Vec<String> = serde_json::from_value(v.input["patterns"].clone())
+                    .expect("missing_default_protection input: patterns");
+                let want: Vec<String> = serde_json::from_value(v.expected.clone())
+                    .expect("missing_default_protection expected");
+                assert_eq!(
+                    missing_default_protection(branch, &patterns),
+                    want,
+                    "vector `{ctx}`"
+                );
+            }
+            "default_protection" => {
+                let branch = v.input["defaultBranch"]
+                    .as_str()
+                    .expect("default_protection input: defaultBranch");
+                let want: Vec<String> = serde_json::from_value(v.expected.clone())
+                    .expect("default_protection expected");
+                assert_eq!(default_protected_patterns(branch), want, "vector `{ctx}`");
             }
             "overlay" => {
                 let inp: OverlayInput =
@@ -2581,23 +2687,7 @@ mod tests {
             "pubkey_entry" | "commit_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),
             "webhook_url" => run_webhook_url_case(v),
-            "role_oracle" => {
-                let inp: RoleOracleInput = input(v);
-                let oracle = v2::RoleOracle::new(inp.memberships);
-                let got: Vec<serde_json::Value> = inp
-                    .queries
-                    .iter()
-                    .map(|q| {
-                        serde_json::json!({
-                            "roleAt": oracle.role_at(&q.identity, q.at),
-                            "memberAt": oracle.member_at(&q.identity, q.at),
-                            "currentRole": oracle.current_role(&q.identity),
-                            "approverAt": oracle.approver_at(&q.identity, q.at),
-                        })
-                    })
-                    .collect();
-                assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
-            }
+            "role_oracle" => run_role_oracle(v),
             "code_owners" | "code_owner_requests" => run_code_owners_case(v),
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
             | "linked_issues" => run_review_case(v),
@@ -2606,8 +2696,125 @@ mod tests {
             }
             "long_body" => run_long_body(v),
             "ci_rerun" | "ci_rerun_write" => run_ci_rerun_case(v),
+            "key_handoff" | "key_handoff_open" | "copy" => run_key_handoff_case(v),
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
+    }
+
+    fn run_role_oracle(v: &Vector) {
+        let inp: RoleOracleInput = input(v);
+        let oracle = v2::RoleOracle::new(inp.memberships);
+        let got: Vec<serde_json::Value> = inp
+            .queries
+            .iter()
+            .map(|q| {
+                serde_json::json!({
+                    "roleAt": oracle.role_at(&q.identity, q.at),
+                    "memberAt": oracle.member_at(&q.identity, q.at),
+                    "currentRole": oracle.current_role(&q.identity),
+                    "approverAt": oracle.approver_at(&q.identity, q.at),
+                })
+            })
+            .collect();
+        assert_eq!(
+            serde_json::Value::from(got),
+            v.expected,
+            "vector `{}`",
+            v.name
+        );
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields, rename_all = "camelCase")]
+    struct KeyHandoffInput {
+        network: String,
+        browser_secret: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ephemeral_secret: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plaintext: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply: Option<String>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct CopyInput {
+        id: String,
+    }
+
+    /// `key_handoff__*` (seal a reply for a request), `key_handoff_open__*` (open one) and
+    /// `copy__*` (fixed user-facing text): `crate::browser_key`.
+    fn run_key_handoff_case(v: &Vector) {
+        use crate::browser_key::{open, request_text, seal_bytes, OpenError, Request};
+        let ctx = &v.name;
+        if v.case == "copy" {
+            let inp: CopyInput = input(v);
+            let text = match inp.id.as_str() {
+                "recoveryPhraseWarning" => crate::browser_key::RECOVERY_PHRASE_WARNING,
+                other => panic!("vector `{ctx}`: unknown copy `{other}`"),
+            };
+            assert_eq!(
+                serde_json::json!({ "text": text }),
+                v.expected,
+                "vector `{ctx}`"
+            );
+            return;
+        }
+        let inp: KeyHandoffInput = input(v);
+        let h32 = |s: &str| -> [u8; 32] {
+            hex::decode(s)
+                .unwrap_or_else(|e| panic!("vector `{ctx}`: {e}"))
+                .try_into()
+                .unwrap_or_else(|_| panic!("vector `{ctx}`: not 32 bytes"))
+        };
+        let secret = h32(&inp.browser_secret);
+        let opened = |reply: &str| match open(reply, &inp.network, &secret) {
+            Ok(p) => serde_json::json!({ "plaintext": String::from_utf8(p.to_vec()).unwrap() }),
+            Err(e) => serde_json::json!({ "error": match e {
+                OpenError::Malformed => "malformed",
+                OpenError::Network => "network",
+                OpenError::Unreadable => "unreadable",
+            } }),
+        };
+        if v.case == "key_handoff_open" {
+            let reply = inp.reply.as_deref().expect("reply");
+            assert_eq!(opened(reply), v.expected, "vector `{ctx}`");
+            return;
+        }
+        let secp = secp256k1::Secp256k1::new();
+        let public_key = secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &secp256k1::SecretKey::from_slice(&secret).unwrap(),
+        );
+        let request = Request {
+            network: inp.network.clone(),
+            public_key,
+        };
+        let plaintext = inp.plaintext.as_deref().expect("plaintext");
+        let nonce: [u8; 12] = hex::decode(inp.nonce.as_deref().expect("nonce"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let reply = seal_bytes(
+            &request,
+            plaintext.as_bytes(),
+            &h32(inp.ephemeral_secret.as_deref().expect("ephemeralSecret")),
+            nonce,
+        )
+        .unwrap();
+        let got = serde_json::json!({
+            "request": request_text(&inp.network, &public_key),
+            "reply": reply,
+        });
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+        assert_eq!(
+            opened(&reply),
+            serde_json::json!({ "plaintext": plaintext }),
+            "vector `{ctx}`: round trip"
+        );
     }
 
     #[derive(Deserialize, Serialize)]
@@ -2717,8 +2924,12 @@ mod tests {
             let bytes = std::fs::read(&path).expect("read vector");
             let v: Vector = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
-            // the private-repository vectors run in `private::conformance`
-            if v.case.starts_with("private_") {
+            // the private-repository and mixed-visibility envelope vectors run in
+            // `private::conformance`
+            if crate::private::conformance::CRYPTO_CASE_PREFIXES
+                .iter()
+                .any(|p| v.case.starts_with(p))
+            {
                 continue;
             }
             match v.rules.as_deref() {

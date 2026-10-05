@@ -1,0 +1,33 @@
+{
+  "name": "pad_before_content_refused",
+  "description": "a padding record before the content breaks the ascending order: malformed.",
+  "case": "mixed_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "issue",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 7,
+      "enc": "03000102030405060708090a0b0509e03d972f69352a14741ce54b415865c97d7c75531b8f21f8be7fccbe453bbba77e549179faeff77dfddefe7bc2b12e116febb59fc649e38824a99d49c4eb22c0052c6e182dd5f32b79178ae3d440c73b4700c6742e0904150e2d077bb4",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

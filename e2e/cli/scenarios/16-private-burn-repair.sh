@@ -34,7 +34,7 @@ fi
 
 step "OWNER creates a private repo, pushes, adds COLLAB (maintainer) and CONTRIB (writer)"
 if ! _retry "$LOG-create.err" _dg_read "$ID_OWNER" "$LOG-create.json" "$LOG-create.err" \
-    --yes --json repo create "$NAME" --private --storage platform; then
+    --yes --json repo create "$NAME" --no-protect --private --storage platform; then
   cat "$LOG-create.err" >&2
   is_flake "$LOG-create.err" && skip_scenario "create failed on a transport flake"
   bad "private create failed"; finish_scenario

@@ -55,7 +55,10 @@ async fn delete(ctx: &Ctx, repo: &str, name: &str) -> Result<()> {
             } else {
                 ""
             };
-            println!("✓ deleted label {name}: {deleted} definition document(s) removed{note}");
+            println!(
+                "✓ deleted label {name}: {} removed{note}",
+                crate::fmt::plural(deleted, "definition")
+            );
         },
     );
     Ok(())

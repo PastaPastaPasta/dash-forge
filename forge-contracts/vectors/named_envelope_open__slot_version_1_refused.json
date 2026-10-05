@@ -1,0 +1,41 @@
+{
+  "name": "slot_version_1_refused",
+  "description": "a slot whose plaintext starts 0x01 (a repoKey wrap's version) never opens as a letter slot: NotARecipient.",
+  "case": "named_envelope_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "040300000004d621f7a2533441093911492768c8b0dedf060a6ccff511d499fc8c8743fd02eea903f59800dc53b0c37ef30bb7eade166c2d1a1829505b173553d5104a9740555ba1410c11b96fcae71747c2dc4640b4b20db1997ab71a5c59e928cfa95144d400557b9d66a8a6e3d64be8c820ed06b61b4a7f62739e29a50476613679027a716bf3bcaa9661bba44167b4dee501a58ca83828e15acbe69b36fb805d24715d8a18e5bdb5a4a95b3b84c7ffea4e0082af6831872c2b094f13b90a4ca9e822391c1405173e56d7cab91bc809215dfed8566037934a8827b54b25b80d1800622ec91dfc5ec0c8c829dd5f390066f5cb1ed947ca05a054bc8cac3ddc16d2e20eabc5d76e41f6d5ebe6b3ed04b0086a7447757c7bc38c36541df0bf5b80a6bb57249f9548f215f12dbf92e6314fc12c0611f3b302eea4cc939148953b5e7f63a42e1ef4e96fb94aa1262744c986fdc41fb1beee62a308880938cc0c0d8627229c4483ffe33a6a3803f556397a937f37e369e70f9ef4d54a4a4fe57b04301742f37c9c288dab332e82b3b76388d8a4d5eb99ce1ea8ebe0e77992bc5663512702a12805604ccb0c3bdc9112738088d9a5d57974c77f61dea46cfc6508f34480"
+    },
+    "ownerKeys": [
+      {
+        "id": 4,
+        "purpose": 1,
+        "keyType": 0,
+        "data": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      }
+    ],
+    "readers": [
+      {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "keys": [
+          "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "status": "unreadable",
+        "reason": "notARecipient"
+      }
+    ]
+  }
+}

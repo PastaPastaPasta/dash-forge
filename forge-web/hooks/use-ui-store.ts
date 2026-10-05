@@ -18,7 +18,7 @@ export type { TopUpReason }
  * as a renewal of the signed-in identity's key, QW3-031; `grant` asks the signed-in identity's
  * wallet for a key on the contract named with it, when the session lacks one).
  */
-export type LoginView = 'import' | 'renew' | 'create' | 'wallet' | 'grant' | 'unlock'
+export type LoginView = 'import' | 'renew' | 'create' | 'wallet' | 'grant' | 'unlock' | 'dg'
 
 /**
  * What a signed-out click asked to do (L-62): the sheet says "Sign in to star this repo" and what

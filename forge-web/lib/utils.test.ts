@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { abbreviate, cn, errorMessage } from '@/lib/utils'
+import { abbreviate, cn, errorMessage, shortId } from '@/lib/utils'
 
 describe('cn', () => {
   it('joins truthy class names', () => {
@@ -65,5 +65,20 @@ describe('abbreviate', () => {
 
   it('returns short values unchanged', () => {
     expect(abbreviate('abc')).toBe('abc')
+  })
+})
+
+describe('shortId', () => {
+  it('keeps both ends of an identity id', () => {
+    expect(shortId('8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB')).toBe('8hJmcHW…Ac7nB')
+  })
+
+  it('tells apart two ids that share a ground prefix', () => {
+    expect(shortId('8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB')).not.toBe(shortId('8hJmcHWaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'))
+  })
+
+  it('returns short values unchanged', () => {
+    expect(shortId('alice')).toBe('alice')
+    expect(shortId('1234567890123')).toBe('1234567890123')
   })
 })

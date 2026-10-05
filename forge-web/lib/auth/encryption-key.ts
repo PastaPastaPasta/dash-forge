@@ -12,20 +12,38 @@
  *   the master key, adding the next key id, derived from the recovery phrase at
  *   `m/9'/<coin>'/5'/0'/0'/<identityIndex>'/<keyId>'` (the CLI's path, so either client can
  *   re-derive it).
- * - Using it: {@link encryptionOps} returns operations only (unwrap a `repoKey`, seal a wrap).
- *   Each opens the key from the vault, hands it to the SDK and wipes it. The raw key never
- *   reaches React, storage outside the vault, a URL or a log.
+ * - Using it: {@link encryptionOps} returns operations only (unwrap a `repoKey`, seal a wrap);
+ *   {@link sealLetterAs} and {@link openLetterAs} seal and open a specific-people letter.
+ *   Each opens the key from the vault, hands it to the SDK or `lib/private/named` and wipes it.
+ *   The raw key never reaches React, storage outside the vault, a URL or a log.
  */
 
 import type { DataContract, Document, EvoSDK, IdentityPublicKey, PrivateKey as WasmPrivateKey } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { bytesToHex, unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type WrapFacade } from '../private'
+import {
+  bytesToHex,
+  openLetter,
+  privateId,
+  sealLetter,
+  unwrapKey,
+  unwrapKeyRaw,
+  sealWrap,
+  type DocFields,
+  type EpochKeys,
+  type LetterOpenResult,
+  type LetterRecipient,
+  type OwnerKey,
+  type PrivateDoc,
+  type StoredPrivateDoc,
+  type WrapFacade,
+} from '../private'
 import { authSdk, sleep } from '../sdk/facade'
 import { timed } from '../step-timing'
 import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, invalidMnemonicMessage, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
-import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate, shortId } from './limited-key'
+import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate } from './limited-key'
+import { shortId } from '../utils'
 import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockScope, unlockedSecret, withEncryptionKey } from './vault'
 
 /** The step-timing flow of enabling private repos at sign-in (L-20). */
@@ -384,6 +402,35 @@ export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: s
         sealWrap(facade, p.keys, p.raw, { dataContract: contract, senderKey: p.senderKey, senderPrivateKey: pk, recipientKey: p.recipientKey }),
       ),
   }
+}
+
+/**
+ * Seal a specific-people letter (`enc` v0x04, `lib/private/named`) from this browser's stored
+ * encryption key for (network, identity): the sender's slot is `recipients[0]`, which must be
+ * this identity and that key. The key is opened from the vault for the call and wiped after; a
+ * locked vault makes the call throw.
+ */
+export function sealLetterAs(
+  network: Network,
+  identityId: string,
+  p: { readonly repoId: Uint8Array; readonly doc: PrivateDoc; readonly fields: DocFields; readonly recipients: readonly LetterRecipient[] },
+): Promise<Uint8Array> {
+  return withEncryptionKey(network, identityId, (keyId, secret) => sealLetter(p.repoId, secret, keyId, p.doc, p.fields, p.recipients))
+}
+
+/**
+ * Open a specific-people letter as (network, identity) with this browser's stored encryption
+ * key; `ownerKeys` are the document owner's identity keys, where the sender key is looked up.
+ * The key is wiped after the call; a locked vault makes the call throw.
+ */
+export function openLetterAs(
+  network: Network,
+  identityId: string,
+  p: { readonly repoId: Uint8Array; readonly doc: StoredPrivateDoc; readonly ownerKeys: readonly OwnerKey[] },
+): Promise<LetterOpenResult> {
+  return withEncryptionKey(network, identityId, (_keyId, secret) =>
+    openLetter(p.repoId, p.doc, p.ownerKeys, { identityId: privateId(identityId), secrets: [secret] }),
+  )
 }
 
 /** Why a webhook's secret cannot be sealed from this browser (QW-071), or the sealer. */

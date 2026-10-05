@@ -1,0 +1,52 @@
+{
+  "name": "slot_flipped",
+  "description": "a byte flipped inside r1's slot: r1 finds no slot; alice and r2 open theirs, but the header is every segment's AD, so SealedPackCorrupt.",
+  "case": "named_artifact_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "sealed": "4446504b020e00000300000004dba451c33a75ee7738e9303949f0bb69c208a6290473fb085f8ea8a9d6ae8c92e7339db87a50f7d2acbd758c519aac8430e644959e5ea175003373938e9cb7d7c316597a7bdf756f73d6e04b6359d601ea543e8236ed8da2bb861ceb199768af52ad37ad7c116dcbb314a561214d25424b95f0f65d0d64cd2435176d4fa83dbbde343114792e246c03f4afecfc00e10df3adfb56d86c75f3658cdd16ec397b0f1d26bacef90e3f121971547030c0ae6a5ad63dd1fa0c3f14358f144df146ac7f8485beaf8a7198febfaa76a3a10d4a391016f4e977294a1fcc937b294a3a42fd0000000000000200f2caf3b1e03752946669e481d7471a42a503e5a830106d04fa901f7ad2b859cf9aca62e3d1d451b553f817aef9cba5d0979cace37239ad6f079b04a8f775b7daf8083f1c1c931f12d65780fb976bfb2fa07f671d511c205b2b1a3aae37a77d45fea0dc8cdbacf3b45cd3464c2d95ddf8f095dd938072695e14f4436afca5101f37145453027c19efb7e667a866fb3b3b91f11327b9c3fb9b0f728a3a63459010b223c70c0a7f25ab5e3304e59ffa067b00f32af8f444d876d8603169c5cbb9f5f4bf21ab9cecc328b71ef7de9a1189143537cc679263745529f413ee495a0766859225e0570ec70674c506d28eda107dbd8c015ff80b0d819468d777821d5a78a36a9d730f86df1c96e96260c4b8d76839b85971fc1b8116c5ce63b5d85460da735d5b9e15d5dad0fc8758e52ff64cd5bbecd927a137885625611f36a7a004e4ed4d5b1e9564af8be79e50fa13a7a434fdc23feee2783b919dbc7b7543a1b0a22066a673b86d8b3b8366eeb387bc395368ff7e61de0cd63752e8bbc2228ab57bf8d338f55e274e6a7c04f4458886238e1b3a444faf82ff15ff86f08b909e8907ea998c6471dc8af4b242619944e89bc11802cd3acf4c9182e8d7d371c3549cb0b91b72547b011cca19c8f09fc75fbc6b3b883f6a44a33095c5c0517c9da62832557257ec972a5cf2e53bb1c8829ba7099f6693225a375f4b811f2e7cecbe6df715893c014f20578412292e080eb61187ed6664bb8644b9bdacb5063a21e3c7be",
+    "sizeBytes": 789,
+    "ownerKeys": [
+      {
+        "id": 4,
+        "purpose": 1,
+        "keyType": 0,
+        "data": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      }
+    ],
+    "readers": [
+      {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "keys": [
+          "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+        ]
+      },
+      {
+        "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+        "keys": [
+          "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955"
+        ]
+      },
+      {
+        "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+        "keys": [
+          "800419f853a2e11eeb44d05d603918884d93a42258c72df493c7d252e30130e8"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "error": "sealedPackCorrupt"
+      },
+      {
+        "error": "notARecipient"
+      },
+      {
+        "error": "sealedPackCorrupt"
+      }
+    ]
+  }
+}
