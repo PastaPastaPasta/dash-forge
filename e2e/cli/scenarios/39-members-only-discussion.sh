@@ -95,7 +95,7 @@ done
 [[ "$(json_field "$LOG-out-pr.json" "\"$IDID_COLLAB\" in d[\"approvedBy\"]")" == True ]] && ok "the members-only approval counts for an outsider" || bad "approvals: $(json_field "$LOG-out-pr.json" 'd["approvedBy"]')"
 [[ "$(json_field "$LOG-out-pr.json" 'all(not r["readable"] for r in d["reviews"] if r["audience"] == "members")')" == True ]] && ok "the review text is not readable to the outsider" || bad "review readable to outsider"
 dg_read_retry "$ID_CONTRIB" "$LOG-out-pr.txt" "$LOG-out-pr2.err" pr view "$REPO" "$PR" \
-  && grep -q "members-only comment.* hidden (you're not a member of" "$LOG-out-pr.txt" && ok "\"members-only comment hidden\" note" || { cat "$LOG-out-pr.txt" >&2; bad "pr view note"; }
+  && grep -q "members-only comment.* hidden.*(you're not a member of" "$LOG-out-pr.txt" && ok "\"members-only comment hidden\" note" || { cat "$LOG-out-pr.txt" >&2; bad "pr view note"; }
 
 step "leak probe: nothing CONTRIB read holds members-only text"
 if grep -l -- "$MARK" "$LOG"-out-* 2>/dev/null; then

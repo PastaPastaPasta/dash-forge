@@ -28,22 +28,27 @@ pub async fn requested(
     let audience = collab.new_audience(repo, target, reply_to).await?;
     match collab.require_members_writer(repo, audience).await {
         // not asked for: the conversation is members-only, and a public reply is not possible
-        Err(e) if !members && refused_non_member(&e) => Err(UserError::new(
-            codes::NOT_A_WRITER,
-            "this conversation is members-only: only members can reply to it",
-        )
-        .cause(format!(
-            "it is for members of {}, and you are not one",
-            repo.display()
-        ))
-        .fix(format!(
-            "become a member: `dg collab accept {}`, then ask a maintainer to add you",
-            repo.display()
-        ))
-        .note("checked before anything was signed; nothing was written or paid")
-        .into()),
+        Err(e) if !members && refused_non_member(&e) => Err(members_only_thread(repo)),
         other => other.map(|()| audience).map_err(Into::into),
     }
+}
+
+/// A reply refused because its conversation is members-only and the signer is not a member.
+pub fn members_only_thread(repo: &RepoRef) -> anyhow::Error {
+    UserError::new(
+        codes::NOT_A_WRITER,
+        "this conversation is members-only: only members can reply to it",
+    )
+    .cause(format!(
+        "it is for members of {}, and you are not one",
+        repo.display()
+    ))
+    .fix(format!(
+        "become a member: `dg collab accept {}`, then ask a maintainer to add you",
+        repo.display()
+    ))
+    .note("checked before anything was signed; nothing was written or paid")
+    .into()
 }
 
 /// Whether `e` is the refusal of a members-only write by someone who is not a member.
@@ -96,7 +101,13 @@ pub fn why_hint(repo: &RepoRef, why: Unopened) -> Option<String> {
         Unopened::NotReadable => Some(format!(
             "written for a key you do not hold (after you were removed, or late); `dg repo keys status {r}` lists your keys"
         )),
-        Unopened::NotForThisRepo => Some("some do not open with this repository's key".to_string()),
+        Unopened::NotForThisRepo => {
+            Some("they do not open with this repository's key (not encrypted for this repo)".to_string())
+        }
+        Unopened::KeysUnreadable => {
+            Some("the repository's keys could not be read just now; try again in a moment".to_string())
+        }
+        Unopened::Locked => Some(crate::common::UNLOCK_HINT.to_string()),
     }
 }
 
@@ -134,26 +145,37 @@ pub fn why_word(why: Unopened) -> &'static str {
         Unopened::NoKeyShared => "noKeyShared",
         Unopened::NotReadable => "notReadable",
         Unopened::NotForThisRepo => "notForThisRepo",
+        Unopened::KeysUnreadable => "keysUnreadable",
+        Unopened::Locked => "locked",
     }
 }
 
 /// "3 members-only comments hidden (you're not a member of o/r)", with the reason for a
-/// member who cannot read them, or `None` for none. `noun` is singular ("comment").
-pub fn hidden_line(repo: &RepoRef, n: usize, noun: &str, why: Option<Unopened>) -> Option<String> {
+/// member who cannot read them, or `None` for none. `noun` is singular ("comment"); `shown` of
+/// the `n` are placeholders above ("…hidden, 1 shown as a placeholder (…)").
+pub fn hidden_line(
+    repo: &RepoRef,
+    (n, shown): (usize, usize),
+    noun: &str,
+    why: Option<Unopened>,
+) -> Option<String> {
     if n == 0 {
         return None;
     }
-    let plural = if n == 1 {
-        noun.to_string()
-    } else {
-        format!("{noun}s")
+    let what = crate::fmt::plural(n, &format!("members-only {noun}"));
+    let shown = match shown {
+        0 => String::new(),
+        1 if n == 1 => ", shown as a placeholder".to_string(),
+        m if m == n => ", shown as placeholders".to_string(),
+        1 => ", 1 shown as a placeholder".to_string(),
+        m => format!(", {m} shown as placeholders"),
     };
     Some(match why.and_then(|w| why_hint(repo, w)) {
         None => format!(
-            "{n} members-only {plural} hidden (you're not a member of {})",
+            "{what} hidden{shown} (you're not a member of {})",
             repo.display()
         ),
-        Some(hint) => format!("{n} members-only {plural} hidden: {hint}"),
+        Some(hint) => format!("{what} hidden{shown}: {hint}"),
     })
 }
 
@@ -211,31 +233,52 @@ pub async fn target_view(
     } else {
         s.client.dpns_first_names([m.author.as_str()]).await
     };
+    let m = &s.placeholders(vec![m.clone()])[0];
     let hint = why_hint(&s.repo, m.why);
     let repo = s.repo.display();
-    ctx.emit(
-        serde_json::json!({
-            "number": number,
-            "id": m.document_id,
-            "documentId": m.document_id,
-            "author": m.author,
-            "createdAt": m.created_at,
-            "state": state,
-            "audience": json(m.audience),
-            "readable": false,
-            "why": why_word(m.why),
+    // The shape `dg issue view --json` / `dg pr view --json` gives a readable one, with what is
+    // not readable here null or empty, and `readable` false.
+    let mut out = serde_json::json!({
+        "number": number,
+        "id": m.document_id,
+        "documentId": m.document_id,
+        "title": null,
+        "body": null,
+        "author": m.author,
+        "createdAt": m.created_at,
+        "audience": json(m.audience),
+        "readable": false,
+        "why": why_word(m.why),
+        "comments": [],
+        "membersOnlyComments": [],
+        "events": [],
+        "transitions": [],
+    });
+    let open = state == "open";
+    let more = match kind {
+        TargetKind::Issue => serde_json::json!({
+            "state": { "open": open, "labels": [], "assignees": [] },
         }),
-        || {
-            println!(
-                "{}",
-                target_line(number, kind.noun(), m, &at_name(&m.author, &names), state)
-            );
-            match &hint {
-                Some(h) => println!("({h})"),
-                None => println!("(only members of {repo} can read it)"),
-            }
-        },
-    );
+        TargetKind::Patch => serde_json::json!({
+            "state": state,
+            "labels": [],
+            "assignees": [],
+            "reviews": [],
+        }),
+    };
+    if let (Some(o), serde_json::Value::Object(more)) = (out.as_object_mut(), more) {
+        o.extend(more);
+    }
+    ctx.emit(out, || {
+        println!(
+            "{}",
+            target_line(number, kind.noun(), m, &at_name(&m.author, &names), state)
+        );
+        match &hint {
+            Some(h) => println!("({h})"),
+            None => println!("(only members of {repo} can read it)"),
+        }
+    });
     Ok(())
 }
 
@@ -255,9 +298,22 @@ pub fn hidden_notes(
             .into_iter()
             .collect();
     }
-    let why = members_only.first().map(|m| m.why);
-    hidden_line(repo, members_only.len(), noun, why)
+    // one line per reason, in a fixed order, each counting the placeholders D14 shows
+    let mut by_why: Vec<(Unopened, usize, usize)> = Vec::new();
+    for m in members_only {
+        let shown = usize::from(m.as_member);
+        match by_why.iter_mut().find(|(w, _, _)| *w == m.why) {
+            Some(e) => {
+                e.1 += 1;
+                e.2 += shown;
+            }
+            None => by_why.push((m.why, 1, shown)),
+        }
+    }
+    by_why.sort_by_key(|(w, _, _)| why_word(*w));
+    by_why
         .into_iter()
+        .filter_map(|(why, n, shown)| hidden_line(repo, (n, shown), noun, Some(why)))
         .chain((malformed > 0).then(|| crate::fmt::hidden_note(repo, malformed)))
         .collect()
 }
@@ -336,17 +392,55 @@ mod tests {
         assert!(one[0].contains("hidden"), "{one:?}");
     }
 
+    /// Each reason gets its own line, and the placeholders shown above are counted apart.
+    #[test]
+    fn notes_name_every_reason_and_the_placeholders_shown() {
+        let placeholder = |why, as_member| MembersOnly {
+            document_id: "d".into(),
+            author: "A".into(),
+            created_at: 1,
+            as_member,
+            number: None,
+            audience: Audience::Members,
+            why,
+        };
+        let public = repo(Visibility::Public);
+        let (shown, counted, locked) = (
+            placeholder(Unopened::NotReadable, true),
+            placeholder(Unopened::NotReadable, false),
+            placeholder(Unopened::Locked, true),
+        );
+        let notes = hidden_notes(&public, 0, &[&shown, &counted, &locked], "comment");
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes.iter().any(|l| l.starts_with(
+                "1 members-only comment hidden, shown as a placeholder: unlock your key"
+            )),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|l| l.starts_with(
+                "2 members-only comments hidden, 1 shown as a placeholder: written for a key"
+            )),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().all(|l| !l.contains("not a member")),
+            "{notes:?}"
+        );
+    }
+
     #[test]
     fn the_hidden_line_says_why_without_calling_it_malformed() {
         let r = repo(Visibility::Public);
-        let line = hidden_line(&r, 3, "comment", Some(Unopened::NotAMember)).unwrap();
+        let line = hidden_line(&r, (3, 0), "comment", Some(Unopened::NotAMember)).unwrap();
         assert!(
             line.starts_with("3 members-only comments hidden (you're not a member of "),
             "{line}"
         );
         assert!(!line.contains("malformed"));
-        assert_eq!(hidden_line(&r, 0, "comment", None), None);
-        let one = hidden_line(&r, 1, "review", Some(Unopened::NoKeyShared)).unwrap();
+        assert_eq!(hidden_line(&r, (0, 0), "comment", None), None);
+        let one = hidden_line(&r, (1, 0), "review", Some(Unopened::NoKeyShared)).unwrap();
         assert!(
             one.starts_with("1 members-only review hidden: you're a member"),
             "{one}"

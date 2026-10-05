@@ -244,9 +244,9 @@ impl Collab<'_> {
         let hash = if members {
             // sealed here, under keys read now (§5.3): the plaintext never leaves this process
             let lane = self.members_writer(repo).await?.lane(repo)?;
-            let sealed = lane
-                .seal_artifact(full.as_bytes())
-                .map_err(|e| crate::keyring::sealed_error(&e))?;
+            let sealed = lane.seal_artifact(full.as_bytes()).map_err(|_| {
+                Error::Config("the members-only text could not be encrypted".into())
+            })?;
             self.repo_service()?
                 .store_members_long_body(
                     repo,
@@ -449,15 +449,14 @@ impl Collab<'_> {
                 ))
             }
         };
+        let damaged = || Error::Config("the stored copy is damaged".into());
         let header = crate::private::PackHeader::parse(
             sealed
                 .get(..crate::private::pack::HEADER_LEN)
-                .ok_or_else(|| {
-                    crate::keyring::sealed_error(&crate::private::PrivateError::SealedPackCorrupt)
-                })?,
+                .ok_or_else(damaged)?,
             copy.size_bytes,
         )
-        .map_err(|e| crate::keyring::sealed_error(&e))?;
+        .map_err(|_| damaged())?;
         let readable = copy.created_at_block_height > 0
             && crate::platform::decode_identifier(&copy.owner_id).is_ok_and(|owner| {
                 kr.resolution()
@@ -470,6 +469,7 @@ impl Collab<'_> {
             ));
         }
         kr.open_pack(repo, sealed, copy.size_bytes)
+            .map_err(|_| Error::Config("it does not open with your keys".into()))
     }
 }
 

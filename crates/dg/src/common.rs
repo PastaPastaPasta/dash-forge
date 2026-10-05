@@ -265,6 +265,9 @@ pub struct Reader {
     signer: Option<(forge_core::keystore::BridgeIdentity, LoadedIdentity)>,
     /// Who is reading, when it is known without unsealing a key (see [`Ctx::identity_id_hint`]).
     viewer: Option<String>,
+    /// A member's key that could not be opened here ([`members_signer`]): the members-only
+    /// content they could read is shown as placeholders saying "unlock", not "not a member".
+    locked: bool,
 }
 
 impl Reader {
@@ -312,10 +315,15 @@ impl Reader {
             }
             signer = Some(ctx.signer_on(&client).await?);
         }
+        let mut locked = false;
         if keys == Keys::Members && repo.visibility == Visibility::Public && signer.is_none() {
             if let Some(viewer) = owner.as_deref() {
                 // boxed: every read command awaits this, and it is rarely taken
-                signer = Box::pin(members_signer(ctx, &client, &repo, viewer)).await;
+                match Box::pin(members_signer(ctx, &client, &repo, viewer)).await {
+                    MembersKeys::Loaded(found) => signer = Some(*found),
+                    MembersKeys::Locked => locked = true,
+                    MembersKeys::None => {}
+                }
             }
         }
         let viewer = signer.as_ref().map(|(_, i)| i.id()).or(owner);
@@ -324,7 +332,24 @@ impl Reader {
             repo,
             signer,
             viewer,
+            locked,
         })
+    }
+
+    /// Placeholders as this reader should read them: a member whose key could not be opened
+    /// here is told to unlock it, never that they are not a member.
+    pub fn placeholders(
+        &self,
+        mut placeholders: Vec<forge_core::collab::v2::MembersOnly>,
+    ) -> Vec<forge_core::collab::v2::MembersOnly> {
+        if self.locked {
+            for m in &mut placeholders {
+                if m.why == forge_core::collab::v2::Unopened::NotAMember {
+                    m.why = forge_core::collab::v2::Unopened::Locked;
+                }
+            }
+        }
+        placeholders
     }
 
     /// The forge-v2 collaboration service: with the identity's keys for a private repository,
@@ -386,25 +411,29 @@ async fn members_signer(
     client: &PlatformClient,
     repo: &Repo,
     viewer: &str,
-) -> Option<(forge_core::keystore::BridgeIdentity, LoadedIdentity)> {
-    let path = ctx.identity_path.as_ref()?;
-    // A wrap to the viewer (a member, or a removed one who still opens what was written while
-    // they were one); else a member of a repo with members-only content (whose key was not
-    // shared yet: they are told so).
-    let members = forge_core::members::MemberReader::new(client);
-    let (wrap, role) = futures::join!(
-        forge_core::keyring::holds_wrap(client, repo, viewer),
-        members.best_role(repo, viewer)
-    );
-    let load = match (wrap, role) {
-        (Ok(true), _) => true,
-        (_, Ok(Some(_))) => forge_core::keyring::has_members_key(client, repo)
+) -> MembersKeys {
+    let Some(path) = ctx.identity_path.as_ref() else {
+        return MembersKeys::None;
+    };
+    // A repository without members-only content needs nothing more (and never asks for a
+    // passphrase). With it: a wrap to the viewer (a member, or a removed one who still opens
+    // what was written while they were one), else a member whose key was not shared yet (they
+    // are told so).
+    if !forge_core::keyring::has_members_key(client, repo)
+        .await
+        .unwrap_or(false)
+    {
+        return MembersKeys::None;
+    }
+    let load = match forge_core::keyring::holds_wrap(client, repo, viewer).await {
+        Ok(true) => true,
+        _ => forge_core::members::MemberReader::new(client)
+            .best_role(repo, viewer)
             .await
-            .unwrap_or(false),
-        _ => false,
+            .is_ok_and(|r| r.is_some()),
     };
     if !load {
-        return None;
+        return MembersKeys::None;
     }
     let hint = |why: &str| {
         eprintln!(
@@ -416,16 +445,30 @@ async fn members_signer(
         && key_needs_passphrase(path)
         && !forge_core::sealed::passphrase_available()
     {
-        hint("your key is protected by a passphrase and there is no terminal to ask on (set DASH_FORGE_PASSPHRASE, or run it in a terminal)");
-        return None;
+        hint(UNLOCK_HINT);
+        return MembersKeys::Locked;
     }
     match ctx.signer_on(client).await {
-        Ok(s) => Some(s),
+        Ok(s) => MembersKeys::Loaded(Box::new(s)),
         Err(e) => {
             hint(&format!("your key could not be opened ({e:#})"));
-            None
+            MembersKeys::Locked
         }
     }
+}
+
+/// What a reader should do to open members-only content with a key it could not open here.
+pub const UNLOCK_HINT: &str = "unlock your key to read members-only content: run it in a terminal (it asks for the passphrase), or set DASH_FORGE_PASSPHRASE";
+
+/// What [`members_signer`] found.
+enum MembersKeys {
+    /// Nothing to load: no members-only content, or not the viewer's to read.
+    None,
+    /// The viewer's identity, loaded.
+    Loaded(Box<(forge_core::keystore::BridgeIdentity, LoadedIdentity)>),
+    /// The viewer's key could not be opened here (a passphrase with no terminal, a locked
+    /// keychain, a wrong passphrase).
+    Locked,
 }
 
 /// Whether the key source `path` is a passphrase-sealed file (its passphrase is asked for when

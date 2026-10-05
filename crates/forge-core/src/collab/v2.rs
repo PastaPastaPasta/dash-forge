@@ -582,6 +582,12 @@ pub enum Unopened {
     /// made for this repository's key (forged, relabelled or moved). The "not encrypted for
     /// this repo" bucket, as `keyring::hidden_bucket` files `BadTag` and `CommitMismatch`.
     NotForThisRepo,
+    /// The repository's keys could not be read just now (a network or chain read failed):
+    /// nothing is said about the reader's membership or the document.
+    KeysUnreadable,
+    /// The reader's own key could not be opened on this computer (a passphrase with no terminal
+    /// to ask on, a locked keychain): a client sets this, core never does.
+    Locked,
 }
 
 /// A members-only document this reader cannot open, as DESIGN D14 shows it: who wrote it, when
@@ -741,6 +747,16 @@ pub struct SealedIssue {
     /// Open or closed (labels and assignees are not readable: an event value follows its
     /// target's audience).
     pub state: IssueState,
+    /// Its `transition`, `event` and `authorEvent` documents.
+    pub log: TargetLog,
+}
+
+/// A members-only issue or PR this reader cannot open, with its log (its transitions and
+/// events, which are public: open, merged or closed, and what moderation reads).
+#[derive(Debug, Clone)]
+pub struct SealedTarget {
+    /// Who wrote it, when, its number.
+    pub placeholder: MembersOnly,
     /// Its `transition`, `event` and `authorEvent` documents.
     pub log: TargetLog,
 }
@@ -2517,7 +2533,11 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
         Unopened::NoEncryptionKey => {
             crate::keyring::no_encryption_key_held(&format!("members-only {what}"))
         }
-        Unopened::NotAMember | Unopened::NotReadable | Unopened::NotForThisRepo => {
+        Unopened::NotAMember
+        | Unopened::NotReadable
+        | Unopened::NotForThisRepo
+        | Unopened::KeysUnreadable
+        | Unopened::Locked => {
             let mut e = UserError::new(codes::MEMBERS_ONLY, format!("{what} is members-only"))
                 .cause(format!(
                     "only members of {} can read it; it was opened by {}",
@@ -2532,6 +2552,8 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
                 Unopened::NotForThisRepo => e.fix(
                     "it does not open with this repository's key: it was not encrypted for this repo",
                 ),
+                Unopened::KeysUnreadable => e.fix("the repository's keys could not be read just now: try again in a moment"),
+                Unopened::Locked => e.fix("unlock your key (enter its passphrase in a terminal, or set DASH_FORGE_PASSPHRASE), then read it again"),
                 _ => e.fix(format!(
                     "it was written for a key or for people you do not hold (after you were removed, late, or to specific people); `dg repo keys status {}` lists the keys you hold",
                     repo.display()
@@ -2825,6 +2847,12 @@ impl<'a> Collab<'a> {
         // a key source with no ENCRYPTION key at all (a limited `dg auth login` key): say so
         // (E306) rather than "no maintainer wrapped the key to you" (E307)
         if signer.encryption_keys(repo).is_empty() {
+            if repo.visibility != Visibility::Private {
+                return Err(crate::keyring::no_members_encryption_key_held(&format!(
+                    "members-only content of {}",
+                    repo.display()
+                )));
+            }
             return Err(crate::keyring::no_encryption_key_held(&format!(
                 "private repo {}",
                 repo.display()
@@ -3046,7 +3074,7 @@ impl<'a> Collab<'a> {
                 .iter()
                 .any(|k| k.is_usable_encryption_key(core));
             return Err(if on_chain {
-                crate::keyring::no_encryption_key_held(&action)
+                crate::keyring::no_members_encryption_key_held(&action)
             } else {
                 crate::keyring::no_encryption_key_set_up(&action)
             });
@@ -3126,7 +3154,7 @@ impl<'a> Collab<'a> {
             Ok(kr) => kr,
             Err(e) => {
                 tracing::warn!(error = %e, "the members key could not be read; members-only content stays hidden");
-                return Ok(DocKeys::None(Unopened::NotReadable));
+                return Ok(DocKeys::None(Unopened::KeysUnreadable));
             }
         };
         if kr.resolution().keys.is_empty() {
@@ -4328,6 +4356,17 @@ impl<'a> Collab<'a> {
         repo: &RepoRef,
         limit: u32,
     ) -> Result<Listed<(PatchView, Approvals)>> {
+        Ok(self.list_patch_views_read(repo, limit).await?.0)
+    }
+
+    /// [`Self::list_patch_views`] with, for each members-only PR of the page this reader cannot
+    /// open, its placeholder and its log (transitions and events: open, merged or closed, and
+    /// what moderation needs), so a list can filter and order it like the others.
+    pub async fn list_patch_views_read(
+        &self,
+        repo: &RepoRef,
+        limit: u32,
+    ) -> Result<(Listed<(PatchView, Approvals)>, Vec<SealedTarget>)> {
         let forge = repo.forge();
         self.client
             .prefetch_contracts(&[&forge.collab, &forge.core, &forge.community])
@@ -4399,12 +4438,22 @@ impl<'a> Collab<'a> {
             let approvals = approvals_over(&patch_reviews, &view, &oracle);
             rows.push((view, approvals));
         }
-        Ok(Listed {
-            rows,
-            hidden,
-            more,
-            members_only,
-        })
+        let sealed = members_only
+            .iter()
+            .map(|m| SealedTarget {
+                placeholder: m.clone(),
+                log: logs.remove(&m.document_id).unwrap_or_default(),
+            })
+            .collect();
+        Ok((
+            Listed {
+                rows,
+                hidden,
+                more,
+                members_only,
+            },
+            sealed,
+        ))
     }
 
     /// Complete the review lookup of [`Self::list_patch_views`] ([`reviews_to_reread`]): the

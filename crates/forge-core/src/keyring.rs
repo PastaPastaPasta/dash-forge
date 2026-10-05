@@ -265,6 +265,15 @@ pub fn no_encryption_key_held(action: &str) -> Error {
     )
 }
 
+/// [`no_encryption_key_held`] for members-only content of a public repository (DESIGN D25: no
+/// "private repo" wording where nothing is private).
+pub fn no_members_encryption_key_held(action: &str) -> Error {
+    no_encryption_key_held_because(
+        action,
+        "members-only content is encrypted to each member's encryption key",
+    )
+}
+
 /// [`no_encryption_key_held`] for an operation that needs the key for `why` (a webhook's secret
 /// is encrypted from it, QW-071); the rest of the message and the fixes are the same.
 pub fn no_encryption_key_held_because(action: &str, why: &str) -> Error {
@@ -596,7 +605,37 @@ impl Keyring {
     /// Never a private repository's seams: a lane answers for no git-plane seam.
     pub fn lane(&self, repo: &RepoRef) -> Result<crate::private::Lane> {
         crate::private::Lane::from_resolution(&self.repo_id, &self.resolution)
-            .ok_or_else(|| self.no_write(repo))
+            .ok_or_else(|| self.no_members_write(repo))
+    }
+
+    /// [`Self::no_write`] in the words of members-only content (DESIGN D25: no "private repo"
+    /// or "key epoch" where nothing is private): no key shared yet (E311), an alert on the key
+    /// (its own code), or a key change a maintainer's client has not finished (E310).
+    fn no_members_write(&self, repo: &RepoRef) -> Error {
+        if self.resolution.keys.is_empty() {
+            return no_key_shared(repo);
+        }
+        let (code, cause) = match self.alert_error(repo) {
+            Some(Error::User(u)) => (
+                u.code,
+                "the key a maintainer shared with you does not match this repository's",
+            ),
+            _ => (
+                codes::ROTATION_PENDING,
+                "a maintainer's client has not finished changing the members' key",
+            ),
+        };
+        UserError::new(
+            code,
+            format!(
+                "members-only content of {} can't be written right now",
+                repo.display()
+            ),
+        )
+        .cause(cause)
+        .fix(fix_repair(repo))
+        .note("nothing was written")
+        .into()
     }
 
     /// The resolution: epochs, anchors, alerts, the repair check.

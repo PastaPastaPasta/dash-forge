@@ -368,6 +368,15 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
         Vec::new()
     } else {
         std::mem::take(&mut read.members_only)
+            .into_iter()
+            .map(|mut x| {
+                x.placeholder = s
+                    .placeholders(vec![x.placeholder])
+                    .pop()
+                    .expect("one in, one out");
+                x
+            })
+            .collect()
     };
     let hidden = read.malformed + read.members_only.len();
     let mut all: Vec<ListRow> = read
@@ -556,6 +565,7 @@ fn sealed_row_json(
             "pinned": pinned,
             "audience": crate::audience::json(m.audience),
             "readable": false,
+            "why": crate::audience::why_word(m.why),
         }),
         h,
     )
@@ -596,6 +606,7 @@ fn issue_row_json(
             "assignees": st.assignees,
             "pinned": pinned,
             "audience": crate::audience::json(v.issue.audience),
+            "readable": true,
         }),
         h,
     )
@@ -652,6 +663,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
     let (mut comments, members_only, malformed) = collab
         .comments_read(&s.repo, &view.issue.document_id)
         .await?;
+    let members_only = s.placeholders(members_only);
     let hidden = malformed + members_only.len();
     // DESIGN D14: a members-only comment this reader cannot open shows as a placeholder when it
     // carries `asMember`; every one is counted in the note under the timeline.
@@ -753,6 +765,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             "documentId": id,
             "id": id,
             "audience": crate::audience::json(issue_audience),
+            "readable": true,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
             "stateReason": state_reason,
             "duplicateOf": duplicate_of,

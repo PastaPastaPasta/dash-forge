@@ -15,8 +15,9 @@
 //!   at most once. Nothing is ever written twice.
 //! * `--discard` throws the draft away.
 //!
-//! A members-only review's draft (`--members`) never holds its text in the clear: the file is
-//! the draft sealed under the repository's members key (DFPK, as a members-only artifact), and
+//! A draft of a review that is not public (`--members`, a members-only thread, or any review in
+//! a private repository) never holds its text in the clear: the file is the draft sealed under
+//! the repository's key for members (DFPK, as a sealed artifact), and
 //! is opened with the reviewer's keys when the command runs again (mixed-visibility DESIGN §4.1:
 //! no members-only text at rest).
 //!
@@ -83,8 +84,9 @@ pub struct ReviewDraft {
     /// The review's id once it landed.
     #[serde(default)]
     pub review_id: Option<String>,
-    /// Members-only (`--members`): the review and its inline comments are for the repository's
-    /// members, and this draft is stored sealed ([`DraftFile`]).
+    /// Not public (members-only, or in a private repository): the review and its inline
+    /// comments are for the repository's members, and this draft is stored sealed
+    /// ([`DraftFile`]). Its JSON name is kept for drafts already on disk.
     #[serde(default)]
     pub members: bool,
 }
@@ -158,11 +160,12 @@ struct SealedDraft {
     sealed: String,
 }
 
-/// Where a draft lives and, for a members-only one, the key it is sealed under.
+/// Where a draft lives and, for one that is not public, the key it is sealed under.
 struct DraftFile {
     path: PathBuf,
-    /// The members key a members-only draft is sealed under; `None` for a public draft.
-    lane: Option<forge_core::private::Lane>,
+    /// The members' write keys a draft that is not public is sealed under; `None` for a
+    /// public draft.
+    keys: Option<forge_core::private::EpochKeys>,
 }
 
 impl DraftFile {
@@ -171,13 +174,12 @@ impl DraftFile {
         if !draft.members {
             return save_draft(&self.path, &serde_json::to_vec_pretty(draft)?);
         }
-        let lane = self.lane.as_ref().ok_or_else(|| {
+        let keys = self.keys.as_ref().ok_or_else(|| {
             std::io::Error::other("a members-only review is never saved without its key")
         })?;
         let plain = zeroize::Zeroizing::new(serde_json::to_vec(draft)?);
-        let sealed = lane
-            .seal_artifact(&plain)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let sealed = forge_core::private::pack::seal(keys, &plain)
+            .map_err(|_| std::io::Error::other("the members-only review could not be encrypted"))?;
         let file = SealedDraft {
             dash_forge_members_review_draft: 1,
             sealed: hex::encode(sealed),
@@ -247,7 +249,8 @@ async fn load_draft(
     };
     decode_draft(path, raw, |sealed| {
         let kr = kr.ok_or_else(|| anyhow::anyhow!("no keys"))?;
-        Ok(kr.open_pack(repo, sealed, sealed.len() as u64)?)
+        kr.open_pack(repo, sealed, sealed.len() as u64)
+            .map_err(|_| anyhow::anyhow!("it does not open with your keys"))
     })
     .map(Some)
 }
@@ -398,27 +401,65 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
         }
         return discard(ctx, &path, existing, a.number);
     }
-    // Members-only (`--members`, or a members-only draft): refused here when it cannot be, and
-    // the draft is kept sealed under the members key, never in the clear.
-    let members = a.members || existing.as_ref().is_some_and(|d| d.members);
+    // Who the review is for: what `--members` (or a members-only draft) asks, else the PR's
+    // (every review of a private repository is for its members). Refused here when it cannot
+    // be written; a draft that is not public is kept sealed, never in the clear.
+    let asked = a.members || existing.as_ref().is_some_and(|d| d.members);
+    let audience =
+        crate::audience::requested(&collab, &s.repo, asked, Some(&view.patch.document_id), None)
+            .await?;
+    let sealed = audience != Audience::Public;
     if let Some(d) = existing
         .as_ref()
-        .filter(|d| d.attempted() && d.members != members)
+        .filter(|d| d.attempted() && d.members != sealed)
     {
         return Err(refuse_attempted(d, &a.repo, a.number));
     }
-    let lane = if members {
-        crate::audience::requested(&collab, &s.repo, true, Some(&view.patch.document_id), None)
-            .await?;
-        Some(collab.keyring(&s.repo).await?.lane(&s.repo)?)
+    let keys = if sealed {
+        let kr = collab.keyring(&s.repo).await?;
+        Some(
+            if s.repo.visibility == forge_core::rules::v2::Visibility::Private {
+                kr.writer(&s.repo)?.write_keys().clone()
+            } else {
+                kr.lane(&s.repo)?.write_keys().clone()
+            },
+        )
     } else {
         None
     };
-    let file = DraftFile { path, lane };
+    let file = DraftFile { path, keys };
+    let shown = Shown {
+        repo: &s.repo,
+        audience,
+    };
     match mode {
         Mode::Discard => unreachable!("handled above"),
-        Mode::Pending => pending(ctx, a, &view, &file, existing, members),
-        Mode::Submit(v) => submit(ctx, a, (&s, &collab), &view, &file, existing, v, members).await,
+        Mode::Pending => pending(ctx, a, &view, &file, existing, shown),
+        Mode::Submit(v) => submit(ctx, a, (&s, &collab), &view, &file, existing, v, shown).await,
+    }
+}
+
+/// Who a review is for, and the repository it is in: what its output names.
+#[derive(Clone, Copy)]
+struct Shown<'r> {
+    repo: &'r forge_core::scope::RepoRef,
+    audience: Audience,
+}
+
+impl Shown<'_> {
+    /// Stored sealed (members-only, or any review of a private repository).
+    fn sealed(self) -> bool {
+        self.audience != Audience::Public
+    }
+
+    /// "members-only " before a noun in a public repository, else "".
+    fn prefix(self) -> &'static str {
+        crate::audience::prefix(self.repo, self.audience)
+    }
+
+    /// Members-only in a public repository (what is worth saying).
+    fn marked(self) -> bool {
+        crate::audience::marked(self.repo, self.audience)
     }
 }
 
@@ -483,14 +524,14 @@ fn pending(
     view: &PatchView,
     file: &DraftFile,
     existing: Option<ReviewDraft>,
-    members: bool,
+    shown: Shown<'_>,
 ) -> Result<()> {
     if let Some(d) = existing.as_ref().filter(|d| d.attempted()) {
         return Err(refuse_attempted(d, &a.repo, a.number));
     }
     let path = &file.path;
     let mut draft = existing.unwrap_or_else(|| ReviewDraft::new(view));
-    draft.members = members;
+    draft.members = shown.sealed();
     draft.add_args(a)?;
     file.save(&draft)
         .with_context(|| format!("saving {}", path.display()))?;
@@ -507,16 +548,17 @@ fn pending(
             }).collect::<Vec<_>>(),
             "anchoredTo": draft.head_oid,
             "headMoved": moved,
-            "audience": crate::audience::json(if members { Audience::Members } else { Audience::Public }),
+            "audience": crate::audience::json(shown.audience),
+            "encrypted": shown.sealed(),
             "draftFile": path.display().to_string(),
         }),
         || {
             println!(
                 "✓ pending {}review on PR #{}: {}, kept on this machine{} until you submit",
-                if members { "members-only " } else { "" },
+                shown.prefix(),
                 a.number,
                 crate::fmt::plural(draft.comments.len(), "comment"),
-                if members { " (encrypted)" } else { "" }
+                if shown.sealed() { " (encrypted)" } else { "" }
             );
             for c in &draft.comments {
                 println!("  {}  {}", c.spec.location(), first_line(&c.spec.body));
@@ -608,7 +650,7 @@ async fn submit(
     file: &DraftFile,
     existing: Option<ReviewDraft>,
     verdict: Option<VerdictArg>,
-    members: bool,
+    shown: Shown<'_>,
 ) -> Result<()> {
     let path = &file.path;
     let resumed = existing.as_ref().is_some_and(ReviewDraft::attempted);
@@ -630,7 +672,7 @@ async fn submit(
             refuse_own_verdict(v, &view.patch.author, &s.identity.id(), &a.repo, a.number)?;
             let mut d = pending.unwrap_or_else(|| ReviewDraft::new(view));
             d.verdict = Some(v.code());
-            d.members = members;
+            d.members = shown.sealed();
             d.add_args(a)?;
             d
         }
@@ -676,7 +718,7 @@ async fn submit(
             eprintln!(
                 "{} {}review on PR #{} at {}: {}",
                 v.label(),
-                if members { "members-only " } else { "" },
+                shown.prefix(),
                 a.number,
                 short(&draft.head_oid),
                 crate::fmt::plural(n, "inline comment")
@@ -727,7 +769,7 @@ async fn submit(
         "pr": a.number,
         "verdict": v.code(),
         "verdictLabel": v.label(),
-        "audience": crate::audience::json(if members { Audience::Members } else { Audience::Public }),
+        "audience": crate::audience::json(shown.audience),
         "commitOid": draft.head_oid,
         "reviewId": draft.review_id,
         "comments": comments_json,
@@ -780,7 +822,7 @@ async fn submit(
             crate::fmt::plural(n, "inline comment"),
             cost_line(spent, price)
         );
-        if members {
+        if shown.marked() {
             println!("  review text visible to members; the verdict counts for everyone");
         }
         for c in &draft.comments {
@@ -928,8 +970,14 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     // A reply names its thread's root (RC1 `reply_thread`: a reply to a reply is refused), so
     // `--reply-to` any comment of a thread replies to the thread.
     let (anchor, kind) = if let Some(reply) = &a.reply_to {
-        let comments = collab.comments(&s.repo, &view.patch.document_id).await?;
+        let (comments, sealed, _) = collab
+            .comments_read(&s.repo, &view.patch.document_id)
+            .await?;
         let Some(root) = super::threads::root_id(&comments, reply) else {
+            // a members-only comment this signer cannot open: its thread is members-only
+            if sealed.iter().any(|m| m.document_id == *reply) {
+                return Err(crate::audience::members_only_thread(&s.repo));
+            }
             return Err(crate::errors::not_found(
                 format!("comment {reply} is not on PR #{}", a.number),
                 format!(
@@ -1076,7 +1124,7 @@ mod tests {
         d.comments[0].landed_id = Some("c0".into());
         let file = DraftFile {
             path: path.clone(),
-            lane: None,
+            keys: None,
         };
         file.save(&d).unwrap();
         let back = load_plain(&path).unwrap();
@@ -1104,13 +1152,14 @@ mod tests {
         res.keys.insert(0, EpochKey::from_bytes([5; 32]));
         res.write_epoch = Some(0);
         let lane = Lane::from_resolution(&[9; 32], &res).unwrap();
+        let keys = lane.write_keys().clone();
         let mut d = draft(2);
         d.members = true;
         d.summary = "SECRET-MEMBERS-SUMMARY".into();
         d.comments[0].spec.body = "SECRET-MEMBERS-COMMENT".into();
         DraftFile {
             path: path.clone(),
-            lane: Some(lane),
+            keys: Some(keys),
         }
         .save(&d)
         .unwrap();
@@ -1132,7 +1181,7 @@ mod tests {
         // and without a key it is never saved in the clear
         let keyless = DraftFile {
             path: dir.path().join("k.json"),
-            lane: None,
+            keys: None,
         };
         assert!(keyless.save(&d).is_err());
         assert!(!dir.path().join("k.json").exists());
@@ -1148,7 +1197,7 @@ mod tests {
         let pending = draft(1);
         DraftFile {
             path: path.clone(),
-            lane: None,
+            keys: None,
         }
         .save(&pending)
         .unwrap();
