@@ -370,12 +370,14 @@ impl Indexer {
                 continue;
             }
             let key = format!("priv:{repo_id}");
-            let Some((latest, writer)) = self.chain.latest_activity(&repo_id).await? else {
+            let prev = self.store.cursor(&key)?;
+            let Some(activity) = self.chain.activity_since(&repo_id, prev).await? else {
                 continue;
             };
-            let prev = self.store.cursor(&key)?;
-            self.store.set_cursor(&key, latest)?;
+            let latest = activity.latest;
             let Some(prev) = prev else {
+                // The first read only sets where the next one starts.
+                self.store.set_cursor(&key, latest)?;
                 continue;
             };
             if latest <= prev {
@@ -396,10 +398,16 @@ impl Indexer {
                 reason: Reason::PrivateActivity,
             };
             for s in wanting {
-                if s.identity != writer {
+                // Nobody is told about their own writes, but only when every write in the
+                // window is theirs: another writer's earlier activity is still news.
+                let only_theirs =
+                    activity.writers.len() == 1 && activity.writers.contains(&s.identity);
+                if !only_theirs {
                     self.dispatcher.deliver(&s.identity, &n).await?;
                 }
             }
+            // Saved once delivered: a failed delivery is retried by the next poll.
+            self.store.set_cursor(&key, latest)?;
         }
         Ok(())
     }

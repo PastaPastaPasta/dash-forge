@@ -24,7 +24,7 @@ use forge_core::platform::{IdentityKeyInfo, KeyBounds};
 use forge_notify::api::{self, ApiSettings, App};
 use forge_notify::auth::{sign, KeySource, KeysFuture};
 use forge_notify::chain::{
-    Addressed, Chain, Read, RepoInfo, TargetInfo, KIND_ASSIGN, KIND_REVIEW_REQUEST,
+    Activity, Addressed, Chain, Read, RepoInfo, TargetInfo, KIND_ASSIGN, KIND_REVIEW_REQUEST,
 };
 use forge_notify::config::Limits;
 use forge_notify::crypto::Vault;
@@ -57,6 +57,8 @@ impl KeySource for Keys {
 
 struct StubChain {
     latest: Mutex<u64>,
+    /// Who wrote in each private-activity window.
+    writers: Mutex<BTreeSet<String>>,
 }
 
 impl Chain for StubChain {
@@ -120,11 +122,14 @@ impl Chain for StubChain {
         };
         Box::pin(async move { Ok(Some(t)) })
     }
-    fn latest_activity(&self, _repo_id: &str) -> Read<'_, Option<(u64, String)>> {
+    fn activity_since(&self, _repo_id: &str, _since: Option<u64>) -> Read<'_, Option<Activity>> {
         let mut l = self.latest.lock().unwrap();
         *l += 1000;
-        let v = *l;
-        Box::pin(async move { Ok(Some((v, BOB.to_string()))) })
+        let v = Activity {
+            latest: *l,
+            writers: self.writers.lock().unwrap().clone(),
+        };
+        Box::pin(async move { Ok(Some(v)) })
     }
     fn dpns_label(&self, identity: &str) -> Read<'_, Option<String>> {
         let v = (identity == ALICE).then(|| "alice".to_string());
@@ -138,6 +143,7 @@ struct World {
     mailer: Arc<CaptureMailer>,
     pusher: Arc<CapturePusher>,
     indexer: Indexer,
+    chain: Arc<StubChain>,
     router: Router,
     feed: watch::Receiver<BTreeSet<String>>,
 }
@@ -197,11 +203,13 @@ fn world() -> World {
     });
     let (feed_tx, feed) = watch::channel(BTreeSet::new());
     let mentions = Arc::new(RwLock::new(MentionIndex::default()));
+    let chain = Arc::new(StubChain {
+        latest: Mutex::new(1_000),
+        writers: Mutex::new(BTreeSet::from([BOB.to_string()])),
+    });
     let indexer = Indexer::new(
         store.clone(),
-        Arc::new(StubChain {
-            latest: Mutex::new(1_000),
-        }),
+        Arc::clone(&chain) as Arc<dyn Chain>,
         Arc::clone(&dispatcher),
         feed_tx,
         Arc::clone(&mentions),
@@ -220,6 +228,7 @@ fn world() -> World {
         mailer,
         pusher,
         indexer,
+        chain,
         router,
         feed,
     }
@@ -460,6 +469,13 @@ async fn subscribe_confirm_route_unsubscribe_export_delete() {
         .subject
         .contains("New activity in a private repository you belong to"));
     assert!(p.subject.contains("/secret]"));
+    // A window of only alice's own writes: nothing. Hers and bob's: a notice.
+    *w.chain.writers.lock().unwrap() = BTreeSet::from([ALICE.to_string()]);
+    w.indexer.poll_private().await.unwrap();
+    assert_eq!(mails(&w).len(), n + 1);
+    *w.chain.writers.lock().unwrap() = BTreeSet::from([ALICE.to_string(), BOB.to_string()]);
+    w.indexer.poll_private().await.unwrap();
+    assert_eq!(mails(&w).len(), n + 2);
 
     // One-click unsubscribe (RFC 8058): any POST body, no login.
     let unsub = p.unsubscribe.clone().unwrap();
@@ -491,7 +507,7 @@ async fn subscribe_confirm_route_unsubscribe_export_delete() {
     );
     w.router.route(REPO, &e2).await.unwrap();
     assert_eq!(mails(&w).len(), n, "no mail after unsubscribing");
-    assert_eq!(w.pusher.sent.lock().unwrap().len(), 5, "push is unaffected");
+    assert_eq!(w.pusher.sent.lock().unwrap().len(), 6, "push is unaffected");
 
     // Export, then delete.
     let (_, v) = signed(&w, "data.export", json!({})).await;

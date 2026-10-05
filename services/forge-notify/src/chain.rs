@@ -38,6 +38,15 @@ pub struct RepoInfo {
     pub private: bool,
 }
 
+/// Writes in a repository after a time ([`Chain::activity_since`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Activity {
+    /// The newest write in the window (ms): where the next read starts.
+    pub latest: u64,
+    /// Everyone who wrote in the window (empty for a first read, which only finds `latest`).
+    pub writers: std::collections::BTreeSet<String>,
+}
+
 /// An `event` or `authorEvent` addressed to someone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Addressed {
@@ -106,8 +115,10 @@ pub trait Chain: Send + Sync {
     fn addressed(&self, identity: &str, since: u64) -> Read<'_, Vec<Addressed>>;
     /// An issue or PR by document id.
     fn target(&self, target_id: &str) -> Read<'_, Option<TargetInfo>>;
-    /// The newest activity in a repo: `(created_at ms, writer)`.
-    fn latest_activity(&self, repo_id: &str) -> Read<'_, Option<(u64, String)>>;
+    /// The writes in a repo after `since` (ms), oldest first, up to a page of each kind of
+    /// document: the window's newest time and its writers. `None` when there is none. With no
+    /// `since`, only the newest write's time (a first read sets the starting point).
+    fn activity_since(&self, repo_id: &str, since: Option<u64>) -> Read<'_, Option<Activity>>;
     /// The identity's DPNS label (`alice`), if it has one.
     fn dpns_label(&self, identity: &str) -> Read<'_, Option<String>>;
 }
@@ -140,6 +151,9 @@ fn id_field(d: &FetchedDocument, name: &str) -> Option<String> {
 }
 
 const MEMBER_READ_MAX: usize = 200;
+
+/// The documents of one kind read per private-activity poll.
+const ACTIVITY_PAGE: u32 = 100;
 
 impl PlatformChain {
     /// Load the forge-v2 contracts of the client's network.
@@ -326,12 +340,23 @@ impl Chain for PlatformChain {
         })
     }
 
-    fn latest_activity(&self, repo_id: &str) -> Read<'_, Option<(u64, String)>> {
+    fn activity_since(&self, repo_id: &str, since: Option<u64>) -> Read<'_, Option<Activity>> {
         let repo_id = repo_id.to_string();
         Box::pin(async move {
             let c = &self.contracts;
-            let filter = [QueryFilter::eq("repoId", id_value(&repo_id)?)];
-            let mut newest: Option<(u64, String)> = None;
+            let mut filter = vec![QueryFilter::eq("repoId", id_value(&repo_id)?)];
+            let order = [match since {
+                Some(t) => {
+                    filter.push(QueryFilter::gt("$createdAt", FieldValue::uint64(t)));
+                    QueryOrder::asc("$createdAt")
+                }
+                None => QueryOrder::desc("$createdAt"),
+            }];
+            let limit = if since.is_some() { ACTIVITY_PAGE } else { 1 };
+            let mut writes: Vec<(u64, String)> = Vec::new();
+            // A full page may stop short of later writes of its kind: the window ends at its
+            // last one, so nothing past it is skipped (the next read starts there).
+            let mut end: Option<u64> = None;
             for (contract, doc_type) in [
                 (&c.core, "refUpdate"),
                 (&c.collab, "issue"),
@@ -341,23 +366,29 @@ impl Chain for PlatformChain {
             ] {
                 let docs = self
                     .client
-                    .query_documents(
-                        contract,
-                        doc_type,
-                        &filter,
-                        &[QueryOrder::desc("$createdAt")],
-                        1,
-                        None,
-                    )
+                    .query_documents(contract, doc_type, &filter, &order, limit, None)
                     .await?;
-                if let Some(d) = docs.first() {
-                    let t = d.created_at.unwrap_or(0);
-                    if newest.as_ref().is_none_or(|(n, _)| t > *n) {
-                        newest = Some((t, d.owner_id.clone()));
-                    }
+                if since.is_some() && docs.len() == ACTIVITY_PAGE as usize {
+                    let last = docs.last().and_then(|d| d.created_at).unwrap_or(0);
+                    end = Some(end.map_or(last, |e| e.min(last)));
                 }
+                writes.extend(
+                    docs.iter()
+                        .map(|d| (d.created_at.unwrap_or(0), d.owner_id.clone())),
+                );
             }
-            Ok(newest)
+            writes.retain(|(t, _)| end.is_none_or(|e| *t <= e));
+            let Some(latest) = writes.iter().map(|(t, _)| *t).max() else {
+                return Ok(None);
+            };
+            Ok(Some(Activity {
+                latest,
+                writers: if since.is_some() {
+                    writes.into_iter().map(|(_, w)| w).collect()
+                } else {
+                    std::collections::BTreeSet::new()
+                },
+            }))
         })
     }
 
