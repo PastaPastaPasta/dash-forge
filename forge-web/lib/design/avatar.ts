@@ -1,21 +1,13 @@
 /**
- * The identity pill's stub avatar fill: a deterministic hue per identity, darkened until the
- * white initial on it clears WCAG AA (4.5:1).
+ * The identicon's fill (`identicon.ts`): a hue from the seed's hash, darkened until it holds
+ * 4.5:1 against white. On the identicon's `#f3f4f6` tile that leaves it above the 3:1 WCAG
+ * asks of graphics (`lib/design/contrast.test.ts` checks both).
  *
  * A fixed `hsl(h 45% 45%)` failed for yellow-green hues (2.58:1 at hue 60): at equal HSL
  * lightness, yellows and greens are far brighter than blues. So the lightness starts at 45%
  * and steps down per hue until the contrast holds. `lib/design/contrast.test.ts` checks all
  * 360 hues.
  */
-
-/** Deterministic hue from the identity id so the stub avatar is stable per identity. */
-export function avatarHue(id: string): number {
-  let hash = 0
-  for (let i = 0; i < id.length; i += 1) {
-    hash = (hash * 31 + id.charCodeAt(i)) % 360
-  }
-  return hash
-}
 
 const SATURATION = 0.45
 const START_LIGHTNESS = 0.45

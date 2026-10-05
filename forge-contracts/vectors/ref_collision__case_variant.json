@@ -1,0 +1,17 @@
+{
+  "name": "case_variant",
+  "description": "refs/heads/Readme-fix and refs/heads/readme-fix are one file on macOS and Windows.",
+  "case": "ref_collision",
+  "rules": "v2",
+  "input": {
+    "existing": [
+      "refs/heads/main",
+      "refs/heads/Readme-fix"
+    ],
+    "name": "refs/heads/readme-fix"
+  },
+  "expected": {
+    "collision": "refs/heads/Readme-fix",
+    "reason": "refs/heads/Readme-fix exists and differs only in letter case"
+  }
+}

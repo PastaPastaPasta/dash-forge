@@ -1,0 +1,17 @@
+{
+  "name": "branch_under_an_existing_branch",
+  "description": "A new refs/heads/feature/x under the existing branch refs/heads/feature: git stores refs as files, so feature cannot also be a folder.",
+  "case": "ref_collision",
+  "rules": "v2",
+  "input": {
+    "existing": [
+      "refs/heads/main",
+      "refs/heads/feature"
+    ],
+    "name": "refs/heads/feature/x"
+  },
+  "expected": {
+    "collision": "refs/heads/feature",
+    "reason": "refs/heads/feature exists, so refs/heads/feature/x cannot be created under it"
+  }
+}

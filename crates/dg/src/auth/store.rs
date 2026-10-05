@@ -225,7 +225,7 @@ impl Storer {
                     UserError::new(codes::USAGE, "the key could not be stored")
                         .cause(format!("{why}, and {e}"))
                         .fix("run it in a terminal to type a passphrase, or set DASH_FORGE_PASSPHRASE")
-                        .note("nothing was registered on chain")
+                        .note("nothing was registered on Platform")
                 })?;
             self.pass = Some(pass);
         }

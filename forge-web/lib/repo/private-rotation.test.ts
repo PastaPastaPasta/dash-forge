@@ -16,6 +16,7 @@ import { EpochKeys, WrapError, bytesToHex, sealDoc } from '../private'
 import type { Membership } from '../rules/v2'
 import { bytesToBase64, base64ToBytes, type DocumentQuery } from '../sdk'
 import type { RepoRef } from './contract'
+import { shortId } from '../utils'
 
 // ---------------------------------------------------------------------------
 // The fake chain
@@ -775,7 +776,7 @@ describe('correctness review of the burn fixes', () => {
     wrap(BOB, ALICE, 1, raw)
     wrap(BOB, CAROL, 1, raw)
     await anchor(CAROL, k1, { defaultBranch: 'main', prevEpoch: 0, burned: true })
-    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob-m3')).rejects.toThrow(new RegExp(b58(CAROL).slice(0, 8)))
+    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob-m3')).rejects.toThrow(shortId(b58(CAROL)))
   })
 
   it('L-a an adopted self-wrap to a key this browser lacks is refused before anything else is paid', async () => {

@@ -327,7 +327,7 @@ function ProfileForm({
           </div>
         </form>
         <div className="order-first flex flex-col items-center gap-2 md:order-none">
-          <ProfileAvatar identityId={identity} name={name ?? draft.displayName} config={avatarConfig} size={160} />
+          <ProfileAvatar identityId={identity} config={avatarConfig} size={160} />
           <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Preview</span>
         </div>
       </div>

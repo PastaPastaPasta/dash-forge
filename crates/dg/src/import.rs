@@ -81,8 +81,13 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
                     "part of what was asked for was left out (the source refused to list it, or a release's asset could not be sealed); see the warnings".to_string()
                 } else {
                     format!(
-                        "{} item(s) and {} optional git push(es) skipped; see the warnings",
-                        summary.counts.skipped, summary.counts.git_skipped
+                        "{} and {} skipped; see the warnings",
+                        crate::fmt::plural(summary.counts.skipped, "item"),
+                        crate::fmt::plural_with(
+                            summary.counts.git_skipped,
+                            "optional git push",
+                            "optional git pushes"
+                        )
                     )
                 })
                 .fix("re-run later: skipped items are retried, and written ones are not written again"),

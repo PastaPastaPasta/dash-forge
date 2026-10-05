@@ -65,12 +65,11 @@ import {
 import { contractOf, repoSource } from './source'
 import { CONSENT_LAG_RETRIES, ConsentMissingError, assertNoPlaintext, findConsent, grantMembershipDoc, revokeMembershipDoc } from './writes'
 import { retryWhileMissing } from '../view/retry'
+import { shortId } from '../utils'
 
 
-/** An identity as the messages name it: its first 8 characters. */
-function short(id: string): string {
-  return `${id.slice(0, 8)}…`
-}
+/** An identity as the messages name it: its first 7 and last 5 characters. */
+const short = shortId
 
 /** Whether the current epoch is burned (§5.3): chain-only, nothing is written under it. */
 export function currentBurned(r: PrivateSession['resolution']): boolean {

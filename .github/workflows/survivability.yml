@@ -14,7 +14,8 @@ name: Survivability drill
 #            browser reader (in-browser clone and ranged reads) and its trust-panel source row;
 #            then `e2e-drill/web-host.spec.ts`: the static build's host is killed and the app
 #            runs from a second host and from its IPFS build (kubo's subdomain and path gateways), and
-#            reads the bucket (CORS) and the gateway from there.
+#            reads the bucket (CORS) and the gateway from there. "notify down": Settings →
+#            Notifications with an unreachable notification service (`notify-panel.test.tsx`).
 #
 # The S3 store is RustFS, not MinIO: the minio/minio images stopped pulling in 2026-04 (see
 # infra/docker-compose.yml); RustFS is the S3 fixture everywhere else in this repo. Images are
@@ -41,6 +42,9 @@ on:
       - 'forge-web/lib/view/storage-status.ts'
       - 'forge-web/lib/view/trust.ts'
       - 'forge-web/lib/view/survivability.drill.test.ts'
+      - 'forge-web/lib/notify/**'
+      - 'forge-web/components/notify-panel.tsx'
+      - 'forge-web/components/notify-panel.test.tsx'
       - 'forge-web/lib/browse/**'
       - 'forge-web/lib/storage/**'
       - 'forge-web/lib/net.ts'
@@ -184,11 +188,11 @@ jobs:
           cache-dependency-path: forge-web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
 
-      - name: Browse drill (bucket deleted, gateway stopped)
+      - name: Browse drill (bucket deleted, gateway stopped, notify down)
         env:
           FORGE_DRILL: '1'
           FORGE_DRILL_KUBO_CONTAINER: ${{ job.services.kubo.id }}
-        run: pnpm exec vitest run lib/view/survivability.drill.test.ts
+        run: pnpm exec vitest run lib/view/survivability.drill.test.ts components/notify-panel.test.tsx
 
       # Any network works: the spec refuses every request but the page's own origin and the
       # storage fixture, so it never reads a chain.

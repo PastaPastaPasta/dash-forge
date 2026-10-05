@@ -12,7 +12,8 @@ use forge_core::storage::human_bytes;
 use forge_import::budget::{collab_doc_credits, CollabDoc};
 
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, REPO_CREATE_ESTIMATE_CREDITS};
+// `dg cost` shows exact amounts, so its rows add up to its totals.
+use crate::fmt::{cost_json, cost_line_exact, REPO_CREATE_ESTIMATE_CREDITS};
 use crate::quote::FIRST_OF_KIND_EXTRA;
 use crate::{Backend, CostCommand};
 
@@ -57,7 +58,7 @@ fn prices_cmd(ctx: &Ctx) {
                 println!("  ({} on {})", crate::fmt::NO_CASH_VALUE, ctx.network_label());
             }
             for (op, credits) in ops {
-                println!("  {op:<26} {}", cost_line(credits, price));
+                println!("  {op:<26} {}", cost_line_exact(credits, price));
             }
         },
     );
@@ -386,20 +387,20 @@ fn estimate_cmd(
             let kind = if q.history_chunks_unpriced {
                 "not counting the history index's chunks"
             } else {
-                "an upper bound, as `git push` quotes it"
+                "an upper bound; `git push` shows it rounded"
             };
-            println!("  total:       {}  ({kind}; later pushes pay less)", cost_line(q.total(), price));
+            println!("  total:       {}  ({kind}; later pushes pay less)", cost_line_exact(q.total(), price));
             println!(
                 "  metadata:    {}  {} manifests + 1 ref update, on Platform",
-                cost_line(q.metadata, price),
+                cost_line_exact(q.metadata, price),
                 q.manifests
             );
             if q.chunks > 0 {
                 let what = if input.history.is_some() { "pack + browse index + history index" } else { "pack + browse index" };
                 println!(
                     "  chunks:      {}  {what} on Platform; {} of it is the storage deposit, never refunded (Platform packs are permanent)",
-                    cost_line(q.chunks, price),
-                    cost_line(q.deposit, price)
+                    cost_line_exact(q.chunks, price),
+                    cost_line_exact(q.deposit, price)
                 );
             }
             if target.external > 0 {
@@ -467,7 +468,7 @@ async fn audit(
                 "  on Platform:     {} ({} bytes), deposit locked {}{}",
                 tally.platform.count,
                 tally.platform.bytes,
-                cost_line(tally.deposit_locked(), price),
+                cost_line_exact(tally.deposit_locked(), price),
                 if tally.platform.count > 0 {
                     " (packs are permanent: the deposit is not refundable)"
                 } else {
@@ -586,9 +587,9 @@ fn print_audit(report: &AuditReport, price: Option<f64>) {
         println!("  since:  {} UTC", format_utc(since_ms));
     }
     println!(
-        "  total:  {} across {} document(s)",
-        cost_line(report.total_credits, price),
-        report.document_count
+        "  total:  {} across {}",
+        cost_line_exact(report.total_credits, price),
+        crate::fmt::plural(report.document_count, "document")
     );
     println!("\n  by document type:");
     for t in &report.by_type {
@@ -596,7 +597,7 @@ fn print_audit(report: &AuditReport, price: Option<f64>) {
             "    {:<20} {:>4}  {}",
             t.doc_type,
             t.count,
-            cost_line(t.credits, price)
+            cost_line_exact(t.credits, price)
         );
     }
     println!("\n  by repository:");
@@ -605,7 +606,7 @@ fn print_audit(report: &AuditReport, price: Option<f64>) {
             "    {:<46} {:>4}  {}",
             r.repo,
             r.count,
-            cost_line(r.credits, price)
+            cost_line_exact(r.credits, price)
         );
     }
     if !report.excluded_types.is_empty() {

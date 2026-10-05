@@ -178,18 +178,21 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         String::new()
     } else {
         format!(
-            " with {} asset(s), {}",
-            args.assets.len(),
+            " with {}, {}",
+            crate::fmt::plural(args.assets.len(), "asset"),
             forge_core::storage::human_bytes(total)
         )
     };
     let kept = existing.as_ref().map_or(String::new(), |r| {
         format!(
-            "; it replaces the current {tag} release and keeps its {} other asset(s){}",
-            r.assets
-                .iter()
-                .filter(|a| !uploads_replace(&args.assets, &a.name))
-                .count(),
+            "; it replaces the current {tag} release and keeps its other {}{}",
+            crate::fmt::plural(
+                r.assets
+                    .iter()
+                    .filter(|a| !uploads_replace(&args.assets, &a.name))
+                    .count(),
+                "asset"
+            ),
             if r.yanked && args.yanked != Some(true) {
                 " (it is yanked now: without --yanked this un-yanks it)"
             } else {
@@ -256,9 +259,9 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         }),
         || {
             println!(
-                "✓ published release {tag} of {} ({} asset(s)) · {}",
+                "✓ published release {tag} of {} ({}) · {}",
                 s.repo.display(),
-                input.assets.len(),
+                crate::fmt::plural(input.assets.len(), "asset"),
                 cost_line(spent, price)
             );
         },
@@ -363,8 +366,8 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
         String::new()
     } else {
         format!(
-            " with {} sealed asset(s), {}",
-            files.len(),
+            " with {} (encrypted), {}",
+            crate::fmt::plural(files.len(), "asset"),
             forge_core::storage::human_bytes(total)
         )
     };
@@ -498,9 +501,12 @@ fn sealed_assets_line(written: &forge_core::collab::ReleaseWritten) -> String {
     if written.asset_list_kept {
         "asset list unchanged".to_string()
     } else if written.asset_list_reused {
-        format!("{n} asset(s), the asset list an earlier attempt stored")
+        format!(
+            "{}, the asset list an earlier attempt stored",
+            crate::fmt::plural(n, "asset")
+        )
     } else {
-        format!("{n} asset(s)")
+        crate::fmt::plural(n, "asset")
     }
 }
 
@@ -956,8 +962,8 @@ fn incomplete_notes(list: &ReleaseList) -> Vec<String> {
             String::new()
         };
         out.push(format!(
-            "{} release revision(s) could not be read{earlier}",
-            list.hidden
+            "{} could not be read{earlier}",
+            crate::fmt::plural(list.hidden, "release revision")
         ));
     }
     out
@@ -985,8 +991,8 @@ fn listed_assets<'a>(r: &'a Release, sealed: &'a SealedLists) -> Option<&'a [Rel
 /// A release's asset count as `dg release list` shows it.
 fn asset_count(r: &Release, sealed: &SealedLists) -> String {
     match (has_sealed_asset_list(r), sealed.get(&r.document_id)) {
-        (false, _) => format!("{} asset(s)", r.assets.len()),
-        (true, Some(Ok(a))) => format!("{} asset(s), sealed list", a.len()),
+        (false, _) => crate::fmt::plural(r.assets.len(), "asset"),
+        (true, Some(Ok(a))) => format!("{}, encrypted list", crate::fmt::plural(a.len(), "asset")),
         // the reason is [`asset_list_error`]'s, on a line of its own
         (true, _) => "sealed asset list (not opened)".to_string(),
     }
@@ -1809,7 +1815,7 @@ mod tests {
         lists.insert("d1".into(), Ok(vec![asset("app.txt", 'c')]));
         assert_eq!(
             asset_count(&sealed_release, &lists),
-            "1 asset(s), sealed list"
+            "1 asset, encrypted list"
         );
         assert_eq!(
             names(listed_assets(&sealed_release, &lists).unwrap()),
@@ -1841,7 +1847,7 @@ mod tests {
             .contains("not opened"));
         // a public release lists what it stores
         let public = current();
-        assert_eq!(asset_count(&public, &lists), "2 asset(s)");
+        assert_eq!(asset_count(&public, &lists), "2 assets");
         assert_eq!(asset_list_error(&public, &lists), None);
         assert!(late_check_failed("node down").contains("none is judged): node down"));
         assert_eq!(listed_assets(&public, &lists).map(<[_]>::len), Some(2));
