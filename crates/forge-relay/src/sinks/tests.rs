@@ -444,3 +444,56 @@ fn the_hub_filters_by_repo_and_event() {
             .contains("opened issue #1"));
     });
 }
+
+#[test]
+fn a_sink_without_repos_gets_only_the_covered_repos() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (base, seen) = http_stub(vec![]).await;
+        let s = spec(
+            "s",
+            SinkTarget::Slack {
+                url: Secret::new(format!("{base}/a")),
+            },
+        );
+        let hub = SinkHub::start(vec![(s, BTreeSet::new())], None).unwrap();
+        let opened = |repo: &str, title: &str| {
+            let meta = crate::payload::RepositoryMeta {
+                repo_id: repo.into(),
+                owner_id: "O".into(),
+                name: "x".into(),
+                default_branch: "main".into(),
+                web_base_url: "https://forge.example".into(),
+            };
+            let issue = crate::payload::IssueObj {
+                number: 1,
+                document_id: "I".into(),
+                author: "A".into(),
+                title: title.into(),
+                body: String::new(),
+                open: true,
+                is_pr: false,
+            };
+            crate::payload::issues_event(&meta, "I", "opened", &issue)
+        };
+        // Nothing is covered before the first discovery.
+        hub.accept("CHOSEN", &opened("CHOSEN", "early"));
+        hub.set_covered(BTreeSet::from(["CHOSEN".to_string()]));
+        // A repo served only for a stranger's webhook document.
+        hub.accept("HOOKED", &opened("HOOKED", "spam"));
+        hub.accept("CHOSEN", &opened("CHOSEN", "wanted"));
+        for _ in 0..50 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].body["text"].as_str().unwrap().contains("wanted"));
+    });
+}

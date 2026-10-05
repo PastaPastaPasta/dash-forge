@@ -314,6 +314,10 @@ impl WebhookSub {
 /// The repo ids with at least one subscription, and the earliest `$createdAt` among each
 /// repo's hooks (0 when a static hook serves it).
 pub fn repos_of(subs: &[WebhookSub]) -> BTreeMap<String, u64> {
+    earliest(subs)
+}
+
+fn earliest<'a>(subs: impl IntoIterator<Item = &'a WebhookSub>) -> BTreeMap<String, u64> {
     let mut out: BTreeMap<String, u64> = BTreeMap::new();
     for s in subs {
         out.entry(s.repo_id.clone())
@@ -321,6 +325,13 @@ pub fn repos_of(subs: &[WebhookSub]) -> BTreeMap<String, u64> {
             .or_insert(s.created_at);
     }
     out
+}
+
+/// The repos the operator chose (a subscription from the config or an embedder: no `webhook`
+/// document), each with its earliest `created_at`, as [`repos_of`]. A repo served only for
+/// `webhook` documents is left out: anyone can create a repo and point a hook at the relay.
+pub fn chosen_repos(subs: &[WebhookSub]) -> BTreeMap<String, u64> {
+    earliest(subs.iter().filter(|s| s.document_id.is_none()))
 }
 
 #[cfg(test)]
@@ -346,6 +357,31 @@ mod tests {
             secret: vec![0; 64],
             disabled,
         }
+    }
+
+    #[test]
+    fn chosen_repos_leave_out_repos_served_only_for_webhook_documents() {
+        let mut hook = watch_subscription("HOOKED", &[], 7);
+        hook.document_id = Some("doc".into());
+        let mut both = hook.clone();
+        both.repo_id = "BOTH".into();
+        let subs = vec![
+            hook,
+            both,
+            watch_subscription("BOTH", &[], 50),
+            wake_subscription("WAKE"),
+            watch_subscription("WATCHED", &[], 30),
+        ];
+        let got = chosen_repos(&subs);
+        assert_eq!(
+            got,
+            BTreeMap::from([
+                ("BOTH".to_string(), 50),
+                ("WAKE".to_string(), 0),
+                ("WATCHED".to_string(), 30),
+            ])
+        );
+        assert_eq!(repos_of(&subs).get("BOTH"), Some(&7));
     }
 
     #[test]
