@@ -105,6 +105,8 @@ export interface RefNow {
   /** null: never written. */
   readonly state: RefState | null
   readonly patterns: readonly string[]
+  /** The patterns the write is routed by: `null` while no config is readable (see `writeRefUpdate`). */
+  readonly routing: readonly string[] | null
 }
 
 /**
@@ -115,16 +117,22 @@ export interface RefNow {
 export async function readRefNow(sdk: EvoSDK, repo: RepoRef, refName: string): Promise<RefNow> {
   const bundle = await readConfigBundle(sdk, repo)
   const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(refName)), bundle.history, undefined, { fresh: true })
-  return { state: ref?.state ?? null, patterns: bundle.config?.protectedPatterns ?? [] }
+  const routing = bundle.config?.protectedPatterns ?? null
+  return { state: ref?.state ?? null, patterns: routing ?? [], routing }
 }
 
 const tipOf = (s: RefState | null): string | null => (s === null ? null : refTip({ state: s }))
 
 /**
  * The write options for a ref update routed by `patterns` just read: a public repo's are passed
- * on (no second config read); a private repo's writer routes by its own sealed config.
+ * on (no second config read), `null` included, so the owner's write before the repo's first config
+ * is visible is still routed as protected; a private repo's writer routes by its own sealed config.
  */
-function routed(repo: RepoRef, patterns: readonly string[], intent: string | undefined): { intent?: string; protectedPatterns?: readonly string[] } {
+function routed(
+  repo: RepoRef,
+  patterns: readonly string[] | null,
+  intent: string | undefined,
+): { intent?: string; protectedPatterns?: readonly string[] | null } {
   return { ...(intent !== undefined ? { intent } : {}), ...(repo.visibility === 'private' ? {} : { protectedPatterns: patterns }) }
 }
 
@@ -149,7 +157,7 @@ export async function createBranch(
   const tip = tipOf(now.state)
   const sameTip = input.restoring === true && tip !== null && tip.toLowerCase() === input.target.toLowerCase()
   if (tip !== null && !sameTip) throw new Error(`a branch named ${input.name} already exists (at ${tip.slice(0, 7)})`)
-  await writeRefUpdate(sdk, auth, repo, { refName, newOid: input.target }, routed(repo, now.patterns, input.intent))
+  await writeRefUpdate(sdk, auth, repo, { refName, newOid: input.target }, routed(repo, now.routing, input.intent))
 }
 
 /**
@@ -163,7 +171,7 @@ export async function deleteBranch(
   repo: RepoRef,
   input: { readonly refName: string; readonly tip: string; readonly defaultBranch: string; readonly role: Role | null; readonly intent?: string },
 ): Promise<void> {
-  const { state, patterns } = await readRefNow(sdk, repo, input.refName)
+  const { state, patterns, routing } = await readRefNow(sdk, repo, input.refName)
   const name = shortRef(input.refName)
   if (state === null || state.state === 'unborn') throw new Error(`${name} is already deleted`)
   // The rules again, against the patterns in force now (a protection added since the page loaded).
@@ -171,7 +179,7 @@ export async function deleteBranch(
   if (block !== null) throw new Error(block)
   if (state.state !== 'resolved') throw new Error(`${name} has diverged heads: delete it with git`)
   if (state.oid.toLowerCase() !== input.tip.toLowerCase()) throw new Error(`${name} moved to ${state.oid.slice(0, 7)} since this page read it; reload and check before deleting it`)
-  await writeRefUpdate(sdk, auth, repo, { refName: input.refName, newOid: '0'.repeat(input.tip.length), prevOid: input.tip }, routed(repo, patterns, input.intent))
+  await writeRefUpdate(sdk, auth, repo, { refName: input.refName, newOid: '0'.repeat(input.tip.length), prevOid: input.tip }, routed(repo, routing, input.intent))
 }
 
 /**
@@ -188,12 +196,12 @@ export async function ensureTag(
   const problem = newTagNameProblem(input.tag)
   if (problem !== null) throw new Error(problem)
   const refName = `${TAG_PREFIX}${input.tag}`
-  const { state, patterns } = await readRefNow(sdk, repo, refName)
+  const { state, routing } = await readRefNow(sdk, repo, refName)
   const now = tipOf(state)
   if (now !== null) {
     if (now.toLowerCase() === input.target.toLowerCase()) return false
     throw new Error(`the tag ${input.tag} already exists at ${now.slice(0, 7)}: pick it as an existing tag, or choose another name`)
   }
-  await writeRefUpdate(sdk, auth, repo, { refName, newOid: input.target }, routed(repo, patterns, input.intent))
+  await writeRefUpdate(sdk, auth, repo, { refName, newOid: input.target }, routed(repo, routing, input.intent))
   return true
 }

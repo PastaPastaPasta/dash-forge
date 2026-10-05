@@ -779,6 +779,12 @@ fn confirm_plan(
                 "  {}",
                 protection_line(&plan.default_branch, opts.no_protect)
             );
+        } else {
+            // A config an earlier run left unwritten is written now, with the same patterns.
+            println!(
+                "  if an earlier run left the config unwritten, it {}",
+                protection_line(&plan.default_branch, opts.no_protect)
+            );
         }
         println!("  {}", packs_line(&plan.storage.policy, plan.size));
         if plan.storage.source != Source::Flag && plan.existing.is_none() {
