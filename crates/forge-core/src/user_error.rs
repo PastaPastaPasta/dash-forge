@@ -120,6 +120,12 @@ pub const CATALOGUE: &[(&str, &str)] = &[
         "the repository's key chain is broken",
     ),
     (codes::ROTATION_PENDING, "key rotation or repair pending"),
+    (codes::NO_KEY_SHARED, "no key has been shared with you yet"),
+    (
+        codes::MEMBERS_ONLY_OFF,
+        "members-only content is not turned on",
+    ),
+    (codes::MEMBERS_ONLY, "members-only"),
     (codes::INSUFFICIENT_CREDITS, "not enough credits"),
     (codes::KEY_BUDGET_SPENT, "this key's budget is used up"),
     (codes::STORAGE_CONFIG, "storage not configured correctly"),
@@ -141,6 +147,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::REJECTED, "rejected by Platform"),
     (codes::ARCHIVED, "repository archived"),
     (codes::EDIT_CONFLICT, "edited by someone else meanwhile"),
+    (codes::ENV_CONFLICT, "environment changed at the same time"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
         codes::NOT_DEPLOYED,
@@ -209,6 +216,15 @@ pub mod codes {
     pub const KEY_CHAIN_BROKEN: &str = "E309";
     /// The current epoch cannot be written under yet: a rotation or a repair is pending.
     pub const ROTATION_PENDING: &str = "E310";
+    /// A member of a public repository with members-only content holds no key yet: a stale
+    /// client added them without sharing the key, and a maintainer's client repairs it.
+    pub const NO_KEY_SHARED: &str = "E311";
+    /// Members-only content was asked for in a public repository where no maintainer has
+    /// turned it on (no members key exists).
+    pub const MEMBERS_ONLY_OFF: &str = "E312";
+    /// A members-only issue or PR this reader cannot open: only the repository's members can
+    /// read it (that it exists, who wrote it and when are public).
+    pub const MEMBERS_ONLY: &str = "E313";
     /// The identity's balance cannot pay for the write.
     pub const INSUFFICIENT_CREDITS: &str = "E401";
     /// The signing key has spent its whole budget (protocol-14 limited keys).
@@ -249,6 +265,9 @@ pub mod codes {
     pub const ARCHIVED: &str = "E606";
     /// An edit made against a revision another edit has since replaced (nothing written).
     pub const EDIT_CONFLICT: &str = "E607";
+    /// An environment two people changed at once: its values are not used until a maintainer
+    /// keeps one version.
+    pub const ENV_CONFLICT: &str = "E608";
     /// DAPI / the quorum service could not be reached.
     pub const UNREACHABLE: &str = "E701";
     /// The selected network has no Dash Forge deployment.

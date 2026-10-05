@@ -1,0 +1,62 @@
+{
+  "name": "sealed_verdict_member",
+  "description": "D15: a member who opens two members-only approvals counts both verdicts; the later approve clears the maintainer's earlier public request for changes.",
+  "case": "approval_count",
+  "rules": "v2",
+  "input": {
+    "visibility": "public",
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "bob",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100,
+        "sealed": true,
+        "opened": true,
+        "asMember": true
+      },
+      {
+        "id": "r2",
+        "reviewer": "maint",
+        "verdict": 2,
+        "commitOid": "head0000",
+        "createdAt": 90,
+        "sealed": false,
+        "opened": true,
+        "asMember": true
+      },
+      {
+        "id": "r3",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 110,
+        "sealed": true,
+        "opened": true,
+        "asMember": true
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      },
+      {
+        "identity": "bob",
+        "role": "writer",
+        "createdAt": 60
+      }
+    ],
+    "headOid": "head0000",
+    "prAuthor": "alice"
+  },
+  "expected": {
+    "approvers": [
+      "bob",
+      "maint"
+    ],
+    "changesRequested": []
+  }
+}

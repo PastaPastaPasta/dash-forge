@@ -57,6 +57,8 @@ import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
+import { readNewestManifestOfKind } from './packs'
+import { PACK_KIND } from '../constants'
 import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
@@ -1041,6 +1043,64 @@ export class PrivateMembershipError extends Error {
   }
 }
 
+/**
+ * A public repo with members-only content turned on: its membership changes must share and
+ * rotate the members key (`private-repos.md` §17), which this web app does not do yet (stream
+ * 1F-web). Until it does, it refuses them rather than add a member who gets no key or remove one
+ * who keeps reading.
+ */
+export class MembersKeyMembershipError extends Error {
+  constructor() {
+    super('This repo has members-only content turned on. Change its members with dg for now.')
+    this.name = 'MembersKeyMembershipError'
+  }
+}
+
+/** Whether a stored `enc` holds bytes (any encoding the SDK returns). */
+function hasBytes(v: unknown): boolean {
+  if (v === null || v === undefined) return false
+  if (typeof v === 'string') return v.length > 0
+  const n = (v as { length?: unknown }).length
+  return typeof n === 'number' && n > 0
+}
+
+/**
+ * Whether `repo` has a members key: every private repo, and a public one with any sealed `config`
+ * (the members-key anchor, even one that does not resolve: the check fails toward refusing). The
+ * same definition `dg` uses (`keyring::has_members_key`).
+ */
+export async function hasMembersKey(sdk: EvoSDK, repo: RepoRef): Promise<boolean> {
+  if (repo.visibility === 'private') return true
+  const rows = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'asc']] }))
+  return rows.some((d) => hasBytes(d['enc']))
+}
+
+/**
+ * A repo with environment snapshots (kind 8): a maintainer's removal, demotion or promotion
+ * changes whose snapshots count, which `dg` handles (it saves the affected environments again
+ * first) and the web does not yet.
+ */
+export class EnvironmentsMembershipError extends Error {
+  constructor(change: 'remove' | 'promote') {
+    super(
+      change === 'remove'
+        ? 'This repo has environments. Remove or demote maintainers with dg for now.'
+        : 'This repo has environments. Make maintainers with dg for now.',
+    )
+    this.name = 'EnvironmentsMembershipError'
+  }
+}
+
+/** Refuse a maintainer change in a repo that has environments ({@link EnvironmentsMembershipError}). */
+async function refuseMaintainerChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef, change: 'remove' | 'promote'): Promise<void> {
+  if ((await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) !== null) throw new EnvironmentsMembershipError(change)
+}
+
+/** Refuse a public repo's membership change while it has a members key ({@link MembersKeyMembershipError}). */
+async function refuseWithMembersKey(sdk: EvoSDK, repo: RepoRef): Promise<void> {
+  if (repo.visibility === 'public' && (await hasMembersKey(sdk, repo))) throw new MembersKeyMembershipError()
+}
+
 // ---------------------------------------------------------------------------
 // Consent (RC1 R-06: nobody is made a member without their own `consent`)
 // ---------------------------------------------------------------------------
@@ -1126,6 +1186,8 @@ export async function grantMember(
   intent?: string,
 ): Promise<WriteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('add')
+  await refuseWithMembersKey(sdk, repo)
+  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
   return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
 }
 
@@ -1181,6 +1243,8 @@ export async function revokeMember(
   role: Role,
 ): Promise<DeleteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
+  await refuseWithMembersKey(sdk, repo)
+  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
   return revokeMembershipDoc(sdk, auth, repo, memberId, role)
 }
 
@@ -1202,6 +1266,9 @@ export async function changeMemberRole(
   intent?: string,
 ): Promise<WriteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
+  await refuseWithMembersKey(sdk, repo)
+  if (from === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
+  else if (to === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
   if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
   if (from === to) throw new Error(`they are already a ${to}`)

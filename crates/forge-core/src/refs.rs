@@ -32,7 +32,9 @@ use crate::error::Result;
 use crate::history::Freshness;
 use crate::history::HistorySpec;
 use crate::platform::{FetchedDocument, LoadedContract, PlatformClient};
-use crate::rules::v2::{is_well_formed, ContentDoc, ContentKind, Visibility};
+use crate::rules::v2::{
+    content_well_formed, git_plane_well_formed, ContentDoc, ContentKind, Visibility,
+};
 use crate::rules::{ConfigDoc, MergeBaseTips, RefUpdate};
 use crate::scope::DocScope;
 
@@ -52,10 +54,13 @@ pub(crate) fn config_well_formed(d: &FetchedDocument) -> bool {
     well_formed_in(ContentKind::Config, d)
 }
 
-/// Whether `d` is well-formed for a PUBLIC repository (forge-v2 §5); private repositories
-/// read through [`read_private_refs`], which checks the private form.
+/// Whether `d` is well-formed for a PUBLIC repository's git plane (forge-v2 §5): the plaintext
+/// form only ([`git_plane_well_formed`]). A sealed `config` (the members-key anchor of a public
+/// repository, DESIGN D1) or a sealed ref update is never a settings or ref row here, whatever
+/// the content predicate admits. Private repositories read through [`read_private_refs`],
+/// which checks the private form.
 fn well_formed_in(kind: ContentKind, d: &FetchedDocument) -> bool {
-    is_well_formed(&content_of(kind, d), Visibility::Public)
+    git_plane_well_formed(&content_of(kind, d))
 }
 
 /// The §5 content view of a ref-update or config row.
@@ -340,7 +345,7 @@ pub fn private_updates_of(state: &GitState, keyring: &crate::keyring::Keyring) -
         ),
     ] {
         for d in rows {
-            if !is_well_formed(&content_of(ContentKind::RefUpdate, d), Visibility::Private) {
+            if !content_well_formed(&content_of(ContentKind::RefUpdate, d), Visibility::Private) {
                 continue;
             }
             let Opened::Readable(fields) = keyring.open(kind, d) else {
@@ -399,7 +404,7 @@ pub fn newer_unreadable_epoch(state: &GitState, keyring: &crate::keyring::Keyrin
         (&state.protected_ref_updates, DocKind::ProtectedRefUpdate),
     ] {
         for d in docs {
-            if !is_well_formed(&content_of(ContentKind::RefUpdate, d), Visibility::Private) {
+            if !content_well_formed(&content_of(ContentKind::RefUpdate, d), Visibility::Private) {
                 continue;
             }
             let seen = match keyring.open(kind, d) {

@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::private::DocKind;
 use crate::repo::{order_copies, PackManifestInfo, RepoService};
 use crate::rules::long_body::{self, LongBody};
-use crate::rules::v2::{Role, Visibility};
+use crate::rules::v2::{Audience, Role, Visibility};
 use crate::scope::RepoRef;
 use crate::storage::{PackReader, StorageTarget};
 use crate::user_error::{codes, UserError};
@@ -55,11 +55,30 @@ pub enum BodyField<'s> {
 
 impl BodyField<'_> {
     /// How many UTF-8 bytes of text the field holds in a `visibility` repository, next to the
-    /// document's other sealed text and an importer's `imported` author and URL (sealed too).
+    /// document's other sealed text and an importer's `imported` author and URL (sealed too):
+    /// [`Self::room_for`] of the repository's own audience (public, or members in a private
+    /// repository).
     #[must_use]
     pub fn room(&self, visibility: Visibility, imported: Option<&Imported>) -> usize {
+        self.room_for(visibility, Audience::Public, imported)
+    }
+
+    /// How many UTF-8 bytes of text the field holds in a document of a `visibility` repository
+    /// written for `audience`: 5,120 for public text; the private-repository `enc` (v0x01)'s room
+    /// in a private repository whatever `audience` says; and in a public repository a
+    /// members-only document's (`enc` v0x03, whose 61 bytes of framing leave 32 bytes less; its
+    /// padding is dropped when it does not fit, `private-repos.md` §4.1). A release's notes are
+    /// 5,120 either way.
+    #[must_use]
+    pub fn room_for(
+        &self,
+        visibility: Visibility,
+        audience: Audience,
+        imported: Option<&Imported>,
+    ) -> usize {
+        let members = visibility == Visibility::Public && audience != Audience::Public;
         let kind = match self {
-            _ if visibility == Visibility::Public => return FIELD_MAX,
+            _ if visibility == Visibility::Public && !members => return FIELD_MAX,
             Self::Release => return FIELD_MAX,
             Self::Issue { .. } => DocKind::Issue,
             Self::Patch { .. } => DocKind::Patch,
@@ -80,9 +99,13 @@ impl BodyField<'_> {
             Self::Review | Self::Release => 0,
         };
         let provenance = imported.map_or(0, |i| record(&i.author) + record(&i.url));
-        (kind.max_enc() - crate::private::doc::MIN_V1)
-            .saturating_sub(3 + others + provenance)
-            .min(FIELD_MAX)
+        let tlv = kind.max_enc()
+            - if members {
+                crate::private::doc::MIN_V3
+            } else {
+                crate::private::doc::MIN_V1
+            };
+        tlv.saturating_sub(3 + others + provenance).min(FIELD_MAX)
     }
 }
 
@@ -159,6 +182,13 @@ impl Collab<'_> {
     ///
     /// Refused before anything is stored when the text is over 262,144 bytes, or when the
     /// signer is not a maintainer or role-1 writer of `repo` (only they may record artifacts).
+    ///
+    /// `audience` is who the document carrying the field is for ([`Collab::new_audience`], or
+    /// the stored document's for an edit; ignored in a private repository, where everything is
+    /// sealed). A members-only text in a public repository is stored only sealed under the
+    /// repository's members key, as a kind-70 artifact ([`crate::pack::KIND_MEMBERS_LONG_BODY`]):
+    /// never where everyone can read it (DESIGN §4.1). Its field then holds the members-only
+    /// room, and the trailer is sealed with the rest of the document.
     pub async fn store_long_body(
         &self,
         repo: &RepoRef,
@@ -166,10 +196,20 @@ impl Collab<'_> {
         imported: Option<&Imported>,
         full: &str,
         store: &BodyStore<'_>,
+        audience: Audience,
     ) -> Result<String> {
-        let room = field.room(repo.visibility, imported);
+        let room = field.room_for(repo.visibility, audience, imported);
         if !long_body::needs_artifact(full, room) {
             return Ok(full.to_string());
+        }
+        let members = repo.visibility == Visibility::Public && audience != Audience::Public;
+        if audience == Audience::SpecificPeople {
+            return Err(UserError::new(
+                codes::USAGE,
+                "writing to specific people is not supported yet",
+            )
+            .note("nothing was written")
+            .into());
         }
         if full.len() as u64 > long_body::MAX_BYTES {
             return Err(UserError::new(
@@ -201,16 +241,32 @@ impl Collab<'_> {
             ),
         )
         .await?;
-        let hash = self
-            .repo_service()?
-            .store_long_body(
-                repo,
-                full.as_bytes(),
-                &store.external,
-                store.platform,
-                store.required,
-            )
-            .await?;
+        let hash = if members {
+            // sealed here, under keys read now (§5.3): the plaintext never leaves this process
+            let lane = self.members_writer(repo).await?.lane(repo)?;
+            let sealed = lane.seal_artifact(full.as_bytes()).map_err(|_| {
+                Error::Config("the members-only text could not be encrypted".into())
+            })?;
+            self.repo_service()?
+                .store_members_long_body(
+                    repo,
+                    sealed,
+                    &store.external,
+                    store.platform,
+                    store.required,
+                )
+                .await?
+        } else {
+            self.repo_service()?
+                .store_long_body(
+                    repo,
+                    full.as_bytes(),
+                    &store.external,
+                    store.platform,
+                    store.required,
+                )
+                .await?
+        };
         long_body::stored_text(full, room, &hash).ok_or_else(no_room)
     }
 
@@ -229,7 +285,21 @@ impl Collab<'_> {
     /// manifests and members (what finds and orders the copies) are read once, and only when a
     /// field continues; the artifacts are fetched side by side.
     pub async fn read_long_bodies(&self, repo: &RepoRef, stored: &[&str]) -> Vec<BodyRead> {
-        let parsed: Vec<LongBody<'_>> = stored.iter().map(|s| long_body::parse(s)).collect();
+        let public: Vec<(&str, Audience)> = stored.iter().map(|s| (*s, Audience::Public)).collect();
+        self.read_long_bodies_for(repo, &public).await
+    }
+
+    /// [`Self::read_long_bodies`] of fields each read from a document for its audience: in a
+    /// public repository a public field's trailer names a public artifact (kind 6) and a
+    /// members-only field's names one sealed under the members key (kind 70), opened with the
+    /// reader's keys; neither is taken for the other, so members-only text never shows under
+    /// a public document. In a private repository the audience changes nothing.
+    pub async fn read_long_bodies_for(
+        &self,
+        repo: &RepoRef,
+        stored: &[(&str, Audience)],
+    ) -> Vec<BodyRead> {
+        let parsed: Vec<LongBody<'_>> = stored.iter().map(|(s, _)| long_body::parse(s)).collect();
         let continued = parsed
             .iter()
             .any(|p| matches!(p, LongBody::Continued { .. }));
@@ -238,7 +308,7 @@ impl Collab<'_> {
         } else {
             None
         };
-        let reads = parsed.iter().zip(stored).map(|(p, s)| {
+        let reads = parsed.iter().zip(stored).map(|(p, (s, audience))| {
             let shared = shared.as_ref();
             async move {
                 match *p {
@@ -253,7 +323,10 @@ impl Collab<'_> {
                         bytes,
                     } => {
                         let text = match shared {
-                            Some(Ok(view)) => self.fetch_long_body(repo, view, sha256, bytes).await,
+                            Some(Ok(view)) => {
+                                self.fetch_long_body(repo, view, (sha256, bytes), *audience)
+                                    .await
+                            }
                             Some(Err(e)) => Err(Error::Config(e.clone())),
                             None => Err(Error::Config("not read".into())),
                         };
@@ -295,18 +368,25 @@ impl Collab<'_> {
         &self,
         repo: &RepoRef,
         view: &CopyView<'_>,
-        sha256: [u8; 32],
-        bytes: u64,
+        (sha256, bytes): ([u8; 32], u64),
+        audience: Audience,
     ) -> Result<String> {
         let private = repo.visibility == Visibility::Private;
-        let cap = if private { sealed_cap(bytes) } else { bytes };
+        let members = !private && audience != Audience::Public;
+        let sealed = private || members;
+        let kind = if members {
+            crate::pack::KIND_MEMBERS_LONG_BODY
+        } else {
+            crate::pack::KIND_LONG_BODY
+        };
+        let cap = if sealed { sealed_cap(bytes) } else { bytes };
         let copies: Vec<&PackManifestInfo> = view
             .manifests
             .iter()
             .filter(|m| {
                 m.pack_hash == sha256
-                    && m.kind == u64::from(crate::pack::KIND_LONG_BODY)
-                    && if private {
+                    && m.kind == u64::from(kind)
+                    && if sealed {
                         m.size_bytes <= cap
                     } else {
                         m.size_bytes == cap
@@ -327,10 +407,14 @@ impl Collab<'_> {
                     continue;
                 }
             };
-            let plain = match svc
-                .open_artifact_of(repo, &[copy], copy.size_bytes, stored)
-                .await
-            {
+            // `fetch_artifact` checked the bytes against this manifest's `packHash` first
+            let opened = if members {
+                self.open_members_artifact(repo, copy, &stored).await
+            } else {
+                svc.open_artifact_of(repo, &[copy], copy.size_bytes, stored)
+                    .await
+            };
+            let plain = match opened {
                 Ok(p) => p,
                 Err(e) => {
                     last = e;
@@ -343,6 +427,49 @@ impl Collab<'_> {
             }
         }
         Err(last)
+    }
+}
+
+impl Collab<'_> {
+    /// Open a members-only artifact of public `repo` (`sealed`, the bytes of `copy`, already
+    /// checked against its `packHash`) with this reader's members keys, after the late-content
+    /// rule: an artifact sealed under an old key by someone no longer a member after the key
+    /// was rotated is not read (`docs/security/private-repos.md` §8.2).
+    async fn open_members_artifact(
+        &self,
+        repo: &RepoRef,
+        copy: &PackManifestInfo,
+        sealed: &[u8],
+    ) -> Result<Vec<u8>> {
+        let kr = match self.lane_keys(repo).await? {
+            super::v2::DocKeys::Held(kr) => kr,
+            super::v2::DocKeys::None(_) => {
+                return Err(Error::Config(
+                    "it is members-only, and not readable with your keys".into(),
+                ))
+            }
+        };
+        let damaged = || Error::Config("the stored copy is damaged".into());
+        let header = crate::private::PackHeader::parse(
+            sealed
+                .get(..crate::private::pack::HEADER_LEN)
+                .ok_or_else(damaged)?,
+            copy.size_bytes,
+        )
+        .map_err(|_| damaged())?;
+        let readable = copy.created_at_block_height > 0
+            && crate::platform::decode_identifier(&copy.owner_id).is_ok_and(|owner| {
+                kr.resolution()
+                    .manifest_standing(header.epoch(), copy.created_at_block_height, &owner)
+                    .readable
+            });
+        if !readable {
+            return Err(Error::Config(
+                "it was stored under an old key after the key was rotated".into(),
+            ));
+        }
+        kr.open_pack(repo, sealed, copy.size_bytes)
+            .map_err(|_| Error::Config("it does not open with your keys".into()))
     }
 }
 
@@ -371,6 +498,46 @@ mod tests {
             BodyField::Release.room(Visibility::Private, None),
             FIELD_MAX
         );
+    }
+
+    /// A members-only long body is kind 70 (64 + 6, DESIGN D6), and what the members key
+    /// seals is within the size a reader accepts for a text of its length (`sealed_cap`), and
+    /// opens again with that key only.
+    #[test]
+    fn a_members_only_long_body_is_sealed_within_the_readers_cap() {
+        use crate::private::{EpochKey, EpochResolution, Lane};
+        assert_eq!(crate::pack::KIND_MEMBERS_LONG_BODY, 70);
+        assert_eq!(long_body::MAX_BYTES, 262_144);
+        let mut res = EpochResolution::default();
+        res.keys.insert(0, EpochKey::from_bytes([4; 32]));
+        res.write_epoch = Some(0);
+        let lane = Lane::from_resolution(&[8; 32], &res).unwrap();
+        for len in [5_200usize, 70_000, 262_144] {
+            let text = "m".repeat(len);
+            let sealed = lane.seal_artifact(text.as_bytes()).unwrap();
+            assert!(sealed.len() as u64 <= sealed_cap(len as u64), "{len}");
+            assert!(!sealed.windows(64).any(|w| w == &text.as_bytes()[..64]));
+            let opened = lane.open_artifact(&sealed, sealed.len() as u64).unwrap();
+            assert_eq!(opened, text.as_bytes());
+            let mut other = EpochResolution::default();
+            other.keys.insert(0, EpochKey::from_bytes([5; 32]));
+            other.write_epoch = Some(0);
+            let stranger = Lane::from_resolution(&[8; 32], &other).unwrap();
+            assert!(stranger
+                .open_artifact(&sealed, sealed.len() as u64)
+                .is_err());
+        }
+    }
+
+    /// A members-only field in a public repository has the members-only room: less than a
+    /// public one's, never more than the field.
+    #[test]
+    fn a_members_only_field_has_the_members_room() {
+        let field = BodyField::Comment { path: None };
+        let public = field.room_for(Visibility::Public, Audience::Public, None);
+        let members = field.room_for(Visibility::Public, Audience::Members, None);
+        assert_eq!(public, FIELD_MAX);
+        assert!(members < public, "{members}");
     }
 
     /// A field, its sealed kind, and the other plaintext the public writer would set.

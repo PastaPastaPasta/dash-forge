@@ -1775,6 +1775,129 @@ mod tests {
 
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ApprovalCountInput {
+        visibility: v2::Visibility,
+        reviews: Vec<v2::ReadReview>,
+        memberships: Vec<v2::Membership>,
+        head_oid: String,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+        dismissed: std::collections::BTreeSet<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        pr_author: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct MixedEditInput {
+        stored: v2::ContentDoc,
+        edited: v2::ContentDoc,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct AnchorSettingsInput {
+        default_branch: String,
+        #[serde(default)]
+        protected_patterns: Vec<String>,
+        backend_mode: u8,
+        archived: bool,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ChainLinkInput {
+        prev: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prev_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skip_key: Option<String>,
+        #[serde(default)]
+        burned: bool,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct MixedAnchorInput {
+        visibility: v2::Visibility,
+        /// The repository's current settings, as the anchor writer is given them.
+        current: AnchorSettingsInput,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<ChainLinkInput>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct MixedAnchorExpected {
+        vis: v2::Visibility,
+        /// The plaintext properties beside `repoId`, `enc`, `epoch` and `vis`, by name.
+        plaintext: Vec<String>,
+        /// The sealed TLV, hex.
+        tlv: String,
+    }
+
+    /// The members-only-content cases (`private-repos.md` §17): D15's approval count, the
+    /// fixed audience of an edit, and the members-key anchor of a public repository.
+    fn run_mixed_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "approval_count" => {
+                let inp: ApprovalCountInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let counted = v2::counted_reviews(&inp.reviews, inp.visibility);
+                let got = v2::count_approvals(
+                    &counted,
+                    &oracle,
+                    &inp.head_oid,
+                    &inp.dismissed,
+                    &inp.pr_author,
+                );
+                assert_eq!(got, expected::<v2::Approvals>(v), "vector `{ctx}`");
+            }
+            "mixed_edit" => {
+                let inp: MixedEditInput = input(v);
+                let got = v2::edit_keeps_audience(&inp.stored, &inp.edited);
+                assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
+            }
+            "mixed_anchor" => run_mixed_anchor(v),
+            other => panic!("vector `{ctx}`: not a mixed case `{other}`"),
+        }
+    }
+
+    fn run_mixed_anchor(v: &Vector) {
+        let ctx = &v.name;
+        let inp: MixedAnchorInput = input(v);
+        let key = |h: &str| {
+            crate::private::EpochKey::from_slice(&hex::decode(h).expect("hex key"))
+                .unwrap_or_else(|| panic!("vector `{ctx}`: a key is 32 bytes"))
+        };
+        let settings = crate::keyring::AnchorSettings {
+            default_branch: inp.current.default_branch.clone(),
+            protected_patterns: inp.current.protected_patterns.clone(),
+            backend: crate::keyring::backend_object(inp.current.backend_mode),
+            archived: inp.current.archived,
+        };
+        let link = inp.link.as_ref().map(|l| crate::keyring::ChainLink {
+            prev: l.prev,
+            prev_key: l.prev_key.as_deref().map(key),
+            skip_key: l.skip_key.as_deref().map(key),
+            burned: l.burned,
+        });
+        let got = crate::keyring::anchor_content(inp.visibility, &settings, link);
+        let got = MixedAnchorExpected {
+            vis: got.vis,
+            plaintext: got.plaintext.keys().cloned().collect(),
+            tlv: hex::encode(&*crate::private::tlv::encode(&got.fields)),
+        };
+        let want: MixedAnchorExpected = expected(v);
+        assert_eq!(
+            serde_json::to_value(&got).unwrap(),
+            serde_json::to_value(&want).unwrap(),
+            "vector `{ctx}`"
+        );
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct V2PackListInput {
         copies: Vec<v2::PackCopyRow>,
         #[serde(default)]
@@ -2731,9 +2854,20 @@ mod tests {
                 assert_eq!(got, expected::<Vec<v2::V2Pack>>(v), "vector `{ctx}`");
             }
             "approvals" => run_approvals_case(v),
-            "well_formed" => {
+            "well_formed" | "content_well_formed" => {
                 let inp: WellFormedInput = input(v);
-                let got = v2::is_well_formed(&inp.doc, inp.visibility);
+                let got = v2::content_well_formed(&inp.doc, inp.visibility);
+                assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
+            }
+            "approval_count" | "mixed_edit" | "mixed_anchor" => run_mixed_case(v),
+            "git_plane_well_formed" => {
+                let inp: WellFormedInput = input(v);
+                assert_eq!(
+                    inp.visibility,
+                    v2::Visibility::Public,
+                    "vector `{ctx}`: the git plane is a public repository's"
+                );
+                let got = v2::git_plane_well_formed(&inp.doc);
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "merge_base_tips" | "pr_base_tips" => {
@@ -3012,10 +3146,11 @@ mod tests {
             let v: Vector = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
             // the private-repository and mixed-visibility envelope vectors run in
-            // `private::conformance`
+            // `private::conformance`, the environment snapshots in `env::conformance`
             if crate::private::conformance::CRYPTO_CASE_PREFIXES
                 .iter()
                 .any(|p| v.case.starts_with(p))
+                || v.case.starts_with(crate::env::conformance::CASE_PREFIX)
             {
                 continue;
             }

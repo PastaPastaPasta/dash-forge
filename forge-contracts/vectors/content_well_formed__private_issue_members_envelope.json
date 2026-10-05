@@ -1,0 +1,15 @@
+{
+  "name": "private_issue_members_envelope",
+  "description": "Control: a private repository's content predicate is unchanged (enc with an epoch and no plaintext), whatever the version byte.",
+  "case": "content_well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "issue",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "private"
+  },
+  "expected": true
+}

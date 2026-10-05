@@ -6,6 +6,7 @@
 //! DASH (primary) / USD (secondary) estimate and prompt unless `--yes`.
 
 mod api;
+mod audience;
 mod auth;
 mod ci;
 mod collab;
@@ -14,6 +15,7 @@ mod config;
 mod context;
 mod cost;
 mod doctor;
+mod env;
 mod errors;
 mod fmt;
 mod git;
@@ -253,6 +255,12 @@ pub enum Command {
     /// Manage webhooks.
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
+    /// Environments: secrets and settings kept out of git
+    ///
+    /// Each environment (dev, staging, production) is encrypted for Maintainers or Members.
+    /// Run code with one through `dg env run`.
+    #[command(subcommand)]
+    Env(env::EnvCommand),
     /// CI: runner keys and memberships, and check runs on commits.
     #[command(subcommand)]
     Ci(ci::CiCommand),
@@ -464,9 +472,13 @@ pub enum RepoCommand {
     /// Backend configuration.
     #[command(subcommand)]
     Backend(RepoBackendCommand),
-    /// A private repository's keys: epochs, wraps, pending rotation, repair.
+    /// A repository's members key (private repositories, and public ones with members-only
+    /// content): epochs, wraps, pending rotation, repair.
     #[command(subcommand)]
     Keys(RepoKeysCommand),
+    /// Members-only content in a public repository: turn it on, or see who has the key.
+    #[command(subcommand)]
+    Members(RepoMembersCommand),
     /// Edit a repo's settings: default branch (config, maintainers), description and topics
     /// (the repo document, its owner).
     Edit(RepoEditArgs),
@@ -622,6 +634,21 @@ pub enum RepoKeysCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum RepoMembersCommand {
+    /// Turn on members-only content (maintainers): sets up a key for the current members and
+    /// shares it with each (shows the cost and asks first; `--yes` skips the question).
+    Enable {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Whether members-only content is on, and who has no key yet.
+    Status {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum RepoBackendCommand {
     /// Set the storage backend mode.
     Set {
@@ -753,6 +780,11 @@ pub enum IssueCommand {
         /// Issue body.
         #[arg(long, default_value = "")]
         body: String,
+        /// Members-only: only the repository's members can read it (everyone still sees that
+        /// something was posted, by whom and when). Needs your encryption key, and members-only
+        /// content turned on in the repository (`dg repo members enable`).
+        #[arg(long, alias = "private")]
+        members: bool,
     },
     /// Edit an issue: its title and body (its author only), labels, assignees and milestone
     /// (maintainers, writers and triage members), as `gh issue edit` does. One confirmation for
@@ -784,6 +816,11 @@ pub enum IssueCommand {
         /// Comment body.
         #[arg(long)]
         body: String,
+        /// Members-only: only the repository's members can read it (everyone still sees that
+        /// something was posted, by whom and when). Needs your encryption key, and members-only
+        /// content turned on in the repository (`dg repo members enable`).
+        #[arg(long, alias = "private")]
+        members: bool,
     },
     /// Edit one of your comments (on an issue or a PR): its body only. In a private repo the
     /// text is re-sealed; an edit made while someone else's landed is refused (E607).
@@ -1383,6 +1420,12 @@ pub struct PrReviewArgs {
     /// Finish an interrupted submit (the verdict and summary are the draft's).
     #[arg(long, conflicts_with_all = ["approve", "request_changes", "comment", "verdict", "pending", "discard"])]
     pub resume: bool,
+    /// Members-only: only the repository's members can read the review's text and its inline
+    /// comments (everyone still sees that a review was posted, by whom and when, and an
+    /// approval or request for changes still counts). Needs your encryption key, and
+    /// members-only content turned on in the repository (`dg repo members enable`).
+    #[arg(long, alias = "private")]
+    pub members: bool,
     /// The summary and the inline comments, in order.
     #[command(flatten)]
     pub inline: pr::inline::InlineArgs,
@@ -1419,6 +1462,12 @@ pub struct PrCommentArgs {
     /// Suggest this text for the lines (a ```` ```suggestion ```` block, new side).
     #[arg(long, requires = "line")]
     pub suggest: Option<String>,
+    /// Members-only: only the repository's members can read it (everyone still sees that
+    /// something was posted, by whom and when). Needs your encryption key, and
+    /// members-only content turned on in the repository (`dg repo members enable`). Inside a
+    /// members-only thread replies are members-only anyway.
+    #[arg(long, alias = "private")]
+    pub members: bool,
 }
 
 /// `dg pr merge` arguments.
@@ -1664,6 +1713,10 @@ pub enum CollabCommand {
         /// are one document: any of them removes it).
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
+        /// Don't save again the environments whose latest change this maintainer made (they
+        /// then go back to the version before it).
+        #[arg(long)]
+        no_resave: bool,
     },
     /// List members.
     List {
@@ -2209,6 +2262,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
+        Command::Env(cmd) => env::run(ctx, cmd).await,
         Command::Ci(cmd) => ci::run(ctx, cmd).await,
         Command::Search(cmd) => search::run(ctx, cmd).await,
         Command::Api(cmd) => api::run(ctx, cmd).await,

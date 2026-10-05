@@ -207,6 +207,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         forge_core::collab::long_body::BodyField::Release,
         None,
         &args.notes,
+        forge_core::rules::v2::Audience::Public,
     )?;
     let quote = release_quote(
         existing.as_ref(),
@@ -403,7 +404,14 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
             };
             let field = forge_core::collab::long_body::BodyField::Release;
             collab
-                .store_long_body(&s.repo, field, None, &args.notes, &on)
+                .store_long_body(
+                    &s.repo,
+                    field,
+                    None,
+                    &args.notes,
+                    &on,
+                    forge_core::rules::v2::Audience::Public,
+                )
                 .await?
         }
         _ => args.notes.clone(),

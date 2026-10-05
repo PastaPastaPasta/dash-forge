@@ -1,0 +1,17 @@
+{
+  "name": "config_plaintext",
+  "description": "A plaintext config is a settings row.",
+  "case": "git_plane_well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "config",
+      "defaultBranch": "main",
+      "protectedPatterns": [
+        "refs/heads/main"
+      ]
+    },
+    "visibility": "public"
+  },
+  "expected": true
+}

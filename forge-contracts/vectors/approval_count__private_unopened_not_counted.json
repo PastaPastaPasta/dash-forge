@@ -1,0 +1,39 @@
+{
+  "name": "private_unopened_not_counted",
+  "description": "Control (private-repos.md §8.1, unchanged): in a private repository a review the reader cannot open never counts.",
+  "case": "approval_count",
+  "rules": "v2",
+  "input": {
+    "visibility": "private",
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "bob",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100,
+        "sealed": true,
+        "opened": false,
+        "asMember": true
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      },
+      {
+        "identity": "bob",
+        "role": "writer",
+        "createdAt": 60
+      }
+    ],
+    "headOid": "head0000",
+    "prAuthor": "alice"
+  },
+  "expected": {
+    "approvers": [],
+    "changesRequested": []
+  }
+}
