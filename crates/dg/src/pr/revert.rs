@@ -65,7 +65,9 @@ impl Landed {
     /// What is reverted, for people.
     fn words(self, merge_oid: &str) -> String {
         match self {
-            Landed::MergeCommit => format!("merge commit {} against its first parent", short(merge_oid)),
+            Landed::MergeCommit => {
+                format!("merge commit {} against its first parent", short(merge_oid))
+            }
             Landed::Squash => format!("squash commit {}", short(merge_oid)),
             Landed::Rebase => format!("the rebased commits up to {}", short(merge_oid)),
             Landed::FastForward => "the PR's commits".to_string(),
@@ -180,7 +182,10 @@ pub(crate) fn revert_title(title: &str) -> String {
     if full.chars().count() <= TITLE_MAX {
         return full;
     }
-    let keep: String = title.chars().take(TITLE_MAX - "Revert \"…\"".chars().count()).collect();
+    let keep: String = title
+        .chars()
+        .take(TITLE_MAX - "Revert \"…\"".chars().count())
+        .collect();
     format!("Revert \"{keep}…\"")
 }
 
@@ -195,7 +200,9 @@ pub(crate) fn revert_body(number: u32, merge_oid: &str, landed: Landed) -> Strin
 /// Whether `name` (`refs/heads/…`) is a branch name git and Platform accept.
 fn usable_branch(name: &str) -> bool {
     name.len() <= 255
-        && name.strip_prefix("refs/heads/").is_some_and(|b| !b.is_empty())
+        && name
+            .strip_prefix("refs/heads/")
+            .is_some_and(|b| !b.is_empty())
         && git::git_ok(Path::new("."), &["check-ref-format", name])
 }
 
@@ -210,7 +217,11 @@ pub(crate) fn default_branch(number: u32, source_ref: Option<&str>) -> String {
 }
 
 /// A refusal of `dg pr revert` before anything was pushed or written.
-fn refusal(code: &'static str, headline: String, cause: impl Into<String>) -> UserError {
+fn refusal(
+    code: &'static str,
+    headline: impl std::fmt::Display,
+    cause: impl Into<String>,
+) -> UserError {
     UserError::new(code, format!("revert not attempted: {headline}"))
         .cause(cause)
         .note("nothing was pushed or written")
@@ -239,7 +250,9 @@ fn require_revertable(view: &PatchView, repo: &str, number: u64) -> Result<Strin
             format!("PR #{number} has no merge commit to revert"),
             why,
         )
-        .fix(format!("`dg pr verify {repo} {number}` says what its merge recorded"))
+        .fix(format!(
+            "`dg pr verify {repo} {number}` says what its merge recorded"
+        ))
         .into()
     })
 }
@@ -263,7 +276,11 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
     };
     // Pushing the revert branch needs write access to the repository.
     collab
-        .require_role(handle, Role::Writer, &format!("revert pull request #{number}"))
+        .require_role(
+            handle,
+            Role::Writer,
+            &format!("revert pull request #{number}"),
+        )
         .await?;
 
     let branch_ref = match branch {
@@ -422,7 +439,11 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
     )?;
     steps.ok(
         "revert",
-        format!("{} → commit {}", inv.landed.words(&merge_oid), short(&commit)),
+        format!(
+            "{} → commit {}",
+            inv.landed.words(&merge_oid),
+            short(&commit)
+        ),
     );
 
     let body = revert_body(view.patch.number, &merge_oid, inv.landed);
@@ -452,7 +473,13 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
         "revert failed",
     ) {
         return Err(crate::errors::reported(
-            super::step_failure(&e, number, repo, "revert failed", "no pull request was opened"),
+            super::step_failure(
+                &e,
+                number,
+                repo,
+                "revert failed",
+                "no pull request was opened",
+            ),
             json!({ "status": "failed", "pr": number, "steps": steps.done }),
         ));
     }
@@ -612,7 +639,7 @@ mod tests {
 
         // A rebase: the PR's two commits replayed on base1.
         run(dir, &["reset", "-q", "--hard", &base1]);
-        run(dir, &["cherry-pick", "-q", &format!("{root}..{head}")]);
+        run(dir, &["cherry-pick", &format!("{root}..{head}")]);
         let rebased = run(dir, &["rev-parse", "HEAD"]);
         let (landed, got) = undo(dir, &head, &rebased, &base1, &rebased);
         assert_eq!(landed, Landed::Rebase);

@@ -194,6 +194,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Pr(P::Review(a)) => ("review not posted", Some(&a.repo)),
         Command::Pr(P::Comment(a)) => ("comment not posted", Some(&a.repo)),
         Command::Pr(P::Merge(a)) => ("merge failed", Some(&a.repo)),
+        Command::Pr(P::Revert { repo, .. }) => ("revert failed", Some(repo)),
         Command::Pr(P::Edit(a)) => ("pull request not edited", Some(&a.repo)),
         Command::Pr(P::Sync { repo, .. }) => ("pull request head not moved", Some(repo)),
         Command::Pr(P::Ready { repo, .. }) => ("pull request not marked ready", Some(repo)),
