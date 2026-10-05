@@ -64,7 +64,7 @@ import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHidden } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
-import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine } from '@/lib/view/pull-actions'
+import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine, unrecordedMerge, unrecordedMergeCandidate } from '@/lib/view/pull-actions'
 import {
   baseRefReaders,
   createComment,
@@ -213,7 +213,8 @@ const OWN_VERDICT: Readonly<Record<OwnReview['verdict'], string>> = { approve: '
 type Pending =
   /** Close or reopen; with `comment`, the composer's text is posted first ("Close with comment", QW2-008). */
   | { kind: 'state'; to: 'close' | 'reopen'; comment?: string }
-  | { kind: 'mark-merged'; bypass: readonly string[] }
+  /** Record a merge done elsewhere: `oid` the head on the base, or the base tip that already makes the PR's changes. */
+  | { kind: 'mark-merged'; bypass: readonly string[]; oid: string }
   | { kind: 'review'; verdict: VerdictInput; body: string }
   | { kind: 'draft'; to: 'draft' | 'ready' }
   | { kind: 'head'; oid: string }
@@ -574,8 +575,18 @@ function PullPage({
     maintainersOnly: policyNow?.approverRole === 1,
     checks: requiredChecks,
   })
+  // An interrupted merge: the base moved to a commit that already makes this PR's changes, but no
+  // merge was recorded. The merge check (git objects through the comparison's readers, no Platform
+  // reads) runs only for a viewer who could record it.
+  const recordInputs = { pull, canMerge: actions.canMerge }
+  const unrecordedCheck = useAsync(
+    () => checkMerge(cmp!.sides, { headOid: pull.headOid, mergeOid: pull.baseTipOid, tipBefore: pull.baseTipPrev ?? '' }),
+    [pull.baseTipOid, pull.baseTipPrev ?? '', pull.headOid, comparison.sidesKey],
+    { enabled: cmp !== null && unrecordedMergeCandidate(recordInputs) },
+  )
+  const recordOid = unrecordedMerge(recordInputs, unrecordedCheck.data?.verdict ?? null)
   // "Mark as merged (done elsewhere)" is offered on a ready PR whose head is on the base already.
-  const showMarkMerged = actions.canMarkMerged && !pull.state.draft
+  const showMarkMerged = actions.canMarkMerged && !pull.state.draft && recordOid === null
   const base = shortBranch(pull.mergeBaseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
   // Who may request reviews (the author, or a member down to triage).
@@ -835,12 +846,12 @@ function PullPage({
         return
       }
       case 'mark-merged':
-        await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent })
+        await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: p.oid, intent })
         // A maintainer recording it past unmet branch rules: the bypass is recorded on the PR,
         // as the merge box and `dg pr merge --event-only --override-policy` record theirs.
         if (p.bypass.length > 0) {
           try {
-            await recordPolicyBypass(sdk, signer, repo, { target, rules: p.bypass, mergeOid: pull.headOid, intent: `${intent}:bypass` })
+            await recordPolicyBypass(sdk, signer, repo, { target, rules: p.bypass, mergeOid: p.oid, intent: `${intent}:bypass` })
           } catch (e) {
             // The merge is recorded (final); a retry of this same action re-uses it and writes only the record.
             throw new Error(`The merge is recorded, but recording the rules bypass failed: ${guard.failed(e)} Retry to record it.`)
@@ -1468,6 +1479,17 @@ function PullPage({
                 <RulesAtMerge sdk={sdk} repo={repo} thread={thread} configHistory={() => baseRefReaders(sdk!, repo).configHistory()} pageChecks={checks.data} />
               ) : null}
 
+              {recordOid !== null && unrecordedCheck.data !== null && !mergeBusy ? (
+                <RecordMergeBox
+                  oid={recordOid}
+                  base={base}
+                  content={unrecordedCheck.data}
+                  bypass={actions.unmetRules}
+                  disabledReason={archived ? ARCHIVED_REASON : guard.disabledReason}
+                  onRecord={() => setPending({ kind: 'mark-merged', bypass: actions.unmetRules, oid: recordOid })}
+                />
+              ) : null}
+
               {/* Merge box */}
               {open && pull.state.draft ? (
                 <section aria-label="Draft" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-300 px-4 py-3 dark:border-anvil-700" data-testid="draft-box">
@@ -1634,7 +1656,7 @@ function PullPage({
                     {showMarkMerged ? (
                       <Button
                         variant="outline"
-                        onClick={() => setPending({ kind: 'mark-merged', bypass: actions.unmetRules })}
+                        onClick={() => setPending({ kind: 'mark-merged', bypass: actions.unmetRules, oid: pull.headOid })}
                         disabled={!signer || guard.disabledReason !== null || archived}
                         title={archived ? ARCHIVED_REASON : 'Records a merge done elsewhere; it moves no code'}
                       >
@@ -2047,18 +2069,22 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
           }
         : { title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number}`, description: `Records ${move}. ${still}`, label: pending.to === 'close' ? 'Close PR' : 'Reopen PR' }
     }
-    case 'mark-merged':
+    case 'mark-merged': {
+      const oid = pending.oid.slice(0, 9)
+      const record = pending.oid.toLowerCase() !== head.toLowerCase()
+      const what = record ? `Records ${oid}, the commit ${base} is at, as the merge of PR #${number}.` : `Records the merge of ${oid}, already on ${base}, done elsewhere.`
       return pending.bypass.length > 0
         ? {
-            title: `Bypass the branch rules and mark PR #${number} as merged`,
-            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final. These branch rules are not met, so this is a bypass, recorded on the PR as an event nobody can delete: ${pending.bypass.join('; ')}.`,
+            title: record ? `Bypass the branch rules and record the merge of ${oid}` : `Bypass the branch rules and mark PR #${number} as merged`,
+            description: `${what} It moves no code, and it is final. These branch rules are not met, so this is a bypass, recorded on the PR as an event nobody can delete: ${pending.bypass.join('; ')}.`,
             label: 'Sign & record (bypass rules)',
           }
         : {
-            title: `Mark PR #${number} as merged (done elsewhere)`,
-            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final.`,
-            label: 'Sign & mark merged',
+            title: record ? `Record the merge of ${oid}` : `Mark PR #${number} as merged (done elsewhere)`,
+            description: `${what} It moves no code, and it is final.`,
+            label: record ? 'Sign & record merge' : 'Sign & mark merged',
           }
+    }
     case 'review':
       return {
         title: `${VERDICT_TEXT[pending.verdict]} PR #${number}`,
@@ -2362,6 +2388,43 @@ function commitAuthors(commits: readonly { readonly commit: { readonly author: {
 }
 
 /** What a merged PR's recorded merge commit holds (`merge-content.ts`), next to its state. */
+/**
+ * "Record merge of <commit>": the base already makes this PR's changes but no merge was recorded
+ * (a browser merge that stopped after moving the branch, or a merge pushed with git).
+ */
+function RecordMergeBox({
+  oid,
+  base,
+  content,
+  bypass,
+  disabledReason,
+  onRecord,
+}: {
+  oid: string
+  base: string
+  content: MergeContent
+  bypass: readonly string[]
+  disabledReason: string | null
+  onRecord: () => void
+}): JSX.Element {
+  const how = content.verdict === 'squash' ? 'a squash of this pull request' : content.verdict === 'rebase' ? 'a rebase of this pull request' : "a merge holding this pull request's commits"
+  return (
+    <section aria-label="Unrecorded merge" className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="record-merge-box">
+      <GitMerge className={`h-5 w-5 shrink-0 ${STATE_TEXT.done}`} aria-hidden />
+      <div className="min-w-[min(16rem,100%)] flex-1">
+        <p className="font-medium">This pull request is already on {base}</p>
+        <p className="text-anvil-600 dark:text-anvil-300">
+          {base} is at <Oid value={oid} chars={7} copyable={false} />, {how}, but no merge was recorded. A merge may have stopped after moving the branch.
+          {bypass.length > 0 ? ' The branch rules are not met, so recording it is a bypass, recorded on the PR.' : ''}
+        </p>
+      </div>
+      <Button variant="primary" size="sm" onClick={onRecord} disabled={disabledReason !== null} title={disabledReason ?? undefined} data-testid="record-merge">
+        Record merge of {oid.slice(0, 7)}
+      </Button>
+    </section>
+  )
+}
+
 function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeOid: string }) {
   const combined = content.combined.length > 0 ? `, combined with base changes in ${plural(content.combined.length, 'file')}` : ''
   const words: Record<MergeContent['verdict'], string> = {
