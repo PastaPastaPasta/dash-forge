@@ -154,7 +154,9 @@ pub struct HistoryItem {
 }
 
 impl Book {
-    fn manifest(&self, id: &str) -> Option<&PackManifestInfo> {
+    /// The manifest of document `id`.
+    #[must_use]
+    pub fn manifest(&self, id: &str) -> Option<&PackManifestInfo> {
         self.manifests.iter().find(|m| m.document_id == id)
     }
 
@@ -320,17 +322,22 @@ impl Book {
     /// The `supersedes` a new snapshot of `env` writes ([`chain::window`]).
     #[must_use]
     pub fn window(&self, env: &str) -> Vec<[u8; 32]> {
-        let Some(state) = self.state(env) else {
-            return Vec::new();
-        };
-        let refs: Vec<SnapshotRef> = state
-            .snapshots
+        self.state(env)
+            .map(|state| self.window_over(&state.snapshots, &state.heads))
+            .unwrap_or_default()
+    }
+
+    /// [`chain::window`] over the snapshots `ids` of an environment whose heads are `heads` (the
+    /// current resolution's, or a predicted one's).
+    #[must_use]
+    pub fn window_over(&self, ids: &[String], heads: &[String]) -> Vec<[u8; 32]> {
+        let refs: Vec<SnapshotRef> = ids
             .iter()
             .filter_map(|id| self.manifest(id))
             .map(snapshot_ref)
             .collect();
         let refs: Vec<&SnapshotRef> = refs.iter().collect();
-        chain::window(&refs, &state.heads)
+        chain::window(&refs, heads)
     }
 
     /// The ignored manifests that name any snapshot of `env` (for its history): changes by
@@ -351,10 +358,7 @@ impl Book {
             .filter(|m| !self.maintainers.contains(&m.owner_id))
             .filter(|m| m.supersedes.iter().any(|h| hashes.contains(h)))
             .collect();
-        out.sort_by(|a, b| {
-            (a.created_at_block_height, &a.document_id)
-                .cmp(&(b.created_at_block_height, &b.document_id))
-        });
+        out.sort_by(|a, b| chain_order(a).cmp(&chain_order(b)));
         out.iter().map(|m| self.head(&m.document_id)).collect()
     }
 
@@ -374,12 +378,6 @@ impl Book {
             })
             .collect();
         chain::resolve(maintainers, &refs, |h| by_hash.get(h).copied())
-    }
-
-    /// The manifest of document `id`.
-    #[must_use]
-    pub fn manifest_of(&self, id: &str) -> Option<&PackManifestInfo> {
-        self.manifest(id)
     }
 
     /// The ignored manifests (by people who are not maintainers now) that name a head of `env`
@@ -416,6 +414,12 @@ impl Book {
     /// heads it supersedes. On a conflict, `keep` (a head's id or its prefix) picks the entries
     /// and the new snapshot supersedes every head, which resolves it.
     pub fn base(&self, repo: &RepoRef, env: &str, keep: Option<&str>) -> Result<Base> {
+        let from = |snap: &Snapshot, heads: usize| Base {
+            vars: snap.vars.clone(),
+            audience: Some(snap.audience),
+            supersedes: self.window(env),
+            heads,
+        };
         match self.current(env) {
             Ok(snap) => {
                 if let Some(k) = keep {
@@ -425,12 +429,7 @@ impl Book {
                     )
                     .into());
                 }
-                Ok(Base {
-                    vars: snap.vars.clone(),
-                    audience: Some(snap.audience),
-                    supersedes: self.window(env),
-                    heads: 1,
-                })
+                Ok(from(snap, 1))
             }
             Err(Blocked::Missing { .. }) => Ok(Base {
                 vars: BTreeMap::new(),
@@ -444,12 +443,7 @@ impl Book {
                     (hits.len() == 1).then(|| hits[0])
                 });
                 match picked.and_then(|h| self.snapshot(&h.id)) {
-                    Some(snap) => Ok(Base {
-                        vars: snap.vars.clone(),
-                        audience: Some(snap.audience),
-                        supersedes: self.window(env),
-                        heads: heads.len(),
-                    }),
+                    Some(snap) => Ok(from(snap, heads.len())),
                     None => Err(conflict_error(repo, env, &heads, split)),
                 }
             }
@@ -939,15 +933,12 @@ impl<'a> Environments<'a> {
             vars: draft.vars.clone(),
         };
         let action = format!("save {}", draft.env);
-        let mut maintainers: Vec<String> = MemberReader::new(self.client)
+        let maintainers: Vec<String> = MemberReader::new(self.client)
             .maintainers(repo)
             .await?
             .into_iter()
             .map(|m| m.identity_id)
             .collect();
-        maintainers.push(signer.identity.id());
-        maintainers.sort();
-        maintainers.dedup();
         match draft.audience {
             Audience::Members => {
                 let kr = signer.keyring(repo).await?;
@@ -1147,15 +1138,17 @@ fn authorized<'m>(
     maintainers: &BTreeSet<String>,
 ) -> Vec<&'m PackManifestInfo> {
     let mut order: Vec<&PackManifestInfo> = manifests.iter().collect();
-    order.sort_by(|a, b| {
-        (a.created_at_block_height, &a.document_id)
-            .cmp(&(b.created_at_block_height, &b.document_id))
-    });
+    order.sort_by(|a, b| chain_order(a).cmp(&chain_order(b)));
     let mut seen = BTreeSet::new();
     order
         .into_iter()
         .filter(|m| maintainers.contains(&m.owner_id) && seen.insert(m.pack_hash))
         .collect()
+}
+
+/// `($createdAtBlockHeight, $id)`: the order the chain reads manifests in.
+fn chain_order(m: &PackManifestInfo) -> (u64, &str) {
+    (m.created_at_block_height, &m.document_id)
 }
 
 fn snapshot_ref(m: &PackManifestInfo) -> SnapshotRef {

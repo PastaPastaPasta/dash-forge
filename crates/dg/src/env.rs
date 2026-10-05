@@ -337,11 +337,14 @@ fn check_var_name(name: &str) -> Result<()> {
     .into())
 }
 
+/// Environments as the session's identity.
+fn environments(s: &Session) -> Environments<'_> {
+    Environments::new(&s.client, &s.identity, &s.bridge)
+}
+
 /// Read every environment of `s.repo` as the session's identity.
 async fn book(s: &Session) -> Result<Book> {
-    Ok(Environments::new(&s.client, &s.identity, &s.bridge)
-        .read(&s.repo)
-        .await?)
+    Ok(environments(s).read(&s.repo).await?)
 }
 
 /// The values of `env`, or the error that says why they cannot be used (fail closed).
@@ -527,10 +530,9 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
                     .unwrap_or_default();
                 let what = match book.current(&e.env) {
                     Ok(snap) => format!(
-                        "{:<12} {} entr{}",
+                        "{:<12} {}",
                         snap.audience.label(),
-                        snap.vars.len(),
-                        if snap.vars.len() == 1 { "y" } else { "ies" }
+                        count(snap.vars.len(), "entry")
                     ),
                     Err(Blocked::Conflict { heads: h, .. }) => format!(
                         "changed at the same time: {} versions, one must be kept",
@@ -675,11 +677,12 @@ async fn set(
         split_entry(e)?;
     }
     let s = Session::open_for_write(ctx, repo, "environment not changed").await?;
-    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+    let envs = environments(&s);
     envs.require_maintainer(&s.repo, &format!("change {env}"))
         .await?;
     let values = entry_values(ctx, entries)?;
-    save(ctx, &s, &envs, env, audience, keep, |vars| {
+    let book = envs.read(&s.repo).await?;
+    commit(ctx, &s, &envs, &book, env, audience, keep, |vars| {
         apply_set(vars, &values, secret, note);
         Ok(())
     })
@@ -698,7 +701,7 @@ async fn unset(
         check_var_name(n)?;
     }
     let s = Session::open_for_write(ctx, repo, "environment not changed").await?;
-    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+    let envs = environments(&s);
     save(ctx, &s, &envs, env, None, keep, |vars| {
         let missing: Vec<&String> = names.iter().filter(|n| !vars.contains_key(*n)).collect();
         if !missing.is_empty() {
@@ -758,7 +761,7 @@ async fn import(
     }
     let values: Vec<(String, Zeroizing<String>)> = parsed.into_iter().collect();
     let s = Session::open_for_write(ctx, repo, "environment not changed").await?;
-    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+    let envs = environments(&s);
     save(ctx, &s, &envs, env, audience, keep, |vars| {
         apply_set(vars, &values, secret, None);
         Ok(())
@@ -837,7 +840,7 @@ async fn edit(
             .into());
     }
     let s = Session::open_for_write(ctx, repo, "environment not changed").await?;
-    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+    let envs = environments(&s);
     envs.require_maintainer(&s.repo, &format!("change {env}"))
         .await?;
     let book = envs.read(&s.repo).await?;
@@ -1107,18 +1110,22 @@ const STARTUP_VARS: [&str; 21] = [
 /// Prefixes treated as [`STARTUP_VARS`]: dynamic linker, git and npm configuration.
 const STARTUP_PREFIXES: [&str; 4] = ["LD_", "DYLD_", "GIT_", "npm_config_"];
 
+/// A variable name as the OS compares it: case-insensitively on Windows.
+fn fold_case(name: &str) -> String {
+    if cfg!(windows) {
+        name.to_ascii_uppercase()
+    } else {
+        name.to_owned()
+    }
+}
+
 /// Whether variable `name` changes how programs start.
 fn is_startup_var(name: &str) -> bool {
-    let fold = |s: &str| {
-        if cfg!(windows) {
-            s.to_ascii_uppercase()
-        } else {
-            s.to_owned()
-        }
-    };
-    let n = fold(name);
-    STARTUP_VARS.iter().any(|v| fold(v) == n)
-        || STARTUP_PREFIXES.iter().any(|p| n.starts_with(&fold(p)))
+    let n = fold_case(name);
+    STARTUP_VARS.iter().any(|v| fold_case(v) == n)
+        || STARTUP_PREFIXES
+            .iter()
+            .any(|p| n.starts_with(&fold_case(p)))
 }
 
 /// The names in `vars` that `--allow-env-override` must allow: those that change how programs
@@ -1127,16 +1134,9 @@ fn startup_overrides<'v>(
     vars: &'v BTreeMap<String, Var>,
     parent: &BTreeSet<String>,
 ) -> Vec<&'v str> {
-    let fold = |s: &str| {
-        if cfg!(windows) {
-            s.to_ascii_uppercase()
-        } else {
-            s.to_owned()
-        }
-    };
     vars.keys()
         .map(String::as_str)
-        .filter(|n| is_startup_var(n) || parent.contains(&fold(n)))
+        .filter(|n| is_startup_var(n) || parent.contains(&fold_case(n)))
         .collect()
 }
 
@@ -1153,13 +1153,7 @@ async fn run_with(
     let snap = current(&book, &s, env)?;
     let parent: BTreeSet<String> = std::env::vars_os()
         .filter_map(|(k, _)| k.into_string().ok())
-        .map(|k| {
-            if cfg!(windows) {
-                k.to_ascii_uppercase()
-            } else {
-                k
-            }
-        })
+        .map(|k| fold_case(&k))
         .collect();
     let risky = startup_overrides(&snap.vars, &parent);
     if !risky.is_empty() && !allow_override {
@@ -1215,17 +1209,17 @@ impl EditorSignals {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let held = [SignalKind::interrupt(), SignalKind::quit()]
-                .into_iter()
-                .map(signal)
-                .collect::<std::io::Result<Vec<_>>>()
-                .context("watching signals")?;
-            let stop = [SignalKind::hangup(), SignalKind::terminate()]
-                .into_iter()
-                .map(signal)
-                .collect::<std::io::Result<Vec<_>>>()
-                .context("watching signals")?;
-            Ok(Self { held, stop })
+            let watch = |kinds: [SignalKind; 2]| {
+                kinds
+                    .into_iter()
+                    .map(signal)
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .context("watching signals")
+            };
+            Ok(Self {
+                held: watch([SignalKind::interrupt(), SignalKind::quit()])?,
+                stop: watch([SignalKind::hangup(), SignalKind::terminate()])?,
+            })
         }
         #[cfg(not(unix))]
         Ok(Self {})
@@ -1345,7 +1339,7 @@ enum GitGuard {
     NotIgnored,
 }
 
-/// The directory holding `path` and its file name.
+/// The directory holding `path` (`.` for a bare file name).
 fn dir_of(path: &Path) -> PathBuf {
     match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
@@ -1529,9 +1523,8 @@ async fn export(
         }),
         || {
             println!(
-                "✓ wrote {} entr{} of {env} to {} (readable by you only)",
-                snap.vars.len(),
-                if snap.vars.len() == 1 { "y" } else { "ies" },
+                "✓ wrote {} of {env} to {} (readable by you only)",
+                count(snap.vars.len(), "entry"),
                 path.display()
             );
             println!("  {note}");
@@ -1575,18 +1568,19 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
                 count(items.len(), "change")
             );
             for i in &items {
-                let what = match (&i.unreadable, &i.saved_for) {
-                    (Some(why), _) => format!("can't be read by you: {why}"),
-                    (None, Some(m)) => format!(
-                        "{:<12} saved again for {m}: {}",
+                let what = if let Some(why) = &i.unreadable {
+                    format!("can't be read by you: {why}")
+                } else {
+                    let again = i
+                        .saved_for
+                        .as_ref()
+                        .map(|m| format!("saved again for {m}: "))
+                        .unwrap_or_default();
+                    format!(
+                        "{:<12} {again}{}",
                         i.audience.map_or("", |a| a.label()),
                         summary(&i.changes)
-                    ),
-                    (None, None) => format!(
-                        "{:<12} {}",
-                        i.audience.map_or("", |a| a.label()),
-                        summary(&i.changes)
-                    ),
+                    )
                 };
                 println!(
                     "  {}  {}  {}  {:>6} B  {what}",
@@ -1638,7 +1632,7 @@ impl Pin {
 /// The `packHash`es of `ids` in `book`.
 fn hashes_of(book: &Book, ids: &[String]) -> Vec<[u8; 32]> {
     ids.iter()
-        .filter_map(|id| book.manifest_of(id).map(|m| m.pack_hash))
+        .filter_map(|id| book.manifest(id).map(|m| m.pack_hash))
         .collect()
 }
 
@@ -1654,28 +1648,11 @@ fn joined(first: Vec<[u8; 32]>, rest: Vec<[u8; 32]>) -> Vec<[u8; 32]> {
     out
 }
 
-/// The `supersedes` window over the snapshots `ids` of an environment with `heads` (a predicted
-/// resolution), as [`forge_core::env::chain::window`] computes it.
-fn window_over(book: &Book, ids: &[String], heads: &[String]) -> Vec<[u8; 32]> {
-    let refs: Vec<forge_core::env::SnapshotRef> = ids
-        .iter()
-        .filter_map(|id| book.manifest_of(id))
-        .map(|m| forge_core::env::SnapshotRef {
-            id: m.document_id.clone(),
-            owner_id: m.owner_id.clone(),
-            pack_hash: m.pack_hash,
-            supersedes: m.supersedes.clone(),
-            height: m.created_at_block_height,
-        })
-        .collect();
-    let refs: Vec<&forge_core::env::SnapshotRef> = refs.iter().collect();
-    forge_core::env::chain::window(&refs, heads)
-}
-
 /// What removing a member does to environments, worked out before the confirmation: the
 /// checklist of what they could read, and (for a maintainer) the snapshots that keep every
 /// environment as it is once their snapshots stop counting: a dry run of the resolution without
 /// them, compared per environment.
+#[derive(Default)]
 pub struct Removal {
     /// The checklist, as JSON.
     pub exposed: Value,
@@ -1689,8 +1666,8 @@ impl Removal {
     /// Print to stderr what the removal saves again (per environment, values hidden) and what
     /// it cannot; the sentence the removal prompt adds (empty when nothing is saved again).
     #[must_use]
-    pub fn explain(&self, member: &str, price: Option<f64>) -> String {
-        explain_pins(&self.pins, &self.cannot, member, "After the removal");
+    pub fn explain(&self, price: Option<f64>) -> String {
+        explain_pins(&self.pins, &self.cannot, "After the removal");
         if self.pins.is_empty() {
             return String::new();
         }
@@ -1704,7 +1681,7 @@ impl Removal {
     /// [`Self::explain`] under `--no-resave`: name each environment that changes when `member`
     /// goes (none is saved again), then drop the saves. Returns the prompt's sentence.
     pub fn explain_skipped(&mut self, member: &str) -> String {
-        explain_pins(&[], &self.cannot, member, "After the removal");
+        explain_pins(&[], &self.cannot, "After the removal");
         if self.pins.is_empty() {
             return String::new();
         }
@@ -1747,7 +1724,7 @@ impl Removal {
     }
 }
 
-fn explain_pins(pins: &[Pin], cannot: &[String], member: &str, when: &str) {
+fn explain_pins(pins: &[Pin], cannot: &[String], when: &str) {
     for p in pins {
         eprintln!("  {}: {}", p.env, p.what);
     }
@@ -1756,7 +1733,6 @@ fn explain_pins(pins: &[Pin], cannot: &[String], member: &str, when: &str) {
             "  {env}: {when} it changes, and you can't read it, so you can't save it first. Ask a maintainer who can read it, or check it afterwards with `dg env history --env {env}`."
         );
     }
-    let _ = member;
 }
 
 /// [`Removal`] for `member` leaving `s.repo`, read before anything changes. `held_members_key`:
@@ -1772,10 +1748,8 @@ pub async fn prepare_removal(
         Ok(b) => b,
         Err(e) => {
             return Removal {
-                exposed: Value::Null,
                 checklist: format!("\ncouldn't list the environments {member} could read: {e}"),
-                pins: Vec::new(),
-                cannot: Vec::new(),
+                ..Removal::default()
             }
         }
     };
@@ -1849,7 +1823,7 @@ fn plan_removal(book: &Book, member: &str) -> (Vec<Pin>, Vec<String>) {
         match state.state {
             forge_core::env::State::Current => {
                 let id = &state.heads[0];
-                let (Some(m), Some(snap)) = (book.manifest_of(id), book.snapshot(id)) else {
+                let (Some(m), Some(snap)) = (book.manifest(id), book.snapshot(id)) else {
                     cannot.push(env.clone());
                     continue;
                 };
@@ -1869,7 +1843,7 @@ fn plan_removal(book: &Book, member: &str) -> (Vec<Pin>, Vec<String>) {
                 }
                 pins.push(Pin {
                     env: env.clone(),
-                    supersedes: joined(first, window_over(book, &kept_ids, &predicted)),
+                    supersedes: joined(first, book.window_over(&kept_ids, &predicted)),
                     predicted,
                     snapshot: snap.clone(),
                     saved_for: theirs.then(|| member.to_owned()),
@@ -1879,7 +1853,7 @@ fn plan_removal(book: &Book, member: &str) -> (Vec<Pin>, Vec<String>) {
             }
             forge_core::env::State::Conflict => {
                 for id in &state.heads {
-                    let Some(m) = book.manifest_of(id).filter(|m| m.owner_id == member) else {
+                    let Some(m) = book.manifest(id).filter(|m| m.owner_id == member) else {
                         continue;
                     };
                     let Some(snap) = book.snapshot(id) else {
@@ -1920,10 +1894,8 @@ fn kept_ancestors(
     kept: &[String],
     head: &forge_core::repo::PackManifestInfo,
 ) -> Vec<[u8; 32]> {
-    let manifests: Vec<&forge_core::repo::PackManifestInfo> = counted
-        .iter()
-        .filter_map(|id| book.manifest_of(id))
-        .collect();
+    let manifests: Vec<&forge_core::repo::PackManifestInfo> =
+        counted.iter().filter_map(|id| book.manifest(id)).collect();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut todo = vec![head];
     let mut found = Vec::new();
@@ -1948,7 +1920,8 @@ fn kept_ancestors(
 }
 
 /// After the membership change: save each planned snapshot, as the signer, but only those whose
-/// environment still has exactly the predicted heads (checked for all before any is written).
+/// environment still has exactly the predicted heads (checked against one read made before any is
+/// written).
 /// Returns the environments saved as JSON, and text to print (each line starting with a
 /// newline).
 async fn save_pins(s: &Session, pins: &[Pin], done: &str) -> (Value, String) {
@@ -1957,7 +1930,7 @@ async fn save_pins(s: &Session, pins: &[Pin], done: &str) -> (Value, String) {
     if pins.is_empty() {
         return (json!(saved_envs), text);
     }
-    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+    let envs = environments(s);
     let book = match envs.read(&s.repo).await {
         Ok(b) => b,
         Err(e) => {
@@ -1965,17 +1938,9 @@ async fn save_pins(s: &Session, pins: &[Pin], done: &str) -> (Value, String) {
             return (json!(saved_envs), text);
         }
     };
-    let fresh: Vec<bool> = pins
-        .iter()
-        .map(|p| {
-            book.state(&p.env)
-                .map(|st| st.heads.clone())
-                .unwrap_or_default()
-                == p.predicted
-        })
-        .collect();
-    for (pin, fresh) in pins.iter().zip(fresh) {
-        if !fresh {
+    for pin in pins {
+        let heads = book.state(&pin.env).map(|st| st.heads.as_slice());
+        if heads.unwrap_or_default() != pin.predicted.as_slice() {
             let _ = write!(
                 text,
                 "\n{} changed after the plan was shown, so it wasn't saved. Check it: `dg env history --env {}`.",
@@ -2018,10 +1983,9 @@ async fn save_pins(s: &Session, pins: &[Pin], done: &str) -> (Value, String) {
 
 /// After `member` is removed (and the key rotated): the planned saves (see [`plan_removal`]),
 /// then the checklist.
-pub async fn finish_removal(s: &Session, member: &str, removal: &Removal) -> (Value, String) {
+pub async fn finish_removal(s: &Session, removal: &Removal) -> (Value, String) {
     let (saved, mut text) =
         save_pins(s, &removal.pins, " again, as it was before the removal").await;
-    let _ = member;
     text.push_str(&removal.checklist);
     (saved, text)
 }
@@ -2031,6 +1995,7 @@ pub async fn finish_removal(s: &Session, member: &str, removal: &Removal) -> (Va
 /// dry run of the resolution with them finds the environments that change; each is saved first
 /// with its current values, naming their dormant snapshots, so nothing changes when the role
 /// lands.
+#[derive(Default)]
 pub struct Promotion {
     pins: Vec<Pin>,
     cannot: Vec<String>,
@@ -2042,7 +2007,7 @@ impl Promotion {
     /// adds (empty when nothing is saved).
     #[must_use]
     pub fn explain(&self, member: &str, price: Option<f64>) -> String {
-        explain_pins(&self.pins, &self.cannot, member, "When the role lands");
+        explain_pins(&self.pins, &self.cannot, "When the role lands");
         for env in &self.appeared {
             eprintln!("  {env}: {member} saved it while not a maintainer; it appears once the role lands.");
         }
@@ -2064,14 +2029,10 @@ impl Promotion {
 
 /// [`Promotion`] for `member` becoming a maintainer of `s.repo`.
 pub async fn prepare_promotion(s: &Session, member: &str) -> Result<Promotion> {
-    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+    let envs = environments(s);
     let now = envs.read(&s.repo).await?;
     if !now.manifests.iter().any(|m| m.owner_id == member) {
-        return Ok(Promotion {
-            pins: Vec::new(),
-            cannot: Vec::new(),
-            appeared: Vec::new(),
-        });
+        return Ok(Promotion::default());
     }
     let then = envs.read_with_maintainer(&s.repo, member).await?;
     let diff_env = forge_core::env::chain::changed(&now.resolution, &then.resolution);
@@ -2082,7 +2043,7 @@ pub async fn prepare_promotion(s: &Session, member: &str) -> Result<Promotion> {
             continue;
         };
         let head = &now.heads(env)[0];
-        let size = now.manifest_of(&head.id).map_or(0, |m| m.size_bytes);
+        let size = now.manifest(&head.id).map_or(0, |m| m.size_bytes);
         let current = now
             .state(env)
             .map(|st| st.heads.clone())
@@ -2096,7 +2057,7 @@ pub async fn prepare_promotion(s: &Session, member: &str) -> Result<Promotion> {
             .unwrap_or_default();
         pins.push(Pin {
             env: env.clone(),
-            supersedes: joined(hashes_of(&now, &current), window_over(&then, &ids, &heads)),
+            supersedes: joined(hashes_of(&now, &current), then.window_over(&ids, &heads)),
             predicted: current,
             snapshot: snap.clone(),
             saved_for: None,

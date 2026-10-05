@@ -27,22 +27,39 @@ fn bytes(v: &Value) -> Vec<u8> {
     hex::decode(v.as_str().unwrap()).unwrap()
 }
 
+/// The strings of an optional JSON array (none when absent).
+fn strings(v: Option<&Value>) -> Vec<String> {
+    v.map(|t| {
+        t.as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_owned())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// A manifest as the chain reads it (`supersedes` empty when absent).
+fn snapshot_ref(m: &Value) -> SnapshotRef {
+    SnapshotRef {
+        id: m["id"].as_str().unwrap().into(),
+        owner_id: m["ownerId"].as_str().unwrap().into(),
+        pack_hash: hex32(&m["packHash"]),
+        supersedes: m
+            .get("supersedes")
+            .map(|s| s.as_array().unwrap().iter().map(hex32).collect())
+            .unwrap_or_default(),
+        height: m["height"].as_u64().unwrap(),
+    }
+}
+
 fn snapshot_of(v: &Value) -> Snapshot {
     Snapshot {
         env: v["env"].as_str().unwrap().into(),
         audience: Audience::parse(v["audience"].as_str().unwrap()).unwrap(),
         generated_at: v["generatedAt"].as_u64().unwrap(),
         saved_for: v.get("savedFor").map(|f| f.as_str().unwrap().to_owned()),
-        to: v
-            .get("to")
-            .map(|t| {
-                t.as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|x| x.as_str().unwrap().to_owned())
-                    .collect()
-            })
-            .unwrap_or_default(),
+        to: strings(v.get("to")),
         vars: v["vars"]
             .as_object()
             .unwrap()
@@ -147,7 +164,7 @@ fn open_one(
     }
 }
 
-fn run_open(inp: &Value, expected: &Value) -> Value {
+fn run_open(inp: &Value) -> Value {
     let repo_id = hex32(&inp["repoId"]);
     if let Some(cases) = inp.get("cases") {
         let results: Vec<Value> = cases
@@ -236,33 +253,16 @@ fn run_open(inp: &Value, expected: &Value) -> Value {
         })
         .collect();
     out.insert("results".into(), json!(results));
-    let _ = expected;
     Value::Object(out)
 }
 
 fn run_resolve(inp: &Value) -> Value {
-    let maintainers: BTreeSet<String> = inp["maintainers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|m| m.as_str().unwrap().to_owned())
-        .collect();
+    let maintainers: BTreeSet<String> = strings(Some(&inp["maintainers"])).into_iter().collect();
     let manifests: Vec<SnapshotRef> = inp["manifests"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|m| SnapshotRef {
-            id: m["id"].as_str().unwrap().into(),
-            owner_id: m["ownerId"].as_str().unwrap().into(),
-            pack_hash: hex32(&m["packHash"]),
-            supersedes: m["supersedes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(hex32)
-                .collect(),
-            height: m["height"].as_u64().unwrap(),
-        })
+        .map(snapshot_ref)
         .collect();
     let opened: BTreeMap<[u8; 32], Option<String>> = inp["opened"]
         .as_object()
@@ -287,16 +287,7 @@ fn run_exposure(inp: &Value) -> Value {
         audience: Audience::parse(v["audience"].as_str().unwrap()).unwrap(),
         generated_at: 0,
         saved_for: None,
-        to: v
-            .get("to")
-            .map(|t| {
-                t.as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|x| x.as_str().unwrap().to_owned())
-                    .collect()
-            })
-            .unwrap_or_default(),
+        to: strings(v.get("to")),
         vars: v["vars"]
             .as_object()
             .unwrap()
@@ -369,19 +360,13 @@ fn run(v: &Value) -> Value {
                 None => json!({ "name": c["name"], "error": "malformed" }),
             }
         }).collect::<Vec<_>>() }),
-        "open" => run_open(inp, &v["expected"]),
+        "open" => run_open(inp),
         "resolve" => run_resolve(inp),
         "exposure" => run_exposure(inp),
         "window" => json!({ "results": inp["cases"].as_array().unwrap().iter().map(|c| {
-            let snaps: Vec<SnapshotRef> = c["snapshots"].as_array().unwrap().iter().map(|m| SnapshotRef {
-                id: m["id"].as_str().unwrap().into(),
-                owner_id: m["ownerId"].as_str().unwrap().into(),
-                pack_hash: hex32(&m["packHash"]),
-                supersedes: Vec::new(),
-                height: m["height"].as_u64().unwrap(),
-            }).collect();
+            let snaps: Vec<SnapshotRef> = c["snapshots"].as_array().unwrap().iter().map(snapshot_ref).collect();
             let refs: Vec<&SnapshotRef> = snaps.iter().collect();
-            let heads: Vec<String> = c["heads"].as_array().unwrap().iter().map(|h| h.as_str().unwrap().to_owned()).collect();
+            let heads = strings(Some(&c["heads"]));
             json!(chain::window(&refs, &heads).iter().map(hex::encode).collect::<Vec<_>>())
         }).collect::<Vec<_>>() }),
         "defaultAudience" => json!({ "results": inp["names"].as_array().unwrap().iter()

@@ -4,7 +4,7 @@
  * `env_snapshot__*` vectors hold the two equal.
  */
 
-import type { Audience, Snapshot } from './format'
+import { compareStrings as cmp, type Audience, type Snapshot } from './format'
 
 /** One kind-8 `packManifest`, as the chain reads it. */
 export interface SnapshotRef {
@@ -55,8 +55,6 @@ export interface Resolution {
   readonly environments: readonly EnvState[]
   readonly hidden: readonly HiddenEnv[]
 }
-
-const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
 /**
  * D24, strictly. Only a current maintainer's snapshot counts; every other manifest is ignored and
@@ -142,7 +140,8 @@ export function resolveSnapshots(
   const environments: EnvState[] = [...envs.keys()].sort(cmp).map((env) => {
     const group = envs.get(env) as Set<string>
     const heads = headsOf(group)
-    const state: EnvStateKind = heads.length === 1 ? (envOf(heads[0] as string) !== null ? 'current' : 'unreadable') : 'conflict'
+    let state: EnvStateKind = 'conflict'
+    if (heads.length === 1) state = envOf(heads[0] as string) !== null ? 'current' : 'unreadable'
     return { env, state, heads: ids(heads), snapshots: ids(group), ignoredNewer: newer(heads) }
   })
   const minKey = (g: readonly string[]) => [...g].sort(byKey)[0] as string

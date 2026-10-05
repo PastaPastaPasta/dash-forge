@@ -108,7 +108,7 @@ export async function openSnapshot(manifest: ManifestCheck, sealed: Uint8Array, 
   } catch (e) {
     if (e instanceof SnapshotOpenError) throw e
     if (e instanceof PackError) {
-      throw new SnapshotOpenError(e.code === 'noKey' ? 'noKey' : e.code === 'sizeMismatch' ? 'sizeMismatch' : 'sealedPackCorrupt')
+      throw new SnapshotOpenError(e.code === 'noKey' || e.code === 'sizeMismatch' ? e.code : 'sealedPackCorrupt')
     }
     if (e instanceof ArtifactError) throw new SnapshotOpenError(e.code)
     throw e

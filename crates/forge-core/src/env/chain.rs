@@ -22,6 +22,7 @@
 //! 5. An ignored manifest that names a head of an environment, from a higher block, is listed in
 //!    that environment's `ignored_newer`: readers say a newer change was ignored, and never use it.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::format::Snapshot;
@@ -137,7 +138,7 @@ pub fn resolve<'a>(
         let reason = if !maintainers.contains(&m.owner_id) {
             others.push(m);
             IgnoredReason::NotAMaintainer
-        } else if let std::collections::btree_map::Entry::Vacant(slot) = nodes.entry(m.pack_hash) {
+        } else if let Entry::Vacant(slot) = nodes.entry(m.pack_hash) {
             slot.insert(m);
             continue;
         } else {
@@ -288,17 +289,12 @@ pub const MAX_SUPERSEDES: usize = 32;
 #[must_use]
 pub fn window(snapshots: &[&SnapshotRef], heads: &[String]) -> Vec<[u8; 32]> {
     let newest_first =
-        |a: &&&SnapshotRef, b: &&&SnapshotRef| (b.height, &b.id).cmp(&(a.height, &a.id));
-    let mut out: Vec<&SnapshotRef> = snapshots
+        |a: &&SnapshotRef, b: &&SnapshotRef| (b.height, &b.id).cmp(&(a.height, &a.id));
+    let (mut out, mut rest): (Vec<&SnapshotRef>, Vec<&SnapshotRef>) = snapshots
         .iter()
-        .filter(|s| heads.contains(&s.id))
         .copied()
-        .collect();
-    out.sort_by(|a, b| (b.height, &b.id).cmp(&(a.height, &a.id)));
-    let mut rest: Vec<&&SnapshotRef> = snapshots
-        .iter()
-        .filter(|s| !heads.contains(&s.id))
-        .collect();
+        .partition(|s| heads.contains(&s.id));
+    out.sort_by(newest_first);
     rest.sort_by(newest_first);
     let mut authors: BTreeSet<&str> = out.iter().map(|s| s.owner_id.as_str()).collect();
     let mut taken: BTreeSet<&str> = out.iter().map(|s| s.id.as_str()).collect();
@@ -391,6 +387,9 @@ pub struct Exposure {
 pub fn exposure(envs: &[EnvHistory<'_>], removed: &str, held_members_key: bool) -> Vec<Exposure> {
     let mut out: Vec<Exposure> = Vec::new();
     for e in envs {
+        let Some(last) = e.heads.last() else {
+            continue;
+        };
         let mut names = BTreeSet::new();
         for head in e.heads {
             for (name, v) in &head.vars {
@@ -406,7 +405,7 @@ pub fn exposure(envs: &[EnvHistory<'_>], removed: &str, held_members_key: bool) 
                 }
             }
         }
-        if let (false, Some(last)) = (names.is_empty(), e.heads.last()) {
+        if !names.is_empty() {
             out.push(Exposure {
                 env: e.env.to_owned(),
                 audience: last.audience,

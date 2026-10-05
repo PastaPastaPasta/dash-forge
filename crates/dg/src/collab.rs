@@ -393,7 +393,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     let explained = if no_resave {
         removal.explain_skipped(member)
     } else {
-        removal.explain(member, ctx.usd_price())
+        removal.explain(ctx.usd_price())
     };
     let prompt = format!("{prompt}{explained}");
     if !ctx.confirm(&prompt)? {
@@ -446,7 +446,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     };
     // after the rotation: the pinned environments saved again, unless changed meanwhile
     let (resaved, exposed_lines) = if removed {
-        crate::env::finish_removal(&s, member, &removal).await
+        crate::env::finish_removal(&s, &removal).await
     } else {
         (serde_json::Value::Null, String::new())
     };

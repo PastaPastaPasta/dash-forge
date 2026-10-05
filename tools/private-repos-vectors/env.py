@@ -464,10 +464,6 @@ def manifest_of(owner, sealed, packHash=None):
     return dict(ownerId=B(owner), packHash=packHash or H(sha256(sealed)), sizeBytes=len(sealed))
 
 
-def open_case(manifest, sealed, owner_keys, reader, epoch_keys):
-    return open_snapshot(manifest, sealed, owner_keys, reader, epoch_keys)
-
-
 def open_vectors():
     dev = dict(env="dev", audience="members", generatedAt=GENERATED_AT,
                vars={"API_URL": var("https://api.example.test", "variable"), "API_TOKEN": var("fake-token-1")})
@@ -475,7 +471,7 @@ def open_vectors():
     man = manifest_of(ALICE, sealed)
     k0 = [dict(epoch=0, key=H(K0))]
     readers = [dict(reader=reader_json(BOB), epochKeys=k0), dict(reader=reader_json(BOB), epochKeys=[])]
-    results = [open_case(man, sealed, [], r["reader"], r["epochKeys"]) for r in readers]
+    results = [open_snapshot(man, sealed, [], r["reader"], r["epochKeys"]) for r in readers]
     assert results[0] == dict(snapshot=snapshot_json(dev)) and results[1] == dict(error="noKey")
     vector("members", "a Members snapshot is the padded artifact sealed as a DFPK 0x01 file under the lane's epoch key "
            "(K_pack,e,fileId): a member holding epoch 0 opens it; a reader without that epoch's key gets noKey.",
@@ -491,7 +487,7 @@ def open_vectors():
     man = manifest_of(ALICE, sealed)
     okeys = [owner_key(ALICE)]
     readers = [dict(reader=reader_json(p), epochKeys=[]) for p in recipients + [WRITER, NAMED_OUTSIDER]]
-    results = [open_case(man, sealed, okeys, r["reader"], []) for r in readers]
+    results = [open_snapshot(man, sealed, okeys, r["reader"], []) for r in readers]
     assert all(r == dict(snapshot=snapshot_json(prod)) for r in results[:3])
     assert results[3:] == [dict(error="notARecipient")] * 2
     vector("maintainers_named", "a Maintainers snapshot is sealed under a DFPK 0x02 header to the current maintainers' "
@@ -510,7 +506,7 @@ def open_vectors():
     _, _, _, _, fsealed = sealed_maintainers(forged, WRITER, [WRITER, ALICE, BOB], label=b"forged")
     man = manifest_of(ALICE, fsealed)
     readers = [dict(reader=reader_json(p), epochKeys=[]) for p in (ALICE, BOB, WRITER)]
-    results = [open_case(man, fsealed, okeys, r["reader"], []) for r in readers]
+    results = [open_snapshot(man, fsealed, okeys, r["reader"], []) for r in readers]
     assert results == [dict(error="notARecipient")] * 2 + [dict(error="malformed")]
     vector("sender_not_owner", "a maintainer's manifest whose artifact was sealed by someone else (a writer as the "
            "sender): the sender key is taken only from the manifest owner's identity, so no maintainer's slot opens; "
@@ -520,7 +516,7 @@ def open_vectors():
            dict(results=results))
 
     man = manifest_of(ALICE, sealed, packHash=H(sha256(fsealed)))
-    results = [open_case(man, sealed, okeys, readers[0]["reader"], [])]
+    results = [open_snapshot(man, sealed, okeys, readers[0]["reader"], [])]
     assert results == [dict(error="packHashMismatch")]
     vector("pack_hash_mismatch", "bytes that do not hash to the owner-signed manifest's packHash are refused before "
            "anything is decrypted (a DFPK 0x02 header alone proves only that some key holder wrote it).",
@@ -532,11 +528,11 @@ def open_vectors():
     wrong = dict(dev, audience="maintainers", to=[B(ALICE)])
     _, _, wsealed = sealed_members(wrong, label=b"wrong audience")
     man = manifest_of(ALICE, wsealed)
-    r1 = open_case(man, wsealed, [], reader_json(BOB), k0)
+    r1 = open_snapshot(man, wsealed, [], reader_json(BOB), k0)
     lying = dict(prod, to=[B(BOB), B(ALICE), B(CAROL)])
     _, _, _, _, lsealed = sealed_maintainers(lying, ALICE, recipients, label=b"lying to")
     man2 = manifest_of(ALICE, lsealed)
-    r2 = open_case(man2, lsealed, okeys, reader_json(BOB), [])
+    r2 = open_snapshot(man2, lsealed, okeys, reader_json(BOB), [])
     assert r1 == r2 == dict(error="malformed")
     vector("audience_mismatch", "an artifact that opens but disagrees with its envelope is malformed: Maintainers "
            "content in a Members (DFPK 0x01) file, and a DFPK 0x02 snapshot whose `to` does not list its owner first.",

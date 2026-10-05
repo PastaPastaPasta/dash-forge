@@ -61,7 +61,12 @@ export const ACCESS_SENTENCE = 'Access is granted, not logged.'
 
 const ENV_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
-const MAX_SAFE = Number.MAX_SAFE_INTEGER
+
+/** Plain `<` order, not `localeCompare`: every name sorted here is ASCII, so it matches the Rust twin. */
+export function compareStrings(a: string, b: string): number {
+  if (a < b) return -1
+  return a > b ? 1 : 0
+}
 
 export function validEnvName(name: string): boolean {
   return ENV_NAME.test(name)
@@ -97,7 +102,7 @@ function canonicalId(id: string): boolean {
 /** Why a snapshot breaks a rule a reader would refuse, or `null`. */
 export function snapshotProblem(s: Snapshot): string | null {
   if (!validEnvName(s.env)) return `${JSON.stringify(s.env)} is not an environment name`
-  if (!Number.isSafeInteger(s.generatedAt) || s.generatedAt < 0 || s.generatedAt > MAX_SAFE) return 'generatedAt is out of range'
+  if (!Number.isSafeInteger(s.generatedAt) || s.generatedAt < 0) return 'generatedAt is out of range'
   if (s.savedFor !== undefined && !canonicalId(s.savedFor)) return `${JSON.stringify(s.savedFor)} is not an identity id`
   for (const [name, v] of s.vars) {
     if (!validVarName(name)) return `${JSON.stringify(name)} is not a variable name`
@@ -121,7 +126,7 @@ function canonical(s: Snapshot): string {
   let out = `{"audience":${str(s.audience)},"env":${str(s.env)},"generatedAt":${s.generatedAt}`
   if (s.savedFor !== undefined) out += `,"savedFor":${str(s.savedFor)}`
   if (s.audience === 'maintainers') out += `,"to":[${s.to.map(str).join(',')}]`
-  const names = [...s.vars.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  const names = [...s.vars.keys()].sort(compareStrings)
   const entries = names.map((n) => {
     const v = s.vars.get(n) as EnvVar
     const note = v.note === '' ? '' : `"note":${str(v.note)},`
@@ -227,5 +232,5 @@ export function diffSnapshots(before: Snapshot | null, after: Snapshot): Array<r
     else if (o.value !== v.value || o.type !== v.type || o.note !== v.note) out.push([name, 'changed'])
   }
   for (const name of old.keys()) if (!after.vars.has(name)) out.push([name, 'removed'])
-  return out.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+  return out.sort((a, b) => compareStrings(a[0], b[0]))
 }
