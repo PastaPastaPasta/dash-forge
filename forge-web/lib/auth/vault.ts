@@ -42,6 +42,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import type { Network } from '../constants'
 import { idbDelete, idbEntries, idbGet, idbPut, idbUpdate } from '../idb'
 import { withTimeout } from '../timeout'
+import { requestPersistence } from './devices'
 import {
   KEPT_TTL_MS,
   LOCKED_AT_KEY,
@@ -149,6 +150,8 @@ interface VaultRecord {
    * when there was none (a first import). Finishing it replaces only that record.
    */
   readonly replaces?: number | null
+  /** The key came from `dg auth keys add --for-browser` (`./key-handoff`): renew it the same way. */
+  readonly origin?: 'dg'
 }
 
 /** What the UI may know about a stored vault (no secrets). */
@@ -164,6 +167,8 @@ export interface VaultInfo {
    * it first drops that blob (it cannot be opened), so the import form says so beforehand.
    */
   readonly encryptionKey?: true
+  /** The key came from `dg` (a key handoff): Renew offers `dg` first, not the recovery phrase. */
+  readonly fromDg?: true
 }
 
 const enc = new TextEncoder()
@@ -638,6 +643,14 @@ export async function stageInVault(network: Network, secret: VaultSecret, protec
   }
 }
 
+/** Another tab stored or removed a key for the identity after the caller checked ({@link storeInVault}). */
+export class VaultChangedError extends Error {
+  constructor() {
+    super('Another tab changed the key stored for this identity meanwhile.')
+    this.name = 'VaultChangedError'
+  }
+}
+
 /** A key renewal on this device may have landed and is not finished: unlock to finish it first. */
 export class PendingRenewalError extends VaultLockedError {
   constructor() {
@@ -905,6 +918,13 @@ export async function storeInVault(
      * gave up, its key carried in `secret.extra`): it is never gone before its key is stored.
      */
     readonly dropStagedKeyId?: number
+    /** Where the key came from ({@link VaultRecord.origin}). */
+    readonly origin?: 'dg'
+    /**
+     * The key id of the record the caller found for this identity (null: none), checked in the
+     * write's own transaction: a key another tab stored meanwhile aborts it ({@link VaultChangedError}).
+     */
+    readonly expectHeldKeyId?: number | null
   } = {},
 ): Promise<StoreOutcome> {
   const lockMarkerAt = lockMarker()
@@ -926,7 +946,8 @@ export async function storeInVault(
   // The extra grants live in their own blob, so a later grant can be added without the data key.
   const { extra, ...main } = secret
   try {
-    const record = await sealRecord(network, main, protection, dataKey)
+    const sealed = await sealRecord(network, main, protection, dataKey)
+    const record: VaultRecord = options.origin ? { ...sealed, origin: options.origin } : sealed
     storageKey = await deriveStorageKey(dataKey, network, identityId)
     const blob = carried !== null ? await sealBlob(storageKey, network, identityId, carried) : undefined
     const extraBlob = extra?.length ? await sealBlob(storageKey, network, identityId, extra, 'extra') : undefined
@@ -944,13 +965,23 @@ export async function storeInVault(
     // THIS key (the renewal that registered it) is done; a stage of another key (a renewal
     // from another tab, not finished) stays, for its unlock to finish.
     const at = stagedKey(network, identityId)
-    await idbUpdate<VaultRecord>('vault', at, (staged) => [
-      [key(network, identityId), record],
-      [storageBlobKey(network, identityId), blob],
-      [extraBlobKey(network, identityId), extraBlob],
-      [encryptionBlobKey(network, identityId), encBlob],
-      ...(staged !== undefined && (staged.keyId === secret.keyId || staged.keyId === options.dropStagedKeyId) ? ([[at, undefined]] as const) : []),
-    ])
+    await idbUpdate<VaultRecord>(
+      'vault',
+      at,
+      (staged, [held]) => {
+        if (options.expectHeldKeyId !== undefined && ((held as VaultRecord | undefined)?.keyId ?? null) !== options.expectHeldKeyId) {
+          throw new VaultChangedError()
+        }
+        return [
+          [key(network, identityId), record],
+          [storageBlobKey(network, identityId), blob],
+          [extraBlobKey(network, identityId), extraBlob],
+          [encryptionBlobKey(network, identityId), encBlob],
+          ...(staged !== undefined && (staged.keyId === secret.keyId || staged.keyId === options.dropStagedKeyId) ? ([[at, undefined]] as const) : []),
+        ]
+      },
+      [key(network, identityId)],
+    )
     // The key is on chain and was staged and read back first: a failed read-back here is not a
     // reason to fail the sign-in (the staged copy, when there was one, is still the safe copy).
     readBackOk = await readsBack(network, key(network, identityId), main, dataKey).catch(() => false)
@@ -958,6 +989,10 @@ export async function storeInVault(
     dataKey.fill(0)
   }
   setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey }, { lockMarkerAt })
+  // TS-17: ask the browser to keep the vault (Safari clears a site's storage after 7 days
+  // without a visit otherwise). Most browsers answer without a prompt; a refusal is shown in
+  // Settings → Devices & keys.
+  void requestPersistence()
   return {
     storageSettingsDropped: hadBlob && carried === null,
     encryptionKeyDropped: hadEnc && carriedEnc === null,
@@ -1049,6 +1084,7 @@ export async function listVaults(network: Network): Promise<VaultInfo[]> {
     createdAt: r.createdAt,
     methods: r.slots.map((s) => s.kind),
     ...(withEnc.has(encryptionBlobKey(network, r.identityId)) ? { encryptionKey: true as const } : {}),
+    ...(r.origin === 'dg' ? { fromDg: true as const } : {}),
   }))
   // An identity with only a staged key (a first import whose tab closed after registering,
   // D-016) must still be offered for unlock, or the key it paid for is unreachable.

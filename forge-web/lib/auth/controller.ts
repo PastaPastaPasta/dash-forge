@@ -33,7 +33,7 @@ import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type Forge
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, assertWritesAllowed, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
 import { KEY_ADD_FLOOR_CREDITS, KEY_DISABLE_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
-import { authSdk, type WasmIdentity } from '../sdk/facade'
+import { authSdk, type WasmIdentity, type WasmKey } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
 import type { KeyLimits } from '../view/funds'
 import { controlsKey, normalizeToWif } from './wif'
@@ -49,12 +49,18 @@ import { clearInbox } from '../view/inbox'
 import { clearDrafts } from '../view/draft-text'
 import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
-import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
+import { PRIVATE_REPOS_FLOW, adoptEncryptionKey, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
+import { openHandoffReply, parseHandoffPayload, type HandoffRequest } from './key-handoff'
+import { acknowledgeKeys, checkKeys, forgetKeySnapshot, type WatchedKey } from './key-watch'
+import { DISABLEABLE, keyRole, keyRows, type KeyRow } from './devices'
+import { hexToBytes } from '@noble/hashes/utils.js'
 import {
   WrongMasterKeyError,
   disableHeldKeys,
+  disableIdentityKeys,
   isForgeBrowserKey,
   readKeyLimits,
+  verifyLimitedKey,
   registerLimitedKey,
   revokeLimitedKey,
   topUpLimitedKey,
@@ -86,6 +92,7 @@ import {
   watchOtherTabs,
   clearSignedWrites,
   storeInVault,
+  VaultChangedError,
   stageInVault,
   hasStaged,
   recoverStaged,
@@ -105,6 +112,11 @@ import {
   type VaultInfo,
   type VaultSecret,
 } from './vault'
+
+/** A chain key as the new-key alert reads it. */
+function watched(k: WasmKey): WatchedKey {
+  return { keyId: k.keyId, purpose: k.purposeNumber, level: k.securityLevelNumber, disabled: k.disabledAt !== undefined }
+}
 
 /** The notice when a renewal could not carry the encryption key over. */
 const ENCRYPTION_KEY_DROPPED =
@@ -183,6 +195,11 @@ export interface AuthState {
    * (public-repo writes only), `full` after an interactive unlock; null when signed out.
    */
   readonly scope?: 'full' | 'signing' | null
+  /**
+   * Keys added to the signed-in identity since this device last looked, other than its own
+   * (`./key-watch`, TS-07): a leaked master key shows up as a key nobody here added.
+   */
+  readonly newKeys?: readonly WatchedKey[]
 }
 
 type Listener = (state: AuthState) => void
@@ -556,7 +573,14 @@ export class AuthController {
    * Open a session for an unlocked secret: re-verify the key on chain, load balance + limits.
    * On failure the unlocked key is dropped again, so no key sits in memory without a session.
    */
-  private async open(secret: VaultSecret, storage: AuthSession['storage'], knownLimits?: KeyLimits, releaseOnFailure = true): Promise<AuthSession> {
+  private async open(
+    secret: VaultSecret,
+    storage: AuthSession['storage'],
+    knownLimits?: KeyLimits,
+    releaseOnFailure = true,
+    /** Keys a wallet just registered for this browser: each came with its encryption key. */
+    walletKeys: readonly number[] = [],
+  ): Promise<AuthSession> {
     const generation = vaultLockGeneration()
     try {
       const sdk = await this.getSdk()
@@ -589,7 +613,12 @@ export class AuthController {
       }
       // Locked (here or in another tab) while this ran: the lock wins.
       if (generation !== vaultLockGeneration()) throw new VaultLockedError('this browser locked while signing in — unlock to continue')
-      this.setState({ session, scope: unlockScope(this.network, secret.identityId) })
+      // The identity just read is compared with what this device saw last: no read of its own.
+      // A wallet registers its encryption key in the same update, right after the auth key.
+      const companions = walletKeys.filter((id) => identity.publicKeys.some((k) => k.keyId === id + 1 && k.purposeNumber === 1)).map((id) => id + 1)
+      const own = [match.keyId, ...(secret.extra ?? []).map((e) => e.keyId), ...companions]
+      const newKeys = storage === 'vault' ? checkKeys(this.network, secret.identityId, identity.publicKeys.map(watched), own) : []
+      this.setState({ session, scope: unlockScope(this.network, secret.identityId), newKeys })
       if (storage === 'vault') void this.keep(session).catch(() => undefined)
       return session
     } catch (e) {
@@ -759,10 +788,11 @@ export class AuthController {
    * Move a registered key into the vault's main record. Registered and staged (D-016) but not
    * moved: the key is safe on this device, and the next unlock finishes the move.
    */
-  private async commitKey(secret: VaultSecret, protection: Protection): Promise<StoreOutcome> {
+  private async commitKey(secret: VaultSecret, protection: Protection, options: Parameters<typeof storeInVault>[3] = {}): Promise<StoreOutcome> {
     try {
-      return await storeInVault(this.network, secret, protection)
+      return await storeInVault(this.network, secret, protection, options)
     } catch (e) {
+      if (e instanceof VaultChangedError) throw e
       if (await hasStaged(this.network, secret.identityId).catch(() => false)) {
         throw new Error(`The new key is registered and saved on this device, but finishing sign-in failed (${errorMessage(e)}). Unlock to continue.`)
       }
@@ -956,6 +986,97 @@ export class AuthController {
     }
   }
 
+  /**
+   * Adopt the limited key `dg auth keys add --for-browser` sealed to `request` (TS-06,
+   * `./key-handoff`): open the reply, check the key on chain (live, Forge-bound, limited, and
+   * controlled by the private key it carries) before anything is stored, then keep it in the
+   * vault like an imported key. Nothing is signed here: dg paid for and registered the key.
+   * Renewing (`renew`) takes only a key for the signed-in identity, and `identityId` (the key
+   * the page asked dg to replace) only a key for that identity.
+   */
+  async adoptHandoffKey(reply: string, request: HandoffRequest, protection: Protection, options: { readonly renew?: boolean; readonly identityId?: string } = {}): Promise<AuthSession> {
+    return this.run(async () => {
+      const network = NETWORKS[this.network].key
+      const payload = parseHandoffPayload(await openHandoffReply(reply, network, request.secret), network)
+      const { identityId } = payload
+      const signedIn = this.state.session?.identityId ?? null
+      if (options.renew === true && signedIn !== null && identityId !== signedIn) {
+        throw new WriteAuthError(`dg made this key for ${shortId(identityId)}, but you are renewing the key of ${shortId(signedIn)}. Sign dg in as ${shortId(signedIn)} (or pass --master with its identity file) and run the command again.`)
+      }
+      if (options.identityId !== undefined && identityId !== options.identityId) {
+        throw new WriteAuthError(
+          `dg made this key for ${shortId(identityId)}, but this page asked for one for ${shortId(options.identityId)}. Nothing was stored. Disable the new key with "dg auth keys disable ${payload.keyId}", then run the command shown here again.`,
+        )
+      }
+      this.requireFullUnlock(identityId)
+      const sdk = await this.getSdk()
+      // A key this browser holds for the identity must be the one dg replaced: otherwise it
+      // would stay live on chain with nothing holding it. Checked before anything is stored.
+      const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
+      if (previous !== undefined && payload.replacedKeyId !== previous.keyId) {
+        throw new WriteAuthError(
+          `This browser already holds key #${previous.keyId} for ${shortId(identityId)}, and dg did not disable it. Nothing was stored. Disable the new key with "dg auth keys disable ${payload.keyId}", then renew from Settings (or Unlock → Replace this key with dg).`,
+        )
+      }
+      const blocker = previous !== undefined ? await this.handoffBlocker(identityId) : null
+      if (blocker !== null) throw new WriteAuthError(`${blocker} Nothing was stored; disable the new key with "dg auth keys disable ${payload.keyId}".`)
+      this.step('Checking the key on Platform')
+      let limits: KeyLimits
+      try {
+        limits = await verifyLimitedKey(sdk, identityId, payload.keyId, this.group(), this.network, payload.wif)
+      } catch (e) {
+        throw new WriteAuthError(`This key can't be used here: ${errorMessage(e)}. Nothing was stored.`)
+      }
+      this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
+      const key: LimitedKey = { keyId: payload.keyId, wif: payload.wif, limits }
+      // Checked again in the vault write's own transaction: another tab may have stored a key
+      // for the identity since `previous` was read.
+      let committed: StoreOutcome
+      try {
+        committed = await this.commitKey({ identityId, keyId: key.keyId, wif: key.wif }, protection, { origin: 'dg', expectHeldKeyId: previous?.keyId ?? null })
+      } catch (e) {
+        if (!(e instanceof VaultChangedError)) throw e
+        throw new WriteAuthError(`Another tab changed the key stored for ${shortId(identityId)} meanwhile. Nothing was stored; disable the new key with "dg auth keys disable ${payload.keyId}".`)
+      }
+      const core = NETWORKS[this.network].v2?.core
+      const bringsEncryption = payload.encryptionKey !== undefined && core !== undefined
+      // A reply that brings the encryption key again: the copy the replacement could not carry
+      // over is reported only if that one cannot be kept either (below).
+      const session = await this.adopt(identityId, key, protection, bringsEncryption ? { ...committed, encryptionKeyDropped: false } : committed)
+      if (bringsEncryption && payload.encryptionKey !== undefined && core !== undefined) {
+        this.step('Enabling private repos')
+        try {
+          await adoptEncryptionKey(sdk, this.network, identityId, core, hexToBytes(payload.encryptionKey.privateKeyHex))
+        } catch (e) {
+          const dropped = committed.encryptionKeyDropped ? ` ${ENCRYPTION_KEY_DROPPED}` : ''
+          this.setState({ notice: `Signed in, but private repos could not be enabled: ${errorMessage(e)}.${dropped}` })
+        }
+      }
+      // Kept: the request is spent. Until then a failed check can be retried with the same reply.
+      request.wipe()
+      return session
+    })
+  }
+
+  /**
+   * Why a key from dg can't replace the key this browser holds for `identityId`, or null: dg
+   * disables one Forge limited key by id, so wallet keys (the main key, or grants beside it)
+   * would stay live after this device forgets them. Those renew with the identity file or phrase.
+   */
+  async handoffBlocker(identityId: string): Promise<string | null> {
+    const stored = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
+    if (stored === undefined) return null
+    let wallet = await hasExtraKeys(this.network, identityId)
+    if (!wallet) {
+      const identity = await authSdk(await this.getSdk()).identities.fetch(identityId)
+      const k = identity?.publicKeys.find((x) => x.keyId === stored.keyId)
+      wallet = k !== undefined && k.disabledAt === undefined && !isForgeBrowserKey(k)
+    }
+    return wallet
+      ? 'This browser holds wallet keys for this identity, which a key from dg cannot disable. Replace them with your identity file or recovery phrase instead, so they are disabled in the same update.'
+      : null
+  }
+
   /** Adopt a limited key obtained elsewhere (identity creation). */
   async adoptLimitedKey(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
     return this.run(() => this.adopt(identityId, key, protection))
@@ -1033,7 +1154,7 @@ export class AuthController {
       'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
     )
     try {
-      return await this.open(secret, 'vault', main.limits ?? undefined)
+      return await this.open(secret, 'vault', main.limits ?? undefined, true, [main.keyId, ...rest.map((k) => k.keyId)])
     } catch (e) {
       throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
     }
@@ -1056,7 +1177,7 @@ export class AuthController {
       const secret = unlockedSecret(this.network, identityId)
       if (!secret) throw new VaultLockedError('unlock to continue')
       try {
-        const opened = await this.open(secret, 'vault', session.keyLimits ?? undefined, false)
+        const opened = await this.open(secret, 'vault', session.keyLimits ?? undefined, false, [key.keyId])
         const want = contractKind(forge, requested)
         if (want === null || !opened.grants?.[want]) throw new Error('the granted key is not live on the identity yet')
         return opened
@@ -1374,11 +1495,13 @@ export class AuthController {
       if (!identityId) throw new Error('sign in first')
       const masterWif = await this.masterWifFor(identityId, input)
       const sdk = await this.getSdk()
-      return this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
+      const key = await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
         this.charged(identityId, 'key:runner', (k) => k?.keyId ?? null, () =>
           registerLimitedKey(sdk, { network: this.network, identityId, masterWif, group: this.group(), trust: this.groupTrust(), request }),
         ),
       )
+      this.noteOwnKey(identityId, key.keyId)
+      return key
     })
   }
 
@@ -1475,6 +1598,64 @@ export class AuthController {
   }
 
   /**
+   * Every key of the signed-in identity for Devices & keys: one identity read and one read of the
+   * remaining budgets.
+   */
+  async identityKeys(): Promise<KeyRow[]> {
+    const session = this.state.session
+    if (session === null) throw new Error('sign in first')
+    const sdk = await this.getSdk()
+    const identity = await withPlatformRead(authSdk(sdk).identities.fetch(session.identityId), 'Reading your keys')
+    if (!identity) throw new Error(`identity ${session.identityId} not found on ${NETWORKS[this.network].key}`)
+    const budgeted = identity.publicKeys.filter((k) => k.totalBudget !== undefined).map((k) => k.keyId)
+    const budgets = budgeted.length ? await withPlatformRead(authSdk(sdk).identities.keysRemainingBudgets(session.identityId, budgeted), 'Reading key budgets') : new Map<number, bigint | null>()
+    return keyRows(identity.publicKeys, budgets, NETWORKS[this.network].v2 ?? undefined, this.browserKeyIds())
+  }
+
+  /** The keys this browser holds for the signed-in identity: its signing key and wallet grants. */
+  private browserKeyIds(): number[] {
+    const session = this.state.session
+    if (session === null) return []
+    return [...(session.keyId !== undefined ? [session.keyId] : []), ...this.heldKeys(session.identityId).map((k) => k.keyId)]
+  }
+
+  /**
+   * Disable one of the identity's keys (a lost device's, a key nobody here added) with the master
+   * key, from the identity file or the recovery phrase. This browser's own key goes through
+   * {@link revokeStored}, which also forgets it here.
+   */
+  async disableIdentityKey(input: MasterInput, keyId: number): Promise<boolean> {
+    return this.run(async () => {
+      const session = this.state.session
+      if (session === null) throw new Error('sign in first')
+      if (this.browserKeyIds().includes(keyId)) throw new WriteAuthError('This browser holds that key: use Revoke on Platform in Settings, which also forgets it here.')
+      const forge = NETWORKS[this.network].v2
+      if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+      const { identityId } = session
+      const masterWif = await this.masterWifFor(identityId, input)
+      const sdk = await this.getSdk()
+      const sent = await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
+        this.charged(identityId, 'key:revoke', () => keyId, () => disableIdentityKeys(sdk, { network: this.network, identityId, masterWif, keyIds: [keyId], allowed: (k) => DISABLEABLE.has(keyRole(k, forge)) })),
+      )
+      if (this.state.newKeys?.some((k) => k.keyId === keyId)) this.setState({ newKeys: this.state.newKeys.filter((k) => k.keyId !== keyId) })
+      return sent
+    })
+  }
+
+  /** The user saw the keys the new-key alert named (or disabled them): it stops naming them. */
+  acknowledgeNewKeys(): void {
+    const session = this.state.session
+    if (session === null || !this.state.newKeys?.length) return
+    acknowledgeKeys(this.network, session.identityId, this.state.newKeys.map((k) => k.keyId))
+    this.setState({ newKeys: [] })
+  }
+
+  /** A key this browser registered itself (a CI runner key, an encryption key): no alert for it. */
+  noteOwnKey(identityId: string, keyId: number): void {
+    acknowledgeKeys(this.network, identityId, [keyId])
+  }
+
+  /**
    * Delete the stored key of `identityId` from this device (ending its session if open), and
    * what this browser recorded for the identity: its spend ledger, its notifications inbox, its
    * comment drafts and the last-used marker (QW2-028). Write journals stay: they finish an interrupted write. So do
@@ -1483,6 +1664,7 @@ export class AuthController {
    */
   async forget(identityId: string): Promise<void> {
     if (this.state.session?.identityId === identityId) this.logout()
+    forgetKeySnapshot(this.network, identityId)
     await forgetVault(this.network, identityId)
     forgetLastIdentity(this.network, identityId)
     clearDrafts(identityId)
