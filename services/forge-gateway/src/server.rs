@@ -47,6 +47,14 @@ use crate::upstream::RepoInfo;
 /// The largest `git-upload-pack` request body (wants and haves; git gzips it).
 pub const MAX_UPLOAD_PACK_REQUEST: usize = 16 * 1024 * 1024;
 
+/// How long a client may take to send a `git-upload-pack` request body.
+pub const UPLOAD_PACK_BODY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long any request may take to produce its response's head, beyond the cold-mirror wait
+/// (`--cold-wait-secs`): a backstop for a Platform read, a body or a backend that never ends.
+/// A response that has started streaming is bounded by its own deadline instead.
+const REQUEST_TIMEOUT_BEYOND_COLD_WAIT: Duration = Duration::from_secs(120);
+
 /// How long a resolved `owner/name` is trusted, and an absent one.
 const RESOLVE_TTL: Duration = Duration::from_secs(300);
 const RESOLVE_MISS_TTL: Duration = Duration::from_secs(60);
@@ -192,7 +200,14 @@ async fn guard(State(state): St, req: Request<Body>, next: Next) -> Response {
         }
     }
     let started = Instant::now();
-    let mut resp = next.run(req).await;
+    let limit = Duration::from_secs(state.cfg.cold_wait_secs) + REQUEST_TIMEOUT_BEYOND_COLD_WAIT;
+    let mut resp = match tokio::time::timeout(limit, next.run(req)).await {
+        Ok(r) => r,
+        Err(_) => text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the request took too long; try again shortly\n",
+        ),
+    };
     let h = resp.headers_mut();
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -487,12 +502,34 @@ async fn upload_pack(
         Metrics::inc(&state.metrics.rate_limited);
         return too_many(wait, "too many clones from your address; slow down\n");
     }
+    // The client's own slot bounds how many bodies it can have in flight; a client that
+    // trickles its body holds only that, and the gateway's slots are taken once the body is in
+    // and the mirror is ready.
     let Some(client_permit) = state.clone_per_client.acquire(ip) else {
         Metrics::inc(&state.metrics.rate_limited);
         return too_many(
             Duration::from_secs(10),
             "too many clones at once from your address\n",
         );
+    };
+    let body = match tokio::time::timeout(
+        UPLOAD_PACK_BODY_TIMEOUT,
+        axum::body::to_bytes(body, MAX_UPLOAD_PACK_REQUEST),
+    )
+    .await
+    {
+        Ok(Ok(body)) => body,
+        Ok(Err(_)) => return text(StatusCode::PAYLOAD_TOO_LARGE, "request too large\n"),
+        Err(_) => {
+            return text(
+                StatusCode::REQUEST_TIMEOUT,
+                "the request body took too long\n",
+            )
+        }
+    };
+    let slot = match ready_mirror(&state, ip, &info).await {
+        Ok(s) => s,
+        Err(r) => return *r,
     };
     let Ok(global_permit) = Arc::clone(&state.clones).try_acquire_owned() else {
         Metrics::inc(&state.metrics.rate_limited);
@@ -503,13 +540,6 @@ async fn upload_pack(
         r.headers_mut()
             .insert(header::RETRY_AFTER, HeaderValue::from_static("10"));
         return r;
-    };
-    let Ok(body) = axum::body::to_bytes(body, MAX_UPLOAD_PACK_REQUEST).await else {
-        return text(StatusCode::PAYLOAD_TOO_LARGE, "request too large\n");
-    };
-    let slot = match ready_mirror(&state, ip, &info).await {
-        Ok(s) => s,
-        Err(r) => return *r,
     };
     let Some(guard) = state.mirrors.checkout(&slot) else {
         return unavailable(&Unavailable::Pending);

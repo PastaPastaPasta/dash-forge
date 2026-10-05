@@ -600,3 +600,36 @@ async fn limits_and_eviction() {
     let (s, _, _) = gw.get("/healthz").await;
     assert_eq!(s, 200);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_trickling_its_request_body_holds_no_gateway_slot() {
+    use tokio::io::AsyncWriteExt as _;
+    let gw = start(|c| c.clones_max = 1).await;
+    let src = source(&gw.tmp);
+    let info = gw.stub.add("alice", "proj", true, &src);
+    assert_eq!(gw.refresh(&info).await, None);
+
+    // A request that announces a body and never finishes sending it.
+    let addr = gw.base.trim_start_matches("http://");
+    let mut slow = tokio::net::TcpStream::connect(addr).await.unwrap();
+    slow.write_all(
+        format!(
+            "POST /alice/proj.git/git-upload-pack HTTP/1.1\r\nhost: {addr}\r\n\
+             content-type: application/x-git-upload-pack-request\r\n\
+             content-length: 1000\r\n\r\n0032want"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // The only clone slot is still free for a real clone.
+    let out = gw.clone("/alice/proj.git", "clone").await;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    drop(slow);
+}
