@@ -215,15 +215,26 @@ octokit) reads them:
   | A members-only comment or review by a member | `issue_comment` `created` / `pull_request_review` `submitted` with an empty `body`. A review keeps its `state` (approved, changes requested, commented): the verdict is public and counts for everyone. |
   | A members-only comment or review by someone who is not a member | Nothing. Anyone can post one, and no member's client shows it. |
   | A label, assignment or retarget whose value is members-only | The usual `issues` / `pull_request` event. A label's `name` is empty; an assignment names its assignee, which is public. |
-  | Anything that happens on a members-only issue or pull request (close, merge, lock, a public comment) | The usual event. The embedded issue or pull request has an empty `title`, `body`, `head.sha` and `base.ref`. |
+  | Anything that happens on a members-only issue or pull request (close, merge, lock, a public comment) | The usual event. The embedded issue or pull request has an empty `title`, `body`, `head.sha` and `base.ref`; a public comment keeps its text. |
   | A members-only release | Nothing. The public release list ignores it, and a `release` event with no tag would mislead a receiver that deploys on releases. |
   | A members-only branch update | Nothing (as before). |
 
-  Each of these events carries `"dash_members_only": true` at the top level; no other event
-  has the key. The event name, action and every other field are the ones a public event of the
-  same kind has, so a GitHub webhook parser reads it unchanged and finds an empty text. A
-  receiver that shows notices should say "posted a members-only comment on #12" rather than
-  quoting the empty body.
+  `"dash_members_only": true` marks them, in two places, and no other event has the key:
+
+  - at the payload's top level when the event's own document is members-only (a members-only
+    issue, pull request, comment or review, or a members-only label, assignment or retarget):
+    its text (`comment.body`, `review.body`, the issue's `title` and `body`, the label's
+    `name`) is empty on purpose;
+  - on the embedded `issue` or `pull_request` object when that issue or pull request is
+    members-only: its `title`, `body`, `head.sha` and `base.ref` are empty on purpose.
+
+  The event name, action and every other field are the ones a public event of the same kind
+  has, so a GitHub webhook parser reads it unchanged and finds an empty text. A receiver that
+  shows notices should say "posted a members-only comment on #12" (top-level key) or "closed
+  members-only issue #12" (object key) rather than quoting an empty text. Limits: no
+  `check_run` is reported for a members-only pull request (its head is a stand-in), and a
+  merge of one always carries `dash_merge_check: "not_on_base"`, because its base branch name
+  is members-only.
 
 ## Delivery semantics
 

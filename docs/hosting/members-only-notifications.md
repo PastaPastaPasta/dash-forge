@@ -37,8 +37,9 @@ The same rule as the web app's inbox and thread pages:
    Never quote an empty body, and never write "sealed" or "encrypted by" in a notice.
 4. **A members-only release or branch update** produces no notice.
 
-`forge-relay` already applies rules 1, 2 and 4 to the events it hands to sinks and to forge-notify,
-and marks every members-only event with `"dash_members_only": true` and empty text fields (see
-"Members-only content" under Payloads in `crates/forge-relay/README.md`). A service that reads the
-chain directly instead must apply the same rules itself. A notice renderer should use the
-`dash_members_only` key to choose the wording in rule 3.
+`forge-relay` already applies rules 1, 2 and 4 to the events it hands to sinks and to forge-notify.
+It marks members-only events with `"dash_members_only": true`: at the top level when the event's
+own document is members-only, and on the embedded `issue` or `pull_request` when that thread is
+(see "Members-only content" under Payloads in `crates/forge-relay/README.md`). A notice renderer
+uses the key to choose the wording in rule 3. A service that reads the chain directly instead
+must apply the same rules itself.
