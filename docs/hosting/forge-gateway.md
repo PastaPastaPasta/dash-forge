@@ -149,7 +149,14 @@ and `GATEWAY_TRUST_PROXY=x-forwarded-for` (Caddy appends the client to `X-Forwar
 
 Every warm mirror is checked every `GATEWAY_POLL_SECS` (120 s), and every request for a mirror older than that starts a refresh in the background while the current snapshot is served. So a push shows on the gateway within about two minutes.
 
-For seconds instead, point the gateway at a forge-relay's wake stream (the same one forge-runner uses; see [Wake a runner](../../crates/forge-relay/README.md#wake-a-runner)): list the repositories in the relay's `[wake] repos`, share its secret, and set `GATEWAY_WAKE_URL` and `GATEWAY_WAKE_SECRET_FILE`. A wake only says "refresh now"; the refresh still reads Platform with proofs, so a relay that is down or lies costs latency and nothing else.
+For seconds instead, point the gateway at a forge-relay's wake stream (the same one forge-runner uses; see [Wake a runner](../../crates/forge-relay/README.md#wake-a-runner)): list the repositories in the relay's `[wake] repos`, share its secret, and set `GATEWAY_WAKE_URL` and `GATEWAY_WAKE_SECRET_FILE`. With the compose file, the secret goes in `services/forge-gateway/wake-secret`, readable by the container's user (`sudo chown 10002:10002 wake-secret && sudo chmod 400 wake-secret`); uncomment the two `secrets` blocks in `docker-compose.yml` and add to `.env`:
+
+```sh
+GATEWAY_WAKE_URL=https://relay.example.org
+GATEWAY_WAKE_SECRET_FILE=/run/secrets/wake
+```
+
+`GATEWAY_WAKE_SECRET_FILE` is the path inside the container. A wake only says "refresh now"; the refresh still reads Platform with proofs, so a relay that is down or lies costs latency and nothing else.
 
 ## Routes
 

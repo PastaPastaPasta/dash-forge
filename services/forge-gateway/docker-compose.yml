@@ -37,10 +37,13 @@ services:
       # Freshness: polling always; relay wakes when a relay is configured.
       GATEWAY_POLL_SECS: ${GATEWAY_POLL_SECS:-120}
       GATEWAY_WAKE_URL: ${GATEWAY_WAKE_URL:-}
+      # The path inside the container: /run/secrets/wake with the secrets blocks below.
+      GATEWAY_WAKE_SECRET_FILE: ${GATEWAY_WAKE_SECRET_FILE:-}
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - gateway-data:/data
-    # A relay's wake secret, when GATEWAY_WAKE_URL is set: uncomment both blocks and set
+    # A relay's wake secret, when GATEWAY_WAKE_URL is set: put it in ./wake-secret, readable
+    # by the container's user (uid 10002), uncomment both blocks and set
     # GATEWAY_WAKE_SECRET_FILE=/run/secrets/wake in .env.
     # secrets:
     #   - wake
