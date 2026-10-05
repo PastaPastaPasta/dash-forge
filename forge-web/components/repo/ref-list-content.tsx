@@ -13,7 +13,7 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { GitBranch, Search, Tag } from 'lucide-react'
+import { Activity, GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
 import { compareRefNames, compareTagNames, repoKey, type ResolvedRef } from '@/lib/repo'
@@ -37,6 +37,21 @@ export function refUpdatedAt(ref: ResolvedRef): number {
   if (st.state === 'resolved') return st.createdAt
   if (st.state === 'diverged') return Math.max(0, ...st.heads.map((h) => h.createdAt))
   return 0
+}
+
+/** A ref's Activity page: its pushes, force-pushes, deletions and protection changes. */
+function ActivityLink({ addr, kind, name }: { addr: RepoAddress; kind: keyof typeof KIND; name: string }): JSX.Element {
+  return (
+    <Link
+      href={repoHref('/repo/activity', addr, kind === 'tags' ? { tag: name } : { branch: name })}
+      className="hit-area inline-flex shrink-0 items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-800 dark:text-anvil-400 dark:hover:text-forge-400"
+      aria-label={`Activity of ${name}`}
+      data-testid="ref-activity-link"
+    >
+      <Activity className="h-3.5 w-3.5" aria-hidden />
+      <span className="hidden sm:inline">Activity</span>
+    </Link>
+  )
 }
 
 export function RefListContent({
@@ -178,6 +193,7 @@ export function RefListContent({
                   </Link>
                 ) : null}
                 {tip ? tipChip(tip) : null}
+                <ActivityLink addr={addr} kind={kind} name={shortName} />
                 {branchAdmin ? (
                   <DeleteBranchButton
                     home={home}
@@ -227,6 +243,7 @@ export function RefListContent({
                 <span className="rounded-full border border-anvil-200 px-2 py-0.5 text-[11px] text-anvil-500 dark:text-anvil-400 dark:border-anvil-700">
                   deleted
                 </span>
+                <ActivityLink addr={addr} kind={kind} name={short(ref)} />
                 {branchAdmin && deletedHere.has(ref.refName) ? (
                   <RestoreBranchButton
                     home={home}
