@@ -152,6 +152,8 @@ pub struct PushRow {
     pub id: i64,
     /// The identity.
     pub identity: String,
+    /// The endpoint's hash (`api::endpoint_hash`).
+    pub endpoint_hash: String,
     /// The sealed `{endpoint, p256dh, auth}` JSON.
     pub sealed: Vec<u8>,
     /// A label the browser gave (`Firefox on Linux`).
@@ -231,11 +233,12 @@ CREATE INDEX IF NOT EXISTS pending_identity ON pending_email(identity);
 CREATE TABLE IF NOT EXISTS push_sub (
   id INTEGER PRIMARY KEY,
   identity TEXT NOT NULL REFERENCES subscriber(identity) ON DELETE CASCADE,
-  endpoint_hash TEXT NOT NULL UNIQUE,
+  endpoint_hash TEXT NOT NULL,
   sealed BLOB NOT NULL,
   label TEXT,
   failures INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  UNIQUE (identity, endpoint_hash)
 );
 CREATE INDEX IF NOT EXISTS push_identity ON push_sub(identity);
 CREATE TABLE IF NOT EXISTS nonce (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
@@ -270,6 +273,43 @@ CREATE TABLE IF NOT EXISTS sent (
 CREATE TABLE IF NOT EXISTS counter (key TEXT PRIMARY KEY, day INTEGER NOT NULL, n INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS cursor (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 ";
+
+/// A store made before push subscriptions were keyed per identity had `endpoint_hash UNIQUE`
+/// on its own, so registering an endpoint moved it to the identity that registered it last.
+/// Rebuild that table with `UNIQUE (identity, endpoint_hash)`, keeping its rows.
+fn migrate_push_sub(conn: &mut Connection) -> Result<()> {
+    let old: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'push_sub'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if !old.is_some_and(|sql| sql.contains("endpoint_hash TEXT NOT NULL UNIQUE")) {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE push_sub_v2 (
+           id INTEGER PRIMARY KEY,
+           identity TEXT NOT NULL REFERENCES subscriber(identity) ON DELETE CASCADE,
+           endpoint_hash TEXT NOT NULL,
+           sealed BLOB NOT NULL,
+           label TEXT,
+           failures INTEGER NOT NULL DEFAULT 0,
+           created_at INTEGER NOT NULL,
+           UNIQUE (identity, endpoint_hash)
+         );
+         INSERT INTO push_sub_v2 (id, identity, endpoint_hash, sealed, label, failures, created_at)
+           SELECT id, identity, endpoint_hash, sealed, label, failures, created_at FROM push_sub;
+         DROP TABLE push_sub;
+         ALTER TABLE push_sub_v2 RENAME TO push_sub;
+         CREATE INDEX IF NOT EXISTS push_identity ON push_sub(identity);",
+    )?;
+    tx.commit()?;
+    tracing::info!("store: push subscriptions are now keyed per identity");
+    Ok(())
+}
 
 fn to_i64(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
@@ -312,8 +352,9 @@ impl Store {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(mut conn: Connection) -> Result<Self> {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        migrate_push_sub(&mut conn)?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -601,7 +642,8 @@ impl Store {
         Ok(())
     }
 
-    /// Add (or refresh) a push subscription.
+    /// Add (or refresh) one of the identity's push subscriptions. Another identity's row for
+    /// the same endpoint is left alone (one browser may serve several identities).
     pub fn add_push(
         &self,
         identity: &str,
@@ -611,7 +653,7 @@ impl Store {
     ) -> Result<()> {
         self.db().execute(
             "INSERT INTO push_sub (identity, endpoint_hash, sealed, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5) \
-             ON CONFLICT(endpoint_hash) DO UPDATE SET identity = ?1, sealed = ?3, label = ?4, failures = 0",
+             ON CONFLICT(identity, endpoint_hash) DO UPDATE SET sealed = ?3, label = ?4, failures = 0",
             params![identity, endpoint_hash, sealed, label, to_i64(now_ms())],
         )?;
         Ok(())
@@ -636,15 +678,17 @@ impl Store {
     pub fn pushes(&self, identity: &str) -> Result<Vec<PushRow>> {
         let db = self.db();
         let mut st = db.prepare(
-            "SELECT id, identity, sealed, label, created_at FROM push_sub WHERE identity = ?1 ORDER BY id",
+            "SELECT id, identity, endpoint_hash, sealed, label, created_at FROM push_sub \
+             WHERE identity = ?1 ORDER BY id",
         )?;
         let rows = st.query_map([identity], |r| {
             Ok(PushRow {
                 id: r.get(0)?,
                 identity: r.get(1)?,
-                sealed: r.get(2)?,
-                label: r.get(3)?,
-                created_at: to_u64(r.get(4)?),
+                endpoint_hash: r.get(2)?,
+                sealed: r.get(3)?,
+                label: r.get(4)?,
+                created_at: to_u64(r.get(5)?),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -892,6 +936,63 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_push_endpoint_belongs_to_each_identity_that_adds_it() {
+        let s = Store::memory().unwrap();
+        s.ensure_subscriber("A").unwrap();
+        s.ensure_subscriber("B").unwrap();
+        s.add_push("A", "h", b"a", Some("one")).unwrap();
+        s.add_push("B", "h", b"b", None).unwrap();
+        s.add_push("A", "h", b"a2", Some("two")).unwrap();
+        let a = s.pushes("A").unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(
+            (a[0].sealed.as_slice(), a[0].label.as_deref()),
+            (&b"a2"[..], Some("two"))
+        );
+        assert_eq!(s.pushes("B").unwrap()[0].sealed, b"b");
+        assert!(s.remove_push("B", "h").unwrap());
+        assert_eq!(s.pushes("A").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_old_store_is_migrated_to_per_identity_push_rows() {
+        // The schema as it was: `endpoint_hash` unique on its own.
+        let old = SCHEMA
+            .replace(
+                "endpoint_hash TEXT NOT NULL,",
+                "endpoint_hash TEXT NOT NULL UNIQUE,",
+            )
+            .replace(",\n  UNIQUE (identity, endpoint_hash)", "");
+        assert_ne!(old, SCHEMA);
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&old).unwrap();
+        conn.execute_batch(
+            "INSERT INTO subscriber (identity, prefs, created_at, updated_at)
+               VALUES ('A', '{}', 0, 0), ('B', '{}', 0, 0);
+             INSERT INTO push_sub (identity, endpoint_hash, sealed, label, created_at)
+               VALUES ('A', 'h', x'01', 'Firefox', 5);",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        let a = s.pushes("A").unwrap();
+        assert_eq!(
+            (
+                a[0].endpoint_hash.as_str(),
+                a[0].label.as_deref(),
+                a[0].created_at
+            ),
+            ("h", Some("Firefox"), 5)
+        );
+        s.add_push("B", "h", b"b", None).unwrap();
+        assert_eq!(s.pushes("A").unwrap().len(), 1);
+        assert_eq!(s.pushes("B").unwrap().len(), 1);
+        // Opening it again changes nothing.
+        let conn = std::mem::replace(&mut *s.db(), Connection::open_in_memory().unwrap());
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.pushes("A").unwrap().len(), 1);
+    }
 
     #[test]
     fn subscriber_lifecycle() {

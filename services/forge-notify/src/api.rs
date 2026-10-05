@@ -459,7 +459,9 @@ fn push_add(app: &App, req: &SignedRequest) -> Result<Json<Value>> {
     ensure_room(app, id)?;
     let hash = endpoint_hash(&target.endpoint);
     let existing = app.store.pushes(id)?;
-    if existing.len() >= MAX_PUSH_PER_IDENTITY {
+    // Re-adding a browser already registered refreshes it, so it never hits the cap.
+    if existing.len() >= MAX_PUSH_PER_IDENTITY && !existing.iter().any(|r| r.endpoint_hash == hash)
+    {
         return Err(NotifyError::BadRequest(format!(
             "at most {MAX_PUSH_PER_IDENTITY} browsers per identity; remove one first"
         )));

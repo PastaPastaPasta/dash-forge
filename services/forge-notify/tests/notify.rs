@@ -511,6 +511,23 @@ async fn subscribe_confirm_route_unsubscribe_export_delete() {
 }
 
 #[tokio::test]
+async fn re_adding_a_browser_at_the_cap_refreshes_it() {
+    let w = world();
+    let ua = web_push_native::p256::SecretKey::random(&mut rand::rngs::OsRng);
+    let p256dh = URL_SAFE_NO_PAD.encode(ua.public_key().to_encoded_point(false).as_bytes());
+    let auth = URL_SAFE_NO_PAD.encode([5u8; 16]);
+    let add = |n: u32| json!({"endpoint": format!("https://fcm.googleapis.com/fcm/send/{n}"), "p256dh": p256dh, "auth": auth});
+    for n in 0..10 {
+        let (s, v) = signed(&w, "push.add", add(n)).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let (s, v) = signed(&w, "push.add", add(3)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _) = signed(&w, "push.add", add(10)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn cors_allows_only_the_configured_origin_and_pages_forbid_scripts() {
     let w = world();
     let preflight = |origin: &str| {
