@@ -149,8 +149,11 @@ export function NotifyService({ base }: { base: string }): JSX.Element {
         without it, and every notice links back here, where the chain is read again.
       </p>
       <p>
-        It keeps your identity id, your address and push subscriptions (encrypted), your choices below and which repos it follows for you. None of it
-        goes on chain. It reads only public data: for a private repo it can say “new activity”, never a title. Sign-in is a request signed by this
+        It keeps your identity id, your address and push subscriptions (encrypted), your choices below and which repos it follows for you.
+        None of it is written to Dash Platform.
+      </p>
+      <p>
+        It reads only public data: for a private repo it can say “new activity”, never a title. Sign-in is a request signed by this
         browser&apos;s key, so there is no account or password.
         {privacyUrl ? (
           <>

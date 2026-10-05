@@ -74,7 +74,7 @@ describe('NotifyService', () => {
     await render()
     const privacy = el.querySelector('[data-testid="notify-privacy"]')?.textContent ?? ''
     expect(privacy).toContain('notify.example.org')
-    expect(privacy).toContain('None of it goes on chain')
+    expect(privacy).toContain('None of it is written to Dash Platform')
     expect(privacy).toContain('never a title')
     expect(el.textContent).toContain('Sign in to set up email or push')
     expect(fetch).toHaveBeenCalledTimes(1)
