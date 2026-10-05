@@ -10,9 +10,10 @@
  *
  *   1. first login: request (forge-core) → wallet approves → register (QR #2) → key lands bound
  *      to forge-core, without limits → session → a forge-core write (a repo) is signed by it;
- *      a forge-collab write (a star) is refused locally with MissingGrantError, nothing sent;
- *   2. the one-tap grant: request (forge-collab) → wallet approves → register → the star lands;
- *   3. returning login: a new request is answered with the already-registered key, no QR #2;
+ *      a forge-community write (a star) is refused locally with MissingGrantError, nothing sent;
+ *   2. returning login on a fresh browser: a new request is answered with the already-registered
+ *      key, no QR #2;
+ *   3. the one-tap grant: request (forge-community) → wallet approves → register → the star lands;
  *   4. cleanup: the master key disables the keys this run added.
  *
  * Both logins keep the encryption key the wallet registered beside the auth key in the vault
@@ -51,7 +52,7 @@ type Responder = typeof import('../../e2e/wallet-responder.mjs')
 
 describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-exchange contract)', () => {
   it(
-    'first login, one-tap forge-collab grant, returning login, cleanup',
+    'first login, returning login, one-tap forge-community grant, cleanup',
     async () => {
       const wallet: Responder = await import(pathToFileURL(resolve(__dirname, '../../e2e/wallet-responder.mjs')).href)
       await evoSdkService.initialize({ network: 'devnet', contractIds: [], timeoutMs: 30000 })
@@ -114,33 +115,35 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
         const repo = await createRepo(sdk, auth, forge, { name })
         expect(repo.repoId).toMatch(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/)
 
-        // A forge-collab write: refused before signing (nothing broadcast, nothing charged).
+        // A forge-community write: refused before signing (nothing broadcast, nothing charged).
         const starOf = { kind: 'v2' as const, forge, repoId: repo.repoId, ownerId: first.identityId, name, visibility: 'public' as const }
         await expect(starRelation(sdk, auth, first.identityId, starOf).add()).rejects.toBeInstanceOf(MissingGrantError)
 
-        // 2. The one-tap grant for forge-collab, then the star lands.
-        const grant = await signIn(forge.collab, first.identityId)
-        expect(grant.key.scope).toEqual({ core: false, collab: true, community: false, unbounded: false })
-        grant.wipe()
-        const after = await controller.addWalletGrant(first.identityId, grant.key, forge.collab)
-        expect(after.grants).toEqual({ core: true, collab: true, community: false })
-        expect(await starRelation(sdk, controller.writeAuth!, first.identityId, starOf).add()).toBe(true)
-
-        // 3. Returning login: the registered key answers straight away.
+        // 2. Returning login, on a browser that holds nothing yet: the registered key answers
+        // straight away (no QR #2), and the same encryption key is derived again and kept. (Before
+        // the grant below: each first approval for another contract registers another encryption
+        // key, which then becomes the identity's usable one.)
         const again = await signIn(forge.core)
         expect(again.registered).toBe(false)
         expect(again.key.keyId).toBe(first.key.keyId)
-        // On a browser that holds nothing yet: the same encryption key, derived again and kept.
         lockVault()
         resetMemoryStores()
         const returning = new AuthController(async () => sdk, network)
-        await returning.adoptWalletKeys(again.identityId, [again.key], { passphrase: 'live wallet e2e passphrase' }, { encryptionKeys: again.encryptionKeys })
+        await returning.adoptWalletKeys(again.identityId, [again.key], protection, { encryptionKeys: again.encryptionKeys })
         again.wipe()
         expect(returning.getState().notice ?? null).toBeNull()
         await expectEncryptionKeyKept(again.identityId)
+
+        // 3. The one-tap grant for forge-community (a star is a forge-community write), then the star lands.
+        const grant = await signIn(forge.community, first.identityId)
+        expect(grant.key.scope).toEqual({ core: false, collab: false, community: true, unbounded: false })
+        grant.wipe()
+        const after = await returning.addWalletGrant(first.identityId, grant.key, forge.community)
+        expect(after.grants).toEqual({ core: true, collab: false, community: true })
+        expect(await starRelation(sdk, returning.writeAuth!, first.identityId, starOf).add()).toBe(true)
       } finally {
         // 4. Leave the identity as it was: disable what this run added.
-        await wallet.disableDerived({ identityFile: FILE, chainKeyHex: CHAIN_KEY, contractIds: [forge.core, forge.collab], devnet: DEVNET })
+        await wallet.disableDerived({ identityFile: FILE, chainKeyHex: CHAIN_KEY, contractIds: [forge.core, forge.community], devnet: DEVNET })
       }
     },
     20 * 60_000,
