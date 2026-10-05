@@ -1006,6 +1006,8 @@ fn audience_phrase(prepared: &Prepared, audience: Audience) -> String {
 fn count(n: usize, thing: &str) -> String {
     if n == 1 {
         format!("1 {thing}")
+    } else if let Some(stem) = thing.strip_suffix('y') {
+        format!("{n} {stem}ies")
     } else {
         format!("{n} {thing}s")
     }
@@ -1706,6 +1708,13 @@ mod tests {
             assert!(!line.to_lowercase().contains(banned), "{line}");
         }
         assert!(line.contains(MEMBERS_SENTENCE));
+    }
+
+    #[test]
+    fn counts_pluralise() {
+        assert_eq!(count(1, "entry"), "1 entry");
+        assert_eq!(count(3, "entry"), "3 entries");
+        assert_eq!(count(2, "environment"), "2 environments");
     }
 
     #[test]
