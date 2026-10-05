@@ -1,0 +1,12 @@
+{
+  "name": "webhooks_path_token",
+  "description": "The plural /webhooks/ counts too, in any letter case.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://bot.example.org/api/Webhooks/AbCdEfGhIjKlMnOpQrStUv12"
+  },
+  "expected": {
+    "secret": "pathToken"
+  }
+}

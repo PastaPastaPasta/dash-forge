@@ -1,0 +1,13 @@
+{
+  "name": "slack_host_case",
+  "description": "Hosts compare case-insensitively.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://HOOKS.Slack.com/services/x"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Slack"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "discord_not_a_webhook",
+  "description": "Other Discord paths are not webhooks.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://discord.com/invite/abc"
+  },
+  "expected": {
+    "secret": null
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "plain_ci_hook",
+  "description": "A word after /webhook/ is not a token.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://ci.example.com/webhook/github"
+  },
+  "expected": {
+    "secret": null
+  }
+}
