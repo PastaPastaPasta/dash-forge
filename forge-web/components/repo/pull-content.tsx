@@ -596,7 +596,9 @@ function PullPage({
   // Who the comment or review text is for (DESIGN §10): the PR's audience, or Members when picked.
   const audience = useComposerAudience(home, { parent: pull.audience ?? 'public', members: thread.members, maintainer: holdings.data?.maintain === true })
   // The unsent comment survives a reload (never stored for a private repo, nor while members-only).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity, pull.audience ?? 'public'), audience.audience === 'public')
+  // Members-only text quoted into the public composer is not kept on disk either.
+  const quotedRef = useRef(false)
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity, pull.audience ?? 'public'), audience.audience === 'public' && !quotedRef.current)
   const warnings = useAudienceWarnings(audience, comment, { author: pull.author, kind: 'pull' })
   // The diff's composers pick their audience the same way (stable while these are).
   const inlineAudience = useMemo(
@@ -777,6 +779,7 @@ function PullPage({
     ...thread.reviews.flatMap((r) => (r.audience === 'members' ? [r.body] : [])),
   ]
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
+  quotedRef.current = quoting
   // A text over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
   const commentLong = useLongCompose(repo, 'comment', comment.trim())
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() }, commentLong)

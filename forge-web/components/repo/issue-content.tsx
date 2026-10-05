@@ -192,7 +192,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // Who the comment is for (DESIGN §10): the issue's audience, or Members when picked.
   const audience = useComposerAudience(home, { parent: data?.issue.audience ?? 'public', members: data?.members ?? null, maintainer: holdings.data?.maintain === true })
   // The unsent comment survives a reload (never stored for a private repo, nor while members-only).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'), audience.audience === 'public')
+  // Members-only text quoted into the public composer is not kept on disk either.
+  const quotedRef = useRef(false)
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'), audience.audience === 'public' && !quotedRef.current)
   const warnings = useAudienceWarnings(audience, comment, data === null ? null : { author: data.issue.author, kind: 'issue' })
   // A public comment that repeats members-only text asks first (product H8).
   const [quoteAsk, setQuoteAsk] = useState(false)
@@ -285,6 +287,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     ...timeline.flatMap((t) => (t.kind === 'comment' && t.comment.audience === 'members' ? [t.comment.body] : [])),
   ]
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
+  quotedRef.current = quoting
   // A close or reopen is one `transition`, by a member or by the author.
   const stateCost = previewCreate('transition', {}, stateFirst)
   // "Close with comment" (QW2-008): the composer's text goes with a close or reopen, as on GitHub,
@@ -473,6 +476,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     <AuthorRolesProvider owner={home.repo.ownerId} members={members}>
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]">
       <div className="min-w-0 space-y-5">
+        {/* What anyone can read of the thread (the e2e "View as public" check compares it). */}
+        <div className="space-y-5" data-testid="thread-conversation">
         {/* Header */}
         <div>
           {editing ? (
@@ -613,6 +618,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
         <HiddenNote hidden={totalHidden(hidden)} what="comment" home={home} by={hidden} shown={data.membersOnly.length} />
         <EventValuesNote counts={eventValues} />
+        </div>
 
         {/* Composer */}
         <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="issue-composer">
