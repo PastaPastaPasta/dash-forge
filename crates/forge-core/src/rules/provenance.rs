@@ -210,6 +210,26 @@ fn asset_changes(first: &ProvenanceRevision, newest: &ProvenanceRevision) -> Ass
     }
 }
 
+/// Each update of `walk` that changed the tip from `tip`, in order.
+fn moves_from(mut tip: Option<String>, walk: &[&RefUpdate]) -> Vec<TagMove> {
+    let mut moves = Vec::new();
+    for u in walk {
+        let to = (!is_null_oid(&u.new_oid)).then(|| u.new_oid.clone());
+        if to == tip {
+            continue;
+        }
+        moves.push(TagMove {
+            id: u.id.clone(),
+            at: u.created_at,
+            by: u.author.clone(),
+            from: tip.clone(),
+            to: to.clone(),
+        });
+        tip = to;
+    }
+    moves
+}
+
 /// The provenance of the release of one tag: `ref_name_hash` is `sha256(refs/tags/<tag>)`
 /// (hex), `updates` the tag's updates of both types, `revisions` every revision of the tag's
 /// release, `pin` the commit (or tag object) a sealed release records, and `target` the tag tip
@@ -252,13 +272,11 @@ pub fn release_provenance(
         .collect();
     let first_later = later.iter().position(|u| !is_null_oid(&u.new_oid));
     let late_tag = before.is_empty() && first_later.is_some();
-    let record = |o: Option<&str>| {
-        o.filter(|p| !is_null_oid(p))
-            .map(str::to_ascii_lowercase)
-    };
+    let record = |o: Option<&str>| o.filter(|p| !is_null_oid(p)).map(str::to_ascii_lowercase);
     let recorded = record(target);
     // A public record must agree with the tag's history at the first publish.
-    let record_differs = matches!((&recorded, &at_publish), (Some(t), Some(a)) if *t != a.oid.to_ascii_lowercase());
+    let record_differs =
+        matches!((&recorded, &at_publish), (Some(t), Some(a)) if *t != a.oid.to_ascii_lowercase());
     // The release's own record counts only when the tag named nothing at the first publish.
     let pin = recorded
         .clone()
@@ -283,26 +301,11 @@ pub fn release_provenance(
     };
 
     // Moves: each later update that changed the tip, walked in the causal order.
-    let mut moves = Vec::new();
-    let mut tip = tag_baseline.as_ref().map(|t| t.oid.clone());
     let walk = match (late_tag, first_later) {
         (true, Some(i)) => &later[i + 1..],
         _ => &later[..],
     };
-    for u in walk {
-        let to = (!is_null_oid(&u.new_oid)).then(|| u.new_oid.clone());
-        if to == tip {
-            continue;
-        }
-        moves.push(TagMove {
-            id: u.id.clone(),
-            at: u.created_at,
-            by: u.author.clone(),
-            from: tip.clone(),
-            to: to.clone(),
-        });
-        tip = to;
-    }
+    let moves = moves_from(tag_baseline.as_ref().map(|t| t.oid.clone()), walk);
 
     let tag = if valid.is_empty() {
         TagVerdict::Missing

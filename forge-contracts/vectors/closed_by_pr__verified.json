@@ -1,6 +1,7 @@
 {
   "name": "verified",
   "description": "A close naming merged PR #7, whose description closes the issue, reads \"closed in #7\".",
+  "rules": "v2",
   "case": "closed_by_pr",
   "input": {
     "issue": 3,

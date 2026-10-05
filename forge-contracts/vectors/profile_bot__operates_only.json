@@ -1,6 +1,7 @@
 {
   "name": "operates_only",
   "description": "A profile that only lists bots it operates is no bot itself.",
+  "rules": "v2",
   "case": "profile_bot",
   "input": {
     "botId": "AbcPFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8xyz",

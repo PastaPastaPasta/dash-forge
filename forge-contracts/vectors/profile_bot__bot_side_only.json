@@ -1,6 +1,7 @@
 {
   "name": "bot_side_only",
   "description": "The bot names an operator that does not list it: no badge.",
+  "rules": "v2",
   "case": "profile_bot",
   "input": {
     "botId": "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv",

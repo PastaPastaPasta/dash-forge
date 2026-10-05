@@ -2083,7 +2083,11 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     for (n, target) in &linked {
         let closed = match u32::try_from(number) {
             Ok(pr) => collab.close_by_merge(handle, target, pr).await,
-            Err(_) => collab.set_state(handle, target, StateAction::Close, None).await,
+            Err(_) => {
+                collab
+                    .set_state(handle, target, StateAction::Close, None)
+                    .await
+            }
         };
         match closed {
             Ok(_) => {

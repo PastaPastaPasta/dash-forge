@@ -1,6 +1,7 @@
 {
   "name": "names_itself",
   "description": "A close naming the issue's own number reads as a plain close.",
+  "rules": "v2",
   "case": "closed_by_pr",
   "input": {
     "issue": 7,

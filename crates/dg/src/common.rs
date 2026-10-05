@@ -641,3 +641,11 @@ mod tests {
         ));
     }
 }
+
+#[test]
+fn a_moved_note_names_both_repositories() {
+    assert_eq!(
+        moved_note("alice/app", "bob/app"),
+        "note: alice/app has moved to bob/app (this command still uses alice/app)"
+    );
+}

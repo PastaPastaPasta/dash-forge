@@ -1,6 +1,7 @@
 {
   "name": "not_merged",
   "description": "A close naming a PR that is not merged reads as a plain close.",
+  "rules": "v2",
   "case": "closed_by_pr",
   "input": {
     "issue": 3,

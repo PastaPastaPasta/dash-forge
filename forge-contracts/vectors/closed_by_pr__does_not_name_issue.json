@@ -1,6 +1,7 @@
 {
   "name": "does_not_name_issue",
   "description": "A close naming a merged PR whose description does not close the issue reads as a plain close (a mention is not a closing reference).",
+  "rules": "v2",
   "case": "closed_by_pr",
   "input": {
     "issue": 3,

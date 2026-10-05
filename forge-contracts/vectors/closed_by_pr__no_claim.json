@@ -1,6 +1,7 @@
 {
   "name": "no_claim",
   "description": "A close that names no PR is not decided here (readers keep the timing match).",
+  "rules": "v2",
   "case": "closed_by_pr",
   "input": {
     "issue": 3,

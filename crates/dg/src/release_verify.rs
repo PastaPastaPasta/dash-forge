@@ -174,7 +174,10 @@ fn print_human(p: &ReleaseProvenance, tag: &str, repo: &str, sig: &LocalSignatur
     }
     if let (Some(r), "tag") = (&p.recorded, p.pinned_by.as_str()) {
         if p.record_differs {
-            println!("  recorded    {} by the release: the tag did not point there", short(r));
+            println!(
+                "  recorded    {} by the release: the tag did not point there",
+                short(r)
+            );
         } else {
             println!("  recorded    {} by the release: matches", short(r));
         }
@@ -292,4 +295,47 @@ pub async fn verify(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
         .fix("ask the repository's maintainers which commit and files the release should name before installing from it"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rev(id: &str, at: u64, delta: i64, target: Option<&str>) -> Release {
+        Release {
+            document_id: id.into(),
+            tag_name: "v1".into(),
+            name: String::new(),
+            notes: String::new(),
+            yanked: false,
+            assets: Vec::new(),
+            publisher: "M".into(),
+            created_at: at,
+            delta,
+            sealed: None,
+            target_oid: target.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_public_release_records_its_first_publishs_target() {
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        let (r1, r2) = (rev("r1", 1, 1, Some(&a)), rev("r2", 2, 0, Some(&b)));
+        let (_, rec) = revisions_of(&[&r2, &r1], true);
+        assert_eq!(rec.target.as_deref(), Some(a.as_str()));
+        assert_eq!(rec.pin, None);
+        // a private repository's plaintext target is never read
+        let (_, rec) = revisions_of(&[&r2, &r1], false);
+        assert_eq!(rec, Recorded::default());
+    }
+
+    #[test]
+    fn a_record_that_differs_from_the_tag_is_named_first() {
+        let p = release_provenance("T", &[], &[], &[], None, None);
+        assert_eq!(p.tag, TagVerdict::Missing);
+        let mut p = p;
+        p.tag = TagVerdict::Unchanged;
+        p.record_differs = true;
+        assert!(headline(&p, "v1").contains("another commit than the release records"));
+    }
 }

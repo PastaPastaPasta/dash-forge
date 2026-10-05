@@ -2717,7 +2717,7 @@ mod tests {
         }
         let ctx = &v.name;
         if v.case == "profile_bot" {
-            #[derive(Deserialize)]
+            #[derive(Deserialize, Serialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct BotInput {
                 bot_id: String,
@@ -2887,7 +2887,7 @@ mod tests {
             }
             "profile_input" | "avatar_config" | "profile_bot" => run_profile_case(v),
             "closed_by_pr" => {
-                #[derive(Deserialize)]
+                #[derive(Deserialize, Serialize)]
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
                 struct ClosedByInput {
                     issue: u32,
@@ -2895,7 +2895,8 @@ mod tests {
                     pr: Option<super::transition::ClosingPr>,
                 }
                 let inp: ClosedByInput = input(v);
-                let got = super::transition::closed_by_pr(inp.issue, inp.closed_by_pr, inp.pr.as_ref());
+                let got =
+                    super::transition::closed_by_pr(inp.issue, inp.closed_by_pr, inp.pr.as_ref());
                 assert_eq!(got, expected::<Option<u32>>(v), "vector `{}`", v.name);
             }
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),

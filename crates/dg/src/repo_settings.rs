@@ -87,6 +87,7 @@ fn full_pattern(p: &str) -> String {
 // ---------------------------------------------------------------------------------------
 
 /// `dg repo edit`: default branch (a config write), description and topics (a repo replace).
+#[allow(clippy::too_many_lines)] // one command: plan, quote, confirm, two writes, report
 pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
     if args.default_branch.is_none()
         && args.description.is_none()
@@ -109,7 +110,9 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
     };
     let change = ConfigChange {
         default_branch: args.default_branch.clone(),
-        moved_to: moved_to.as_ref().map(|m| m.as_ref().map(|r| r.repo_id.clone())),
+        moved_to: moved_to
+            .as_ref()
+            .map(|m| m.as_ref().map(|r| r.repo_id.clone())),
         ..ConfigChange::default()
     };
     change.validate()?;
@@ -191,20 +194,7 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
                 return;
             }
             if let (Some(id), Some(n)) = (&config_id, &next) {
-                if change.default_branch.is_some() {
-                    println!(
-                        "✓ default branch is now {} (config {id})",
-                        safe(&n.default_branch)
-                    );
-                }
-                match &moved_to {
-                    Some(Some(r)) => println!(
-                        "✓ marked as moved to {} (config {id})",
-                        safe(&r.display())
-                    ),
-                    Some(None) => println!("✓ no longer marked as moved (config {id})"),
-                    None => {}
-                }
+                print_config_edit(id, n, &change, moved_to.as_ref());
             }
             if edited {
                 println!("✓ repo document updated");
@@ -215,12 +205,29 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
     Ok(())
 }
 
+/// What a `dg repo edit` config write changed (human mode).
+fn print_config_edit(
+    id: &str,
+    next: &CurrentConfig,
+    change: &ConfigChange,
+    moved_to: Option<&Option<forge_core::scope::RepoRef>>,
+) {
+    if change.default_branch.is_some() {
+        println!(
+            "✓ default branch is now {} (config {id})",
+            safe(&next.default_branch)
+        );
+    }
+    match moved_to {
+        Some(Some(r)) => println!("✓ marked as moved to {} (config {id})", safe(&r.display())),
+        Some(None) => println!("✓ no longer marked as moved (config {id})"),
+        None => {}
+    }
+}
+
 /// The repository `--moved-to` names (`Ok(None)` for `""`, which clears the mark): it must
 /// exist and must not be this one. Only a public repository can be marked.
-async fn moved_target(
-    s: &Session,
-    target: &str,
-) -> Result<Option<forge_core::scope::RepoRef>> {
+async fn moved_target(s: &Session, target: &str) -> Result<Option<forge_core::scope::RepoRef>> {
     if target.trim().is_empty() {
         return Ok(None);
     }

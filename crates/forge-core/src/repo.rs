@@ -3608,9 +3608,8 @@ impl ConfigChange {
             check_patterns(p)?;
         }
         if let Some(Some(id)) = &self.moved_to {
-            platform::decode_identifier(id).map_err(|_| {
-                Error::Config(format!("{id:?} is not a repository id"))
-            })?;
+            platform::decode_identifier(id)
+                .map_err(|_| Error::Config(format!("{id:?} is not a repository id")))?;
         }
         if let Some(u) = &self.backend_uris {
             if !BACKEND_URIS_V2.fits(u) {
@@ -5798,6 +5797,7 @@ mod tests {
                 archived: false,
                 backend_mode: 2,
                 backend_uris: vec!["https://b.example/".into()],
+                moved_to: Some("4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF".into()),
             };
             let next = now.apply(&ConfigChange {
                 default_branch: Some("refs/heads/trunk".into()),
@@ -5809,6 +5809,13 @@ mod tests {
                 (next.backend_mode, &next.backend_uris),
                 (2, &now.backend_uris)
             );
+            // A move carries over every later config, and only an explicit change clears it.
+            assert_eq!(next.moved_to, now.moved_to);
+            let cleared = now.apply(&ConfigChange {
+                moved_to: Some(None),
+                ..ConfigChange::default()
+            });
+            assert_eq!(cleared.moved_to, None);
             let archived = now.apply(&ConfigChange {
                 archived: Some(true),
                 ..ConfigChange::default()

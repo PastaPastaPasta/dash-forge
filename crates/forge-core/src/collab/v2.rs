@@ -4989,7 +4989,15 @@ impl<'a> Collab<'a> {
             return Ok(None);
         }
         let e = match self
-            .set_state_from(repo, &target, StateAction::Draft, None, Some(code), None, None)
+            .set_state_from(
+                repo,
+                &target,
+                StateAction::Draft,
+                None,
+                Some(code),
+                None,
+                None,
+            )
             .await
         {
             Ok(c) => return Ok(Some(c.transition_id)),
@@ -6137,8 +6145,16 @@ impl<'a> Collab<'a> {
         target: &Target,
         closed: &ClosedAs,
     ) -> Result<StateChange> {
-        self.set_state_from(repo, target, StateAction::Close, None, None, Some(closed), None)
-            .await
+        self.set_state_from(
+            repo,
+            target,
+            StateAction::Close,
+            None,
+            None,
+            Some(closed),
+            None,
+        )
+        .await
     }
 
     /// Write the transition `mv` on `target` as it is (the importer's primitive: it computed
@@ -6161,6 +6177,7 @@ impl<'a> Collab<'a> {
     }
 
     /// [`Self::set_state`] from a state code the caller already knows (`None`: read it).
+    #[allow(clippy::too_many_arguments)] // an issue close's reason and its cause ride along
     async fn set_state_from(
         &self,
         repo: &RepoRef,
@@ -6448,7 +6465,9 @@ impl<'a> Collab<'a> {
                     .ok()
                     .filter(|b| b.len() == 20 || b.len() == 32)
                     .ok_or_else(|| {
-                        Error::Config(format!("release target {oid:?} is not a 20- or 32-byte oid"))
+                        Error::Config(format!(
+                            "release target {oid:?} is not a 20- or 32-byte oid"
+                        ))
                     })?;
                 p.insert(RELEASE_TARGET_OID.to_string(), FieldValue::bytes(bytes));
             }

@@ -315,14 +315,13 @@ async fn bot(ctx: &Ctx, cmd: &ProfileBotCommand) -> Result<()> {
         .as_ref()
         .and_then(|p| p.bot.clone())
         .unwrap_or_default();
-    let resolve = |who: &str| crate::meta::identity_arg(&client, || Ok(me.clone()), who);
     let done = match cmd {
         ProfileBotCommand::Operator { who } if who.trim().is_empty() => {
             claim.operator = None;
             "no longer names an operator".to_string()
         }
         ProfileBotCommand::Operator { who } => {
-            let op = resolve(who).await?;
+            let op = crate::meta::identity_arg(&client, || Ok(me.clone()), who).await?;
             if op == me {
                 return Err(crate::errors::usage("a bot cannot operate itself"));
             }
@@ -330,9 +329,11 @@ async fn bot(ctx: &Ctx, cmd: &ProfileBotCommand) -> Result<()> {
             format!("names {op} as its operator; the badge shows once {op} runs `dg profile bot add {me}`")
         }
         ProfileBotCommand::Add { bot } => {
-            let b = resolve(bot).await?;
+            let b = crate::meta::identity_arg(&client, || Ok(me.clone()), bot).await?;
             if b == me {
-                return Err(crate::errors::usage("you cannot list yourself as your own bot"));
+                return Err(crate::errors::usage(
+                    "you cannot list yourself as your own bot",
+                ));
             }
             if !claim.operates.contains(&b) {
                 if claim.operates.len() >= MAX_OPERATED_BOTS {
@@ -348,12 +349,17 @@ async fn bot(ctx: &Ctx, cmd: &ProfileBotCommand) -> Result<()> {
             format!("lists {b} as a bot you operate")
         }
         ProfileBotCommand::Remove { bot } => {
-            let b = resolve(bot).await?;
+            let b = crate::meta::identity_arg(&client, || Ok(me.clone()), bot).await?;
             claim.operates.retain(|x| *x != b);
             format!("no longer lists {b}")
         }
     };
-    if stored.as_ref().and_then(|p| p.bot.clone()).unwrap_or_default() == claim {
+    if stored
+        .as_ref()
+        .and_then(|p| p.bot.clone())
+        .unwrap_or_default()
+        == claim
+    {
         ctx.emit(json!({"status": "unchanged"}), || {
             println!("profile unchanged (it already says so)");
         });

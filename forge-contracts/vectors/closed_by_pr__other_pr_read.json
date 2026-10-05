@@ -1,6 +1,7 @@
 {
   "name": "other_pr_read",
   "description": "The PR read must be the one the close names.",
+  "rules": "v2",
   "case": "closed_by_pr",
   "input": {
     "issue": 3,

@@ -1,6 +1,7 @@
 {
   "name": "mutual",
   "description": "The bot names its operator and the operator lists the bot: the badge shows, naming the operator.",
+  "rules": "v2",
   "case": "profile_bot",
   "input": {
     "botId": "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv",

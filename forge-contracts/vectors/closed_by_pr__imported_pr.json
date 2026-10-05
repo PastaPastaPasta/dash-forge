@@ -1,6 +1,7 @@
 {
   "name": "imported_pr",
   "description": "An imported PR's closing references are the source forge's numbers: a plain close.",
+  "rules": "v2",
   "case": "closed_by_pr",
   "input": {
     "issue": 3,

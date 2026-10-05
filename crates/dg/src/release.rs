@@ -292,10 +292,13 @@ async fn ensure_tag(s: &Session, tag: &str, has_release: Option<bool>) -> Result
         .await?;
     require_tag(&refs, &s.repo.display(), tag, has_release)?;
     let want = format!("refs/tags/{tag}");
-    Ok(refs.iter().find(|(n, _)| *n == want).and_then(|(_, st)| match st {
-        forge_core::rules::RefState::Resolved { oid, .. } => Some(oid.clone()),
-        _ => None,
-    }))
+    Ok(refs
+        .iter()
+        .find(|(n, _)| *n == want)
+        .and_then(|(_, st)| match st {
+            forge_core::rules::RefState::Resolved { oid, .. } => Some(oid.clone()),
+            _ => None,
+        }))
 }
 
 /// Refuse a release for a tag the repository does not have (E102), before anything is
