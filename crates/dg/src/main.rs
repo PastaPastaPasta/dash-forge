@@ -943,6 +943,34 @@ pub enum ProfileCommand {
     /// The keys you sign commits with, published on your profile for Verified badges.
     #[command(subcommand)]
     Key(ProfileKeyCommand),
+    /// Mark an identity as a bot: its profile names its operator, and the operator's profile
+    /// lists it. Forge shows a "bot" badge only when both say so.
+    #[command(subcommand)]
+    Bot(ProfileBotCommand),
+}
+
+/// `dg profile bot` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ProfileBotCommand {
+    /// Run as the bot: name the identity that operates you (id, DPNS name or `@name`; `""`
+    /// clears it).
+    Operator {
+        /// The operator.
+        #[arg(value_name = "IDENTITY")]
+        who: String,
+    },
+    /// Run as the operator: list a bot you operate on your profile (at most 8).
+    Add {
+        /// The bot (id, DPNS name or `@name`).
+        #[arg(value_name = "IDENTITY")]
+        bot: String,
+    },
+    /// Run as the operator: stop listing a bot.
+    Remove {
+        /// The bot (id, DPNS name or `@name`).
+        #[arg(value_name = "IDENTITY")]
+        bot: String,
+    },
 }
 
 /// `dg profile key` subcommands.

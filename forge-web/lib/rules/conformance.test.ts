@@ -40,7 +40,7 @@ import { releaseProvenance, type ProvenanceInput } from './releaseProvenance'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
-import { avatarSpec, checkProfile, type ProfileInput } from './profile'
+import { avatarSpec, botOperator, checkProfile, type BotClaim, type ProfileInput } from './profile'
 import { backlinkFile, readBacklink } from './mirror-backlink'
 import { readPubkeyEntry, verifyCommitSignature, verifyTagSignature, type Signer } from './signature'
 import { HandoffError, RECOVERY_PHRASE_WARNING, handoffRequest, openHandoffReply } from '../auth/key-handoff'
@@ -579,6 +579,12 @@ function runCaseV2(v: Vector): void {
     case 'profile_input': {
       onlyKeys(v, ['displayName', 'bio', 'avatarConfig', 'links', 'location', 'company'])
       expect(checkProfile(v.input as ProfileInput)).toEqual(v.expected)
+      break
+    }
+    case 'profile_bot': {
+      onlyKeys(v, ['botId', 'bot', 'operator'])
+      const inp = v.input as { readonly botId: string; readonly bot: BotClaim | null; readonly operator: BotClaim | null }
+      expect(botOperator(inp.botId, inp.bot, inp.operator)).toEqual(v.expected)
       break
     }
     case 'avatar_config': {

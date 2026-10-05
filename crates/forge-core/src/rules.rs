@@ -2593,6 +2593,20 @@ mod tests {
             identity_id: String,
         }
         let ctx = &v.name;
+        if v.case == "profile_bot" {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct BotInput {
+                bot_id: String,
+                bot: Option<super::profile::BotClaim>,
+                operator: Option<super::profile::BotClaim>,
+            }
+            let inp: BotInput = input(v);
+            let got =
+                super::profile::bot_operator(&inp.bot_id, inp.bot.as_ref(), inp.operator.as_ref());
+            assert_eq!(got, expected::<Option<String>>(v), "vector `{ctx}`");
+            return;
+        }
         if v.case == "profile_input" {
             let inp: super::profile::ProfileInput = input(v);
             let got = serde_json::to_value(super::profile::check_profile(&inp)).expect("serialize");
@@ -2737,7 +2751,7 @@ mod tests {
                 let got = v2::ref_name_hashes_agree(&inp.doc, key.as_ref());
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
-            "profile_input" | "avatar_config" => run_profile_case(v),
+            "profile_input" | "avatar_config" | "profile_bot" => run_profile_case(v),
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
             "pubkey_entry" | "commit_signature" | "tag_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),

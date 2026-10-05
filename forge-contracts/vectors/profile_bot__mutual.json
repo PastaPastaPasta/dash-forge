@@ -1,0 +1,18 @@
+{
+  "name": "mutual",
+  "description": "The bot names its operator and the operator lists the bot: the badge shows, naming the operator.",
+  "case": "profile_bot",
+  "input": {
+    "botId": "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv",
+    "bot": {
+      "operator": "AbcPFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8xyz"
+    },
+    "operator": {
+      "operates": [
+        "Zzz9FaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8abc",
+        "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv"
+      ]
+    }
+  },
+  "expected": "AbcPFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8xyz"
+}

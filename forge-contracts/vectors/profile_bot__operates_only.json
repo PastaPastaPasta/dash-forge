@@ -1,0 +1,15 @@
+{
+  "name": "operates_only",
+  "description": "A profile that only lists bots it operates is no bot itself.",
+  "case": "profile_bot",
+  "input": {
+    "botId": "AbcPFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8xyz",
+    "bot": {
+      "operates": [
+        "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv"
+      ]
+    },
+    "operator": null
+  },
+  "expected": null
+}

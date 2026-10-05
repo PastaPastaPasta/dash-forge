@@ -1,0 +1,15 @@
+{
+  "name": "operator_side_only",
+  "description": "An operator lists an identity whose profile names no operator: no badge (nobody labels someone else a bot).",
+  "case": "profile_bot",
+  "input": {
+    "botId": "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv",
+    "bot": null,
+    "operator": {
+      "operates": [
+        "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv"
+      ]
+    }
+  },
+  "expected": null
+}
