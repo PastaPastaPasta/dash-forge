@@ -1093,7 +1093,9 @@ pub enum PrCommand {
     /// Check that a merged pull request's recorded merge contains its commits. Writes nothing.
     ///
     /// Fetches the base branch and the PR head, then says whether the merge commit contains the
-    /// PR's commits, is a squash or a rebase of them, or does not contain them.
+    /// PR's commits, is a squash or a rebase of them, or does not contain them. Then lists the
+    /// branch rules in force when it was merged (protection, approvals, required checks) and
+    /// whether the merge met them, or a maintainer recorded a bypass.
     Verify {
         /// The repository (`owner/name`).
         repo: String,

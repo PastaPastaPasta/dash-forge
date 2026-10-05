@@ -204,8 +204,8 @@ pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
             .cloned()
             .collect(),
     );
-    let policy = newest_at(&input.policies, at, |p| (p.created_at, p.id.as_str()))
-        .map(|p| p.policy.clone());
+    let policy =
+        newest_at(&input.policies, at, |p| (p.created_at, p.id.as_str())).map(|p| p.policy.clone());
     let protected = newest_at(&input.protection, at, |p| (p.created_at, p.id.as_str()))
         .is_some_and(|p| p.protected);
     let merger_role = oracle.role_at(&input.merger, at);
@@ -239,8 +239,11 @@ pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
         .is_some_and(|p| p.require_checks || p.required_checks.iter().any(|n| !n.is_empty()));
     let checks = match (&policy, &input.runs) {
         (Some(policy), Some(runs)) if checks_required => {
-            let runs: Vec<CheckRunRow> =
-                runs.iter().filter(|r| r.created_at <= at).cloned().collect();
+            let runs: Vec<CheckRunRow> = runs
+                .iter()
+                .filter(|r| r.created_at <= at)
+                .cloned()
+                .collect();
             Some(checks_state(
                 &runs,
                 &input.merge_head,

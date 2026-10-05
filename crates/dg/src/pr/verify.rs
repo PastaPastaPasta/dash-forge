@@ -18,8 +18,10 @@ use serde_json::json;
 
 use crate::common::Reader;
 use crate::context::Ctx;
-use crate::fmt::short;
+use crate::fmt::{short, short_identity};
 use crate::git;
+use forge_core::rules::merge_audit::{AuditVerdict, MergeAudit};
+use forge_core::rules::v2::CheckState;
 
 /// `git merge-base --is-ancestor a b`: `Some(true)` (exit 0) or `Some(false)` (exit 1), `None`
 /// when it could not answer: an object is missing, the walk failed, or the repository is shallow
@@ -226,11 +228,137 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         &view.tip_before(&merge_oid),
     );
     let content = merge_content(&facts);
+    // The branch rules at the merge: Platform reads only (policy and config timelines, reviews,
+    // members, and the runs on the merged head when the policy required checks).
+    let audit = collab.merge_audit(handle, &view).await;
+    let base = forge_core::repo::short_branch_name(&view.merge_base.ref_name).to_string();
+    let merger = forge_core::rules::v2::merge_transition(&view.log.transitions)
+        .map(|t| t.actor.clone())
+        .unwrap_or_default();
+    let audit_json = match &audit {
+        Ok(Some(a)) => serde_json::to_value(a).unwrap_or(serde_json::Value::Null),
+        Ok(None) => serde_json::Value::Null,
+        Err(e) => json!({ "error": e.to_string() }),
+    };
     ctx.emit(
-        json!({ "pr": number, "merged": true, "mergeContent": content_json(&merge_oid, &content) }),
-        || println!("{}", merge_line(&merge_oid, &content)),
+        json!({ "pr": number, "merged": true, "mergeContent": content_json(&merge_oid, &content), "rulesAtMerge": audit_json }),
+        || {
+            println!("{}", merge_line(&merge_oid, &content));
+            match &audit {
+                Ok(Some(a)) => {
+                    for line in audit_lines(a, &merger, &base) {
+                        println!("{line}");
+                    }
+                }
+                Ok(None) => println!("branch rules at merge: not checked for a private repository yet"),
+                Err(e) => println!("branch rules at merge: could not be read: {e}"),
+            }
+        },
     );
     Ok(())
+}
+
+/// `dg pr verify`'s "branch rules at merge" block: the verdict, then one line per rule (`!` first
+/// when unmet). Parity with the web's `auditRows` / `auditHeadline` (`lib/view/merge-audit.ts`).
+pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<String> {
+    let headline = match a.verdict {
+        AuditVerdict::None => "no branch rules applied",
+        AuditVerdict::Met => "met the branch rules in force at the time",
+        AuditVerdict::Bypassed => "a maintainer bypassed the branch rules and recorded it",
+        AuditVerdict::Unmet => {
+            "did not meet the branch rules in force at the time, and no bypass was recorded"
+        }
+        AuditVerdict::Unknown => "the required checks could not be read",
+    };
+    let mark = |met: bool| if met { "  " } else { "! " };
+    let bang = if a.verdict == AuditVerdict::Unmet {
+        "! "
+    } else {
+        ""
+    };
+    let mut out = vec![format!("{bang}branch rules at merge: {headline}")];
+    out.push(format!(
+        "  merged by {}{}",
+        short_identity(merger),
+        a.merger_role.map_or_else(
+            || ", not a member now".to_string(),
+            |r| format!(", {} at the time", r.noun())
+        )
+    ));
+    if a.protected {
+        out.push(if a.protection_unmet {
+            format!("! protected branch: {base} was protected, and the merge was not recorded by a maintainer")
+        } else {
+            format!("  protected branch: {base} was protected; a maintainer merged it")
+        });
+    } else {
+        out.push(format!("  protected branch: {base} was not protected"));
+    }
+    match (&a.policy, &a.approvals) {
+        (None, _) => out.push("  branch policy: none".to_string()),
+        (Some(p), Some(s)) if s.need > 0 => {
+            let who = if p.approver_role == 1 {
+                " (maintainers only)"
+            } else {
+                ""
+            };
+            out.push(format!(
+                "{}required approvals: {} of {}{who}",
+                mark(s.have >= s.need),
+                s.have,
+                s.need
+            ));
+            if !s.blocked_by.is_empty() {
+                let n = s.blocked_by.len();
+                out.push(format!(
+                    "! changes requested by {n} reviewer{}",
+                    if n == 1 { "" } else { "s" }
+                ));
+            }
+        }
+        _ => out.push("  required approvals: none".to_string()),
+    }
+    if a.checks_unread {
+        out.push("  required checks: could not be read".to_string());
+    } else if let Some(c) = &a.checks {
+        if c.required.is_empty() {
+            out.push("! required checks: none reported on the merged head".to_string());
+        }
+        for r in &c.required {
+            let word = match r.state {
+                CheckState::Passed => "passed",
+                CheckState::Failing => "failed",
+                CheckState::Pending => "still running",
+                CheckState::Missing => "not reported",
+            };
+            out.push(format!(
+                "{}check {}: {word}",
+                mark(r.state == CheckState::Passed),
+                r.name
+            ));
+        }
+    }
+    if let Some(b) = &a.bypass {
+        out.push(format!(
+            "  bypass recorded by {}{}",
+            short_identity(&b.actor),
+            if b.value.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", b.value)
+            }
+        ));
+    }
+    if a.rules_changed {
+        out.push("! the branch rules changed less than an hour before this merge".to_string());
+    }
+    if a.verdict == AuditVerdict::Unmet {
+        out.push(
+            "  (judged by what is on Platform now: reviews and check runs can be deleted, and a removed member's approval stops counting)"
+                .to_string(),
+        );
+    }
+    out
 }
 
 /// `mergeContent` in `dg pr view --json` and `dg pr verify --json`.
@@ -346,6 +474,46 @@ mod tests {
         // A commit that is not in the repository: unknown, never missing.
         let c = merge_content(&merge_facts(dir, &"e".repeat(40), &squashed, &base1));
         assert_eq!(c.verdict, MergeVerdict::Unknown);
+    }
+
+    #[test]
+    fn audit_lines_mark_unmet_rules_and_the_caveat() {
+        use forge_core::rules::merge_audit::{audit_merge, MergeAuditInput, ProtectionDoc};
+        use forge_core::rules::v2::{Membership, Role};
+        let input = MergeAuditInput {
+            merged_at: 100,
+            merger: "writ".into(),
+            merge_oid: "b".repeat(40),
+            merge_head: "a".repeat(40),
+            pr_author: "auth".into(),
+            protection: vec![ProtectionDoc {
+                id: "c1".into(),
+                created_at: 90,
+                protected: true,
+            }],
+            memberships: vec![Membership {
+                identity: "writ".into(),
+                role: Role::Writer,
+                created_at: 1,
+            }],
+            ..MergeAuditInput::default()
+        };
+        let lines = audit_lines(&audit_merge(&input), "writ", "main");
+        assert_eq!(
+            lines[0],
+            "! branch rules at merge: did not meet the branch rules in force at the time, and no bypass was recorded"
+        );
+        assert!(lines.contains(&"  merged by writ, a writer at the time".to_string()));
+        assert!(lines
+            .iter()
+            .any(|l| l.starts_with("! protected branch: main was protected")));
+        assert!(lines.contains(
+            &"! the branch rules changed less than an hour before this merge".to_string()
+        ));
+        assert!(lines
+            .last()
+            .unwrap()
+            .contains("judged by what is on Platform now"));
     }
 
     #[test]
