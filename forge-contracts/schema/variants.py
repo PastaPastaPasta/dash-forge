@@ -16,6 +16,11 @@ combination with each contract's serialized size against the D-12 budget (build.
 build.CEILING) and its create transition against the 20,480-byte limit, and exits 1 when any
 combination fails validation or goes over the ceiling.
 
+RC2 is registered (devnet sakura, 2026-10-01), so its matrix is run as it was decided: with every
+UPDATE-1 item (build.UPDATE1_FLAGS, roadmap D4) off. UPDATE-1 is one in-place update on top of the
+registered RC2 set, so its rows follow with every RC2 item and rider on: all of it, and each item
+left out alone (U1-<item>), every one of which must fit the ceiling too.
+
 A probe variant to register (and measure) is the same build:
   python3 forge-contracts/schema/build.py --off review_to_author --out /tmp/probe-s2
 """
@@ -36,12 +41,17 @@ SHORT = {'check_evidence_freeze': 'S1', 'review_to_author': 'S2', 'review_author
 
 def combinations():
     """(the flags turned off) for every combination of RC2_FLAGS with the riders on, then every
-    combination of RIDER_FLAGS with the RC2 items on (the riders touch other properties)."""
+    combination of RIDER_FLAGS with the RC2 items on (the riders touch other properties), each
+    with UPDATE-1 off (as registered); then UPDATE-1 whole, and with each of its items left out."""
+    u1 = list(build.UPDATE1_FLAGS)
     for on in itertools.product((True, False), repeat=len(build.RC2_FLAGS)):
-        yield [f for f, v in zip(build.RC2_FLAGS, on) if not v]
+        yield [f for f, v in zip(build.RC2_FLAGS, on) if not v] + u1
     for on in itertools.product((True, False), repeat=len(build.RIDER_FLAGS)):
         if not all(on):
-            yield [f for f, v in zip(build.RIDER_FLAGS, on) if not v]
+            yield [f for f, v in zip(build.RIDER_FLAGS, on) if not v] + u1
+    yield []
+    for f in u1:
+        yield [f]
 
 
 def main():
@@ -54,6 +64,9 @@ def main():
     for off_flags in combinations():
         off = ','.join(off_flags)
         label = '+'.join(['M1'] + [s for f, s in SHORT.items() if f not in off_flags])
+        u1_off = [f for f in build.UPDATE1_FLAGS if f in off_flags]
+        if len(u1_off) < len(build.UPDATE1_FLAGS):
+            label += '+U1' + ''.join(f'-{f}' for f in u1_off)
         with tempfile.TemporaryDirectory() as tmp:
             vectors = os.path.join(tmp, 'vectors')
             gen = subprocess.run([sys.executable, os.path.join(HERE, 'vectors.py'), '--off', off, '--out', vectors],

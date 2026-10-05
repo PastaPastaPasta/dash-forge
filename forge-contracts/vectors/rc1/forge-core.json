@@ -4274,5 +4274,359 @@
    "description": "d",
    "r": 3
   }
+ },
+ {
+  "item": "U1",
+  "name": "a release naming its commit (20 B)",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1,
+   "targetOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a release naming its commit (32 B)",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1,
+   "targetOid": {
+    "$b": [
+     1,
+     32
+    ]
+   }
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a release without targetOid (an installed client)",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a release targetOid of 19 bytes",
+  "type": "release",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1,
+   "targetOid": {
+    "$b": [
+     1,
+     19
+    ]
+   }
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a config naming its successor repo",
+  "type": "config",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "defaultBranch": "main",
+   "protectedPatterns": [
+    "refs/heads/main",
+    "refs/tags/**"
+   ],
+   "backend": {
+    "mode": 2,
+    "uris": [
+     "s3://b/p"
+    ]
+   },
+   "vis": "public",
+   "movedTo": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a movedTo of 31 bytes",
+  "type": "config",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "defaultBranch": "main",
+   "protectedPatterns": [
+    "refs/heads/main",
+    "refs/tags/**"
+   ],
+   "backend": {
+    "mode": 2,
+    "uris": [
+     "s3://b/p"
+    ]
+   },
+   "vis": "public",
+   "movedTo": {
+    "$b": [
+     9,
+     31
+    ]
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "packMirror ok",
+  "type": "packMirror",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "https://mirror.example.com/p/abc.pack"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a stranger records an ipfs copy",
+  "type": "packMirror",
+  "expect": "ok",
+  "owner": 9,
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 2,
+   "uris": [
+    "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "four uris",
+  "type": "packMirror",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "https://m0.example.com/p",
+    "https://m1.example.com/p",
+    "https://m2.example.com/p",
+    "https://m3.example.com/p"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a mirror with no uri",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": []
+  }
+ },
+ {
+  "item": "U1",
+  "name": "five uris",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "https://m0.example.com/p",
+    "https://m1.example.com/p",
+    "https://m2.example.com/p",
+    "https://m3.example.com/p",
+    "https://m4.example.com/p"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a mirror of kind 0",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "uris": [
+    "https://mirror.example.com/p/abc.pack"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a mirror without a kind",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "uris": [
+    "https://mirror.example.com/p/abc.pack"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a mirror uri over 300 characters",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "maxLength",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "https://m.example.com/pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a file: mirror uri",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "file:///etc/passwd"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a plain http mirror uri",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "http://169.254.169.254/latest/meta-data"
+   ]
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a mirror uri with credentials",
+  "type": "packMirror",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 1,
+   "uris": [
+    "https://user:pw@m.example.com/p"
+   ]
+  }
  }
 ]
