@@ -26,9 +26,11 @@ import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/component
 import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
-import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
+import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/lib/view'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
-import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
+import { quotesMembersText } from '@/lib/view/audience'
+import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, QuoteConfirmDialog, useAudienceWarnings, useComposerAudience } from '@/components/repo/audience'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
 import type { ClosedAs } from '@/lib/rules/transition'
@@ -136,7 +138,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // satisfies them all; a newer read aborts the older one's polling.
   const expectations = useRef<((t: IssueThread) => boolean)[]>([])
   const current = useRef<{ aborted: boolean }>({ aborted: false })
-  const { data, loading, error, reload } = useAsync<IssueThread | null>(
+  const { data: read, loading, error, reload } = useAsync<IssueThread | MembersOnlyTarget | null>(
     async (stop) => {
       current.current.aborted = true
       const own = { aborted: false }
@@ -144,11 +146,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       // Stopped by a newer read, or by useAsync (deps changed, or the page unmounted).
       const signal = { get aborted() { return own.aborted || stop.aborted } }
       const want = [...expectations.current]
-      const load = (): Promise<IssueThread | null> => loadIssueThread(sdk!, home.repo, number, network)
+      const load = (): Promise<IssueThread | MembersOnlyTarget | null> => loadIssueOrMembersOnly(sdk!, home.repo, number, network)
       const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
-      if (first === null || want.length === 0) return first
+      // A members-only issue this reader cannot open has nothing to re-read for.
+      if (first === null || isMembersOnlyTarget(first) || want.length === 0) return first
       // A re-read that fails keeps the thread just read rather than replacing the page with an error.
-      const reread = (): Promise<IssueThread | null> => load().catch(() => first)
+      const reread = (): Promise<IssueThread | null> => load().then((t) => (isMembersOnlyTarget(t) ? first : t)).catch(() => first)
       const t = await readUntil(reread, want, { signal, first })
       if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
       return t
@@ -156,6 +159,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     [ready, contentKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
+  // The thread this reader can read (null too for a members-only issue it cannot open).
+  const data = read === null || isMembersOnlyTarget(read) ? null : read
   const refresh = useCallback(
     (want?: (t: IssueThread) => boolean) => {
       if (want) expectations.current.push(want)
@@ -184,8 +189,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     { enabled: ready && sdk !== null && canSetMilestone },
   )
 
-  // The unsent comment survives a reload (never stored for a private repo).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'))
+  // Who the comment is for (DESIGN §10): the issue's audience, or Members when picked.
+  const audience = useComposerAudience(home, { parent: data?.issue.audience ?? 'public', members: data?.members ?? null, maintainer: holdings.data?.maintain === true })
+  // The unsent comment survives a reload (never stored for a private repo, nor while members-only).
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'), audience.audience === 'public')
+  const warnings = useAudienceWarnings(audience, comment, data === null ? null : { author: data.issue.author, kind: 'issue' })
+  // A public comment that repeats members-only text asks first (product H8).
+  const [quoteAsk, setQuoteAsk] = useState(false)
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -233,6 +243,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Loading issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
+  if (isMembersOnlyTarget(read)) return <MembersOnlyTargetPage home={home} target={read} />
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="issue" icon={CircleDot} title={`Issue #${number} not found`} body="No issue or pull request with that number in this repo." />
 
   const { issue, timeline, labels, members, hidden, eventValues, meta } = data
@@ -267,26 +278,37 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       ? `Couldn't read this repo's ${ACL_NAME}, so close/reopen permission is unknown.`
       : null
   const target = { id: issue.id, number: issue.number }
-  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst)
+  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
+  // Members-only text on this page: a public comment that repeats it asks first.
+  const membersTexts = [
+    ...(issue.audience === 'members' ? [issue.title, issue.body] : []),
+    ...timeline.flatMap((t) => (t.kind === 'comment' && t.comment.audience === 'members' ? [t.comment.body] : [])),
+  ]
+  const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
   // A close or reopen is one `transition`, by a member or by the author.
   const stateCost = previewCreate('transition', {}, stateFirst)
   // "Close with comment" (QW2-008): the composer's text goes with a close or reopen, as on GitHub,
   // when this viewer could post it (not locked out, nothing blocking the composer, within the limit).
-  const withComment = comment.trim() !== '' && composeBlock === null && !lockedOutNow && !commentTooLong ? comment.trim() : null
+  const withComment = comment.trim() !== '' && composeBlock === null && !lockedOutNow && !commentTooLong && !quoting ? comment.trim() : null
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
-  const postComment = async (): Promise<void> => {
+  const postComment = async (confirmed = false): Promise<void> => {
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
+    if (quoting && !confirmed) {
+      setQuoteAsk(true)
+      return
+    }
     setPosting(true)
     setCommentError(null)
     // Until the outcome is known, a reload must not bring the text back to be posted again.
     holdDraft(true, comment)
     try {
-      const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext })
+      const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext, audience: audience.audience })
       setComment('')
       holdDraft(false, '')
       draft.renew()
+      audience.reset()
       refresh((t) => issueWriteShows(t, { kind: 'comment', id: posted.documentId }))
     } catch (e) {
       if (e instanceof SupersededWriteError) {
@@ -315,7 +337,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'state': {
         // The comment first, as GitHub posts it: it is part of why the issue closes.
         if (pending.comment !== undefined && closeComment.current?.intent !== intent) {
-          const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: pending.comment, intent: `${intent}:comment`, post: postContext }).catch((e: unknown) => {
+          const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: pending.comment, intent: `${intent}:comment`, post: postContext, audience: audience.audience }).catch((e: unknown) => {
             if (e instanceof SupersededWriteError) return { documentId: e.documentId }
             throw e
           })
@@ -412,7 +434,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const pendingCost = ((): Cost => {
     switch (pending?.kind) {
       case 'state':
-        return pending.comment === undefined ? stateCost : sumPreviews([composeCost(home.repo, 'comment', { body: pending.comment }, commentFirst), stateCost])
+        return pending.comment === undefined ? stateCost : sumPreviews([composeCost(home.repo, 'comment', { body: pending.comment }, commentFirst, audience.audience), stateCost])
       case 'labels':
         return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => composeCost(home.repo, 'event', { value }, eventFirst)))
       case 'assignees':
@@ -533,9 +555,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         )}
 
         {/* Timeline */}
-        {!threadCollapsed && (timeline.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 || (duplicatesOf.data?.length ?? 0) > 0) ? (
+        {!threadCollapsed && (timeline.length > 0 || data.membersOnly.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 || (duplicatesOf.data?.length ?? 0) > 0) ? (
           <Timeline
             items={timeline}
+            membersOnly={data.membersOnly}
+            {...(home.lane ? { lane: home.lane } : {})}
             links={links}
             trust={trust}
             {...(moderation ? { moderation } : {})}
@@ -587,7 +611,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           />
         ) : null}
 
-        <HiddenNote hidden={0} what="comments" home={home} by={hidden} />
+        <HiddenNote hidden={totalHidden(hidden)} what="comment" home={home} by={hidden} shown={data.membersOnly.length} />
         <EventValuesNote counts={eventValues} />
 
         {/* Composer */}
@@ -598,6 +622,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
             <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={composeBlock === null ? () => void postComment() : undefined} />
             <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} long={commentLong} />
+            <AudienceWarnings warnings={warnings} />
           </LockedBanner>
           {lockedOutNow && !canToggle ? null : (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
@@ -624,10 +649,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   {stateToggleLabel(open, withComment !== null, 'issue')}
                 </Button>
               ) : null}
+              {lockedOutNow ? null : <AudienceChip home={home} state={audience} />}
               {lockedOutNow ? null : (
                 <Button
                   variant="primary"
-                  onClick={postComment}
+                  onClick={() => void postComment()}
                   loading={posting}
                   disabled={composeBlock !== null || comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
                   title={guard.disabledReason ?? undefined}
@@ -715,6 +741,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         </SidebarSection>
       </aside>
 
+      <QuoteConfirmDialog
+        open={quoteAsk}
+        onCancel={() => setQuoteAsk(false)}
+        onConfirm={() => {
+          setQuoteAsk(false)
+          void postComment(true)
+        }}
+      />
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}

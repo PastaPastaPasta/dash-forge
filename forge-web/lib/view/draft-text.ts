@@ -117,8 +117,12 @@ export function clearDrafts(identityId: string): void {
  * issue or PR, another identity) loads that key's draft. `hold(true, …)` takes the stored copy
  * away and stores nothing until `hold(false, text)` stores `text` again: while a post's outcome is unknown, a reload must not
  * bring back text that may already be on chain, where it would be posted twice.
+ *
+ * `persist` false (the composer turned members-only): the text stays in memory, and the stored
+ * copy is removed at once, so no members-only text is at rest (DESIGN §4.1). Back to true, the
+ * text is stored again.
  */
-export function useDraftText(key: string | null): [string, (text: string) => void, (held: boolean, text: string) => void] {
+export function useDraftText(key: string | null, persist = true): [string, (text: string) => void, (held: boolean, text: string) => void] {
   const [state, setState] = useState<{ key: string | null; text: string }>(() => ({ key, text: key === null ? '' : readDraft(key) }))
   const held = useRef(false)
   const current = state.key === key ? state.text : key === null ? '' : readDraft(key)
@@ -128,19 +132,26 @@ export function useDraftText(key: string | null): [string, (text: string) => voi
       setState({ key, text: key === null ? '' : readDraft(key) })
     }
   }, [key, state.key])
+  // The audience changed: drop the stored copy, or store the text again.
+  const latest = useRef(current)
+  latest.current = current
+  useEffect(() => {
+    if (key === null || held.current) return
+    writeDraft(key, persist ? latest.current : '')
+  }, [key, persist])
   const set = useCallback(
     (text: string) => {
       setState({ key, text })
-      if (key !== null && !held.current) writeDraft(key, text)
+      if (key !== null && !held.current && persist) writeDraft(key, text)
     },
-    [key],
+    [key, persist],
   )
   const hold = useCallback(
     (on: boolean, text: string) => {
       held.current = on
-      if (key !== null) writeDraft(key, on ? '' : text)
+      if (key !== null) writeDraft(key, on || !persist ? '' : text)
     },
-    [key],
+    [key, persist],
   )
   return [current, set, hold]
 }

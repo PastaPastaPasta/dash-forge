@@ -47,7 +47,7 @@ import {
 import { repoChromeTimelines, type ChromeTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
-import { HiddenTally, SEALED_EPOCH, admittedAudience, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
+import { HiddenTally, MEMBERS_ONLY_ROW, SEALED_EPOCH, admittedAudience, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -67,6 +67,11 @@ export interface IssueView {
   readonly id: string
   /** Who it was written for (a public repo's members-only issue reads as `members`). Absent: public. */
   readonly audience?: 'members'
+  /**
+   * A members-only issue this reader cannot open (a list's placeholder row, DESIGN D14): its
+   * title and body are empty, and everything else is what is public about it.
+   */
+  readonly membersOnly?: true
   readonly number: number
   readonly title: string
   /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
@@ -120,12 +125,21 @@ export function revisionOf(doc: PlainDocument): number {
   return typeof r === 'number' && r > 0 ? r : typeof r === 'bigint' ? Number(r) : 1
 }
 
+/**
+ * The audience marks of an issue or PR view: `members` for a members-only one this reader opened,
+ * and `membersOnly` too for one it cannot open (a list's placeholder row, {@link MEMBERS_ONLY_ROW}).
+ */
+function audienceOf(doc: PlainDocument): { audience?: 'members'; membersOnly?: true } {
+  if (doc[MEMBERS_ONLY_ROW] === true) return { audience: 'members', membersOnly: true }
+  return admittedAudience(doc) === 'members' ? { audience: 'members' } : {}
+}
+
 /** An issue document, its state code and its target log (no reads). */
 export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: number): IssueView {
   const author = str(issueDoc, '$ownerId')
   return {
     id: str(issueDoc, '$id'),
-    ...(admittedAudience(issueDoc) === 'members' ? { audience: 'members' as const } : {}),
+    ...audienceOf(issueDoc),
     number: num(issueDoc, 'number'),
     title: titleOf(issueDoc),
     body: str(issueDoc, 'body'),
@@ -142,6 +156,10 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: numbe
 /** A PR (patch) with its folded state. */
 export interface PullView {
   readonly id: string
+  /** Who it was written for (a public repo's members-only PR reads as `members`). Absent: public. */
+  readonly audience?: 'members'
+  /** A members-only PR this reader cannot open (a list's placeholder row): see {@link IssueView.membersOnly}. */
+  readonly membersOnly?: true
   readonly number: number
   readonly title: string
   /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
@@ -287,6 +305,8 @@ export interface ReviewView {
    * D15), with no body. Never part of a thread's readable reviews.
    */
   readonly membersOnly?: true
+  /** A members-only review this reader opened: its text is for members (its verdict is public). Absent: public. */
+  readonly audience?: 'members'
 }
 
 
@@ -690,6 +710,7 @@ export function reviewViewOf(d: PlainDocument): ReviewView {
   const { verdict, code } = verdictFromCode(num(d, 'verdict'))
   return {
     id: str(d, '$id'),
+    ...(admittedAudience(d) === 'members' ? { audience: 'members' as const } : {}),
     reviewer: str(d, '$ownerId'),
     verdict,
     verdictCode: code,
@@ -877,6 +898,7 @@ export async function readPull(
 
   return {
     id,
+    ...audienceOf(patchDoc),
     number: num(patchDoc, 'number'),
     title: titleOf(patchDoc),
     body: str(patchDoc, 'body'),
@@ -974,6 +996,7 @@ export function incompletePullView(doc: PlainDocument, code: number): PullView {
   }
   return {
     id: str(doc, '$id'),
+    ...audienceOf(doc),
     number: num(doc, 'number'),
     title: titleOf(doc),
     body: str(doc, 'body'),

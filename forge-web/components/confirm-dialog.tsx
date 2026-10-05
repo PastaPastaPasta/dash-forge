@@ -14,7 +14,7 @@
  * write Platform has shown; an unconfirmed one says so and keeps the dialog open.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { newIntent, type CostPreview as Cost } from '@/lib/sdk'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -35,6 +35,12 @@ export interface ConfirmDialogProps {
   cost: Cost | null
   refund?: boolean
   confirmLabel: string
+  /** The dismiss button's words (default "Cancel"). */
+  cancelLabel?: string
+  /** More of the question under the description (paragraphs, a list), above the cost. */
+  children?: ReactNode
+  /** Why the action cannot run yet (no key in this browser, a locked tab): shown, and Confirm is disabled. */
+  blocked?: ReactNode
   /** The write to run on confirm, with this action's intent token. Throw to show the error. */
   onConfirm: (intent: string) => Promise<void>
   /** A short success note shown briefly before auto-close. */
@@ -55,6 +61,9 @@ export function ConfirmDialog({
   cost,
   refund,
   confirmLabel,
+  cancelLabel = 'Cancel',
+  children,
+  blocked,
   onConfirm,
   successNote,
   toast,
@@ -116,15 +125,16 @@ export function ConfirmDialog({
       footer={
         <>
           <Button variant="ghost" onClick={close} disabled={pending}>
-            Cancel
+            {cancelLabel}
           </Button>
-          <Button variant={isRefund ? 'danger' : 'primary'} onClick={run} loading={pending} disabled={done || pending}>
+          <Button variant={isRefund ? 'danger' : 'primary'} onClick={run} loading={pending} disabled={done || pending || (blocked !== undefined && blocked !== null)}>
             {done ? 'Done' : check.ok ? confirmLabel : 'Top up to continue'}
           </Button>
         </>
       }
     >
       <div className="space-y-3">
+        {children}
         {cost ? (
           <CostPreview cost={cost} refund={isRefund} />
         ) : (
@@ -138,6 +148,8 @@ export function ConfirmDialog({
               : `Not enough credits: Platform needs ${creditsAsDash(cost?.admit.balance ?? 0)} DASH available to accept this write, ${creditsAsDash(Number(check.shortfall))} DASH more than your balance.`}
           </div>
         ) : null}
+
+        {blocked ?? null}
 
         {done ? <p className="text-dense text-verify-700 dark:text-verify-400">{successNote ?? 'Confirmed on Platform'}</p> : null}
 

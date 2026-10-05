@@ -55,7 +55,9 @@ import {
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
+import { publicLineQuestion, quotesMembersText } from '@/lib/view/audience'
+import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, QuoteConfirmDialog, useAudienceWarnings, useComposerAudience, warningName } from '@/components/repo/audience'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
@@ -213,7 +215,8 @@ type Pending =
   /** Close or reopen; with `comment`, the composer's text is posted first ("Close with comment", QW2-008). */
   | { kind: 'state'; to: 'close' | 'reopen'; comment?: string }
   | { kind: 'mark-merged'; bypass: readonly string[] }
-  | { kind: 'review'; verdict: VerdictInput; body: string }
+  /** A review from the composer; `audience`: who its text is for (its verdict is always public, D15). */
+  | { kind: 'review'; verdict: VerdictInput; body: string; audience: 'public' | 'members' }
   | { kind: 'draft'; to: 'draft' | 'ready' }
   | { kind: 'head'; oid: string }
   | { kind: 'request'; who: string; remove: boolean }
@@ -263,19 +266,22 @@ export function PullContent({
   const current = useRef<{ aborted: boolean }>({ aborted: false })
   // Set by a refresh: from then on the base ref's history is read afresh, not the repo chrome's.
   const refreshed = useRef(false)
-  const { data, loading, error, reload } = useAsync<PullThread | null>(
+  const { data, loading, error, reload } = useAsync<PullThread | MembersOnlyTarget | null>(
     async () => {
       current.current.aborted = true
       const signal = { aborted: false }
       current.current = signal
       const want = [...expectations.current]
-      let latest: PullThread | null = null
+      // A members-only PR this reader cannot open: its public facts, nothing to re-read for.
+      const opened = await retryWhileMissing(() => loadPullOrMembersOnly(sdk!, home.repo, number, network, { fresh: refreshed.current }), justCreated ? 8 : 0, undefined, signal)
+      if (opened === null || isMembersOnlyTarget(opened)) return opened
+      let latest: PullThread | null = opened
       const load = async (): Promise<PullThread | null> => {
         if (signal.aborted) return latest
         latest = await loadPullThread(sdk!, home.repo, number, network, { fresh: refreshed.current })
         return latest
       }
-      const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
+      const first = opened
       // One read on a cold load; re-reads only while a write this page made has not shown (L-77).
       const t = first === null ? null : await readUntil(load, want, { ...(waitFor.current ?? {}), signal, first })
       if (!signal.aborted && t !== null) {
@@ -300,6 +306,7 @@ export function PullContent({
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Loading pull request" />
   if (error && !data) return <ErrorState message={error} onRetry={reload} />
+  if (isMembersOnlyTarget(data)) return <MembersOnlyTargetPage home={home} target={data} />
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="pull" icon={GitPullRequest} title={`PR #${number} not found`} body="No pull request or issue with that number in this repo." />
   return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} reloadHome={reloadHome} />
 }
@@ -586,8 +593,17 @@ function PullPage({
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
-  // The unsent comment survives a reload (never stored for a private repo).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity))
+  // Who the comment or review text is for (DESIGN §10): the PR's audience, or Members when picked.
+  const audience = useComposerAudience(home, { parent: pull.audience ?? 'public', members: thread.members, maintainer: holdings.data?.maintain === true })
+  // The unsent comment survives a reload (never stored for a private repo, nor while members-only).
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity, pull.audience ?? 'public'), audience.audience === 'public')
+  const warnings = useAudienceWarnings(audience, comment, { author: pull.author, kind: 'pull' })
+  const blockingQuestion = (p: { verdict: VerdictInput; audience: 'public' | 'members' }): string | null =>
+    publicLineQuestion({ verdict: p.verdict, audience: p.audience, author: pull.author, authorName: warningName(network, pull.author), holders: audience.holders })
+  // A public comment that repeats members-only text asks first (product H8).
+  const [quoteAsk, setQuoteAsk] = useState(false)
+  // A members-only "Request changes" the PR's author can't read: one public line beside it (H8).
+  const [publicLine, setPublicLine] = useState('')
   const commentIntent = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -748,7 +764,14 @@ function PullPage({
     }),
     [canResolve, resolvedKey, identity, setPending, thread.moderation],
   )
-  const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
+  const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
+  // Members-only text on this page: a public comment that repeats it asks first.
+  const membersTexts = [
+    ...(pull.audience === 'members' ? [pull.title, pull.body] : []),
+    ...thread.comments.flatMap((c) => (c.audience === 'members' ? [c.body] : [])),
+    ...thread.reviews.flatMap((r) => (r.audience === 'members' ? [r.body] : [])),
+  ]
+  const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
   // A text over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
   const commentLong = useLongCompose(repo, 'comment', comment.trim())
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() }, commentLong)
@@ -761,7 +784,7 @@ function PullPage({
   const editedPath = thread.comments.find((x) => x.id === editingComment?.id)?.anchor?.path
   const commentEditLong = useLongCompose(repo, 'comment', editingComment?.body ?? '', editedPath === undefined ? {} : { path: editedPath })
   // "Close with comment" (QW2-008): the composer's text goes with a close or reopen when it could be posted.
-  const withComment = comment.trim() !== '' && !writeBlocked && !commentTooLong ? comment.trim() : null
+  const withComment = comment.trim() !== '' && !writeBlocked && !commentTooLong && !quoting ? comment.trim() : null
   // The repo's milestones, for the picker (QW2-050): read for members only (only they can set one).
   const milestones = useAsync(
     () => readMilestones(sdk!, repo),
@@ -769,18 +792,23 @@ function PullPage({
     { enabled: ready && sdk !== null && canMember && caps.canMilestone },
   )
 
-  const postComment = async (): Promise<void> => {
+  const postComment = async (confirmed = false): Promise<void> => {
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
+    if (quoting && !confirmed) {
+      setQuoteAsk(true)
+      return
+    }
     setPosting(true)
     setCommentError(null)
     // Until the outcome is known, a reload must not bring the text back to be posted again.
     holdDraft(true, comment)
     try {
-      const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent, post: postContext })
+      const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent, post: postContext, audience: audience.audience })
       setComment('')
       holdDraft(false, '')
       commentIntent.renew()
+      audience.reset()
       refresh((t) => t.comments.some((c) => c.id === r.documentId))
     } catch (e) {
       // Another tab of this identity wrote it: the composer's text is on chain, clear it.
@@ -814,7 +842,7 @@ function PullPage({
       case 'state': {
         // The comment first, as GitHub posts it.
         if (p.comment !== undefined && closeComment.current?.intent !== intent) {
-          const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: p.comment, intent: `${intent}:comment`, post: postContext }).catch((e: unknown) => {
+          const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: p.comment, intent: `${intent}:comment`, post: postContext, audience: audience.audience }).catch((e: unknown) => {
             if (e instanceof SupersededWriteError) return { documentId: e.documentId }
             throw e
           })
@@ -848,7 +876,16 @@ function PullPage({
         refresh((t) => t.pull.state.merged)
         return
       case 'review': {
-        const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent, post: postContext })
+        const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent, post: postContext, audience: p.audience })
+        // The public line the author can read, after the members-only review (one intent per action).
+        const line = publicLine.trim()
+        if (line !== '' && blockingQuestion(p) !== null) {
+          await createComment(sdk, signer, repo, { targetId: pull.id, body: line, intent: `${intent}:public-line`, post: postContext, audience: 'public' }).catch((e: unknown) => {
+            if (!(e instanceof SupersededWriteError)) throw e
+          })
+          setPublicLine('')
+        }
+        audience.reset()
         // On Platform now; remembered until a read shows it, so a reload before then still says so.
         if (ownScope !== null) rememberOwnReview(ownScope, { id: r.documentId, verdict: p.verdict, at: Date.now() })
         setOwnTick((n) => n + 1)
@@ -980,14 +1017,16 @@ function PullPage({
   const pendingCost = ((): Cost => {
     if (pending === null) return eventCost
     switch (pending.kind) {
-      case 'review':
-        return composeCost(repo, 'review', { body: pending.body }, reviewFirst)
+      case 'review': {
+        const review = composeCost(repo, 'review', { body: pending.body }, reviewFirst, pending.audience)
+        return publicLine.trim() !== '' && blockingQuestion(pending) !== null ? sumPreviews([review, composeCost(repo, 'comment', { body: publicLine.trim() }, commentFirst)]) : review
+      }
       case 'mark-merged':
         return pending.bypass.length > 0
           ? previewCredits(transitionCost.credits + previewCreate('event', { value: bypassValue(pending.bypass) }).credits)
           : transitionCost
       case 'state':
-        return pending.comment === undefined ? transitionCost : previewCredits(transitionCost.credits + composeCost(repo, 'comment', { body: pending.comment }, commentFirst).credits)
+        return pending.comment === undefined ? transitionCost : previewCredits(transitionCost.credits + composeCost(repo, 'comment', { body: pending.comment }, commentFirst, audience.audience).credits)
       case 'draft':
       case 'lock':
         return transitionCost
@@ -1378,9 +1417,11 @@ function PullPage({
                 </div>
               </div>
 
-              {timeline.length > 0 ? (
+              {timeline.length > 0 || thread.membersOnly.length > 0 ? (
                 <Timeline
                   items={conversation}
+                  membersOnly={thread.membersOnly}
+                  {...(home.lane ? { lane: home.lane } : {})}
                   links={links}
                   trust={trust}
                   imported={origin === null ? null : { origin, signer: pull.author, createdAt: pull.createdAt }}
@@ -1429,7 +1470,7 @@ function PullPage({
               ) : null}
               </>
               )}
-              <HiddenNote hidden={0} what="comments and reviews" home={home} by={thread.hidden} />
+              <HiddenNote hidden={totalHidden(thread.hidden)} what="comment or review" many="comments and reviews" home={home} by={thread.hidden} shown={thread.membersOnly.length} />
               <EventValuesNote counts={thread.eventValues} />
 
               {closedBranch !== null && guard.disabledReason === null && !archived && !mergeBusy ? (
@@ -1608,6 +1649,7 @@ function PullPage({
                       <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} />
                       <SealedLimit repo={repo} kind="comment" text={comment.trim()} long={commentLong} />
                       <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} />
+                      <AudienceWarnings warnings={warnings} />
                     </>
                   )}
                 </LockedBanner>
@@ -1636,10 +1678,11 @@ function PullPage({
                         <GitMerge className="h-3.5 w-3.5" aria-hidden /> Mark as merged (done elsewhere)
                       </Button>
                     ) : null}
+                    {writeBlocked ? null : <AudienceChip home={home} state={audience} />}
                     {writeBlocked ? null : (
                       <Button
                         variant="primary"
-                        onClick={postComment}
+                        onClick={() => void postComment()}
                         loading={posting}
                         disabled={comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
                         title={guard.disabledReason ?? undefined}
@@ -1662,7 +1705,7 @@ function PullPage({
                         // Until the viewer's membership is read, a verdict would be recorded as a non-member's.
                         disabled={guard.disabledReason !== null || (v !== 'comment' && !holdings.settled)}
                         onClick={() => {
-                          if (!commentTooLong && guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst), 'collab')) setPending({ kind: 'review', verdict: v, body: comment.trim() })
+                          if (!commentTooLong && guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst, audience.audience), 'collab')) setPending({ kind: 'review', verdict: v, body: comment.trim(), audience: audience.audience })
                         }}
                       >
                         {VERDICT_TEXT[v]}
@@ -1950,7 +1993,24 @@ function PullPage({
         ) : null}
       </div>
 
-      <ConfirmDialog open={pending !== null} onClose={() => setPending(null)} title={confirm.title} description={confirm.description} cost={pendingCost} confirmLabel={confirm.label} onConfirm={runPending} />
+      <QuoteConfirmDialog
+        open={quoteAsk}
+        onCancel={() => setQuoteAsk(false)}
+        onConfirm={() => {
+          setQuoteAsk(false)
+          void postComment(true)
+        }}
+      />
+      <ConfirmDialog open={pending !== null} onClose={() => setPending(null)} title={confirm.title} description={confirm.description} cost={pendingCost} confirmLabel={confirm.label} onConfirm={runPending}>
+        {pending?.kind === 'review' && blockingQuestion(pending) !== null ? (
+          <div className="space-y-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2" data-testid="public-line-question">
+            <p className="text-dense text-anvil-800 dark:text-anvil-100">{blockingQuestion(pending)}</p>
+            <Field label="Public line (optional)" htmlFor="public-line">
+              <Input id="public-line" value={publicLine} onChange={(e) => setPublicLine(e.target.value)} maxLength={500} placeholder="Changes requested: see the review for details" />
+            </Field>
+          </div>
+        ) : null}
+      </ConfirmDialog>
     </div>
     </AuthorRolesProvider>
   )

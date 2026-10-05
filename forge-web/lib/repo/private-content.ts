@@ -308,6 +308,18 @@ export const SEALED_EPOCH = '$sealedEpoch'
  */
 export const AUDIENCE_FIELD = '$audience'
 
+/**
+ * Where a list keeps a members-only issue or PR this reader cannot open as a row (DESIGN D14:
+ * top-level issues and PRs always get one, "#42 · Members-only pull request"): the stored
+ * document, untouched, with this mark. Its views have no title or body, only what is public.
+ */
+export const MEMBERS_ONLY_ROW = '$membersOnlyRow'
+
+/** `doc` (a well-formed sealed issue or PR this reader cannot open) as a list's placeholder row. */
+export function membersOnlyRow(doc: PlainDocument): PlainDocument {
+  return { ...doc, [MEMBERS_ONLY_ROW]: true }
+}
+
 /** The audience of an admitted document ({@link AUDIENCE_FIELD}; plaintext otherwise). */
 export function admittedAudience(doc: PlainDocument): Audience {
   const a = doc[AUDIENCE_FIELD]

@@ -51,6 +51,8 @@ export function composeCost(
   kind: SealedKind | 'event',
   input: Readonly<Record<string, unknown>>,
   first: FirstWrite = {},
+  /** A public repo's members-only text is stored encrypted too (DESIGN §4.1): priced so. */
+  audience: 'public' | 'members' = 'public',
 ): CostPreview {
   // A body over its field is priced as the field it is written as, plus its artifact
   // (forge-v2.md §6.3: `longBodyField`).
@@ -58,20 +60,26 @@ export function composeCost(
   const long = kind !== 'event' && typeof body === 'string' && isLongBody(repo, kind, body, input)
   const data = long ? { ...input, body: fieldEstimate(repo, kind, body, input) } : input
   const extra = long ? previewCredits(longBodyCredits(repo, utf8Bytes(body))) : null
-  const doc = composeDocCost(repo, kind, data, first)
+  const doc = composeDocCost(repo, kind, data, first, audience)
   return extra === null ? doc : sumPreviews([doc, extra])
 }
+
+/** A members-only (`enc` v0x03) document's framing: the 61-byte envelope, and the text padded to 64 bytes. */
+const MEMBERS_FRAME = 61
+const MEMBERS_PAD = 64
 
 function composeDocCost(
   repo: RepoRef,
   kind: SealedKind | 'event',
   data: Readonly<Record<string, unknown>>,
   first: FirstWrite,
+  audience: 'public' | 'members',
 ): CostPreview {
   const { used, fields, props } = sealedTextUse(kind, data)
-  if (repo.visibility !== 'private' || (fields === 0 && kind === 'event')) return previewCreate(kind, data, first)
+  const members = repo.visibility === 'public' && audience === 'members'
+  if ((repo.visibility !== 'private' && !members) || (fields === 0 && kind === 'event')) return previewCreate(kind, data, first)
   const bind = Object.fromEntries(Object.entries(data).filter(([k]) => !props.includes(k)))
-  const sealedBytes = used + 3 * fields + 29
+  const sealedBytes = members ? Math.ceil((used + 3 * fields) / MEMBERS_PAD) * MEMBERS_PAD + MEMBERS_FRAME + 32 : used + 3 * fields + 29
   const credits = estimateBytesCredits(kind, sealedBytes, bind, first)
   return previewCredits(credits, admissionFor(kind, sealedBytes, credits))
 }

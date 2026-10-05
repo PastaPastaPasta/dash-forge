@@ -28,6 +28,9 @@ import { useRepoTrust } from '@/hooks/use-repo-trust'
 import { TrustFailureBanner } from '@/components/ui/trust-alert'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { repoHref, useExpiredLink, type RepoAddress } from '@/hooks/use-query-param'
+import { SignedOutView } from '@/contexts/auth-context'
+import { usePublicView } from '@/hooks/use-public-view'
+import { PublicViewBanner, ViewAsPublicButton } from '@/components/repo/audience'
 
 export function RepoScaffold({
   addr,
@@ -63,7 +66,37 @@ export function RepoScaffold({
    */
   refs?: RepoHomeRefs
 }): JSX.Element {
-  const { data, loading, error, cause, settled, ready, reload } = useRepoHome(addr, { browse, refs })
+  const repoHome = useRepoHome(addr, { browse, refs })
+  // "View as public" (DESIGN §10): the whole page, the repo's own state included, read signed out.
+  const [publicView, setPublicView] = usePublicView(repoHome.data?.repo.repoId ?? '')
+  const body = <ScaffoldBody {...{ addr, children, rail, verification, refParam, sealedOk, repoHome }} />
+  if (!publicView) return body
+  return (
+    <>
+      <PublicViewBanner onExit={() => setPublicView(false)} />
+      <SignedOutView>{body}</SignedOutView>
+    </>
+  )
+}
+
+function ScaffoldBody({
+  addr,
+  children,
+  rail,
+  verification,
+  refParam,
+  sealedOk,
+  repoHome,
+}: {
+  addr: RepoAddress
+  children: (home: RepoHome, reload: () => void) => ReactNode
+  rail: boolean
+  verification: boolean
+  refParam: string
+  sealedOk: boolean
+  repoHome: ReturnType<typeof useRepoHome>
+}): JSX.Element {
+  const { data, loading, error, cause, settled, ready, reload } = repoHome
   const { status: sdkStatus, retry: retrySdk } = useSdk()
   // A private repo is re-read through the viewer's decryption session (or shown as sealed).
   const privateHome = usePrivateHome(data ?? null, addr)
@@ -183,6 +216,7 @@ export function RepoScaffold({
       <RepoHeader home={home} addr={addr} />
       <InviteBanner repo={home.repo} />
       <PrivateBanner home={home} />
+      <ViewAsPublicButton home={home} />
       {rail ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
           <div className="min-w-0">{children(home, reload)}</div>

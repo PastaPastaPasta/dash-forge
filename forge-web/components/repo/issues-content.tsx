@@ -85,6 +85,7 @@ import {
   budgetEmptyTitle,
   readingLabel,
   tabCount,
+  MembersOnlyShare,
   useAutoReadOn,
   useListQuery,
   useReadProgress,
@@ -270,10 +271,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
           <StateTabs label="Issue state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
-              <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open
+              <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open<MembersOnlyShare n={data?.membersOnly?.open} />
             </StateTab>
             <StateTab active={query.state === 'closed'} onClick={() => change({ state: 'closed' })}>
-              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.closedCount)}Closed
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.closedCount)}Closed<MembersOnlyShare n={data?.membersOnly?.closed} />
             </StateTab>
             <StateTab active={query.state === 'all'} onClick={() => change({ state: 'all' })}>
               All
@@ -348,7 +349,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <RowLink href={repoHref('/repo/issue', addr, { number: String(issue.number) })} title={issue.title} />
+                    <RowLink href={repoHref('/repo/issue', addr, { number: String(issue.number) })} title={issue.title} {...(issue.audience ? { audience: issue.audience } : {})} {...(issue.membersOnly ? { membersOnly: true } : {})} />
                     {issue.state.labels.map((l) => (
                       <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />
                     ))}
@@ -379,7 +380,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
       <Pager label="Issue pages" page={query.page} hasNext={data?.hasNext ?? false} matching={data?.matching ?? null} pageSize={ISSUE_PAGE_SIZE} onPage={(page) => change({ page })} />
 
-      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} home={home} by={data?.hiddenBy} />
+      <HiddenNote hidden={data?.hidden ?? 0} what="issue" home={home} by={data?.hiddenBy} />
 
       <ComposeIssueDialog
         // A new prefill (another /issues/new?title=… link) starts the form afresh.

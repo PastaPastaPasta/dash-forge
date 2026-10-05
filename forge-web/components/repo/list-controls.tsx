@@ -10,12 +10,13 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { ChevronDown, ChevronLeft, ChevronRight, Loader2, MessageSquare, Search, SlidersHorizontal } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Loader2, Lock, MessageSquare, Search, SlidersHorizontal } from 'lucide-react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '@/lib/constants'
 import type { LabelDef } from '@/lib/repo'
 import { plural, resolveDpnsId } from '@/lib/view'
 import { dpnsAuthorCandidates, Q_MAX, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
+import { membersOnlyTitle } from '@/lib/view/audience'
 import { formatCount as grouped } from '@/lib/view/text-limits'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
@@ -223,6 +224,16 @@ export function SortSelect<S extends 'newest' | 'oldest' | 'comments'>({ id, val
 /** A count before a tab's name, digit-grouped as elsewhere in the UI (QW3-058; nothing while not proven). */
 export function tabCount(n: number | null | undefined): string {
   return n == null ? '' : `${grouped(n)} `
+}
+
+/** A tab count's members-only share ("3 Open (1 members-only)", DESIGN §4.1), when there are any. */
+export function MembersOnlyShare({ n }: { n: number | null | undefined }): JSX.Element | null {
+  if (n == null || n <= 0) return null
+  return (
+    <span className="text-[11px] font-normal text-anvil-500 dark:text-anvil-400" data-testid="members-only-share">
+      {` (${grouped(n)} members-only)`}
+    </span>
+  )
 }
 
 /**
@@ -709,12 +720,40 @@ export function LabelChipFilter({ name, def, selected, onChange }: { name: strin
   )
 }
 
-/** A link to one row of a list (its title). */
-export function RowLink({ href, title }: { href: string; title: string }): JSX.Element {
+/**
+ * A link to one row of a list (its title). A members-only row this reader cannot open
+ * (`membersOnly`) reads "Members-only issue" (DESIGN D14); one it can open is marked members-only.
+ */
+export function RowLink({
+  href,
+  title,
+  audience,
+  membersOnly,
+  type = 'issue',
+}: {
+  href: string
+  title: string
+  audience?: 'members'
+  membersOnly?: true
+  type?: 'issue' | 'patch'
+}): JSX.Element {
   return (
-    <Link href={href} className="hit-area text-dense font-medium text-anvil-900 hover:text-forge-700 dark:text-anvil-50 dark:hover:text-forge-400">
-      {title || '(untitled)'}
-    </Link>
+    <>
+      <Link href={href} className="hit-area text-dense font-medium text-anvil-900 hover:text-forge-700 dark:text-anvil-50 dark:hover:text-forge-400" {...(membersOnly ? { 'data-testid': 'members-only-title' } : {})}>
+        {membersOnly ? (
+          <span className="inline-flex items-center gap-1">
+            <Lock className="h-3.5 w-3.5" aria-hidden /> {membersOnlyTitle(type)}
+          </span>
+        ) : (
+          title || '(untitled)'
+        )}
+      </Link>
+      {audience === 'members' && !membersOnly ? (
+        <span className="inline-flex items-center gap-1 rounded-full bg-anvil-100 px-1.5 py-0.5 text-[11px] font-medium text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200" data-testid="members-only-mark">
+          <Lock className="h-3 w-3" aria-hidden /> Members only
+        </span>
+      ) : null}
+    </>
   )
 }
 
