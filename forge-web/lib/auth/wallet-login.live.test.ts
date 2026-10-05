@@ -41,7 +41,7 @@ import { awaitRegisteredKey, awaitWalletAnswer, newLoginRequest, responseSources
 import { AuthController, MissingGrantError } from './controller'
 import { fetchIdentityKeys, usableEncryptionKey } from './encryption-key'
 import { keyRegistrationUri, RevokedWalletKey, type WalletKey } from './key-registration'
-import { lockVault, storedEncryptionKeyId, withEncryptionKey } from './vault'
+import { lockVault, storedEncryptionKeyId, storedEncryptionKeyIds, withEncryptionKey } from './vault'
 
 const DEVNET = NETWORKS.devnet.devnetName ?? ''
 const FILE = process.env['FORGE_WALLET_IDENTITY_FILE'] ?? join(homedir(), '.config/dash-forge/test-identities', `devnet-${DEVNET}`, 'RELAY.identity.json')
@@ -137,9 +137,13 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
         // 3. The one-tap grant for forge-community (a star is a forge-community write), then the star lands.
         const grant = await signIn(forge.community, first.identityId)
         expect(grant.key.scope).toEqual({ core: false, collab: false, community: true, unbounded: false })
+        const heldBefore = await storedEncryptionKeyIds(network, first.identityId)
+        const after = await returning.addWalletGrant(first.identityId, grant.key, forge.community, { encryptionKeys: grant.encryptionKeys, justRegistered: grant.registered })
         grant.wipe()
-        const after = await returning.addWalletGrant(first.identityId, grant.key, forge.community)
         expect(after.grants).toEqual({ core: true, collab: false, community: true })
+        // That first approval registered another encryption key: the vault keeps both (D27).
+        expect(await storedEncryptionKeyIds(network, first.identityId)).toHaveLength(heldBefore.length + 1)
+        await expectEncryptionKeyKept(first.identityId)
         expect(await starRelation(sdk, returning.writeAuth!, first.identityId, starOf).add()).toBe(true)
       } finally {
         // 4. Leave the identity as it was: disable what this run added.
