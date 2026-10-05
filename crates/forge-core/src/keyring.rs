@@ -37,7 +37,7 @@ use crate::private::{
     OpenContext, Opened, Private, Unreadable,
 };
 use crate::private::{release, DocKind, PrivateError};
-use crate::rules::v2::Role;
+use crate::rules::v2::{Role, Visibility};
 use crate::scope::{DocScope, RepoRef};
 use crate::user_error::{codes, UserError};
 
@@ -51,6 +51,43 @@ const ANCHOR_POLL_DELAY: std::time::Duration = std::time::Duration::from_millis(
 
 /// Identity reads a keyring load runs at once.
 const IDENTITY_FETCH_WINDOW: usize = 8;
+
+/// E311: a member of a public repository with members-only content holds no key for it yet
+/// (an older client added them without sharing the key). DESIGN §10's copy.
+#[must_use]
+pub fn no_key_shared(repo: &RepoRef) -> Error {
+    UserError::new(
+        codes::NO_KEY_SHARED,
+        format!(
+            "you're a member of {}, but no key has been shared with you yet",
+            repo.display()
+        ),
+    )
+    .cause("members-only content is encrypted to each member's key, and no maintainer has shared that key with you yet")
+    .fix(fix_repair(repo))
+    .note("a maintainer's client fixes this the next time they open the repo")
+    .into()
+}
+
+/// E312: members-only content was asked for in public `repo`, where no maintainer has turned
+/// it on (no members key exists).
+#[must_use]
+pub fn members_only_off(repo: &RepoRef) -> Error {
+    UserError::new(
+        codes::MEMBERS_ONLY_OFF,
+        format!(
+            "members-only content is not turned on in {}",
+            repo.display()
+        ),
+    )
+    .cause("no maintainer has set up a members key for this repository yet")
+    .fix(format!(
+        "a maintainer runs `dg repo members enable {}` (it shows the cost first)",
+        repo.display()
+    ))
+    .note("nothing was written")
+    .into()
+}
 
 /// The fix every "no encryption key" error carries.
 pub const FIX_ADD_ENCRYPTION_KEY: &str = "dg auth keys add --encryption";
@@ -281,6 +318,9 @@ pub struct PrivateConfig {
 /// A private repository's keys, as one reader sees them now.
 pub struct Keyring {
     repo_id: [u8; 32],
+    /// The repository's visibility: a public repository's key chain ("lane 0") carries no
+    /// settings in its anchors.
+    visibility: Visibility,
     reader: [u8; 32],
     members: Vec<Member>,
     configs: Vec<FetchedDocument>,
@@ -383,6 +423,7 @@ impl Keyring {
             .collect();
         let mut keyring = Self {
             repo_id: io.scope.repo_id,
+            visibility: repo.visibility,
             reader: reader_bytes,
             members,
             configs,
@@ -468,9 +509,13 @@ impl Keyring {
                 key: w.key.clone(),
             })
             .collect();
+        // who the key is for: every member of a private repository; in a public one, the roles
+        // `holds_members_key` names (DESIGN §2.1)
+        let visibility = self.visibility;
         let memberships: Vec<MemberRow> = self
             .members
             .iter()
+            .filter(|m| crate::members::holds_members_key(m.role, visibility))
             .filter_map(|m| {
                 Some(MemberRow {
                     identity: platform::decode_identifier(&m.identity_id).ok()?,
@@ -503,6 +548,14 @@ impl Keyring {
     /// The repository these keys belong to.
     pub fn repo_id(&self) -> &[u8; 32] {
         &self.repo_id
+    }
+
+    /// Whether the repository has a members key chain in force: an anchored epoch (every
+    /// finished private repository; a public one once a maintainer turned members-only content
+    /// on, DESIGN §4.1).
+    #[must_use]
+    pub fn has_members_key(&self) -> bool {
+        !self.resolution.anchors.is_empty()
     }
 
     /// The resolution: epochs, anchors, alerts, the repair check.
@@ -746,9 +799,18 @@ impl Keyring {
         let Some(enc) = d.field_bytes("enc").filter(|e| !e.is_empty()) else {
             return Opened::Malformed;
         };
-        let Some(header) = header_of(kind, d) else {
+        let Some(mut header) = header_of(kind, d) else {
             return Opened::Malformed;
         };
+        // Which envelope a document may carry follows its repository (private-repos.md §17):
+        // v0x01 in a private one, v0x03 (members-only) in a public one. The document's own
+        // `vis` (consensus holds it equal to the repository's) says which; a type without one
+        // (an `event`) is the repository's. A `vis` that is not this repository's is malformed.
+        match d.field_str("vis").as_deref() {
+            None => header.vis = self.visibility,
+            Some(v) if v == self.visibility.as_str() => {}
+            Some(_) => return Opened::Malformed,
+        }
         let opened = open_content(&self.ctx, &header, &enc);
         // judged by the newest write, as the late rule is: an edit re-seals the text
         let written = match (
@@ -758,10 +820,16 @@ impl Keyring {
             (Some(c), Some(u)) => Some(c.max(u)),
             (c, u) => c.or(u),
         };
-        let earlier = matches!(
-            opened,
-            Opened::Unreadable(Unreadable::BadTag | Unreadable::CommitMismatch)
-        ) && self.earlier_use(header.epoch, written);
+        // A members-only (v0x03) document's commitment is to its own key: a mismatch is a
+        // forged, relabelled or moved document, never an earlier use of the epoch number, so it
+        // stays `CommitMismatch` and is counted, never dropped silently (DESIGN §4.1).
+        let members = enc.first() == Some(&crate::private::doc::V3);
+        let earlier = !members
+            && matches!(
+                opened,
+                Opened::Unreadable(Unreadable::BadTag | Unreadable::CommitMismatch)
+            )
+            && self.earlier_use(header.epoch, written);
         if earlier {
             Opened::Unreadable(Unreadable::EarlierUse)
         } else {
@@ -1006,6 +1074,11 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
     let owner = platform::decode_identifier(&d.owner_id).ok()?;
     let epoch = u32::try_from(d.field_u64("epoch")?).ok()?;
     let mut h = DocHeader::new(kind, owner, epoch);
+    // the document's own `vis` (consensus-checked to be its repository's): which envelope it
+    // may carry (§17); a type without one keeps the default and the reader sets it
+    if d.field_str("vis").as_deref() == Some(Visibility::Public.as_str()) {
+        h.vis = Visibility::Public;
+    }
     h.id = platform::decode_identifier(&d.id).ok();
     h.created_at_block_height = d.created_at_block_height;
     h.updated_at_block_height = d.updated_at_block_height;
@@ -1061,7 +1134,9 @@ pub fn stored_release(d: &FetchedDocument) -> Option<release::StoredRelease> {
 pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
     match o {
         Opened::Readable(_) => None,
-        Opened::Malformed | Opened::Unreadable(Unreadable::BadTag) => {
+        // a commitment that does not match is a document made for another key (forged,
+        // relabelled or moved), like a failed tag
+        Opened::Malformed | Opened::Unreadable(Unreadable::BadTag | Unreadable::CommitMismatch) => {
             Some("not encrypted for this repo")
         }
         Opened::Unreadable(Unreadable::Late) => Some("written after the key was rotated"),
@@ -1119,6 +1194,28 @@ pub(crate) fn repo_key_fields(
         ),
         ("wrapped", FieldValue::bytes(sealed.wrapped)),
     ]
+}
+
+/// Whether `repo` has a members key chain: every private repository, and a public one in which
+/// a maintainer turned members-only content on (a sealed `config`, the epoch-0 anchor, exists:
+/// DESIGN §4.1, "lane 0"). Membership changes key on this, never on visibility alone: in such a
+/// repository an add must wrap the key and a removal must rotate it. Any sealed `config` counts,
+/// even one whose author is no longer a maintainer, so a removal never skips its rotation.
+pub async fn has_members_key(client: &PlatformClient, repo: &RepoRef) -> Result<bool> {
+    if repo.visibility == crate::rules::v2::Visibility::Private {
+        return Ok(true);
+    }
+    let scope = repo.scope()?;
+    let core = client.fetch_contract(&scope.contract_id).await?;
+    let configs = client
+        .query_all_documents(
+            &core,
+            DOC_CONFIG,
+            &scope.filters([]),
+            &[QueryOrder::asc("$createdAt")],
+        )
+        .await?;
+    Ok(configs.iter().any(|d| config_row(d).is_some()))
 }
 
 /// A signer's view of a private repository: its client, identity, key file and the keys that
@@ -1268,33 +1365,24 @@ impl<'a> PrivateSigner<'a> {
         .map(|k| (k, d.recipient_key_id)))
     }
 
-    /// Post the anchor `config` of `epoch` sealed under `key`: the current config's fields,
-    /// plus `prevEpoch`/`prevEpochKey` for `epoch ≥ 1`.
+    /// Post the anchor `config` of `epoch` sealed under `key` ([`anchor_content`]): in a
+    /// private repository the current config's fields, in a public one none; plus
+    /// `prevEpoch`/`prevEpochKey` for `epoch ≥ 1`.
     async fn post_anchor(&self, w: &WriteCtx, anchor: &AnchorInput<'_>) -> Result<String> {
         let (core, scope, owner) = (&w.core, &w.scope, w.me);
         let keys = EpochKeys::derive(&scope.repo_id, anchor.epoch, anchor.key);
-        let base = Fields {
-            default_branch: Some(anchor.default_branch.to_string()),
-            protected_patterns: anchor.protected_patterns.to_vec(),
-            ..Fields::default()
-        };
-        let fields = match &anchor.link {
-            Some(l) => l.apply(base),
-            None => base,
-        };
+        let content = anchor_content(anchor.visibility, &anchor.settings, anchor.link.clone());
         let enc = crate::private::doc::seal(
             &keys,
             &DocHeader::new(DocKind::Config, owner, anchor.epoch),
-            &fields,
+            &content.fields,
         )?;
         let mut props = scope.props([
             ("enc", FieldValue::bytes(enc)),
             ("epoch", FieldValue::integer(u64::from(anchor.epoch))),
-            ("archived", FieldValue::boolean(anchor.archived)),
         ]);
-        props.insert("backend".into(), anchor.backend.clone());
-        // anchors exist only in private repositories
-        crate::layout::stamp_vis(&mut props, crate::rules::v2::Visibility::Private);
+        props.extend(content.plaintext);
+        crate::layout::stamp_vis(&mut props, content.vis);
         self.engine()?
             .create_document(core, DOC_CONFIG, props)
             .await
@@ -1391,34 +1479,114 @@ impl PrivateSigner<'_> {
     }
 }
 
+/// The settings a private repository's anchor `config` repeats: `config` is newest-wins
+/// there, so every anchor carries the current ones. A public repository's anchors carry none
+/// (DESIGN D1): its settings live in its plaintext configs, which the git plane reads.
+#[derive(Debug, Clone)]
+pub struct AnchorSettings {
+    /// The default branch (short name).
+    pub default_branch: String,
+    /// The protected patterns.
+    pub protected_patterns: Vec<String>,
+    /// The plaintext `backend` object.
+    pub backend: FieldValue,
+    /// The plaintext `archived` flag.
+    pub archived: bool,
+}
+
+impl AnchorSettings {
+    /// The settings of a private repository's current config (`config` is newest-wins).
+    #[must_use]
+    pub fn current(cfg: &PrivateConfig) -> Self {
+        Self {
+            default_branch: cfg.default_branch.as_deref().unwrap_or("main").to_string(),
+            protected_patterns: cfg.protected_patterns.clone(),
+            backend: cfg.backend.clone().unwrap_or_else(|| backend_object(0)),
+            archived: cfg.archived,
+        }
+    }
+}
+
+/// What an anchor `config` carries besides `repoId`, `enc` and `epoch` ([`anchor_content`]).
+#[derive(Debug, Clone)]
+pub struct AnchorContent {
+    /// The `vis` it is stamped with: the repository's (consensus refuses a `"private"` config
+    /// in a public repository, 40127).
+    pub vis: Visibility,
+    /// The sealed fields (the TLV).
+    pub fields: Fields,
+    /// The plaintext properties beside `enc` (`backend`, `archived`), by name.
+    pub plaintext: BTreeMap<String, FieldValue>,
+}
+
+/// What the anchor `config` of an epoch of a `visibility` repository carries (DESIGN D1, §4.1;
+/// `private-repos.md` §17), given its current `settings`:
+///
+/// * a **private** repository's: `vis: "private"`, the settings sealed (default branch,
+///   protected patterns) and in plaintext (`backend`, `archived`), byte for byte as before;
+/// * a **public** repository's members key: `vis: "public"` and none of the settings, whatever
+///   they are: an empty TLV at epoch 0, and above it only the chain link. Rotations and
+///   re-anchors carry nothing forward, so the anchor can never be read as the repository's
+///   settings (they stay in its plaintext configs, which the git plane reads).
+///
+/// `link` is the chain link of an epoch `e ≥ 1` (`None` for epoch 0). Pure: the
+/// `mixed_anchor__*` vectors pin it.
+#[must_use]
+pub fn anchor_content(
+    visibility: Visibility,
+    settings: &AnchorSettings,
+    link: Option<ChainLink>,
+) -> AnchorContent {
+    let (base, plaintext) = match visibility {
+        Visibility::Private => (
+            Fields {
+                default_branch: Some(settings.default_branch.clone()),
+                protected_patterns: settings.protected_patterns.clone(),
+                ..Fields::default()
+            },
+            BTreeMap::from([
+                ("backend".to_string(), settings.backend.clone()),
+                (
+                    "archived".to_string(),
+                    FieldValue::boolean(settings.archived),
+                ),
+            ]),
+        ),
+        Visibility::Public => (Fields::default(), BTreeMap::new()),
+    };
+    AnchorContent {
+        vis: visibility,
+        fields: match link {
+            Some(l) => l.apply(base),
+            None => base,
+        },
+        plaintext,
+    }
+}
+
 /// What an anchor `config` carries.
 struct AnchorInput<'k> {
     epoch: u32,
     key: &'k EpochKey,
     /// The chain link (`None` for epoch 0).
     link: Option<ChainLink>,
-    default_branch: &'k str,
-    protected_patterns: &'k [String],
-    backend: FieldValue,
-    archived: bool,
+    /// The repository's visibility: a public one's anchor carries no settings
+    /// ([`anchor_content`]).
+    visibility: Visibility,
+    /// The current settings (repeated by a private repository's anchor only).
+    settings: AnchorSettings,
 }
 
 impl<'k> AnchorInput<'k> {
-    /// An anchor repeating the current config's fields (`config` is newest-wins).
-    fn current(
-        cfg: &'k PrivateConfig,
-        epoch: u32,
-        key: &'k EpochKey,
-        link: Option<ChainLink>,
-    ) -> Self {
+    /// An anchor of `kr`'s repository: a private one repeats the current config's fields
+    /// (`config` is newest-wins), a public one carries none.
+    fn current(kr: &Keyring, epoch: u32, key: &'k EpochKey, link: Option<ChainLink>) -> Self {
         Self {
             epoch,
             key,
             link,
-            default_branch: cfg.default_branch.as_deref().unwrap_or("main"),
-            protected_patterns: &cfg.protected_patterns,
-            backend: cfg.backend.clone().unwrap_or_else(|| backend_object(0)),
-            archived: cfg.archived,
+            visibility: kr.visibility,
+            settings: AnchorSettings::current(kr.config()),
         }
     }
 }
@@ -1457,14 +1625,90 @@ pub async fn create_private_state(
                 epoch: 0,
                 key: &key,
                 link: None,
-                default_branch: short_branch(default_branch),
-                protected_patterns: &[],
-                backend,
-                archived: false,
+                visibility: Visibility::Private,
+                settings: AnchorSettings {
+                    default_branch: short_branch(default_branch).to_string(),
+                    protected_patterns: Vec::new(),
+                    backend,
+                    archived: false,
+                },
             },
         )
         .await?;
     Ok(true)
+}
+
+/// What [`enable_members_key`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Enabled {
+    /// This run posted the epoch-0 anchor (false: it already stood, and this run finished the
+    /// wraps).
+    pub anchored: bool,
+    /// Members the key was shared with (wrapped), this signer excluded.
+    pub wrapped: Vec<String>,
+    /// Members it could not be shared with yet: no usable encryption key (a repair wraps them
+    /// once they add one).
+    pub skipped: Vec<String>,
+}
+
+/// Turn members-only content on in a public repository (DESIGN D1, §4.1): epoch 0 of its members
+/// key chain ("lane 0"). The signer's own wrap, then the anchor `config` (`vis: "public"`, no
+/// settings, an empty TLV: [`anchor_content`]), confirmed on a proved read, then a wrap to every
+/// current member whose role holds the key ([`crate::members::holds_members_key`]; never a
+/// runner, which is not a member). A maintainer only. Resumable: an existing epoch-0 self-wrap
+/// is reused, an anchor that stands is kept, and only the missing wraps are posted ([`repair`]).
+pub async fn enable_members_key(signer: &PrivateSigner<'_>, repo: &RepoRef) -> Result<Enabled> {
+    if repo.visibility == Visibility::Private {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!(
+                "{} is private: everything in it is already members-only",
+                repo.display()
+            ),
+        )
+        .into());
+    }
+    let w = signer.open(repo).await?;
+    require_rotator(&w.kr, repo)?;
+    let mut out = Enabled::default();
+    if !w.kr.resolution.anchors.contains_key(&0) {
+        // Resume: our own epoch-0 self-wrap, if it landed, is the key.
+        let key = match pending_key(&w.kr, w.me, 0) {
+            Some(k) => k,
+            None => self_wrap(signer, &w, 0, EpochKey::generate()?).await?.0,
+        };
+        let input = AnchorInput {
+            epoch: 0,
+            key: &key,
+            link: None,
+            visibility: Visibility::Public,
+            settings: AnchorSettings::current(w.kr.config()),
+        };
+        if !anchor_and_confirm(signer, &w, repo, &input).await? {
+            return Err(UserError::new(
+                codes::ROTATION_PENDING,
+                format!(
+                    "another maintainer turned members-only content on in {} at the same time",
+                    repo.display()
+                ),
+            )
+            .cause("their key stands; yours was not used")
+            .fix(format!(
+                "ask them to run `dg repo keys repair {}`, which shares the key with every member",
+                repo.display()
+            ))
+            .into());
+        }
+        out.anchored = true;
+    }
+    let report = repair(signer, repo).await?;
+    out.wrapped = report.wrapped;
+    out.skipped = report.skipped;
+    if let Some(r) = report.rotated {
+        out.wrapped.extend(r.wrapped.into_iter().skip(1));
+        out.skipped.extend(r.skipped);
+    }
+    Ok(out)
 }
 
 /// Post the signer's own wrap of `key` for `epoch` and return the key the epoch must use, and
@@ -1734,7 +1978,6 @@ pub async fn rotate(
     if removing {
         member_list_is_stable(signer, repo, &me_b58, exclude, &targets).await?;
     }
-    let cfg = w.kr.config();
     let mut burned = None;
     loop {
         let epoch = from
@@ -1790,7 +2033,7 @@ pub async fn rotate(
             // posted (no key, a standing one that cannot be replaced) are skipped.
             wrap_remaining(signer, &w, epoch, &key, &targets).await?;
             let link = next_link(&w.kr, &from, from_burned, true, None)?;
-            let input = AnchorInput::current(cfg, epoch, &key, Some(link));
+            let input = AnchorInput::current(&w.kr, epoch, &key, Some(link));
             if !anchor_and_confirm(signer, &w, repo, &input).await? {
                 // another maintainer's anchor for this epoch won: theirs stands, and posting
                 // n + 2 from a key that is not the epoch's would fork the chain
@@ -1815,7 +2058,7 @@ pub async fn rotate(
             return Err(stray_error(epoch, *stray));
         }
         let link = next_link(&w.kr, &from, from_burned, false, skip_below.as_ref())?;
-        let input = AnchorInput::current(cfg, epoch, &key, Some(link));
+        let input = AnchorInput::current(&w.kr, epoch, &key, Some(link));
         let won = anchor_and_confirm(signer, &w, repo, &input).await?;
         return Ok(Rotation {
             epoch,
@@ -1832,8 +2075,8 @@ fn require_rotator(kr: &Keyring, repo: &RepoRef) -> Result<()> {
         return Ok(());
     }
     Err(Error::NotPermitted {
-        action: format!("rotate the key of {}", repo.display()),
-        reason: "only a current maintainer can rotate a private repository's key".into(),
+        action: format!("change the members key of {}", repo.display()),
+        reason: "only a current maintainer can turn on or rotate a repository's members key".into(),
         needs: "maintainer".into(),
     })
 }
@@ -2065,10 +2308,9 @@ pub async fn reanchor_before_removal(
             .map(platform::encode_identifier)
             .collect(),
     };
-    let cfg = w.kr.config();
     for epoch in theirs {
         let key = &before.keys[&epoch];
-        let input = AnchorInput::current(cfg, epoch, key, w.kr.link_of(epoch)?);
+        let input = AnchorInput::current(&w.kr, epoch, key, w.kr.link_of(epoch)?);
         signer.post_anchor(&w, &input).await?;
         out.reanchored.push(epoch);
     }
@@ -2256,7 +2498,7 @@ async fn member_list_is_stable(
     targets: &[String],
 ) -> Result<()> {
     let again = MemberReader::new(signer.client).list(repo).await?;
-    if targets_of(&again, me, exclude) == targets {
+    if targets_of(&again, repo.visibility, me, exclude) == targets {
         return Ok(());
     }
     Err(UserError::new(
@@ -2304,13 +2546,24 @@ fn stray_error(epoch: u32, stray: [u8; 32]) -> Error {
 
 /// Who a rotation wraps to: this signer first, then every current member not in `exclude`.
 fn rotation_targets(kr: &Keyring, me: &str, exclude: &[String]) -> Vec<String> {
-    targets_of(kr.members(), me, exclude)
+    targets_of(kr.members(), kr.visibility, me, exclude)
 }
 
-fn targets_of(members: &[Member], me: &str, exclude: &[String]) -> Vec<String> {
+/// This signer first, then every member whose role holds the members key
+/// ([`crate::members::holds_members_key`]) and who is not in `exclude`. A runner is never a
+/// member, so never a target.
+fn targets_of(
+    members: &[Member],
+    visibility: Visibility,
+    me: &str,
+    exclude: &[String],
+) -> Vec<String> {
     let mut targets: Vec<String> = vec![me.to_string()];
     for m in members {
-        if !exclude.contains(&m.identity_id) && !targets.contains(&m.identity_id) {
+        if crate::members::holds_members_key(m.role, visibility)
+            && !exclude.contains(&m.identity_id)
+            && !targets.contains(&m.identity_id)
+        {
             targets.push(m.identity_id.clone());
         }
     }
@@ -2562,6 +2815,7 @@ mod tests {
             );
             Keyring {
                 repo_id: self.repo_id,
+                visibility: Visibility::Private,
                 reader,
                 members: self
                     .members
@@ -3146,15 +3400,18 @@ mod tests {
         ];
         // a stale read still lists bob after his removal: excluded anyway
         assert_eq!(
-            targets_of(&members, "alice", &["bob".into()]),
+            targets_of(&members, Visibility::Private, "alice", &["bob".into()]),
             ["alice", "carol"]
         );
         assert_eq!(
-            targets_of(&members, "alice", &[]),
+            targets_of(&members, Visibility::Private, "alice", &[]),
             ["alice", "bob", "carol"]
         );
         // the rotator is wrapped first even when not listed yet (a lagging read)
-        assert_eq!(targets_of(&[], "alice", &[]), ["alice"]);
+        assert_eq!(
+            targets_of(&[], Visibility::Private, "alice", &[]),
+            ["alice"]
+        );
     }
 
     #[test]
@@ -3243,6 +3500,10 @@ mod tests {
         assert_eq!(
             hidden_bucket(&Opened::Unreadable(Unreadable::NoKey)),
             Some("wrong or missing key")
+        );
+        assert_eq!(
+            hidden_bucket(&Opened::Unreadable(Unreadable::CommitMismatch)),
+            Some("not encrypted for this repo")
         );
         assert_eq!(hidden_bucket(&Opened::Readable(Box::default())), None);
     }

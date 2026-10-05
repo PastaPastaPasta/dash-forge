@@ -9,7 +9,7 @@ use anyhow::Result;
 use forge_core::collab::long_body::{BodyField, BodyStore};
 use forge_core::collab::v2::Collab;
 use forge_core::collab::Imported;
-use forge_core::rules::v2::Visibility;
+use forge_core::rules::v2::{Audience, Visibility};
 use forge_core::scope::RepoRef;
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{ExternalTarget, StoragePolicy, StorageProfiles, StorageTarget};
@@ -165,17 +165,20 @@ impl<'f> Planned<'f> {
     }
 
     /// The text to write into the field: the text itself, or (after storing the full text)
-    /// its first part and the line naming the artifact.
+    /// its first part and the line naming the artifact. `audience`: who the document carrying
+    /// it is for (`Collab::new_audience`): a members-only text is never stored where everyone
+    /// can read it.
     pub async fn field_text(
         &self,
         collab: &Collab<'_>,
         repo: &RepoRef,
         imported: Option<&Imported>,
+        audience: Audience,
     ) -> Result<String> {
         match &self.targets {
             None => Ok(self.full.clone()),
             Some(t) => Ok(collab
-                .store_long_body(repo, self.field, imported, &self.full, &t.store())
+                .store_long_body(repo, self.field, imported, &self.full, &t.store(), audience)
                 .await?),
         }
     }

@@ -418,7 +418,15 @@ impl Chain for CollabChain<'_> {
             required: storage.replicas(),
         };
         self.collab
-            .store_long_body(repo, field, imported, full, &store)
+            // an import writes public items (a private repository seals everything anyway)
+            .store_long_body(
+                repo,
+                field,
+                imported,
+                full,
+                &store,
+                forge_core::rules::v2::Audience::Public,
+            )
             .await
     }
 

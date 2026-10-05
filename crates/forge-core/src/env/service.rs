@@ -657,6 +657,46 @@ impl<'a> Environments<'a> {
         })
     }
 
+    /// The recipients of a Maintainers snapshot: `me` (the writer, slot 0), then every other
+    /// current maintainer by id with their highest usable ENCRYPTION key; and the maintainers
+    /// left out for having none.
+    async fn recipients(
+        &self,
+        repo: &RepoRef,
+        me: Recipient,
+    ) -> Result<(Vec<Recipient>, Vec<String>)> {
+        let me_id = platform::encode_identifier(me.identity_id);
+        let mut others: Vec<String> = MemberReader::new(self.client)
+            .maintainers(repo)
+            .await?
+            .into_iter()
+            .map(|m| m.identity_id)
+            .filter(|id| *id != me_id)
+            .collect();
+        others.sort();
+        others.dedup();
+        let core = repo.forge().core.clone();
+        let mut recipients = vec![me];
+        let mut skipped = Vec::new();
+        for other in others {
+            let keys = match self.client.fetch_identity(&other).await {
+                Ok(identity) => identity.public_keys(),
+                Err(Error::NotFound) => Vec::new(),
+                Err(e) => return Err(e),
+            };
+            let key = recipient_key(&keys, &core)
+                .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok());
+            match key {
+                Some(public_key) => recipients.push(Recipient {
+                    identity_id: platform::decode_identifier(&other)?,
+                    public_key,
+                }),
+                None => skipped.push(other),
+            }
+        }
+        Ok((recipients, skipped))
+    }
+
     /// Seal `draft` for its audience: the bytes, who it goes to, and who was left out.
     async fn seal(
         &self,
@@ -683,6 +723,14 @@ impl<'a> Environments<'a> {
         match draft.audience {
             Audience::Members => {
                 let kr = signer.keyring(repo).await?;
+                // E312 when no members key exists (members-only content not turned on), E311
+                // when one does and none was shared with this maintainer yet
+                if !kr.has_members_key() {
+                    return Err(crate::keyring::members_only_off(repo));
+                }
+                if kr.resolution().keys.is_empty() {
+                    return Err(crate::keyring::no_key_shared(repo));
+                }
                 let resolution = kr.resolution();
                 let epoch = resolution
                     .write_epoch
@@ -700,36 +748,15 @@ impl<'a> Environments<'a> {
                     .ok_or_else(|| crate::keyring::no_encryption_key_held(&action))?;
                 let me = signer.identity.id();
                 let me_bytes = platform::decode_identifier(&me)?;
-                let maintainers = MemberReader::new(self.client).maintainers(repo).await?;
-                let core = repo.forge().core.clone();
-                let mut recipients = vec![Recipient {
-                    identity_id: me_bytes,
-                    public_key: sender.public_key(),
-                }];
-                let mut skipped = Vec::new();
-                let mut others: Vec<String> = maintainers
-                    .into_iter()
-                    .map(|m| m.identity_id)
-                    .filter(|id| *id != me)
-                    .collect();
-                others.sort();
-                others.dedup();
-                for other in others {
-                    let keys = match self.client.fetch_identity(&other).await {
-                        Ok(identity) => identity.public_keys(),
-                        Err(Error::NotFound) => Vec::new(),
-                        Err(e) => return Err(e),
-                    };
-                    let key = recipient_key(&keys, &core)
-                        .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok());
-                    match key {
-                        Some(public_key) => recipients.push(Recipient {
-                            identity_id: platform::decode_identifier(&other)?,
-                            public_key,
-                        }),
-                        None => skipped.push(other),
-                    }
-                }
+                let (recipients, skipped) = self
+                    .recipients(
+                        repo,
+                        Recipient {
+                            identity_id: me_bytes,
+                            public_key: sender.public_key(),
+                        },
+                    )
+                    .await?;
                 if recipients.len() > MAX_RECIPIENTS {
                     return Err(UserError::new(
                         codes::UNSUPPORTED,
@@ -786,15 +813,15 @@ pub fn utc(ms: u64) -> String {
 /// Members audience without a members key to write under.
 fn no_members_key(repo: &RepoRef, action: &str) -> Error {
     UserError::new(
-        codes::NOT_A_KEY_HOLDER,
-        format!("{action}: the Members audience needs the repository's members key, which you don't hold"),
+        codes::ROTATION_PENDING,
+        format!("{action}: the members key can't be written under right now"),
     )
     .cause(format!(
-        "a Members environment is encrypted to everyone who holds {}'s members key; it exists once a maintainer turns on members-only content, and each member receives it",
+        "a Members environment is encrypted under {}'s current members key, and a key change has not finished",
         repo.display()
     ))
-    .fix("save it for Maintainers instead: add `--audience maintainers`")
-    .fix(format!("or turn on members-only content first: `dg repo members enable {}`", repo.display()))
+    .fix(format!("`dg repo keys repair {}` finishes it", repo.display()))
+    .fix("or save it for Maintainers instead: add `--audience maintainers`")
     .note("nothing was written")
     .into()
 }

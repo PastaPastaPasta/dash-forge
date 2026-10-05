@@ -1,0 +1,62 @@
+{
+  "name": "sealed_verdict_outsider",
+  "description": "D15: an outsider who cannot open the same members-only reviews counts their plaintext verdicts too (asMember proves the writer a member), so member and outsider agree.",
+  "case": "approval_count",
+  "rules": "v2",
+  "input": {
+    "visibility": "public",
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "bob",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100,
+        "sealed": true,
+        "opened": false,
+        "asMember": true
+      },
+      {
+        "id": "r2",
+        "reviewer": "maint",
+        "verdict": 2,
+        "commitOid": "head0000",
+        "createdAt": 90,
+        "sealed": false,
+        "opened": true,
+        "asMember": true
+      },
+      {
+        "id": "r3",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 110,
+        "sealed": true,
+        "opened": false,
+        "asMember": true
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      },
+      {
+        "identity": "bob",
+        "role": "writer",
+        "createdAt": 60
+      }
+    ],
+    "headOid": "head0000",
+    "prAuthor": "alice"
+  },
+  "expected": {
+    "approvers": [
+      "bob",
+      "maint"
+    ],
+    "changesRequested": []
+  }
+}

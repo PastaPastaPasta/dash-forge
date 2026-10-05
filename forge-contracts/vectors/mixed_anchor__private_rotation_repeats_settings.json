@@ -1,0 +1,30 @@
+{
+  "name": "private_rotation_repeats_settings",
+  "description": "Control: a PRIVATE repository's rotation anchor repeats the current settings (config is newest-wins there) and stays vis private, unchanged by mixed repositories.",
+  "case": "mixed_anchor",
+  "rules": "v2",
+  "input": {
+    "visibility": "private",
+    "current": {
+      "defaultBranch": "main",
+      "protectedPatterns": [
+        "refs/heads/main",
+        "refs/heads/release/*"
+      ],
+      "backendMode": 0,
+      "archived": false
+    },
+    "link": {
+      "prev": 0,
+      "prevKey": "0101010101010101010101010101010101010101010101010101010101010101"
+    }
+  },
+  "expected": {
+    "vis": "private",
+    "plaintext": [
+      "archived",
+      "backend"
+    ],
+    "tlv": "0600046d61696e07000f726566732f68656164732f6d61696e070014726566732f68656164732f72656c656173652f2a080004000000000900200101010101010101010101010101010101010101010101010101010101010101"
+  }
+}

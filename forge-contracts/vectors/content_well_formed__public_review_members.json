@@ -1,0 +1,15 @@
+{
+  "name": "public_review_members",
+  "description": "A members-only review in a public repository: enc v0x03, epoch; its verdict and commit are plaintext fields outside the content check.",
+  "case": "content_well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "review",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 1
+    },
+    "visibility": "public"
+  },
+  "expected": true
+}

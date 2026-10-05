@@ -129,6 +129,12 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Repo(Rp::Keys(crate::RepoKeysCommand::Rotate { repo })) => {
             ("key not rotated", Some(repo))
         }
+        Command::Repo(Rp::Members(crate::RepoMembersCommand::Enable { repo })) => {
+            ("members-only content not turned on", Some(repo))
+        }
+        Command::Repo(Rp::Members(crate::RepoMembersCommand::Status { repo })) => {
+            ("could not read the members key", Some(repo))
+        }
         Command::Repo(Rp::Backend(RepoBackendCommand::Set { repo, .. })) => {
             ("backend not changed", Some(repo))
         }

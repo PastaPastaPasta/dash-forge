@@ -478,7 +478,8 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         if let Some(created) = collab.resume_patch_create(handle, &input, &journal).await? {
             created
         } else {
-            input.body = planned.field_text(&collab, handle, None).await?;
+            let audience = collab.new_audience(handle, None, None).await?;
+            input.body = planned.field_text(&collab, handle, None, audience).await?;
             collab.create_patch(handle, &input, &journal).await?
         };
     let requested = match &owner_plan {

@@ -192,12 +192,30 @@ pub fn role_limits(role: Role, repo: &RepoRef) -> Option<String> {
     }
 }
 
-/// Refuse a grant of `role` to `member` the clients do not make: a reader on a public
-/// repository ([`check_role_for`]), and the repo owner giving itself a triage or reader
-/// `writer` document (the owner already holds every right through its ownership and its
-/// maintainer document; forge-web refuses it too).
+/// Whether readers (role 3) are in a repository's members key chain, so they receive key wraps
+/// and read members-only content (DESIGN §2.1, owner question 2). Runners are never in it: a
+/// `runner` document (forge-community) is not a membership, so it is never listed by
+/// [`MemberReader::list`] and never receives a wrap; a runner made a reader is a member like
+/// any other. Private repositories always wrap their readers; this constant decides public
+/// repositories with members-only content, and is kept in one place so the decision is cheap
+/// to change.
+pub const READERS_IN_MEMBERS_KEY: bool = true;
+
+/// Whether a member with `role` receives the members key of a repository of `visibility` (key
+/// wraps, rotations, repairs): every role of a private repository, and in a public one every
+/// role but a reader unless [`READERS_IN_MEMBERS_KEY`].
+#[must_use]
+pub fn holds_members_key(role: Role, visibility: crate::rules::v2::Visibility) -> bool {
+    role != Role::Reader
+        || READERS_IN_MEMBERS_KEY
+        || visibility == crate::rules::v2::Visibility::Private
+}
+
+/// Refuse a grant of `role` to `member` the clients do not make: the repo owner giving itself a
+/// triage or reader `writer` document (the owner already holds every right through its
+/// ownership and its maintainer document; forge-web refuses it too). A reader is allowed on a
+/// public repository too: there it reads the members-only content (DESIGN §4.1).
 pub fn check_grant(repo: &RepoRef, member: &str, role: Role) -> Result<()> {
-    check_role_for(repo, role)?;
     if member == repo.owner_id() && matches!(role, Role::Triage | Role::Reader) {
         return Err(UserError::new(
             codes::REJECTED,
@@ -208,25 +226,6 @@ pub fn check_grant(repo: &RepoRef, member: &str, role: Role) -> Result<()> {
         )
         .cause("the owner holds every right through its ownership and maintainer document")
         .fix("add the owner as a maintainer or writer, or give the role to another identity")
-        .note("nothing was written")
-        .into());
-    }
-    Ok(())
-}
-
-/// Refuse a reader role on a public repository: everyone can already read it, and a reader
-/// can write nothing a non-member cannot (a client rule; consensus admits the document).
-pub fn check_role_for(repo: &RepoRef, role: Role) -> Result<()> {
-    if role == Role::Reader && repo.visibility != crate::rules::v2::Visibility::Private {
-        return Err(UserError::new(
-            codes::REJECTED,
-            format!(
-                "{} is public: the reader role is for private repositories only",
-                repo.display()
-            ),
-        )
-        .cause("everyone can read a public repository, and a reader can write nothing a non-member cannot")
-        .fix("add them as `--role triage` or `--role writer` instead")
         .note("nothing was written")
         .into());
     }
@@ -367,6 +366,7 @@ fn role_change_interrupted(
     to: Role,
     cause: &Error,
     deleted: bool,
+    keyed: bool,
 ) -> Error {
     let repo_name = repo.display();
     let (headline, state) = if deleted {
@@ -395,7 +395,9 @@ fn role_change_interrupted(
     let mut u = UserError::new(codes::REJECTED, headline)
         .cause(cause.to_string())
         .fix(finish);
-    u = if repo.visibility == crate::rules::v2::Visibility::Private {
+    // a repository with a members key (private, or public with members-only content) must
+    // rotate it away from someone who is not coming back
+    u = if keyed {
         u.fix(format!(
             "or, if {member} should not be re-added, run `dg collab remove {repo_name} {member}` \
              (or `dg repo keys repair {repo_name}`) so the key rotates away from them"
@@ -545,8 +547,8 @@ impl<'a> MemberService<'a> {
     ///
     /// A member whose `writer` document grants another of writer, triage and reader has it
     /// replaced (a role change: the document is immutable, so it is deleted and a new one
-    /// written, after the consent check). A reader is refused on a public repository
-    /// ([`check_role_for`]).
+    /// written, after the consent check).
+    #[allow(clippy::too_many_lines)] // one grant: consent, the role change, its recoveries
     pub async fn grant(&self, repo: &RepoRef, member: &str, role: Role) -> Result<Member> {
         self.require_owner(repo)?;
         check_grant(repo, member, role)?;
@@ -592,6 +594,15 @@ impl<'a> MemberService<'a> {
         // A role change: the old `writer` document goes first (the `(repoId, memberId)` index
         // is unique, and the document is immutable).
         let changed_from = existing.as_ref().map(|old| old.role);
+        // How an interrupted role change is finished depends on whether a members key exists
+        // (read only for a role change; an unreadable answer is taken as yes).
+        let keyed = if changed_from.is_some() {
+            crate::keyring::has_members_key(self.client, repo)
+                .await
+                .unwrap_or(true)
+        } else {
+            false
+        };
         if let Some(old) = existing {
             // A failed delete (a timeout included) may still have landed: say so.
             if let Err(e) = self
@@ -600,7 +611,7 @@ impl<'a> MemberService<'a> {
                 .await
             {
                 return Err(role_change_interrupted(
-                    repo, member, old.role, role, &e, false,
+                    repo, member, old.role, role, &e, false, keyed,
                 ));
             }
         }
@@ -628,11 +639,14 @@ impl<'a> MemberService<'a> {
                             role,
                             &Error::NotFound,
                             true,
+                            keyed,
                         ),
                         None => Error::NotFound,
                     }),
                     Err(e) => Err(match changed_from {
-                        Some(from) => role_change_interrupted(repo, member, from, role, &e, true),
+                        Some(from) => {
+                            role_change_interrupted(repo, member, from, role, &e, true, keyed)
+                        }
                         None => e,
                     }),
                 }
@@ -641,7 +655,9 @@ impl<'a> MemberService<'a> {
             // role until the add runs again.
             Err(e) => {
                 return Err(match changed_from {
-                    Some(from) => role_change_interrupted(repo, member, from, role, &e, true),
+                    Some(from) => {
+                        role_change_interrupted(repo, member, from, role, &e, true, keyed)
+                    }
                     None => e,
                 })
             }
@@ -983,19 +999,20 @@ mod tests {
         for role in [Role::Maintainer, Role::Writer] {
             assert!(check_grant(&repo(), "alice", role).is_ok());
         }
-        // A reader on a public repository is refused for anyone.
-        assert!(check_grant(&repo(), "bob", Role::Reader).is_err());
+        // A reader on a public repository is allowed: it reads the members-only content.
+        assert!(check_grant(&repo(), "bob", Role::Reader).is_ok());
     }
 
     #[test]
-    fn a_reader_is_for_private_repositories_only() {
-        let e = check_role_for(&repo(), Role::Reader)
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("public"), "{e}");
-        assert!(check_role_for(&private_repo(), Role::Reader).is_ok());
-        for role in [Role::Maintainer, Role::Writer, Role::Triage] {
-            assert!(check_role_for(&repo(), role).is_ok(), "{role:?}");
+    fn readers_hold_the_members_key_and_the_choice_is_one_constant() {
+        use crate::rules::v2::Visibility;
+        for role in [Role::Maintainer, Role::Writer, Role::Triage, Role::Reader] {
+            assert!(holds_members_key(role, Visibility::Private), "{role:?}");
+            assert_eq!(
+                holds_members_key(role, Visibility::Public),
+                role != Role::Reader || READERS_IN_MEMBERS_KEY,
+                "{role:?}"
+            );
         }
     }
 

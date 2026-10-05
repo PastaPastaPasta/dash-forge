@@ -1,0 +1,16 @@
+{
+  "name": "public_comment_members_with_plaintext_path",
+  "description": "An inline comment's path is content: plaintext beside enc is malformed.",
+  "case": "content_well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "comment",
+      "path": "a.rs",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

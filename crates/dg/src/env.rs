@@ -9,6 +9,7 @@
 //! `get` and `export` refuse until a maintainer keeps one (`--keep`).
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -1244,26 +1245,25 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
 }
 
 /// The removal checklist for `member` leaving `s.repo` (DESIGN §4.5 "Audit and exposure"):
-/// the environments and current value names they could read, as JSON and lines to print.
+/// the environments and current value names they could read, as JSON and as text to print after
+/// a line (each of its lines starts with a newline; empty when there is nothing to say).
 /// `held_members_key`: whether they held the members key. Reading fails softly (a note).
 pub async fn removal_checklist(
     s: &Session,
     member: &str,
     held_members_key: bool,
-) -> (Value, Vec<String>) {
+) -> (Value, String) {
     let book = match book(s).await {
         Ok(b) => b,
         Err(e) => {
             return (
                 Value::Null,
-                vec![format!(
-                    "couldn't list the environments {member} could read: {e}"
-                )],
+                format!("\ncouldn't list the environments {member} could read: {e}"),
             )
         }
     };
     let exposed = book.exposure(member, held_members_key);
-    let mut lines = Vec::new();
+    let mut lines = String::new();
     for e in &exposed {
         let n = e.names.len();
         let past = if e.audience == Audience::Members {
@@ -1271,13 +1271,14 @@ pub async fn removal_checklist(
         } else {
             ""
         };
-        lines.push(format!(
-            "{member} could read {n} {} value{}{past}. Rotate {} at the source: {}",
+        let _ = write!(
+            lines,
+            "\n{member} could read {n} {} value{}{past}. Rotate {} at the source: {}",
             e.env,
             if n == 1 { "" } else { "s" },
             if n == 1 { "it" } else { "them" },
             e.names.join(", ")
-        ));
+        );
     }
     (serde_json::to_value(&exposed).unwrap_or(Value::Null), lines)
 }

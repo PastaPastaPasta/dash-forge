@@ -1,0 +1,27 @@
+{
+  "name": "public_burned_rotation_link_only",
+  "description": "A burned rotation anchor of a PUBLIC repository carries prevEpoch and the burned flag only: no key below, no settings.",
+  "case": "mixed_anchor",
+  "rules": "v2",
+  "input": {
+    "visibility": "public",
+    "current": {
+      "defaultBranch": "main",
+      "protectedPatterns": [
+        "refs/heads/main",
+        "refs/heads/release/*"
+      ],
+      "backendMode": 0,
+      "archived": false
+    },
+    "link": {
+      "prev": 1,
+      "burned": true
+    }
+  },
+  "expected": {
+    "vis": "public",
+    "plaintext": [],
+    "tlv": "080004000000010b000101"
+  }
+}

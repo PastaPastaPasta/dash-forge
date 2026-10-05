@@ -1,0 +1,15 @@
+{
+  "name": "config_members_anchor",
+  "description": "The members-key anchor (enc v0x02, no settings) is never a settings row: the git plane admits no enc (DESIGN D1).",
+  "case": "git_plane_well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "config",
+      "enc": "02000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

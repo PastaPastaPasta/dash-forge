@@ -1,0 +1,20 @@
+{
+  "name": "plaintext_beside_reseal_refused",
+  "description": "A re-seal that leaves plaintext beside enc is refused.",
+  "case": "mixed_edit",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "kind": "issue",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "issue",
+      "title": "leak",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    }
+  },
+  "expected": false
+}
