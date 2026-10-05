@@ -391,6 +391,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         },
         None,
         &args.body,
+        s.collab().new_audience(handle, None, None).await?,
     )?;
     let mut input = PatchInput {
         title: title.clone(),
@@ -478,8 +479,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         if let Some(created) = collab.resume_patch_create(handle, &input, &journal).await? {
             created
         } else {
-            let audience = collab.new_audience(handle, None, None).await?;
-            input.body = planned.field_text(&collab, handle, None, audience).await?;
+            input.body = planned.field_text(&collab, handle, None).await?;
             collab.create_patch(handle, &input, &journal).await?
         };
     let requested = match &owner_plan {
@@ -3596,6 +3596,7 @@ pub(crate) mod tests {
             created_at: 0,
             imported: None,
             upstream_number: None,
+            audience: forge_core::rules::v2::Audience::Public,
         };
         PatchView {
             state: forge_core::rules::PrState::default(),

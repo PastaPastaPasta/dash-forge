@@ -103,20 +103,25 @@ pub struct Planned<'f> {
     field: BodyField<'f>,
     full: String,
     room: usize,
+    /// Who the document carrying it is for: a members-only text has the members-only room and
+    /// is never stored where everyone can read it.
+    audience: Audience,
     /// The storage, when the text is stored as an artifact.
     targets: Option<BodyTargets>,
 }
 
 impl<'f> Planned<'f> {
-    /// Plan writing `full` into `field` of `repo`: the storage policy is read only when the
-    /// text needs an artifact.
+    /// Plan writing `full` into `field` of `repo`, in a document for `audience`
+    /// (`Collab::new_audience`, or the stored document's for an edit): the storage policy is read
+    /// only when the text needs an artifact.
     pub fn new(
         repo: &RepoRef,
         field: BodyField<'f>,
         imported: Option<&Imported>,
         full: &str,
+        audience: Audience,
     ) -> Result<Self> {
-        let room = field.room(repo.visibility, imported);
+        let room = field.room_for(repo.visibility, audience, imported);
         let targets = forge_core::rules::long_body::needs_artifact(full, room)
             .then(BodyTargets::resolve)
             .transpose()?;
@@ -124,6 +129,7 @@ impl<'f> Planned<'f> {
             field,
             full: full.to_string(),
             room,
+            audience,
             targets,
         })
     }
@@ -165,20 +171,25 @@ impl<'f> Planned<'f> {
     }
 
     /// The text to write into the field: the text itself, or (after storing the full text)
-    /// its first part and the line naming the artifact. `audience`: who the document carrying
-    /// it is for (`Collab::new_audience`): a members-only text is never stored where everyone
-    /// can read it.
+    /// its first part and the line naming the artifact (never stored where everyone can read it
+    /// for a members-only document: core refuses that).
     pub async fn field_text(
         &self,
         collab: &Collab<'_>,
         repo: &RepoRef,
         imported: Option<&Imported>,
-        audience: Audience,
     ) -> Result<String> {
         match &self.targets {
             None => Ok(self.full.clone()),
             Some(t) => Ok(collab
-                .store_long_body(repo, self.field, imported, &self.full, &t.store(), audience)
+                .store_long_body(
+                    repo,
+                    self.field,
+                    imported,
+                    &self.full,
+                    &t.store(),
+                    self.audience,
+                )
                 .await?),
         }
     }

@@ -185,6 +185,68 @@ fn is_sealed(d: &FetchedDocument) -> bool {
     d.field_bytes("enc").is_some_and(|e| !e.is_empty())
 }
 
+/// A comment's thread as [`Collab::thread_docs`] read it.
+struct ThreadDocs {
+    /// The comment named (replied to).
+    parent: FetchedDocument,
+    /// Its root, when it is a reply.
+    root: Option<FetchedDocument>,
+}
+
+impl ThreadDocs {
+    /// The thread's root comment id.
+    fn root_id(&self) -> String {
+        self.root.as_ref().unwrap_or(&self.parent).id.clone()
+    }
+
+    /// The comment replied to and its root, both of which a reply's audience is under.
+    fn docs(self) -> Vec<FetchedDocument> {
+        std::iter::once(self.parent).chain(self.root).collect()
+    }
+}
+
+/// A parent whose audience a write must know and cannot read: an error, never "public"
+/// (DESIGN §3.3 fails closed).
+fn parent_not_found(what: &str, id: &str) -> Error {
+    UserError::new(
+        codes::NOT_FOUND,
+        format!("the {what} {id} could not be read"),
+    )
+    .cause("who can read a reply depends on what it answers, so it is checked before anything is written")
+    .fix("check the id, or try again in a moment (a node may not show it yet)")
+    .note("nothing was written")
+    .into()
+}
+
+/// The audience of a parent read by id (`found`), failing closed: one that is not there is an
+/// error ([`parent_not_found`]), never "public".
+fn audience_of_found(found: Option<&FetchedDocument>, what: &str, id: &str) -> Result<Audience> {
+    found
+        .map(stored_audience)
+        .ok_or_else(|| parent_not_found(what, id))
+}
+
+/// The audience a child is under: the narrowest of its target's (`target`) and every comment of
+/// the thread it replies in (the comment replied to and its root): a reply to a members-only
+/// reply under a public root is members-only (DESIGN §3.3).
+fn thread_audience(target: Audience, thread: &[&FetchedDocument]) -> Audience {
+    thread
+        .iter()
+        .map(|d| stored_audience(d))
+        .fold(target, Audience::narrower)
+}
+
+/// The `targetId` an event's properties name, or an error: an event whose target cannot be
+/// named is refused, never sealed (or not) as if public.
+fn event_target_id(props: &BTreeMap<String, FieldValue>) -> Result<String> {
+    props
+        .get("targetId")
+        .and_then(FieldValue::as_bytes)
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .map(platform::encode_identifier)
+        .ok_or_else(|| parent_not_found("event target", "(none)"))
+}
+
 /// Who a stored document was written for, read from the document ([`Audience::of`]).
 fn stored_audience(d: &FetchedDocument) -> Audience {
     match d.field_bytes("enc").filter(|e| !e.is_empty()) {
@@ -220,8 +282,18 @@ fn open_with(
     match keys {
         DocKeys::None(why) => Err(MembersOnly::of(&d, *why)),
         DocKeys::Held(kr) => {
-            let placeholder = MembersOnly::of(&d, Unopened::NotReadable);
-            private::open_doc(kr.open(doc_kind(kind), &d), d).ok_or(placeholder)
+            let opened = kr.open(doc_kind(kind), &d);
+            // A member tells a document made for another key (forged, relabelled or moved: it
+            // fails the commitment or the tag) apart from one under a key they do not hold.
+            let why = match &opened {
+                crate::private::Opened::Malformed
+                | crate::private::Opened::Unreadable(
+                    crate::private::Unreadable::BadTag | crate::private::Unreadable::CommitMismatch,
+                ) => Unopened::NotForThisRepo,
+                _ => Unopened::NotReadable,
+            };
+            let placeholder = MembersOnly::of(&d, why);
+            private::open_doc(opened, d).ok_or(placeholder)
         }
     }
 }
@@ -294,6 +366,8 @@ pub struct Issue {
     /// The source forge's number (`upstreamNumber`), when an importer recorded it. A free
     /// field: show it only through [`crate::rules::v2::trusted_upstream_number`].
     pub upstream_number: Option<u32>,
+    /// Who it is for, read from the stored document: what an edit keeps (DESIGN §2.4).
+    pub audience: Audience,
 }
 
 impl Issue {
@@ -339,6 +413,8 @@ pub struct Patch {
     pub imported: Option<Imported>,
     /// The source forge's number (`upstreamNumber`), as on [`Issue::upstream_number`].
     pub upstream_number: Option<u32>,
+    /// Who it is for, read from the stored document: what an edit keeps (DESIGN §2.4).
+    pub audience: Audience,
 }
 
 /// The base a PR's merge is folded against: `baseRefName` as of the patch's `$createdAt`
@@ -416,6 +492,8 @@ pub struct Comment {
     /// A mirrored review comment's source diff hunk (QW2-010, `diffHunk`): text a reader shows
     /// as text, and only on an imported comment with a path ([`Comment::shown_hunk`]).
     pub diff_hunk: Option<String>,
+    /// Who it is for, read from the stored document: what an edit keeps (DESIGN §2.4).
+    pub audience: Audience,
 }
 
 impl Comment {
@@ -495,8 +573,13 @@ pub enum Unopened {
     /// The reader is a member, but no maintainer has shared the key with them yet (E311).
     NoKeyShared,
     /// The reader holds keys of this repository, but not one this document opens with (an
-    /// epoch from after their removal, content written late, or tampered bytes).
+    /// epoch from after their removal, content written late, a specific-people letter that does
+    /// not name them).
     NotReadable,
+    /// The reader holds this repository's keys and the document fails their checks: it was not
+    /// made for this repository's key (forged, relabelled or moved). The "not encrypted for
+    /// this repo" bucket, as `keyring::hidden_bucket` files `BadTag` and `CommitMismatch`.
+    NotForThisRepo,
 }
 
 /// A members-only document this reader cannot open, as DESIGN D14 shows it: who wrote it, when
@@ -548,6 +631,25 @@ pub enum TargetRead {
     Readable(FetchedDocument),
     /// A members-only target this reader cannot open.
     MembersOnly(MembersOnly),
+}
+
+impl TargetRead {
+    /// This issue or PR as an event or transition target: what a close, lock or label of it
+    /// needs, which is public even when its text is members-only (a maintainer can close a
+    /// stranger's members-only issue by number without reading it).
+    #[must_use]
+    pub fn target(&self, kind: TargetKind, number: u32) -> Target {
+        let (id, author) = match self {
+            TargetRead::Readable(d) => (d.id.clone(), d.owner_id.clone()),
+            TargetRead::MembersOnly(m) => (m.document_id.clone(), m.author.clone()),
+        };
+        Target {
+            kind,
+            id,
+            number,
+            author,
+        }
+    }
 }
 
 /// A page of documents as the public codecs read them ([`Collab::readable`]).
@@ -1001,6 +1103,7 @@ pub fn issue_from_doc(d: &FetchedDocument) -> Issue {
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
         upstream_number: upstream_number_of(d),
+        audience: stored_audience(d),
     }
 }
 
@@ -1024,6 +1127,7 @@ pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
         upstream_number: upstream_number_of(d),
+        audience: stored_audience(d),
     }
 }
 
@@ -1075,6 +1179,7 @@ fn comment_from_doc(d: &FetchedDocument) -> Comment {
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
         diff_hunk: d.field_str(COMMENT_DIFF_HUNK),
+        audience: stored_audience(d),
     }
 }
 
@@ -2384,22 +2489,25 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
         Unopened::NoEncryptionKey => {
             crate::keyring::no_encryption_key_held(&format!("members-only {what}"))
         }
-        Unopened::NotAMember | Unopened::NotReadable => {
+        Unopened::NotAMember | Unopened::NotReadable | Unopened::NotForThisRepo => {
             let mut e = UserError::new(codes::MEMBERS_ONLY, format!("{what} is members-only"))
                 .cause(format!(
                     "only members of {} can read it; it was opened by {}",
                     repo.display(),
                     m.author
                 ));
-            e = if m.why == Unopened::NotAMember {
-                e.fix(format!(
+            e = match m.why {
+                Unopened::NotAMember => e.fix(format!(
                     "not a member? run `dg collab accept {}` (your consent), then ask the owner to add you",
                     repo.display()
-                ))
-            } else {
-                e.fix(
-                    "it was written under a key you do not hold (after you were removed, or late)",
-                )
+                )),
+                Unopened::NotForThisRepo => e.fix(
+                    "it does not open with this repository's key: it was not encrypted for this repo",
+                ),
+                _ => e.fix(format!(
+                    "it was written for a key or for people you do not hold (after you were removed, late, or to specific people); `dg repo keys status {}` lists the keys you hold",
+                    repo.display()
+                )),
             };
             e.into()
         }
@@ -2779,83 +2887,66 @@ impl<'a> Collab<'a> {
 
     /// The audience of `repo`'s issue or patch `target_id` (a comment's, review's or event's
     /// parent): read from the stored document, never from the repository alone (DESIGN §3.3).
-    /// A target that is not there reads as public (the write is then refused at consensus).
+    /// It fails closed: a target that cannot be read is an error, never "public".
     async fn target_audience(&self, repo: &RepoRef, target_id: &str) -> Result<Audience> {
         if repo.visibility == Visibility::Private {
             return Ok(Audience::Members);
         }
         let collab = self.collab_contract(repo).await?;
+        let mut found = None;
         for doc_type in [DOC_ISSUE, DOC_PATCH] {
-            if let Some(d) = self
+            found = self
                 .client
                 .fetch_document(&collab, doc_type, target_id)
-                .await?
-            {
-                return Ok(stored_audience(&d));
+                .await?;
+            if found.is_some() {
+                break;
             }
         }
-        Ok(Audience::Public)
+        audience_of_found(found.as_ref(), "issue or pull request", target_id)
     }
 
-    /// The audience a new comment or review is written for: its target's and, for a reply, its
-    /// thread root's ([`Self::audience_for`] over the narrower of the two).
+    /// The audience a new comment or review on `target_id` is written for, replying (for a
+    /// comment) in the thread whose documents are `thread` (the comment replied to and its
+    /// root, as [`Self::thread_docs`] read them): the narrowest of the target's and every one
+    /// of theirs ([`Self::audience_for`]; DESIGN §3.3). A reply to a members-only reply under a
+    /// public root is members-only.
     async fn child_audience(
         &self,
         repo: &RepoRef,
         target_id: &str,
-        reply_to: Option<&str>,
+        thread: &[&FetchedDocument],
     ) -> Result<Audience> {
         if repo.visibility == Visibility::Private {
             return self.audience_for(repo, None);
         }
-        let mut parent = self.target_audience(repo, target_id).await?;
-        if let Some(root) = reply_to {
-            let collab = self.collab_contract(repo).await?;
-            if let Some(d) = self
-                .client
-                .fetch_document(&collab, DOC_COMMENT, root)
-                .await?
-            {
-                parent = parent.narrower(stored_audience(&d));
-            }
-        }
-        self.audience_for(repo, Some(parent))
+        let target = self.target_audience(repo, target_id).await?;
+        self.audience_for(repo, Some(thread_audience(target, thread)))
     }
 
     /// The audience a new document of `repo` would be written for by this `Collab`: an issue or
-    /// PR (`target` `None`), or a comment or review on `target` (replying to `reply_to`). What
-    /// a caller storing a long body first passes to [`Self::store_long_body`]. Refused as the
-    /// write would be refused (a public reply under a members-only parent).
+    /// PR (`target` `None`), or a comment or review on `target` replying to comment `reply_to`
+    /// (any comment of a thread: its root is read too). What a caller storing a long body first
+    /// passes to [`Self::store_long_body`]. Refused as the write would be refused (a public reply
+    /// under a members-only parent), and when a parent cannot be read.
     pub async fn new_audience(
         &self,
         repo: &RepoRef,
         target: Option<&str>,
         reply_to: Option<&str>,
     ) -> Result<Audience> {
-        match target {
-            None => self.audience_for(repo, None),
-            Some(t) => self.child_audience(repo, t, reply_to).await,
-        }
-    }
-
-    /// Who issue or PR `target_id` of `repo` is for (read from the stored document; everything
-    /// of a private repository is members-only): what an edit of its text keeps.
-    pub async fn audience_of_target(&self, repo: &RepoRef, target_id: &str) -> Result<Audience> {
-        self.target_audience(repo, target_id).await
-    }
-
-    /// Who comment `comment_id` of `repo` is for: what an edit of it keeps.
-    pub async fn audience_of_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<Audience> {
-        if repo.visibility == Visibility::Private {
-            return Ok(Audience::Members);
-        }
-        let collab = self.collab_contract(repo).await?;
-        Ok(self
-            .client
-            .fetch_document(&collab, DOC_COMMENT, comment_id)
-            .await?
-            .as_ref()
-            .map_or(Audience::Public, stored_audience))
+        let Some(t) = target else {
+            return self.audience_for(repo, None);
+        };
+        let thread = match reply_to {
+            Some(r) => {
+                let collab = self.collab_contract(repo).await?;
+                self.thread_docs(repo, &collab, t, r).await?.docs()
+            }
+            None => Vec::new(),
+        };
+        self.child_audience(repo, t, &thread.iter().collect::<Vec<_>>())
+            .await
     }
 
     /// `props` of a new `kind` document of `repo`, for `audience`: unchanged when public;
@@ -2879,9 +2970,9 @@ impl<'a> Collab<'a> {
             Audience::Public => Ok(props),
             Audience::Members => {
                 let kr = self.members_writer(repo).await?;
-                let w = kr.writer(repo)?;
+                let lane = kr.lane(repo)?;
                 let owner = platform::decode_identifier(&self.signer_id()?)?;
-                private::seal_members_props(w.write_keys(), kind, owner, props)
+                private::seal_members_props(&lane, kind, owner, props)
             }
             Audience::SpecificPeople => Err(UserError::new(
                 codes::USAGE,
@@ -2970,10 +3061,19 @@ impl<'a> Collab<'a> {
             };
             return Ok(DocKeys::None(why));
         }
-        let kr = crate::repo::cached_keyring(&self.keyring, repo, || async move {
+        // A public repository's read never fails on its members key: a keyring that cannot be
+        // read leaves the members-only rows as placeholders, and everything public reads.
+        let kr = match crate::repo::cached_keyring(&self.keyring, repo, || async move {
             signer.keyring(repo).await
         })
-        .await?;
+        .await
+        {
+            Ok(kr) => kr,
+            Err(e) => {
+                tracing::warn!(error = %e, "the members key could not be read; members-only content stays hidden");
+                return Ok(DocKeys::None(Unopened::NotReadable));
+            }
+        };
         if kr.resolution().keys.is_empty() {
             let why = if kr.reader_role().is_some() {
                 Unopened::NoKeyShared
@@ -3256,15 +3356,9 @@ impl<'a> Collab<'a> {
         // follows its target): every event in a private repository, and in a public one the
         // events of a members-only issue. Every event write passes here.
         let props = if doc_type == DOC_EVENT && props.contains_key("value") {
-            let target = props
-                .get("targetId")
-                .and_then(FieldValue::as_bytes)
-                .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                .map(platform::encode_identifier);
-            let audience = match &target {
-                Some(t) => self.target_audience(repo, t).await?,
-                None => Audience::Public,
-            };
+            // fails closed: an event naming no readable target is refused, never public
+            let target = event_target_id(&props)?;
+            let audience = self.target_audience(repo, &target).await?;
             // the target's audience, never the command's request: an event has no audience of
             // its own
             let audience = if repo.visibility == Visibility::Private {
@@ -5378,6 +5472,13 @@ impl<'a> Collab<'a> {
                 .map(|k| (k.to_string(), stored.fields.get(k).cloned()))
                 .collect());
         }
+        let owner = platform::decode_identifier(&self.signer_id()?)?;
+        if members {
+            // a public repository's members key is a `Lane`, never a private repository's seams
+            let lane = kr.lane(repo)?;
+            let sealed = private::reseal_members_edit(&lane, kind, owner, &opened, &text)?;
+            return Ok(clear_plaintext(kind, stored, sealed));
+        }
         let writer = kr.writer(repo)?;
         let keys = if kind == DocKind::Patch {
             let epoch = stored
@@ -5388,12 +5489,7 @@ impl<'a> Collab<'a> {
         } else {
             writer.write_keys()
         };
-        let owner = platform::decode_identifier(&self.signer_id()?)?;
-        let sealed = if members {
-            private::reseal_members_edit(keys, kind, owner, &opened, &text)?
-        } else {
-            private::reseal_edit(keys, kind, owner, &opened, &text)?
-        };
+        let sealed = private::reseal_edit(keys, kind, owner, &opened, &text)?;
         Ok(clear_plaintext(kind, stored, sealed))
     }
 
@@ -5452,15 +5548,23 @@ impl<'a> Collab<'a> {
     ) -> Result<String> {
         let collab = self.collab_contract(repo).await?;
         let mut anchor = anchor.cloned();
+        // A reply's thread: the comment replied to and its root, read once. Its audience is a
+        // subset of its target's and of both of theirs (§3.3), so they are read in a public
+        // repository even when `replyTo` already names the root.
+        let mut thread = Vec::new();
         if let Some(a) = &mut anchor {
-            if let Some(parent) = a.reply_to.as_ref().filter(|_| find_root) {
-                a.reply_to = Some(self.thread_root(repo, &collab, target_id, parent).await?);
+            if let Some(parent) = a.reply_to.clone() {
+                if find_root {
+                    let t = self.thread_docs(repo, &collab, target_id, &parent).await?;
+                    a.reply_to = Some(t.root_id());
+                    thread = t.docs();
+                } else if repo.visibility == Visibility::Public {
+                    thread.push(self.root_doc(&collab, &parent).await?);
+                }
             }
         }
-        // a comment's audience is a subset of its target's and of its thread root's (§3.3)
-        let reply_to = anchor.as_ref().and_then(|a| a.reply_to.clone());
         let audience = self
-            .child_audience(repo, target_id, reply_to.as_deref())
+            .child_audience(repo, target_id, &thread.iter().collect::<Vec<_>>())
             .await?;
         if let Some(a) = &mut anchor {
             // A hunk is public text: a sealed comment has no room for it, and a contract
@@ -5489,6 +5593,22 @@ impl<'a> Collab<'a> {
         target_id: &str,
         comment_id: &str,
     ) -> Result<String> {
+        Ok(self
+            .thread_docs(repo, collab, target_id, comment_id)
+            .await?
+            .root_id())
+    }
+
+    /// The thread of comment `comment_id` (a comment of `target_id`), read: the comment itself
+    /// and, when it is a reply, its root. What a reply's root ([`Self::thread_root`]) and its
+    /// audience ([`Self::child_audience`]) are taken from, read once.
+    async fn thread_docs(
+        &self,
+        repo: &RepoRef,
+        collab: &LoadedContract,
+        target_id: &str,
+        comment_id: &str,
+    ) -> Result<ThreadDocs> {
         let parent = self
             .client
             .fetch_document(collab, DOC_COMMENT, comment_id)
@@ -5505,21 +5625,42 @@ impl<'a> Collab<'a> {
                 "comment {comment_id} is not on this issue or pull request"
             )));
         }
-        let Some(root) = id_field(&parent, "replyTo") else {
-            return Ok(parent.id);
+        let Some(root_id) = id_field(&parent, "replyTo") else {
+            return Ok(ThreadDocs { parent, root: None });
         };
-        if self
+        let Some(root) = self
             .client
-            .fetch_document(collab, DOC_COMMENT, &root)
+            .fetch_document(collab, DOC_COMMENT, &root_id)
             .await?
-            .is_none()
-        {
+        else {
             return Err(Error::Config(format!(
                 "the first comment of the thread of {comment_id} was deleted, so the thread takes \
                  no replies; post a new comment instead"
             )));
+        };
+        Ok(ThreadDocs {
+            parent,
+            root: Some(root),
+        })
+    }
+
+    /// Thread root `root_id`, which a writer names directly (the importer, [`Self::comment_on_root`]):
+    /// read for its audience, polled like a landing (a node a block behind may not show a root
+    /// just written), and an error, never "public", when it cannot be read.
+    async fn root_doc(&self, collab: &LoadedContract, root_id: &str) -> Result<FetchedDocument> {
+        for poll in 0..CONFIRM_POLLS {
+            if let Some(d) = self
+                .client
+                .fetch_document(collab, DOC_COMMENT, root_id)
+                .await?
+            {
+                return Ok(d);
+            }
+            if poll + 1 < CONFIRM_POLLS {
+                tokio::time::sleep(CONFIRM_POLL_DELAY).await;
+            }
         }
-        Ok(root)
+        Err(parent_not_found("comment", root_id))
     }
 
     /// Review a PR: `verdict` on `commit_oid` (the head a reviewer saw). Un-gated; only
@@ -5539,7 +5680,7 @@ impl<'a> Collab<'a> {
         let p = review_props(patch_id, verdict, commit_oid, body, comment_count, imported)?;
         self.require_unlocked_or_member(repo, patch_id).await?;
         // a review's audience is a subset of its PR's; its verdict stays public (D15)
-        let audience = self.child_audience(repo, patch_id, None).await?;
+        let audience = self.child_audience(repo, patch_id, &[]).await?;
         let p = self.seal_for(repo, DocKind::Review, p, audience).await?;
         let collab = self.collab_contract(repo).await?;
         self.write(repo, &collab, DOC_REVIEW, p).await
@@ -5602,7 +5743,7 @@ impl<'a> Collab<'a> {
         })
         .ok_or_else(|| Error::Config("create_once: the document names no target".into()))?;
         let audience = self
-            .child_audience(repo, &target, id_of("replyTo").as_deref())
+            .new_audience(repo, Some(&target), id_of("replyTo").as_deref())
             .await?;
         let props = self.seal_for(repo, doc_kind(kind), props, audience).await?;
         let prepared = self
@@ -7967,6 +8108,77 @@ mod mixed_read_tests {
         assert!(!proof_optional(&props), "a sealed comment keeps it");
         props.insert("enc".into(), FieldValue::bytes(Vec::new()));
         assert!(proof_optional(&props), "an empty enc is no enc");
+    }
+
+    /// Item 5 of the review: a members-only issue read by number is still a target (its id,
+    /// number and author are public), so a maintainer can close, lock or label it unread.
+    #[test]
+    fn a_members_only_issue_is_still_a_target() {
+        let d = doc(vec![members_enc(), ("number", FieldValue::integer(3))]);
+        let m = MembersOnly::of(&d, Unopened::NotAMember);
+        let t = TargetRead::MembersOnly(m).target(TargetKind::Issue, 3);
+        assert_eq!(t.id, d.id);
+        assert_eq!(t.author, d.owner_id);
+        assert_eq!((t.kind, t.number), (TargetKind::Issue, 3));
+        assert_eq!(
+            TargetRead::Readable(d.clone()).target(TargetKind::Issue, 3),
+            t
+        );
+    }
+
+    /// Review item 1: a reply's audience is the narrowest of its target, the comment it replies
+    /// to and the thread root: replying to a members-only reply under a public root is sealed.
+    #[test]
+    fn a_reply_to_a_members_reply_under_a_public_root_is_members_only() {
+        let public_root = doc(vec![("body", FieldValue::text("root"))]);
+        let members_reply = doc(vec![members_enc(), ("epoch", FieldValue::integer(0))]);
+        assert_eq!(
+            thread_audience(Audience::Public, &[&members_reply, &public_root]),
+            Audience::Members
+        );
+        assert_eq!(
+            thread_audience(Audience::Public, &[&public_root]),
+            Audience::Public
+        );
+        assert_eq!(
+            thread_audience(Audience::Members, &[&public_root]),
+            Audience::Members,
+            "a public comment on a members-only issue still answers members-only text"
+        );
+    }
+
+    /// Review item 2: every audience lookup fails closed: a parent that is not there, and an
+    /// event naming no target, are errors, never "public".
+    #[test]
+    fn audience_lookups_fail_closed() {
+        assert!(audience_of_found(None, "issue or pull request", "x").is_err());
+        let sealed = doc(vec![members_enc()]);
+        assert_eq!(
+            audience_of_found(Some(&sealed), "comment", "x").unwrap(),
+            Audience::Members
+        );
+        assert!(event_target_id(&BTreeMap::new()).is_err());
+        let props = BTreeMap::from([("targetId".to_string(), FieldValue::identifier([5; 32]))]);
+        assert_eq!(
+            event_target_id(&props).unwrap(),
+            platform::encode_identifier([5; 32])
+        );
+    }
+
+    /// Review item 2: an edit takes its audience from the document it read: a members-only
+    /// issue or comment read for an edit says so.
+    #[test]
+    fn read_documents_carry_their_audience() {
+        let sealed = doc(vec![
+            members_enc(),
+            ("epoch", FieldValue::integer(0)),
+            ("title", FieldValue::text("opened")),
+        ]);
+        assert_eq!(issue_from_doc(&sealed).audience, Audience::Members);
+        assert_eq!(comment_from_doc(&sealed).audience, Audience::Members);
+        assert_eq!(patch_from_doc(&sealed).audience, Audience::Members);
+        let plain = doc(vec![("title", FieldValue::text("t"))]);
+        assert_eq!(issue_from_doc(&plain).audience, Audience::Public);
     }
 
     #[test]

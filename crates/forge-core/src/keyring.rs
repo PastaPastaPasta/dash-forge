@@ -541,12 +541,22 @@ impl Keyring {
         &self.repo_id
     }
 
-    /// Whether the repository has a members key chain in force: an anchored epoch (every
-    /// finished private repository; a public one once a maintainer turned members-only content
-    /// on, DESIGN §4.1).
+    /// Whether the repository has a members key: any sealed `config` exists (every private
+    /// repository; a public one once a maintainer turned members-only content on, DESIGN
+    /// §4.1). The one definition every membership change, `enable` and members-only write
+    /// keys on ([`has_members_key`] reads the same rows): it fails toward wrapping, rotating
+    /// and refusing, so a sealed config whose anchor does not resolve still counts.
     #[must_use]
     pub fn has_members_key(&self) -> bool {
-        !self.resolution.anchors.is_empty()
+        !self.rows.configs.is_empty()
+    }
+
+    /// The members key of a PUBLIC repository to write with ([`Lane`]): the epoch new
+    /// members-only content is sealed under, or the reason there is none (as [`Self::writer`]).
+    /// Never a private repository's seams: a lane answers for no git-plane seam.
+    pub fn lane(&self, repo: &RepoRef) -> Result<crate::private::Lane> {
+        crate::private::Lane::from_resolution(&self.repo_id, &self.resolution)
+            .ok_or_else(|| self.no_write(repo))
     }
 
     /// The resolution: epochs, anchors, alerts, the repair check.
@@ -1662,7 +1672,13 @@ pub async fn enable_members_key(signer: &PrivateSigner<'_>, repo: &RepoRef) -> R
     let w = signer.open(repo).await?;
     require_rotator(&w.kr, repo)?;
     let mut out = Enabled::default();
-    if !w.kr.resolution.anchors.contains_key(&0) {
+    // Epoch 0 is minted only when no sealed config exists at all: one that does not resolve
+    // (a removed maintainer's, a broken one) is never papered over by a second epoch 0.
+    let step = enable_step(w.kr.has_members_key(), !w.kr.resolution.anchors.is_empty());
+    if step == EnableStep::Refuse {
+        return Err(unresolved_members_key(repo));
+    }
+    if step == EnableStep::MintEpochZero {
         // Resume: our own epoch-0 self-wrap, if it landed, is the key.
         let key = match pending_key(&w.kr, w.me, 0) {
             Some(k) => k,
@@ -1700,6 +1716,49 @@ pub async fn enable_members_key(signer: &PrivateSigner<'_>, repo: &RepoRef) -> R
         out.skipped.extend(r.skipped);
     }
     Ok(out)
+}
+
+/// What turning members-only content on does (pure; review item 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnableStep {
+    /// No sealed config exists at all: post epoch 0.
+    MintEpochZero,
+    /// A members key resolves: post only the missing wraps.
+    Finish,
+    /// A sealed config exists and nothing resolves: never mint a second epoch 0 over it.
+    Refuse,
+}
+
+/// [`EnableStep`] for a repository that has a sealed config (`has_sealed_config`) whose anchors
+/// resolve (`resolves`) or not.
+fn enable_step(has_sealed_config: bool, resolves: bool) -> EnableStep {
+    match (has_sealed_config, resolves) {
+        (false, _) => EnableStep::MintEpochZero,
+        (true, true) => EnableStep::Finish,
+        (true, false) => EnableStep::Refuse,
+    }
+}
+
+/// The refusal to mint epoch 0 of a public repository that already has a sealed `config` whose
+/// anchor does not resolve (a removed maintainer's, a broken one): never papered over by a
+/// second epoch 0.
+#[must_use]
+pub fn unresolved_members_key(repo: &RepoRef) -> Error {
+    UserError::new(
+        codes::ROTATION_PENDING,
+        format!(
+            "{} already has a members key that does not resolve",
+            repo.display()
+        ),
+    )
+    .cause("a sealed config exists, but no current maintainer's anchor makes an epoch of it")
+    .fix(format!(
+        "`dg repo keys status {}` says why; `dg repo keys repair {}` (a maintainer)",
+        repo.display(),
+        repo.display()
+    ))
+    .note("nothing was written")
+    .into()
 }
 
 /// Post the signer's own wrap of `key` for `epoch` and return the key the epoch must use, and
@@ -3476,6 +3535,15 @@ mod tests {
         ];
         assert_eq!(recipient_key(&keys, "CORE").map(|k| k.id), Some(4));
         assert!(recipient_key(&keys[1..], "CORE").is_none());
+    }
+
+    /// Review item 4: epoch 0 is minted only where no sealed config exists at all; one that
+    /// does not resolve is refused (repair), never papered over by a second epoch 0.
+    #[test]
+    fn enable_never_mints_over_an_existing_sealed_config() {
+        assert_eq!(enable_step(false, false), EnableStep::MintEpochZero);
+        assert_eq!(enable_step(true, true), EnableStep::Finish);
+        assert_eq!(enable_step(true, false), EnableStep::Refuse);
     }
 
     #[test]
