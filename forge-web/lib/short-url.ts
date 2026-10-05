@@ -34,15 +34,19 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   // `/github.com/<owner>/<repo>` and `/gh/<owner>/<repo>`: the Forge mirror of a GitHub repo (CJ-3).
   'gh',
   'github.com',
+  // public/: the share card, the web manifest and the app icons.
+  'icons',
   'index',
   // The IPFS variant reads `/ipfs/<cid>/` and `/ipns/<name>/` as its base path (scripts/ipfs-base.cjs).
   'ipfs',
   'ipns',
   'login',
+  'manifest.webmanifest',
   'mirror',
   'networks',
   'new',
   'notifications',
+  'og.png',
   'private',
   'repo',
   'robots.txt',

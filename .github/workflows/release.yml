@@ -6,8 +6,9 @@ name: Release
 # for six targets, packaged as dash-forge-<version>-<target>.{tar.gz,zip}, listed in
 # SHA256SUMS, and covered by GitHub build-provenance attestations (Sigstore, keyless; no
 # signing key to leak or rotate). install.sh and `cargo binstall` both consume these names.
-# With them: the web app's reproducible IPFS build (web-ipfs.yml), as forge-web-<version>.car
-# and forge-web-<version>.cid, in SHA256SUMS too, and its CID in the release notes.
+# With them: the web app's reproducible IPFS build (web-ipfs.yml), as forge-web-<version>.car,
+# forge-web-<version>.cid and forge-web-<version>.manifest.json (every file's SHA-256, for
+# `dg verify-app`), in SHA256SUMS too, and its CID in the release notes.
 #
 # Triggers:
 #   * push of a tag `v<semver>`: build, attest, and publish a GitHub Release.
@@ -434,14 +435,15 @@ jobs:
         with:
           name: web-ipfs
           path: web-ipfs
-      # The web app's CAR and CID, named for the release, go into SHA256SUMS (and so under the
-      # attestation) with the archives.
-      - name: Web app CAR and CID
+      # The web app's CAR, CID and manifest, named for the release, go into SHA256SUMS (and so
+      # under the attestation) with the archives.
+      - name: Web app CAR, CID and manifest
         run: |
           set -euo pipefail
           mkdir -p dist-web
           cp web-ipfs/forge-web.car "dist-web/forge-web-${VERSION}.car"
           cp web-ipfs/forge-web.cid "dist-web/forge-web-${VERSION}.cid"
+          cp web-ipfs/forge-web.manifest.json "dist-web/forge-web-${VERSION}.manifest.json"
           cp dist-web/* dist/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -456,7 +458,7 @@ jobs:
           expected=6
           count=$(find . -maxdepth 1 -name "dash-forge-${VERSION}-*" | wc -l)
           [ "$count" -eq "$expected" ] || { echo "::error::expected $expected archives, found $count"; ls -l; exit 1; }
-          sha256sum dash-forge-* "forge-web-${VERSION}.car" "forge-web-${VERSION}.cid" > SHA256SUMS
+          sha256sum dash-forge-* "forge-web-${VERSION}.car" "forge-web-${VERSION}.cid" "forge-web-${VERSION}.manifest.json" > SHA256SUMS
           cat SHA256SUMS
           {
             echo "### Artifacts (\`$VERSION\`)"

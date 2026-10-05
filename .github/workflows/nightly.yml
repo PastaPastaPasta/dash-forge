@@ -307,3 +307,43 @@ jobs:
             /tmp/dash-forge-e2e/**/*.out
           retention-days: 7
           if-no-files-found: ignore
+
+  verify-app:
+    name: verify-app (forge.dashhq.org)
+    # The hosted web app, file by file, against the manifest this repository's Pages deploy
+    # attested (docs/guides/verify-the-app.md). A failure means the site serves bytes no build
+    # of this repository made: treat it as an incident (docs/hosting.md).
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      # The tenderdash proto-compiler needs a modern protoc (see cli-suite).
+      - name: Install protoc
+        env:
+          PROTOC_VERSION: '28.3'
+        run: |
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          sudo chmod +x /usr/local/bin/protoc
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e-cli
+      - name: Build dg
+        timeout-minutes: 30
+        run: cargo build --locked -p dg
+      - name: dg verify-app
+        env:
+          # GitHub's attestation lookup, past the shared runners' anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
+        # Once more after 5 minutes: right after a deploy the CDN can serve old and new files
+        # side by side.
+        run: |
+          target/debug/dg verify-app https://forge.dashhq.org || {
+            echo "::warning::verify-app failed; retrying in 5 minutes in case a deploy was propagating"
+            sleep 300
+            target/debug/dg verify-app https://forge.dashhq.org
+          }

@@ -41,6 +41,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { noteClockOk, noteClockSkew } from './clock-skew'
 
 import { NETWORKS, type Network } from '../constants'
+import { userQuorumUrl } from '../quorum-url'
 import { dapiBudget, installDapiFetchGate } from './budget'
 import { isContractMissingError } from './contract-missing'
 import { isQuorumMiss, isStaleConnectionError } from './unreachable'
@@ -1150,6 +1151,9 @@ async function connectAndWarm(
   // its own (`protocol_version_store`), and the service's handle never reports lower.
   const options = { settings: { timeoutMs: config.timeoutMs ?? 8000, banFailedAddress: false } }
   let sdk: EvoSDK
+  // A quorum service the reader chose in Settings (`lib/quorum-url.ts`), in place of the
+  // network's. evo-sdk takes it on every network (`prefetch{Mainnet,Testnet,Devnet}WithUrl`).
+  const chosen = userQuorumUrl(NETWORKS[config.network].key)
   if (config.network === 'devnet') {
     // A named devnet: trusted quorum keys from `quorums.<name>.networks.dash.org` (or the
     // deployment file's quorumBaseUrl); DAPI from the configured list, else discovered by
@@ -1158,14 +1162,17 @@ async function connectAndWarm(
     if (devnet.devnetName === null) {
       throw new Error('devnet selected without NEXT_PUBLIC_DEVNET_NAME')
     }
+    const quorumUrl = chosen ?? devnet.quorumBaseUrl
     sdk = new EvoSDKClass({
       ...options,
       network: 'devnet',
       trusted: true,
       devnetName: devnet.devnetName,
-      ...(devnet.quorumBaseUrl !== null ? { quorumUrl: devnet.quorumBaseUrl } : {}),
+      ...(quorumUrl !== null ? { quorumUrl } : {}),
       ...(devnet.dapiAddresses.length > 0 ? { addresses: [...devnet.dapiAddresses] } : {}),
     })
+  } else if (chosen !== null) {
+    sdk = new EvoSDKClass({ ...options, network: config.network, trusted: true, quorumUrl: chosen })
   } else {
     sdk = config.network === 'mainnet' ? EvoSDKClass.mainnetTrusted(options) : EvoSDKClass.testnetTrusted(options)
   }
