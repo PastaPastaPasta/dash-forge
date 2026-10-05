@@ -1,0 +1,12 @@
+{
+  "name": "rocketchat_later_segment",
+  "description": "The token may come after another segment (Rocket.Chat /hooks/<id>/<token>).",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://chat.example.org/hooks/AbCdEf123/0123456789abcdefABCDEF0123456789abcdefABCDEF01"
+  },
+  "expected": {
+    "secret": "pathToken"
+  }
+}

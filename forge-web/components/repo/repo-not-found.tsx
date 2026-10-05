@@ -12,20 +12,29 @@
  * of", and comes first when that source is the address asked for (`github.com/<owner>/<name>`);
  * anyone can list their own repo in a look-alike source. Otherwise the order is stars, then age
  * (the older first).
+ *
+ * When the owner is no Forge identity (not an id, not a DPNS name) and one mirror is clear
+ * (`matchUpstream`: the only claim among every repo of that name, or the one the showcase vouches
+ * for), `/dashpay/dash` simply opens it, on the same page (CJ-3). A real Forge user's address is
+ * never handed to a repo that merely claims to mirror a GitHub repo of the same name.
  */
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { useState } from 'react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { CheckCircle2, GitBranch, Star } from 'lucide-react'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/ui/states'
+import { EmptyState, LoadingBlock } from '@/components/ui/states'
 import { useAsync } from '@/hooks/use-async'
+import { isIdentityId } from '@/lib/utils'
+import { resolveDpnsId } from '@/lib/view/dpns'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { useSdk } from '@/hooks/use-sdk'
 import { reposNamed, type DiscoveredRepo } from '@/lib/view/discovery'
 import { checkMirrorClaim, githubRepoOf, type MirrorCheck } from '@/lib/view/mirror-check'
 import { mirrorSourceOfDescription, type MirrorSource } from '@/lib/view/mirror-source'
+import { matchUpstream } from '@/lib/view/upstream-alias'
 
 /** Claims checked at most, per click: each is one request to GitHub. */
 const CHECK_MAX = 10
@@ -97,6 +106,34 @@ export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
     const c = checks.get(s.repo.key)
     return c === undefined || c.backlink.kind === 'failed'
   })
+
+  // A GitHub address with one clear Forge mirror opens it, as the obvious URL should: only when
+  // the owner is no Forge identity (an id, or a DPNS name that resolves, is a Forge user's own
+  // address), and never for a pinned address (`?repo=`), which names one exact repo. The repo read
+  // already resolved the name, so the DPNS answer is cached.
+  const router = useRouter()
+  const pathname = usePathname()
+  const params = useSearchParams()
+  const githubLike = !addr.repoId && name !== '' && !isIdentityId(addr.owner)
+  const forgeOwner = useAsync(() => resolveDpnsId(sdk!, addr.owner, network), [ready, addr.owner, network], { enabled: githubLike && ready && sdk !== null })
+  const mirror = githubLike && found.data && forgeOwner.settled && forgeOwner.data === null ? matchUpstream(addr.owner, addr.name, found.data).open : null
+  useEffect(() => {
+    if (mirror === null) return
+    // The same page of the mirror (`/dashpay/dash/issues/12` opens the mirror's issue 12), with
+    // its fragment (`#L10`).
+    const q = new URLSearchParams(params.toString())
+    q.set('owner', mirror.ownerId)
+    q.set('name', mirror.slug)
+    q.set('repo', mirror.key)
+    router.replace(`${pathname.endsWith('/') ? pathname : `${pathname}/`}?${q.toString()}${window.location.hash}`)
+    // Once per resolved mirror.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mirror?.key])
+  // Until the names are read, an unpinned address may still turn out to be a GitHub one: say
+  // nothing is missing only once there is no mirror to open.
+  if (githubLike && (!found.settled || !forgeOwner.settled || mirror !== null)) {
+    return <LoadingBlock label={mirror !== null ? `Opening the mirror of github.com/${addr.owner}/${addr.name}` : 'Reading from Platform'} />
+  }
 
   const checkClaims = (): void => {
     const asked = name

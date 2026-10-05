@@ -8,6 +8,9 @@
 import type { Event } from '../rules'
 import { hiddenItems, hideBlocked, isModerationKind, NOTHING_HIDDEN, type HiddenItems, type HideBlock, type HideScope, type Membership, type ThreadItem } from '../rules/v2'
 
+/** forge-community `event.asMaintainer` (RC2 MOD): the writer's maintainer document, proved. */
+export const EVENT_AS_MAINTAINER = 'asMaintainer'
+
 /** Whether a thread's events hold any hide or unhide (nothing to fold, and no read, otherwise). */
 export function hasHides(events: readonly Event[]): boolean {
   return events.some(isModerationKind)
