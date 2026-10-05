@@ -15,9 +15,10 @@
   ],
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
-    "build:ipfs": "FORGE_IPFS_BUILD=1 next build && node scripts/ipfs-postbuild.mjs out",
+    "build": "next build && node scripts/build-manifest.mjs out",
+    "build:ipfs": "FORGE_IPFS_BUILD=1 next build && node scripts/ipfs-postbuild.mjs out && FORGE_IPFS_BUILD=1 node scripts/build-manifest.mjs out",
     "lint": "next lint",
+    "lint:copy": "node scripts/copy-lint.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test"

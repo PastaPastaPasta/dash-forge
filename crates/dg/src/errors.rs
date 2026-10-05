@@ -180,6 +180,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             | P::View { repo, .. }
             | P::Diff { repo, .. }
             | P::Checkout { repo, .. }
+            | P::Verify { repo, .. }
             | P::Checks { repo, .. }
             | P::Commits { repo, .. },
         ) => ("could not read the pull request", Some(repo)),
@@ -249,6 +250,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         }
         Command::Profile(crate::ProfileCommand::Key(_)) => ("signing keys not changed", None),
         Command::VerifyCommit { repo, .. } => ("could not verify the commits", repo.as_ref()),
+        Command::VerifyApp(_) => ("could not verify the web app", None),
         Command::Doctor { .. } => ("doctor found problems", None),
         Command::Completions { .. } => ("could not print completions", None),
     };

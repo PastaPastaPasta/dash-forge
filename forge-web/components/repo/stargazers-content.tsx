@@ -59,7 +59,7 @@ export function StargazersContent({ home, addr }: { home: RepoHome; addr: RepoAd
 
   const count = home.starCount
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className="max-w-4xl space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="flex items-center gap-2 text-xl">
           <Star className="h-5 w-5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Stargazers

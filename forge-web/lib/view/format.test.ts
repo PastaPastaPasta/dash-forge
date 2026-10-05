@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { branchName, forkSourcePrefix, plural, timeAgo } from './format'
+import { branchName, forkSourcePrefix, mainnetCents, plural, timeAgo } from './format'
 
 describe('plural (L-36)', () => {
   it('is singular for exactly one and plural otherwise', () => {
@@ -73,5 +73,15 @@ describe('forkSourcePrefix (QW4-030)', () => {
   it("names only the repo for the owner's own fork, and nothing for a same-repo PR", () => {
     expect(forkSourcePrefix({ ownerId: 'BASEOWNER', ownerLabel: 'owner', name: 'other' }, base)).toBe('other:')
     expect(forkSourcePrefix(null, base)).toBe('')
+  })
+})
+
+describe('mainnetCents', () => {
+  it('rounds a DASH amount to whole cents at the indicative rate', () => {
+    expect(mainnetCents(0.001212)).toBe('4¢')
+    expect(mainnetCents(0.0055)).toBe('17¢')
+  })
+  it('never says less than 1¢', () => {
+    expect(mainnetCents(0.00001)).toBe('1¢')
   })
 })

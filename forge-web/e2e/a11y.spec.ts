@@ -28,7 +28,8 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   [
     'landing',
     '/',
-    (page) => page.locator('section').filter({ hasText: 'Recent repos' }).first().locator('a[href*="/repo"]').first(),
+    // A card, or the "Show all recent repos" offer when none of the newest has a description and a push.
+    (page) => page.locator('section').filter({ hasText: 'Recent repos' }).first().locator('a[href*="/repo"], [data-testid="show-all-recent"]').first(),
   ],
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
   ['private', '/private/', (page) => page.getByRole('heading', { name: 'Private repositories', exact: true })],
@@ -43,7 +44,7 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   ['profile-by-id', `/u/?id=${DEMO.owner}`, (page) => page.getByTestId('profile-card')],
   ['repo-home', repoUrl(), (page) => page.getByRole('link', { name: 'README.md' }).first()],
   ['tree', repoUrl('tree', '&path=src'), (page) => page.getByRole('link', { name: 'main.rs' }).first()],
-  ['blob', repoUrl('blob', '&path=src/main.rs'), (page) => page.getByText('reads are proof-checked').first()],
+  ['blob', repoUrl('blob', '&path=src/main.rs'), (page) => page.getByText('Your browser verifies what it shows').first()],
   ['commits', repoUrl('commits'), (page) => page.locator('a[href*="/repo/commit/"]').first()],
   ['branches', repoUrl('branches'), (page) => page.getByText('feature/greeting').first()],
   ['tags', repoUrl('tags'), (page) => page.getByText('v0.1.0').first()],
@@ -53,7 +54,7 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   ['pull', () => repoUrl('pull', `&number=${loadSeedPulls().approved}`), (page) => page.getByRole('region', { name: 'Approvals' })],
   ['stargazers', repoUrl('stargazers'), (page) => page.getByRole('main').locator('a[href*="/u"]').first()],
   ['releases', repoUrl('releases'), (page) => page.getByText(/No releases|Latest/).first()],
-  ['settings-repo', repoUrl('settings'), (page) => page.getByRole('region', { name: 'Collaborators' }).getByText('WRITER', { exact: true })],
+  ['settings-repo', repoUrl('settings'), (page) => page.getByRole('region', { name: 'Members' }).getByText('WRITER', { exact: true })],
   ['empty-repo', repoUrl('', '', EMPTY), (page) => page.getByText(/empty|nothing pushed|push/i).first()],
 ]
 
@@ -102,7 +103,7 @@ for (const theme of ['dark', 'light'] as const) {
 test('a11y: the profile and the signed-out /new and /settings gates have one h1', async ({ page }) => {
   const pages: [href: string, h1: RegExp][] = [
     [`/u/?name=${DEMO.owner}`, new RegExp(`^Profile of `)],
-    ['/new/', /^Sign in to forge a repo$/],
+    ['/new/', /^Sign in to create a repo$/],
     ['/settings/', /^Sign in to see your settings$/],
     ['/settings/profile/', /^Public profile$/],
   ]

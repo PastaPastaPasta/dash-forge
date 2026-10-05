@@ -56,7 +56,7 @@ export function useRepoTrust(home: RepoHome, selected: SelectedRef): TrustReport
     refName: selected.name,
     tip: selected.pinned ? pinnedTip(selected.pinned, home) : selected.ref?.state ?? 'missing',
     checks,
-    configuredBackend: home.backend.label,
+    configuredBackend: home.backend.kind,
     configuredUris: home.backend.uris,
     gateways: readGatewaysFor(key),
   })

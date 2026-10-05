@@ -23,7 +23,8 @@ import { packHashOperand } from './pack-hash'
 /** The contract of `forge` that holds `type` (`forge-v2.md` §2, the RC1 layout). Throws on a type no contract holds. */
 export function contractOf(forge: ForgeIds, type: string): string {
   const kind = contractKindOfType(type)
-  if (kind === null) throw new Error(`no forge-v2 contract holds the document type ${JSON.stringify(type)}`)
+  // copy-lint-ignore: a developer error naming a schema type, caught by tests before release
+  if (kind === null) throw new Error(`no Forge contract holds the document type ${JSON.stringify(type)}`)
   return forge[kind]
 }
 

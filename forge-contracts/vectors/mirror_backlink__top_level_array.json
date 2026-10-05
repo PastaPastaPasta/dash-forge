@@ -1,0 +1,14 @@
+{
+  "name": "top_level_array",
+  "description": "A bare list is invalid: the file is an object.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "[\"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"]",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": false,
+    "listed": false
+  }
+}

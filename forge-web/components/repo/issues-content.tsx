@@ -195,7 +195,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const lastPage = empty ? pastLastPage(query.page, data?.matching ?? null, ISSUE_PAGE_SIZE) : null
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <SearchBox id="issue-search" label="Search issues" search={search} placeholder="is:open label:bug author:@me" />
         <TriageNav addr={addr} />
@@ -580,7 +580,7 @@ function ComposeIssueDialog({
                 : labelDefs.error !== null
                   ? `The repository's labels could not be read, so this template's labels (${template.labels.join(', ')}) are not applied.`
                   : labelsToApply.length > 0
-                    ? `The labels ${labelsToApply.join(', ')} are applied with the issue: one more document each.`
+                    ? `The labels ${labelsToApply.join(', ')} are applied with the issue, each for a small extra fee.`
                     : `This template's labels (${template.labels.join(', ')}) are not defined in this repository, so none is applied.`
               : `This template suggests the labels ${template.labels.join(', ')}. Labels are applied after the issue is opened, by ${whoCan('canLabel', 'one')}.`}
           </p>

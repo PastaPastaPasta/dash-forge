@@ -265,7 +265,7 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4" data-testid="labels-page">
+    <div className="max-w-4xl space-y-4" data-testid="labels-page">
       <div className="flex flex-wrap items-center gap-3">
         <TriageNav addr={addr} current="labels" />
         <label htmlFor="label-search" className="sr-only">Search all labels</label>

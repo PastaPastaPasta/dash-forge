@@ -399,7 +399,7 @@ export function WalletSupportNote(): JSX.Element {
     return (
       <p role="note" data-testid="wallet-support" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px]">
         {network === 'devnet'
-          ? `Dash Wallet support arrives when Forge is on testnet, where its sign-in feature (DashConnect) works; that feature is not in a released wallet yet. On ${key}, only an internal iOS build with this network's login contract entered by hand can answer.`
+          ? `Dash Wallet support arrives when Forge is on testnet, where its sign-in feature works. No released wallet has it yet. On ${key}, only an internal iOS build can answer.`
           : `No Dash Wallet build supports sign-in on ${key} yet: its sign-in feature (DashConnect) works on testnet only.`}{' '}
         Here, sign in with your identity file or recovery phrase, or create an identity in the browser.
       </p>
@@ -407,9 +407,8 @@ export function WalletSupportNote(): JSX.Element {
   }
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-      Works with a testnet build of the DashPay (Dash Wallet) app: More → Tools → Connections → Scan QR. That feature (DashConnect) is not in a released
-      version yet, only in builds from the wallets&apos; development branches (on Android, the testnet build only). The first approval covers repositories
-      and pushes; issues, pull requests and stars may take a second one.
+      Works with a testnet development build of the Dash Wallet app: More → Tools → Connections → Scan QR. No released version has it yet. The first
+      approval covers repos and pushes. Issues, pull requests and stars may ask again.
     </p>
   )
 }
@@ -420,10 +419,9 @@ export function UnlimitedKeyWarning({ unbounded }: { unbounded: boolean }): JSX.
     <div role="note" data-testid="unlimited-key-warning" className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
       <span>
-        This wallet key has no spending limit or expiry: anyone who copies it from this browser can spend your balance
-        {unbounded ? ', on any Platform app, not only Forge' : ' on Forge'}. Disabling it on chain stops it, but this wallet derives the same key every time,
-        so once it is disabled, Forge refuses wallet sign-in for this identity. Protect it with a passkey, and replace it with a limited key (Settings → This
-        browser&apos;s key) when you can.
+        This wallet key has no spending limit or expiry. Anyone who copies it from this browser can spend your balance
+        {unbounded ? ' on any Platform app' : ' on Forge'}. Protect it with a passkey and replace it with a limited key soon, in
+        Settings → This browser&apos;s key.
       </span>
     </div>
   )

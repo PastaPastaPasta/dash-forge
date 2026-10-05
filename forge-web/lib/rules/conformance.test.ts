@@ -37,6 +37,7 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
 import { avatarSpec, checkProfile, type ProfileInput } from './profile'
+import { backlinkFile, readBacklink } from './mirror-backlink'
 import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
 import { planRefs, syncDecision } from '../repo/fork'
 import { matchesText, mentions } from '../repo/issue-index'
@@ -533,6 +534,11 @@ function runCaseV2(v: Vector): void {
       expect(v2.prMergeBase(inp.baseRefName, inp.openedAt, inp.events, inp.mergedAt ?? null)).toEqual(v.expected)
       break
     }
+    case 'merge_content': {
+      onlyKeys(v, ['headOid', 'mergeOid', 'tipBefore', 'mergeParents', 'headInMerge', 'tipBeforeInMerge', 'mergeChange', 'prChange', 'baseChange'])
+      expect(v2.mergeContent(v.input as v2.MergeFacts)).toEqual(v.expected)
+      break
+    }
     case 'ref_name_hashes': {
       onlyKeys(v, ['doc', 'refKey'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly refKey?: string }
@@ -636,6 +642,17 @@ function runCaseV2(v: Vector): void {
         }
       })
       expect(got).toEqual(v.expected)
+      break
+    }
+    case 'mirror_backlink': {
+      onlyKeys(v, ['file', 'repoId'])
+      const inp = v.input as { readonly file: string; readonly repoId: string }
+      expect(readBacklink(inp.file, inp.repoId)).toEqual(v.expected)
+      break
+    }
+    case 'mirror_backlink_file': {
+      onlyKeys(v, ['repoIds'])
+      expect({ file: backlinkFile((v.input as { readonly repoIds: readonly string[] }).repoIds) }).toEqual(v.expected)
       break
     }
     default:
