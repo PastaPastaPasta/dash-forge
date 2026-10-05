@@ -158,6 +158,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::CONFIRMATION_REQUIRED, "confirmation required"),
     (codes::CANCELLED, "cancelled at the confirmation prompt"),
     (codes::POLICY_NOT_MET, "branch policy not met"),
+    (codes::SECRET_IN_PUSH, "possible secret in a public push"),
 ];
 
 /// The stable codes. The first digit is the exit code.
@@ -279,6 +280,9 @@ pub mod codes {
     pub const CANCELLED: &str = "E803";
     /// The repository's branch `policy` (a client rule) is not met by this merge.
     pub const POLICY_NOT_MET: &str = "E804";
+    /// A public push adds a file that looks like a secret (`forge-secrets`), and nothing
+    /// allows it.
+    pub const SECRET_IN_PUSH: &str = "E807";
 }
 
 /// An error a person can act on.
@@ -1899,6 +1903,11 @@ fn is_key_char(c: char) -> bool {
 
 fn is_secret_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
+    // The helper's `allow-secret=<fingerprint>` push option names a finding of its secret scan
+    // (E807): the fingerprint is a short hash, not a secret, and the fix line must show it.
+    if k == "allow-secret" {
+        return false;
+    }
     (k.starts_with("x-amz-") && k != "x-amz-date" && k != "x-amz-expires")
         || SECRET_KEYS
             .iter()
@@ -3682,6 +3691,12 @@ mod tests {
             redact("monkey=banana apikey=s3cr3t"),
             "monkey=banana apikey=[redacted]"
         );
+        // The secret scan's override names a fingerprint, which the fix line must show.
+        assert_eq!(
+            redact("push with -o allow-secret=3a673ba6830a if you're sure"),
+            "push with -o allow-secret=3a673ba6830a if you're sure"
+        );
+        assert_eq!(redact("client-secret=s3cr3t"), "client-secret=[redacted]");
         assert_eq!(
             redact("Authorization: Basic dXNlcjpwYXNz; next"),
             "Authorization: Basic [redacted]; next"
