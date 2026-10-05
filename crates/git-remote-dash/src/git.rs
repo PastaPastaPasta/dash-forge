@@ -232,6 +232,18 @@ impl LocalRepo {
         forge_core::storage::policy::git_config_scoped(key)
     }
 
+    /// Whether the local repository has any ref at all (a fresh clone or `git init` has none).
+    /// `true` when git cannot tell, so callers that act on "no refs" stay still.
+    pub fn has_refs() -> bool {
+        run_git(
+            &["for-each-ref", "--count=1", "--format=x"],
+            None,
+            false,
+            None,
+        )
+        .map_or(true, |out| !out.is_empty())
+    }
+
     /// Whether object `oid` is present in the local odb.
     pub fn object_exists(oid: &str) -> bool {
         if ensure_safe_rev(oid).is_err() {

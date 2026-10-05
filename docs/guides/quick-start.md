@@ -301,12 +301,17 @@ It **warns** and pushes anyway for:
 - anything that would be refused, when it is only in history older than the repository on Forge: commits made more than a day before you created the repo, or anything `forge-import` mirrors
 
 ```
+$ git push origin main
+dash: warning: .envrc is a direnv file that sets variables [29c1916f3f54]
 dash: warning: test/key.pem line 1 holds a private key (test folder) [b43e53f5c2b3]
-dash: possible secret: .env looks like a secret file (added in 4c1d2e9) [3a673ba6830a]
-dash: error: refs/heads/main adds .env, which looks like a secret file   [E807]
+dash: these are warnings only. To silence one, add its fingerprint to .forge/secret-scan-allow.
+dash: possible secret: .env looks like a secret file (added in 7ecba60) [b93e02318f67]
+dash: error: refs/heads/main adds .env, which looks like a secret file        [E807]
 dash:   cause: nothing pushed to a public branch can be taken back
 dash:   fix:   keep .env out of git: `git rm --cached .env`, add it to .gitignore, then amend or rebase the commits that added it
-dash:   or:    push with -o allow-secret=3a673ba6830a if you're sure
+dash:   or:    push with -o allow-secret=b93e02318f67 if you're sure
+dash:   or:    add the fingerprint to .forge/secret-scan-allow and commit it
+dash:   note:  checked before anything was signed or stored: these refs were not pushed
  ! [remote rejected] main -> main (possible secret in new files)
 ```
 
@@ -315,7 +320,7 @@ Only the refused branch or tag is held back. The rest of the push goes ahead.
 The code in brackets is the finding's **fingerprint**. It names that secret in that file without revealing it. To push a finding you've checked, pass its fingerprint for this push:
 
 ```sh
-git push -o allow-secret=3a673ba6830a origin main
+git push -o allow-secret=b93e02318f67 origin main
 ```
 
 To allow it for everyone, commit a `.forge/secret-scan-allow` file. Each line is a fingerprint or a path, and `#` starts a comment. An allowed finding is neither refused nor warned about.
@@ -323,7 +328,7 @@ To allow it for everyone, commit a `.forge/secret-scan-allow` file. Each line is
 ```
 # Dash Core's key test vectors are public
 src/test/data/key_io_valid.json
-3a673ba6830a      # the demo .env, holds no real keys
+b93e02318f67      # the demo .env, holds no real keys
 docs/examples/**/*.pem
 ```
 

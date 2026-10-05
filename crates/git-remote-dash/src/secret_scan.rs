@@ -533,20 +533,14 @@ impl Scan {
         let what = match items.as_slice() {
             [one] => format!(
                 "{}, which {}",
-                one.finding.location(),
+                one.finding.path,
                 one.finding.rule.describe()
             ),
-            many => format!(
-                "{} possible secrets: {}",
-                many.len(),
-                list(
-                    &many
-                        .iter()
-                        .map(|i| i.finding.location())
-                        .collect::<Vec<_>>(),
-                    ""
-                )
-            ),
+            many => {
+                let mut paths: Vec<String> = many.iter().map(|i| i.finding.path.clone()).collect();
+                paths.dedup();
+                format!("{} possible secrets in {}", many.len(), list(&paths, ""))
+            }
         };
         let first_fix = match items.iter().find(|i| i.finding.rule == Rule::EnvFile) {
             Some(env) => format!(
@@ -826,7 +820,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             e.message,
-            "refs/heads/main and refs/heads/dev add 3 possible secrets: .env, a/.env and 1 more"
+            "refs/heads/main and refs/heads/dev add 3 possible secrets in .env, a/.env and 1 more"
         );
         let text = e.render("", false);
         assert_eq!(text.matches("-o allow-secret=").count(), 3, "{text}");

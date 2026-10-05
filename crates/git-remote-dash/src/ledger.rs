@@ -3,8 +3,8 @@
 //! The ledger will list every members-only commit this clone has fetched or pushed, so that a
 //! later publication guard can refuse to push one to a public branch even without the
 //! encryption key. Members-only branches do not exist yet, so this helper only **creates the
-//! file empty**: on every clone, and on the first fetch into a clone that has no `dash/` folder
-//! yet. An existing file is never rewritten. The file then tells a later guard "this clone has
+//! file empty**: on every clone (an empty repository's too), and on the first fetch into a
+//! clone that has no `dash/` folder yet. An existing file is never rewritten. The file then tells a later guard "this clone has
 //! been recorded since before it could hold members-only commits" apart from "unknown" (an
 //! older clone, where `dg doctor` will ask before creating it).
 //!
@@ -59,6 +59,16 @@ pub fn create_empty(git_dir: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// Create the ledger when a `list` starts a clone or a first fetch: the repo has no refs yet
+/// (`fresh`) and no `dash/` folder. git announces a clone only before `fetch`, and a clone of an
+/// empty repository never fetches, so this is where such a clone gets its ledger. An
+/// `ls-remote` run inside an existing repository creates nothing.
+pub fn ensure_on_list(git_dir: &Path, fresh: bool) {
+    if fresh {
+        ensure_on_fetch(git_dir, false);
+    }
+}
+
 /// Create the ledger on a clone (`cloning`), or on the first fetch into a clone with no
 /// `dash/` folder. A failure is logged, never fatal: the fetch itself is what the user asked
 /// for, and a missing ledger only makes a later guard ask.
@@ -101,5 +111,17 @@ mod tests {
         let fresh = tempfile::TempDir::new().unwrap();
         ensure_on_fetch(fresh.path(), false);
         assert!(path(fresh.path()).exists(), "a first fetch gets one");
+
+        let listed = tempfile::TempDir::new().unwrap();
+        ensure_on_list(listed.path(), false);
+        assert!(
+            !path(listed.path()).exists(),
+            "ls-remote in a repo with refs"
+        );
+        ensure_on_list(listed.path(), true);
+        assert!(
+            path(listed.path()).exists(),
+            "a clone of an empty repository"
+        );
     }
 }
