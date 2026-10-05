@@ -2800,8 +2800,12 @@ mod tests {
             let bytes = std::fs::read(&path).expect("read vector");
             let v: Vector = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
-            // the private-repository vectors run in `private::conformance`
-            if v.case.starts_with("private_") {
+            // the private-repository and mixed-visibility envelope vectors run in
+            // `private::conformance`
+            if crate::private::conformance::CRYPTO_CASE_PREFIXES
+                .iter()
+                .any(|p| v.case.starts_with(p))
+            {
                 continue;
             }
             match v.rules.as_deref() {

@@ -1,0 +1,33 @@
+{
+  "name": "v03_too_short",
+  "description": "a v0x03 enc under 61 bytes is malformed before any key is used.",
+  "case": "mixed_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c84f9892eab0fdb7a611874cf6",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

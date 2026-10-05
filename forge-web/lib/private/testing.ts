@@ -6,8 +6,9 @@
  */
 
 import { sha256, utf8, type Bytes } from './bytes'
-import { __unsafeSealDocWithNonce, type PrivateDoc, type SealDocOptions } from './doc'
+import { __unsafeSealDocWithNonce, __unsafeSealMembersDocWithNonce, type PrivateDoc, type SealDocOptions } from './doc'
 import { hedgeFileId, hedgeNonce, type EpochKeys } from './keys'
+import { __unsafeSealLetterArtifactWith, __unsafeSealLetterWith, type LetterRecipient } from './named'
 import { __unsafeSealPackWithFileId } from './pack'
 import { __unsafeSealReleaseWithNonce, encodeReleaseManifest, type ReleaseFields, type ReleaseManifest } from './release'
 import type { DocFields } from './tlv'
@@ -21,6 +22,46 @@ export function sealDocWithNonce(
   options: SealDocOptions = {},
 ): Promise<{ ad: Bytes; tlv: Bytes; enc: Bytes }> {
   return __unsafeSealDocWithNonce(keys, doc, fields, nonce, options)
+}
+
+/** `sealMembersDoc` with a fixed nonce; returns the AD, raw `K_obj`, `COMMIT_obj` and padded TLV too. */
+export function sealMembersDocWithNonce(
+  keys: EpochKeys,
+  doc: PrivateDoc,
+  fields: DocFields,
+  nonce: Uint8Array,
+): Promise<{ ad: Bytes; kObj: Bytes; commit: Bytes; tlv: Bytes; enc: Bytes }> {
+  return __unsafeSealMembersDocWithNonce(keys, doc, fields, nonce)
+}
+
+/** `sealLetter` with a fixed `K_obj`, nonce and slot IVs; returns the commitment, H, AD' and TLV too. */
+export function sealLetterWith(
+  repoId: Uint8Array,
+  senderSecret: Uint8Array,
+  senderKeyId: number,
+  doc: PrivateDoc,
+  fields: DocFields,
+  recipients: readonly LetterRecipient[],
+  kObj: Uint8Array,
+  nonce: Uint8Array,
+  ivs: readonly Uint8Array[],
+): Promise<{ commit: Bytes; head: Bytes; ad: Bytes; tlv: Bytes; enc: Bytes }> {
+  return __unsafeSealLetterWith(repoId, senderSecret, senderKeyId, doc, fields, recipients, kObj, nonce, ivs)
+}
+
+/** `sealLetterArtifact` with a fixed `K_obj`, `fileId` and slot IVs. */
+export function sealLetterArtifactWith(
+  repoId: Uint8Array,
+  senderSecret: Uint8Array,
+  senderKeyId: number,
+  ownerId: Uint8Array,
+  recipients: readonly LetterRecipient[],
+  plaintext: Uint8Array,
+  kObj: Uint8Array,
+  fileId: Uint8Array,
+  ivs: readonly Uint8Array[],
+): Promise<Bytes> {
+  return __unsafeSealLetterArtifactWith(repoId, senderSecret, senderKeyId, ownerId, recipients, plaintext, kObj, fileId, ivs)
 }
 
 /** `sealPack` with a fixed `fileId`. */

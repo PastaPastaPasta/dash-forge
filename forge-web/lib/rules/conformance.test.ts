@@ -729,8 +729,9 @@ const MIXED_PENDING_CASES: ReadonlySet<string> = new Set([
 describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
   const base = vectors.filter((v) => v.rules === undefined)
-  // `private_*` cases (private-repos.md §11) run in `lib/private/conformance.test.ts`.
-  const isPrivate = (v: Vector) => v.case.startsWith('private_')
+  // `private_*` cases (private-repos.md §11) and the mixed-visibility envelope cases
+  // (`mixed_doc_*`, `named_envelope*`, `named_artifact*`) run in `lib/private/conformance.test.ts`.
+  const isPrivate = (v: Vector) => ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact'].some((p) => v.case.startsWith(p))
   // Members-only content in public repositories (private-repos.md §17): the Rust rules landed
   // first; the TypeScript port (phase-1 stream 1B) runs these cases and removes this list.
   const isMixedPending = (v: Vector) => MIXED_PENDING_CASES.has(v.case)
