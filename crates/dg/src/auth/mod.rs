@@ -14,6 +14,7 @@
 pub mod group;
 mod keys;
 mod new;
+mod rekey;
 pub mod store;
 
 use std::path::PathBuf;
@@ -297,6 +298,8 @@ pub fn read_mnemonic() -> Result<Secret> {
                 .into(),
         );
     }
+    // The same words before every phrase prompt, here and in the web app (TS-06).
+    eprintln!("{}", forge_core::browser_key::RECOVERY_PHRASE_WARNING);
     let words =
         rpassword::prompt_password("Recovery words (12, hidden as you type): ").map_err(|e| {
             // Ctrl-D or Ctrl-C: the user left, nothing was written (E803), not "no terminal".
@@ -315,7 +318,7 @@ pub fn read_mnemonic() -> Result<Secret> {
 /// What [`master_identity`] says before it asks for the recovery words: a user who signed in
 /// with an identity file has no words at hand, and `--master <file>` takes that file instead
 /// (L-34).
-const MASTER_PROMPT: &str =
+pub(crate) const MASTER_PROMPT: &str =
     "This needs your master key once. It is used for this one signature and not stored.\n\
      Type your 12-word recovery phrase below, or press Ctrl-C and run the command again with \
      --master <identity file> (the file from the bridge, or a `dg auth new --backup-file`).";
@@ -360,7 +363,7 @@ pub fn master_identity(
 
 /// The identity's master identity loaded when only words are available and the id is unknown
 /// yet: derive, then find the identity by its master key on chain.
-async fn identity_from_words(
+pub(crate) async fn identity_from_words(
     ctx: &Ctx,
     client: &PlatformClient,
     words: &Secret,
