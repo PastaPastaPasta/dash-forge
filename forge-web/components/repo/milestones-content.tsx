@@ -236,7 +236,7 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
           }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4" data-testid="milestones-page">
+    <div className="max-w-4xl space-y-4" data-testid="milestones-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <TriageNav addr={addr} current="milestones" />
         {canEdit ? (
