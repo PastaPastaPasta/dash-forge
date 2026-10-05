@@ -23,7 +23,8 @@
 //!
 //! The seams the data plane routes through ([`RefNameHasher`], [`RepoCodec`], [`PackCipher`],
 //! [`RepoKeyReader`]) have their private implementations in [`Private`], built from the
-//! resolution [`crate::keyring::Keyring`] reads from Platform.
+//! resolution [`crate::keyring::Keyring`] reads from Platform. A public repository's members lane
+//! is [`Lane`]: the same epoch chain, none of the git-plane seams.
 
 // The deterministic seal constructors behind `vectors` reuse nonces and file ids by design; a
 // release build must never carry them.
@@ -222,18 +223,13 @@ impl RepoKeyReader for Public {
 ///
 /// Seal APIs draw their nonce / fileId through the hedge (§3.6) and take none from the caller.
 ///
-/// The same keys serve the **members lane of a public repository** ([`Self::from_resolution_mixed`],
-/// lane 0 of the mixed-visibility design): there [`Self::seal_doc`] writes members-only content
-/// (`enc` v0x03, padded), and the git-plane seams ([`RefNameHasher`], [`RepoCodec`],
-/// [`PackCipher`]) stay the public repository's (sha256 ref hashes, plaintext by default, packs
-/// as-is): in phase 1 the lane seals discussion only, never refs or packs.
+/// A public repository's members lane is a different type, [`Lane`]: it shares the epoch chain
+/// but none of these seams.
 #[derive(Clone)]
 pub struct Private {
     keys: BTreeMap<u32, EpochKeys>,
     raw: BTreeMap<u32, EpochKey>,
     write_epoch: u32,
-    /// The members lane of a public repository, not a private repository.
-    mixed: bool,
 }
 
 impl std::fmt::Debug for Private {
@@ -241,7 +237,6 @@ impl std::fmt::Debug for Private {
         f.debug_struct("Private")
             .field("epochs", &self.keys.keys().collect::<Vec<_>>())
             .field("write_epoch", &self.write_epoch)
-            .field("mixed", &self.mixed)
             .finish_non_exhaustive()
     }
 }
@@ -262,26 +257,7 @@ impl Private {
             keys,
             raw,
             write_epoch,
-            mixed: false,
         })
-    }
-
-    /// The members lane of the **public** repository `repo_id` (lane 0: the epoch chain of
-    /// `private-repos.md` §5 under a settings-free anchor). `None` as for
-    /// [`Self::from_resolution`]. Its [`Self::seal_doc`] writes `enc` v0x03 with the padding of
-    /// [`doc::pads`]; its git-plane seams are the public repository's.
-    #[must_use]
-    pub fn from_resolution_mixed(repo_id: &[u8; 32], resolution: &EpochResolution) -> Option<Self> {
-        let mut p = Self::from_resolution(repo_id, resolution)?;
-        p.mixed = true;
-        Some(p)
-    }
-
-    /// Whether these are a public repository's members-lane keys
-    /// ([`Self::from_resolution_mixed`]).
-    #[must_use]
-    pub fn is_mixed(&self) -> bool {
-        self.mixed
     }
 
     /// The epoch new content is written under.
@@ -304,9 +280,8 @@ impl Private {
             .expect("the write epoch's keys are held by construction")
     }
 
-    /// Seal a document's content under the write epoch (a random, hedged nonce): `enc` v0x01 in
-    /// a private repository, v0x03 (padded per [`doc::pads`]) in a public repository's members
-    /// lane; a config is v0x02 in both. The header's `vis` is set to the repository's.
+    /// Seal a document's content under the write epoch (a random, hedged nonce): `enc` v0x01,
+    /// or v0x02 for a config.
     pub fn seal_doc(
         &self,
         header: &DocHeader,
@@ -314,22 +289,8 @@ impl Private {
     ) -> std::result::Result<Vec<u8>, PrivateError> {
         let mut header = header.clone();
         header.epoch = self.write_epoch;
-        header.vis = self.visibility();
-        if self.mixed && header.kind != DocKind::Config {
-            doc::seal_members(self.write_keys(), &header, fields)
-        } else {
-            doc::seal(self.write_keys(), &header, fields)
-        }
-    }
-
-    /// The visibility of the repository these keys belong to.
-    #[must_use]
-    pub fn visibility(&self) -> crate::rules::v2::Visibility {
-        if self.mixed {
-            crate::rules::v2::Visibility::Public
-        } else {
-            crate::rules::v2::Visibility::Private
-        }
+        header.vis = crate::rules::v2::Visibility::Private;
+        doc::seal(self.write_keys(), &header, fields)
     }
 
     /// Open a sealed artifact after checking its length against the manifest's `size_bytes`.
@@ -344,9 +305,6 @@ impl Private {
 
 impl RefNameHasher for Private {
     fn hash(&self, epoch: u32, ref_name: &str) -> Result<[u8; 32]> {
-        if self.mixed {
-            return Public.hash(epoch, ref_name);
-        }
         self.keys
             .get(&epoch)
             .map(|k| k.ref_name_hash(ref_name))
@@ -356,22 +314,15 @@ impl RefNameHasher for Private {
 
 impl RepoCodec for Private {
     fn plaintext(&self) -> bool {
-        // a public repository's content is plaintext unless its writer chooses Members
-        self.mixed
+        false
     }
 }
 
 impl PackCipher for Private {
     fn seal(&self, pack: Vec<u8>) -> Result<Vec<u8>> {
-        if self.mixed {
-            return Public.seal(pack);
-        }
         Ok(pack::seal(self.write_keys(), &pack)?)
     }
     fn open(&self, sealed: Vec<u8>, size_bytes: u64) -> Result<Vec<u8>> {
-        if self.mixed {
-            return Public.open(sealed, size_bytes);
-        }
         Ok(self.open_pack(&sealed, size_bytes)?)
     }
 }
@@ -385,6 +336,101 @@ impl RepoKeyReader for Private {
     }
 }
 
+/// The **members lane of a public repository** (lane 0 of the mixed-visibility design): the
+/// epoch chain of `private-repos.md` §5 under a settings-free anchor, held by the repository's
+/// members. Deliberately not a [`Private`] and none of the git-plane seams ([`RefNameHasher`],
+/// [`RepoCodec`], [`PackCipher`]): the repository's refs, packs and default content stay public,
+/// and a caller cannot pass a lane where a repository's seams are wanted. What it seals it seals
+/// under the lane's keys, never as plaintext:
+///
+/// * [`Self::seal_doc`]: members-only content, `enc` v0x03 padded per [`doc::pads`] (a config, the
+///   lane's anchor, v0x02);
+/// * [`Self::seal_artifact`]: a members-only sealed artifact (DFPK version 0x01 under the write
+///   epoch), e.g. a members long body (kind 70) or a Members environment snapshot (kind 8);
+/// * [`Self::epoch_keys`]: the subkeys of a held epoch, for a keyed ref-name hash
+///   ([`EpochKeys::ref_name_hash`]) or the read context.
+///
+/// It also implements [`RepoKeyReader`] (the raw epoch key, for wrapping it to a new member).
+#[derive(Clone)]
+pub struct Lane {
+    inner: Private,
+}
+
+impl std::fmt::Debug for Lane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lane")
+            .field("epochs", &self.inner.keys.keys().collect::<Vec<_>>())
+            .field("write_epoch", &self.inner.write_epoch)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Lane {
+    /// The lane of the public repository `repo_id` over the keys a resolution found. `None`
+    /// unless the resolution has an epoch the reader can write under (as [`Private::from_resolution`]).
+    #[must_use]
+    pub fn from_resolution(repo_id: &[u8; 32], resolution: &EpochResolution) -> Option<Self> {
+        Private::from_resolution(repo_id, resolution).map(|inner| Self { inner })
+    }
+
+    /// The epoch new members-only content is written under.
+    #[must_use]
+    pub fn write_epoch(&self) -> u32 {
+        self.inner.write_epoch
+    }
+
+    /// The subkeys of `epoch`, if held.
+    #[must_use]
+    pub fn epoch_keys(&self, epoch: u32) -> Option<&EpochKeys> {
+        self.inner.epoch_keys(epoch)
+    }
+
+    /// The subkeys of the write epoch.
+    #[must_use]
+    pub fn write_keys(&self) -> &EpochKeys {
+        self.inner.write_keys()
+    }
+
+    /// Seal a document's content as members-only (`enc` v0x03, padded per [`doc::pads`]) under
+    /// the write epoch; a config (the lane's anchor) is v0x02. The header's `epoch` is set to
+    /// the write epoch and its `vis` to public.
+    pub fn seal_doc(
+        &self,
+        header: &DocHeader,
+        fields: &Fields,
+    ) -> std::result::Result<Vec<u8>, PrivateError> {
+        let mut header = header.clone();
+        header.epoch = self.inner.write_epoch;
+        header.vis = crate::rules::v2::Visibility::Public;
+        if header.kind == DocKind::Config {
+            doc::seal(self.write_keys(), &header, fields)
+        } else {
+            doc::seal_members(self.write_keys(), &header, fields)
+        }
+    }
+
+    /// Seal a members-only artifact (DFPK version 0x01, hedged `fileId`) under the write epoch.
+    pub fn seal_artifact(&self, plaintext: &[u8]) -> std::result::Result<Vec<u8>, PrivateError> {
+        pack::seal(self.write_keys(), plaintext)
+    }
+
+    /// Open a members-only artifact after checking its length against the manifest's
+    /// `size_bytes`.
+    pub fn open_artifact(
+        &self,
+        sealed: &[u8],
+        size_bytes: u64,
+    ) -> std::result::Result<Vec<u8>, PrivateError> {
+        self.inner.open_pack(sealed, size_bytes)
+    }
+}
+
+impl RepoKeyReader for Lane {
+    fn epoch_key(&self, epoch: u32) -> Result<EpochKey> {
+        self.inner.epoch_key(epoch)
+    }
+}
+
 fn not_supported() -> Error {
     Error::Config("a public repository has no keys".into())
 }
@@ -392,6 +438,38 @@ fn not_supported() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lane_seals_members_only_content_and_artifacts_under_its_key() {
+        let repo = [0x11; 32];
+        let mut res = EpochResolution::default();
+        res.keys.insert(0, EpochKey::from_bytes([3; 32]));
+        res.write_epoch = Some(0);
+        let lane = Lane::from_resolution(&repo, &res).unwrap();
+        let mut h = DocHeader::new(DocKind::Comment, [0x22; 32], 7);
+        h.target_id = Some([0x33; 32]);
+        let f = Fields {
+            body: Some("members only".into()),
+            ..Fields::default()
+        };
+        let enc = lane.seal_doc(&h, &f).unwrap();
+        assert_eq!(enc[0], doc::V3);
+        // the anchor of the lane is a v0x02 config
+        let cfg = DocHeader::new(DocKind::Config, [0x22; 32], 0);
+        assert_eq!(lane.seal_doc(&cfg, &Fields::default()).unwrap()[0], doc::V2);
+        // an artifact (a members long body) is sealed under the lane key, never plaintext
+        let body = b"a long members-only body".to_vec();
+        let sealed = lane.seal_artifact(&body).unwrap();
+        assert_ne!(
+            &sealed[pack::HEADER_LEN..pack::HEADER_LEN + body.len()],
+            &body[..]
+        );
+        assert_eq!(
+            lane.open_artifact(&sealed, sealed.len() as u64).unwrap(),
+            body
+        );
+        assert!(lane.epoch_key(0).is_ok());
+    }
 
     #[test]
     fn public_seams_are_the_identity_and_sha256() {

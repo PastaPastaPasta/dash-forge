@@ -20,8 +20,9 @@
  * Reader rule: the sender key is the document owner's key `senderKeyId`, which must be an
  * `ECDSA_SECP256K1` key of purpose `ENCRYPTION` (disabled is fine for reading); one ECDH per key
  * the reader holds, every slot tried; a slot counts only when its padding, version byte,
- * `KCV_obj` prefix and the full `COMMIT_obj` match; then GCM; then `count(tag 25) = n` and the
- * reader's own id at its slot index. The recipient list is "as listed by the sender".
+ * `KCV_obj` prefix and the full `COMMIT_obj` match; then GCM; then `count(tag 25) = n`, the owner
+ * at slot 0, no identity listed twice, and the reader's own id at its slot index. The recipient
+ * list is "as listed by the sender".
  */
 
 import { getPublicKey, getSharedSecret } from '@noble/secp256k1'
@@ -117,6 +118,29 @@ async function publicRefNamesMatch(doc: PrivateDoc, fields: DocFields): Promise<
   return true
 }
 
+/**
+ * The writer's checks of a recipient list (slot order): 1 to 16 recipients, 32-byte identity ids
+ * and 33-byte compressed keys, the sender (`ownerId`, `senderSecret`'s key) first, no identity
+ * twice. Throws {@link MalformedError}.
+ */
+function checkRecipients(recipients: readonly LetterRecipient[], ownerId: Uint8Array, senderSecret: Uint8Array): void {
+  const n = recipients.length
+  if (n < 1 || n > MAX_LETTER_RECIPIENTS) throw new MalformedError(`a letter has 1 to ${MAX_LETTER_RECIPIENTS} recipients`)
+  for (const r of recipients) {
+    if (r.identityId.length !== 32) throw new MalformedError('an identity id is 32 bytes')
+    if (r.publicKey.length !== 33) throw new MalformedError('a recipient key is a 33-byte compressed key')
+  }
+  const first = recipients[0] as LetterRecipient
+  if (!bytesEqual(first.identityId, ownerId) || !constantTimeEqual(first.publicKey, getPublicKey(senderSecret, true))) {
+    throw new MalformedError('the sender is the first recipient')
+  }
+  if (hasDuplicate(recipients.map((r) => r.identityId))) throw new MalformedError('a recipient is listed twice')
+}
+
+function hasDuplicate(ids: readonly Uint8Array[]): boolean {
+  return ids.some((id, i) => ids.slice(0, i).some((o) => bytesEqual(o, id)))
+}
+
 /** Seals one slot plaintext to one recipient. */
 type SlotSealer = (recipient: LetterRecipient, index: number, plaintext: Bytes) => Promise<Bytes>
 
@@ -142,16 +166,7 @@ async function sealWith(
 ): Promise<LetterSealed> {
   const n = recipients.length
   if (doc.epoch !== 0 || !letterKind(doc.type)) throw new MalformedError('a letter is an issue, PR, comment, review or event under epoch 0')
-  if (n < 1 || n > MAX_LETTER_RECIPIENTS) throw new MalformedError(`a letter has 1 to ${MAX_LETTER_RECIPIENTS} recipients`)
-  const first = recipients[0] as LetterRecipient
-  if (!bytesEqual(first.identityId, doc.ownerId) || !constantTimeEqual(first.publicKey, getPublicKey(senderSecret, true))) {
-    throw new MalformedError('the sender is the first recipient')
-  }
-  for (let i = 1; i < n; i++) {
-    if (recipients.slice(0, i).some((r) => bytesEqual(r.identityId, (recipients[i] as LetterRecipient).identityId))) {
-      throw new MalformedError('a recipient is listed twice')
-    }
-  }
+  checkRecipients(recipients, doc.ownerId, senderSecret)
   if (nonce.length !== NONCE_LEN) throw new RangeError('a nonce is 12 bytes')
   const records = buildTlv(fields, { type: doc.type, epoch: 0 })
   if (!(await publicRefNamesMatch(doc, fields))) throw new MalformedError('a ref name does not match its hash')
@@ -236,7 +251,8 @@ export function __unsafeSealLetterWith(
 /** The sender's public key under the reader rule, or undefined (malformed). */
 function senderKey(ownerKeys: readonly OwnerKey[], senderKeyId: number): Uint8Array | undefined {
   const k = ownerKeys.find((o) => o.id === senderKeyId)
-  return k !== undefined && k.purpose === PURPOSE_ENCRYPTION && k.keyType === KEY_TYPE_ECDSA_SECP256K1 ? k.data : undefined
+  // a Platform ECDSA_SECP256K1 key is 33 bytes; a 33-byte value that is not a point fails the ECDH (malformed)
+  return k !== undefined && k.purpose === PURPOSE_ENCRYPTION && k.keyType === KEY_TYPE_ECDSA_SECP256K1 && k.data.length === 33 ? k.data : undefined
 }
 
 /**
@@ -283,7 +299,9 @@ async function findSlot(
 
 /**
  * Open the letter `doc.enc` in the repository `repoId` as `reader`, with the document owner's
- * keys `ownerKeys` (the reader rule in the module docs).
+ * keys `ownerKeys` (the reader rule in the module docs). `ownerKeys` must be the identity keys
+ * of **this document's** `$ownerId`: the sender key comes from nowhere else, and the ECDH with it
+ * is what binds a slot to its writer.
  */
 export async function openLetter(
   repoId: Uint8Array,
@@ -329,8 +347,11 @@ export async function openLetter(
   } finally {
     pt.fill(0)
   }
+  // the list as the writer rule makes it: n ids, the owner in slot 0, none twice, the reader at its slot
+  const [first] = parsed.recipients
   const mine = parsed.recipients[found.slot]
-  if (parsed.recipients.length !== n || mine === undefined || !bytesEqual(mine, reader.identityId)) return MALFORMED
+  if (parsed.recipients.length !== n || first === undefined || !bytesEqual(first, doc.ownerId) || hasDuplicate(parsed.recipients)) return MALFORMED
+  if (mine === undefined || !bytesEqual(mine, reader.identityId)) return MALFORMED
   if (!(await publicRefNamesMatch(doc, parsed.fields))) return MALFORMED
   return { status: 'readable', fields: parsed.fields, recipients: parsed.recipients, slot: found.slot }
 }
@@ -389,16 +410,7 @@ async function sealArtifactWith(
   sealSlot: SlotSealer,
 ): Promise<Bytes> {
   const n = recipients.length
-  if (n < 1 || n > MAX_LETTER_RECIPIENTS) throw new MalformedError(`an artifact has 1 to ${MAX_LETTER_RECIPIENTS} recipients`)
-  const first = recipients[0] as LetterRecipient
-  if (!bytesEqual(first.identityId, ownerId) || !constantTimeEqual(first.publicKey, getPublicKey(senderSecret, true))) {
-    throw new MalformedError('the sender is the first recipient')
-  }
-  for (let i = 1; i < n; i++) {
-    if (recipients.slice(0, i).some((r) => bytesEqual(r.identityId, (recipients[i] as LetterRecipient).identityId))) {
-      throw new MalformedError('a recipient is listed twice')
-    }
-  }
+  checkRecipients(recipients, ownerId, senderSecret)
   if (fileId.length !== 16 || segLog2 < 10 || segLog2 > 20) throw new RangeError('a 16-byte fileId and 10 <= L <= 20')
   const obj = await objKeys(repoId, kObj)
   const slotPlaintext = concat(new Uint8Array([SLOT_VERSION]), obj.commit.subarray(0, 14), kObj)
@@ -415,7 +427,11 @@ async function sealArtifactWith(
   const parts: Uint8Array[] = [header]
   for (let i = 0; i < segments; i++) {
     const chunk = bytes(plaintext.slice(i * S, (i + 1) * S))
-    parts.push(new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: segmentNonce(i, segments), additionalData: header }, key, chunk)))
+    try {
+      parts.push(new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: segmentNonce(i, segments), additionalData: header }, key, chunk)))
+    } finally {
+      chunk.fill(0)
+    }
   }
   return concat(...parts)
 }
@@ -470,6 +486,11 @@ export function __unsafeSealLetterArtifactWith(
  * Open a sealed artifact under a specific-people header whose manifest says `sizeBytes`, as
  * `reader`, with the manifest owner's keys (the letter reader rule). The length is checked
  * first. Throws {@link ArtifactError}.
+ *
+ * Callers must first check that `sealed` hashes to the `packHash` of the **owner-signed
+ * `packManifest`** it was fetched for (the pack reader rule), and pass that manifest's
+ * `$ownerId`'s keys as `ownerKeys`: an artifact carries no owner of its own, so the manifest is
+ * what says who wrote it. Bytes from storage that no manifest names are never opened.
  */
 export async function openLetterArtifact(
   repoId: Uint8Array,
@@ -505,14 +526,15 @@ export async function openLetterArtifact(
   let at = headerLen
   for (let i = 0; i < segments; i++) {
     const len = Math.min(S, plaintextLen - i * S) + 16
-    let pt: ArrayBuffer
+    let pt: Uint8Array
     try {
-      pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: segmentNonce(i, segments), additionalData: header }, key, bytes(sealed.slice(at, at + len)))
+      pt = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: segmentNonce(i, segments), additionalData: header }, key, bytes(sealed.slice(at, at + len))))
     } catch {
       out.fill(0)
       throw corrupt()
     }
-    out.set(new Uint8Array(pt), i * S)
+    out.set(pt, i * S)
+    pt.fill(0)
     at += len
   }
   return out

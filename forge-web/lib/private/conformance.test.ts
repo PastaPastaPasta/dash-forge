@@ -419,17 +419,24 @@ async function namedEnvelope(inp: Obj): Promise<Json> {
   const ivs = inp['ivs']
   if (!Array.isArray(ivs)) throw new TypeError('ivs: expected an array')
   const kObj = hex(inp, 'kObj')
-  const sealed = await sealLetterWith(
-    repoId,
-    hex(sender, 'priv'),
-    num(sender, 'keyId'),
-    doc,
-    fields,
-    recipients.map((r) => ({ identityId: hex(r, 'identityId'), publicKey: hex(r, 'pub') })),
-    kObj,
-    hex(inp, 'nonce'),
-    ivs.map((x) => hexToBytes(String(x))),
-  )
+  let sealed: Awaited<ReturnType<typeof sealLetterWith>>
+  try {
+    sealed = await sealLetterWith(
+      repoId,
+      hex(sender, 'priv'),
+      num(sender, 'keyId'),
+      doc,
+      fields,
+      recipients.map((r) => ({ identityId: hex(r, 'identityId'), publicKey: hex(r, 'pub') })),
+      kObj,
+      hex(inp, 'nonce'),
+      ivs.map((x) => hexToBytes(String(x))),
+    )
+  } catch (e) {
+    if (e instanceof MalformedError) return { error: 'malformed' }
+    if (e instanceof TooLargeError) return { error: 'tooLarge' }
+    throw e
+  }
   // The intermediates, recomputed from their definitions rather than read back from the seal
   const n = recipients.length
   const body = concat(buildTlv(fields, { type: doc.type, epoch: 0 }), encodeRecipients(recipients.map((r) => hex(r, 'identityId'))))

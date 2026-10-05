@@ -1832,6 +1832,7 @@ def release_fold_vectors():
 # the sender in slot 0, the recipients' identity ids in TLV tag 25.
 
 V3, V4 = 0x03, 0x04
+LETTER_KINDS = ("issue", "patch", "comment", "review", "event")
 MIN_V3 = 1 + 12 + 32 + 16
 MAX_ENC = {"issue": 5120, "patch": 5120, "comment": 5120, "review": 5120, "event": 5120, "refUpdate": 1536,
            "protectedRefUpdate": 1536, "config": 1536}
@@ -2018,12 +2019,27 @@ def mixed_vectors():
          ISSUE_TLV + rec(25, bytes(32)), MALFORMED),
         ("blind_tags_reserved", "tags 22-24 and 27 (sealed ref values, defined for later clients) stay reserved: "
          "malformed.", ISSUE_TLV + rec(22, bytes(20)), MALFORMED),
+        ("reserved_tag_23", "tag 23 (a sealed ref update's real prevOid) stays reserved: malformed.",
+         ISSUE_TLV + rec(23, bytes(20)), MALFORMED),
+        ("reserved_tag_24", "tag 24 (a head update's real head) stays reserved: malformed.",
+         ISSUE_TLV + rec(24, bytes(20)), MALFORMED),
+        ("reserved_tag_27", "tag 27 (an OID blind's salt) stays reserved: malformed.", ISSUE_TLV + rec(27, bytes(32)),
+         MALFORMED),
     ]:
         _, _, _, _, e = seal_members(MISSUE, K0, b"", pt=pt)
         v(name, desc, MISSUE, CTX0, exp, e)
     late = dict(MISSUE, createdAtBlockHeight=1000 + GRACE_BLOCKS + 1)
     v("late", "the late-content rule applies to the members lane as to a private repository: under epoch 0 after the "
       "epoch-1 anchor + 240 by a non-member, Unreadable(Late).", late, CTX01, unreadable("late"), issue_enc)
+    k_obj, nonce, ivs = named_inputs(3)
+    letter = seal_named(named_doc(), NAMED_SENDER, 4, [NAMED_SENDER] + NAMED_OTHERS[:2],
+                        tlv((2, b"A letter to 3 people (the sender included): the embargo ends on Friday.")), k_obj,
+                        nonce, ivs)[5]
+    v("v04_public", "a well-framed specific-people letter (v0x04) in a public repository: the epoch keys cannot open "
+      "it, and no lane is needed to frame it: Unreadable(Letter); the letter reader opens it.", named_doc(),
+      ctx({}, {}), unreadable("letter"), letter)
+    v("v04_private", "the same letter on a private repository's document: also Unreadable(Letter), even for a member "
+      "holding K_0.", private_vis(named_doc()), CTX0, unreadable("letter"), letter)
     v("config_anchor_public", "the lane-0 anchor of a public repository is a v0x02 config with vis public: it opens "
       "as in a private repository.", dict(CONFIG0, vis="public", id="c0"), CTX0,
       readable({"defaultBranch": "refs/heads/main"}), seal_doc(CONFIG0, K0, CONFIG0_TLV)[1])
@@ -2052,8 +2068,15 @@ def named_inputs(n):
 
 
 def ecdh(d, pub_bytes):
+    """S = SHA-256 of the compressed point d·pub; ValueError when pub is not a compressed point on the curve."""
+    if len(pub_bytes) != 33 or pub_bytes[0] not in (2, 3):
+        raise ValueError("not a compressed public key")
     x = int.from_bytes(pub_bytes[1:], "big")
+    if x >= P:
+        raise ValueError("x out of range")
     y = pow((x * x * x + 7) % P, (P + 1) // 4, P)
+    if (y * y - (x * x * x + 7)) % P:
+        raise ValueError("not on the curve")
     if y % 2 != pub_bytes[0] - 2:
         y = P - y
     return sha256(comp(ec_mul(d, (x, y))))
@@ -2114,18 +2137,24 @@ def parse_letter_tlv(pt):
 
 def open_named(doc, enc, owner_keys, reader_id, reader_privs):
     """The reference reader rule of a letter (§4.1): sender key, slot trial, commitment, GCM, recipient list."""
+    if len(enc) < 38 or doc["type"] not in LETTER_KINDS or doc["epoch"] != 0:
+        return MALFORMED
     n = enc[1]
-    if enc[0] != V4 or not 1 <= n <= 16 or len(enc) < 66 + 64 * n or doc["epoch"] != 0:
+    if enc[0] != V4 or not 1 <= n <= 16 or len(enc) < 66 + 64 * n:
         return MALFORMED
     kid = struct.unpack(">I", enc[2:6])[0]
     sk = [k for k in owner_keys if k["id"] == kid]
-    if not sk or sk[0]["purpose"] != PURPOSE_ENCRYPTION or sk[0]["keyType"] != KEY_TYPE_SECP256K1:
+    if not sk or sk[0]["purpose"] != PURPOSE_ENCRYPTION or sk[0]["keyType"] != KEY_TYPE_SECP256K1 \
+            or len(bytes.fromhex(sk[0]["data"])) != 33:
         return MALFORMED
     sender_pub = bytes.fromhex(sk[0]["data"])
     C, head = enc[6:38], enc[1:38 + 64 * n]
     found = None
     for d in reader_privs:
-        S = ecdh(d, sender_pub)
+        try:
+            S = ecdh(d, sender_pub)
+        except ValueError:
+            return MALFORMED
         for i in range(n):
             spt = cbc_open(S, enc[38 + 64 * i:38 + 64 * (i + 1)])
             if spt is None or len(spt) != 47 or spt[0] != SLOT_VERSION or spt[1:15] != C[:14]:
@@ -2144,7 +2173,8 @@ def open_named(doc, enc, owner_keys, reader_id, reader_privs):
     except Exception:
         return unreadable("badTag")
     parsed = parse_letter_tlv(pt)
-    if parsed is None or len(parsed[1]) != n or parsed[1][slot] != reader_id:
+    if parsed is None or len(parsed[1]) != n or parsed[1][0] != bytes.fromhex(doc["ownerId"]) \
+            or len(set(parsed[1])) != n or parsed[1][slot] != reader_id:
         return MALFORMED
     return dict(status="readable", fields={"body": parsed[0]}, recipients=[H(r) for r in parsed[1]], slot=slot)
 
@@ -2168,6 +2198,7 @@ NAMED_N3 = [NAMED_SENDER] + NAMED_OTHERS[:2]
 def named_vectors():
     for n in (1, 3, 16):
         recipients = [NAMED_SENDER] + NAMED_OTHERS[:n - 1]
+        assert len({p["id"] for p in recipients}) == n
         k_obj, nonce, ivs = named_inputs(n)
         body = f"A letter to {n} people (the sender included): the embargo ends on Friday."
         doc = named_doc()
@@ -2219,10 +2250,10 @@ def named_vectors():
     assert res == [unreadable("notARecipient")]
     flipped = bytearray(enc)
     flipped[38 + 20] ^= 0x01
-    res = neg("other_slot_flipped", "one byte flipped inside alice's slot (slot 0): r2 still opens its own slot, "
-              "then GCM fails under the changed H (BadTag); alice's slot no longer opens.", bytes(flipped),
-              [reader_json(NAMED_OUTSIDER), reader_json(NAMED_N3[2])])
-    assert res[1] == unreadable("badTag")
+    res = neg("other_slot_flipped", "one byte flipped inside alice's slot (slot 0): alice's slot no longer opens "
+              "(NotARecipient); r2 still opens its own slot, then GCM fails under the changed H (BadTag).",
+              bytes(flipped), [reader_json(NAMED_N3[0]), reader_json(NAMED_N3[2])])
+    assert res == [unreadable("notARecipient"), unreadable("badTag")]
     # r1's slot re-wrapped to another key K' with its own valid KCV: the KCV no longer matches COMMIT_obj
     k_alt = sha256(b"dash-forge vectors: named equivocating key")
     alt_pt = bytes([SLOT_VERSION]) + obj_keys(k_alt)[1][:14] + k_alt
@@ -2268,6 +2299,82 @@ def named_vectors():
     res = neg("slot_version_1_refused", "a slot whose plaintext starts 0x01 (a repoKey wrap's version) never opens as "
               "a letter slot: NotARecipient.", wrong_ver, readers3[:1])
     assert res == [unreadable("notARecipient")]
+    ids = lambda *ps: body + b"".join(rec(25, p["id"]) for p in ps)
+    not_first = seal_named(doc, NAMED_SENDER, 4, NAMED_N3, body, k_obj, nonce, ivs,
+                           tlv_override=ids(NAMED_OTHERS[2], NAMED_N3[1], NAMED_N3[2]))[5]
+    res = neg("sender_not_slot0", "the TLV lists r3, not the owner, at slot 0 (r1 and r2 at their own slots): the "
+              "sender is always slot 0, so malformed even for r1.", not_first, readers3[1:2])
+    assert res == [MALFORMED]
+    dup = seal_named(doc, NAMED_SENDER, 4, NAMED_N3, body, k_obj, nonce, ivs,
+                     tlv_override=ids(NAMED_N3[0], NAMED_N3[1], NAMED_N3[1]))[5]
+    res = neg("duplicate_recipient", "the TLV lists r1 at slots 1 and 2: no identity appears twice, so malformed "
+              "even for r1 at its own slot.", dup, readers3[1:2])
+    assert res == [MALFORMED]
+    res = neg("sender_key_not_a_point", "the owner's key 4 is 33 bytes that are not a point on secp256k1: "
+              "malformed.", enc, readers3[:1], owner_keys=[dict(owner_key(NAMED_SENDER), data="02" + "ff" * 32)])
+    assert res == [MALFORMED]
+    uncompressed = owner_key(NAMED_SENDER)
+    x = int.from_bytes(NAMED_SENDER["pub"][1:], "big")
+    y = pow((x ** 3 + 7) % P, (P + 1) // 4, P)
+    y = y if y % 2 == NAMED_SENDER["pub"][0] - 2 else P - y
+    uncompressed["data"] = "04" + x.to_bytes(32, "big").hex() + y.to_bytes(32, "big").hex()
+    res = neg("sender_key_uncompressed", "the owner's key 4 is the same point in 65-byte uncompressed form: a "
+              "Platform ECDSA_SECP256K1 key is 33 bytes, so malformed.", enc, readers3[:1], owner_keys=[uncompressed])
+    assert res == [MALFORMED]
+    n0 = bytearray(enc)
+    n0[1] = 0
+    res = neg("n_zero", "n = 0: malformed before any key is used.", bytes(n0), readers3[:1])
+    assert res == [MALFORMED]
+    n17 = bytearray(enc)
+    n17[1] = 17
+    n17 += bytes(64 * 14)
+    res = neg("n_seventeen", "n = 17 (with room for 17 slots): more than 16 recipients is malformed.", bytes(n17),
+              readers3[:1])
+    assert res == [MALFORMED]
+    res = neg("truncated", "one byte short of the framing for n = 3: malformed.", enc[:66 + 64 * 3 - 1], readers3[:1])
+    assert res == [MALFORMED]
+    ref_doc = dict(type="refUpdate", vis="public", ownerId=H(NAMED_SENDER["id"]), epoch=0, refNameHash="55" * 32,
+                   newOid="aa" * 20)
+    res = neg("ref_update_refused", "a letter is an issue, PR, comment, review or event: a v0x04 refUpdate is "
+              "malformed.", enc, readers3[:1], doc_=ref_doc)
+    assert res == [MALFORMED]
+    res = neg("config_refused", "a v0x04 config is malformed.", enc, readers3[:1],
+              doc_=dict(type="config", vis="public", ownerId=H(NAMED_SENDER["id"]), epoch=0))
+    assert res == [MALFORMED]
+
+    # the writer refuses what a reader would: the same input shape as named_envelope, `error` expected
+    def writer_check(doc_, f, recipients):
+        """The letter writer's refusals, in the reader rule's terms."""
+        ids_ = [p["id"] for p in recipients]
+        if doc_["type"] not in LETTER_KINDS or doc_["epoch"] != 0 or not 1 <= len(ids_) <= 16 \
+                or ids_[0] != bytes.fromhex(doc_["ownerId"]) or len(set(ids_)) != len(ids_):
+            return "malformed"
+        size = sum(3 + len(x.encode()) for x in f.values()) + 35 * len(ids_)
+        return "tooLarge" if size > MAX_ENC[doc_["type"]] - (66 + 64 * len(ids_)) else None
+
+    def refused(name, desc, recipients, err, doc_=doc, fields=None, n_ivs=None):
+        f = {"body": "x"} if fields is None else fields
+        assert writer_check(doc_, f, recipients) == err, name
+        k, nn, ivs_ = named_inputs(3)
+        ivs_ = [sha256(b"dash-forge vectors: named refused iv %d" % i)[:16] for i in range(len(recipients))]
+        vector("named_envelope", name, desc,
+               dict(repoId=H(repoId), doc=doc_, fields=f, sender=dict(party_json(NAMED_SENDER), keyId=4),
+                    recipients=[party_json(p) for p in recipients], kObj=H(k), nonce=H(nn), ivs=[H(i) for i in ivs_]),
+               dict(error=err))
+
+    refused("refused_sender_not_first", "the sender is not the first recipient: the writer refuses.",
+            [NAMED_N3[1], NAMED_SENDER], "malformed")
+    refused("refused_duplicate_recipient", "r1 listed twice: the writer refuses.",
+            [NAMED_SENDER, NAMED_N3[1], NAMED_N3[1]], "malformed")
+    refused("refused_seventeen", "17 recipients, the sender included: the writer refuses.",
+            [NAMED_SENDER] + NAMED_OTHERS + [NAMED_OUTSIDER], "malformed")
+    refused("refused_epoch_1", "a letter carries epoch 0 (D20): the writer refuses epoch 1.", NAMED_N3, "malformed",
+            doc_=named_doc(epoch=1))
+    refused("refused_ref_update", "a refUpdate is not a letter kind: the writer refuses.", NAMED_N3, "malformed",
+            doc_=ref_doc, fields={"refName": "refs/heads/main"})
+    room = MAX_ENC["comment"] - (66 + 64 * 3) - 3 * 35 - 3
+    refused("refused_over_cap", f"a comment body one byte over the room of a letter to 3 ({room} bytes) does not "
+            "fit.", NAMED_N3, "tooLarge", fields={"body": "b" * (room + 1)})
 
 
 # --- sealed artifacts under a specific-people header (DFPK version 0x02) ---------------------------
