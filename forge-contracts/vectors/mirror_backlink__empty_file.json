@@ -1,0 +1,14 @@
+{
+  "name": "empty_file",
+  "description": "An empty file is invalid.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": false,
+    "listed": false
+  }
+}

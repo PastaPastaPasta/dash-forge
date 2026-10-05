@@ -1,0 +1,14 @@
+{
+  "name": "no_mirrors_key",
+  "description": "A file without `mirrors` is invalid.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "{\"mirror\": [\"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"]}",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": false,
+    "listed": false
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "lists_the_repo",
+  "description": "The file lists this repo among its mirrors.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "{\"mirrors\": [\"H3xi5biFj6wbxmpbdhHx1D2D3ofKJJ7anDG58ixhqvry\", \"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"]}",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": true,
+    "listed": true
+  }
+}
