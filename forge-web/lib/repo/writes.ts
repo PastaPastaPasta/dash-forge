@@ -29,7 +29,7 @@ import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isGitRefName, type EventKind } from '../rules'
 import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
-import { fetchIdentityKeys, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
+import { fetchIdentityKeys, heldKeysText, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
@@ -1487,9 +1487,9 @@ export async function createRepo(
   if (visibility === 'private' && !resumed && privateCreate !== undefined) {
     const current = usableEncryptionKey((await fetchIdentityKeys(sdk, ownerId)) ?? [], forge.core)
     if (current === null) throw new Error('cannot create a private repository: your identity has no encryption key')
-    if (current.keyId !== privateCreate.ops.keyId) {
+    if (!privateCreate.ops.keyIds.includes(current.keyId)) {
       throw new Error(
-        `cannot create a private repository: your identity's current encryption key is key ${current.keyId}, but this browser holds key ${privateCreate.ops.keyId}; add key ${current.keyId} here (Settings → Private repos)`,
+        `cannot create a private repository: your identity's current encryption key is key ${current.keyId}, but this browser holds ${heldKeysText(privateCreate.ops.keyIds)}; add key ${current.keyId} here (Settings → Private repos)`,
       )
     }
   }

@@ -10,12 +10,17 @@
  *
  *   1. first login: request (forge-core) → wallet approves → register (QR #2) → key lands bound
  *      to forge-core, without limits → session → a forge-core write (a repo) is signed by it;
- *      a forge-collab write (a star) is refused locally with MissingGrantError, nothing sent;
- *   2. the one-tap grant: request (forge-collab) → wallet approves → register → the star lands;
- *   3. returning login: a new request is answered with the already-registered key, no QR #2;
+ *      a forge-community write (a star) is refused locally with MissingGrantError, nothing sent;
+ *   2. returning login on a fresh browser: a new request is answered with the already-registered
+ *      key, no QR #2;
+ *   3. the one-tap grant: request (forge-community) → wallet approves → register → the star lands;
  *   4. cleanup: the master key disables the keys this run added.
  *
- * Uses the RELAY fixture identity (unused by the other suites) and a chain key fixed per run.
+ * Both logins keep the encryption key the wallet registered beside the auth key in the vault
+ * (DESIGN D27): its public key is the identity's usable ENCRYPTION key.
+ *
+ * Uses the RELAY fixture identity (unused by the other suites), or the identity file named by
+ * FORGE_WALLET_IDENTITY_FILE, and a chain key fixed per run.
  */
 
 import { randomBytes } from 'node:crypto'
@@ -29,12 +34,17 @@ import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { resetMemoryStores } from '../idb'
 import { evoSdkService } from '../sdk'
 import { createRepo, starRelation } from '../repo/writes'
-import { awaitRegisteredKey, awaitWalletAnswer, newLoginRequest, responseSources } from './app-connect'
+import * as secp from '@noble/secp256k1'
+import { bytesToHex } from '@noble/hashes/utils.js'
+
+import { awaitRegisteredKey, awaitWalletAnswer, newLoginRequest, responseSources, wipeAnswer } from './app-connect'
 import { AuthController, MissingGrantError } from './controller'
+import { fetchIdentityKeys, usableEncryptionKey } from './encryption-key'
 import { keyRegistrationUri, RevokedWalletKey, type WalletKey } from './key-registration'
+import { lockVault, storedEncryptionKeyId, storedEncryptionKeyIds, withEncryptionKey } from './vault'
 
 const DEVNET = NETWORKS.devnet.devnetName ?? ''
-const FILE = join(homedir(), '.config/dash-forge/test-identities', `devnet-${DEVNET}`, 'RELAY.identity.json')
+const FILE = process.env['FORGE_WALLET_IDENTITY_FILE'] ?? join(homedir(), '.config/dash-forge/test-identities', `devnet-${DEVNET}`, 'RELAY.identity.json')
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet' && existsSync(FILE)
 const CHAIN_KEY = randomBytes(32).toString('hex')
 
@@ -42,7 +52,7 @@ type Responder = typeof import('../../e2e/wallet-responder.mjs')
 
 describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-exchange contract)', () => {
   it(
-    'first login, one-tap forge-collab grant, returning login, cleanup',
+    'first login, returning login, one-tap forge-community grant, cleanup',
     async () => {
       const wallet: Responder = await import(pathToFileURL(resolve(__dirname, '../../e2e/wallet-responder.mjs')).href)
       await evoSdkService.initialize({ network: 'devnet', contractIds: [], timeoutMs: 30000 })
@@ -54,32 +64,49 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
       const opts = { network, forge, sources, intervalMs: 2000, settleMs: 2000 }
 
       /** The app shows `contractId`'s request; the wallet approves and, if asked, registers. */
-      async function signIn(contractId: string, identityId?: string): Promise<{ identityId: string; key: WalletKey; registered: boolean }> {
+      async function signIn(
+        contractId: string,
+        identityId?: string,
+      ): Promise<{ identityId: string; key: WalletKey; registered: boolean; encryptionKeys: readonly Uint8Array[]; wipe: () => void }> {
         const req = newLoginRequest(network, contractId)
         const answering = awaitWalletAnswer(sdk, req, { ...opts, ...(identityId ? { identityId } : {}) })
         const approved = await wallet.approve({ uri: req.uri, identityFile: FILE, chainKeyHex: CHAIN_KEY, devnet: DEVNET })
         expect(approved.contractId).toBe(contractId)
         expect(approved.label).toBe('Dash Forge')
         const answer = await answering
-        if (answer.kind === 'keys') return { identityId: answer.identityId, key: answer.keys[0]!, registered: false }
+        const held = { encryptionKeys: answer.encryptionKeys, wipe: () => wipeAnswer(answer) }
+        if (answer.kind === 'keys') return { identityId: answer.identityId, key: answer.keys[0]!, registered: false, ...held }
         const until = Date.now() + 5 * 60_000
         const uri = await keyRegistrationUri(sdk, { identityId: answer.identityId, keys: answer.keys, contractId, network })
         await wallet.register({ uri, identityFile: FILE, chainKeyHex: CHAIN_KEY, contractId, devnet: DEVNET })
         const key = await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network, forge, until })
-        return { identityId: answer.identityId, key, registered: true }
+        return { identityId: answer.identityId, key, registered: true, ...held }
+      }
+
+      /** The vault holds an encryption key whose public key is the identity's usable ENCRYPTION key. */
+      async function expectEncryptionKeyKept(identityId: string): Promise<void> {
+        const usable = usableEncryptionKey((await fetchIdentityKeys(sdk, identityId)) ?? [], forge.core)
+        expect(usable).not.toBeNull()
+        expect(await storedEncryptionKeyId(network, identityId)).toBe(usable!.keyId)
+        const pub = await withEncryptionKey(network, identityId, async (_k, secret) => bytesToHex(secp.getPublicKey(secret, true)))
+        expect(pub).toBe(usable!.data.toLowerCase())
       }
 
       try {
         // 1. First login on forge-core: QR #2 registers the key, bound to forge-core, no limits.
         const first = await signIn(forge.core)
         expect(first.registered).toBe(true)
-        expect(first.key.scope).toEqual({ core: true, collab: false, unbounded: false })
+        expect(first.key.scope).toEqual({ core: true, collab: false, community: false, unbounded: false })
         expect(first.key.limits).toBeNull()
 
         resetMemoryStores()
         const controller = new AuthController(async () => sdk, network)
-        const session = await controller.adoptWalletKeys(first.identityId, [first.key], { passphrase: 'live wallet e2e passphrase' })
-        expect(session.grants).toEqual({ core: true, collab: false })
+        const protection = { passphrase: 'live wallet e2e passphrase' }
+        const session = await controller.adoptWalletKeys(first.identityId, [first.key], protection, { encryptionKeys: first.encryptionKeys, justRegistered: true })
+        first.wipe()
+        expect(controller.getState().notice ?? null).toBeNull()
+        await expectEncryptionKeyKept(first.identityId)
+        expect(session.grants).toEqual({ core: true, collab: false, community: false })
         expect(session.unlimited).toBe(true)
         const auth = controller.writeAuth!
 
@@ -88,24 +115,39 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
         const repo = await createRepo(sdk, auth, forge, { name })
         expect(repo.repoId).toMatch(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/)
 
-        // A forge-collab write: refused before signing (nothing broadcast, nothing charged).
+        // A forge-community write: refused before signing (nothing broadcast, nothing charged).
         const starOf = { kind: 'v2' as const, forge, repoId: repo.repoId, ownerId: first.identityId, name, visibility: 'public' as const }
         await expect(starRelation(sdk, auth, first.identityId, starOf).add()).rejects.toBeInstanceOf(MissingGrantError)
 
-        // 2. The one-tap grant for forge-collab, then the star lands.
-        const grant = await signIn(forge.collab, first.identityId)
-        expect(grant.key.scope).toEqual({ core: false, collab: true, unbounded: false })
-        const after = await controller.addWalletGrant(first.identityId, grant.key, forge.collab)
-        expect(after.grants).toEqual({ core: true, collab: true })
-        expect(await starRelation(sdk, controller.writeAuth!, first.identityId, starOf).add()).toBe(true)
-
-        // 3. Returning login: the registered key answers straight away.
+        // 2. Returning login, on a browser that holds nothing yet: the registered key answers
+        // straight away (no QR #2), and the same encryption key is derived again and kept. (Before
+        // the grant below: each first approval for another contract registers another encryption
+        // key, which then becomes the identity's usable one.)
         const again = await signIn(forge.core)
         expect(again.registered).toBe(false)
         expect(again.key.keyId).toBe(first.key.keyId)
+        lockVault()
+        resetMemoryStores()
+        const returning = new AuthController(async () => sdk, network)
+        await returning.adoptWalletKeys(again.identityId, [again.key], protection, { encryptionKeys: again.encryptionKeys })
+        again.wipe()
+        expect(returning.getState().notice ?? null).toBeNull()
+        await expectEncryptionKeyKept(again.identityId)
+
+        // 3. The one-tap grant for forge-community (a star is a forge-community write), then the star lands.
+        const grant = await signIn(forge.community, first.identityId)
+        expect(grant.key.scope).toEqual({ core: false, collab: false, community: true, unbounded: false })
+        const heldBefore = await storedEncryptionKeyIds(network, first.identityId)
+        const after = await returning.addWalletGrant(first.identityId, grant.key, forge.community, { encryptionKeys: grant.encryptionKeys, justRegistered: grant.registered })
+        grant.wipe()
+        expect(after.grants).toEqual({ core: true, collab: false, community: true })
+        // That first approval registered another encryption key: the vault keeps both (D27).
+        expect(await storedEncryptionKeyIds(network, first.identityId)).toHaveLength(heldBefore.length + 1)
+        await expectEncryptionKeyKept(first.identityId)
+        expect(await starRelation(sdk, returning.writeAuth!, first.identityId, starOf).add()).toBe(true)
       } finally {
         // 4. Leave the identity as it was: disable what this run added.
-        await wallet.disableDerived({ identityFile: FILE, chainKeyHex: CHAIN_KEY, contractIds: [forge.core, forge.collab], devnet: DEVNET })
+        await wallet.disableDerived({ identityFile: FILE, chainKeyHex: CHAIN_KEY, contractIds: [forge.core, forge.community], devnet: DEVNET })
       }
     },
     20 * 60_000,
@@ -132,14 +174,15 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
         await wallet.register({ uri, identityFile: FILE, chainKeyHex: chainKey, contractId: forge.core, devnet: DEVNET, android: true })
         const key = await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network, forge, until: Date.now() + 5 * 60_000 })
         // Android drops the bound: the key covers both contracts (and any other), no limits.
-        expect(key.scope).toEqual({ core: true, collab: true, unbounded: true })
+        expect(key.scope).toEqual({ core: true, collab: true, community: true, unbounded: true })
         expect(key.limits).toBeNull()
 
         resetMemoryStores()
         const controller = new AuthController(async () => sdk, network)
         const session = await controller.adoptWalletKeys(answer.identityId, [key], { passphrase: 'live wallet e2e passphrase' })
-        expect(session.grants).toEqual({ core: true, collab: true })
+        expect(session.grants).toEqual({ core: true, collab: true, community: true })
         expect(session.unbounded).toBe(true)
+        wipeAnswer(answer)
 
         // Revoke it; a new login from the same wallet derives the same key: refused.
         await wallet.disableDerived({ identityFile: FILE, chainKeyHex: chainKey, contractIds: [forge.core], devnet: DEVNET })

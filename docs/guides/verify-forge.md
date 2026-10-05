@@ -166,6 +166,22 @@ If the tip from step 1 equals `git rev-parse main`, and `fsck` passes, you hold 
 
 **4. Compare with another source.** For a mirror, `git ls-remote https://github.com/<o>/<r> refs/heads/main` must show the same id.
 
+**5. Check a plain-git gateway.** A [forge-gateway](../hosting/forge-gateway.md) serves `git clone https://<gateway>/<owner>/<repo>.git` for tools that only speak git. Check it before you depend on it:
+
+```sh
+dg verify-mirror https://<gateway>/<owner>/<repo>.git
+```
+
+```
+https://git.forge.dashhq.org/alice/project.git  G6D3…/project
+  match     8f3e2a1c40a1  refs/heads/main  (the proved tip)
+  stale     c41d9e0b7f22  refs/heads/dev   (an earlier tip; the ref moved after the mirror's snapshot)
+  manifest: snapshot at Platform height 51234 (3 blocks behind the chain tip)
+stale: 1 match, 1 stale, 0 mismatch
+```
+
+It lists what the gateway serves, folds the refs from Platform with proofs, and checks the gateway's `forge-manifest.json` (the `refUpdate` behind each ref, and the block its snapshot reflects). `stale` is a gateway that has not refreshed yet. `MISMATCH` is a tip the ref never had, a ref Platform does not have, or a claim Platform does not back: the command exits non-zero ([`E504`](../errors.md#e504)), and you should clone with `dash://`. `--strict` fails on `stale` too. The web app's clone box has a **verify** link that runs the same comparison for the branches and tags the page proved.
+
 ---
 
 ## The third-party verification script

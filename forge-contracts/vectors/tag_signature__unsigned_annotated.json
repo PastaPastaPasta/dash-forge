@@ -1,0 +1,24 @@
+{
+  "name": "unsigned_annotated",
+  "description": "An annotated tag without a signature: no verdict.",
+  "case": "tag_signature",
+  "rules": "v2",
+  "input": {
+    "tag": "object b0d60cfedec17d709cacf95547e1a27c67b68ce0\ntype commit\ntag v1.0.1\ntagger Tag-Fixture <tag@dash-forge.test> 1791115200 +0000\n\nUnsigned annotated\n",
+    "signers": [
+      {
+        "identity": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "pubkeys": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKlxwBdl5BMou7QztNy8uRfENRcuLEe0EvX22UgM0jQI sig-test-e"
+        ]
+      },
+      {
+        "identity": "7Y8kWyGnrdGEWZBWeW5JRb5XvDwhhgzXJDrgD3eNGnDZ",
+        "pubkeys": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMZkYRZPB/ufhVeIib/dklLdMpjPgc48cfH4IJxX3WGK e5 tag fixture"
+        ]
+      }
+    ]
+  },
+  "expected": null
+}

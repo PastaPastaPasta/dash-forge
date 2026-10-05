@@ -36,6 +36,7 @@ mod prompt;
 mod publish;
 mod quote;
 mod release;
+mod release_verify;
 mod repo;
 mod repo_settings;
 mod repo_sync;
@@ -46,6 +47,7 @@ mod status;
 mod storage;
 mod storage_wizard;
 mod verify_app;
+mod verify_mirror;
 mod webhook;
 
 use std::path::PathBuf;
@@ -194,6 +196,15 @@ pub enum Command {
         /// Also trust this identity's keys (a pull request's author; id or DPNS name; repeatable).
         #[arg(long = "author", value_name = "IDENTITY")]
         author: Vec<String>,
+    },
+    /// Check a plain-git mirror of a repository (a gateway's https clone URL) against Dash
+    /// Platform: each ref it serves is a match, stale (behind) or a MISMATCH.
+    VerifyMirror {
+        /// The mirror's clone URL, `https://<gateway>/<owner>/<name>.git`.
+        url: String,
+        /// Fail on a stale ref too, not only on a mismatch.
+        #[arg(long)]
+        strict: bool,
     },
     /// Repository members (maintainers, writers, triage members and readers).
     #[command(subcommand)]
@@ -1553,6 +1564,18 @@ pub enum ReleaseCommand {
         /// The release tag.
         tag: String,
     },
+    /// Check that a release's tag and assets are still what was first published. Exits with
+    /// E504 when the tag moved, was deleted or races, or the assets changed.
+    ///
+    /// It compares the tag's history on Platform (who pushed it, every later move) and the
+    /// assets with the first publish, and checks the tag's signature when this directory's git
+    /// holds the tag. Needs no identity for a public repository.
+    Verify {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The release tag.
+        tag: String,
+    },
 }
 
 /// `dg release create` arguments.
@@ -2211,6 +2234,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::VerifyCommit { repo, revs, author } => {
             signing::verify_commits(ctx, repo.as_deref(), revs, author).await
         }
+        Command::VerifyMirror { url, strict } => verify_mirror::run(ctx, url, *strict).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,

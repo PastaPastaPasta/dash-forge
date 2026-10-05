@@ -215,6 +215,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         // for those failures (L-22).
         Command::Release(R::Download { repo, .. }) => ("release not downloaded", Some(repo)),
         Command::Release(R::Unpublish { repo, .. }) => ("release not unpublished", Some(repo)),
+        Command::Release(R::Verify { repo, .. }) => ("release not verified", Some(repo)),
         Command::Label(LabelCommand::List { repo, .. }) => ("could not list labels", Some(repo)),
         Command::Issue(I::Label { repo, .. })
         | Command::Label(
@@ -258,6 +259,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         }
         Command::Profile(crate::ProfileCommand::Key(_)) => ("signing keys not changed", None),
         Command::VerifyCommit { repo, .. } => ("could not verify the commits", repo.as_ref()),
+        Command::VerifyMirror { .. } => ("could not verify the mirror", None),
         Command::VerifyApp(_) => ("could not verify the web app", None),
         Command::Doctor { .. } => ("doctor found problems", None),
         Command::Completions { .. } => ("could not print completions", None),

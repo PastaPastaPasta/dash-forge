@@ -54,6 +54,7 @@ pub mod mirror;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
+pub mod provenance;
 pub mod ref_collision;
 pub mod review;
 pub mod search;
@@ -274,15 +275,41 @@ pub fn resolve_ref(
     ref_name_hash: &str,
     is_ancestor: impl Fn(&str, &str) -> bool,
 ) -> RefState {
+    let mut heads = live_heads(updates, config_history, ref_name_hash, is_ancestor);
+    // (5) resolve. `heads[0]` is the provisional read-only tip of a diverged ref (§2.3).
+    match heads.len() {
+        0 => RefState::Unborn,
+        1 => {
+            let h = heads.pop().expect("len checked");
+            RefState::Resolved {
+                oid: h.oid,
+                author: h.author,
+                created_at: h.created_at,
+            }
+        }
+        _ => RefState::Diverged { heads },
+    }
+}
+
+/// Steps 1–4 of [`resolve_ref`]: the ref's live heads, newest first, each with the `$id` of
+/// the update that set it. Empty when the ref is unborn or deleted. For a reader that must
+/// name the document behind a tip (a mirror's manifest, `dg verify-mirror`), which
+/// [`RefState::Resolved`] does not carry.
+pub fn live_heads(
+    updates: &[RefUpdate],
+    config_history: &[ConfigDoc],
+    ref_name_hash: &str,
+    is_ancestor: impl Fn(&str, &str) -> bool,
+) -> Vec<RefHead> {
     // (1) validity filter, keeping only this ref's updates; (2) the causal order.
     let valid = valid_updates(updates, config_history, ref_name_hash);
 
     // (3) unborn / deleted.
     let Some(newest) = valid.last() else {
-        return RefState::Unborn;
+        return Vec::new();
     };
     if is_null_oid(&newest.new_oid) {
-        return RefState::Unborn;
+        return Vec::new();
     }
 
     // (4) live heads: `v` (later in the causal order) supersedes `u`.
@@ -307,20 +334,25 @@ pub fn resolve_ref(
             created_at: u.created_at,
         });
     }
+    heads
+}
 
-    // (5) resolve. `heads[0]` is the provisional read-only tip of a diverged ref (§2.3).
-    match heads.len() {
-        0 => RefState::Unborn, // unreachable given step 3, but total.
-        1 => {
-            let h = heads.pop().expect("len checked");
-            RefState::Resolved {
-                oid: h.oid,
-                author: h.author,
-                created_at: h.created_at,
-            }
-        }
-        _ => RefState::Diverged { heads },
-    }
+/// Every tip `ref_name_hash` has validly pointed at (non-null `newOid` of a valid update), and
+/// the `$createdAt` of its newest valid update (a deletion included): what a mirror served
+/// from an older snapshot can show, and since when it is out of date.
+pub fn valid_tips(
+    updates: &[RefUpdate],
+    config_history: &[ConfigDoc],
+    ref_name_hash: &str,
+) -> (std::collections::BTreeSet<Oid>, Option<u64>) {
+    let valid = valid_updates(updates, config_history, ref_name_hash);
+    let newest = valid.last().map(|u| u.created_at);
+    let tips = valid
+        .into_iter()
+        .filter(|u| !is_null_oid(&u.new_oid))
+        .map(|u| u.new_oid.clone())
+        .collect();
+    (tips, newest)
 }
 
 /// Whether `v` recorded `u`'s tip as its `prevOid` (a fast-forward, or a force naming the
@@ -1543,46 +1575,10 @@ mod tests {
                     serde_json::from_value(v.expected.clone()).expect("matches_protected expected");
                 assert_eq!(got, want, "vector `{ctx}`");
             }
-            "ref_update_route" => {
-                let name = v.input["refName"]
-                    .as_str()
-                    .expect("ref_update_route input: refName");
-                let patterns: Option<Vec<String>> =
-                    serde_json::from_value(v.input["patterns"].clone())
-                        .expect("ref_update_route input: patterns");
-                let owner = v.input["pusherIsOwner"]
-                    .as_bool()
-                    .expect("ref_update_route input: pusherIsOwner");
-                let want = v.expected.as_str().expect("ref_update_route expected");
-                let got = if routes_protected(name, patterns.as_deref(), owner) {
-                    "protectedRefUpdate"
-                } else {
-                    "refUpdate"
-                };
-                assert_eq!(got, want, "vector `{ctx}`");
-            }
-            "missing_default_protection" => {
-                let branch = v.input["defaultBranch"]
-                    .as_str()
-                    .expect("missing_default_protection input: defaultBranch");
-                let patterns: Vec<String> = serde_json::from_value(v.input["patterns"].clone())
-                    .expect("missing_default_protection input: patterns");
-                let want: Vec<String> = serde_json::from_value(v.expected.clone())
-                    .expect("missing_default_protection expected");
-                assert_eq!(
-                    missing_default_protection(branch, &patterns),
-                    want,
-                    "vector `{ctx}`"
-                );
-            }
-            "default_protection" => {
-                let branch = v.input["defaultBranch"]
-                    .as_str()
-                    .expect("default_protection input: defaultBranch");
-                let want: Vec<String> = serde_json::from_value(v.expected.clone())
-                    .expect("default_protection expected");
-                assert_eq!(default_protected_patterns(branch), want, "vector `{ctx}`");
-            }
+            "release_provenance"
+            | "ref_update_route"
+            | "missing_default_protection"
+            | "default_protection" => run_protection_case(v),
             "overlay" => {
                 let inp: OverlayInput =
                     serde_json::from_value(v.input.clone()).expect("overlay input");
@@ -2571,10 +2567,22 @@ mod tests {
             commit: String,
             signers: Vec<super::signature::Signer>,
         }
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct TagInput {
+            tag: String,
+            signers: Vec<super::signature::Signer>,
+        }
         let ctx = &v.name;
         let got = if v.case == "pubkey_entry" {
             let inp: EntryInput = input(v);
             serde_json::to_value(super::signature::read_pubkey_entry(&inp.entry))
+        } else if v.case == "tag_signature" {
+            let inp: TagInput = input(v);
+            serde_json::to_value(super::signature::verify_tag_signature(
+                inp.tag.as_bytes(),
+                &inp.signers,
+            ))
         } else {
             let inp: CommitInput = input(v);
             serde_json::to_value(super::signature::verify_commit_signature(
@@ -2584,6 +2592,81 @@ mod tests {
             ))
         };
         assert_eq!(got.expect("serialize"), v.expected, "vector `{ctx}`");
+    }
+
+    /// The protection and release-provenance conventions (epic E5): `default_protection`,
+    /// `missing_default_protection`, `ref_update_route` and `release_provenance`.
+    fn run_protection_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "release_provenance" => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Input {
+                    ref_name_hash: String,
+                    updates: Vec<RefUpdate>,
+                    configs: Vec<ConfigDoc>,
+                    revisions: Vec<super::provenance::ProvenanceRevision>,
+                    #[serde(default)]
+                    pin: Option<String>,
+                }
+                let inp: Input =
+                    serde_json::from_value(v.input.clone()).expect("release_provenance input");
+                let got = super::provenance::release_provenance(
+                    &inp.ref_name_hash,
+                    &inp.updates,
+                    &inp.configs,
+                    &inp.revisions,
+                    inp.pin.as_deref(),
+                );
+                assert_eq!(
+                    serde_json::to_value(&got).expect("provenance json"),
+                    v.expected,
+                    "vector `{ctx}`"
+                );
+            }
+            "ref_update_route" => {
+                let name = v.input["refName"]
+                    .as_str()
+                    .expect("ref_update_route input: refName");
+                let patterns: Option<Vec<String>> =
+                    serde_json::from_value(v.input["patterns"].clone())
+                        .expect("ref_update_route input: patterns");
+                let owner = v.input["pusherIsOwner"]
+                    .as_bool()
+                    .expect("ref_update_route input: pusherIsOwner");
+                let want = v.expected.as_str().expect("ref_update_route expected");
+                let got = if routes_protected(name, patterns.as_deref(), owner) {
+                    "protectedRefUpdate"
+                } else {
+                    "refUpdate"
+                };
+                assert_eq!(got, want, "vector `{ctx}`");
+            }
+            "missing_default_protection" => {
+                let branch = v.input["defaultBranch"]
+                    .as_str()
+                    .expect("missing_default_protection input: defaultBranch");
+                let patterns: Vec<String> = serde_json::from_value(v.input["patterns"].clone())
+                    .expect("missing_default_protection input: patterns");
+                let want: Vec<String> = serde_json::from_value(v.expected.clone())
+                    .expect("missing_default_protection expected");
+                assert_eq!(
+                    missing_default_protection(branch, &patterns),
+                    want,
+                    "vector `{ctx}`"
+                );
+            }
+            "default_protection" => {
+                let branch = v.input["defaultBranch"]
+                    .as_str()
+                    .expect("default_protection input: defaultBranch");
+                let want: Vec<String> = serde_json::from_value(v.expected.clone())
+                    .expect("default_protection expected");
+                assert_eq!(default_protected_patterns(branch), want, "vector `{ctx}`");
+            }
+            other => unreachable!("not a protection case: {other}"),
+        }
     }
 
     /// `repo_name`: [`v2::is_valid_repo_name`] and [`v2::normalize_repo_name`].
@@ -2787,7 +2870,7 @@ mod tests {
             }
             "profile_input" | "avatar_config" => run_profile_case(v),
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
-            "pubkey_entry" | "commit_signature" => run_signature_case(v),
+            "pubkey_entry" | "commit_signature" | "tag_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),
             "webhook_url" => run_webhook_url_case(v),
             "role_oracle" => run_role_oracle(v),

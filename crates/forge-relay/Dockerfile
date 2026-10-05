@@ -28,7 +28,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY build-support build-support
 COPY crates crates
-# services/ holds workspace members (forge-notify, …): cargo needs every member present.
+# Every workspace member must be present for cargo to read the workspace.
 COPY services services
 COPY docs/errors.md docs/errors.md
 COPY forge-contracts/deployments forge-contracts/deployments

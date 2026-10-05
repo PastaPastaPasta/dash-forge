@@ -550,9 +550,12 @@ export interface StoreOutcome {
   readonly storageSettingsDropped: boolean
   /**
    * An encryption key was stored but could not be carried across (the vault was locked when the
-   * key was renewed). It is deleted; the user imports it again in Settings → Keys.
+   * key was renewed, or this tab holds a tab-only key that cannot open the stored ones). It is
+   * deleted; the user imports it again in Settings → Private repos.
    */
   readonly encryptionKeyDropped: boolean
+  /** The key ids of the dropped encryption keys (the ones that did carry across are kept). */
+  readonly encryptionKeysDropped?: readonly number[]
   /**
    * The record was written but did not read back: this browser's storage may not keep it. The
    * session works; the UI warns to keep the identity file handy.
@@ -775,15 +778,10 @@ export async function recoverStaged(
   // Carry the old record's blobs across when this session has them open (the old key was
   // unlocked just before), sealed under the staged record's blob keys.
   const carried = await readStorageBlob(network, identityId).catch(() => null)
-  const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlob(network, identityId).catch(() => null) : null
+  const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => []) : []
   const hadBlob = (await idbGet('vault', storageBlobKey(network, identityId))) !== undefined
-  const hadEnc = (await idbGet('vault', encryptionBlobKey(network, identityId))) !== undefined
-  let encBlob: EncryptionBlob | undefined
-  try {
-    encBlob = carriedEnc !== null ? await sealEncryptionBlob(opened.blobKeys.encryption, network, identityId, carriedEnc.keyId, carriedEnc.secret) : undefined
-  } finally {
-    carriedEnc?.secret.fill(0)
-  }
+  const droppedEnc = await droppedEncryptionIds(network, identityId, carriedEnc)
+  const encBlob = await sealEncryptionBlobs(opened.blobKeys.encryption, network, identityId, carriedEnc)
   const blob = carried !== null ? await sealBlob(opened.blobKeys.storage, network, identityId, carried) : undefined
   const { replaces: _replaces, ...promoted } = record
   let raced = false
@@ -814,7 +812,7 @@ export async function recoverStaged(
   return {
     status: 'adopted',
     secret: opened.secret,
-    outcome: { storageSettingsDropped: hadBlob && carried === null, encryptionKeyDropped: hadEnc && carriedEnc === null },
+    outcome: { storageSettingsDropped: hadBlob && carried === null, encryptionKeyDropped: droppedEnc.length > 0, encryptionKeysDropped: droppedEnc },
   }
 }
 
@@ -937,8 +935,9 @@ export async function storeInVault(
   const carried = hadBlob ? await readStorageBlob(network, identityId).catch(() => null) : null
   // The encryption key is carried the same way, but only from the stored vault blob: a tab-only
   // session's key stays in that session. One that cannot be opened is dropped, and reported.
-  const hadEnc = (await idbGet<EncryptionBlob>('vault', encryptionBlobKey(network, identityId))) !== undefined
-  const carriedEnc = hadEnc && unlocked?.sessionEnc === undefined ? await readEncryptionBlob(network, identityId).catch(() => null) : null
+  // Each key that opens is carried; any other is dropped, and reported by id.
+  const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => []) : []
+  const droppedEnc = await droppedEncryptionIds(network, identityId, carriedEnc)
   const dataKey = random(32)
   let storageKey: CryptoKey
   let encryptionKey: CryptoKey
@@ -952,14 +951,7 @@ export async function storeInVault(
     const blob = carried !== null ? await sealBlob(storageKey, network, identityId, carried) : undefined
     const extraBlob = extra?.length ? await sealBlob(storageKey, network, identityId, extra, 'extra') : undefined
     encryptionKey = await deriveEncryptionKey(dataKey, network, identityId)
-    let encBlob: EncryptionBlob | undefined
-    if (carriedEnc !== null) {
-      try {
-        encBlob = await sealEncryptionBlob(encryptionKey, network, identityId, carriedEnc.keyId, carriedEnc.secret)
-      } finally {
-        carriedEnc.secret.fill(0)
-      }
-    }
+    const encBlob = await sealEncryptionBlobs(encryptionKey, network, identityId, carriedEnc)
     // One transaction: a crash between the writes must not leave settings sealed under a
     // data key no record holds any more. The key is now the main record, so a staged copy of
     // THIS key (the renewal that registered it) is done; a stage of another key (a renewal
@@ -995,7 +987,8 @@ export async function storeInVault(
   void requestPersistence()
   return {
     storageSettingsDropped: hadBlob && carried === null,
-    encryptionKeyDropped: hadEnc && carriedEnc === null,
+    encryptionKeyDropped: droppedEnc.length > 0,
+    encryptionKeysDropped: droppedEnc,
     ...(readBackOk ? {} : { readBackFailed: true }),
   }
 }
@@ -1077,7 +1070,7 @@ function unlockedStorageKey(network: Network, identityId: string): CryptoKey | n
 /** The vaults stored for `network` (no secrets). */
 export async function listVaults(network: Network): Promise<VaultInfo[]> {
   const rows = await idbEntries<VaultRecord>('vault', `vault:${network}:`)
-  const withEnc = new Set((await idbEntries<EncryptionBlob>('vault', `vault-enc:${network}:`)).map(([k]) => k))
+  const withEnc = new Set((await idbEntries<StoredEncryption>('vault', `vault-enc:${network}:`)).filter(([, v]) => encryptionEntries(v).length > 0).map(([k]) => k))
   const out: VaultInfo[] = rows.map(([, r]) => ({
     identityId: r.identityId,
     keyId: r.keyId,
@@ -1224,7 +1217,7 @@ interface Unlocked {
   at: number
   blobKeys: BlobKeys | null
   /** Tab-only sessions: the encryption key, sealed under a random per-session key. */
-  sessionEnc?: { key: CryptoKey; blob: EncryptionBlob | null }
+  sessionEnc?: { key: CryptoKey; blobs: readonly EncryptionBlob[] }
   /**
    * `signing`: picked up from a kept session. Only the limited signing key is here; the
    * encryption key, storage settings and wallet grants need an interactive unlock
@@ -1455,11 +1448,25 @@ export function releaseUnlocked(): void {
 // The identity's ENCRYPTION key (private repos, `docs/security/private-repos.md` §5.2)
 // ---------------------------------------------------------------------------
 
-/** The sealed encryption key: its key id on the identity (public) and the sealed private key. */
+/** One sealed encryption key: its key id on the identity (public) and the sealed private key. */
 interface EncryptionBlob {
   readonly keyId: number
   readonly iv: Uint8Array
   readonly ciphertext: Uint8Array
+}
+
+/**
+ * What the vault keeps for an identity's encryption keys: every key this browser has held for it,
+ * one sealed entry per on-chain key id (DESIGN D27: a wallet registers a new one with each first
+ * approval for another contract, and wraps made to an older key must still open). A vault written
+ * before that holds a single entry, read as a set of one.
+ */
+type StoredEncryption = EncryptionBlob | readonly EncryptionBlob[]
+
+/** The entries of a stored value, highest key id first (a legacy single entry: a set of one). */
+function encryptionEntries(v: StoredEncryption | undefined | null): EncryptionBlob[] {
+  if (v === undefined || v === null) return []
+  return (Array.isArray(v) ? [...(v as readonly EncryptionBlob[])] : [v as EncryptionBlob]).sort((a, b) => b.keyId - a.keyId)
 }
 
 function encryptionAad(network: Network, identityId: string, keyId: number): Uint8Array {
@@ -1471,6 +1478,22 @@ async function sealEncryptionBlob(key: CryptoKey, network: Network, identityId: 
   const iv = random(12)
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(encryptionAad(network, identityId, keyId)) }, key, buf(secret))
   return { keyId, iv, ciphertext: new Uint8Array(ct) }
+}
+
+/** Seal every carried key under `key` (each secret is wiped); undefined when there is none. */
+async function sealEncryptionBlobs(
+  key: CryptoKey,
+  network: Network,
+  identityId: string,
+  carried: readonly { readonly keyId: number; readonly secret: Uint8Array }[],
+): Promise<EncryptionBlob[] | undefined> {
+  try {
+    const sealed: EncryptionBlob[] = []
+    for (const c of carried) sealed.push(await sealEncryptionBlob(key, network, identityId, c.keyId, c.secret))
+    return sealed.length > 0 ? sealed : undefined
+  } finally {
+    for (const c of carried) c.secret.fill(0)
+  }
 }
 
 async function openEncryptionBlob(key: CryptoKey, network: Network, identityId: string, blob: EncryptionBlob): Promise<Uint8Array> {
@@ -1488,26 +1511,49 @@ async function openEncryptionBlob(key: CryptoKey, network: Network, identityId: 
   }
 }
 
-/** The unlocked session's encryption blob and the key it is sealed under, or null. */
-async function encryptionSource(network: Network, identityId: string): Promise<{ key: CryptoKey; blob: EncryptionBlob } | null> {
+/** The unlocked session's encryption entries and the key they are sealed under, or null (none). */
+async function encryptionSource(network: Network, identityId: string): Promise<{ key: CryptoKey; blobs: EncryptionBlob[] } | null> {
   if (unlockedSecret(network, identityId) === null || unlocked === null) return null
-  if (unlocked.sessionEnc !== undefined) return unlocked.sessionEnc.blob === null ? null : { key: unlocked.sessionEnc.key, blob: unlocked.sessionEnc.blob }
+  if (unlocked.sessionEnc !== undefined) {
+    const blobs = encryptionEntries(unlocked.sessionEnc.blobs)
+    return blobs.length === 0 ? null : { key: unlocked.sessionEnc.key, blobs }
+  }
   const k = unlocked.blobKeys?.encryption
   if (k === undefined) return null
-  const blob = await idbGet<EncryptionBlob>('vault', encryptionBlobKey(network, identityId))
-  return blob === undefined ? null : { key: k, blob }
+  const blobs = encryptionEntries(await idbGet<StoredEncryption>('vault', encryptionBlobKey(network, identityId)))
+  return blobs.length === 0 ? null : { key: k, blobs }
 }
 
-/** The stored encryption key's plaintext, for re-sealing on renewal. Needs the vault unlocked. */
-async function readEncryptionBlob(network: Network, identityId: string): Promise<{ keyId: number; secret: Uint8Array } | null> {
+/**
+ * The plaintext of every stored encryption key this unlocked session can open, for re-sealing on
+ * renewal: an entry that does not open is left out (and reported dropped), never the whole set.
+ */
+async function readEncryptionBlobs(network: Network, identityId: string): Promise<{ keyId: number; secret: Uint8Array }[]> {
   const src = await encryptionSource(network, identityId)
-  if (src === null) return null
-  return { keyId: src.blob.keyId, secret: await openEncryptionBlob(src.key, network, identityId, src.blob) }
+  if (src === null) return []
+  const out: { keyId: number; secret: Uint8Array }[] = []
+  for (const b of src.blobs) {
+    try {
+      out.push({ keyId: b.keyId, secret: await openEncryptionBlob(src.key, network, identityId, b) })
+    } catch {
+      /* not carried: reported by droppedEncryptionIds */
+    }
+  }
+  return out
+}
+
+/**
+ * The key ids stored in the vault for the identity (its raw entries, whatever this tab can open)
+ * that `carried` does not include: what a re-key is about to delete.
+ */
+async function droppedEncryptionIds(network: Network, identityId: string, carried: readonly { readonly keyId: number }[]): Promise<number[]> {
+  const stored = encryptionEntries(await idbGet<StoredEncryption>('vault', encryptionBlobKey(network, identityId))).map((b) => b.keyId)
+  return stored.filter((id) => !carried.some((c) => c.keyId === id))
 }
 
 const encListeners = new Set<() => void>()
 
-/** Be told when the encryption key is added, removed, or becomes unusable (lock). */
+/** Be told when an encryption key is added, removed, or becomes unusable (lock). */
 export function onEncryptionKeyChange(listener: () => void): () => void {
   encListeners.add(listener)
   return () => {
@@ -1520,31 +1566,37 @@ function notifyEncryptionKeyChange(): void {
 }
 
 /** The tab-only session's encryption slot for (network, identity), or undefined. */
-function sessionEncFor(network: Network, identityId: string): { key: CryptoKey; blob: EncryptionBlob | null } | undefined {
+function sessionEncFor(network: Network, identityId: string): { key: CryptoKey; blobs: readonly EncryptionBlob[] } | undefined {
   // Not `unlockedSecret()`: that one auto-locks an expired session, which a read must not do.
   return unlockedFor(network, identityId)?.sessionEnc
 }
 
 /**
- * Whether an encryption key is stored for (network, identity), and its key id (public: it is
- * on the identity). Readable while locked; using it needs the vault unlocked.
+ * The key ids (public: they are on the identity) of every encryption key stored for (network,
+ * identity), highest first; empty when none. Readable while locked; using one needs the vault
+ * unlocked.
  */
-export async function storedEncryptionKeyId(network: Network, identityId: string): Promise<number | null> {
+export async function storedEncryptionKeyIds(network: Network, identityId: string): Promise<number[]> {
   const session = sessionEncFor(network, identityId)
-  if (session !== undefined) return session.blob?.keyId ?? null
+  if (session !== undefined) return encryptionEntries(session.blobs).map((b) => b.keyId)
   // Unlocked for this identity by a tab-only key: a vault blob it cannot open does not count.
   // (A resumed signing-only session has no blob keys either, but the blob is its own: it counts,
   // and using it asks for an interactive unlock.)
   const u = unlockedFor(network, identityId)
-  if (u !== null && u.blobKeys === null && u.scope === 'full') return null
-  const blob = await idbGet<EncryptionBlob>('vault', encryptionBlobKey(network, identityId))
-  return blob?.keyId ?? null
+  if (u !== null && u.blobKeys === null && u.scope === 'full') return []
+  return encryptionEntries(await idbGet<StoredEncryption>('vault', encryptionBlobKey(network, identityId))).map((b) => b.keyId)
+}
+
+/** The highest key id among {@link storedEncryptionKeyIds}, or null when none is stored. */
+export async function storedEncryptionKeyId(network: Network, identityId: string): Promise<number | null> {
+  return (await storedEncryptionKeyIds(network, identityId))[0] ?? null
 }
 
 /**
  * Seal the identity's encryption private key (32 bytes, key `keyId` on the identity) beside the
- * unlocked vault record, replacing any earlier one. A tab-only session holds it for the session
- * only. The caller has verified it against the identity and wipes `secret` afterwards.
+ * unlocked vault record, ADDED to the keys already there (a key of the same id is resealed; no
+ * other is ever replaced). A tab-only session holds it for the session only. The caller has
+ * verified it against the identity and wipes `secret` afterwards.
  */
 export async function storeEncryptionKey(network: Network, identityId: string, keyId: number, secret: Uint8Array): Promise<void> {
   assertDedicatedOrigin()
@@ -1552,30 +1604,45 @@ export async function storeEncryptionKey(network: Network, identityId: string, k
   // A resumed signing-only tab has no blob keys either, but its vault does: seal there after an
   // interactive unlock, never into this tab's memory (it would be lost on reload).
   if (unlocked.scope === 'signing') throw new VaultLockedError('unlock this tab first: your encryption key is stored with the rest of the vault')
+  const add = (current: StoredEncryption | undefined, sealed: EncryptionBlob): EncryptionBlob[] => [...encryptionEntries(current).filter((b) => b.keyId !== keyId), sealed]
   if (unlocked.blobKeys === null) {
     // A tab-only session: sealed under a random key that lives as long as the session.
-    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
-    unlocked.sessionEnc = { key, blob: await sealEncryptionBlob(key, network, identityId, keyId, secret) }
+    const held = unlocked.sessionEnc
+    const key = held?.key ?? (await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']))
+    const sealed = await sealEncryptionBlob(key, network, identityId, keyId, secret)
+    unlocked.sessionEnc = { key, blobs: add(held?.blobs, sealed) }
   } else {
-    await idbPut('vault', encryptionBlobKey(network, identityId), await sealEncryptionBlob(unlocked.blobKeys.encryption, network, identityId, keyId, secret))
+    const sealed = await sealEncryptionBlob(unlocked.blobKeys.encryption, network, identityId, keyId, secret)
+    const at = encryptionBlobKey(network, identityId)
+    // Read and written in one transaction: a key another tab adds meanwhile is kept.
+    await idbUpdate<StoredEncryption>('vault', at, (current) => [[at, add(current, sealed)]])
   }
   notifyEncryptionKeyChange()
 }
 
-/** Delete the stored encryption key (it can be imported again from the identity file). */
+/** Delete every stored encryption key (each can be imported again from the identity file). */
 export async function removeEncryptionKey(network: Network, identityId: string): Promise<void> {
   const session = sessionEncFor(network, identityId)
-  if (session !== undefined && unlocked !== null) unlocked.sessionEnc = { key: session.key, blob: null }
+  if (session !== undefined && unlocked !== null) unlocked.sessionEnc = { key: session.key, blobs: [] }
   await idbDelete('vault', encryptionBlobKey(network, identityId))
   notifyEncryptionKeyChange()
 }
 
+/** This browser does not hold encryption key `keyId` of the identity. */
+export class EncryptionKeyNotHeldError extends Error {
+  constructor(readonly keyId: number) {
+    super(`this browser does not hold encryption key ${keyId}`)
+    this.name = 'EncryptionKeyNotHeldError'
+  }
+}
+
 /**
- * Run `use` with the unlocked encryption private key (a fresh copy, wiped afterwards). Module
- * internal: callers get the {@link EncryptionOps} of `lib/auth/encryption-key.ts`, which pass the
- * key only to the SDK. Throws {@link VaultLockedError} when locked or when no key is stored.
+ * Run `use` with an unlocked encryption private key (a fresh copy, wiped afterwards): key `keyId`
+ * ({@link EncryptionKeyNotHeldError} when this browser does not hold it), else the highest held.
+ * Module internal: callers get the {@link EncryptionOps} of `lib/auth/encryption-key.ts`, which
+ * pass the key only to the SDK. Throws {@link VaultLockedError} when locked or when none is stored.
  */
-export async function withEncryptionKey<T>(network: Network, identityId: string, use: (keyId: number, secret: Uint8Array) => Promise<T>): Promise<T> {
+export async function withEncryptionKey<T>(network: Network, identityId: string, use: (keyId: number, secret: Uint8Array) => Promise<T>, keyId?: number): Promise<T> {
   const src = await encryptionSource(network, identityId)
   if (src === null) {
     const scope = unlockScope(network, identityId)
@@ -1583,11 +1650,35 @@ export async function withEncryptionKey<T>(network: Network, identityId: string,
       scope === null ? 'unlock this browser to read private repos' : scope === 'signing' ? 'unlock to use your encryption key in this tab' : 'no encryption key is stored in this browser',
     )
   }
-  const secret = await openEncryptionBlob(src.key, network, identityId, src.blob)
+  const blob = keyId === undefined ? src.blobs[0] : src.blobs.find((b) => b.keyId === keyId)
+  if (blob === undefined) throw new EncryptionKeyNotHeldError(keyId ?? -1)
+  const secret = await openEncryptionBlob(src.key, network, identityId, blob)
   try {
-    return await use(src.blob.keyId, secret)
+    return await use(blob.keyId, secret)
   } finally {
     secret.fill(0)
+  }
+}
+
+/**
+ * Run `use` with every held encryption private key of (network, identity), highest key id first
+ * (fresh copies, all wiped afterwards): for a reader that cannot tell from a document which of its
+ * keys it was sealed to. An entry that does not open is left out. Module internal, as
+ * {@link withEncryptionKey}; throws {@link VaultLockedError} when locked or none is stored.
+ */
+export async function withEncryptionKeys<T>(network: Network, identityId: string, use: (keys: readonly { readonly keyId: number; readonly secret: Uint8Array }[]) => Promise<T>): Promise<T> {
+  const src = await encryptionSource(network, identityId)
+  if (src === null) {
+    const scope = unlockScope(network, identityId)
+    throw new VaultLockedError(
+      scope === null ? 'unlock this browser to read private repos' : scope === 'signing' ? 'unlock to use your encryption key in this tab' : 'no encryption key is stored in this browser',
+    )
+  }
+  const keys = await readEncryptionBlobs(network, identityId)
+  try {
+    return await use(keys)
+  } finally {
+    for (const k of keys) k.secret.fill(0)
   }
 }
 
