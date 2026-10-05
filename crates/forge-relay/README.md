@@ -175,7 +175,7 @@ name = "team-chat"
 kind = "discord"                        # discord | slack | matrix | ntfy | smtp
 url = "env:DISCORD_WEBHOOK_URL"         # a secret reference, never the URL itself
 events = ["pull_request", "release"]    # default: every event
-repos = ["alice/project"]               # default: every repo the relay serves
+repos = ["alice/project"]               # default: the repos chosen here (see below)
 
 [[sink]]
 name = "phone"
@@ -213,9 +213,14 @@ to = ["me@example.org"]                 # 1 to 50 addresses
   storage profiles). A literal URL, token or password is refused, and so is a Discord or Slack
   webhook URL, because the URL *is* the credential. An ntfy topic may be written plainly, but on
   a public server anyone who knows it can read it.
-- **What a sink gets**: every event of every repository the relay serves (its hooks' repos,
-  `[watch]`, the sinks' own `repos`, `[wake]`), filtered by the sink's `repos` and `events`.
-  Each becomes a short notice: who did what, an excerpt of the comment, review or description,
+- **What a sink gets**: a sink with `repos` gets those repositories, and the relay polls them
+  for its `events`. A sink without `repos` gets the repositories chosen in this file: `[watch]`
+  (its repos and the identity's), `[wake]`, the `[[webhook]]` blocks and every sink's `repos`
+  (and an embedder's watch feed); the relay polls them for its `events` too. It never gets a
+  repository the relay serves only because a `webhook` document points a hook at the relay
+  identity: anyone can create a repository and write one, and a sink is your own channel. A
+  sink without `repos` on a relay that chooses no repository gets nothing (a warning at start
+  says so). Either way the sink's `events` filter applies. Each event becomes a short notice: who did what, an excerpt of the comment, review or description,
   and the forge-web link (`--web-base-url`). Names show as DPNS names where the identity has one.
 - **Untrusted text is defused**: titles and bodies are written by strangers, so a notice is
   plain text with control and bidi characters removed and lengths capped. Discord gets

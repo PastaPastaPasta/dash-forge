@@ -25,7 +25,9 @@
 //! ([`subscriptions::watch_subscription`]) make a repo served with no `webhook` document: a
 //! sink's `repos`, `[watch] repos`, the repos `[watch] identity` watches (re-read at every
 //! discovery), and an embedder's watch feed ([`Embed::watch_feed`]). A private repo is never
-//! served; one that appears in a watch set is refused once and skipped after that.
+//! served; one that appears in a watch set is refused once and skipped after that. A `[[sink]]`
+//! without `repos` gets the repos chosen in the config or by the embedder, polled for its
+//! events too ([`unscoped_watch`]), never a repo served only for a `webhook` document.
 //!
 //! **Merge tips** are tracked only for refs that are the base of a known PR: backfilled from
 //! that ref's history (by `refNameHash`) when the PR is first seen, then fed by the ref streams.
@@ -264,11 +266,10 @@ pub async fn run_with(cfg: RelayConfig, embed: Embed) -> Result<()> {
         Some(w) => Some(wake_hub(&client, w, &mut statics).await?),
         None => None,
     };
-    let mut sinks = embed.sinks;
-    if !cfg.sinks.is_empty() {
-        sinks.push(Arc::new(sink_hub(&client, &cfg, &mut statics).await?));
-    }
     let watch_identity = static_watch(&client, &cfg, &mut statics).await?;
+    let dynamic_watch = watch_identity.is_some() || embed.watch_feed.is_some();
+    let (sinks, unscoped) =
+        all_sinks(&client, &cfg, embed.sinks, &mut statics, dynamic_watch).await?;
     if identity.is_none()
         && statics.is_empty()
         && watch_identity.is_none()
@@ -333,6 +334,7 @@ pub async fn run_with(cfg: RelayConfig, embed: Embed) -> Result<()> {
             embed.watch_events,
         ),
         refused: BTreeSet::new(),
+        unscoped,
     });
 
     tokio::select! {
@@ -406,13 +408,16 @@ fn watch_events(cfg: &RelayConfig) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The `[[sink]]`s, started: each sink's `repos` resolved, and watched for it.
+/// The `[[sink]]`s, started: each sink's `repos` resolved, and watched for it. Also the union
+/// of the events of the sinks without `repos`, if any: the chosen repos are polled for them
+/// ([`unscoped_watch`]).
 async fn sink_hub(
     client: &Arc<PlatformClient>,
     cfg: &RelayConfig,
     statics: &mut Vec<WebhookSub>,
-) -> Result<SinkHub> {
+) -> Result<(Arc<SinkHub>, Option<Vec<String>>)> {
     let mut specs = Vec::new();
+    let mut unscoped: Option<Vec<String>> = None;
     for spec in &cfg.sinks {
         let mut ids = BTreeSet::new();
         for r in &spec.repos {
@@ -420,10 +425,61 @@ async fn sink_hub(
             statics.push(subscriptions::watch_subscription(&id, &spec.events, 0));
             ids.insert(id);
         }
+        if spec.repos.is_empty() {
+            unscoped = Some(match unscoped {
+                Some(events) => union_events(&events, &spec.events),
+                None => spec.events.clone(),
+            });
+        }
         specs.push((spec.clone(), ids));
     }
     tracing::info!(sinks = specs.len(), "sinks configured");
-    SinkHub::start(specs, Some(&Arc::new(NameCache::new(Arc::clone(client)))))
+    let hub = SinkHub::start(specs, Some(&Arc::new(NameCache::new(Arc::clone(client)))))?;
+    Ok((Arc::new(hub), unscoped))
+}
+
+/// The embedder's sinks and the `[[sink]]`s ([`sink_hub`]), and the sinks without `repos`.
+/// Warns when those get nothing: the config chooses no repo (`statics` holds the static
+/// webhooks, `[wake]`, `[watch] repos` and the sinks' repos) and nothing is watched dynamically.
+async fn all_sinks(
+    client: &Arc<PlatformClient>,
+    cfg: &RelayConfig,
+    mut sinks: Vec<Arc<dyn EventSink>>,
+    statics: &mut Vec<WebhookSub>,
+    dynamic_watch: bool,
+) -> Result<(Vec<Arc<dyn EventSink>>, Option<Unscoped>)> {
+    if cfg.sinks.is_empty() {
+        return Ok((sinks, None));
+    }
+    let (hub, events) = sink_hub(client, cfg, statics).await?;
+    sinks.push(Arc::clone(&hub) as Arc<dyn EventSink>);
+    let unscoped = events.map(|events| Unscoped { hub, events });
+    if unscoped.is_some() && statics.is_empty() && !dynamic_watch {
+        tracing::warn!(
+            "a [[sink]] without repos gets only the repos chosen in the config ([watch], [wake], \
+             [[webhook]], the sinks' repos), never those of webhook documents, and none is \
+             chosen: it gets nothing. Give it repos or add [watch]"
+        );
+    }
+    Ok((sinks, unscoped))
+}
+
+/// The sinks without `repos`: the hub to tell which repos they get, and the union of their
+/// events.
+struct Unscoped {
+    hub: Arc<SinkHub>,
+    events: Vec<String>,
+}
+
+/// The repos the sinks without `repos` get ([`subscriptions::chosen_repos`]), and a watch
+/// subscription for each, so it is polled for those sinks' `events` (from when it was chosen).
+fn unscoped_watch(subs: &[WebhookSub], events: &[String]) -> (BTreeSet<String>, Vec<WebhookSub>) {
+    let chosen = subscriptions::chosen_repos(subs);
+    let watch = chosen
+        .iter()
+        .map(|(repo, since)| subscriptions::watch_subscription(repo, events, *since))
+        .collect();
+    (chosen.into_keys().collect(), watch)
 }
 
 /// An identity id, or a DPNS name (`alice`, `alice.dash`) resolved to one.
@@ -701,6 +757,8 @@ struct Discovery {
     watch: DynamicWatch,
     /// Repos refused for good (private): never set up again.
     refused: BTreeSet<String>,
+    /// The sinks without `repos`, if any.
+    unscoped: Option<Unscoped>,
 }
 
 /// The union of two event filters, where empty (or `*`) means every event.
@@ -820,6 +878,12 @@ impl Discovery {
         );
         // A private repo is refused for good, whichever subscription named it.
         subs.retain(|s| !self.refused.contains(&s.repo_id));
+        // Sinks without `repos` get the chosen repos, never those of webhook documents only.
+        if let Some(u) = &self.unscoped {
+            let (covered, watch) = unscoped_watch(&subs, &u.events);
+            u.hub.set_covered(covered);
+            subs.extend(watch);
+        }
         let wanted = subscriptions::repos_of(&subs);
 
         // Stop serving repos with no hook left, remembering where they stopped.
@@ -1935,6 +1999,42 @@ fn prune_heads(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unscoped_sinks_watch_the_chosen_repos_only() {
+        let v = |e: &[&str]| e.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let mut hook = subscriptions::watch_subscription("HOOKED", &[], 5);
+        hook.document_id = Some("doc".into());
+        hook.url = "https://ci.example/h".into();
+        let subs = vec![
+            hook,
+            subscriptions::watch_subscription("WATCHED", &v(&["push"]), 40),
+            subscriptions::wake_subscription("WAKE"),
+        ];
+        let (covered, watch) = unscoped_watch(&subs, &v(&["issues"]));
+        assert_eq!(
+            covered,
+            BTreeSet::from(["WAKE".to_string(), "WATCHED".to_string()])
+        );
+        let got: Vec<_> = watch
+            .iter()
+            .map(|w| {
+                (
+                    w.repo_id.as_str(),
+                    w.created_at,
+                    w.events.clone(),
+                    w.is_internal(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("WAKE", 0, v(&["issues"]), true),
+                ("WATCHED", 40, v(&["issues"]), true),
+            ]
+        );
+    }
 
     #[test]
     fn watch_event_filters_union_with_empty_meaning_all() {

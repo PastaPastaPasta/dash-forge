@@ -11,17 +11,22 @@
 //! name = "team-chat"
 //! kind = "discord"                       # discord | slack | matrix | ntfy | smtp
 //! url = "env:DISCORD_WEBHOOK_URL"        # a secret reference, never the URL itself
-//! repos = ["alice/project"]              # watched for this sink; default: every served repo
+//! repos = ["alice/project"]              # watched for this sink; default: the chosen repos
 //! events = ["pull_request", "issues"]    # default: every event
 //! ```
 //!
 //! * **Secrets** are references (`env:VAR` or `keychain:<service>/<account>`, the scheme of
 //!   storage profiles, [`forge_core::storage::SecretRef`]); a literal is refused. A Discord or
 //!   Slack webhook URL *is* a credential, so it is a reference too.
-//! * **What reaches a sink**: every event of every repository the relay serves (its hooks'
-//!   repositories, `[watch]` and the sink's own `repos`), filtered by the sink's `repos` and
-//!   `events`. Each event becomes a [`render::Notice`]: who did what, an excerpt, the forge-web
-//!   link. The relay serves public repositories only.
+//! * **What reaches a sink**: a sink with `repos` gets those repositories (watched for it). A
+//!   sink without `repos` gets the repositories the operator chose: the config's `[watch]`
+//!   (repos and identity), `[wake]`, `[[webhook]]` blocks and the sinks' own `repos`, and an
+//!   embedder's watch feed; they are polled for its `events` too. It never gets a repository
+//!   served only because a `webhook` document points at the relay identity: anyone can create
+//!   a repository and such a document, so that would let strangers post into the operator's
+//!   channels ([`SinkHub::set_covered`]). Either way the sink's `events` filter applies. Each
+//!   event becomes a [`render::Notice`]: who did what, an excerpt, the forge-web link. The
+//!   relay serves public repositories only.
 //! * **Delivery**: each sink has a worker and a queue of [`QUEUE_PER_SINK`] events (more are
 //!   dropped with a warning), sends at most `max-per-minute` (default
 //!   [`DEFAULT_PER_MINUTE`]), and retries a failure [`RETRIES`] times (2 s, 10 s, 30 s, or the
@@ -647,7 +652,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// A started sink: what it wants and its worker's queue.
 struct Handle {
     name: String,
-    /// Repo ids; empty = all.
+    /// Repo ids; empty = the operator's chosen repos ([`SinkHub::set_covered`]).
     repos: BTreeSet<String>,
     events: Vec<String>,
     tx: mpsc::Sender<WebhookEvent>,
@@ -658,11 +663,14 @@ struct Handle {
 /// The configured sinks, each with its worker.
 pub struct SinkHub {
     sinks: Vec<Handle>,
+    /// The repos a sink without `repos` gets: those the operator chose, never one served only
+    /// for a `webhook` document. Empty until the first discovery sets it.
+    covered: Mutex<BTreeSet<String>>,
 }
 
 impl SinkHub {
-    /// Start a worker per sink. Each sink comes with its `repos` resolved to ids (empty =
-    /// every repo). Must run inside a tokio runtime.
+    /// Start a worker per sink. Each sink comes with its `repos` resolved to ids (empty = the
+    /// repos of [`SinkHub::set_covered`]). Must run inside a tokio runtime.
     pub fn start(
         sinks: Vec<(SinkSpec, BTreeSet<String>)>,
         names: Option<&Arc<NameCache>>,
@@ -691,21 +699,35 @@ impl SinkHub {
             };
             tokio::spawn(run_sink(Arc::new(spec), transport, rx, names.cloned()));
         }
-        Ok(Self { sinks: handles })
+        Ok(Self {
+            sinks: handles,
+            covered: Mutex::new(BTreeSet::new()),
+        })
     }
 
     /// Whether no sink is configured.
     pub fn is_empty(&self) -> bool {
         self.sinks.is_empty()
     }
+
+    /// Set the repos a sink without `repos` gets: the ones the operator chose (`[watch]`,
+    /// `[wake]`, `[[webhook]]`, the sinks' `repos`, an embedder's feed). A repo served only
+    /// because a `webhook` document names the relay identity is never among them.
+    pub fn set_covered(&self, repos: BTreeSet<String>) {
+        *lock(&self.covered) = repos;
+    }
 }
 
 impl EventSink for SinkHub {
     fn accept(&self, repo_id: &str, event: &WebhookEvent) {
+        let covered = lock(&self.covered).contains(repo_id);
         for s in &self.sinks {
-            if !(s.repos.is_empty() || s.repos.contains(repo_id))
-                || !forge_core::webhooks::wants_event(&s.events, event.event)
-            {
+            let repo_ok = if s.repos.is_empty() {
+                covered
+            } else {
+                s.repos.contains(repo_id)
+            };
+            if !repo_ok || !forge_core::webhooks::wants_event(&s.events, event.event) {
                 continue;
             }
             if s.tx.try_send(event.clone()).is_err() {
