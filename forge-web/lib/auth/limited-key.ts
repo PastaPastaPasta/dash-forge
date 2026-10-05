@@ -305,6 +305,39 @@ export async function disableHeldKeys(
   return true
 }
 
+/**
+ * Disable keys of an identity with its master key (Devices & keys): AUTHENTICATION keys below
+ * MASTER that `allowed` accepts (the caller passes the page's rule, `./devices` `disableRefusal`,
+ * checked again here against the identity just read). Returns whether an update was sent (false
+ * when every key was already disabled).
+ */
+export async function disableIdentityKeys(
+  sdk: EvoSDK,
+  params: {
+    readonly network: Network
+    readonly identityId: string
+    readonly masterWif: string
+    readonly keyIds: readonly number[]
+    readonly allowed: (k: WasmKey) => boolean
+  },
+): Promise<boolean> {
+  const identity = await authSdk(sdk).identities.fetch(params.identityId)
+  if (!identity) throw new Error(`identity ${params.identityId} not found`)
+  const ids: number[] = []
+  for (const id of params.keyIds) {
+    const k = identity.publicKeys.find((x) => x.keyId === id)
+    if (!k) throw new Error(`key ${id} is not on this identity`)
+    if (k.securityLevelNumber === 0 || k.purposeNumber !== 0 || !params.allowed(k)) throw new Error(`key ${id} is not a Forge signing key below master; refusing to disable it here`)
+    if (k.disabledAt === undefined) ids.push(id)
+  }
+  if (ids.length === 0) return false
+  await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
+  await withMasterSigner(params.masterWif, (signer) =>
+    sendIdentityUpdate(sdk, params.identityId, () => authSdk(sdk).identities.update({ identity, disablePublicKeys: ids, signer })),
+  )
+  return true
+}
+
 /** Run `fn` with an IdentitySigner holding only the master key; both are freed after. */
 async function withMasterSigner<T>(masterWif: string, fn: (signer: unknown) => Promise<T>): Promise<T> {
   const { IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')

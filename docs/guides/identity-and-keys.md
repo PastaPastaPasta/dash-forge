@@ -68,7 +68,7 @@ Do this once:
 If you lose a laptop but still have the words or a backup of the file, nothing is lost. Your repositories, issues and history are on Platform, not on your laptop:
 
 1. On the new machine run `dg auth login --mnemonic` (type the 12 words) or `dg auth login <file>` with your backup. It registers a new limited key and stores only that, with the encryption key beside it.
-2. Disable the lost machine's key: `dg auth keys list` shows it, `dg auth keys disable <id>` disables it (or pass `--replace <id>` to the login above to do both in one update). A limited key can only spend its remaining budget, and only on Forge, until then.
+2. Disable the lost machine's key: in the web app, **Settings → Devices & keys** lists every key and has **Disable** (your identity file or recovery phrase signs once); in the terminal, `dg auth keys list` shows it and `dg auth keys disable <id>` disables it (or pass `--replace <id>` to the login above to do both in one update). A limited key can only spend its remaining budget, and only on Forge, until then.
 3. In a browser, **Sign in → Import an identity file or recovery phrase** registers a fresh limited key for that browser; the words alone are enough.
 
 Your **repository data** needs no backup of its own. Refs, issues and PRs are on Platform. Pack bytes are on Platform or in the storage you chose. Any clone also holds a full copy of the history, and [`dg reseed --from-local`](bring-your-own-storage.md#restoring-a-lost-copy) can restore a lost pack copy from it.
@@ -261,6 +261,14 @@ Drafts of the wallet-side fixes (group-scoped, limited grants; a signature that 
 CI gets one pasteable value, `DASH_FORGE_KEY=dfk1:<network>:<identity id>:<key id>:<wif>`, in place of a file. `dg auth export --format dfk1` writes only limited keys.
 
 ---
+
+## Devices & keys
+
+**Settings → Devices & keys** lists every key on your identity as the network has it: what each is for (master, a Forge key with a budget and an expiry, a key for one Forge contract, encryption, transfer), what is left of its budget, when it expires, and which one this browser signs with. Name a key ("work laptop") to tell them apart; names stay in this browser. **Disable** turns off a lost device's key for good; your identity file or recovery phrase signs once (about 0.00002 DASH). The master key cannot be disabled, this browser's own key goes through **Revoke on Platform**, and the encryption key is not disabled here, because your private repos open with it. Platform does not record when a key was last used: a budget that went down was used, and the page shows when this browser last wrote.
+
+**New-key alert.** Each browser remembers which keys your identity had when it last looked. When you sign in or unlock and a key has appeared that this browser did not add, a red bar names it. Added it yourself (with `dg`, another browser, a CI runner)? Choose **It was me**. If not, choose **Review keys** and disable it: whoever holds your recovery phrase or master key can add keys, so a key you did not add is the first sign of a leak. A new **master** key means someone else may control the identity ([below](#rotating-and-disabling-keys)). The check reuses the identity read every sign-in makes; it costs nothing.
+
+**Storage.** The vault lives in the browser's storage, which a browser may clear under storage pressure, and Safari clears after 7 days without a visit. Forge asks the browser to keep it when it stores a key (`navigator.storage.persist()`), and Devices & keys says whether it agreed. If the vault is cleared, sign in again with `dg`, your identity file or your recovery phrase.
 
 ## The browser vault and its limits
 

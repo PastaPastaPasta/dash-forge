@@ -42,6 +42,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import type { Network } from '../constants'
 import { idbDelete, idbEntries, idbGet, idbPut, idbUpdate } from '../idb'
 import { withTimeout } from '../timeout'
+import { requestPersistence } from './devices'
 import {
   KEPT_TTL_MS,
   LOCKED_AT_KEY,
@@ -988,6 +989,10 @@ export async function storeInVault(
     dataKey.fill(0)
   }
   setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey }, { lockMarkerAt })
+  // TS-17: ask the browser to keep the vault (Safari clears a site's storage after 7 days
+  // without a visit otherwise). Most browsers answer without a prompt; a refusal is shown in
+  // Settings → Devices & keys.
+  void requestPersistence()
   return {
     storageSettingsDropped: hadBlob && carried === null,
     encryptionKeyDropped: hadEnc && carriedEnc === null,

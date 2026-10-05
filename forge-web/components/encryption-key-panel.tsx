@@ -161,6 +161,8 @@ export function EncryptionKeyPanel(): JSX.Element | null {
         keyId = r.keyId
         return r.registered
       })
+      // Added here: the new-key alert does not name it on the next sign-in.
+      controller.noteOwnKey(identity, keyId)
       return keyId
     })
   }
