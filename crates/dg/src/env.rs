@@ -19,7 +19,9 @@ use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
 use forge_core::env::format::{diff, parse_dotenv, render_dotenv, Change};
-use forge_core::env::service::{conflict_error, utc, Blocked, Book, Draft, Environments, Prepared};
+use forge_core::env::service::{
+    conflict_error, conflict_headline, utc, Blocked, Book, Draft, Environments, Prepared,
+};
 use forge_core::env::{
     default_audience, valid_env_name, valid_var_name, Audience, Snapshot, Var, VarType,
     ACCESS_SENTENCE, MEMBERS_SENTENCE,
@@ -488,9 +490,10 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
                         snap.vars.len(),
                         if snap.vars.len() == 1 { "y" } else { "ies" }
                     ),
-                    Err(Blocked::Conflict(h)) => {
-                        format!("two people changed it at once ({} versions)", h.len())
-                    }
+                    Err(Blocked::Conflict(h)) => format!(
+                        "changed at the same time: {} versions, one must be kept",
+                        h.len()
+                    ),
                     Err(_) => "latest change can't be read by you".into(),
                 };
                 println!("{:<24} {what:<44} {when}", e.env);
@@ -1271,7 +1274,11 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
     ctx.emit(
         json!({ "env": env, "state": state.state, "heads": state.heads, "changes": items }),
         || {
-            println!("{env} in {} · {}", s.repo.display(), count(items.len(), "change"));
+            println!(
+                "{env} in {} · {}",
+                s.repo.display(),
+                count(items.len(), "change")
+            );
             for i in &items {
                 let what = match &i.unreadable {
                     Some(why) => format!("can't be read by you: {why}"),
@@ -1291,7 +1298,8 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
             }
             if conflict {
                 println!(
-                    "Two people changed {env} at the same time: keep one with `dg env edit --env {env} --keep <id>`."
+                    "{}. Keep one version with `dg env edit --env {env} --keep <id>`.",
+                    conflict_headline(env, &book.heads(env))
                 );
             }
             println!("{ACCESS_SENTENCE}");

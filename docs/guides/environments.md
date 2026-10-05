@@ -60,10 +60,10 @@ dg env history <owner>/<repo> --env production        # who changed what, and wh
 Only maintainers change environments. Anyone else, writers included, is refused before anything is signed:
 
 ```
-error: E601 change production: only maintainers can change environments
+error: change production: only maintainers can change environments      [E601]
 ```
 
-Each change saves the whole environment again, encrypted for its audience, and records which change it replaces. Before it saves, `dg` shows who will be able to read it and the cost, about 0.002 DASH (one chunk and one record on Dash Platform), and asks you to confirm.
+Each change saves the whole environment again, encrypted for its audience, and records which change it replaces. Before it saves, `dg` shows who will be able to read it and the cost, about 0.0025 DASH (one chunk and one record on Dash Platform, measured on devnet sakura), and asks you to confirm.
 
 Forge counts a change only when its author is a current maintainer. A change by anyone else is ignored by every reader, `dg env run` included, even though Platform lets a writer store it. When a maintainer is removed, their changes stop counting too.
 
@@ -72,10 +72,10 @@ Forge counts a change only when its author is a current maintainer. A change by 
 Two maintainers who change the same environment at the same time leave two versions. Forge never merges them. Until a maintainer keeps one, `dg env run`, `get` and `export` refuse and name both versions:
 
 ```
-error: E607 2 people changed production at the same time, so its values can't be used until one version is kept
-  cause: 7Hq2kQm4Xa by <identity> at 2026-10-05 09:12 UTC
-  cause: 9LpW3sdTt1 by <identity> at 2026-10-05 09:12 UTC
-  fix: a maintainer keeps one: `dg env edit --env production --keep 7Hq2kQm4Xa`
+error: 2 people changed production at the same time, so its values can't be used until one version is kept [E607]
+  cause: production in alice/shop has 2 latest versions, never merged automatically: 8V2UnsMbU1 by <maintainer> at 2026-10-05 08:36 UTC, and ByFFj1bXro by <maintainer> at 2026-10-05 08:36 UTC
+  fix:   a maintainer keeps one: `dg env edit --env production --keep 8V2UnsMbU1` (or `dg env set … --keep <id>`)
+  or:    `dg env history --env production` shows what each changed
 ```
 
 `dg env history --env production` shows what each version changed. Keep one with `--keep <id>` on `edit`, `set`, `unset` or `import`: the new change starts from that version and replaces both.
@@ -86,7 +86,7 @@ error: E607 2 people changed production at the same time, so its values can't be
 
 ```
 Removed <identity> (writer) from alice/shop.
-<identity> could read 2 dev values (and every past value of it). Rotate them at the source: API_TOKEN, SENTRY_DSN
+<identity> could read 2 dev values (and every past value of it). Rotate them at the source: API_TOKEN, API_URL
 ```
 
 Removing someone stops them reading changes saved afterwards. It cannot take back what they could already read.

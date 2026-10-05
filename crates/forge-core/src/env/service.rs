@@ -319,6 +319,18 @@ impl Book {
     }
 }
 
+/// "2 people changed production at the same time", or "production was changed 2 times at the
+/// same time" when one person did it from two places.
+#[must_use]
+pub fn conflict_headline(env: &str, heads: &[Head]) -> String {
+    let authors: BTreeSet<&str> = heads.iter().map(|h| h.author.as_str()).collect();
+    if authors.len() > 1 {
+        format!("{} people changed {env} at the same time", authors.len())
+    } else {
+        format!("{env} was changed {} times at the same time", heads.len())
+    }
+}
+
 /// E607 for an environment two people changed at once.
 #[must_use]
 pub fn conflict_error(repo: &RepoRef, env: &str, heads: &[Head]) -> Error {
@@ -329,8 +341,8 @@ pub fn conflict_error(repo: &RepoRef, env: &str, heads: &[Head]) -> Error {
     let mut u = UserError::new(
         codes::EDIT_CONFLICT,
         format!(
-            "{} people changed {env} at the same time, so its values can't be used until one version is kept",
-            heads.len()
+            "{}, so its values can't be used until one version is kept",
+            conflict_headline(env, heads)
         ),
     )
     .cause(format!(
