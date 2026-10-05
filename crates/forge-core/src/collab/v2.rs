@@ -3017,14 +3017,21 @@ impl<'a> Collab<'a> {
     pub(super) async fn members_writer(&self, repo: &RepoRef) -> Result<Arc<Keyring>> {
         let (identity, bridge) = self.signer()?;
         if !self.is_member(repo).await? {
-            return Err(Error::NotPermitted {
-                action: "post members-only content".into(),
-                reason: format!(
-                    "only members of {} can write what only members can read",
+            return Err(UserError::new(
+                codes::NOT_A_WRITER,
+                format!(
+                    "only members of {} can post members-only content",
                     repo.display()
                 ),
-                needs: "member".into(),
-            });
+            )
+            .cause("members-only content is for the repository's members, and you are not one")
+            .fix("post it publicly (without --members)")
+            .fix(format!(
+                "or become a member: `dg collab accept {}`, then ask a maintainer to add you",
+                repo.display()
+            ))
+            .note("checked before anything was signed; nothing was written or paid")
+            .into());
         }
         let signer = crate::keyring::PrivateSigner {
             client: self.client,

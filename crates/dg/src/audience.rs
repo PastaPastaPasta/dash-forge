@@ -6,6 +6,7 @@ use anyhow::Result;
 use forge_core::collab::v2::{Collab, MembersOnly, TargetKind, TargetLog, Unopened};
 use forge_core::rules::v2::{Audience, Visibility};
 use forge_core::scope::RepoRef;
+use forge_core::user_error::{codes, UserError};
 
 use crate::common::Reader;
 use crate::context::Ctx;
@@ -25,8 +26,29 @@ pub async fn requested(
 ) -> Result<Audience> {
     collab.request_audience(members.then_some(Audience::Members));
     let audience = collab.new_audience(repo, target, reply_to).await?;
-    collab.require_members_writer(repo, audience).await?;
-    Ok(audience)
+    match collab.require_members_writer(repo, audience).await {
+        // not asked for: the conversation is members-only, and a public reply is not possible
+        Err(e) if !members && refused_non_member(&e) => Err(UserError::new(
+            codes::NOT_A_WRITER,
+            "this conversation is members-only: only members can reply to it",
+        )
+        .cause(format!(
+            "it is for members of {}, and you are not one",
+            repo.display()
+        ))
+        .fix(format!(
+            "become a member: `dg collab accept {}`, then ask a maintainer to add you",
+            repo.display()
+        ))
+        .note("checked before anything was signed; nothing was written or paid")
+        .into()),
+        other => other.map(|()| audience).map_err(Into::into),
+    }
+}
+
+/// Whether `e` is the refusal of a members-only write by someone who is not a member.
+fn refused_non_member(e: &forge_core::Error) -> bool {
+    matches!(e, forge_core::Error::User(u) if u.code == codes::NOT_A_WRITER)
 }
 
 /// Whether `audience` is worth naming in `repo`: members-only content of a public repository
@@ -126,13 +148,13 @@ pub fn hidden_line(repo: &RepoRef, n: usize, noun: &str, why: Option<Unopened>) 
     } else {
         format!("{noun}s")
     };
-    let reason = match why {
-        None | Some(Unopened::NotAMember) => {
-            format!("you're not a member of {}", repo.display())
-        }
-        Some(w) => why_hint(repo, w).unwrap_or_default(),
-    };
-    Some(format!("{n} members-only {plural} hidden ({reason})"))
+    Some(match why.and_then(|w| why_hint(repo, w)) {
+        None => format!(
+            "{n} members-only {plural} hidden (you're not a member of {})",
+            repo.display()
+        ),
+        Some(hint) => format!("{n} members-only {plural} hidden: {hint}"),
+    })
 }
 
 /// `@name` for an identity whose DPNS name `names` holds, else its id: how DESIGN §10 names

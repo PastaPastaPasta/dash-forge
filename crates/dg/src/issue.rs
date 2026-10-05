@@ -815,19 +815,21 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
                         crate::audience::sealed_noun(m.audience, "comment")
                     ),
                     Item::Comment(c) => {
-                        let author = format!(
-                            "{}{}",
-                            who(&c.author),
-                            crate::audience::suffix(&s.repo, c.audience)
-                        );
+                        let author = who(&c.author);
+                        // "— alice (id) · members-only:" for a members-only comment
+                        let mark = if crate::audience::marked(&s.repo, c.audience) {
+                            " · members-only"
+                        } else {
+                            ""
+                        };
                         match moderation.item(&c.document_id) {
                             Some(h) if !show_hidden => println!(
-                                "\n— {author} ({}): {}",
+                                "\n— {author} ({}){mark}: {}",
                                 c.document_id,
                                 crate::fmt::hidden_line("comment", h, &who, false)
                             ),
                             h => {
-                                println!("\n— {author} ({}):", c.document_id);
+                                println!("\n— {author} ({}){mark}:", c.document_id);
                                 if let Some(h) = h {
                                     println!("{}", crate::fmt::hidden_line("comment", h, &who, true));
                                 }
