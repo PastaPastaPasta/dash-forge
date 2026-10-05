@@ -26,6 +26,10 @@ use crate::user_error::{codes, UserError};
 /// modified client would (a writer's snapshot, which every reader must ignore).
 pub const TEST_ANY_WRITER: &str = "DASH_FORGE_TEST_ENV_ANY_WRITER";
 
+/// Debug builds only: comma-separated `packHash`es (hex) a test adds to a new snapshot's
+/// `supersedes`.
+pub const TEST_SUPERSEDES: &str = "DASH_FORGE_TEST_ENV_SUPERSEDES";
+
 /// Artifacts fetched at once.
 const FETCH_WINDOW: usize = 8;
 
@@ -121,6 +125,8 @@ pub struct HistoryItem {
     /// The snapshot.
     #[serde(flatten)]
     pub head: Head,
+    /// Its `packHash`, hex (public, as its author, time and size are).
+    pub pack_hash: String,
     /// The padded, sealed size (what the public sees).
     pub size_bytes: u64,
     /// Who could read it.
@@ -213,6 +219,7 @@ impl Book {
                     .and_then(|p| self.snapshot(p));
                 HistoryItem {
                     head: self.head(id),
+                    pack_hash: m.map(|m| hex::encode(m.pack_hash)).unwrap_or_default(),
                     size_bytes: m.map_or(0, |m| m.size_bytes),
                     audience: opened.map(|s| s.audience),
                     changes: opened.map(|s| diff(before, s)).unwrap_or_default(),
@@ -315,6 +322,10 @@ impl Book {
 /// E607 for an environment two people changed at once.
 #[must_use]
 pub fn conflict_error(repo: &RepoRef, env: &str, heads: &[Head]) -> Error {
+    let versions: Vec<String> = heads
+        .iter()
+        .map(|h| format!("{} by {} at {}", h.short(), h.author, utc(h.created_at)))
+        .collect();
     let mut u = UserError::new(
         codes::EDIT_CONFLICT,
         format!(
@@ -323,18 +334,11 @@ pub fn conflict_error(repo: &RepoRef, env: &str, heads: &[Head]) -> Error {
         ),
     )
     .cause(format!(
-        "{env} in {} has {} latest versions, and they are never merged automatically",
+        "{env} in {} has {} latest versions, never merged automatically: {}",
         repo.display(),
-        heads.len()
+        heads.len(),
+        versions.join(", and ")
     ));
-    for h in heads {
-        u = u.cause(format!(
-            "{} by {} at {}",
-            h.short(),
-            h.author,
-            utc(h.created_at)
-        ));
-    }
     if let Some(h) = heads.first() {
         u = u.fix(format!(
             "a maintainer keeps one: `dg env edit --env {env} --keep {}` (or `dg env set … --keep <id>`)",
@@ -641,9 +645,20 @@ impl<'a> Environments<'a> {
         self.require_maintainer(repo, &format!("change {}", draft.env))
             .await?;
         let (sealed, to, skipped) = self.seal(repo, draft).await?;
+        let mut supersedes = draft.supersedes.clone();
+        // Debug builds only: name more heads, as a modified client could (live QA's forgery).
+        if cfg!(debug_assertions) {
+            if let Ok(list) = std::env::var(TEST_SUPERSEDES) {
+                supersedes.extend(list.split(',').filter_map(|h| {
+                    hex::decode(h.trim())
+                        .ok()
+                        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                }));
+            }
+        }
         Ok(Prepared {
             audience: draft.audience,
-            supersedes: draft.supersedes.clone(),
+            supersedes,
             sealed,
             to,
             skipped,
@@ -735,7 +750,21 @@ impl<'a> Environments<'a> {
                 // E312 when no members key exists (members-only content not turned on), E311
                 // when one does and none was shared with this maintainer yet
                 if !kr.has_members_key() {
-                    return Err(crate::keyring::members_only_off(repo));
+                    return Err(UserError::new(
+                        codes::MEMBERS_ONLY_OFF,
+                        format!(
+                            "{action}: members-only content is not turned on in {}",
+                            repo.display()
+                        ),
+                    )
+                    .cause("a Members environment is encrypted under the repo's members key, and no maintainer has set one up yet")
+                    .fix(format!(
+                        "turn it on: `dg repo members enable {}` (it shows the cost first)",
+                        repo.display()
+                    ))
+                    .fix("or save it for Maintainers: add `--audience maintainers`")
+                    .note("nothing was written")
+                    .into());
                 }
                 if kr.resolution().keys.is_empty() {
                     return Err(crate::keyring::no_key_shared(repo));

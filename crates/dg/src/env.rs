@@ -333,11 +333,12 @@ async fn book(s: &Session) -> Result<Book> {
 }
 
 /// The values of `env`, or the error that says why they cannot be used (fail closed).
-fn current<'b>(book: &'b Book, repo: &Repo, env: &str) -> Result<&'b Snapshot> {
-    book.current(env).map_err(|b| blocked_error(repo, env, b))
+fn current<'b>(book: &'b Book, s: &Session, env: &str) -> Result<&'b Snapshot> {
+    book.current(env)
+        .map_err(|b| blocked_error(&s.repo, env, b, book.maintainers.contains(&s.identity.id())))
 }
 
-fn blocked_error(repo: &Repo, env: &str, blocked: Blocked) -> anyhow::Error {
+fn blocked_error(repo: &Repo, env: &str, blocked: Blocked, maintainer: bool) -> anyhow::Error {
     match blocked {
         Blocked::Missing { hidden } => {
             let mut u = UserError::new(
@@ -345,27 +346,45 @@ fn blocked_error(repo: &Repo, env: &str, blocked: Blocked) -> anyhow::Error {
                 format!("{} has no environment {env} you can read", repo.display()),
             );
             if hidden > 0 {
+                let why = if maintainer {
+                    ""
+                } else {
+                    " Environments for Maintainers are sent only to the repo's maintainers, and you aren't one."
+                };
                 u = u.cause(format!(
-                    "{} there can't be read by you. {env} may be one of them.",
+                    "{} there can't be read by you. {env} may be one of them.{why}",
                     count(hidden, "environment")
                 ));
             }
-            u.fix(format!("`dg env ls {}` lists the environments you can read", repo.display()))
-                .into()
+            u.fix(format!(
+                "`dg env ls {}` lists the environments you can read",
+                repo.display()
+            ))
+            .into()
         }
         Blocked::Conflict(heads) => conflict_error(repo, env, &heads).into(),
-        Blocked::Unreadable { head, reason } => UserError::new(
-            codes::NOT_A_KEY_HOLDER,
-            format!("the latest change to {env} can't be read by you"),
-        )
-        .cause(format!(
-            "{} by {} at {}: {reason}",
-            head.short(),
-            head.author,
-            utc(head.created_at)
-        ))
-        .fix("ask a maintainer who can read it to save it again: each change goes to the current maintainers (Maintainers) or everyone holding the members key (Members)")
-        .into(),
+        Blocked::Unreadable { head, reason } => {
+            let u = UserError::new(
+                codes::NOT_A_KEY_HOLDER,
+                format!("the latest change to {env} can't be read by you"),
+            )
+            .cause(format!(
+                "{} by {} at {}: {reason}",
+                head.short(),
+                head.author,
+                utc(head.created_at)
+            ));
+            let u = if maintainer {
+                u.fix("ask a maintainer who can read it to save it again. It then goes to every maintainer with an encryption key.")
+            } else {
+                u.fix(format!(
+                    "if you're a member who should hold the members key, ask a maintainer to run `dg repo keys repair {}`",
+                    repo.display()
+                ))
+                .note("each change can be read only by the people it was saved for")
+            };
+            u.into()
+        }
     }
 }
 
@@ -384,6 +403,42 @@ fn audience_line(snap: &Snapshot) -> String {
     }
 }
 
+/// `dg env ls --env <env>`: one environment's entries, values hidden.
+fn ls_env(ctx: &Ctx, s: &Session, book: &Book, env: &str) -> Result<()> {
+    let snap = current(book, s, env)?;
+    let head = &book.heads(env)[0];
+    ctx.emit(
+        json!({
+            "env": env,
+            "audience": snap.audience,
+            "to": snap.to,
+            "updatedBy": head.author,
+            "updatedAt": head.created_at,
+            "entries": snap.vars.iter().map(|(n, v)| json!({
+                "name": n, "type": v.kind.as_str(), "note": v.note,
+            })).collect::<Vec<_>>(),
+        }),
+        || {
+            println!("{env} in {}", s.repo.display());
+            println!("Who can read this: {}", audience_line(snap));
+            println!("Updated {} by {}", utc(head.created_at), head.author);
+            if snap.vars.is_empty() {
+                println!("(no entries)");
+            }
+            for (n, v) in &snap.vars {
+                let note = if v.note.is_empty() {
+                    String::new()
+                } else {
+                    format!("  # {}", crate::fmt::safe(&v.note))
+                };
+                println!("  {n:<32} {:<8} ••••••{note}", v.kind.as_str());
+            }
+            println!("{ACCESS_SENTENCE}");
+        },
+    );
+    Ok(())
+}
+
 async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
     if let Some(e) = env {
         check_env_name(e)?;
@@ -391,38 +446,7 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let book = book(&s).await?;
     if let Some(env) = env {
-        let snap = current(&book, &s.repo, env)?;
-        let head = &book.heads(env)[0];
-        ctx.emit(
-            json!({
-                "env": env,
-                "audience": snap.audience,
-                "to": snap.to,
-                "updatedBy": head.author,
-                "updatedAt": head.created_at,
-                "entries": snap.vars.iter().map(|(n, v)| json!({
-                    "name": n, "type": v.kind.as_str(), "note": v.note,
-                })).collect::<Vec<_>>(),
-            }),
-            || {
-                println!("{env} in {}", s.repo.display());
-                println!("Who can read this: {}", audience_line(snap));
-                println!("Updated {} by {}", utc(head.created_at), head.author);
-                if snap.vars.is_empty() {
-                    println!("(no entries)");
-                }
-                for (n, v) in &snap.vars {
-                    let note = if v.note.is_empty() {
-                        String::new()
-                    } else {
-                        format!("  # {}", crate::fmt::safe(&v.note))
-                    };
-                    println!("  {n:<32} {:<8} ••••••{note}", v.kind.as_str());
-                }
-                println!("{ACCESS_SENTENCE}");
-            },
-        );
-        return Ok(());
+        return ls_env(ctx, &s, &book, env);
     }
     let rows: Vec<Value> = book
         .resolution
@@ -443,8 +467,9 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
         })
         .collect();
     let hidden = book.resolution.hidden.len();
+    let ignored = book.resolution.ignored.len();
     ctx.emit(
-        json!({ "environments": rows, "hidden": hidden }),
+        json!({ "environments": rows, "hidden": hidden, "ignored": ignored }),
         || {
             if book.resolution.environments.is_empty() && hidden == 0 {
                 println!("No environments yet. Secrets stored here are encrypted for the people you choose and injected with `dg env run`. They're never committed to git.");
@@ -471,9 +496,12 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
                 println!("{:<24} {what:<44} {when}", e.env);
             }
             if hidden > 0 {
+                println!("+ {} you can't read", count(hidden, "environment"));
+            }
+            if ignored > 0 {
                 println!(
-                    "+ {hidden} environment{} you can't read",
-                    if hidden == 1 { "" } else { "s" }
+                    "Ignored: {} by people who aren't maintainers now.",
+                    count(ignored, "change")
                 );
             }
             println!("{ACCESS_SENTENCE}");
@@ -487,7 +515,7 @@ async fn get(ctx: &Ctx, repo: &str, name: &str, env: &str) -> Result<()> {
     check_var_name(name)?;
     let s = Session::open(ctx, repo).await?;
     let book = book(&s).await?;
-    let snap = current(&book, &s.repo, env)?;
+    let snap = current(&book, &s, env)?;
     let Some(v) = snap.vars.get(name) else {
         return Err(
             UserError::new(codes::NOT_FOUND, format!("{env} has no entry {name}"))
@@ -989,7 +1017,7 @@ async fn run_with(ctx: &Ctx, repo: &str, env: &str, command: &[String]) -> Resul
     check_env_name(env)?;
     let s = Session::open(ctx, repo).await?;
     let book = book(&s).await?;
-    let snap = current(&book, &s.repo, env)?;
+    let snap = current(&book, &s, env)?;
     let vars = child_vars(&snap.vars);
     let (program, args) = command
         .split_first()
@@ -1180,7 +1208,7 @@ async fn export(
     check_env_name(env)?;
     let s = Session::open(ctx, repo).await?;
     let book = book(&s).await?;
-    let snap = current(&book, &s.repo, env)?;
+    let snap = current(&book, &s, env)?;
     let text = render_dotenv(&snap.vars);
     let Some(path) = output else {
         // stdout, for piping: the text only
@@ -1235,6 +1263,7 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
             Blocked::Missing {
                 hidden: book.resolution.hidden.len(),
             },
+            book.maintainers.contains(&s.identity.id()),
         ));
     };
     let items = book.history(env);
