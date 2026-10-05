@@ -400,7 +400,7 @@ Fix: read it again (`dg issue view`, `dg pr view --comments`) and redo the edit 
 
 ## E608
 
-**Environment changed at the same time.** Two changes to one environment were saved at once (two maintainers, or one maintainer from two places), so it has two latest versions. Forge never merges them: `dg env run`, `get` and `export` refuse until a maintainer keeps one. The `cause:` line names both versions.
+**Environment changed at the same time.** Two changes to one environment were saved at once (two maintainers, or one maintainer from two places), so it has two or more latest versions. Versions that share no earlier version are reported as separate histories. Forge never merges them: `dg env run`, `get` and `export` refuse until a maintainer keeps one. The `cause:` line names every version, with its author and time.
 
 Fix: `dg env history --env <name>` shows what each changed; a maintainer keeps one with `dg env edit --env <name> --keep <id>` (or `set`, `unset`, `import` with `--keep`). See [Environments](guides/environments.md#when-two-people-change-it-at-once).
 

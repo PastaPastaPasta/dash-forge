@@ -41,8 +41,11 @@ export {
   type OpenKeys,
 } from './codec'
 export {
+  MAX_SUPERSEDES,
+  changedEnvironments,
   exposureOf,
   resolveSnapshots,
+  supersedesWindow,
   type EnvHistory,
   type EnvState,
   type EnvStateKind,

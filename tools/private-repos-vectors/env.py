@@ -70,6 +70,8 @@ def snapshot_obj(s):
                     for k, v in s["vars"].items()}}
     if s["audience"] == "maintainers":
         obj["to"] = list(s["to"])
+    if s.get("savedFor"):
+        obj["savedFor"] = s["savedFor"]
     return obj
 
 
@@ -83,7 +85,7 @@ def encode(s):
 def valid(obj):
     """Whether `obj` (parsed JSON) is a version-1 snapshot; returns the snapshot dict or None."""
     is_int = lambda x: isinstance(x, int) and not isinstance(x, bool)
-    if not isinstance(obj, dict) or not set(obj) <= {"v", "env", "audience", "generatedAt", "to", "vars"}:
+    if not isinstance(obj, dict) or not set(obj) <= {"v", "env", "audience", "generatedAt", "savedFor", "to", "vars"}:
         return None
     if obj.get("v") != 1 or not is_int(obj.get("v")) or not isinstance(obj.get("env"), str) \
             or not ENV_NAME.fullmatch(obj["env"]) or obj.get("audience") not in AUDIENCES \
@@ -97,6 +99,8 @@ def valid(obj):
             return None
     elif "to" in obj:
         return None
+    if "savedFor" in obj and b58decode(obj["savedFor"]) is None:
+        return None
     out_vars = {}
     for k, v in obj["vars"].items():
         if not VAR_NAME.fullmatch(k) or not isinstance(v, dict) or not set(v) <= {"type", "value", "note"}:
@@ -108,6 +112,8 @@ def valid(obj):
     s = dict(env=obj["env"], audience=obj["audience"], generatedAt=obj["generatedAt"], vars=out_vars)
     if obj["audience"] == "maintainers":
         s["to"] = list(obj["to"])
+    if "savedFor" in obj:
+        s["savedFor"] = obj["savedFor"]
     return s
 
 
@@ -135,6 +141,8 @@ def snapshot_json(s):
                vars={k: dict(type=v["type"], value=v["value"], note=v.get("note", "")) for k, v in s["vars"].items()})
     if s["audience"] == "maintainers":
         out["to"] = list(s["to"])
+    if s.get("savedFor"):
+        out["savedFor"] = s["savedFor"]
     return out
 
 
@@ -274,6 +282,29 @@ def resolve(maintainers, manifests, opened):
     return dict(ignored=ignored, environments=out_envs, hidden=out_hidden)
 
 
+# --- what a new snapshot supersedes ---------------------------------------------------------------
+
+MAX_SUPERSEDES = 32
+
+
+def window(snapshots, heads):
+    """`supersedes` of a new snapshot: the environment's heads, then the newest snapshot of each other
+    author, then the rest, newest first; at most 32. `snapshots`: the environment's counted snapshots
+    [{id, ownerId, packHash, height}]; `heads`: their ids. Naming each author's newest keeps the chain
+    whole when a maintainer with a long run of changes is removed."""
+    key = lambda m: (m["height"], m["id"])
+    by_id = {m["id"]: m for m in snapshots}
+    out = [by_id[h] for h in sorted(heads, key=lambda h: key(by_id[h]), reverse=True)]
+    rest = sorted((m for m in snapshots if m["id"] not in heads), key=key, reverse=True)
+    authors = {m["ownerId"] for m in out}
+    for m in rest:
+        if m["ownerId"] not in authors:
+            authors.add(m["ownerId"])
+            out.append(m)
+    out += [m for m in rest if m not in out]
+    return [m["packHash"] for m in out[:MAX_SUPERSEDES]]
+
+
 # --- the removal checklist --------------------------------------------------------------------------
 
 
@@ -341,11 +372,16 @@ def format_vectors():
     pt = encode(named)
     assert decode(pt) is not None
     cases.append(dict(snapshot=snapshot_json(named), plaintextHex=H(pt), sizeBytes=len(pt)))
+    resaved = dict(env="production", audience="members", generatedAt=GENERATED_AT, savedFor=B(CAROL),
+                   vars={"STRIPE_KEY": var("sk_test_fake_carol")})
+    pt = encode(resaved)
+    assert b'"savedFor"' in pt and decode(pt)["savedFor"] == B(CAROL)
+    cases.append(dict(snapshot=snapshot_json(resaved), plaintextHex=H(pt), sizeBytes=len(pt)))
     big = dict(base, vars={"FILL": var("x" * MAX_SNAPSHOT)})
     assert encode(big) is None
     cases.append(dict(snapshot=snapshot_json(big), tooLarge=True))
     vector("padding", "the artifact is canonical JSON (sorted keys, no whitespace, UTF-8 unescaped, `note` left out "
-           "when empty, `to` only for Maintainers) padded with spaces to a multiple of 512 bytes; exactly 512 needs no "
+           "when empty, `to` only for Maintainers, `savedFor` only on a snapshot saved again for a removed maintainer) padded with spaces to a multiple of 512 bytes; exactly 512 needs no "
            "padding, one byte more takes 1,024; over 12,288 bytes is refused by the writer.",
            dict(op="format", cases=[dict(snapshot=c["snapshot"]) for c in cases]),
            dict(results=[{k: v for k, v in c.items() if k != "snapshot"} for c in cases]))
@@ -384,6 +420,8 @@ def decode_vectors():
         ("escaped_ascii", pad(raw.replace(b'"1"', b'"\\u0031"')), False),
         ("float_time", pad(raw.replace(b"1767225600000", b"1767225600000.0")), False),
         ("not_json", pad(b"KEY=value"), False),
+        ("saved_for_not_an_id", pad(raw.replace(b'"generatedAt":1767225600000,',
+                                                b'"generatedAt":1767225600000,"savedFor":"carol",')), False),
         ("env_name_trailing_newline", pad(raw.replace(b'"dev"', b'"dev\\n"')), False),
         ("duplicate_key", pad(raw.replace(b'"vars":{', b'"vars":{"A":{"type":"secret","value":"0"},', 1)), False),
         ("control_escaped_lowercase", ctl, True),
@@ -650,6 +688,71 @@ def resolve_vectors():
                    [m("s1", ALICE, 1000), m("d1", ALICE, 2000, ["s1"])], {"s1": P, "d1": D}, cross)
 
 
+def window_vectors():
+    snaps = [dict(id=f"x{i:02}", ownerId=B(BOB) if i < 40 else B(ALICE), packHash=hx(f"x{i:02}"), height=1000 + i)
+             for i in range(45)]
+    snaps.append(dict(id="c0", ownerId=B(CAROL), packHash=hx("c0"), height=999))
+    heads = ["x44"]
+    res = window(snaps, heads)
+    assert res[0] == hx("x44") and hx("x39") in res and hx("c0") in res and len(res) == 32
+    small = snaps[:3]
+    res2 = window(small, ["x02"])
+    assert res2 == [hx("x02"), hx("x01"), hx("x00")]
+    vector("window", "what a new snapshot names in supersedes: the heads, then the newest snapshot of each other "
+           "author, then the rest newest first, at most 32; so carol's single old snapshot and bob's newest are named "
+           "even behind a long run by alice.",
+           dict(op="window", cases=[dict(snapshots=snaps, heads=heads), dict(snapshots=small, heads=["x02"])]),
+           dict(results=[res, res2]))
+
+
+def long_run_vectors():
+    P, S = dict(env="production"), dict(env="staging")
+    ms = [m("a0", ALICE, 1), m("b0", ALICE, 2)]
+    ids_p, ids_s = ["a0"], ["b0"]
+    for i in range(32):
+        lp, ls = f"p{i:02}", f"q{i:02}"
+        ms.append(m(lp, CAROL, 10 + 2 * i, list(reversed(ids_p))[:32]))
+        ms.append(m(ls, CAROL, 11 + 2 * i, list(reversed(ids_s))[:32]))
+        ids_p.append(lp)
+        ids_s.append(ls)
+    # production's a1 names only the 32 newest (all carol's); staging's b1 names carol's newest, then
+    # each other author's newest (b0), then the rest (the window rule)
+    ms.append(m("a1", ALICE, 100, list(reversed(ids_p))[:32]))
+    snaps_s = [dict(id=x["label"], ownerId=x["ownerId"], packHash=x["packHash"], height=x["height"])
+               for x in ms if x["label"] in ids_s]
+    w = window(snaps_s, ["q31"])
+    ms.append(dict(m("b1", ALICE, 101), supersedes=w))
+    opened = {x["label"]: (S if x["label"] in ids_s + ["b1"] else P) for x in ms}
+
+    def check(envs, ign, hid):
+        assert envs["production"]["state"] == "conflict" and envs["production"]["heads"] == ["a0", "a1"]
+        assert envs["staging"]["state"] == "current" and envs["staging"]["heads"] == ["b1"]
+    resolve_vector("long_run_by_removed_maintainer", "carol saved 32 changes in a row to each environment and is then "
+                   "removed. production's later a1 named only the 32 newest snapshots (all carol's), so without her "
+                   "a0 is a head again beside a1: a conflict (dg collab remove sees this in its dry run and saves "
+                   "again first). staging's b1 named carol's newest, then each other author's newest, so it stays "
+                   "one chain.", [ALICE], ms, opened, check)
+
+
+def promotion_vectors():
+    P = dict(env="production")
+    base = [m("a0", ALICE, 1000), m("w0", WRITER, 2000, ["a0"])]
+
+    def unprotected(envs, ign, hid):
+        assert envs["production"]["state"] == "current" and envs["production"]["heads"] == ["w0"]
+    resolve_vector("promotion_unprotected", "the writer's old snapshot w0 (ignored while they were a writer) starts "
+                   "counting the moment they become a maintainer, and silently replaces production's values: why the "
+                   "promoting client first saves a snapshot naming it (next vector).", [ALICE, WRITER], base,
+                   {"a0": P, "w0": P}, unprotected)
+
+    def protected(envs, ign, hid):
+        assert envs["production"]["state"] == "current" and envs["production"]["heads"] == ["p1"]
+    resolve_vector("promotion_protected", "before granting the role, alice saved production's current values again "
+                   "(p1) naming both a0 and the writer's dormant w0: after the promotion p1 is the only head and the "
+                   "values are unchanged.", [ALICE, WRITER], base + [m("p1", ALICE, 3000, ["a0", "w0"])],
+                   {"a0": P, "w0": P, "p1": P}, protected)
+
+
 def exposure_vectors():
     p = lambda to, **vs: dict(audience="maintainers", to=[B(x) for x in to], vars=vs)
     mem = lambda **vs: dict(audience="members", vars=vs)
@@ -685,6 +788,9 @@ def build():
     decode_vectors()
     open_vectors()
     resolve_vectors()
+    window_vectors()
+    long_run_vectors()
+    promotion_vectors()
     exposure_vectors()
     default_audience_vectors()
 

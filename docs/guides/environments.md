@@ -50,9 +50,9 @@ dg env history <owner>/<repo> --env production        # who changed what, and wh
 
 - `set` takes several names at once and saves them as one change. A value on the command line can be seen by other users of your computer, so give the name alone to be asked for the value, or pipe it in: `printf %s "$TOKEN" | dg env set API_TOKEN --env dev`.
 - `--secret` marks entries as secrets. Every value is encrypted either way. The type tells Forge what to mask by default.
-- `run` adds the values to the command's environment variables and writes nothing to disk. Its exit code is the command's. An environment that sets `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`, `BASH_ENV`, `ENV` or `NODE_OPTIONS` changes which program runs or what it loads, so `run` refuses it unless you pass `--allow-env-override`.
-- `export -o` first adds the file to `.git/info/exclude` and checks with `git check-ignore` that git ignores it, then creates it with mode 0600. It refuses a file git already tracks, a path a `.gitignore` rule un-ignores, and an existing file unless you pass `--force` (which replaces a symlink rather than writing through it). The text quotes values so that `source .env` in a shell never runs anything inside them.
-- `edit` opens `$VISUAL` or `$EDITOR` on a temporary file only you can read, and removes it afterwards, also when the terminal closes. Your editor may keep its own swap or backup copies elsewhere. Ctrl-C goes to the editor. Delete a line to remove an entry.
+- `run` adds the values to the command's environment variables and writes nothing to disk. Its exit code is the command's. It refuses, unless you pass `--allow-env-override`, an entry that replaces a variable already set in your shell, and any entry that changes which program runs or what it loads: `PATH`, `HOME`, `XDG_CONFIG_HOME`, `BASH_ENV`, `ENV`, `ZDOTDIR`, `SHELLOPTS`, `PS4`, `NODE_OPTIONS`, `NODE_PATH`, `PYTHONPATH`, `PYTHONHOME`, `PERL5OPT`, `PERL5LIB`, `RUBYOPT`, `RUBYLIB`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `JDK_JAVA_OPTIONS`, `RUSTC_WRAPPER`, and names starting with `LD_`, `DYLD_`, `GIT_` or `npm_config_` (on Windows, in any letter case).
+- `export -o` first adds the file to `.git/info/exclude` and checks with `git check-ignore` that git ignores it, then creates it with mode 0600. It refuses a file git already tracks (also one whose name differs only in letter case), a path a `.gitignore` rule un-ignores, a folder inside a git work tree where git can't run, and an existing file unless you pass `--force` (which replaces a symlink rather than writing through it). The text quotes values so that `source .env` in a shell never runs anything inside them.
+- `edit` opens `$VISUAL` or `$EDITOR` on a temporary file only you can read, and removes it afterwards, also when the terminal closes. Your editor may keep its own swap or backup copies elsewhere. Ctrl-C goes to the editor while it is open. Delete a line to remove an entry. Closing the editor without a change saves nothing.
 - Every command takes `--json`.
 
 ## Changing an environment
@@ -65,26 +65,25 @@ error: change production: only maintainers can change environments      [E601]
 
 Each change saves the whole environment again, encrypted for its audience, and records which change it replaces. Before it saves, `dg` shows who will be able to read it and the cost, about 0.0025 DASH (one chunk and one record on Dash Platform, measured on devnet sakura), and asks you to confirm.
 
-Forge counts a change only when its author is a current maintainer. A change by anyone else is ignored by every reader, `dg env run` included, even though Platform lets a writer store it. That includes a former maintainer's changes, from the moment they stop being one. When such a change claims to replace an environment's latest version, `dg env ls`, `get`, `run` and `export` keep using the latest version by a maintainer and say so in one line:
+Forge counts a change only when its author is a current maintainer. A change by anyone else is ignored by every reader, `dg env run` included, even though Platform lets a writer store it. That includes a former maintainer's changes, from the moment they stop being one. When such a change claims to replace an environment's latest version, `dg env ls`, `get`, `run` and `export` keep using the latest version by a maintainer and say so in one line, naming the ignored change:
 
 ```
-warning: production has a newer change by someone who isn't a maintainer now; it was ignored. Ask a maintainer to check production's values.
+warning: production has a newer change by <identity> at 2026-10-05 08:41 UTC (3kQx7pWm2v), who isn't a maintainer now; it was ignored. Ask a maintainer to check production's values.
 ```
 
-`dg env ls` shows who saved the version in use and when.
+`dg env ls` shows who saved the version in use and when. `dg env history` lists ignored changes too, marked `ignored: not a maintainer now, never used`.
 
 ## When two people change it at once
 
-Two maintainers who change the same environment at the same time leave two versions. Forge never merges them. Until a maintainer keeps one, `dg env run`, `get` and `export` refuse and name both versions:
+Two maintainers who change the same environment at the same time leave two versions. Forge never merges them. Until a maintainer keeps one, `dg env run`, `get` and `export` refuse and name every version:
 
 ```
-error: 2 people changed production at the same time, so its values can't be used until one version is kept [E608]
-  cause: production in alice/shop has 2 latest versions, never merged automatically: 8V2UnsMbU1 by <maintainer> at 2026-10-05 08:36 UTC, and ByFFj1bXro by <maintainer> at 2026-10-05 08:36 UTC
-  fix:   a maintainer keeps one: `dg env edit --env production --keep 8V2UnsMbU1` (or `dg env set … --keep <id>`)
-  or:    `dg env history --env production` shows what each changed
+error: 2 people changed production at the same time, so its values can't be used until a maintainer keeps one [E608]
+  cause: production in alice/shop has 2 latest versions (they were made from the same version, and versions are never merged automatically): 8V2UnsMbU1 by <maintainer> at 2026-10-05 08:36 UTC, ByFFj1bXro by <maintainer> at 2026-10-05 08:36 UTC
+  fix:   compare them with `dg env history --env production`, then a maintainer keeps one: `dg env edit --env production --keep <id>`
 ```
 
-`dg env history --env production` shows what each version changed. Keep one with `--keep <id>` on `edit`, `set`, `unset` or `import`: the new change starts from that version and replaces both.
+`dg env history --env production` shows what each version changed. Keep one with `--keep <id>` on `edit`, `set`, `unset` or `import`: the new change starts from that version and replaces every latest version. Versions that share no earlier version (two first versions saved at once, for example) are reported as separate histories, and are kept the same way.
 
 ## Removing a member
 
@@ -97,7 +96,19 @@ Removed <identity> (writer) from alice/shop.
 
 Removing someone stops them reading changes saved afterwards. It cannot take back what they could already read.
 
-When you remove a maintainer, their changes stop counting, so an environment whose latest version they saved would go back to the version before it. `dg collab remove` shows, for each such environment, what their latest change did (entry names only, values hidden) and the cost, and asks you to confirm. After the removal it saves those values again as you, one change each, unless someone changed the environment in the meantime. If you can't read one of them, it says so: ask a maintainer who can to save it again. A maintainer removed some other way (an older Forge build, for example) leaves their environments at the version before their last change, and readers see the warning above.
+When you remove a maintainer, their changes stop counting. Before it asks you to confirm, `dg collab remove` works out what each environment would look like without them and lists every environment that would change: one whose latest version they saved would go back to the version before it, and one with versions saved at the same time would lose theirs. For each it shows what their change did (entry names only, values hidden) and the cost. After the removal it saves those environments again as you, one change each, so they stay as they were. `dg env history` shows such a change as `saved again for <identity>`.
+
+The saves have their own confirmation, so you can remove the maintainer and decline them. `--no-resave` skips them without asking. Either way the environments then hold the version before the removed maintainer's change, or a conflict, and the command names them.
+
+A save is skipped when someone changed that environment in the meantime. If you can't read an environment that would change, the command says so: ask a maintainer who can to save it again. A maintainer removed some other way (an older Forge build, for example) leaves their environments at the version before their last change, and readers see the warning above.
+
+### Making someone a maintainer
+
+Changes saved by someone who wasn't a maintainer are ignored, but they stay on Platform. If that person becomes a maintainer, those changes start counting and could replace the values in use. `dg collab add --role maintainer` checks for this first. For every environment that would change it saves the current values again as you, naming their earlier changes as replaced, before it grants the role. The confirmation lists those environments and the cost. An environment that only they saved, which nobody could use before, is listed as one that appears once they are a maintainer.
+
+### On the web
+
+Removing, demoting or adding a maintainer of a repository that has environments needs the steps above, which the web app doesn't take yet. It refuses with "This repo has environments. Remove or demote maintainers with dg for now." (or "Make maintainers with dg for now."). Use `dg collab remove --role maintainer` (then `dg collab add` to give a demoted maintainer another role) or `dg collab add --role maintainer`.
 
 The list also notes how many environments you can't read yourself: the removed member may have been able to read values there.
 

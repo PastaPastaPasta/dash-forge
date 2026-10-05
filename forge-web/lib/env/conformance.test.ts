@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 import { EpochKeys, bytesToHex, hexToBytes, type EpochKeyring, type OwnerKey } from '../private'
 import { sealLetterArtifactWith, sealPackWithFileId } from '../private/testing'
-import { exposureOf, resolveSnapshots, type SnapshotRef } from './chain'
+import { exposureOf, resolveSnapshots, supersedesWindow, type SnapshotRef } from './chain'
 import { openSnapshot, recipientsMatch, SnapshotOpenError } from './codec'
 import { decodeSnapshot, defaultAudience, encodeSnapshot, type EnvVar, type Snapshot } from './format'
 
@@ -44,6 +44,7 @@ function snapshotOf(v: Obj): Snapshot {
     env: s(v.env),
     audience: s(v.audience) as Snapshot['audience'],
     generatedAt: n(v.generatedAt),
+    ...(v.savedFor === undefined ? {} : { savedFor: s(v.savedFor) }),
     to: v.to === undefined ? [] : arr(v.to).map(s),
     vars,
   }
@@ -54,6 +55,7 @@ function snapshotJson(snap: Snapshot): Obj {
   for (const [k, v] of snap.vars) Object.defineProperty(vars, k, { value: { type: v.type, value: v.value, note: v.note }, enumerable: true })
   const out: Obj = { env: snap.env, audience: snap.audience, generatedAt: snap.generatedAt, vars }
   if (snap.audience === 'maintainers') out.to = [...snap.to]
+  if (snap.savedFor !== undefined) out.savedFor = snap.savedFor
   return out
 }
 
@@ -193,6 +195,15 @@ async function run(v: Vector): Promise<Json> {
       return runResolve(inp)
     case 'exposure':
       return runExposure(inp)
+    case 'window':
+      return {
+        results: arr(inp.cases).map((c) =>
+          supersedesWindow(
+            arr(o(c).snapshots).map((m) => ({ id: s(o(m).id), ownerId: s(o(m).ownerId), packHash: s(o(m).packHash), supersedes: [], height: n(o(m).height) })),
+            arr(o(c).heads).map(s),
+          ),
+        ),
+      }
     case 'defaultAudience':
       return { results: arr(inp.names).map((x) => defaultAudience(s(x))) }
     default:

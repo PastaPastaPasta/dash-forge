@@ -81,6 +81,9 @@ pub struct Snapshot {
     pub audience: Audience,
     /// When the writer made it (ms since the epoch; informational: block height orders).
     pub generated_at: u64,
+    /// Set on a snapshot a maintainer saved again for a removed maintainer, with the values they
+    /// last saved: that maintainer (base58). History says "saved again for …".
+    pub saved_for: Option<String>,
     /// The recipients of a Maintainers snapshot in slot order (base58 identity ids, the writer
     /// first), "as listed by the writer"; empty for Members.
     pub to: Vec<String>,
@@ -133,6 +136,9 @@ impl Snapshot {
         if self.generated_at > MAX_SAFE_INT {
             return bad("generatedAt is out of range".into());
         }
+        if let Some(f) = self.saved_for.as_deref().filter(|f| !canonical_id(f)) {
+            return bad(format!("{f:?} is not an identity id"));
+        }
         if let Some(n) = self.vars.keys().find(|n| !valid_var_name(n)) {
             return bad(format!(
                 "{n:?} is not a variable name (letters, digits and `_`, not starting with a digit)"
@@ -170,6 +176,10 @@ impl Snapshot {
         out.push_str(",\"env\":");
         push_str(&mut out, &self.env);
         let _ = write!(out, ",\"generatedAt\":{}", self.generated_at);
+        if let Some(f) = &self.saved_for {
+            out.push_str(",\"savedFor\":");
+            push_str(&mut out, f);
+        }
         if self.audience == Audience::Maintainers {
             out.push_str(",\"to\":[");
             for (i, t) in self.to.iter().enumerate() {
@@ -233,7 +243,15 @@ impl Snapshot {
     }
 
     fn from_value(v: &serde_json::Value) -> Option<Self> {
-        const KEYS: [&str; 6] = ["audience", "env", "generatedAt", "to", "v", "vars"];
+        const KEYS: [&str; 7] = [
+            "audience",
+            "env",
+            "generatedAt",
+            "savedFor",
+            "to",
+            "v",
+            "vars",
+        ];
         let obj = v.as_object()?;
         if obj.keys().any(|k| !KEYS.contains(&k.as_str())) || obj.get("v")?.as_u64()? != 1 {
             return None;
@@ -269,10 +287,15 @@ impl Snapshot {
                 },
             );
         }
+        let saved_for = match obj.get("savedFor") {
+            Some(f) => Some(f.as_str()?.to_owned()),
+            None => None,
+        };
         let snap = Self {
             env: obj.get("env")?.as_str()?.to_owned(),
             audience,
             generated_at: obj.get("generatedAt")?.as_u64()?,
+            saved_for,
             to,
             vars,
         };
@@ -475,6 +498,7 @@ mod tests {
             env: "dev".into(),
             audience: Audience::Members,
             generated_at: 1,
+            saved_for: None,
             to: Vec::new(),
             vars: vars
                 .iter()

@@ -8,7 +8,7 @@
 //! maintainer; two people changing one environment at once leave two versions, which `run`,
 //! `get` and `export` refuse until a maintainer keeps one (`--keep`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -171,8 +171,8 @@ pub enum EnvCommand {
         /// The environment.
         #[arg(long)]
         env: String,
-        /// Let the environment set variables that change how programs start (PATH, LD_PRELOAD,
-        /// LD_LIBRARY_PATH, DYLD_*, BASH_ENV, ENV, NODE_OPTIONS).
+        /// Let the environment replace variables this shell already has, or set ones that change
+        /// how programs start (PATH, LD_*, DYLD_*, NODE_OPTIONS, PYTHONPATH, GIT_* and others).
         #[arg(long)]
         allow_env_override: bool,
         /// The command and its arguments, after `--`.
@@ -354,11 +354,20 @@ fn current<'b>(book: &'b Book, s: &Session, env: &str) -> Result<&'b Snapshot> {
 /// One stderr line when someone who isn't a maintainer now posted a change naming `env`'s head:
 /// it is ignored (D24), and a maintainer should look (never used, never offered to save).
 fn warn_ignored(book: &Book, env: &str) {
-    if !book.ignored_newer(env).is_empty() {
-        eprintln!(
-            "warning: {env} has a newer change by someone who isn't a maintainer now; it was ignored. Ask a maintainer to check {env}'s values."
-        );
-    }
+    let ignored = book.ignored_newer(env);
+    let Some(last) = ignored.last() else {
+        return;
+    };
+    let more = match ignored.len() {
+        1 => String::new(),
+        n => format!(" (and {} more)", n - 1),
+    };
+    eprintln!(
+        "warning: {env} has a newer change by {} at {} ({}){more}, who isn't a maintainer now; it was ignored. Ask a maintainer to check {env}'s values.",
+        last.author,
+        utc(last.created_at),
+        last.short()
+    );
 }
 
 fn blocked_error(repo: &Repo, env: &str, blocked: Blocked, maintainer: bool) -> anyhow::Error {
@@ -385,8 +394,13 @@ fn blocked_error(repo: &Repo, env: &str, blocked: Blocked, maintainer: bool) -> 
             ))
             .into()
         }
-        Blocked::Conflict(heads) => conflict_error(repo, env, &heads).into(),
-        Blocked::Unreadable { head, reason } => {
+        Blocked::Conflict { heads, split } => conflict_error(repo, env, &heads, split).into(),
+        Blocked::Unreadable {
+            head,
+            reason,
+            unfetched: true,
+        } => forge_core::env::service::unfetched_error(env, &head, &reason).into(),
+        Blocked::Unreadable { head, reason, .. } => {
             let u = UserError::new(
                 codes::NOT_A_KEY_HOLDER,
                 format!("the latest change to {env} can't be read by you"),
@@ -518,7 +532,7 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
                         snap.vars.len(),
                         if snap.vars.len() == 1 { "y" } else { "ies" }
                     ),
-                    Err(Blocked::Conflict(h)) => format!(
+                    Err(Blocked::Conflict { heads: h, .. }) => format!(
                         "changed at the same time: {} versions, one must be kept",
                         h.len()
                     ),
@@ -836,7 +850,9 @@ async fn edit(
     text.push_str(&render_dotenv(&base.vars));
     // Ctrl-C and Ctrl-\\ belong to the editor; a hangup or termination still reaches the cleanup
     let mut signals = EditorSignals::install()?;
-    let saved = run_editor(&text, &mut signals)?;
+    let saved = run_editor(&text, &mut signals);
+    signals.restore();
+    let saved = saved?;
     let parsed = parse_dotenv(&saved).map_err(|e| {
         anyhow::Error::from(
             UserError::new(
@@ -905,6 +921,7 @@ async fn commit(
         env: env.to_owned(),
         audience: base.audience.unwrap_or(Audience::Members),
         generated_at: 0,
+        saved_for: None,
         to: Vec::new(),
         vars: base.vars.clone(),
     };
@@ -918,11 +935,12 @@ async fn commit(
         env: env.to_owned(),
         audience,
         generated_at: 0,
+        saved_for: None,
         to: Vec::new(),
         vars,
     };
     let changes = diff(base.audience.map(|_| &before), &after);
-    let resolving = base.supersedes.len() > 1;
+    let resolving = base.heads > 1;
     if changes.is_empty() && base.audience == Some(audience) && !resolving {
         ctx.emit(json!({ "status": "unchanged", "env": env }), || {
             println!("{env} already holds that. Nothing to save.");
@@ -934,6 +952,7 @@ async fn commit(
         audience,
         vars: after.vars,
         supersedes: base.supersedes.clone(),
+        saved_for: None,
     };
     let prepared = envs.prepare(&s.repo, &draft).await?;
     let quote = prepared.credits();
@@ -969,7 +988,7 @@ async fn commit(
     if resolving {
         lines.push(format!(
             "  This keeps one of the {} versions of {env} and replaces them all.",
-            base.supersedes.len()
+            base.heads
         ));
     }
     lines.push(format!(
@@ -1060,21 +1079,64 @@ fn child_vars(vars: &BTreeMap<String, Var>) -> Vec<(String, Zeroizing<String>)> 
 }
 
 /// Variables that decide which program runs or what it loads: an environment may set them only
-/// with `--allow-env-override`.
-const STARTUP_VARS: [&str; 6] = [
+/// with `--allow-env-override` (case-insensitively on Windows).
+const STARTUP_VARS: [&str; 21] = [
     "PATH",
-    "LD_PRELOAD",
-    "LD_LIBRARY_PATH",
+    "HOME",
+    "XDG_CONFIG_HOME",
     "BASH_ENV",
     "ENV",
+    "ZDOTDIR",
+    "SHELLOPTS",
+    "PS4",
     "NODE_OPTIONS",
+    "NODE_PATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PERL5OPT",
+    "PERL5LIB",
+    "RUBYOPT",
+    "RUBYLIB",
+    "JAVA_TOOL_OPTIONS",
+    "_JAVA_OPTIONS",
+    "JDK_JAVA_OPTIONS",
+    "RUSTC_WRAPPER",
+    "SHELL",
 ];
 
-/// The names in `vars` that change how programs start ([`STARTUP_VARS`], `DYLD_*`).
-fn startup_overrides(vars: &BTreeMap<String, Var>) -> Vec<&str> {
+/// Prefixes treated as [`STARTUP_VARS`]: dynamic linker, git and npm configuration.
+const STARTUP_PREFIXES: [&str; 4] = ["LD_", "DYLD_", "GIT_", "npm_config_"];
+
+/// Whether variable `name` changes how programs start.
+fn is_startup_var(name: &str) -> bool {
+    let fold = |s: &str| {
+        if cfg!(windows) {
+            s.to_ascii_uppercase()
+        } else {
+            s.to_owned()
+        }
+    };
+    let n = fold(name);
+    STARTUP_VARS.iter().any(|v| fold(v) == n)
+        || STARTUP_PREFIXES.iter().any(|p| n.starts_with(&fold(p)))
+}
+
+/// The names in `vars` that `--allow-env-override` must allow: those that change how programs
+/// start, and any that would replace a variable `parent` already has.
+fn startup_overrides<'v>(
+    vars: &'v BTreeMap<String, Var>,
+    parent: &BTreeSet<String>,
+) -> Vec<&'v str> {
+    let fold = |s: &str| {
+        if cfg!(windows) {
+            s.to_ascii_uppercase()
+        } else {
+            s.to_owned()
+        }
+    };
     vars.keys()
         .map(String::as_str)
-        .filter(|n| STARTUP_VARS.contains(n) || n.starts_with("DYLD_"))
+        .filter(|n| is_startup_var(n) || parent.contains(&fold(n)))
         .collect()
 }
 
@@ -1089,13 +1151,23 @@ async fn run_with(
     let s = Session::open(ctx, repo).await?;
     let book = book(&s).await?;
     let snap = current(&book, &s, env)?;
-    let risky = startup_overrides(&snap.vars);
+    let parent: BTreeSet<String> = std::env::vars_os()
+        .filter_map(|(k, _)| k.into_string().ok())
+        .map(|k| {
+            if cfg!(windows) {
+                k.to_ascii_uppercase()
+            } else {
+                k
+            }
+        })
+        .collect();
+    let risky = startup_overrides(&snap.vars, &parent);
     if !risky.is_empty() && !allow_override {
         return Err(UserError::new(
             codes::USAGE,
-            format!("{env} sets {}, which change how programs start", risky.join(", ")),
+            format!("{env} sets {}, which this shell already sets or which change how programs start", risky.join(", ")),
         )
-        .cause("a maintainer's value there decides which program runs or what it loads, on this computer")
+        .cause("a maintainer's value there would replace yours, or decide which program runs or what it loads, on this computer")
         .fix("pass --allow-env-override if you mean to use them")
         .note("nothing was run")
         .into());
@@ -1131,9 +1203,9 @@ async fn run_with(
 /// (it no longer dies on them; the editor, in the same process group, gets them), and SIGHUP
 /// and SIGTERM are noted so the temporary file is still removed before `dg` stops.
 struct EditorSignals {
-    /// SIGINT and SIGQUIT: held only so `dg` keeps ignoring them while the editor runs.
+    /// SIGINT and SIGQUIT: held so `dg` ignores them while the editor runs, then acts on them.
     #[cfg(unix)]
-    _held: Vec<tokio::signal::unix::Signal>,
+    held: Vec<tokio::signal::unix::Signal>,
     #[cfg(unix)]
     stop: Vec<tokio::signal::unix::Signal>,
 }
@@ -1153,10 +1225,26 @@ impl EditorSignals {
                 .map(signal)
                 .collect::<std::io::Result<Vec<_>>>()
                 .context("watching signals")?;
-            Ok(Self { _held: held, stop })
+            Ok(Self { held, stop })
         }
         #[cfg(not(unix))]
         Ok(Self {})
+    }
+
+    /// After the editor: the signals act as by default again (the process ends with the usual
+    /// status), since a registration cannot be undone.
+    fn restore(self) {
+        #[cfg(unix)]
+        {
+            let codes = [130, 131, 129, 143];
+            for (mut sig, code) in self.held.into_iter().chain(self.stop).zip(codes) {
+                tokio::spawn(async move {
+                    if sig.recv().await.is_some() {
+                        std::process::exit(code);
+                    }
+                });
+            }
+        }
     }
 
     /// Whether a hangup or termination arrived.
@@ -1224,6 +1312,8 @@ fn write_private(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
     Ok(())
 }
 
+/// `git -C dir args`. Pathspec arguments pass `--literal-pathspecs` first (`check-ignore` takes
+/// paths, which it never expands, and refuses the option).
 fn git_in(dir: &Path, args: &[&str]) -> Option<std::process::Output> {
     std::process::Command::new("git")
         .arg("-C")
@@ -1231,6 +1321,14 @@ fn git_in(dir: &Path, args: &[&str]) -> Option<std::process::Output> {
         .args(args)
         .output()
         .ok()
+}
+
+/// Whether `dir` or a directory above it holds a `.git` (a work tree), found without git.
+fn inside_work_tree(dir: &Path) -> bool {
+    let Ok(abs) = std::fs::canonicalize(dir) else {
+        return false;
+    };
+    abs.ancestors().any(|d| d.join(".git").exists())
 }
 
 /// How an exported file sits in git.
@@ -1255,17 +1353,21 @@ fn dir_of(path: &Path) -> PathBuf {
     }
 }
 
-/// Whether `path` is tracked by git (an export must not overwrite a committed file).
+/// Whether `path` is tracked by git, or a tracked file in its directory has the same name but
+/// for case (on a case-insensitive file system writing `path` would overwrite it).
 fn tracked(path: &Path) -> bool {
     let dir = dir_of(path);
-    let Some(name) = path.file_name() else {
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
         return false;
     };
-    git_in(
-        &dir,
-        &["ls-files", "--error-unmatch", "--", &name.to_string_lossy()],
-    )
-    .is_some_and(|o| o.status.success())
+    git_in(&dir, &["--literal-pathspecs", "ls-files", "-z", "--", "."])
+        .filter(|o| o.status.success())
+        .is_some_and(|o| {
+            o.stdout
+                .split(|b| *b == 0)
+                .map(String::from_utf8_lossy)
+                .any(|f| f.to_lowercase() == name.to_lowercase())
+        })
 }
 
 /// Keep `path` out of git: add `/<path from the top>` to the repository's `info/exclude` unless
@@ -1276,6 +1378,17 @@ fn exclude_from_git(path: &Path) -> Result<GitGuard> {
         .filter(|o| o.status.success())
         .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
     else {
+        // fail closed: a work tree git cannot read (git missing or failing) is not "no repository"
+        if inside_work_tree(&dir) {
+            return Err(UserError::new(
+                codes::GIT_REPO,
+                format!("can't check that git ignores {}", path.display()),
+            )
+            .cause("it is inside a git work tree, and git could not be run there")
+            .fix("install git or fix the repository, then export again, or export outside the work tree")
+            .note("nothing was written")
+            .into());
+        }
         return Ok(GitGuard::NoRepository);
     };
     let name = path
@@ -1341,7 +1454,8 @@ fn ignore_pattern(path: &str) -> String {
     out
 }
 
-/// Keep `path` out of git, then write it: refused when git tracks it, or when it is still not
+/// Keep `path` out of git, then write it: refused when git tracks it (or a file differing only
+/// in case), when git cannot be run inside its work tree, or when it is still not
 /// ignored after the `info/exclude` entry (a `.gitignore` rule un-ignores it). Inside no git
 /// repository it is simply written.
 fn write_export(path: &Path, text: &str, force: bool) -> Result<GitGuard> {
@@ -1441,9 +1555,19 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
         ));
     };
     let items = book.history(env);
-    let conflict = matches!(book.current(env), Err(Blocked::Conflict(_)));
+    let conflict = match book.current(env) {
+        Err(Blocked::Conflict { heads, split }) => Some(conflict_headline(env, &heads, split)),
+        _ => None,
+    };
+    let ignored = book.ignored_for(env);
     ctx.emit(
-        json!({ "env": env, "state": state.state, "heads": state.heads, "changes": items }),
+        json!({
+            "env": env,
+            "state": state.state,
+            "heads": state.heads,
+            "changes": items,
+            "ignored": ignored,
+        }),
         || {
             println!(
                 "{env} in {} · {}",
@@ -1451,9 +1575,14 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
                 count(items.len(), "change")
             );
             for i in &items {
-                let what = match &i.unreadable {
-                    Some(why) => format!("can't be read by you: {why}"),
-                    None => format!(
+                let what = match (&i.unreadable, &i.saved_for) {
+                    (Some(why), _) => format!("can't be read by you: {why}"),
+                    (None, Some(m)) => format!(
+                        "{:<12} saved again for {m}: {}",
+                        i.audience.map_or("", |a| a.label()),
+                        summary(&i.changes)
+                    ),
+                    (None, None) => format!(
                         "{:<12} {}",
                         i.audience.map_or("", |a| a.label()),
                         summary(&i.changes)
@@ -1467,10 +1596,17 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
                     i.size_bytes
                 );
             }
-            if conflict {
+            for h in &ignored {
                 println!(
-                    "{}. Keep one version with `dg env edit --env {env} --keep <id>`.",
-                    conflict_headline(env, &book.heads(env))
+                    "  {}  {}  {}  ignored: not a maintainer now, never used",
+                    utc(h.created_at),
+                    h.short(),
+                    h.author
+                );
+            }
+            if let Some(headline) = &conflict {
+                println!(
+                    "{headline}. Compare the versions above, then a maintainer keeps one: `dg env edit --env {env} --keep <id>`."
                 );
             }
             println!("{ACCESS_SENTENCE}");
@@ -1479,65 +1615,121 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
     Ok(())
 }
 
-/// An environment whose counted head a removed maintainer wrote, pinned before the removal:
-/// saved again afterwards, with these values, only if nothing changed meanwhile.
+/// One snapshot a membership change saves, planned before it (values held in memory only).
 struct Pin {
     env: String,
-    pack_hash: [u8; 32],
-    height: u64,
-    size: u64,
+    /// The heads this environment is predicted to have once the change lands: saved only if it
+    /// still has exactly these, so nothing that changed meanwhile is overwritten.
+    predicted: Vec<String>,
+    supersedes: Vec<[u8; 32]>,
     snapshot: Snapshot,
-    /// What that head changed against the newest earlier version by someone else (names only).
-    changes: Vec<(String, Change)>,
+    saved_for: Option<String>,
+    /// For a person: what this save keeps.
+    what: String,
+    size: u64,
+}
+
+impl Pin {
+    fn credits(&self) -> u64 {
+        forge_core::env::service::snapshot_credits(self.size)
+    }
+}
+
+/// The `packHash`es of `ids` in `book`.
+fn hashes_of(book: &Book, ids: &[String]) -> Vec<[u8; 32]> {
+    ids.iter()
+        .filter_map(|id| book.manifest_of(id).map(|m| m.pack_hash))
+        .collect()
+}
+
+/// `first`, then `rest` not already in it, at most [`MAX_SUPERSEDES`].
+fn joined(first: Vec<[u8; 32]>, rest: Vec<[u8; 32]>) -> Vec<[u8; 32]> {
+    let mut out = first;
+    for h in rest {
+        if !out.contains(&h) {
+            out.push(h);
+        }
+    }
+    out.truncate(forge_core::env::service::MAX_SUPERSEDES);
+    out
+}
+
+/// The `supersedes` window over the snapshots `ids` of an environment with `heads` (a predicted
+/// resolution), as [`forge_core::env::chain::window`] computes it.
+fn window_over(book: &Book, ids: &[String], heads: &[String]) -> Vec<[u8; 32]> {
+    let refs: Vec<forge_core::env::SnapshotRef> = ids
+        .iter()
+        .filter_map(|id| book.manifest_of(id))
+        .map(|m| forge_core::env::SnapshotRef {
+            id: m.document_id.clone(),
+            owner_id: m.owner_id.clone(),
+            pack_hash: m.pack_hash,
+            supersedes: m.supersedes.clone(),
+            height: m.created_at_block_height,
+        })
+        .collect();
+    let refs: Vec<&forge_core::env::SnapshotRef> = refs.iter().collect();
+    forge_core::env::chain::window(&refs, heads)
 }
 
 /// What removing a member does to environments, worked out before the confirmation: the
-/// checklist of what they could read, and (for a maintainer) the environments whose counted head
-/// they wrote, pinned to be saved again after the removal. Their snapshots stop counting once
-/// they are not a maintainer, so without this those environments would go back to an earlier
-/// version (or to a conflict).
+/// checklist of what they could read, and (for a maintainer) the snapshots that keep every
+/// environment as it is once their snapshots stop counting: a dry run of the resolution without
+/// them, compared per environment.
 pub struct Removal {
     /// The checklist, as JSON.
     pub exposed: Value,
     checklist: String,
     pins: Vec<Pin>,
-    /// Environments whose head they wrote that the remover cannot open.
+    /// Environments that change and that the remover cannot save again (not readable here).
     cannot: Vec<String>,
 }
 
 impl Removal {
-    /// Print to stderr what the removal saves again (per environment: what the removed
-    /// maintainer's latest change did, values hidden) and what the remover cannot read; return
-    /// the sentence the confirmation prompt adds (empty when nothing is saved again).
+    /// Print to stderr what the removal saves again (per environment, values hidden) and what
+    /// it cannot; the sentence the removal prompt adds (empty when nothing is saved again).
     #[must_use]
     pub fn explain(&self, member: &str, price: Option<f64>) -> String {
-        for p in &self.pins {
-            eprintln!(
-                "  {} will be saved again as you with the values {member} last saved ({}). Their change: {}. Values are not shown.",
-                p.env,
-                p.snapshot.audience.label(),
-                summary(&p.changes)
-            );
-        }
-        for env in &self.cannot {
-            eprintln!(
-                "  {env}'s latest change is by {member} and can't be read by you, so it can't be saved again by you. After the removal it goes back to the version before it. Ask a maintainer who can read it."
-            );
-        }
+        explain_pins(&self.pins, &self.cannot, member, "After the removal");
         if self.pins.is_empty() {
             return String::new();
         }
-        let credits: u64 = self
-            .pins
-            .iter()
-            .map(|p| forge_core::env::service::snapshot_credits(p.size))
-            .sum();
         format!(
-            ". It also saves {} again as you, as listed above: {}",
+            ". {} will then be saved again as you ({}), unless you say no next or pass --no-resave",
             count(self.pins.len(), "environment"),
-            cost_line(credits, price)
+            cost_line(self.pins.iter().map(Pin::credits).sum(), price)
         )
     }
+
+    /// Whether anything is to be saved again.
+    #[must_use]
+    pub fn saves(&self) -> bool {
+        !self.pins.is_empty()
+    }
+
+    /// Drop the saves (`--no-resave`, or a no at their own confirmation).
+    pub fn skip_saves(&mut self, member: &str) {
+        if !self.pins.is_empty() {
+            let _ = write!(
+                self.checklist,
+                "\nNot saved again: {}. Each now holds the version before {member}'s change, or a conflict.",
+                self.pins.iter().map(|p| p.env.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+        self.pins.clear();
+    }
+}
+
+fn explain_pins(pins: &[Pin], cannot: &[String], member: &str, when: &str) {
+    for p in pins {
+        eprintln!("  {}: {}", p.env, p.what);
+    }
+    for env in cannot {
+        eprintln!(
+            "  {env}: {when} it changes, and you can't read it, so you can't save it first. Ask a maintainer who can read it, or check it afterwards with `dg env history --env {env}`."
+        );
+    }
+    let _ = member;
 }
 
 /// [`Removal`] for `member` leaving `s.repo`, read before anything changes. `held_members_key`:
@@ -1578,12 +1770,14 @@ pub async fn prepare_removal(
             e.names.join(", ")
         );
     }
+    // environments the remover cannot read at all: hidden ones, and those whose latest change
+    // does not open here (a conflict is readable, only undecided)
     let unreadable = book.resolution.hidden.len()
         + book
             .resolution
             .environments
             .iter()
-            .filter(|e| book.current(&e.env).is_err())
+            .filter(|e| e.state == forge_core::env::State::Unreadable)
             .count();
     if unreadable > 0 {
         let _ = write!(
@@ -1592,22 +1786,11 @@ pub async fn prepare_removal(
             count(unreadable, "environment")
         );
     }
-    let (mut pins, mut cannot) = (Vec::new(), Vec::new());
-    if maintainer {
-        for h in book.heads_by(member) {
-            match h.snapshot {
-                Some(snap) => pins.push(Pin {
-                    changes: diff(h.previous, snap),
-                    env: h.env,
-                    pack_hash: h.pack_hash,
-                    height: h.height,
-                    size: h.size_bytes,
-                    snapshot: snap.clone(),
-                }),
-                None => cannot.push(h.env),
-            }
-        }
-    }
+    let (pins, cannot) = if maintainer {
+        plan_removal(&book, member)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     Removal {
         exposed: serde_json::to_value(&exposed).unwrap_or(Value::Null),
         checklist,
@@ -1616,93 +1799,254 @@ pub async fn prepare_removal(
     }
 }
 
-/// After `member` is removed (and the key rotated): save again each pinned environment, as the
-/// remover, with the values the removed maintainer last saved, one snapshot each, but only when
-/// its pinned head is still there and no maintainer has changed the environment since. Returns
-/// the environments saved again as JSON, and the text to print after the removal line (then the
-/// checklist).
-pub async fn finish_removal(s: &Session, member: &str, removal: &Removal) -> (Value, String) {
+/// The saves that keep every environment as it is when `member` stops being a maintainer: a dry
+/// run of the resolution without them, per environment whose heads change.
+/// - One head (theirs, or anyone's when their snapshots held the chain together): it is saved
+///   again as the remover, naming the heads the dry run predicts, so one head remains.
+/// - A conflict: each head of theirs is saved again naming only what it superseded, so the
+///   conflict stays for a maintainer to settle (never decided by the removal).
+fn plan_removal(book: &Book, member: &str) -> (Vec<Pin>, Vec<String>) {
+    let mut without = book.maintainers.clone();
+    without.remove(member);
+    let after = book.resolution_with(&without);
+    let diff_env = forge_core::env::chain::changed(&book.resolution, &after);
+    let (mut pins, mut cannot) = (Vec::new(), Vec::new());
+    for env in diff_env.changed.iter().chain(&diff_env.vanished) {
+        let Some(state) = book.state(env) else {
+            continue;
+        };
+        let (predicted, kept_ids) = after
+            .env(env)
+            .map(|a| (a.heads.clone(), a.snapshots.clone()))
+            .unwrap_or_default();
+        match state.state {
+            forge_core::env::State::Current => {
+                let id = &state.heads[0];
+                let (Some(m), Some(snap)) = (book.manifest_of(id), book.snapshot(id)) else {
+                    cannot.push(env.clone());
+                    continue;
+                };
+                let theirs = m.owner_id == member;
+                let what = if theirs {
+                    format!(
+                        "saved again as you with the values {member} last saved ({}). Their change: {}. Values are not shown.",
+                        snap.audience.label(),
+                        summary(&diff(book.previous_by_other(state, m, member), snap))
+                    )
+                } else {
+                    format!("saved again as you, unchanged, so its history stays in one piece without {member}.")
+                };
+                let mut first = hashes_of(book, &predicted);
+                if theirs {
+                    first.insert(0, m.pack_hash);
+                }
+                pins.push(Pin {
+                    env: env.clone(),
+                    supersedes: joined(first, window_over(book, &kept_ids, &predicted)),
+                    predicted,
+                    snapshot: snap.clone(),
+                    saved_for: theirs.then(|| member.to_owned()),
+                    what,
+                    size: m.size_bytes,
+                });
+            }
+            forge_core::env::State::Conflict => {
+                for id in &state.heads {
+                    let Some(m) = book.manifest_of(id).filter(|m| m.owner_id == member) else {
+                        continue;
+                    };
+                    let Some(snap) = book.snapshot(id) else {
+                        cannot.push(env.clone());
+                        continue;
+                    };
+                    let named: Vec<[u8; 32]> = hashes_of(book, &predicted)
+                        .into_iter()
+                        .filter(|h| m.supersedes.contains(h))
+                        .collect();
+                    let mut first = vec![m.pack_hash];
+                    first.extend(named);
+                    pins.push(Pin {
+                        env: env.clone(),
+                        supersedes: joined(first, Vec::new()),
+                        predicted: predicted.clone(),
+                        snapshot: snap.clone(),
+                        saved_for: Some(member.to_owned()),
+                        what: format!(
+                            "has versions saved at the same time; {member}'s ({}) is saved again as you so it stays one of them. Values are not shown.",
+                            &id[..id.len().min(10)]
+                        ),
+                        size: m.size_bytes,
+                    });
+                }
+            }
+            forge_core::env::State::Unreadable => cannot.push(env.clone()),
+        }
+    }
+    (pins, cannot)
+}
+
+/// After the membership change: save each planned snapshot, as the signer, but only those whose
+/// environment still has exactly the predicted heads (checked for all before any is written).
+/// Returns the environments saved as JSON, and text to print (each line starting with a
+/// newline).
+async fn save_pins(s: &Session, pins: &[Pin], done: &str) -> (Value, String) {
     let mut text = String::new();
     let mut saved_envs = Vec::new();
-    if !removal.pins.is_empty() {
-        let envs = Environments::new(&s.client, &s.identity, &s.bridge);
-        match envs.read(&s.repo).await {
-            Ok(book) => {
-                for pin in &removal.pins {
-                    match resave_pinned(&envs, s, &book, member, pin).await {
-                        Ok(true) => {
-                            let _ = write!(
-                                text,
-                                "\nSaved {} again as you ({}), with the values {member} last saved.",
-                                pin.env,
-                                pin.snapshot.audience.label()
-                            );
-                            saved_envs.push(pin.env.clone());
-                        }
-                        Ok(false) => {
-                            let _ = write!(
-                                text,
-                                "\n{} changed after the plan was shown, so it wasn't saved again. Check it: `dg env history --env {}`.",
-                                pin.env, pin.env
-                            );
-                        }
-                        Err(e) => {
-                            let _ = write!(
-                                text,
-                                "\ncouldn't save {} again: {e}. It now holds the version before {member}'s change.",
-                                pin.env
-                            );
-                        }
-                    }
-                }
+    if pins.is_empty() {
+        return (json!(saved_envs), text);
+    }
+    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+    let book = match envs.read(&s.repo).await {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = write!(text, "\ncouldn't read the environments to save them: {e}");
+            return (json!(saved_envs), text);
+        }
+    };
+    let fresh: Vec<bool> = pins
+        .iter()
+        .map(|p| {
+            book.state(&p.env)
+                .map(|st| st.heads.clone())
+                .unwrap_or_default()
+                == p.predicted
+        })
+        .collect();
+    for (pin, fresh) in pins.iter().zip(fresh) {
+        if !fresh {
+            let _ = write!(
+                text,
+                "\n{} changed after the plan was shown, so it wasn't saved. Check it: `dg env history --env {}`.",
+                pin.env, pin.env
+            );
+            continue;
+        }
+        let draft = Draft {
+            env: pin.env.clone(),
+            audience: pin.snapshot.audience,
+            vars: pin.snapshot.vars.clone(),
+            supersedes: pin.supersedes.clone(),
+            saved_for: pin.saved_for.clone(),
+        };
+        let written = async {
+            let prepared = envs.prepare(&s.repo, &draft).await?;
+            envs.store(&s.repo, &prepared).await
+        };
+        match written.await {
+            Ok(_) => {
+                let _ = write!(
+                    text,
+                    "\nSaved {} as you ({}){done}.",
+                    pin.env,
+                    pin.snapshot.audience.label()
+                );
+                saved_envs.push(pin.env.clone());
             }
             Err(e) => {
                 let _ = write!(
                     text,
-                    "\ncouldn't read the environments to save them again: {e}"
+                    "\ncouldn't save {}: {e}. Check it: `dg env history --env {}`.",
+                    pin.env, pin.env
                 );
             }
         }
     }
-    text.push_str(&removal.checklist);
     (json!(saved_envs), text)
 }
 
-/// Save `pin` again from the post-removal `book`, already confirmed: `false` (nothing written)
-/// when the pinned head is gone or a counted change of the environment is newer than it.
-async fn resave_pinned(
-    envs: &Environments<'_>,
-    s: &Session,
-    book: &Book,
-    member: &str,
-    pin: &Pin,
-) -> Result<bool> {
-    let still_there = book
-        .manifests
-        .iter()
-        .any(|m| m.pack_hash == pin.pack_hash && m.owner_id == member);
-    let newer = book.state(&pin.env).is_some_and(|st| {
-        st.snapshots.iter().any(|id| {
-            book.manifests
-                .iter()
-                .any(|m| &m.document_id == id && m.created_at_block_height > pin.height)
-        })
-    });
-    if !still_there || newer {
-        return Ok(false);
+/// After `member` is removed (and the key rotated): the planned saves (see [`plan_removal`]),
+/// then the checklist.
+pub async fn finish_removal(s: &Session, member: &str, removal: &Removal) -> (Value, String) {
+    let (saved, mut text) =
+        save_pins(s, &removal.pins, " again, as it was before the removal").await;
+    let _ = member;
+    text.push_str(&removal.checklist);
+    (saved, text)
+}
+
+/// What making `member` a maintainer does to environments: their earlier snapshots (ignored
+/// while they were not one) would start counting and could change values or split a chain. A
+/// dry run of the resolution with them finds the environments that change; each is saved first
+/// with its current values, naming their dormant snapshots, so nothing changes when the role
+/// lands.
+pub struct Promotion {
+    pins: Vec<Pin>,
+    cannot: Vec<String>,
+    appeared: Vec<String>,
+}
+
+impl Promotion {
+    /// Print to stderr what would change and what is saved first; the sentence the add prompt
+    /// adds (empty when nothing is saved).
+    #[must_use]
+    pub fn explain(&self, member: &str, price: Option<f64>) -> String {
+        explain_pins(&self.pins, &self.cannot, member, "When the role lands");
+        for env in &self.appeared {
+            eprintln!("  {env}: {member} saved it while not a maintainer; it appears once the role lands.");
+        }
+        if self.pins.is_empty() {
+            return String::new();
+        }
+        format!(
+            ". First it saves {} as you, as listed above ({})",
+            count(self.pins.len(), "environment"),
+            cost_line(self.pins.iter().map(Pin::credits).sum(), price)
+        )
     }
-    let mut supersedes = book.window(&pin.env);
-    supersedes.truncate(forge_core::env::service::MAX_SUPERSEDES - 1);
-    supersedes.push(pin.pack_hash);
-    let draft = Draft {
-        env: pin.env.clone(),
-        audience: pin.snapshot.audience,
-        vars: pin.snapshot.vars.clone(),
-        supersedes,
-    };
-    let prepared = envs.prepare(&s.repo, &draft).await?;
-    envs.store(&s.repo, &prepared).await?;
-    Ok(true)
+
+    /// Save the planned snapshots, before the role is granted.
+    pub async fn save(&self, s: &Session) -> (Value, String) {
+        save_pins(s, &self.pins, ", so it stays as it is").await
+    }
+}
+
+/// [`Promotion`] for `member` becoming a maintainer of `s.repo`.
+pub async fn prepare_promotion(s: &Session, member: &str) -> Result<Promotion> {
+    let envs = Environments::new(&s.client, &s.identity, &s.bridge);
+    let now = envs.read(&s.repo).await?;
+    if !now.manifests.iter().any(|m| m.owner_id == member) {
+        return Ok(Promotion {
+            pins: Vec::new(),
+            cannot: Vec::new(),
+            appeared: Vec::new(),
+        });
+    }
+    let then = envs.read_with_maintainer(&s.repo, member).await?;
+    let diff_env = forge_core::env::chain::changed(&now.resolution, &then.resolution);
+    let (mut pins, mut cannot) = (Vec::new(), Vec::new());
+    for env in &diff_env.changed {
+        let Ok(snap) = now.current(env) else {
+            cannot.push(env.clone());
+            continue;
+        };
+        let head = &now.heads(env)[0];
+        let size = now.manifest_of(&head.id).map_or(0, |m| m.size_bytes);
+        let current = now
+            .state(env)
+            .map(|st| st.heads.clone())
+            .unwrap_or_default();
+        // The current version, then the window over the predicted history: its heads (the
+        // member's dormant changes that would take over) first, each author's newest next.
+        // Every snapshot the predicted history doesn't end in is already replaced by a counted one.
+        let (ids, heads) = then
+            .state(env)
+            .map(|st| (st.snapshots.clone(), st.heads.clone()))
+            .unwrap_or_default();
+        pins.push(Pin {
+            env: env.clone(),
+            supersedes: joined(hashes_of(&now, &current), window_over(&then, &ids, &heads)),
+            predicted: current,
+            snapshot: snap.clone(),
+            saved_for: None,
+            what: format!("{member}'s earlier changes would replace its values; it is saved first with its current values, which stay."),
+            size,
+        });
+    }
+    Ok(Promotion {
+        pins,
+        cannot,
+        appeared: diff_env.appeared,
+    })
 }
 
 #[cfg(test)]
@@ -1839,6 +2183,7 @@ mod tests {
             env: "dev".into(),
             audience: Audience::Members,
             generated_at: 0,
+            saved_for: None,
             to: Vec::new(),
             vars: BTreeMap::new(),
         };
@@ -1903,9 +2248,43 @@ mod tests {
         ]
         .into();
         assert_eq!(
-            startup_overrides(&vars),
+            startup_overrides(&vars, &BTreeSet::new()),
             vec!["DYLD_INSERT_LIBRARIES", "NODE_OPTIONS", "PATH"]
         );
+        let parent: BTreeSet<String> = ["API_TOKEN".to_owned()].into();
+        assert_eq!(
+            startup_overrides(&vars, &parent).len(),
+            4,
+            "shadowing the parent too"
+        );
+        for n in [
+            "GIT_SSH_COMMAND",
+            "LD_AUDIT",
+            "npm_config_registry",
+            "PYTHONPATH",
+            "HOME",
+        ] {
+            assert!(is_startup_var(n), "{n}");
+        }
+        assert!(!is_startup_var("DATABASE_URL"));
+    }
+
+    #[test]
+    fn export_refuses_a_name_differing_only_in_case_from_a_tracked_file() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        std::fs::write(dir.path().join("Config.env"), "X=1\n").unwrap();
+        git(dir.path(), &["add", "Config.env"]);
+        assert!(write_export(&dir.path().join("config.env"), "A=1\n", true).is_err());
+    }
+
+    #[test]
+    fn export_fails_closed_inside_a_work_tree_git_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap(); // not a repository git accepts
+        let path = dir.path().join(".env");
+        assert!(write_export(&path, "A=1\n", false).is_err());
+        assert!(!path.exists());
     }
 
     #[test]

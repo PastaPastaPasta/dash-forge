@@ -31,6 +31,8 @@ export interface Snapshot {
   readonly audience: Audience
   /** When the writer made it (ms). */
   readonly generatedAt: number
+  /** Set when a maintainer saved a removed maintainer's values again for them (base58). */
+  readonly savedFor?: string
   /** Maintainers only: the recipients in slot order (base58), the writer first; empty for Members. */
   readonly to: readonly string[]
   /** The entries by name (a `Map`: a name like `__proto__` is just a name). */
@@ -96,6 +98,7 @@ function canonicalId(id: string): boolean {
 export function snapshotProblem(s: Snapshot): string | null {
   if (!validEnvName(s.env)) return `${JSON.stringify(s.env)} is not an environment name`
   if (!Number.isSafeInteger(s.generatedAt) || s.generatedAt < 0 || s.generatedAt > MAX_SAFE) return 'generatedAt is out of range'
+  if (s.savedFor !== undefined && !canonicalId(s.savedFor)) return `${JSON.stringify(s.savedFor)} is not an identity id`
   for (const [name, v] of s.vars) {
     if (!validVarName(name)) return `${JSON.stringify(name)} is not a variable name`
     if (v.type !== 'secret' && v.type !== 'variable') return `${name} has an unknown type`
@@ -116,6 +119,7 @@ export function snapshotProblem(s: Snapshot): string | null {
 function canonical(s: Snapshot): string {
   const str = (x: string) => JSON.stringify(x)
   let out = `{"audience":${str(s.audience)},"env":${str(s.env)},"generatedAt":${s.generatedAt}`
+  if (s.savedFor !== undefined) out += `,"savedFor":${str(s.savedFor)}`
   if (s.audience === 'maintainers') out += `,"to":[${s.to.map(str).join(',')}]`
   const names = [...s.vars.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   const entries = names.map((n) => {
@@ -145,7 +149,7 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
   return out
 }
 
-const TOP_KEYS = new Set(['audience', 'env', 'generatedAt', 'to', 'v', 'vars'])
+const TOP_KEYS = new Set(['audience', 'env', 'generatedAt', 'savedFor', 'to', 'v', 'vars'])
 const VAR_KEYS = new Set(['note', 'type', 'value'])
 
 function isObject(x: unknown): x is Record<string, unknown> {
@@ -172,7 +176,15 @@ function fromJson(obj: unknown): Snapshot | null {
     if ((type !== 'secret' && type !== 'variable') || typeof value !== 'string' || typeof note !== 'string') return null
     out.set(name, { type, value, note })
   }
-  const s: Snapshot = { env, audience, generatedAt, to, vars: out }
+  if ('savedFor' in obj && typeof obj.savedFor !== 'string') return null
+  const s: Snapshot = {
+    env,
+    audience,
+    generatedAt,
+    ...(typeof obj.savedFor === 'string' ? { savedFor: obj.savedFor } : {}),
+    to,
+    vars: out,
+  }
   return snapshotProblem(s) === null ? s : null
 }
 

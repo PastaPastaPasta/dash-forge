@@ -277,6 +277,89 @@ fn components(
     comps.into_values().collect()
 }
 
+/// The most `packHash`es one `supersedes` holds (the contract's 1,024 bytes).
+pub const MAX_SUPERSEDES: usize = 32;
+
+/// What a new snapshot names in `supersedes` (`env_snapshot__window`): the environment's heads,
+/// then the newest snapshot of each other author, then the rest, newest first, at most
+/// [`MAX_SUPERSEDES`]. `snapshots` are the environment's counted snapshots, `heads` their ids.
+/// Naming each author's newest keeps the chain whole when a maintainer with a long run of
+/// changes is removed (readers follow links only between counted snapshots).
+#[must_use]
+pub fn window(snapshots: &[&SnapshotRef], heads: &[String]) -> Vec<[u8; 32]> {
+    let newest_first =
+        |a: &&&SnapshotRef, b: &&&SnapshotRef| (b.height, &b.id).cmp(&(a.height, &a.id));
+    let mut out: Vec<&SnapshotRef> = snapshots
+        .iter()
+        .filter(|s| heads.contains(&s.id))
+        .copied()
+        .collect();
+    out.sort_by(|a, b| (b.height, &b.id).cmp(&(a.height, &a.id)));
+    let mut rest: Vec<&&SnapshotRef> = snapshots
+        .iter()
+        .filter(|s| !heads.contains(&s.id))
+        .collect();
+    rest.sort_by(newest_first);
+    let mut authors: BTreeSet<&str> = out.iter().map(|s| s.owner_id.as_str()).collect();
+    let mut taken: BTreeSet<&str> = out.iter().map(|s| s.id.as_str()).collect();
+    for s in &rest {
+        if authors.insert(s.owner_id.as_str()) {
+            taken.insert(s.id.as_str());
+            out.push(s);
+        }
+    }
+    for s in rest {
+        if taken.insert(s.id.as_str()) {
+            out.push(s);
+        }
+    }
+    out.iter()
+        .take(MAX_SUPERSEDES)
+        .map(|s| s.pack_hash)
+        .collect()
+}
+
+/// How environments differ between two resolutions of the same manifests (a membership change's
+/// dry run): by name, those whose heads or state change, those only `before` names, and those
+/// only `after` names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Changed {
+    /// In both, with other heads or another state.
+    pub changed: Vec<String>,
+    /// Only before (it would disappear).
+    pub vanished: Vec<String>,
+    /// Only after (it would appear).
+    pub appeared: Vec<String>,
+}
+
+impl Changed {
+    /// Whether nothing changes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.vanished.is_empty() && self.appeared.is_empty()
+    }
+}
+
+/// [`Changed`] from `before` to `after`.
+#[must_use]
+pub fn changed(before: &Resolution, after: &Resolution) -> Changed {
+    let mut out = Changed::default();
+    for b in &before.environments {
+        match after.env(&b.env) {
+            Some(a) if a.state == b.state && a.heads == b.heads => {}
+            Some(_) => out.changed.push(b.env.clone()),
+            None => out.vanished.push(b.env.clone()),
+        }
+    }
+    out.appeared = after
+        .environments
+        .iter()
+        .filter(|a| before.env(&a.env).is_none())
+        .map(|a| a.env.clone())
+        .collect();
+    out
+}
+
 /// One environment's opened snapshots, as the removal checklist reads them.
 #[derive(Debug, Clone, Copy)]
 pub struct EnvHistory<'a> {
@@ -411,6 +494,31 @@ mod tests {
             &[("t1", Some("prod")), ("t2", Some("prod"))],
         );
         assert_eq!(r.env("prod").unwrap().state, State::Conflict);
+    }
+
+    #[test]
+    fn a_promotion_dry_run_sees_a_dormant_snapshot_take_over() {
+        let ms = [m("a0", "A", 1, &[]), m("w0", "W", 2, &["a0"])];
+        let opened = [("a0", Some("prod")), ("w0", Some("prod"))];
+        let before = run(&["A"], &ms, &opened);
+        let after = run(&["A", "W"], &ms, &opened);
+        assert_eq!(changed(&before, &after).changed, vec!["prod"]);
+        assert!(changed(&before, &before).is_empty());
+    }
+
+    #[test]
+    fn the_window_names_each_authors_newest_before_filling() {
+        let mut snaps: Vec<SnapshotRef> = (0..40)
+            .map(|i| m(&format!("c{i}"), "C", 10 + i, &[]))
+            .collect();
+        snaps.push(m("a0", "A", 1, &[]));
+        snaps.push(m("a1", "A", 100, &[]));
+        let refs: Vec<&SnapshotRef> = snaps.iter().collect();
+        let w = window(&refs, &["a1".into()]);
+        assert_eq!(w.len(), MAX_SUPERSEDES);
+        assert_eq!(w[0], h("a1"));
+        assert_eq!(w[1], h("c39"), "the newest other author next");
+        assert!(!w.contains(&h("a0")), "a0's author is already named by a1");
     }
 
     #[test]

@@ -44,7 +44,12 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
             wait,
         } => add(ctx, repo, member, *role, *wait).await,
         CollabCommand::Accept { repo, withdraw } => accept(ctx, repo, *withdraw).await,
-        CollabCommand::Remove { repo, member, role } => remove(ctx, repo, member, *role).await,
+        CollabCommand::Remove {
+            repo,
+            member,
+            role,
+            no_resave,
+        } => remove(ctx, repo, member, *role, *no_resave).await,
         CollabCommand::List { repo } => list(ctx, repo).await,
     }
 }
@@ -260,10 +265,28 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         ),
         None => format!("Add {member} as a {role} of {repo}? ({what})"),
     };
+    // A new maintainer's earlier environment snapshots (ignored until now) start counting with
+    // the role: the environments they would change are saved first, unchanged (DESIGN §4.5).
+    let promotion = if role == Role::Maintainer && !held {
+        Some(crate::env::prepare_promotion(&s, member).await?)
+    } else {
+        None
+    };
+    let question = match &promotion {
+        Some(p) => format!("{question}{}", p.explain(member, ctx.usd_price())),
+        None => question,
+    };
     if !ctx.confirm(&question)? {
         return Err(crate::errors::cancelled());
     }
     let before = s.balance().await;
+    let (protected, protected_text) = match &promotion {
+        Some(p) => p.save(&s).await,
+        None => (serde_json::Value::Null, String::new()),
+    };
+    if !protected_text.is_empty() {
+        eprintln!("{}", protected_text.trim_start());
+    }
     let granted = MemberService::new(client, &s.identity, &s.bridge)
         .grant(handle, member, role)
         .await
@@ -296,6 +319,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "member": member,
             "role": granted.role.as_str(),
             "previousRole": change_from.map(Role::as_str),
+            "environmentsSavedFirst": protected,
             "documentId": granted.document_id,
             "id": granted.document_id,
             "repo": handle.display(),
@@ -327,7 +351,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
 }
 
 #[allow(clippy::too_many_lines)] // one removal: prompt, re-anchor, revoke, rotate, environments
-async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
+async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: bool) -> Result<()> {
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
@@ -364,10 +388,18 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     // Environments (DESIGN §4.5), read before they go: what they could read (keyed = held the
     // key), and those whose counted head a removed maintainer wrote, pinned and saved again
     // after the rotation (their snapshots stop counting when they go).
-    let removal = crate::env::prepare_removal(&s, member, keyed, role == Role::Maintainer).await;
+    let mut removal =
+        crate::env::prepare_removal(&s, member, keyed, role == Role::Maintainer).await;
+    if no_resave {
+        removal.skip_saves(member);
+    }
     let prompt = format!("{prompt}{}", removal.explain(member, ctx.usd_price()));
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
+    }
+    // the saves are a separate decision (`--yes` answers both)
+    if removal.saves() && !ctx.confirm("Save those environments again as you after the removal?")? {
+        removal.skip_saves(member);
     }
     let signer = crate::keys::signer(&s);
     // Removing a maintainer withdraws their anchors (§5.3): re-anchor their epochs under the

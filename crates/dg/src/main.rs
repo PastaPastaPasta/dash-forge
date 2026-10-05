@@ -1667,6 +1667,10 @@ pub enum CollabCommand {
         /// are one document: any of them removes it).
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
+        /// Don't save again the environments whose latest change this maintainer made (they
+        /// then go back to the version before it).
+        #[arg(long)]
+        no_resave: bool,
     },
     /// List members.
     List {

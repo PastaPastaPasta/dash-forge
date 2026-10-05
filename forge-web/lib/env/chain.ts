@@ -152,6 +152,45 @@ export function resolveSnapshots(
   return { ignored, environments, hidden: hiddenOut }
 }
 
+/** The most `packHash`es one `supersedes` holds (the contract's 1,024 bytes). */
+export const MAX_SUPERSEDES = 32
+
+/**
+ * What a new snapshot names in `supersedes`: the environment's heads, then the newest snapshot of
+ * each other author, then the rest, newest first, at most 32 (`env_snapshot__window`).
+ */
+export function supersedesWindow(snapshots: readonly SnapshotRef[], heads: readonly string[]): string[] {
+  const newestFirst = (a: SnapshotRef, b: SnapshotRef) => b.height - a.height || cmp(b.id, a.id)
+  const out = snapshots.filter((s) => heads.includes(s.id)).sort(newestFirst)
+  const rest = snapshots.filter((s) => !heads.includes(s.id)).sort(newestFirst)
+  const authors = new Set(out.map((s) => s.ownerId))
+  const taken = new Set(out.map((s) => s.id))
+  for (const s of rest) {
+    if (!authors.has(s.ownerId)) {
+      authors.add(s.ownerId)
+      taken.add(s.id)
+      out.push(s)
+    }
+  }
+  for (const s of rest) if (!taken.has(s.id)) out.push(s)
+  return out.slice(0, MAX_SUPERSEDES).map((s) => s.packHash)
+}
+
+/** Environments whose heads or state differ between two resolutions (a membership change's dry run). */
+export function changedEnvironments(before: Resolution, after: Resolution): { changed: string[]; vanished: string[]; appeared: string[] } {
+  const byName = (r: Resolution) => new Map(r.environments.map((e) => [e.env, e]))
+  const a = byName(after)
+  const b = byName(before)
+  const changed: string[] = []
+  const vanished: string[] = []
+  for (const e of before.environments) {
+    const x = a.get(e.env)
+    if (x === undefined) vanished.push(e.env)
+    else if (x.state !== e.state || x.heads.join() !== e.heads.join()) changed.push(e.env)
+  }
+  return { changed, vanished, appeared: after.environments.filter((e) => !b.has(e.env)).map((e) => e.env) }
+}
+
 /** One environment's readable snapshots, as the removal checklist reads them. */
 export interface EnvHistory {
   readonly env: string

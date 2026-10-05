@@ -73,7 +73,7 @@ pub mod service;
 pub(crate) mod conformance;
 
 pub use chain::{
-    exposure, resolve, EnvState, Exposure, HiddenEnv, Ignored, Resolution, SnapshotRef,
+    exposure, resolve, EnvState, Exposure, HiddenEnv, Ignored, Resolution, SnapshotRef, State,
 };
 pub use codec::{open, owner_keys, seal_maintainers, seal_members, OpenError, OpenKeys};
 pub use format::{Snapshot, Var, VarType};

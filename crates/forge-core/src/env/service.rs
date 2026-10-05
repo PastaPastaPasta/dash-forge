@@ -44,6 +44,9 @@ pub enum Opened {
     Refused(OpenError),
     /// No copy could be fetched (the message, never content).
     Unfetched(String),
+    /// A Members snapshot under a members key its author could no longer use when it was saved
+    /// (the late-content rule sealed packs follow, `private-repos.md` §8.2).
+    Late,
 }
 
 impl Opened {
@@ -63,6 +66,7 @@ impl Opened {
             Self::Snapshot(_) => String::new(),
             Self::Refused(e) => e.reason().to_owned(),
             Self::Unfetched(why) => format!("it could not be fetched ({why})"),
+            Self::Late => "it was saved under a members key after that key was replaced".to_owned(),
         }
     }
 }
@@ -110,13 +114,21 @@ pub enum Blocked {
         hidden: usize,
     },
     /// Two or more heads: the values are never merged automatically.
-    Conflict(Vec<Head>),
+    Conflict {
+        /// The heads, oldest first.
+        heads: Vec<Head>,
+        /// The heads share no earlier version: separate histories (two first versions, or a
+        /// chain split), not two changes made at once.
+        split: bool,
+    },
     /// The latest change does not open for this reader.
     Unreadable {
         /// That change.
         head: Head,
         /// Why, for a person.
         reason: String,
+        /// No copy of it could be fetched (a storage or network failure, not a key).
+        unfetched: bool,
     },
 }
 
@@ -137,6 +149,8 @@ pub struct HistoryItem {
     pub changes: Vec<(String, Change)>,
     /// Why it cannot be read, when it cannot.
     pub unreadable: Option<String>,
+    /// A maintainer saved it again for this removed maintainer, with their values.
+    pub saved_for: Option<String>,
 }
 
 impl Book {
@@ -178,9 +192,10 @@ impl Book {
                 .snapshot(&state.heads[0])
                 .ok_or_else(|| self.unreadable(&state.heads[0])),
             State::Unreadable => Err(self.unreadable(&state.heads[0])),
-            State::Conflict => Err(Blocked::Conflict(
-                state.heads.iter().map(|h| self.head(h)).collect(),
-            )),
+            State::Conflict => Err(Blocked::Conflict {
+                heads: state.heads.iter().map(|h| self.head(h)).collect(),
+                split: self.is_split(state),
+            }),
         }
     }
 
@@ -188,7 +203,39 @@ impl Book {
         Blocked::Unreadable {
             head: self.head(id),
             reason: self.opened.get(id).map(Opened::reason).unwrap_or_default(),
+            unfetched: matches!(self.opened.get(id), Some(Opened::Unfetched(_))),
         }
+    }
+
+    /// Whether `state`'s heads share no earlier counted version (separate histories) rather
+    /// than having been made from one version at the same time.
+    fn is_split(&self, state: &EnvState) -> bool {
+        let in_env: BTreeMap<[u8; 32], &PackManifestInfo> = state
+            .snapshots
+            .iter()
+            .filter_map(|id| self.manifest(id).map(|m| (m.pack_hash, m)))
+            .collect();
+        let ancestors = |id: &str| -> BTreeSet<[u8; 32]> {
+            let mut seen = BTreeSet::new();
+            let mut todo: Vec<&PackManifestInfo> = self.manifest(id).into_iter().collect();
+            while let Some(m) = todo.pop() {
+                for h in &m.supersedes {
+                    if let Some(p) = in_env.get(h) {
+                        if p.created_at_block_height < m.created_at_block_height && seen.insert(*h)
+                        {
+                            todo.push(p);
+                        }
+                    }
+                }
+            }
+            seen
+        };
+        let mut sets = state.heads.iter().map(|h| ancestors(h));
+        let Some(first) = sets.next() else {
+            return false;
+        };
+        sets.fold(first, |acc, s| acc.intersection(&s).copied().collect())
+            .is_empty()
     }
 
     /// The heads of `env` (one, or every head of a conflict).
@@ -236,6 +283,7 @@ impl Book {
                     size_bytes: m.map_or(0, |m| m.size_bytes),
                     audience: opened.map(|s| s.audience),
                     changes: opened.map(|s| diff(before, s)).unwrap_or_default(),
+                    saved_for: opened.and_then(|s| s.saved_for.clone()),
                     unreadable: opened
                         .is_none()
                         .then(|| self.opened.get(id).map(Opened::reason).unwrap_or_default()),
@@ -269,34 +317,69 @@ impl Book {
         chain::exposure(&histories, removed, held_members_key)
     }
 
-    /// The `supersedes` a new snapshot of `env` writes: every head, then every other counted
-    /// snapshot of the environment, newest first, up to [`MAX_SUPERSEDES`] in all. Naming the
-    /// whole recent chain (not only the head) keeps it one chain when a maintainer who wrote a
-    /// change in its middle is removed, since readers follow links only between counted
-    /// snapshots.
+    /// The `supersedes` a new snapshot of `env` writes ([`chain::window`]).
     #[must_use]
     pub fn window(&self, env: &str) -> Vec<[u8; 32]> {
         let Some(state) = self.state(env) else {
             return Vec::new();
         };
-        let mut rest: Vec<&PackManifestInfo> = state
+        let refs: Vec<SnapshotRef> = state
             .snapshots
             .iter()
-            .filter(|id| !state.heads.contains(id))
             .filter_map(|id| self.manifest(id))
+            .map(snapshot_ref)
             .collect();
-        rest.sort_by(|a, b| {
-            (b.created_at_block_height, &b.document_id)
-                .cmp(&(a.created_at_block_height, &a.document_id))
-        });
-        state
-            .heads
+        let refs: Vec<&SnapshotRef> = refs.iter().collect();
+        chain::window(&refs, &state.heads)
+    }
+
+    /// The ignored manifests that name any snapshot of `env` (for its history): changes by
+    /// people who are not maintainers now, never used.
+    #[must_use]
+    pub fn ignored_for(&self, env: &str) -> Vec<Head> {
+        let Some(state) = self.state(env) else {
+            return Vec::new();
+        };
+        let hashes: BTreeSet<[u8; 32]> = state
+            .snapshots
             .iter()
-            .filter_map(|id| self.manifest(id))
-            .chain(rest)
-            .map(|m| m.pack_hash)
-            .take(MAX_SUPERSEDES)
-            .collect()
+            .filter_map(|id| self.manifest(id).map(|m| m.pack_hash))
+            .collect();
+        let mut out: Vec<&PackManifestInfo> = self
+            .manifests
+            .iter()
+            .filter(|m| !self.maintainers.contains(&m.owner_id))
+            .filter(|m| m.supersedes.iter().any(|h| hashes.contains(h)))
+            .collect();
+        out.sort_by(|a, b| {
+            (a.created_at_block_height, &a.document_id)
+                .cmp(&(b.created_at_block_height, &b.document_id))
+        });
+        out.iter().map(|m| self.head(&m.document_id)).collect()
+    }
+
+    /// The resolution these manifests would have if the maintainers were `maintainers` (a dry
+    /// run of a removal: only snapshots this book opened can be named, so a set larger than the
+    /// current one needs [`Environments::read_with_maintainer`]).
+    #[must_use]
+    pub fn resolution_with(&self, maintainers: &BTreeSet<String>) -> Resolution {
+        let refs: Vec<SnapshotRef> = self.manifests.iter().map(snapshot_ref).collect();
+        let by_hash: BTreeMap<[u8; 32], &str> = self
+            .manifests
+            .iter()
+            .filter(|m| maintainers.contains(&m.owner_id))
+            .filter_map(|m| {
+                self.snapshot(&m.document_id)
+                    .map(|s| (m.pack_hash, s.env.as_str()))
+            })
+            .collect();
+        chain::resolve(maintainers, &refs, |h| by_hash.get(h).copied())
+    }
+
+    /// The manifest of document `id`.
+    #[must_use]
+    pub fn manifest_of(&self, id: &str) -> Option<&PackManifestInfo> {
+        self.manifest(id)
     }
 
     /// The ignored manifests (by people who are not maintainers now) that name a head of `env`
@@ -308,33 +391,11 @@ impl Book {
             .unwrap_or_default()
     }
 
-    /// The environments whose single counted head `author` wrote: what removing that
-    /// maintainer saves again.
-    #[must_use]
-    pub fn heads_by(&self, author: &str) -> Vec<AuthoredHead<'_>> {
-        self.resolution
-            .environments
-            .iter()
-            .filter(|e| e.heads.len() == 1)
-            .filter_map(|e| {
-                let m = self.manifest(&e.heads[0])?;
-                (m.owner_id == author).then(|| AuthoredHead {
-                    env: e.env.clone(),
-                    head: self.head(&e.heads[0]),
-                    pack_hash: m.pack_hash,
-                    height: m.created_at_block_height,
-                    size_bytes: m.size_bytes,
-                    snapshot: self.snapshot(&e.heads[0]),
-                    previous: self.previous_by_other(e, m, author),
-                })
-            })
-            .collect()
-    }
-
     /// The newest earlier snapshot of `state`'s environment, below `head` in block height, that
     /// someone other than `author` wrote and this reader can open: what the removal diff compares
     /// with.
-    fn previous_by_other(
+    #[must_use]
+    pub fn previous_by_other(
         &self,
         state: &EnvState,
         head: &PackManifestInfo,
@@ -368,14 +429,16 @@ impl Book {
                     vars: snap.vars.clone(),
                     audience: Some(snap.audience),
                     supersedes: self.window(env),
+                    heads: 1,
                 })
             }
             Err(Blocked::Missing { .. }) => Ok(Base {
                 vars: BTreeMap::new(),
                 audience: None,
                 supersedes: Vec::new(),
+                heads: 0,
             }),
-            Err(Blocked::Conflict(heads)) => {
+            Err(Blocked::Conflict { heads, split }) => {
                 let picked = keep.and_then(|k| {
                     let hits: Vec<&Head> = heads.iter().filter(|h| h.id.starts_with(k)).collect();
                     (hits.len() == 1).then(|| hits[0])
@@ -385,11 +448,17 @@ impl Book {
                         vars: snap.vars.clone(),
                         audience: Some(snap.audience),
                         supersedes: self.window(env),
+                        heads: heads.len(),
                     }),
-                    None => Err(conflict_error(repo, env, &heads)),
+                    None => Err(conflict_error(repo, env, &heads, split)),
                 }
             }
-            Err(Blocked::Unreadable { head, reason }) => Err(UserError::new(
+            Err(Blocked::Unreadable {
+                head,
+                reason,
+                unfetched: true,
+            }) => Err(unfetched_error(env, &head, &reason)),
+            Err(Blocked::Unreadable { head, reason, .. }) => Err(UserError::new(
                 codes::NOT_A_KEY_HOLDER,
                 format!(
                     "the latest change to {env} can't be read by you, so it can't be changed from here"
@@ -408,10 +477,14 @@ impl Book {
     }
 }
 
-/// "2 people changed production at the same time", or "production was changed 2 times at the
-/// same time" when one person did it from two places.
+/// The headline of a conflict: "2 people changed production at the same time" (or "production
+/// was changed 2 times at the same time"), or for heads with no earlier version in common
+/// "production has 2 separate histories".
 #[must_use]
-pub fn conflict_headline(env: &str, heads: &[Head]) -> String {
+pub fn conflict_headline(env: &str, heads: &[Head], split: bool) -> String {
+    if split {
+        return format!("{env} has {} separate histories", heads.len());
+    }
     let authors: BTreeSet<&str> = heads.iter().map(|h| h.author.as_str()).collect();
     if authors.len() > 1 {
         format!("{} people changed {env} at the same time", authors.len())
@@ -420,59 +493,51 @@ pub fn conflict_headline(env: &str, heads: &[Head]) -> String {
     }
 }
 
-/// E608 for an environment two people changed at once.
+/// E608: `env` has two or more latest versions. Every one is named (id, author, time); which to
+/// keep is left to a maintainer who has looked at `dg env history`.
 #[must_use]
-pub fn conflict_error(repo: &RepoRef, env: &str, heads: &[Head]) -> Error {
+pub fn conflict_error(repo: &RepoRef, env: &str, heads: &[Head], split: bool) -> Error {
     let versions: Vec<String> = heads
         .iter()
         .map(|h| format!("{} by {} at {}", h.short(), h.author, utc(h.created_at)))
         .collect();
-    let mut u = UserError::new(
+    let why = if split {
+        "they share no earlier version: two first versions were saved, or a removed maintainer's changes joined them"
+    } else {
+        "they were made from the same version, and versions are never merged automatically"
+    };
+    UserError::new(
         codes::ENV_CONFLICT,
         format!(
-            "{}, so its values can't be used until one version is kept",
-            conflict_headline(env, heads)
+            "{}, so its values can't be used until a maintainer keeps one",
+            conflict_headline(env, heads, split)
         ),
     )
     .cause(format!(
-        "{env} in {} has {} latest versions, never merged automatically: {}",
+        "{env} in {} has {} latest versions ({why}): {}",
         repo.display(),
         heads.len(),
-        versions.join(", and ")
-    ));
-    if let Some(h) = heads.first() {
-        u = u.fix(format!(
-            "a maintainer keeps one: `dg env edit --env {env} --keep {}` (or `dg env set … --keep <id>`)",
-            h.short()
-        ));
-    }
-    u.fix(format!(
-        "`dg env history --env {env}` shows what each changed"
+        versions.join(", ")
+    ))
+    .fix(format!(
+        "compare them with `dg env history --env {env}`, then a maintainer keeps one: `dg env edit --env {env} --keep <id>`"
     ))
     .into()
 }
 
-/// The most `packHash`es one `supersedes` holds (the contract's 1,024 bytes).
-pub const MAX_SUPERSEDES: usize = crate::repo::MAX_SUPERSEDES;
-
-/// An environment whose counted head one maintainer wrote ([`Book::heads_by`]).
-#[derive(Debug, Clone)]
-pub struct AuthoredHead<'b> {
-    /// The environment.
-    pub env: String,
-    /// The head.
-    pub head: Head,
-    /// Its `packHash`: what a removal pins, to save again only an unchanged head.
-    pub pack_hash: [u8; 32],
-    /// Its block height.
-    pub height: u64,
-    /// Its sealed size.
-    pub size_bytes: u64,
-    /// The head, when this reader can open it.
-    pub snapshot: Option<&'b Snapshot>,
-    /// The newest earlier version by someone else, when readable (what the diff compares with).
-    pub previous: Option<&'b Snapshot>,
+/// E503 for an environment whose latest change could not be fetched (not a key problem).
+#[must_use]
+pub fn unfetched_error(env: &str, head: &Head, reason: &str) -> Error {
+    UserError::new(
+        codes::PACKS_UNREADABLE,
+        format!("the latest change to {env} couldn't be fetched"),
+    )
+    .cause(format!("{} by {}: {reason}", head.short(), head.author))
+    .fix("check your connection and storage settings (`dg storage status`), then try again")
+    .into()
 }
+
+pub use super::chain::MAX_SUPERSEDES;
 
 /// Where a new snapshot starts ([`Book::base`]).
 #[derive(Debug, Clone)]
@@ -483,6 +548,9 @@ pub struct Base {
     pub audience: Option<Audience>,
     /// The `packHash`es the new snapshot supersedes.
     pub supersedes: Vec<[u8; 32]>,
+    /// How many heads the environment has now (0 new, 1, or more when `keep` resolves a
+    /// conflict).
+    pub heads: usize,
 }
 
 /// A snapshot ready to save.
@@ -496,6 +564,8 @@ pub struct Draft {
     pub vars: BTreeMap<String, Var>,
     /// What it replaces ([`Base::supersedes`]).
     pub supersedes: Vec<[u8; 32]>,
+    /// Set when saving a removed maintainer's values again for them.
+    pub saved_for: Option<String>,
 }
 
 /// A sealed snapshot not yet written ([`Environments::prepare`]).
@@ -602,6 +672,16 @@ impl<'a> Environments<'a> {
     /// `packHash`) and opened, then [`chain::resolve`]. A snapshot by anyone else is never
     /// fetched or opened (D24).
     pub async fn read(&self, repo: &RepoRef) -> Result<Book> {
+        self.read_as(repo, None).await
+    }
+
+    /// [`Self::read`] as if `extra` were a maintainer too: a dry run of a promotion, opening
+    /// their snapshots as a reader would once they count.
+    pub async fn read_with_maintainer(&self, repo: &RepoRef, extra: &str) -> Result<Book> {
+        self.read_as(repo, Some(extra)).await
+    }
+
+    async fn read_as(&self, repo: &RepoRef, extra: Option<&str>) -> Result<Book> {
         let svc = self.repo_service();
         let members = MemberReader::new(self.client);
         let (manifests, maintainers) =
@@ -610,8 +690,9 @@ impl<'a> Environments<'a> {
             .into_iter()
             .filter(|m| m.kind == u64::from(crate::pack::KIND_ENV_SNAPSHOT))
             .collect();
-        let maintainers: BTreeSet<String> =
+        let mut maintainers: BTreeSet<String> =
             maintainers.into_iter().map(|m| m.identity_id).collect();
+        maintainers.extend(extra.map(str::to_owned));
         let authorized = authorized(&manifests, &maintainers);
         let opened: BTreeMap<String, Opened> = self
             .opener(repo, &svc, &authorized)
@@ -689,6 +770,7 @@ impl<'a> Environments<'a> {
             .signer
             .and_then(|(identity, _)| platform::decode_identifier(&identity.id()).ok());
         let mut epoch_keys: BTreeMap<u32, EpochKeys> = BTreeMap::new();
+        let mut standing = None;
         if let (true, Some(s)) = (needs(crate::private::pack::VERSION), signer.as_ref()) {
             // a repository without a members key chain, or a reader without its key: nothing
             // opens, which is what the reader is told per snapshot
@@ -697,6 +779,7 @@ impl<'a> Environments<'a> {
                 for (e, k) in &kr.resolution().keys {
                     epoch_keys.insert(*e, EpochKeys::derive(&repo_id, *e, k));
                 }
+                standing = Some(kr.resolution().clone());
             }
         }
         Ok(Opener {
@@ -706,6 +789,7 @@ impl<'a> Environments<'a> {
             reader_id,
             reader_keys,
             epoch_keys,
+            standing,
         })
     }
 
@@ -850,6 +934,7 @@ impl<'a> Environments<'a> {
             env: draft.env.clone(),
             audience: draft.audience,
             generated_at,
+            saved_for: draft.saved_for.clone(),
             to: Vec::new(),
             vars: draft.vars.clone(),
         };
@@ -954,9 +1039,32 @@ struct Opener {
     reader_id: Option<[u8; 32]>,
     reader_keys: Vec<crate::envelope::PrivateKey>,
     epoch_keys: BTreeMap<u32, EpochKeys>,
+    /// The members key chain, for the late-content rule on Members snapshots.
+    standing: Option<crate::private::EpochResolution>,
 }
 
 impl Opener {
+    /// Whether `bytes`, a Members (DFPK 0x01) snapshot, is late content: sealed under an epoch
+    /// its owner could no longer write when the manifest landed (as for sealed packs,
+    /// [`crate::private::EpochResolution::manifest_standing`]). A manifest with no block height
+    /// cannot be judged and never qualifies.
+    fn late(&self, m: &PackManifestInfo, bytes: &[u8]) -> bool {
+        if bytes.get(4) != Some(&crate::private::pack::VERSION) {
+            return false;
+        }
+        let (Some(res), Ok(header), Ok(owner)) = (
+            self.standing.as_ref(),
+            crate::private::PackHeader::parse(bytes, bytes.len() as u64),
+            platform::decode_identifier(&m.owner_id),
+        ) else {
+            return false;
+        };
+        m.created_at_block_height == 0
+            || !res
+                .manifest_standing(header.epoch(), m.created_at_block_height, &owner)
+                .readable
+    }
+
     /// What each of `list` came to: opened ([`codec::open`], D24's order), refused, or unfetched.
     fn open_all(&self, list: &[&PackManifestInfo]) -> BTreeMap<String, Opened> {
         let lookup = |e: u32| self.epoch_keys.get(&e);
@@ -964,6 +1072,7 @@ impl Opener {
         list.iter()
             .map(|m| {
                 let result = match self.fetched.get(&m.document_id) {
+                    Some(Ok(bytes)) if self.late(m, bytes) => Opened::Late,
                     Some(Ok(bytes)) => {
                         let keys = OpenKeys {
                             repo_id: &self.repo_id,

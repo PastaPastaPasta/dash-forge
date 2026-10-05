@@ -32,6 +32,7 @@ fn snapshot_of(v: &Value) -> Snapshot {
         env: v["env"].as_str().unwrap().into(),
         audience: Audience::parse(v["audience"].as_str().unwrap()).unwrap(),
         generated_at: v["generatedAt"].as_u64().unwrap(),
+        saved_for: v.get("savedFor").map(|f| f.as_str().unwrap().to_owned()),
         to: v
             .get("to")
             .map(|t| {
@@ -75,6 +76,9 @@ fn snapshot_json(s: &Snapshot) -> Value {
     });
     if s.audience == Audience::Maintainers {
         out["to"] = json!(s.to);
+    }
+    if let Some(f) = &s.saved_for {
+        out["savedFor"] = json!(f);
     }
     out
 }
@@ -282,6 +286,7 @@ fn run_exposure(inp: &Value) -> Value {
         env: "x".into(),
         audience: Audience::parse(v["audience"].as_str().unwrap()).unwrap(),
         generated_at: 0,
+        saved_for: None,
         to: v
             .get("to")
             .map(|t| {
@@ -367,6 +372,18 @@ fn run(v: &Value) -> Value {
         "open" => run_open(inp, &v["expected"]),
         "resolve" => run_resolve(inp),
         "exposure" => run_exposure(inp),
+        "window" => json!({ "results": inp["cases"].as_array().unwrap().iter().map(|c| {
+            let snaps: Vec<SnapshotRef> = c["snapshots"].as_array().unwrap().iter().map(|m| SnapshotRef {
+                id: m["id"].as_str().unwrap().into(),
+                owner_id: m["ownerId"].as_str().unwrap().into(),
+                pack_hash: hex32(&m["packHash"]),
+                supersedes: Vec::new(),
+                height: m["height"].as_u64().unwrap(),
+            }).collect();
+            let refs: Vec<&SnapshotRef> = snaps.iter().collect();
+            let heads: Vec<String> = c["heads"].as_array().unwrap().iter().map(|h| h.as_str().unwrap().to_owned()).collect();
+            json!(chain::window(&refs, &heads).iter().map(hex::encode).collect::<Vec<_>>())
+        }).collect::<Vec<_>>() }),
         "defaultAudience" => json!({ "results": inp["names"].as_array().unwrap().iter()
             .map(|n| default_audience(n.as_str().unwrap()).as_str()).collect::<Vec<_>>() }),
         other => panic!("unknown env_snapshot op {other}"),
