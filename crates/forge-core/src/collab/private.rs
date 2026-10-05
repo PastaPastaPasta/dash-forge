@@ -25,12 +25,22 @@ use crate::private::{DocKind, EpochKeys, Fields, Opened, PrivateError};
 /// framing (29) minus 3 bytes per TLV record the type carries (§4.3 combined sizes).
 #[must_use]
 pub fn text_cap(kind: DocKind) -> usize {
-    let records = match kind {
+    kind.max_enc() - crate::private::doc::MIN_V1 - 3 * records_of(kind)
+}
+
+/// [`text_cap`] of a members-only document of a public repository (`enc` v0x03, whose framing
+/// is 32 bytes longer; its padding is dropped when it does not fit).
+#[must_use]
+pub fn members_text_cap(kind: DocKind) -> usize {
+    kind.max_enc() - crate::private::doc::MIN_V3 - 3 * records_of(kind)
+}
+
+fn records_of(kind: DocKind) -> usize {
+    match kind {
         DocKind::Issue | DocKind::Comment => 2,
         DocKind::Patch => 4,
         _ => 1,
-    };
-    kind.max_enc() - crate::private::doc::MIN_V1 - 3 * records
+    }
 }
 
 fn take_text(props: &mut BTreeMap<String, FieldValue>, name: &str) -> Option<String> {
@@ -71,9 +81,39 @@ pub fn seal_props(
     owner: [u8; 32],
     props: BTreeMap<String, FieldValue>,
 ) -> Result<BTreeMap<String, FieldValue>> {
-    seal_props_inner(keys, kind, owner, props, |h, f| {
+    seal_props_inner(keys, kind, owner, props, false, |h, f| {
         crate::private::doc::seal(keys, h, f)
     })
+}
+
+/// [`seal_props`] for a **members-only** document of a public repository
+/// (`docs/security/private-repos.md` §17): the same transform, sealed in `enc` v0x03 (a
+/// per-object key under the members key's epoch `keys`, its commitment, the padding) by
+/// [`crate::private::doc::seal_members`]. A patch is refused by the caller (members-only pull
+/// requests come with members-only branches).
+pub fn seal_members_props(
+    lane: &crate::private::Lane,
+    kind: DocKind,
+    owner: [u8; 32],
+    props: BTreeMap<String, FieldValue>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    seal_props_inner(lane.write_keys(), kind, owner, props, true, |h, f| {
+        lane.seal_doc(h, f)
+    })
+}
+
+/// [`reseal_edit`] for a members-only issue or comment of a public repository: the whole
+/// content re-sealed in `enc` v0x03 ([`seal_members_props`]); only `enc` / `epoch` change.
+pub fn reseal_members_edit(
+    lane: &crate::private::Lane,
+    kind: DocKind,
+    owner: [u8; 32],
+    opened: &FetchedDocument,
+    changes: &BTreeMap<String, Option<String>>,
+) -> Result<BTreeMap<String, Option<FieldValue>>> {
+    let props = edited_props(opened, changes);
+    let sealed = seal_members_props(lane, kind, owner, props)?;
+    Ok(enc_and_epoch(&sealed))
 }
 
 /// The `enc` / `epoch` a replace of a private issue, PR or comment sets (the web's
@@ -144,7 +184,7 @@ pub fn seal_props_with_nonce(
     props: BTreeMap<String, FieldValue>,
     nonce: [u8; 12],
 ) -> Result<BTreeMap<String, FieldValue>> {
-    seal_props_inner(keys, kind, owner, props, |h, f| {
+    seal_props_inner(keys, kind, owner, props, false, |h, f| {
         crate::private::doc::seal_with_nonce(keys, h, f, false, nonce)
     })
 }
@@ -154,6 +194,7 @@ fn seal_props_inner(
     kind: DocKind,
     owner: [u8; 32],
     mut props: BTreeMap<String, FieldValue>,
+    members: bool,
     seal: impl FnOnce(&DocHeader, &Fields) -> std::result::Result<Vec<u8>, PrivateError>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     let epoch = keys.epoch();
@@ -205,7 +246,7 @@ fn seal_props_inner(
         }
     }
     take_imported(&mut props, &mut fields);
-    let enc = seal(&header, &fields).map_err(|e| sealing_error(kind, e))?;
+    let enc = seal(&header, &fields).map_err(|e| sealing_error(kind, members, e))?;
     props.insert("epoch".into(), FieldValue::integer(u64::from(epoch)));
     props.insert("enc".into(), FieldValue::bytes(enc));
     Ok(props)
@@ -220,7 +261,7 @@ pub fn is_too_large(e: &Error) -> bool {
 }
 
 /// A seal failure as the user reads it.
-fn sealing_error(kind: DocKind, e: PrivateError) -> Error {
+fn sealing_error(kind: DocKind, members: bool, e: PrivateError) -> Error {
     match e {
         PrivateError::TooLarge(..) => {
             let what = match kind {
@@ -232,9 +273,14 @@ fn sealing_error(kind: DocKind, e: PrivateError) -> Error {
             crate::user_error::UserError::new(
                 crate::user_error::codes::USAGE,
                 format!(
-                    "a private {}'s {what} is at most {} bytes {TOO_LARGE_MARK}",
+                    "a {} {}'s {what} is at most {} bytes {TOO_LARGE_MARK}",
+                    if members { "members-only" } else { "private" },
                     kind.type_name(),
-                    text_cap(kind)
+                    if members {
+                        members_text_cap(kind)
+                    } else {
+                        text_cap(kind)
+                    }
                 ),
             )
             .fix("shorten it, or split it into several")
@@ -345,6 +391,13 @@ mod tests {
         EpochKeys::derive(&REPO, 0, &EpochKey::from_bytes([3; 32]))
     }
 
+    fn lane() -> crate::private::Lane {
+        let mut res = crate::private::EpochResolution::default();
+        res.keys.insert(0, EpochKey::from_bytes([3; 32]));
+        res.write_epoch = Some(0);
+        crate::private::Lane::from_resolution(&REPO, &res).unwrap()
+    }
+
     fn ctx() -> OpenContext {
         OpenContext {
             keys: [(0, keys())].into(),
@@ -414,6 +467,62 @@ mod tests {
             assert_eq!(back.fields.get(f), public.get(f), "{f}");
         }
         assert!(back.field_bool("draft"), "plaintext fields are untouched");
+    }
+
+    /// §17: a members-only comment of a public repository is sealed in `enc` v0x03 with no
+    /// plaintext left, is well-formed public content, opens for a member (the header says the
+    /// repository is public), and an edit re-seals it as v0x03 again.
+    #[test]
+    fn a_members_only_comment_seals_opens_and_reseals_as_v03() {
+        let public: BTreeMap<String, FieldValue> = [
+            ("targetId".to_string(), FieldValue::identifier([7; 32])),
+            ("body".to_string(), FieldValue::text("members only")),
+            ("path".to_string(), FieldValue::text("src/a.rs")),
+        ]
+        .into();
+        let sealed = seal_members_props(&lane(), DocKind::Comment, OWNER, public).unwrap();
+        assert!(!sealed.contains_key("body") && !sealed.contains_key("path"));
+        let d = fetched(sealed);
+        assert_eq!(
+            d.field_bytes("enc").unwrap()[0],
+            crate::private::doc::V3,
+            "members-only content is enc v0x03"
+        );
+        assert!(crate::collab::v2::well_formed(
+            ContentKind::Comment,
+            &d,
+            Visibility::Public
+        ));
+        let mut header = header_of(DocKind::Comment, &d).unwrap();
+        // read as a private repository's document, v0x03 is refused
+        assert!(matches!(
+            open_content(&ctx(), &header, &d.field_bytes("enc").unwrap()),
+            crate::private::Opened::Malformed
+        ));
+        header.vis = Visibility::Public;
+        let back = open_doc(
+            open_content(&ctx(), &header, &d.field_bytes("enc").unwrap()),
+            d.clone(),
+        )
+        .unwrap();
+        assert_eq!(back.field_str("body").as_deref(), Some("members only"));
+        assert_eq!(back.field_str("path").as_deref(), Some("src/a.rs"));
+        let changes = BTreeMap::from([("body".to_string(), Some("edited".to_string()))]);
+        let replace =
+            reseal_members_edit(&lane(), DocKind::Comment, OWNER, &back, &changes).unwrap();
+        assert_eq!(replace.keys().collect::<Vec<_>>(), ["enc", "epoch"]);
+        let enc = replace["enc"]
+            .as_ref()
+            .and_then(FieldValue::as_bytes)
+            .unwrap();
+        assert_eq!(enc[0], crate::private::doc::V3);
+        let mut after = d;
+        after
+            .fields
+            .insert("enc".into(), FieldValue::bytes(enc.clone()));
+        let back = open_doc(open_content(&ctx(), &header, &enc), after).unwrap();
+        assert_eq!(back.field_str("body").as_deref(), Some("edited"));
+        assert_eq!(back.field_str("path").as_deref(), Some("src/a.rs"));
     }
 
     #[test]

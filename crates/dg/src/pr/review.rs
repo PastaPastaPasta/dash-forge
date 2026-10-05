@@ -792,6 +792,15 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     };
     let price = ctx.usd_price();
     let path_len = spec.as_ref().map_or(0, |s| s.path.len());
+    // Who it is for: the PR's, the comment replied to and its thread root's, as the write reads
+    // them (DESIGN §3.3); `--reply-to` names any comment of the thread.
+    let audience = collab
+        .new_audience(
+            &s.repo,
+            Some(&view.patch.document_id),
+            a.reply_to.as_deref(),
+        )
+        .await?;
     // A body longer than the field is stored as a repository artifact (forge-v2.md §6.3).
     let planned = crate::long_body::Planned::new(
         &s.repo,
@@ -800,6 +809,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
         },
         None,
         &body,
+        audience,
     )?;
     let field_bytes = usize::try_from(planned.field_bytes()).unwrap_or(usize::MAX);
     let est = estimate(Est::Comment, field_bytes + path_len) + planned.extra_credits(&s.repo);

@@ -1,0 +1,39 @@
+{
+  "name": "sealed_verdict_without_proof_not_counted",
+  "description": "A sealed review that cannot be opened and carries no asMember is a stranger's: its verdict is not counted.",
+  "case": "approval_count",
+  "rules": "v2",
+  "input": {
+    "visibility": "public",
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "bob",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100,
+        "sealed": true,
+        "opened": false,
+        "asMember": false
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      },
+      {
+        "identity": "bob",
+        "role": "writer",
+        "createdAt": 60
+      }
+    ],
+    "headOid": "head0000",
+    "prAuthor": "alice"
+  },
+  "expected": {
+    "approvers": [],
+    "changesRequested": []
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "ref_update_members",
+  "description": "A sealed ref update (refName absent, enc v0x03) is never a public ref row.",
+  "case": "git_plane_well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "refNameHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

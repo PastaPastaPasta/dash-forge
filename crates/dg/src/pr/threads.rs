@@ -416,6 +416,7 @@ mod tests {
             created_at: at,
             imported: None,
             diff_hunk: None,
+            audience: forge_core::rules::v2::Audience::Public,
         }
     }
 
@@ -429,6 +430,7 @@ mod tests {
             comment_count: None,
             created_at: at,
             imported: None,
+            members_only: false,
         }
     }
 

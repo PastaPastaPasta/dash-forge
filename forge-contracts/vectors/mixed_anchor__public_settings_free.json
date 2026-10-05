@@ -1,0 +1,23 @@
+{
+  "name": "public_settings_free",
+  "description": "The members-key anchor of a PUBLIC repository (epoch 0) carries vis public, none of the repository's settings, whatever they are, and an empty TLV: it can never be read as the settings, which stay in the plaintext configs (DESIGN D1).",
+  "case": "mixed_anchor",
+  "rules": "v2",
+  "input": {
+    "visibility": "public",
+    "current": {
+      "defaultBranch": "main",
+      "protectedPatterns": [
+        "refs/heads/main",
+        "refs/heads/release/*"
+      ],
+      "backendMode": 0,
+      "archived": false
+    }
+  },
+  "expected": {
+    "vis": "public",
+    "plaintext": [],
+    "tlv": ""
+  }
+}

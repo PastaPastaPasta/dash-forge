@@ -391,6 +391,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         },
         None,
         &args.body,
+        s.collab().new_audience(handle, None, None).await?,
     )?;
     let mut input = PatchInput {
         title: title.clone(),
@@ -3596,6 +3597,7 @@ pub(crate) mod tests {
             created_at: 0,
             imported: None,
             upstream_number: None,
+            audience: forge_core::rules::v2::Audience::Public,
         };
         PatchView {
             state: forge_core::rules::PrState::default(),
