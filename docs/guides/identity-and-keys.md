@@ -339,6 +339,19 @@ Both check the same rules before anything is signed: a name, company or location
 
 Everywhere else (beside your comments, repositories and reviews) Forge draws the pattern of your identity id with its first 7 and last 5 characters, whatever your profile says. Anyone can copy a picture or register a similar name, but not that pattern: it changes with every character of the id.
 
+### Bot accounts
+
+An identity that runs automation (a CI bot, an importer) can carry a **bot** badge beside its name in issue and pull request threads, with its operator on its profile page. The badge needs both sides to agree, so no one can label someone else a bot, and no bot can claim an operator who does not vouch for it:
+
+```sh
+dg profile bot operator @alice     # as the bot: name the identity that runs you ("" clears it)
+dg profile bot add @alice-bot      # as the operator: list a bot you run (up to 8)
+dg profile bot remove @alice-bot
+dg profile show @alice-bot         # "bot  operated by …" once both are set
+```
+
+Each command writes only your own profile, so the badge appears once both identities have run theirs.
+
 ### Signed commits and Verified badges
 
 If you sign your commits with git (an SSH key with `gpg.format=ssh`, or an OpenPGP key), publish the key on your profile. Your signed commits then show **Verified** in the web app, on the commits list, the commit page and a pull request's commits, in every repository you own or are a member of:

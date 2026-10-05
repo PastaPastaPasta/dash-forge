@@ -1,8 +1,9 @@
 //! `dg release verify <repo> <tag>` (epic E5): whether a release's tag and assets are what was
 //! first published, from the chain ([`forge_core::rules::provenance`]), and the tag's signature
 //! when this directory's git holds the tag object. Exits with E504 when the tag moved, was
-//! deleted or races, or the assets changed since the first publish, so a script can stop before
-//! it installs from the tag.
+//! deleted or races, the assets changed since the first publish, or the release records another
+//! commit than its tag held then (`release.targetOid`), so a script can stop before it installs
+//! from the tag.
 
 use anyhow::{bail, Result};
 use serde_json::json;

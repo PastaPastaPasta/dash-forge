@@ -1614,7 +1614,8 @@ pub enum ReleaseCommand {
         tag: String,
     },
     /// Check that a release's tag and assets are still what was first published. Exits with
-    /// E504 when the tag moved, was deleted or races, or the assets changed.
+    /// E504 when the tag moved, was deleted or races, the assets changed, or the release
+    /// records another commit than its tag held at publish.
     ///
     /// It compares the tag's history on Platform (who pushed it, every later move) and the
     /// assets with the first publish, and checks the tag's signature when this directory's git

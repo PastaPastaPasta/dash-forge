@@ -41,14 +41,16 @@ export function MovedBanner({ home }: { home: RepoHome }): JSX.Element | null {
       This repository moved to
       <Author identityId={data.ownerId} link={false} />
       <span aria-hidden>/</span>
-      <Link
-        href={repoHref('/repo', { owner: data.ownerId, name: data.name })}
-        className="font-mono font-medium text-forge-700 underline-offset-2 hover:underline dark:text-forge-400"
-        data-testid="repo-moved-link"
-      >
-        {data.name}
-      </Link>
-      <span className="text-anvil-600 dark:text-anvil-300">. Work continues there.</span>
+      <span>
+        <Link
+          href={repoHref('/repo', { owner: data.ownerId, name: data.name })}
+          className="font-mono font-medium text-forge-700 underline-offset-2 hover:underline dark:text-forge-400"
+          data-testid="repo-moved-link"
+        >
+          {data.name}
+        </Link>
+        .
+      </span>
     </div>
   )
 }
