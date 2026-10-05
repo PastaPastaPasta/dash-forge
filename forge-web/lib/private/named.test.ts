@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { MIN_MEMBERS_ENC, letterFraming, openContent, sealDoc, sealMembersDoc, type OpenContext, type PrivateDoc } from './doc'
 import { IdSet } from './ids'
 import { EpochKeys } from './keys'
-import { openLetter, sealLetter, type LetterRecipient, type OwnerKey } from './named'
+import { ArtifactError, openLetter, openLetterArtifact, sealLetter, sealLetterArtifact, type LetterRecipient, type OwnerKey } from './named'
 import { MalformedError } from './tlv'
 
 const REPO_ID = new Uint8Array(32).fill(0x11)
@@ -73,5 +73,21 @@ describe('specific-people letters (enc v0x04)', () => {
     const seventeen = [alice, ...Array.from({ length: 16 }, (_, i) => party(i + 2))]
     await expect(sealLetter(REPO_ID, secret(1), 4, doc, f, seventeen)).rejects.toBeInstanceOf(MalformedError)
     await expect(sealLetter(REPO_ID, secret(1), 4, { ...doc, epoch: 1 }, f, [alice])).rejects.toBeInstanceOf(MalformedError)
+  })
+})
+
+describe('artifacts under a specific-people header (DFPK 0x02)', () => {
+  it('a production seal of several segments opens for each recipient, not for others', async () => {
+    const alice = party(1)
+    const owner: OwnerKey[] = [{ id: 4, purpose: 1, keyType: 0, data: alice.publicKey }]
+    const plain = Uint8Array.from({ length: 40000 }, (_, i) => i % 251)
+    const sealed = await sealLetterArtifact(REPO_ID, secret(1), 4, alice.identityId, [alice, party(2)], plain)
+    expect(sealed.length).toBe(69 + 2 * 64 + 40000 + 3 * 16)
+    for (const b of [1, 2]) {
+      expect(await openLetterArtifact(REPO_ID, sealed, sealed.length, owner, { identityId: id(b), secrets: [secret(b)] })).toEqual(plain)
+    }
+    await expect(openLetterArtifact(REPO_ID, sealed, sealed.length, owner, { identityId: id(3), secrets: [secret(3)] })).rejects.toEqual(
+      new ArtifactError('notARecipient'),
+    )
   })
 })

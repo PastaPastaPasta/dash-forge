@@ -278,6 +278,7 @@ impl std::fmt::Debug for EpochKeys {
 /// commitment and AES. `COMMIT_obj` is not secret: it is carried in `enc`.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub(crate) struct ObjKeys {
+    prk: [u8; 32],
     doc: [u8; 32],
     #[zeroize(skip)]
     commit: [u8; 32],
@@ -286,17 +287,31 @@ pub(crate) struct ObjKeys {
 impl ObjKeys {
     /// Derive the keys of `k_obj` in the repository `repo_id`.
     pub(crate) fn derive(repo_id: &[u8; 32], k_obj: &[u8; 32]) -> Self {
-        let (_, hk) = Hkdf::<Sha256>::extract(Some(repo_id), k_obj);
-        let expand = |label: &[u8]| {
-            let mut okm = [0u8; 32];
-            hk.expand(label, &mut okm)
-                .expect("32 bytes is a valid HKDF-SHA256 output length");
-            okm
+        let (prk, _) = Hkdf::<Sha256>::extract(Some(repo_id), k_obj);
+        let mut keys = Self {
+            prk: prk.into(),
+            doc: [0; 32],
+            commit: [0; 32],
         };
-        Self {
-            doc: expand(b"dash-forge/v2/obj-doc\0"),
-            commit: expand(b"dash-forge/v2/obj-commit\0"),
-        }
+        keys.doc = keys.expand(b"dash-forge/v2/obj-doc\0");
+        keys.commit = keys.expand(b"dash-forge/v2/obj-commit\0");
+        keys
+    }
+
+    fn expand(&self, info: &[u8]) -> [u8; 32] {
+        let hk = Hkdf::<Sha256>::from_prk(&self.prk).expect("a 32-byte PRK is a valid HKDF PRK");
+        let mut okm = [0u8; 32];
+        hk.expand(info, &mut okm)
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        okm
+    }
+
+    /// `K_pack,obj,fileId = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-pack" ‖ 0x00 ‖ 0x02 ‖ fileId,
+    /// 32)`: the key of a sealed artifact under a specific-people header (DFPK version 0x02).
+    pub(crate) fn pack_key(&self, file_id: &[u8; 16]) -> Zeroizing<[u8; 32]> {
+        let mut info = b"dash-forge/v2/obj-pack\0\x02".to_vec();
+        info.extend_from_slice(file_id);
+        Zeroizing::new(self.expand(&info))
     }
 
     /// `K_doc,obj`, the AES-256-GCM key of the envelope.

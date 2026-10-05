@@ -334,3 +334,186 @@ export async function openLetter(
   if (!(await publicRefNamesMatch(doc, parsed.fields))) return MALFORMED
   return { status: 'readable', fields: parsed.fields, recipients: parsed.recipients, slot: found.slot }
 }
+
+// --- sealed artifacts under a specific-people header (DFPK version 0x02) ---------------------
+
+/** The header version of a sealed artifact keyed by a per-artifact `K_obj` wrapped to specific people (§3.2). */
+export const ARTIFACT_VERSION = 0x02
+/** The segment size writers use (`L = 14`, as for DFPK version 0x01). */
+export const ARTIFACT_SEG_LOG2 = 14
+
+/**
+ * The header length of an artifact sealed to `n` recipients:
+ * `"DFPK" ‖ 0x02 ‖ L ‖ reserved(2) ‖ n ‖ senderKeyId ‖ COMMIT_obj ‖ n × slot ‖ plaintextLen(8) ‖ fileId(16)`,
+ * `69 + 64·n`. The slot block stands where version 0x01 has its epoch.
+ */
+export function artifactHeaderLength(n: number): number {
+  return 8 + 37 + LETTER_SLOT_LEN * n + 8 + 16
+}
+
+export type ArtifactErrorCode = 'sizeMismatch' | 'sealedPackCorrupt' | 'malformed' | 'notARecipient'
+
+/** Why a sealed artifact under a specific-people header cannot be read. */
+export class ArtifactError extends Error {
+  constructor(readonly code: ArtifactErrorCode) {
+    super(`sealed artifact: ${code}`)
+    this.name = 'ArtifactError'
+  }
+}
+
+const MAGIC = utf8('DFPK')
+
+function u64be(n: number): Bytes {
+  const out = new Uint8Array(8)
+  new DataView(out.buffer).setBigUint64(0, BigInt(n))
+  return out
+}
+
+function segmentNonce(i: number, segments: number): Bytes {
+  const n = new Uint8Array(12)
+  new DataView(n.buffer).setBigUint64(0, BigInt(i))
+  n[11] = i + 1 === segments ? 1 : 0
+  return n
+}
+
+async function sealArtifactWith(
+  repoId: Uint8Array,
+  senderSecret: Uint8Array,
+  senderKeyId: number,
+  ownerId: Uint8Array,
+  recipients: readonly LetterRecipient[],
+  plaintext: Uint8Array,
+  kObj: Uint8Array,
+  fileId: Uint8Array,
+  segLog2: number,
+  sealSlot: SlotSealer,
+): Promise<Bytes> {
+  const n = recipients.length
+  if (n < 1 || n > MAX_LETTER_RECIPIENTS) throw new MalformedError(`an artifact has 1 to ${MAX_LETTER_RECIPIENTS} recipients`)
+  const first = recipients[0] as LetterRecipient
+  if (!bytesEqual(first.identityId, ownerId) || !constantTimeEqual(first.publicKey, getPublicKey(senderSecret, true))) {
+    throw new MalformedError('the sender is the first recipient')
+  }
+  for (let i = 1; i < n; i++) {
+    if (recipients.slice(0, i).some((r) => bytesEqual(r.identityId, (recipients[i] as LetterRecipient).identityId))) {
+      throw new MalformedError('a recipient is listed twice')
+    }
+  }
+  if (fileId.length !== 16 || segLog2 < 10 || segLog2 > 20) throw new RangeError('a 16-byte fileId and 10 <= L <= 20')
+  const obj = await objKeys(repoId, kObj)
+  const slotPlaintext = concat(new Uint8Array([SLOT_VERSION]), obj.commit.subarray(0, 14), kObj)
+  const slots: Bytes[] = []
+  try {
+    for (const [i, r] of recipients.entries()) slots.push(await sealSlot(r, i, slotPlaintext))
+  } finally {
+    slotPlaintext.fill(0)
+  }
+  const header = concat(MAGIC, new Uint8Array([ARTIFACT_VERSION, segLog2, 0, 0, n]), u32(senderKeyId), obj.commit, ...slots, u64be(plaintext.length), fileId)
+  const key = await obj.packKey(fileId)
+  const S = 2 ** segLog2
+  const segments = Math.max(1, Math.ceil(plaintext.length / S))
+  const parts: Uint8Array[] = [header]
+  for (let i = 0; i < segments; i++) {
+    const chunk = bytes(plaintext.slice(i * S, (i + 1) * S))
+    parts.push(new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: segmentNonce(i, segments), additionalData: header }, key, chunk)))
+  }
+  return concat(...parts)
+}
+
+/**
+ * Seal `plaintext` as an artifact for `recipients` (slot order, the sender first, as for
+ * {@link sealLetter}) in the repository `repoId`, written by `ownerId` (the `packManifest`'s
+ * `$ownerId`). Draws a fresh `K_obj`, `fileId` and slot IVs.
+ */
+export async function sealLetterArtifact(
+  repoId: Uint8Array,
+  senderSecret: Uint8Array,
+  senderKeyId: number,
+  ownerId: Uint8Array,
+  recipients: readonly LetterRecipient[],
+  plaintext: Uint8Array,
+): Promise<Bytes> {
+  const kObj = randomBytes(32)
+  try {
+    return await sealArtifactWith(repoId, senderSecret, senderKeyId, ownerId, recipients, plaintext, kObj, randomBytes(16), ARTIFACT_SEG_LOG2, async (r, _i, pt) => {
+      const shared = await letterSharedKey(senderSecret, r.publicKey)
+      try {
+        return await cbcSeal(shared, randomBytes(16), pt)
+      } finally {
+        shared.fill(0)
+      }
+    })
+  } finally {
+    kObj.fill(0)
+  }
+}
+
+/** INTERNAL, TEST-ONLY: {@link sealLetterArtifact} with a fixed `K_obj`, `fileId` and slot IVs. */
+export function __unsafeSealLetterArtifactWith(
+  repoId: Uint8Array,
+  senderSecret: Uint8Array,
+  senderKeyId: number,
+  ownerId: Uint8Array,
+  recipients: readonly LetterRecipient[],
+  plaintext: Uint8Array,
+  kObj: Uint8Array,
+  fileId: Uint8Array,
+  ivs: readonly Uint8Array[],
+): Promise<Bytes> {
+  if (ivs.length !== recipients.length) throw new RangeError('one IV per recipient')
+  return sealArtifactWith(repoId, senderSecret, senderKeyId, ownerId, recipients, plaintext, kObj, fileId, ARTIFACT_SEG_LOG2, async (r, i, pt) =>
+    cbcSeal(await letterSharedKey(senderSecret, r.publicKey), ivs[i] as Uint8Array, pt),
+  )
+}
+
+/**
+ * Open a sealed artifact under a specific-people header whose manifest says `sizeBytes`, as
+ * `reader`, with the manifest owner's keys (the letter reader rule). The length is checked
+ * first. Throws {@link ArtifactError}.
+ */
+export async function openLetterArtifact(
+  repoId: Uint8Array,
+  sealed: Uint8Array,
+  sizeBytes: number,
+  ownerKeys: readonly OwnerKey[],
+  reader: LetterReader,
+): Promise<Bytes> {
+  if (sealed.length !== sizeBytes) throw new ArtifactError('sizeMismatch')
+  const corrupt = () => new ArtifactError('sealedPackCorrupt')
+  const L = sealed[5] as number
+  if (sealed.length < 45 || !constantTimeEqual(sealed.subarray(0, 4), MAGIC) || sealed[4] !== ARTIFACT_VERSION || L < 10 || L > 20 || sealed[6] !== 0 || sealed[7] !== 0) {
+    throw corrupt()
+  }
+  const n = sealed[8] as number
+  const headerLen = artifactHeaderLength(n)
+  if (n < 1 || n > MAX_LETTER_RECIPIENTS || sealed.length < headerLen) throw corrupt()
+  const header = bytes(sealed.slice(0, headerLen))
+  const block = header.subarray(8, 45 + LETTER_SLOT_LEN * n)
+  const view = new DataView(header.buffer)
+  const plaintextLen = Number(view.getBigUint64(headerLen - 24))
+  const fileId = header.subarray(headerLen - 16)
+  const S = 2 ** L
+  const segments = Math.max(1, Math.ceil(plaintextLen / S))
+  if (!Number.isSafeInteger(plaintextLen) || headerLen + plaintextLen + 16 * segments !== sealed.length) throw corrupt()
+  const senderPublic = senderKey(ownerKeys, view.getUint32(9))
+  if (senderPublic === undefined) throw new ArtifactError('malformed')
+  const found = await findSlot(repoId, block, n, senderPublic, reader.secrets)
+  if (found === undefined) throw new ArtifactError('malformed')
+  if (found === null) throw new ArtifactError('notARecipient')
+  const key = await found.obj.packKey(fileId)
+  const out = new Uint8Array(plaintextLen)
+  let at = headerLen
+  for (let i = 0; i < segments; i++) {
+    const len = Math.min(S, plaintextLen - i * S) + 16
+    let pt: ArrayBuffer
+    try {
+      pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: segmentNonce(i, segments), additionalData: header }, key, bytes(sealed.slice(at, at + len)))
+    } catch {
+      out.fill(0)
+      throw corrupt()
+    }
+    out.set(new Uint8Array(pt), i * S)
+    at += len
+  }
+  return out
+}

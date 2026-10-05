@@ -2668,7 +2668,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
             // the private-repository and mixed-visibility envelope vectors run in
             // `private::conformance`
-            if ["private_", "mixed_doc_", "named_envelope"]
+            if crate::private::conformance::CRYPTO_CASE_PREFIXES
                 .iter()
                 .any(|p| v.case.starts_with(p))
             {

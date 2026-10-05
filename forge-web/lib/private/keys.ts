@@ -115,6 +115,11 @@ export class EpochKeys {
 export interface ObjKeys {
   readonly docKey: CryptoKey
   readonly commit: Bytes
+  /**
+   * `K_pack,obj,fileId = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-pack" ‖ 0x00 ‖ 0x02 ‖ fileId)`:
+   * the key of a sealed artifact under a specific-people header (DFPK version 0x02, §3.2).
+   */
+  packKey(fileId: Uint8Array): Promise<CryptoKey>
 }
 
 /**
@@ -135,7 +140,12 @@ export async function objKeys(repoId: Uint8Array, kObj: Uint8Array): Promise<Obj
     crypto.subtle.deriveKey(params('obj-doc'), base, AES_256, false, ['encrypt', 'decrypt']),
     crypto.subtle.deriveBits(params('obj-commit'), base, 256),
   ])
-  return { docKey, commit: new Uint8Array(commit) }
+  const packKey = (fileId: Uint8Array): Promise<CryptoKey> => {
+    if (fileId.length !== 16) throw new RangeError('fileId must be 16 bytes')
+    const info = concat(utf8('dash-forge/v2/obj-pack'), new Uint8Array([0, 0x02]), fileId)
+    return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(repoId), info }, base, AES_256, false, ['encrypt', 'decrypt'])
+  }
+  return { docKey, commit: new Uint8Array(commit), packKey }
 }
 
 /** {@link EpochKeys.import}, then erase `raw` (best effort; the caller must not reuse it). */

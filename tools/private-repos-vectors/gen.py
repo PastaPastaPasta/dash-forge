@@ -2250,6 +2250,132 @@ def named_vectors():
     assert res == [unreadable("notARecipient")]
 
 
+# --- sealed artifacts under a specific-people header (DFPK version 0x02) ---------------------------
+
+ARTIFACT_VERSION = 0x02
+
+
+def obj_pack_key(k_obj, file_id):
+    """K_pack,obj,fileId = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-pack" ‖ 0x00 ‖ 0x02 ‖ fileId, 32)."""
+    return expand(hmac.new(repoId, k_obj, hashlib.sha256).digest(), b"dash-forge/v2/obj-pack\x00\x02" + file_id)
+
+
+def seal_named_artifact(sender, key_id, recipients, plain, k_obj, file_id, ivs, L=14):
+    """(header, sealed) of `plain` sealed to `recipients` (slot 0 the sender) under a DFPK 0x02 header."""
+    _, C = obj_keys(k_obj)
+    spt = bytes([SLOT_VERSION]) + C[:14] + k_obj
+    slots = [cbc(ecdh(sender["priv"], r["pub"]), iv, spt) for r, iv in zip(recipients, ivs)]
+    block = bytes([len(recipients)]) + u32(key_id) + C + b"".join(slots)
+    hdr = b"DFPK" + bytes([ARTIFACT_VERSION, L, 0, 0]) + block + u64(len(plain)) + file_id
+    S = 1 << L
+    nseg = max(1, -(-len(plain) // S))
+    kf = obj_pack_key(k_obj, file_id)
+    out = bytearray(hdr)
+    for i in range(nseg):
+        out += AESGCM(kf).encrypt(u64(i) + b"\x00\x00\x00" + bytes([1 if i == nseg - 1 else 0]), plain[i * S:(i + 1) * S], hdr)
+    return hdr, bytes(out)
+
+
+def open_named_artifact(sealed, size_bytes, owner_keys, reader_id, reader_privs):
+    """The reference reader of a DFPK 0x02 artifact: length, header, sender key, slot, segments."""
+    if len(sealed) != size_bytes:
+        return dict(error="sizeMismatch")
+    if len(sealed) < 45 or sealed[:4] != b"DFPK" or sealed[4] != ARTIFACT_VERSION or not 10 <= sealed[5] <= 20 \
+            or sealed[6:8] != b"\x00\x00":
+        return dict(error="sealedPackCorrupt")
+    n = sealed[8]
+    hl = 69 + 64 * n
+    if not 1 <= n <= 16 or len(sealed) < hl:
+        return dict(error="sealedPackCorrupt")
+    hdr, block = sealed[:hl], sealed[8:45 + 64 * n]
+    plen, file_id, S = struct.unpack(">Q", hdr[hl - 24:hl - 16])[0], hdr[hl - 16:], 1 << sealed[5]
+    nseg = max(1, -(-plen // S))
+    if hl + plen + 16 * nseg != len(sealed):
+        return dict(error="sealedPackCorrupt")
+    kid = struct.unpack(">I", block[1:5])[0]
+    sk = [k for k in owner_keys if k["id"] == kid]
+    if not sk or sk[0]["purpose"] != PURPOSE_ENCRYPTION or sk[0]["keyType"] != KEY_TYPE_SECP256K1:
+        return dict(error="malformed")
+    C, k_obj = block[5:37], None
+    for d in reader_privs:
+        S_ = ecdh(d, bytes.fromhex(sk[0]["data"]))
+        for i in range(n):
+            spt = cbc_open(S_, block[37 + 64 * i:37 + 64 * (i + 1)])
+            if spt and len(spt) == 47 and spt[0] == SLOT_VERSION and spt[1:15] == C[:14] and obj_keys(spt[15:])[1] == C:
+                k_obj = spt[15:]
+                break
+        if k_obj:
+            break
+    if k_obj is None:
+        return dict(error="notARecipient")
+    kf, out, at = obj_pack_key(k_obj, file_id), b"", hl
+    for i in range(nseg):
+        ln = min(S, plen - i * S) + 16
+        try:
+            out += AESGCM(kf).decrypt(u64(i) + b"\x00\x00\x00" + bytes([1 if i == nseg - 1 else 0]), sealed[at:at + ln], hdr)
+        except Exception:
+            return dict(error="sealedPackCorrupt")
+        at += ln
+    return dict(plaintextHex=H(out))
+
+
+def named_artifact_vectors():
+    recipients = NAMED_N3
+    k_obj = sha256(b"dash-forge vectors: named artifact kObj")
+    file_id = sha256(b"dash-forge vectors: named artifact fileId")[:16]
+    ivs = [sha256(b"dash-forge vectors: named artifact iv %d" % i)[:16] for i in range(3)]
+    snapshot = b'{"env":"production","generatedAt":1767225600000,"vars":{"STRIPE_KEY":{"type":"secret","value":"sk_test_x"}}}'
+    plain = snapshot + b" " * (512 - len(snapshot))
+    hdr, sealed = seal_named_artifact(NAMED_SENDER, 4, recipients, plain, k_obj, file_id, ivs)
+    assert len(hdr) == 69 + 64 * 3 and len(sealed) == len(hdr) + 512 + 16
+    okeys = [owner_key(NAMED_SENDER)]
+    for p in recipients:
+        assert open_named_artifact(sealed, len(sealed), okeys, p["id"], [p["priv"]]) == dict(plaintextHex=H(plain))
+    vector("named_artifact", "n3", "an environment snapshot (512 bytes) sealed to three people under a DFPK version 0x02 "
+           "header: the slot block of a letter stands where version 0x01 has its epoch; the file key is "
+           "HKDF-Expand(PRK_obj, \"dash-forge/v2/obj-pack\" ‖ 0x00 ‖ 0x02 ‖ fileId); the whole header is every "
+           "segment's AD (§3.2).",
+           dict(repoId=H(repoId), ownerId=H(NAMED_SENDER["id"]), sender=dict(party_json(NAMED_SENDER), keyId=4),
+                recipients=[party_json(p) for p in recipients], kObj=H(k_obj), fileId=H(file_id), ivs=[H(i) for i in ivs],
+                plaintextHex=H(plain)),
+           dict(header=H(hdr), packKey=H(obj_pack_key(k_obj, file_id)), sealedLen=len(sealed),
+                packHash=H(sha256(sealed)), sealed=H(sealed)))
+
+    def neg(name, desc, sealed_, readers, owner_keys=okeys, size=None):
+        size = len(sealed_) if size is None else size
+        results = [open_named_artifact(sealed_, size, owner_keys, bytes.fromhex(r["identityId"]),
+                                       [int(k, 16) for k in r["keys"]]) for r in readers]
+        vector("named_artifact_open", name, desc,
+               dict(repoId=H(repoId), sealed=H(sealed_), sizeBytes=size, ownerKeys=owner_keys, readers=readers),
+               dict(results=results))
+        return results
+
+    readers3 = [reader_json(p) for p in NAMED_N3]
+    res = neg("recipients", "every recipient opens the snapshot; dave, not listed, does not.", sealed,
+              readers3 + [reader_json(NAMED_OUTSIDER)])
+    assert res[3] == dict(error="notARecipient")
+    flipped = bytearray(sealed)
+    flipped[8 + 37 + 64 + 20] ^= 0x01
+    res = neg("slot_flipped", "a byte flipped inside r1's slot: r1 finds no slot; alice and r2 open theirs, but the "
+              "header is every segment's AD, so SealedPackCorrupt.", bytes(flipped), readers3)
+    assert res[0] == dict(error="sealedPackCorrupt") and res[1] == dict(error="notARecipient")
+    res = neg("size_mismatch", "the manifest's sizeBytes is one byte off: refused before anything is read.", sealed,
+              readers3[:1], size=len(sealed) + 1)
+    assert res == [dict(error="sizeMismatch")]
+    res = neg("wrong_sender_key_type", "the owner's key 4 is a BLS12_381 key: malformed.", sealed, readers3[:1],
+              owner_keys=[owner_key(NAMED_SENDER, key_type=KEY_TYPE_BLS)])
+    assert res == [dict(error="malformed")]
+    trunc = sealed[:-1]
+    res = neg("truncated", "one byte short of what the header says (sizeBytes agreeing): SealedPackCorrupt.", trunc,
+              readers3[:1])
+    assert res == [dict(error="sealedPackCorrupt")]
+    v1 = bytearray(sealed)
+    v1[4] = 0x01
+    res = neg("version_1_refused", "the same bytes labelled header version 0x01 are not a specific-people artifact.",
+              bytes(v1), readers3[:1])
+    assert res == [dict(error="sealedPackCorrupt")]
+
+
 # Vector files committed by hand (efbb9f1e, d0e66072) that this generator does not produce yet: kept
 # as they are rather than deleted on every run. Porting them here is a follow-up.
 HAND_WRITTEN = {
@@ -2277,7 +2403,8 @@ def write_vectors(out_dir):
     release_fold_vectors()
     mixed_vectors()
     named_vectors()
-    for pattern in ("private_*.json", "mixed_doc_*.json", "named_envelope*.json"):
+    named_artifact_vectors()
+    for pattern in ("private_*.json", "mixed_doc_*.json", "named_envelope*.json", "named_artifact*.json"):
         for old in glob.glob(os.path.join(out_dir, pattern)):
             if os.path.basename(old) not in HAND_WRITTEN:
                 os.remove(old)

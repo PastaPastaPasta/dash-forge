@@ -54,13 +54,14 @@ import {
   type ReleaseStatus,
   type StoredRelease,
 } from './release'
-import { openLetter, letterSharedKey, type LetterOpenResult, type OwnerKey } from './named'
+import { ArtifactError, openLetter, openLetterArtifact, letterSharedKey, type LetterOpenResult, type OwnerKey } from './named'
 import { buildTlv, encodeRecipients, MalformedError, type DocFields, type PrivateDocType } from './tlv'
 import { WrapError, buildWrapPlaintext, openWrap, sealWrap, type WrapFacade } from './wrap'
 import {
   hedgedFileId,
   hedgedNonce,
   sealDocWithNonce,
+  sealLetterArtifactWith,
   sealLetterWith,
   sealMembersDocWithNonce,
   sealPackWithFileId,
@@ -85,7 +86,7 @@ interface Vector {
 const ROOT = resolve(process.cwd(), '..')
 const VECTORS_DIR = resolve(ROOT, 'forge-contracts', 'vectors')
 /** The private-repository cases and the mixed-visibility envelopes (members-only, specific people). */
-const CRYPTO_PREFIXES = ['private_', 'mixed_doc_', 'named_envelope']
+const CRYPTO_PREFIXES = ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact']
 const isCryptoCase = (name: string) => CRYPTO_PREFIXES.some((p) => name.startsWith(p))
 const PRIVATE_FILES = readdirSync(VECTORS_DIR)
   .filter((f) => isCryptoCase(f) && f.endsWith('.json'))
@@ -145,6 +146,16 @@ const SHAPES: Readonly<Record<string, Shape>> = {
     fields: FIELDS,
     sender: PARTY,
     recipients: each(PARTY),
+  }),
+  named_artifact: object({
+    ...leafFields('repoId', 'ownerId', 'kObj', 'fileId', 'ivs', 'plaintextHex'),
+    sender: PARTY,
+    recipients: each(PARTY),
+  }),
+  named_artifact_open: object({
+    ...leafFields('repoId', 'sealed', 'sizeBytes'),
+    ownerKeys: each(leaves('id', 'purpose', 'keyType', 'data')),
+    readers: each(leaves('identityId', 'keys')),
   }),
   named_envelope_open: object({
     repoId: LEAF,
@@ -625,6 +636,60 @@ async function run(v: Vector): Promise<Json> {
     }
     case 'named_envelope':
       return namedEnvelope(inp)
+    case 'named_artifact': {
+      const repoId = hex(inp, 'repoId')
+      const sender = obj(inp, 'sender')
+      const recipients = arr(inp, 'recipients')
+      const ivs = inp['ivs']
+      if (!Array.isArray(ivs)) throw new TypeError('ivs: expected an array')
+      const kObj = hex(inp, 'kObj')
+      const fileId = hex(inp, 'fileId')
+      const plain = hex(inp, 'plaintextHex')
+      const sealed = await sealLetterArtifactWith(
+        repoId,
+        hex(sender, 'priv'),
+        num(sender, 'keyId'),
+        hex(inp, 'ownerId'),
+        recipients.map((r) => ({ identityId: hex(r, 'identityId'), publicKey: hex(r, 'pub') })),
+        plain,
+        kObj,
+        fileId,
+        ivs.map((x) => hexToBytes(String(x))),
+      )
+      const ownerKeys: OwnerKey[] = [{ id: num(sender, 'keyId'), purpose: 1, keyType: 0, data: hex(sender, 'pub') }]
+      for (const r of recipients) {
+        const opened = await openLetterArtifact(repoId, sealed, sealed.length, ownerKeys, { identityId: hex(r, 'identityId'), secrets: [hex(r, 'priv')] })
+        expect(bytesToHex(opened)).toBe(bytesToHex(plain))
+      }
+      // the file key is non-extractable: recompute it with @noble/hashes from its definition
+      const packKey = expand(nobleSha256, hmac(nobleSha256, repoId, kObj), concat(new TextEncoder().encode('dash-forge/v2/obj-pack'), new Uint8Array([0, 2]), fileId), 32)
+      const headerLen = 69 + 64 * recipients.length
+      return {
+        header: bytesToHex(sealed.subarray(0, headerLen)),
+        packKey: bytesToHex(packKey),
+        sealedLen: sealed.length,
+        packHash: bytesToHex(await sha256(sealed)),
+        sealed: bytesToHex(sealed),
+      }
+    }
+    case 'named_artifact_open': {
+      const repoId = hex(inp, 'repoId')
+      const sealed = hex(inp, 'sealed')
+      const ownerKeys: OwnerKey[] = arr(inp, 'ownerKeys').map((k) => ({ id: num(k, 'id'), purpose: num(k, 'purpose'), keyType: num(k, 'keyType'), data: hex(k, 'data') }))
+      const results: Json[] = []
+      for (const r of arr(inp, 'readers')) {
+        const keys = r['keys']
+        if (!Array.isArray(keys)) throw new TypeError('keys: expected an array')
+        try {
+          const pt = await openLetterArtifact(repoId, sealed, num(inp, 'sizeBytes'), ownerKeys, { identityId: hex(r, 'identityId'), secrets: keys.map((k) => hexToBytes(String(k))) })
+          results.push({ plaintextHex: bytesToHex(pt) })
+        } catch (e) {
+          if (e instanceof ArtifactError) results.push({ error: e.code })
+          else throw e
+        }
+      }
+      return { results }
+    }
     case 'named_envelope_open': {
       const repoId = hex(inp, 'repoId')
       const doc = storedDoc(obj(inp, 'doc'))

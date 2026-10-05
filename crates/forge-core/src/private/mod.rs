@@ -40,7 +40,7 @@ pub mod tlv;
 pub mod wrap;
 
 #[cfg(test)]
-mod conformance;
+pub(crate) mod conformance;
 
 use std::collections::BTreeMap;
 

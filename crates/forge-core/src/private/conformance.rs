@@ -325,6 +325,43 @@ struct NamedOpenIn {
     readers: Vec<ReaderIn>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArtifactSealIn {
+    repo_id: String,
+    owner_id: String,
+    sender: PartyIn,
+    recipients: Vec<PartyIn>,
+    k_obj: String,
+    file_id: String,
+    ivs: Vec<String>,
+    plaintext_hex: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArtifactOpenIn {
+    repo_id: String,
+    sealed: String,
+    size_bytes: u64,
+    owner_keys: Vec<OwnerKeyIn>,
+    readers: Vec<ReaderIn>,
+}
+
+fn reader_keys(r: &ReaderIn) -> Vec<crate::envelope::PrivateKey> {
+    r.keys
+        .iter()
+        .map(|k| crate::envelope::PrivateKey::from_hex(k).unwrap())
+        .collect()
+}
+
+fn artifact_json(r: Result<zeroize::Zeroizing<Vec<u8>>, named::ArtifactError>) -> Value {
+    match r {
+        Ok(pt) => json!({ "plaintextHex": hex::encode(&*pt) }),
+        Err(e) => json!({ "error": e }),
+    }
+}
+
 fn owner_keys(keys: &[OwnerKeyIn]) -> Vec<named::OwnerKey> {
     keys.iter()
         .map(|k| named::OwnerKey {
@@ -946,15 +983,87 @@ fn run(v: &Vector) -> Value {
                 &header,
                 &enc,
                 &owner,
-                i.readers.iter().map(|r| {
-                    let keys = r
-                        .keys
-                        .iter()
-                        .map(|k| crate::envelope::PrivateKey::from_hex(k).unwrap())
-                        .collect();
-                    (h32(&r.identity_id), keys)
-                }),
+                i.readers
+                    .iter()
+                    .map(|r| (h32(&r.identity_id), reader_keys(r))),
             );
+            json!({ "results": results })
+        }
+        "named_artifact" => {
+            let i: ArtifactSealIn = input(v);
+            let repo_id = h32(&i.repo_id);
+            let recipients: Vec<named::Recipient> =
+                i.recipients.iter().map(PartyIn::recipient).collect();
+            let k_obj = h32(&i.k_obj);
+            let file_id: [u8; 16] = hex::decode(&i.file_id).unwrap().try_into().unwrap();
+            let ivs: Vec<[u8; 16]> = i
+                .ivs
+                .iter()
+                .map(|x| hex::decode(x).unwrap().try_into().unwrap())
+                .collect();
+            let plain = hex::decode(&i.plaintext_hex).unwrap();
+            let sealed = named::seal_artifact_with(
+                &repo_id,
+                &i.sender.key(),
+                i.sender.key_id.unwrap(),
+                &h32(&i.owner_id),
+                &recipients,
+                &plain,
+                &k_obj,
+                file_id,
+                named::ARTIFACT_SEG_LOG2,
+                &ivs,
+            )
+            .unwrap();
+            let owner = vec![named::OwnerKey {
+                id: i.sender.key_id.unwrap(),
+                purpose: named::PURPOSE_ENCRYPTION,
+                key_type: named::KEY_TYPE_ECDSA_SECP256K1,
+                data: hex::decode(&i.sender.public).unwrap(),
+            }];
+            for r in &i.recipients {
+                let keys = [r.key()];
+                let reader = named::Reader {
+                    identity_id: h32(&r.identity_id),
+                    keys: &keys,
+                };
+                let opened =
+                    named::open_artifact(&repo_id, &sealed, sealed.len() as u64, &owner, &reader)
+                        .unwrap();
+                assert_eq!(*opened, plain, "vector `{}`", v.name);
+            }
+            let header_len = named::artifact_header_len(recipients.len());
+            json!({
+                "header": hex::encode(&sealed[..header_len]),
+                "packKey": hex::encode(*ObjKeys::derive(&repo_id, &k_obj).pack_key(&file_id)),
+                "sealedLen": sealed.len(),
+                "packHash": hex::encode(sha256(&sealed)),
+                "sealed": hex::encode(&sealed),
+            })
+        }
+        "named_artifact_open" => {
+            let i: ArtifactOpenIn = input(v);
+            let repo_id = h32(&i.repo_id);
+            let sealed = hex::decode(&i.sealed).unwrap();
+            let owner = owner_keys(&i.owner_keys);
+            let results: Vec<Value> = i
+                .readers
+                .iter()
+                .map(|r| {
+                    let keys = reader_keys(r);
+                    let reader = named::Reader {
+                        identity_id: h32(&r.identity_id),
+                        keys: &keys,
+                    };
+                    artifact_json(named::open_artifact(
+                        &repo_id,
+                        &sealed,
+                        i.size_bytes,
+                        &owner,
+                        &reader,
+                    ))
+                })
+                .collect();
             json!({ "results": results })
         }
         "private_doc_open" | "mixed_doc_open" => {
@@ -1304,10 +1413,15 @@ fn a_reseal_edit_is_the_create_transform() {
     assert!(checked >= 15, "re-sealed {checked} vectors");
 }
 
-/// The vector files this harness runs: the private-repository cases and the mixed-visibility
-/// envelopes (members-only content, specific-people letters).
+/// The vector cases (and file-name prefixes) this harness runs: the private-repository cases and
+/// the mixed-visibility envelopes (members-only content, specific-people letters and artifacts).
+/// The rules harness skips them.
+pub(crate) const CRYPTO_CASE_PREFIXES: [&str; 4] =
+    ["private_", "mixed_doc_", "named_envelope", "named_artifact"];
+
+/// Whether `file_name` is one of [`CRYPTO_CASE_PREFIXES`].
 fn is_crypto_vector(file_name: &str) -> bool {
-    ["private_", "mixed_doc_", "named_envelope"]
+    CRYPTO_CASE_PREFIXES
         .iter()
         .any(|p| file_name.starts_with(p))
 }

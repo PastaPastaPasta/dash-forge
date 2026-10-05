@@ -422,6 +422,241 @@ pub fn open(
     }))
 }
 
+// --- sealed artifacts under a specific-people header (DFPK version 0x02) ---------------------
+
+/// The header version of a sealed artifact whose key is a per-artifact `K_obj` wrapped to
+/// specific people, instead of an epoch key (`private-repos.md` §3.2): the Maintainers and
+/// Specific-people environments, branch grants.
+pub const ARTIFACT_VERSION: u8 = 0x02;
+/// The segment size writers use (`L = 14`, as for DFPK version 0x01).
+pub const ARTIFACT_SEG_LOG2: u8 = 14;
+const ARTIFACT_MIN_SEG_LOG2: u8 = 10;
+const ARTIFACT_MAX_SEG_LOG2: u8 = 20;
+
+/// The header length of an artifact sealed to `n` recipients:
+/// `magic(4) ‖ 0x02 ‖ L ‖ reserved(2) ‖ n ‖ senderKeyId(4) ‖ COMMIT_obj(32) ‖ n × slot(64) ‖
+/// plaintextLen(8) ‖ fileId(16)` = `69 + 64·n`. The slot block stands where version 0x01 has its
+/// epoch; every other field keeps its meaning.
+#[must_use]
+pub const fn artifact_header_len(n: usize) -> usize {
+    8 + 37 + SLOT_LEN * n + 8 + 16
+}
+
+/// Why a sealed artifact under a specific-people header cannot be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ArtifactError {
+    /// The bytes are not as long as the manifest's `sizeBytes`.
+    SizeMismatch,
+    /// The header or a segment failed its checks (§3.5): as a copy that failed `packHash`.
+    SealedPackCorrupt,
+    /// The sender key is not the owner's ECDSA_SECP256K1 ENCRYPTION key `senderKeyId`.
+    Malformed,
+    /// No slot opens to the committed key under the reader's keys.
+    NotARecipient,
+}
+
+/// Seal `plaintext` as an artifact for `recipients` (slot order, the sender first, as for
+/// [`seal`]) in the repository `repo_id`, written by `owner_id` (the `packManifest`'s
+/// `$ownerId`). Draws a fresh `K_obj`, `fileId` and slot IVs.
+pub fn seal_artifact(
+    repo_id: &[u8; 32],
+    sender: &PrivateKey,
+    sender_key_id: u32,
+    owner_id: &[u8; 32],
+    recipients: &[Recipient],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, PrivateError> {
+    let mut k_obj = Zeroizing::new([0u8; 32]);
+    let mut file_id = [0u8; 16];
+    getrandom::getrandom(&mut *k_obj).map_err(|_| PrivateError::Rng)?;
+    getrandom::getrandom(&mut file_id).map_err(|_| PrivateError::Rng)?;
+    seal_artifact_inner(
+        repo_id,
+        sender,
+        sender_key_id,
+        owner_id,
+        recipients,
+        plaintext,
+        &k_obj,
+        file_id,
+        ARTIFACT_SEG_LOG2,
+        |r, pt| envelope::encrypt(sender, &r.public_key, pt).map_err(|_| PrivateError::Malformed),
+    )
+}
+
+/// [`seal_artifact`] with a caller-chosen `K_obj`, `fileId`, segment size and slot IVs: the
+/// conformance vectors only.
+#[cfg(any(test, feature = "vectors"))]
+#[allow(clippy::too_many_arguments)]
+pub fn seal_artifact_with(
+    repo_id: &[u8; 32],
+    sender: &PrivateKey,
+    sender_key_id: u32,
+    owner_id: &[u8; 32],
+    recipients: &[Recipient],
+    plaintext: &[u8],
+    k_obj: &[u8; 32],
+    file_id: [u8; 16],
+    seg_log2: u8,
+    ivs: &[[u8; 16]],
+) -> Result<Vec<u8>, PrivateError> {
+    if ivs.len() != recipients.len() {
+        return Err(PrivateError::Malformed);
+    }
+    let mut next = ivs.iter();
+    seal_artifact_inner(
+        repo_id,
+        sender,
+        sender_key_id,
+        owner_id,
+        recipients,
+        plaintext,
+        k_obj,
+        file_id,
+        seg_log2,
+        |r, pt| {
+            let iv = next.next().ok_or(PrivateError::Malformed)?;
+            envelope::encrypt_with_iv_for_vectors(sender, &r.public_key, pt, iv)
+                .map_err(|_| PrivateError::Malformed)
+        },
+    )
+}
+
+fn artifact_nonce(i: u64, segments: u64) -> [u8; 12] {
+    let mut n = [0u8; 12];
+    n[..8].copy_from_slice(&i.to_be_bytes());
+    n[11] = u8::from(i + 1 == segments);
+    n
+}
+
+#[allow(clippy::too_many_arguments)]
+fn seal_artifact_inner(
+    repo_id: &[u8; 32],
+    sender: &PrivateKey,
+    sender_key_id: u32,
+    owner_id: &[u8; 32],
+    recipients: &[Recipient],
+    plaintext: &[u8],
+    k_obj: &[u8; 32],
+    file_id: [u8; 16],
+    seg_log2: u8,
+    wrap: impl FnMut(&Recipient, &[u8]) -> Result<Vec<u8>, PrivateError>,
+) -> Result<Vec<u8>, PrivateError> {
+    if !(ARTIFACT_MIN_SEG_LOG2..=ARTIFACT_MAX_SEG_LOG2).contains(&seg_log2) {
+        return Err(PrivateError::Malformed);
+    }
+    let obj = ObjKeys::derive(repo_id, k_obj);
+    let block = slot_block(
+        sender,
+        sender_key_id,
+        owner_id,
+        recipients,
+        &obj,
+        k_obj,
+        wrap,
+    )?;
+    let mut out = Vec::with_capacity(artifact_header_len(recipients.len()) + plaintext.len() + 16);
+    out.extend_from_slice(&super::pack::MAGIC);
+    out.extend_from_slice(&[ARTIFACT_VERSION, seg_log2, 0, 0]);
+    out.extend_from_slice(&block);
+    out.extend_from_slice(&(plaintext.len() as u64).to_be_bytes());
+    out.extend_from_slice(&file_id);
+    let header = out.clone();
+    let pack_key = obj.pack_key(&file_id);
+    let cipher = Aes256Gcm::new((&*pack_key).into());
+    let seg = 1usize << seg_log2;
+    let segments = plaintext.len().div_ceil(seg).max(1);
+    for i in 0..segments {
+        let chunk =
+            &plaintext[(i * seg).min(plaintext.len())..((i + 1) * seg).min(plaintext.len())];
+        let ct = cipher
+            .encrypt(
+                Nonce::from_slice(&artifact_nonce(i as u64, segments as u64)),
+                Payload {
+                    msg: chunk,
+                    aad: &header,
+                },
+            )
+            .map_err(|_| PrivateError::SealedPackCorrupt)?;
+        out.extend_from_slice(&ct);
+    }
+    Ok(out)
+}
+
+/// Open a sealed artifact under a specific-people header whose manifest says `size_bytes`, as
+/// `reader`, with the manifest owner's keys `owner_keys` (the letter reader rule: the sender key
+/// is the owner's ECDSA_SECP256K1 ENCRYPTION key `senderKeyId`; a slot counts only when its
+/// KCV prefix and full commitment match). The length is checked before anything else.
+pub fn open_artifact(
+    repo_id: &[u8; 32],
+    sealed: &[u8],
+    size_bytes: u64,
+    owner_keys: &[OwnerKey],
+    reader: &Reader<'_>,
+) -> Result<Zeroizing<Vec<u8>>, ArtifactError> {
+    if sealed.len() as u64 != size_bytes {
+        return Err(ArtifactError::SizeMismatch);
+    }
+    let corrupt = ArtifactError::SealedPackCorrupt;
+    if sealed.len() < 8 + 37
+        || sealed[..4] != super::pack::MAGIC
+        || sealed[4] != ARTIFACT_VERSION
+        || !(ARTIFACT_MIN_SEG_LOG2..=ARTIFACT_MAX_SEG_LOG2).contains(&sealed[5])
+        || sealed[6..8] != [0, 0]
+    {
+        return Err(corrupt);
+    }
+    let n = usize::from(sealed[8]);
+    let header_len = artifact_header_len(n);
+    if !(1..=MAX_RECIPIENTS).contains(&n) || sealed.len() < header_len {
+        return Err(corrupt);
+    }
+    let header = &sealed[..header_len];
+    let block = &header[8..8 + 37 + SLOT_LEN * n];
+    let plaintext_len = u64::from_be_bytes(
+        header[header_len - 24..header_len - 16]
+            .try_into()
+            .expect("8 bytes"),
+    );
+    let file_id: [u8; 16] = header[header_len - 16..].try_into().expect("16 bytes");
+    let seg = 1u64 << sealed[5];
+    let segments = plaintext_len.div_ceil(seg).max(1);
+    let expected = (header_len as u64)
+        .checked_add(plaintext_len)
+        .and_then(|x| x.checked_add(segments.checked_mul(16)?));
+    if expected != Some(sealed.len() as u64) {
+        return Err(corrupt);
+    }
+    let sender_key_id = u32::from_be_bytes(block[1..5].try_into().expect("4 bytes"));
+    let sender_public = sender_key(owner_keys, sender_key_id).ok_or(ArtifactError::Malformed)?;
+    let (_, obj) = find_slot(repo_id, block, n, sender_public, reader)
+        .map_err(|()| ArtifactError::Malformed)?
+        .ok_or(ArtifactError::NotARecipient)?;
+    let pack_key = obj.pack_key(&file_id);
+    let cipher = Aes256Gcm::new((&*pack_key).into());
+    let mut out = Zeroizing::new(Vec::with_capacity(
+        usize::try_from(plaintext_len).map_err(|_| corrupt)?,
+    ));
+    let mut at = header_len;
+    for i in 0..segments {
+        let plain = (plaintext_len - (i * seg).min(plaintext_len)).min(seg);
+        let len = usize::try_from(plain + 16).map_err(|_| corrupt)?;
+        let pt = cipher
+            .decrypt(
+                Nonce::from_slice(&artifact_nonce(i, segments)),
+                Payload {
+                    msg: &sealed[at..at + len],
+                    aad: header,
+                },
+            )
+            .map_err(|_| corrupt)?;
+        out.extend_from_slice(&Zeroizing::new(pt));
+        at += len;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +738,44 @@ mod tests {
             keys: &keys,
         };
         assert_eq!(open(&repo, &h, &enc, &ok, &liar), LetterOpened::Malformed);
+    }
+
+    #[test]
+    fn a_production_artifact_opens_for_each_recipient_only() {
+        let repo = [0x11; 32];
+        let (alice, bob) = (key(1), key(2));
+        let recipients = [
+            Recipient {
+                identity_id: [0xa1; 32],
+                public_key: alice.public_key(),
+            },
+            Recipient {
+                identity_id: [0xb2; 32],
+                public_key: bob.public_key(),
+            },
+        ];
+        let plain: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+        let sealed = seal_artifact(&repo, &alice, 4, &[0xa1; 32], &recipients, &plain).unwrap();
+        assert_eq!(sealed.len(), artifact_header_len(2) + 40_000 + 3 * 16);
+        let ok = owner_keys(&alice);
+        for (i, k) in [key(1), key(2)].into_iter().enumerate() {
+            let keys = [k];
+            let r = Reader {
+                identity_id: recipients[i].identity_id,
+                keys: &keys,
+            };
+            let got = open_artifact(&repo, &sealed, sealed.len() as u64, &ok, &r).unwrap();
+            assert_eq!(*got, plain);
+        }
+        let keys = [key(3)];
+        let outsider = Reader {
+            identity_id: [0xc3; 32],
+            keys: &keys,
+        };
+        assert_eq!(
+            open_artifact(&repo, &sealed, sealed.len() as u64, &ok, &outsider),
+            Err(ArtifactError::NotARecipient)
+        );
     }
 
     #[test]

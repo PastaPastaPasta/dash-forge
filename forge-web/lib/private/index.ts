@@ -77,12 +77,18 @@ export {
   type UnreadableReason,
 } from './doc'
 export {
+  ARTIFACT_VERSION,
+  ArtifactError,
   KEY_TYPE_ECDSA_SECP256K1,
   PURPOSE_ENCRYPTION,
   SLOT_VERSION,
+  artifactHeaderLength,
   letterSharedKey,
   openLetter,
+  openLetterArtifact,
   sealLetter,
+  sealLetterArtifact,
+  type ArtifactErrorCode,
   type LetterOpenResult,
   type LetterReader,
   type LetterRecipient,
