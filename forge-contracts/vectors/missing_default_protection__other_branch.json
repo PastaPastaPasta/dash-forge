@@ -1,0 +1,15 @@
+{
+  "name": "other_branch",
+  "description": "Protecting a branch other than the default leaves the default unprotected.",
+  "case": "missing_default_protection",
+  "input": {
+    "defaultBranch": "trunk",
+    "patterns": [
+      "refs/heads/main",
+      "refs/tags/**"
+    ]
+  },
+  "expected": [
+    "refs/heads/trunk"
+  ]
+}

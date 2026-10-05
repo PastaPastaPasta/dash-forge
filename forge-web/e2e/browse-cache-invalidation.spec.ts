@@ -104,7 +104,7 @@ test.beforeAll(() => {
   writeFileSync(join(SRC, 'README.md'), `# ${REPO}\n\nThe G4 browse-cache fixture.\n`)
   g('add', 'README.md')
   g('commit', '-q', '-m', 'first')
-  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--description', 'Dash Forge e2e: the browse cache after a push (G4)')
+  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--no-protect', '--description', 'Dash Forge e2e: the browse cache after a push (G4)')
   push('OWNER', 'main')
   // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
   // node that has not seen the consent yet).

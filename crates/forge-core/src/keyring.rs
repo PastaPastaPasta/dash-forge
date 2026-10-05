@@ -1671,6 +1671,7 @@ pub async fn create_private_state(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,
     default_branch: &str,
+    protected_patterns: &[String],
     backend: FieldValue,
 ) -> Result<bool> {
     let w = signer.open(repo).await?;
@@ -1692,7 +1693,7 @@ pub async fn create_private_state(
                 visibility: Visibility::Private,
                 settings: AnchorSettings {
                     default_branch: short_branch(default_branch).to_string(),
-                    protected_patterns: Vec::new(),
+                    protected_patterns: protected_patterns.to_vec(),
                     backend,
                     archived: false,
                 },

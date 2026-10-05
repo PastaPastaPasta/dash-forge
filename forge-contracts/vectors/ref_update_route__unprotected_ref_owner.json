@@ -1,0 +1,13 @@
+{
+  "name": "unprotected_ref_owner",
+  "description": "With a config read, the owner's update of an unprotected ref is a plain refUpdate.",
+  "case": "ref_update_route",
+  "input": {
+    "refName": "refs/heads/dev",
+    "patterns": [
+      "refs/heads/main"
+    ],
+    "pusherIsOwner": true
+  },
+  "expected": "refUpdate"
+}

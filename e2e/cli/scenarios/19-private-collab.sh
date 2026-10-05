@@ -69,7 +69,7 @@ SRC="${WORKROOT}/s19-src"
 
 step "P_OWNER creates a private repo, pushes main and feature, adds P_MEMBER"
 if ! _retry "$LOG-create.err" _dg_read "$P_OWNER" "$LOG-create.json" "$LOG-create.err" \
-    --yes --json repo create "$NAME" --private --storage platform; then
+    --yes --json repo create "$NAME" --no-protect --private --storage platform; then
   cat "$LOG-create.err" >&2
   is_flake "$LOG-create.err" && skip_scenario "create failed on a transport flake"
   bad "private create failed"; finish_scenario
@@ -215,7 +215,7 @@ fi
 # not take the plaintext path
 PUB="e2e-pub-${RUN_ID}"
 PUB="${PUB:0:63}"
-if ! _retry "$LOG-pub.err" _dg_read "$P_MEMBER" "$LOG-pub.json" "$LOG-pub.err" --yes --json repo create "$PUB" --storage platform; then
+if ! _retry "$LOG-pub.err" _dg_read "$P_MEMBER" "$LOG-pub.json" "$LOG-pub.err" --yes --json repo create "$PUB" --no-protect --storage platform; then
   cat "$LOG-pub.err" >&2; bad "could not create the public repo for the cross-repo check"
 elif dg_as "$P_MEMBER" -y --json issue edit-comment "${ID_P_MEMBER}/${PUB}" "$COMMENT_ID" --body "leak ${RUN_ID}" >"$LOG-xr.json" 2>"$LOG-xr.err"; then
   bad "a private comment was edited through a public repo"
