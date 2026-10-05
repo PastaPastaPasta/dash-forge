@@ -8,6 +8,14 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+### Added
+
+- **Members-only discussion from `dg`** in public repositories with members-only content turned on: `--members` on `dg issue create`, `dg issue comment`, `dg pr comment` and `dg pr review`. Members read it in `dg issue view/list` and `dg pr view/list`; everyone else sees "#3 · members-only issue by @alice · open" and "3 members-only comments hidden". Every item in `--json` carries `"audience"` and `"readable"`.
+
+### Changed
+
+- `dg repo view` counts git packs only: `packCount` and `packBytes` (and the `packs:` line) no longer include browse indexes, history indexes, release-asset lists or long bodies. `dg storage status` still lists every artifact.
+
 ## [0.1.0] - 2026-10-04
 
 The first release. It targets devnet sakura (Dash Platform v5.0.0-beta.1, protocol 14) only;

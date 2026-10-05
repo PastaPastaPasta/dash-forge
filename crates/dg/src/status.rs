@@ -92,7 +92,7 @@ async fn hides_of<'a>(
 
 /// `dg pr status`.
 pub async fn pr_status(ctx: &Ctx, repo: &str) -> Result<()> {
-    let mut s = Reader::open(ctx, repo).await?;
+    let mut s = Reader::open_discussion(ctx, repo).await?;
     let me = s.me(ctx)?;
     let fork = if crate::infer::repo_from_clone() {
         crate::pr::into_fork_parent(&s.client, &mut s.repo, "reading the fork").await?
@@ -226,10 +226,12 @@ fn issue_json(v: &IssueView) -> serde_json::Value {
 
 /// `dg issue status`.
 pub async fn issue_status(ctx: &Ctx, repo: &str) -> Result<()> {
-    let s = Reader::open(ctx, repo).await?;
+    let s = Reader::open_discussion(ctx, repo).await?;
     let me = s.me(ctx)?;
     let name = s.client.dpns_first_names([me.as_str()]).await.remove(&me);
-    let (mut all, hidden) = s.collab().issues_with_state(&s.repo).await?;
+    // members-only issues this reader cannot open are counted apart from malformed ones
+    let read = s.collab().issues_with_state_read(&s.repo).await?;
+    let (mut all, hidden, members_only) = (read.rows, read.malformed, read.members_only.len());
     all.retain(|v| v.state.open);
     all.sort_by_key(|v| std::cmp::Reverse(v.issue.created_at));
     let hides = hides_of(
@@ -265,6 +267,7 @@ pub async fn issue_status(ctx: &Ctx, repo: &str) -> Result<()> {
             "mentioned": mentioning.iter().map(|v| issue_json(v)).collect::<Vec<_>>(),
             "authored": opened.iter().map(|v| issue_json(v)).collect::<Vec<_>>(),
             "hidden": hidden,
+            "membersOnly": members_only,
             "hiddenOmitted": omitted.len(),
         }),
         || {
@@ -288,6 +291,9 @@ pub async fn issue_status(ctx: &Ctx, repo: &str) -> Result<()> {
                 "There are no issues opened by you",
             );
             hidden_note(omitted.len());
+            if members_only > 0 {
+                println!("({members_only} members-only issue(s) you can't read are not listed)");
+            }
         },
     );
     Ok(())
