@@ -15,7 +15,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { NETWORKS } from '../constants'
 import { idbEntries, resetMemoryStores } from '../idb'
 import { AuthController } from './controller'
-import { ENCRYPTION_KEY_ELSEWHERE, adoptWalletEncryptionKey, encryptionKeyState, encryptionOps } from './encryption-key'
+import { ENCRYPTION_KEY_ELSEWHERE, ENCRYPTION_KEY_OTHER_APPROVAL, adoptWalletEncryptionKey, encryptionKeyState, encryptionOps } from './encryption-key'
 import type { WalletKey } from './key-registration'
 import { lockVault, releaseUnlocked, storeEncryptionKey, storeInVault, storedEncryptionKeyId, withEncryptionKey } from './vault'
 import { encryptionKeyFromLogin } from './wallet-protocol'
@@ -114,7 +114,7 @@ const fakeNavigator = {
   },
 }
 
-function authKey(keyId: number, wif: string): FakeKey {
+function authKey(keyId: number, wif: string, contract = FORGE.core): FakeKey {
   return {
     keyId,
     wif,
@@ -122,7 +122,7 @@ function authKey(keyId: number, wif: string): FakeKey {
     securityLevelNumber: 2,
     keyTypeNumber: 2,
     data: '',
-    contractBounds: { toJSON: () => ({ $type: 'singleContract', id: FORGE.core }) },
+    contractBounds: { toJSON: () => ({ $type: 'singleContract', id: contract }) },
     validatePrivateKey: (bytes) => bytesToHex(bytes) === bytesToHex(decodeWif(wif).privateKey),
   }
 }
@@ -133,13 +133,9 @@ function encKey(keyId: number, priv: Uint8Array, extra: Partial<FakeKey> = {}): 
 
 describe('wallet login and the encryption key (D27)', () => {
   let keys: FakeKey[]
-  let fetches = 0
   const sdk = {
     identities: {
-      fetch: async () => {
-        fetches += 1
-        return { balance: 10n ** 11n, publicKeys: keys, getPublicKeyById: () => ({}) }
-      },
+      fetch: async () => ({ balance: 10n ** 11n, publicKeys: keys, getPublicKeyById: () => ({}) }),
       keysRemainingBudgets: async () => new Map(),
     },
     contracts: { fetch: async () => ({}) },
@@ -163,7 +159,6 @@ describe('wallet login and the encryption key (D27)', () => {
     vi.stubGlobal('navigator', fakeNavigator)
     lockVault()
     gestures = 0
-    fetches = 0
     // The first wallet login's update: the auth key, and the encryption key right after it.
     keys = [authKey(5, AUTH_WIF), encKey(6, WALLET_ENC)]
   })
@@ -272,18 +267,66 @@ describe('wallet login and the encryption key (D27)', () => {
 
   it("waits for a node a block behind the wallet's registration, and wipes only its own copies", async () => {
     keys = [authKey(5, AUTH_WIF)]
-    const late = encKey(6, WALLET_ENC)
+    await login(make())
+    // The node shows the encryption key from its third read on.
+    const behind = [authKey(5, AUTH_WIF)]
+    const caughtUp = [authKey(5, AUTH_WIF), encKey(6, WALLET_ENC)]
+    let reads = 0
+    const lagging = {
+      ...sdk,
+      identities: { ...(sdk as unknown as { identities: object }).identities, fetch: async () => ({ balance: 10n ** 11n, publicKeys: ++reads >= 3 ? caughtUp : behind }) },
+    } as unknown as EvoSDK
+    const mine = new Uint8Array(WALLET_ENC)
+    const outcome = await adoptWalletEncryptionKey(lagging, NET, ID, FORGE.core, [mine], { attempts: 5, intervalMs: 5 })
+    expect(outcome).toEqual({ kind: 'stored', keyId: 6 })
+    expect(reads).toBe(3)
+    expect(bytesToHex(mine)).toBe(bytesToHex(WALLET_ENC))
+    // Without retries (a returning login), one read decides.
+    reads = 0
+    expect(await adoptWalletEncryptionKey(lagging, NET, ID, FORGE.core, [mine])).toEqual({ kind: 'none' })
+    expect(reads).toBe(1)
+  }, 30_000)
+
+  it('copies the key at once: the sheet wiping its bytes mid sign-in does not matter', async () => {
+    const theirs = new Uint8Array(WALLET_ENC)
+    const c = make()
+    const signingIn = c.adoptWalletKeys(ID, [walletKey], PASSKEY, { encryptionKeys: [theirs] })
+    theirs.fill(0) // the sheet closed
+    await signingIn
+    expect(c.getState().notice ?? null).toBeNull()
+    expect(await withEncryptionKey(NET, ID, async (k, s) => [k, bytesToHex(s)])).toEqual([6, bytesToHex(WALLET_ENC)])
+  }, 30_000)
+
+  it("a grant's first approval registers the identity's new usable key: the grant keeps it", async () => {
+    const c = make()
+    await login(c, true)
+    // The wallet's first approval for forge-collab: another auth key, and another encryption key.
+    const COLLAB_WIF = encodeWif(new Uint8Array(32).fill(7), NET)
+    const collabEnc = encryptionKeyFromLogin(new Uint8Array(32).fill(0x22), ID)
+    keys = [...keys, authKey(7, COLLAB_WIF, FORGE.collab), encKey(8, collabEnc)]
+    const grant: WalletKey = { keyId: 7, wif: COLLAB_WIF, scope: { core: false, collab: true, community: false, unbounded: false }, limits: null }
+    await c.addWalletGrant(ID, grant, FORGE.collab, { encryptionKeys: [new Uint8Array(collabEnc)], justRegistered: true })
+    expect(c.getState().notice ?? null).toBeNull()
+    expect(await withEncryptionKey(NET, ID, async (k, s) => [k, bytesToHex(s)])).toEqual([8, bytesToHex(collabEnc)])
+    // A later forge-core login elsewhere: its key is no longer the identity's, and the notice
+    // points to the approval that brings it (not to an import no file could make).
+    resetMemoryStores()
+    lockVault()
+    const other = make()
+    await login(other)
+    expect(other.getState().notice).toBe(ENCRYPTION_KEY_OTHER_APPROVAL)
+    expect(await storedEncryptionKeyId(NET, ID)).toBeNull()
+  }, 30_000)
+
+  it('replacing a different key the vault could not carry over still says it was dropped', async () => {
+    const OLD = new Uint8Array(32).fill(0x44)
+    keys = [encKey(4, OLD), authKey(5, AUTH_WIF), encKey(6, WALLET_ENC)]
+    await storeInVault(NET, { identityId: ID, keyId: 9, wif: encodeWif(new Uint8Array(32).fill(9), NET) }, PASSKEY)
+    await storeEncryptionKey(NET, ID, 4, new Uint8Array(OLD))
+    lockVault()
     const c = make()
     await login(c)
-    const mine = new Uint8Array(WALLET_ENC)
-    const pending = (async () => {
-      await vi.waitFor(() => expect(fetches).toBeGreaterThan(0))
-      keys = [...keys, late]
-    })()
-    fetches = 0
-    const outcome = await adoptWalletEncryptionKey(sdk, NET, ID, FORGE.core, [mine], { attempts: 5, intervalMs: 5 })
-    await pending
-    expect(outcome).toEqual({ kind: 'stored', keyId: 6 })
-    expect(bytesToHex(mine)).toBe(bytesToHex(WALLET_ENC))
+    expect(c.getState().notice).toMatch(/not carried over/)
+    expect(await withEncryptionKey(NET, ID, async (k) => k)).toBe(6)
   }, 30_000)
 })

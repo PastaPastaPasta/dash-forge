@@ -46,7 +46,8 @@ import { PLATFORM_READ_MS, withPlatformRead } from './connect'
 import { withTimeout } from '../timeout'
 import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
-import { ENCRYPTION_KEY_ELSEWHERE, adoptWalletEncryptionKey } from './encryption-key'
+import { ENCRYPTION_KEY_ELSEWHERE, ENCRYPTION_KEY_OTHER_APPROVAL, adoptWalletEncryptionKey, type WalletEncryptionOutcome } from './encryption-key'
+import { storedEncryptionKeyId } from './vault'
 import { clearDrafts } from '../view/draft-text'
 import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
@@ -963,16 +964,11 @@ export class AuthController {
       readonly renewalUnlock?: { passphrase: string } | 'passkey'
       /** Give it up even though it cannot be opened (its key then stays live until it expires). */
       readonly dropUnopened?: boolean
-      /**
-       * The encryption private keys the wallet's login keys stand for (`WalletAnswer`): the one
-       * the identity uses is sealed beside the wallet key (DESIGN D27). Copied, not wiped: the
-       * caller wipes them.
-       */
-      readonly encryptionKeys?: readonly Uint8Array[]
-      /** The wallet registered its keys just now (QR #2): a node may not show them yet. */
-      readonly justRegistered?: boolean
-    } = {},
+    } & WalletEncryption = {},
   ): Promise<AuthSession> {
+    // Copied before anything waits: the sheet wipes its bytes when it closes.
+    const encryptionKeys = copyKeys(options.encryptionKeys)
+    const withCopies = { ...options, encryptionKeys }
     return this.run(async () => {
       const [main, ...rest] = keys
       if (!main) throw new Error('the wallet granted no key')
@@ -988,12 +984,12 @@ export class AuthController {
       // that stores it. As this identity's one writer: no other tab's stage is dropped instead.
       return serialized(identityId, async () => {
         try {
-          return await this.storeWalletKeys(identityId, main, rest, forge, protection, options)
+          return await this.storeWalletKeys(identityId, main, rest, forge, protection, withCopies)
         } finally {
           forgetPasskeyOutputs()
         }
       })
-    })
+    }).finally(() => wipeKeys(encryptionKeys))
   }
 
   private async storeWalletKeys(
@@ -1023,11 +1019,14 @@ export class AuthController {
     const kept = [...held, ...(given ? [given] : [])].filter((h, i, all) => !fresh.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
     const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
     const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
+    const heldBefore = await storedEncryptionKeyId(this.network, identityId)
     const stored = await storeInVault(this.network, secret, protection, pending !== null ? { dropStagedKeyId: pending.keyId } : {})
     const encryption = await this.keepWalletEncryptionKey(identityId, forge, options)
+    // A key the vault could not carry over is not reported when the wallet's own key replaced
+    // that same key, or when the notice already says where the identity's key is.
+    const replaced = encryption.outcome?.kind === 'stored' && encryption.outcome.keyId === heldBefore
     this.noteDropped(
-      // An encryption key the vault could not carry over is replaced by the wallet's own.
-      encryption.stored ? { ...stored, encryptionKeyDropped: false } : stored,
+      replaced || encryption.outcome?.kind === 'elsewhere' ? { ...stored, encryptionKeyDropped: false } : stored,
       'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
       encryption.notice,
     )
@@ -1047,16 +1046,17 @@ export class AuthController {
   private async keepWalletEncryptionKey(
     identityId: string,
     forge: ForgeIds,
-    options: { readonly encryptionKeys?: readonly Uint8Array[]; readonly justRegistered?: boolean },
-  ): Promise<{ readonly stored: boolean; readonly notice: string | null }> {
-    if (!options.encryptionKeys?.length) return { stored: false, notice: null }
+    options: WalletEncryption,
+  ): Promise<{ readonly outcome: WalletEncryptionOutcome | null; readonly notice: string | null }> {
+    if (!options.encryptionKeys?.length) return { outcome: null, notice: null }
     this.step('Enabling private repos')
     try {
       const sdk = await this.getSdk()
       const outcome = await adoptWalletEncryptionKey(sdk, this.network, identityId, forge.core, options.encryptionKeys, options.justRegistered === true ? { attempts: 5 } : {})
-      return { stored: outcome.kind === 'stored', notice: outcome.kind === 'elsewhere' ? ENCRYPTION_KEY_ELSEWHERE : null }
+      const notice = outcome.kind === 'elsewhere' ? ENCRYPTION_KEY_ELSEWHERE : outcome.kind === 'other-approval' ? ENCRYPTION_KEY_OTHER_APPROVAL : null
+      return { outcome, notice }
     } catch (e) {
-      return { stored: false, notice: `Signed in, but private repos could not be enabled: ${errorMessage(e)}.` }
+      return { outcome: null, notice: `Private repos could not be enabled: ${errorMessage(e)}` }
     }
   }
 
@@ -1064,7 +1064,9 @@ export class AuthController {
    * Add a wallet grant for another Forge contract to the signed-in identity (a shipped wallet
    * grants one contract per approval). The key must belong to the session's identity.
    */
-  async addWalletGrant(identityId: string, key: WalletKey, requested: string): Promise<AuthSession> {
+  async addWalletGrant(identityId: string, key: WalletKey, requested: string, options: WalletEncryption = {}): Promise<AuthSession> {
+    // Copied before anything waits: the sheet wipes its bytes when it closes.
+    const encryptionKeys = copyKeys(options.encryptionKeys)
     return this.run(async () => {
       const session = this.state.session
       const forge = NETWORKS[this.network].v2
@@ -1080,6 +1082,10 @@ export class AuthController {
         const opened = await this.open(secret, 'vault', session.keyLimits ?? undefined, false)
         const want = contractKind(forge, requested)
         if (want === null || !opened.grants?.[want]) throw new Error('the granted key is not live on the identity yet')
+        // A first approval for this contract registered an encryption key too, now the
+        // identity's usable one: keep it (never throws).
+        const encryption = await this.keepWalletEncryptionKey(identityId, forge, { ...options, encryptionKeys })
+        if (encryption.notice !== null) this.setState({ notice: encryption.notice })
         return opened
       } catch (e) {
         // The grant is stored; keep the session that was working (unless it locked meanwhile:
@@ -1087,7 +1093,7 @@ export class AuthController {
         if (unlockedSecret(this.network, identityId) !== null) this.setState({ session })
         throw new Error(`The approval was saved, but checking it on Platform failed (${errorMessage(e)}). It will be checked again when you next unlock.`)
       }
-    })
+    }).finally(() => wipeKeys(encryptionKeys))
   }
 
   /** Open the session of a key already in the vault and unlocked (identity creation). */
@@ -1669,4 +1675,20 @@ function toExtraKey(key: WalletKey, forge: ForgeIds, requested?: string): ExtraK
   const covered = FORGE_CONTRACT_KINDS.find((k) => key.scope[k]) ?? 'community'
   const contractId = requested !== undefined && scopeCovers(key.scope, forge, requested) ? requested : forge[covered]
   return { contractId, keyId: key.keyId, wif: key.wif }
+}
+
+/**
+ * What a wallet answer brings for the encryption key (DESIGN D27): the encryption private keys
+ * its login keys stand for (`WalletAnswer.encryptionKeys`), the one the identity uses being sealed
+ * beside the wallet key. Copied on the way in, so the caller wipes its own bytes whenever it likes.
+ */
+interface WalletEncryption {
+  readonly encryptionKeys?: readonly Uint8Array[]
+  /** The wallet registered its keys just now (QR #2): a node may not show them yet. */
+  readonly justRegistered?: boolean
+}
+
+const copyKeys = (keys: readonly Uint8Array[] | undefined): Uint8Array[] => (keys ?? []).map((k) => new Uint8Array(k))
+const wipeKeys = (keys: readonly Uint8Array[]): void => {
+  for (const k of keys) k.fill(0)
 }

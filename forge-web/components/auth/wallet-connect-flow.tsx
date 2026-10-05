@@ -21,8 +21,9 @@
  * since only answers from the signed-in identity are read.
  *
  * Granted keys are held in refs, never React state, and dropped when the sheet closes. So is the
- * encryption key the wallet's login key stands for: signing in seals it into the vault beside the
- * wallet key when it is the identity's (DESIGN D27), and the bytes are wiped once the sheet is done.
+ * encryption key the wallet's login key stands for: signing in (or a grant) seals it into the vault
+ * beside the wallet key when it is the identity's (DESIGN D27), and the bytes are wiped once the
+ * sheet is done.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -211,7 +212,8 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
             // The key that covers what was asked for (a wallet may grant several, or the wrong one).
             const key = keys.find((k) => scopeCovers(k.scope, forge, target))
             if (!key) throw new Error("The wallet's answer does not cover issues and pull requests. Try again, or sign in with your identity file.")
-            await latest.current.addWalletGrant(answer.identityId, key, target)
+            // Its first approval registered an encryption key too: the sign-in keeps it.
+            await latest.current.addWalletGrant(answer.identityId, key, target, { encryptionKeys: answer.encryptionKeys, justRegistered: answer.kind === 'register' })
             if (signal.aborted) return
             latest.current.onDone()
             return

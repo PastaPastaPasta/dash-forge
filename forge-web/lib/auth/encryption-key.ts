@@ -122,6 +122,18 @@ export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identity
  */
 export const ENCRYPTION_KEY_ELSEWHERE = 'Your encryption key is held elsewhere. Import it under Settings → Private repos.'
 
+/**
+ * The identity's encryption key came with another of the wallet's approvals: each first approval
+ * for another Forge contract registers its own (QR #2 adds exactly an auth and an encryption
+ * key), and the latest is the one writers use. Approving that contract here again brings it.
+ */
+export const ENCRYPTION_KEY_OTHER_APPROVAL =
+  "Your encryption key came with another approval in your wallet. Approve it again under Settings → This browser's key to read private repos."
+
+/** AUTHENTICATION, and ECDSA_HASH160: the auth key a wallet registers (DPP enums). */
+const PURPOSE_AUTHENTICATION = 0
+const KEY_TYPE_ECDSA_HASH160 = 2
+
 /** What became of the encryption key a wallet login stands for ({@link adoptWalletEncryptionKey}). */
 export type WalletEncryptionOutcome =
   /** It is the identity's usable encryption key, now sealed in the vault. */
@@ -130,6 +142,11 @@ export type WalletEncryptionOutcome =
   | { readonly kind: 'held'; readonly keyId: number }
   /** It is not, and this browser does not hold the one the identity uses ({@link ENCRYPTION_KEY_ELSEWHERE}). */
   | { readonly kind: 'elsewhere'; readonly keyId: number }
+  /**
+   * It is not: the identity's is the one another approval of the wallet registered, right after
+   * its auth key ({@link ENCRYPTION_KEY_OTHER_APPROVAL}). Its grant for that contract brings it.
+   */
+  | { readonly kind: 'other-approval'; readonly keyId: number }
   /** The identity has no usable encryption key. */
   | { readonly kind: 'none' }
 
@@ -169,7 +186,9 @@ export async function adoptWalletEncryptionKey(
       }
       if (usable === null) return { kind: 'none' }
       if ((await storedEncryptionKeyId(network, identityId)) === usable.keyId) return { kind: 'held', keyId: usable.keyId }
-      return { kind: 'elsewhere', keyId: usable.keyId }
+      // A wallet registers its encryption key right after the auth key, in one update.
+      const companion = keys.some((k) => k.keyId === usable.keyId - 1 && k.purposeNumber === PURPOSE_AUTHENTICATION && k.keyTypeNumber === KEY_TYPE_ECDSA_HASH160)
+      return { kind: companion ? 'other-approval' : 'elsewhere', keyId: usable.keyId }
     }
   } finally {
     for (const s of secrets) s.fill(0)

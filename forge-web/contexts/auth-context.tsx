@@ -110,7 +110,7 @@ interface AuthContextValue {
   /** Store the keys a wallet granted (verified on chain) and open the session. */
   adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection, options?: Parameters<AuthController['adoptWalletKeys']>[3]) => Promise<void>
   /** Add a wallet grant for another Forge contract to the signed-in identity. */
-  addWalletGrant: (identityId: string, key: WalletKey, requested: string) => Promise<void>
+  addWalletGrant: (identityId: string, key: WalletKey, requested: string, options?: Parameters<AuthController['addWalletGrant']>[3]) => Promise<void>
   /** Which Forge contracts the session's keys cover, and whether a held key is unlimited. */
   readonly grants: AuthSession['grants'] | null
   readonly unlimitedKey: boolean
