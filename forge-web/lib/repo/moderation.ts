@@ -18,7 +18,7 @@ import { decodeIdentifier } from '../auth/base58'
 import type { Event } from '../rules'
 import type { HideReason, Membership } from '../rules/v2'
 import type { Hidden } from '../rules/moderation'
-import { threadModeration } from './moderation-fold'
+import { EVENT_AS_MAINTAINER, threadModeration } from './moderation-fold'
 import type { WriteAuth, WriteResult } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { contractHasProperty } from './contract-shape'
@@ -27,8 +27,7 @@ import type { Network } from '../constants'
 import { targetEventData } from './review-writes'
 import { writeRepoDoc, type WriteTarget } from './writes'
 
-/** forge-community `event.asMaintainer` (RC2 MOD): the writer's maintainer document, proved. */
-export const EVENT_AS_MAINTAINER = 'asMaintainer'
+export { EVENT_AS_MAINTAINER }
 
 /** Whether the repo's forge-community proves a hide's maintainer (then every hide counts). */
 export function hidesProved(sdk: EvoSDK, repo: RepoRef): Promise<boolean> {

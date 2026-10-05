@@ -1,0 +1,13 @@
+{
+  "name": "discord",
+  "description": "A Discord webhook URL is its token: refused on chain.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://discord.com/api/webhooks/123456789012345678/AbCdEfGh-ijk_lmn"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Discord"
+  }
+}

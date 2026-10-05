@@ -1,0 +1,13 @@
+{
+  "name": "google_chat",
+  "description": "Google Chat webhooks put the key and token in the query; the host alone is enough.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://chat.googleapis.com/v1/spaces/AAA/messages"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Google Chat"
+  }
+}

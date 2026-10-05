@@ -42,6 +42,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTRACTS = os.path.join(os.path.dirname(HERE), 'contracts')
+# The schemas each network registered (version 1); an in-place update is validated against them.
+REGISTERED = os.path.join(CONTRACTS, 'registered')
 NAMES = ('forge-core', 'forge-collab', 'forge-community')
 CORE = 'FORGE_CORE_CONTRACT_ID'
 COLLAB = 'FORGE_COLLAB_CONTRACT_ID'
@@ -112,7 +114,38 @@ FLAGS = dict(
     # 1 writer / 2 triage / 3 reader, and a claimed `r` the writer leaf proves on every gated type.
     # Re-cut-or-never: a `where` added to a registered writer leaf is refused on update.
     member_roles=True,           # ROLES: writer.role + r on refUpdate/packManifest/chunk/label/transition/event/milestone/checkRun
+    # ---- UPDATE-1 (roadmap D4, owner decision 2026-10-04; dash-forge-qa design/v5/CONTRACT-UPDATE-1.md):
+    # one in-place DataContractUpdate of all three registered contracts (version 1 -> 2 on sakura)
+    # and the same additions in the mainnet registration. Only what protocol 14 lets an update add
+    # (forge-v2.md §9): new optional properties and new document types with their own indexes. No
+    # rule, index, reference or required field on an existing type. Each flag off reproduces the
+    # registered v1 schema (registered/<contract>.v1.json, checked by --check).
+    release_target_oid=True,     # release.targetOid: the commit the tag named at publish (optional, never requiredSince)
+    config_moved_to=True,        # config.movedTo: the successor repository's id (TS-11 succession)
+    pack_mirror=True,            # packMirror: anyone records an external copy of a listed pack (TS-10, RECUT O-2)
+    transition_closed_by_pr=True,  # transition.closedByPr: the PR number whose merge closed this issue
+    profile_key_proofs=True,     # profile.keyProofs: possession proofs for profile.pubkeys (client-rules #5)
+    profile_bot=True,            # profile.bot: {operator} on a bot, {operates} on its operator (DX-15)
+    author_retarget=True,        # authorEvent kind 8 + value: the PR author retargets (power R-STACK-1)
+    policy_code_owners=True,     # policy.requireCodeOwners: CODEOWNERS approval declared on chain
+    repo_ban=True,               # ban: a maintainer's per-repo ban list, applied by readers (TS-08 c)
 )
+# The UPDATE-1 items: every one off is the registered v1 set (registered/*.v1.json).
+UPDATE1_FLAGS = ('release_target_oid', 'config_moved_to', 'pack_mirror', 'transition_closed_by_pr', 'profile_key_proofs',
+                 'profile_bot', 'author_retarget', 'policy_code_owners', 'repo_ban')
+# ---- Mainnet-only (a fresh registration may add them; an update never can: rules, references and
+# required fields on existing types are frozen, forge-v2.md §9). Off in every devnet build; the mainnet
+# registration turns them on with --mainnet. Each is documented in docs/contracts/forge-v2.md §9.1.
+MAINNET_FLAGS = dict(
+    mainnet_release_target=False,  # release: a public publish (+1) names targetOid; a sealed revision never does
+    mainnet_retarget_value=False,  # authorEvent: kind 8 names its new base in `value`; `value` only on kind 8
+    mainnet_moved_to_public=False,  # config: no plaintext movedTo beside a sealed config (noPlain)
+    mainnet_mirror_public=False,   # packMirror: a stranger's mirror only for a public repo (where vis)
+    # Declared, not built: each needs a design pass and a re-cut test before it can be switched on.
+    mainnet_consensus_archive=False,  # repo.archived refuses every gated write (client-rules #10)
+    mainnet_epoch_writes=False,    # sealed writes only under the current epoch (client-rules §11-18)
+)
+MAINNET_UNBUILT = ('mainnet_consensus_archive', 'mainnet_epoch_writes')
 # The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
 RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star', 'event_as_maintainer',
              'member_roles')
@@ -668,6 +701,123 @@ def build(flags):
         ev_home['event']['propertyConstraints']['t_triageKinds'] = {
             "ifThen": [{"in": ["kind", WRITER_EVENT_KINDS]}, {"equal": ["r", 1]}]}
 
+    # ======================= UPDATE-1 (roadmap D4; design/v5/CONTRACT-UPDATE-1.md) =======================
+    # Each addition is something protocol 14 lets a DataContractUpdate add to a registered contract:
+    # an optional property under an existing type's `properties` (rs-json-schema-compatibility-validator
+    # rule_set.rs "properties": inner allow_addition), an `enum` that only gains values (rule_set.rs
+    # "enum": allow_addition at the element level), or a new document type with its own indexes and
+    # references (rs-dpp data_contract/methods/validate_update/v0: new types are validated as at
+    # registration). Nothing below adds a rule, index, reference or required field to an existing type.
+    up = {**f, **{k: f.get(k, False) for k in MAINNET_FLAGS}}
+    for k in MAINNET_UNBUILT:
+        if up[k]:
+            sys.exit(f'{k} is declared, not built: see docs/contracts/forge-v2.md §9.1')
+    if up['release_target_oid']:
+        # The commit the tag named when this revision was written. Optional, not `requiredSince`:
+        # a sealed revision must not carry it in plaintext and an unpublish names no commit, and a
+        # requiredSince property is required of every later create (book contract-keywords/
+        # required-since.md: "Every post created or replaced under version 3 or later must have"),
+        # so it would refuse both and every installed client's release. Readers compare it with
+        # the tag's tip (TS-04); a sealed revision states it inside `enc`.
+        rl = cd['release']
+        add_prop(rl, 'targetOid', {"$ref": "#/$defs/oid"})
+        if up['mainnet_release_target']:
+            rl['propertyConstraints']['targetOnPublish'] = {"ifThenElse": [
+                {"present": "enc"}, {"absent": "targetOid"},
+                {"anyOf": [{"notEqual": ["delta", 1]}, {"present": "targetOid"}]}]}
+    if up['config_moved_to']:
+        # The successor repository (any network-local repo id). Maintainer-written like every
+        # config, so a maintainer can point readers on even with the owner gone (TS-11 c). Readers
+        # honour it on a public repo only; a sealed config states it inside `enc`.
+        cf = cd['config']
+        add_prop(cf, 'movedTo', ident())
+        if up['mainnet_moved_to_public']:
+            cf['propertyConstraints']['noPlain']['anyOf'][1]['allOf'].append({"absent": "movedTo"})
+    if up['pack_mirror']:
+        # Anyone records another copy of a pack the members' manifests already list. Bytes verify
+        # against packHash, so a mirror can only fail to serve; readers take mirrors only for hashes
+        # in the members' pack list, members' first, strangers last and capped (RECUT-B §5). The
+        # writer pays, and may delete its own record. `kind` names how `uris` are read (1 https or
+        # a public s3 URL, 2 ipfs://<cid>); readers skip a kind they do not know. Only https:// and
+        # ipfs:// URIs (no file:, javascript: or credentials in the URL): a pattern can never be
+        # added by a later update.
+        pm = {"type": "object", "documentsMutable": False, "canBeDeleted": True,
+              "properties": {
+                  "repoId": ident(refersTo={"type": "permanentDocument", "documentType": "repo"}, position=0),
+                  "packHash": {"$ref": "#/$defs/hid", "position": 1},
+                  "kind": {"type": "integer", "minimum": 1, "maximum": 255, "position": 2},
+                  "uris": {"type": "array", "minItems": 1, "maxItems": 4,
+                           "items": {"type": "string", "minLength": 1, "maxLength": 300, "pattern": LOG_URL},
+                           "position": 3}},
+              "indices": [
+                  # The mirrors of one pack (repoId, packHash) and of a whole repo (repoId alone);
+                  # unique per writer, so one record per (repo, pack, mirror)
+                  {"name": "byHash", "properties": [{"repoId": "asc"}, {"packHash": "asc"}, {"$ownerId": "asc"}],
+                   "unique": True},
+                  # What one mirror (a pin service) has recorded, newest last
+                  {"name": "byOwner", "properties": [{"$ownerId": "asc"}, {"$createdAt": "asc"}]}],
+              "required": ["$createdAt", "repoId", "packHash", "kind", "uris"], "additionalProperties": False}
+        if up['mainnet_mirror_public']:
+            pm['properties']['repoId']['refersTo']['where'] = {"visibility": "vis"}
+            # public-only, as on topic and starBeat: the where proves it equals the repo's
+            pm['properties']['vis'] = {"type": "string", "enum": ["public"], "maxLength": 6, "position": 4}
+            pm['required'].append('vis')
+        cd['packMirror'] = pm
+    if up['transition_closed_by_pr']:
+        # The PR whose merge closed this issue (a "Fixes #N" close). Readers verify that PR is merged
+        # and names the issue before showing "closed in #N" (client-rules #12). Inlined: the type
+        # already takes the `num` def (targetNumber).
+        add_prop(ld['transition'], 'closedByPr', {"type": "integer", "minimum": 1, "maximum": 4294967295})
+    if up['profile_key_proofs']:
+        # keyProofs[i] proves possession of pubkeys[i]: base64 of an SSH signature (sshsig, namespace
+        # `dash-forge`) or a binary OpenPGP signature over `dash-forge-key:v1:<identity id>:<pubkeys[i]
+        # key part>`. Consensus cannot check either; the shared reader rule does, and a proven
+        # listing outranks an unproven one (client-rules #5). An empty string is "no proof" for that
+        # key. 1,200 characters (900 bytes) holds an RSA-3072 sshsig or an RSA-4096 OpenPGP
+        # signature; four of them stay under max_field_value_size (5,120 B).
+        add_prop(md['profile'], 'keyProofs', {"type": "array", "maxItems": 4, "items": {
+            "type": "string", "minLength": 0, "maxLength": 1200, "pattern": "^[A-Za-z0-9+/]*={0,2}$"}})
+    if up['profile_bot']:
+        # A bot's profile names its operator; the operator's profile lists the bots it runs. Readers
+        # show a "bot" badge only when both sides agree (DX-15): neither claim alone proves anything.
+        add_prop(md['profile'], 'bot', {"type": "object", "properties": {
+            "operator": ident(position=0),
+            "operates": {"type": "array", "maxItems": 8, "items": ID, "position": 1}},
+            "additionalProperties": False})
+    if up['author_retarget']:
+        # The PR author may retarget its own PR (power-user R-STACK-1): kind 8 joins the author kinds
+        # and `value` carries the new base branch, as on a member's kind-8 event. The enum only
+        # gains a value (appended, so no existing element moves). authorEvent's rules are frozen,
+        # so "kind 8 needs a value" is a reader rule until mainnet (mainnet_retarget_value); a
+        # private repo's author retarget is refused by readers (value would be plaintext).
+        ae = md['authorEvent']
+        ae['properties']['kind']['enum'].append(8)
+        add_prop(ae, 'value', {"type": "string", "minLength": 1, "maxLength": 120, "maxBytes": 480})
+        if up['mainnet_retarget_value']:
+            ae['propertyConstraints']['retargetValue'] = {"ifThenElse": [
+                {"equal": ["kind", 8]}, {"present": "value"}, {"absent": "value"}]}
+    if up['policy_code_owners']:
+        # The merge box requires an approval from a code owner of every touched path (a client rule
+        # like the rest of the policy; power-user #14).
+        add_prop(md['policy'], 'requireCodeOwners', {"type": "boolean"})
+    if up['repo_ban']:
+        # A maintainer bans an identity from a repo: readers hide its issues, PRs, comments and
+        # reviews there, as they apply a hide (TS-08 c), from the bans of current maintainers. One
+        # write covers every past and future post. Deleting it (its writer) lifts it. Not consensus:
+        # the banned identity can still write; v5 moderation is contract-wide (forge-v2.md §3.2).
+        ld['ban'] = {"type": "object", "documentsMutable": False, "canBeDeleted": True,
+                     "ownerRefersTo": find_leaf("maintainer", CORE),
+                     "properties": {
+                         "repoId": ident(position=0),
+                         "identityId": ident(position=1),
+                         "reason": {"type": "integer", "minimum": 0, "maximum": 255, "position": 2}},
+                     "indices": [
+                         # Every ban in a repo (repoId), one identity's (repoId, identityId); one per
+                         # (repo, identity, maintainer)
+                         {"name": "byRepo", "properties": [{"repoId": "asc"}, {"identityId": "asc"}, {"$ownerId": "asc"}],
+                          "unique": True}],
+                     "required": ["$createdAt", "repoId", "identityId"], "additionalProperties": False}
+
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"
     comm['description'] = "Dash Forge v2 community: events, milestones, runners, check runs, policies, stars, webhooks"
@@ -704,8 +854,9 @@ def gate(gate_bin, contracts):
 
 
 def flags_from(off='', on=''):
-    """FLAGS with the comma-separated `off` flags turned off and the `on` ones turned on."""
-    flags = dict(FLAGS)
+    """FLAGS (and the MAINNET_FLAGS, all off) with the comma-separated `off` flags turned off and the
+    `on` ones turned on."""
+    flags = dict(FLAGS, **MAINNET_FLAGS)
     for value, names in ((False, off), (True, on)):
         for fl in filter(None, names.split(',')):
             if fl not in flags:
@@ -746,19 +897,31 @@ def main():
     ap.add_argument('--off', default='')
     ap.add_argument('--on', default='')
     ap.add_argument('--out', help='write the three files here instead of forge-contracts/contracts')
+    ap.add_argument('--mainnet', action='store_true',
+                    help='turn the built MAINNET_FLAGS on (a fresh registration only; needs --out)')
     a = ap.parse_args()
-    variant = bool(a.off or a.on)
-    contracts = build(flags_from(a.off, a.on))
+    on = a.on
+    if a.mainnet:
+        on = ','.join(filter(None, [on, *(k for k in MAINNET_FLAGS if k not in MAINNET_UNBUILT)]))
+    variant = bool(a.off or on)
+    contracts = build(flags_from(a.off, on))
     targets = {n: os.path.join(a.out or CONTRACTS, f'{n}.json') for n in NAMES}
-    if not a.out and not variant:
-        targets['registered'] = os.path.join(CONTRACTS, 'registered', 'forge-core.v1.json')
-    texts = {k: dumps(contracts['forge-core' if k == 'registered' else k]) for k in targets}
+    texts = {k: dumps(contracts[k]) for k in targets}
     if a.check and variant:
         sys.exit('--check compares the full build: use it without --off/--on')
     if a.check:
         stale = [p for k, p in targets.items() if not os.path.exists(p) or open(p).read() != texts[k]]
         for p in stale:
             print(f'stale: {os.path.relpath(p)} (re-run forge-contracts/schema/build.py)')
+        # The registered v1 schemas are frozen copies of what devnet sakura registered on
+        # 2026-10-01; the build with every UPDATE-1 item off must still reproduce them, so an edit
+        # to an earlier flag cannot silently change what an update is validated against.
+        v1 = build(flags_from(','.join(UPDATE1_FLAGS)))
+        for n in NAMES:
+            p = os.path.join(REGISTERED, f'{n}.v1.json')
+            if not os.path.exists(p) or open(p).read() != dumps(v1[n]):
+                stale.append(p)
+                print(f'differs: {os.path.relpath(p)} is not the build with every UPDATE-1 flag off')
         sys.exit(1 if stale else 0)
     if a.out or not variant:
         if a.out:
