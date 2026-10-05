@@ -417,10 +417,7 @@ mod tests {
     #[tokio::test]
     async fn a_digest_that_fails_to_go_keeps_its_items() {
         let mailer = Arc::new(FlakyMailer::default());
-        let d = dispatcher(
-            Some(Arc::clone(&mailer) as Arc<dyn Mailer>),
-            Arc::default(),
-        );
+        let d = dispatcher(Some(Arc::clone(&mailer) as Arc<dyn Mailer>), Arc::default());
         subscribe(&d, Some("a@example.org"), Delivery::Daily);
         d.deliver(ID, &notice("1")).await.unwrap();
         d.deliver(ID, &notice("2")).await.unwrap();
