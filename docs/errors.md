@@ -181,7 +181,7 @@ Fix: register a fresh one with your master key (used once): `dg auth login <iden
 - "the key stored on this computer holds no encryption key": your identity usually has one (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), but the key source in use does not hold its private half: a limited key stored by an older `dg`, or with `--signing-only`, is a signing key only.
 - "`<member>` has no encryption key" (`dg collab add` to a private repository): the member you named has no enabled `ENCRYPTION` key on their identity.
 
-Fix: for the first, sign in again, replacing the key in use (`dg auth status` shows its id, and its `Private:` line prints the command): `dg auth login <identity file> --replace <key id>`, or `dg auth login --mnemonic --replace <key id>` with the 12-word recovery phrase if you have no identity file (a `dg auth new` identity). It registers a new limited key, stores your encryption key beside it and disables the old key; the master key is used once and not stored. For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery phrase (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+Fix: for the first, sign in again, replacing the key in use (`dg auth status` shows its id, and its `Private:` line prints the command): `dg auth login <identity file> --replace <key id>`, or `dg auth login --mnemonic --replace <key id>` with the 12-word recovery phrase if you have no identity file (a `dg auth new` identity). It registers a new limited key, stores your encryption key beside it and disables the old key; the master key is used once and not stored. For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery phrase (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Private repos → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
 
 ## E307
 
@@ -219,13 +219,15 @@ Fix: a maintainer's client shares it the next time they open the repo; from the 
 
 **Members-only content is not turned on.** You asked for members-only content (an issue, comment or review only members can read) in a public repository where no maintainer has turned it on.
 
-Fix: a maintainer runs `dg repo members enable <owner>/<repo>`, which sets up a key for the current members (the command shows the cost first). Until then, post it publicly or ask a maintainer.
+Fix: a maintainer runs `dg repo members enable <owner>/<repo>`, which sets up a key for the current members (the command shows the cost first). Until then, post it publicly or ask a maintainer. See [Turn on members-only content](security/audiences.md#turn-on-members-only-content).
 
 ## E313
 
 **Members-only.** This issue or pull request is members-only: only members of the repository can read it. Everyone can see that it exists, its number, who opened it and when; nothing else.
 
-Fix: ask the repository's owner to add you as a member (`dg collab accept <owner>/<repo>` first, your consent). If you are a member already, see [E311](#e311).
+`dg issue view` and `dg pr view` show such an item as a row (`#3 · members-only issue by @alice · open`) and exit 0 instead. <!-- PENDING #398 --> E313 comes from commands that need its content, such as commenting on it or checking it out.
+
+Fix: ask the repository's owner to add you as a member (`dg collab accept <owner>/<repo>` first, your consent). If you are a member already, see [E311](#e311). If your key is protected by a passphrase and there is no terminal to ask for it, set `DASH_FORGE_PASSPHRASE` and try again. [Who can read what](security/audiences.md) explains members-only content.
 
 ## E401
 
