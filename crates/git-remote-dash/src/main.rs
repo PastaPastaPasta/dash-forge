@@ -43,11 +43,13 @@ mod fetched;
 mod git;
 mod helper;
 mod journal;
+mod ledger;
 mod options;
 mod pin;
 mod policy;
 mod pr_sync;
 mod progress;
+mod secret_scan;
 mod url;
 
 use std::io::{self, BufRead, Write};
@@ -261,6 +263,12 @@ fn protocol_loop<R: BufRead, W: Write>(
                 goal.set(line.contains("for-push"), &opts);
                 fail_if_shallow(&opts)?;
                 let for_push = line.split_whitespace().nth(1) == Some("for-push");
+                // A clone of an empty repository never fetches: the ledger is made here.
+                if !for_push && opts.cloning {
+                    if let Ok(dir) = git::LocalRepo::git_dir() {
+                        ledger::ensure_on_fetch(&dir, true);
+                    }
+                }
                 let out = step(rt.block_on(helper.list(for_push)), "list refs")?;
                 for l in &out {
                     writeln!(writer, "{l}")?;

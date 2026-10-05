@@ -273,6 +273,10 @@ impl Helper {
     /// into the local odb. Full clone indexes the self-contained packs directly; a
     /// `--filter` partial clone re-packs through a scratch repo and writes `.promisor`.
     pub async fn fetch(&mut self, wants: &[Want], options: &OptionState) -> Result<()> {
+        // The sealed-object ledger, created empty on a clone or a first fetch ([`crate::ledger`]).
+        if let Ok(dir) = LocalRepo::git_dir() {
+            crate::ledger::ensure_on_fetch(&dir, options.cloning);
+        }
         // The local git odb is the cache — never re-download objects git already has
         // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
         // already present locally there is nothing to transfer. (A promisor fetch still
@@ -480,6 +484,10 @@ impl Helper {
         };
 
         let mut planned = plan_pushes(specs, &remote_refs);
+        // Before anything is built, signed or stored: a public push publishes for good.
+        if conn.repo.visibility == forge_core::rules::v2::Visibility::Public {
+            check_secrets(conn, &mut planned, &remote_refs, options).await;
+        }
         let progress = Progress::new(options.verbosity);
         let balance_before = conn.identity().balance();
         let mut est_credits = push_fees::estimate_ref_updates(
@@ -1431,6 +1439,73 @@ fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Pl
         });
     }
     planned
+}
+
+/// The secret scan of a public push ([`crate::secret_scan`]): prints its warnings, and refuses
+/// (E807) each ref whose new commits add a likely secret nothing allows. When the scan itself
+/// cannot run (git failed), it says so and the push goes ahead: the scan is a safety net, and a
+/// broken one must not block every push.
+async fn check_secrets(
+    conn: &Conn,
+    planned: &mut [Planned],
+    remote_refs: &[(String, RefState)],
+    options: &OptionState,
+) {
+    let tips: Vec<(usize, String)> = planned
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.reject.is_none())
+        .filter_map(|(i, p)| p.new_oid.clone().map(|oid| (i, oid)))
+        .collect();
+    if tips.is_empty() {
+        return;
+    }
+    let known = remote_refs
+        .iter()
+        .filter_map(|(_, s)| tip_oid(s))
+        .filter(|oid| LocalRepo::object_exists(oid))
+        .collect();
+    let created_at_ms = forge_core::resolve::repo_created_at(&conn.client, &conn.repo)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read when the repo was created; every new commit counts as new");
+            None
+        });
+    let request = crate::secret_scan::Request {
+        repo: None,
+        tips,
+        known,
+        created_at_ms,
+        mirror: crate::secret_scan::spawned_by_import(),
+        allow: crate::secret_scan::Request::allow_from_options(options),
+    };
+    let scan = match crate::secret_scan::scan(&request) {
+        Ok(scan) => scan,
+        Err(e) => {
+            eprintln!("dash: warning: couldn't check this push for secrets, pushing anyway: {e:#}");
+            return;
+        }
+    };
+    let json = Progress::new(options.verbosity).json;
+    scan.print_warnings(json);
+    let refs: Vec<String> = scan
+        .refused
+        .iter()
+        .map(|(i, _)| planned[*i].spec.dst.clone())
+        .collect();
+    let Some(error) = scan.refusal(&refs) else {
+        return;
+    };
+    if !json {
+        scan.print_refusals();
+    }
+    error.eprint("dash: ");
+    let mut event = error.to_json();
+    event["event"] = serde_json::json!("error");
+    progress::report(&event);
+    for (i, _) in &scan.refused {
+        planned[*i].reject = Some(crate::secret_scan::WIRE.to_string());
+    }
 }
 
 /// What [`upload_push_pack`] needs from the push.

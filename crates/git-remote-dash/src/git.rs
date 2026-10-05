@@ -64,6 +64,17 @@ fn git_output(
     Ok(out)
 }
 
+/// `git <args>` in `repo` (with the inherited `GIT_DIR` cleared), or in the repo git spawned
+/// the helper for when `None`; stdout on success, git's stderr as the error otherwise.
+pub fn git_in(repo: Option<&Path>, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+    run_git(args, repo, repo.is_some(), stdin)
+}
+
+/// Whether `git <args>` in `repo` (as [`git_in`]) exits 0.
+pub fn git_ok_in(repo: Option<&Path>, args: &[&str]) -> bool {
+    git_output(args, repo, repo.is_some(), None).is_ok_and(|o| o.status.success())
+}
+
 /// What `index-pack --stdin` reported: the pack's sha (its `pack\t<sha>` or `keep\t<sha>`
 /// line), and the `.gitmodules`/`.gitattributes` blobs its checks could not read (the oid
 /// lines after it: blobs a tree in this pack names, held by a pack not yet indexed).

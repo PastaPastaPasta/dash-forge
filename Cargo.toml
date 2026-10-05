@@ -7,6 +7,7 @@ members = [
     "crates/forge-relay",
     "crates/forge-import",
     "crates/forge-runner",
+    "crates/forge-secrets",
 ]
 
 [workspace.package]

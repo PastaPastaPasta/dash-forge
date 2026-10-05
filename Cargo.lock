@@ -2170,6 +2170,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-secrets"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2380,6 +2389,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "forge-core",
+ "forge-secrets",
  "futures",
  "hex",
  "serde_json",

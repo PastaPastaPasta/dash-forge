@@ -45,6 +45,14 @@ impl OptionState {
     pub fn has_push_option(&self, name: &str) -> bool {
         self.push_options.iter().any(|o| o == name)
     }
+
+    /// The values of every `git push -o <key>=<value>`, in order (`-o allow-secret=3f9a…`
+    /// gives `3f9a…` for `allow-secret`). An option without `=` has no value and is skipped.
+    pub fn push_option_values<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.push_options
+            .iter()
+            .filter_map(move |o| o.split_once('=').filter(|(k, _)| *k == key).map(|(_, v)| v))
+    }
 }
 
 /// The reply to emit for an `option` line.
@@ -227,6 +235,26 @@ mod tests {
         assert!(s.has_push_option("allow-private-uri"));
         assert!(!s.has_push_option("allow"));
         assert_eq!(s.push_options, ["allow-private-uri", "ci.skip"]);
+    }
+
+    #[test]
+    fn key_value_push_options_are_read_by_key() {
+        let mut s = OptionState::default();
+        for o in [
+            "allow-secret=3f9a1c2d4e5f",
+            "allow-secret",
+            "allow-secrets=000000000000",
+            "allow-secret=0123456789ab",
+        ] {
+            assert_eq!(
+                handle_option(&mut s, &format!("push-option {o}")),
+                OptionReply::Ok
+            );
+        }
+        let got: Vec<&str> = s.push_option_values("allow-secret").collect();
+        assert_eq!(got, ["3f9a1c2d4e5f", "0123456789ab"]);
+        assert!(s.has_push_option("allow-secret"));
+        assert_eq!(s.push_option_values("ci.skip").count(), 0);
     }
 
     #[test]
