@@ -1291,7 +1291,14 @@ mod tests {
         assert_eq!(t.head_oid, newer);
         // The webhook: `synchronize` with the new head.
         let prs = targets([9; 32], t);
-        let e = translate_event(DOC_EVENT,&meta(), &head("MEMBER", &newer), &prs, &BTreeSet::new()).unwrap();
+        let e = translate_event(
+            DOC_EVENT,
+            &meta(),
+            &head("MEMBER", &newer),
+            &prs,
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!(e.payload["action"], "synchronize");
         assert_eq!(e.payload["pull_request"]["head"]["sha"], newer);
     }
@@ -1310,21 +1317,39 @@ mod tests {
         };
         let issues = targets([1; 32], target(false, 8));
         let empty = BTreeSet::new();
-        let e =
-            translate_event(DOC_EVENT,&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &empty).unwrap();
+        let e = translate_event(
+            DOC_EVENT,
+            &meta(),
+            &ev("l", 4, Some("bug"), [1; 32]),
+            &issues,
+            &empty,
+        )
+        .unwrap();
         assert_eq!(e.payload["action"], "labeled");
         assert_eq!(e.payload["label"]["name"], "bug");
         assert_eq!(e.payload["sender"]["login"], "ACTOR");
         assert_eq!(e.payload["issue"]["state"], "open");
-        let e =
-            translate_event(DOC_EVENT,&meta(), &ev("a", 6, Some("BOB"), [1; 32]), &issues, &empty).unwrap();
+        let e = translate_event(
+            DOC_EVENT,
+            &meta(),
+            &ev("a", 6, Some("BOB"), [1; 32]),
+            &issues,
+            &empty,
+        )
+        .unwrap();
         assert_eq!(e.payload["assignee"]["login"], "BOB");
 
         // The relay's last-seen fold, not the event's own: a labeled event on an issue the
         // relay has seen closed still reports the issue closed.
         let closed = BTreeSet::from([encode_identifier([1; 32])]);
-        let e =
-            translate_event(DOC_EVENT,&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &closed).unwrap();
+        let e = translate_event(
+            DOC_EVENT,
+            &meta(),
+            &ev("l", 4, Some("bug"), [1; 32]),
+            &issues,
+            &closed,
+        )
+        .unwrap();
         assert_eq!(e.payload["issue"]["state"], "closed");
         // Likewise a PR event carries TargetInfo::merged forward.
         let mut merged_pr = target(true, 3);
@@ -1344,21 +1369,41 @@ mod tests {
         // nothing on an issue; unknown targets and kinds are skipped.
         let prs = targets([9; 32], target(true, 3));
         for kind in [1, 2, 3, 9, 10] {
-            assert!(
-                translate_event(DOC_EVENT,&meta(), &ev("x", kind, None, [9; 32]), &prs, &empty).is_none()
-            );
-            assert!(
-                translate_event(DOC_EVENT,&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
-            );
+            assert!(translate_event(
+                DOC_EVENT,
+                &meta(),
+                &ev("x", kind, None, [9; 32]),
+                &prs,
+                &empty
+            )
+            .is_none());
+            assert!(translate_event(
+                DOC_EVENT,
+                &meta(),
+                &ev("x", kind, None, [1; 32]),
+                &issues,
+                &empty
+            )
+            .is_none());
         }
         for kind in [8, 11] {
-            assert!(
-                translate_event(DOC_EVENT,&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
-            );
+            assert!(translate_event(
+                DOC_EVENT,
+                &meta(),
+                &ev("x", kind, None, [1; 32]),
+                &issues,
+                &empty
+            )
+            .is_none());
         }
-        assert!(
-            translate_event(DOC_EVENT,&meta(), &ev("x", 4, Some("b"), [5; 32]), &issues, &empty).is_none()
-        );
+        assert!(translate_event(
+            DOC_EVENT,
+            &meta(),
+            &ev("x", 4, Some("b"), [5; 32]),
+            &issues,
+            &empty
+        )
+        .is_none());
     }
 
     /// Each transition kind is the GitHub action a receiver expects, on the right target kind.
@@ -2098,7 +2143,7 @@ mod tests {
                 ("kind", FieldValue::integer(4)),
             ],
         );
-        let ev = translate_event(DOC_EVENT,&meta(), &label, &issues, &none).unwrap();
+        let ev = translate_event(DOC_EVENT, &meta(), &label, &issues, &none).unwrap();
         assert_eq!(ev.payload["action"], "labeled");
         assert_eq!(ev.payload["label"]["name"], "");
         assert_content_free(&ev, &e);
@@ -2113,7 +2158,7 @@ mod tests {
                 ("refId", FieldValue::identifier([0xb0; 32])),
             ],
         );
-        let ev = translate_event(DOC_EVENT,&meta(), &assign, &issues, &none).unwrap();
+        let ev = translate_event(DOC_EVENT, &meta(), &assign, &issues, &none).unwrap();
         assert_eq!(
             ev.payload["assignee"]["login"],
             encode_identifier([0xb0; 32])

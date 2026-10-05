@@ -328,7 +328,8 @@ octokit) reads them:
   The event name, action and every other field are the ones a public event of the same kind
   has, so a GitHub webhook parser reads it unchanged and finds an empty text. A receiver that
   shows notices should say "posted a members-only comment on #12" (top-level key) or "closed
-  members-only issue #12" (object key) rather than quoting an empty text. Limits: no
+  members-only issue #12" (object key) rather than quoting an empty text; the relay's own
+  sinks (and forge-notify, which renders through them) do exactly that. Limits: no
   `check_run` is reported for a members-only pull request (its head is a stand-in), and a
   merge of one always carries `dash_merge_check: "not_on_base"`, because its base branch name
   is members-only.
