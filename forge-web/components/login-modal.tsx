@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, RotateCw, Upload, Wallet } from 'lucide-react'
+import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, RotateCw, SquareTerminal, Upload, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore, type LoginView } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
@@ -28,6 +28,9 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
+import { DgHandoffFlow, type HandoffTarget } from '@/components/auth/dg-handoff-flow'
+import { KeyLifetimeSelect } from '@/components/auth/key-lifetime'
+import { PhraseWarning } from '@/components/auth/phrase-warning'
 import { StepFailed } from '@/components/auth/step-status'
 import { forgetConfirm } from '@/components/keys-panel'
 import { otherIdentityFileMessage } from '@/lib/auth/controller'
@@ -35,7 +38,7 @@ import { useConfirmAction } from '@/components/ui/confirm-action'
 import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { GRANT_COPY } from '@/lib/auth/key-registration'
 import { NotDeployedState } from '@/components/ui/network-badge'
-import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
+import { BROWSER_KEY_DEFAULTS, lifetimeLabel, limitsFor, masterMaterialFromFile, type VaultInfo } from '@/lib/auth'
 import { AlreadyStoredError, UnlockNeededError } from '@/lib/auth/controller'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
@@ -65,6 +68,8 @@ export function LoginModal(): JSX.Element {
   const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys } = useAuth()
   const [view, setView] = useState<View | null>(null)
   const [unlockFor, setUnlockFor] = useState<string | null>(null)
+  // The locked key a dg handoff replaces (Unlock → "Replace this key with dg").
+  const [dgReplace, setDgReplace] = useState<HandoffTarget | null>(null)
   const hasVault = vaults.length > 0
 
   // Pick the view when the sheet opens: once the stored-key list has been read, so a returning
@@ -86,6 +91,7 @@ export function LoginModal(): JSX.Element {
       opened.current = { hasVault }
       setView(requested ?? (hasVault ? 'unlock' : 'choose'))
       setUnlockFor(null)
+      setDgReplace(null)
       return
     }
     if (!opened.current.hasVault && hasVault && requested === null) {
@@ -100,6 +106,11 @@ export function LoginModal(): JSX.Element {
     if (open && view === 'unlock' && vaultsLoaded && !vaultsError && !hasVault) setView('choose')
   }, [open, view, vaultsLoaded, vaultsError, hasVault])
 
+  // A key this device already holds: unlock it instead.
+  const toUnlock = (id: string): void => {
+    setUnlockFor(id)
+    setView('unlock')
+  }
   const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' || view === 'renew' ? null : () => setView('choose')
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
@@ -107,7 +118,17 @@ export function LoginModal(): JSX.Element {
   // A write asked for the sheet: say which, and what it costs once signed in (L-62).
   // Creating an identity is sign-up, and says so on every step (QW4-022), as GitHub's "Create your account" does.
   const title =
-    view === 'grant' ? grantTitle : view === 'renew' ? "Renew this browser's key" : view === 'create' ? 'Create your identity' : intent ? `Sign in to ${intent.action}` : 'Sign in to Dash Forge'
+    view === 'grant'
+      ? grantTitle
+      : view === 'renew'
+        ? "Renew this browser's key"
+        : view === 'create'
+          ? 'Create your identity'
+          : view === 'dg'
+            ? 'Sign in with dg'
+            : intent
+              ? `Sign in to ${intent.action}`
+              : 'Sign in to Dash Forge'
 
   return (
     <Dialog open={open} onClose={close} title={title} description={description} className="max-w-lg">
@@ -132,22 +153,38 @@ export function LoginModal(): JSX.Element {
         </button>
       ) : null}
       {view === null && !vaultsError ? <Spinner label="Checking this browser for a stored key" /> : null}
-      {view === 'unlock' ? <UnlockView initial={unlockFor} onDone={close} onOther={() => setView('choose')} onRenew={() => setView('import')} /> : null}
-      {view === 'choose' ? <ChooseView onPick={setView} /> : null}
+      {view === 'unlock' ? (
+        <UnlockView
+          initial={unlockFor}
+          onDone={close}
+          onOther={() => setView('choose')}
+          onRenew={(v) => {
+            // A key that came from dg is replaced with dg: the recovery phrase is not asked for.
+            setDgReplace(v?.fromDg === true ? { identityId: v.identityId, keyId: v.keyId } : null)
+            setView(v?.fromDg === true ? 'dg' : 'import')
+          }}
+        />
+      ) : null}
+      {view === 'choose' ? (
+        <ChooseView
+          onPick={(v) => {
+            setDgReplace(null)
+            setView(v)
+          }}
+        />
+      ) : null}
       {view === 'import' || view === 'renew' ? (
         limitedKeys ? (
-          <ImportView
-            renew={view === 'renew'}
-            onDone={close}
-            onStored={(id) => {
-              setUnlockFor(id)
-              setView('unlock')
-            }}
-          />
+          view === 'renew' ? (
+            <RenewView onDone={close} onStored={toUnlock} />
+          ) : (
+            <ImportView onDone={close} onStored={toUnlock} />
+          )
         ) : (
           <NotDeployedState />
         )
       ) : null}
+      {view === 'dg' ? limitedKeys ? <DgHandoffFlow onDone={close} {...(dgReplace !== null ? { target: dgReplace } : {})} /> : <NotDeployedState /> : null}
       {view === 'create' ? <CreateIdentityFlow onDone={close} /> : null}
       {view === 'wallet' ? <WalletConnectFlow onDone={close} /> : null}
       {view === 'grant' ? <WalletConnectFlow mode="grant" contractId={grantFor} onDone={close} /> : null}
@@ -161,8 +198,9 @@ function describeView(view: View, limitedKeys: boolean): string {
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
   if (view === 'wallet' || view === 'grant') return 'Your wallet sends this browser a key it derives for Dash Forge. Your recovery phrase and master key stay on the phone.'
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
-  const limits = `at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days`
+  const limits = `at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for up to a year`
   if (view === 'renew') return `A new key for this browser (${limits}) replaces the current one, which is disabled in the same update.`
+  if (view === 'dg') return `dg registers a limited key for this browser (${limits}). Your recovery phrase stays out of the browser.`
   if (view === 'create' || view === 'import') return `Forge signs with a limited key: ${limits}.`
   if (view === 'unlock') return 'Unlock the key this browser already holds.'
   // The tile list: a wallet's key comes with no limits (docs/design/wallet-login.md).
@@ -273,6 +311,14 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
         onClick={() => onPick('import')}
         pausedReason={pausedReason}
       />
+      <Tile
+        testId="tile-dg"
+        icon={SquareTerminal}
+        title="Use dg on your computer"
+        body="Already signed in to the dg command line? Run one command there. Your recovery phrase stays out of the browser."
+        onClick={() => onPick('dg')}
+        pausedReason={pausedReason}
+      />
       {walletFirst ? null : walletTile}
       <div className="pt-2">
         <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="hit-area text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
@@ -369,7 +415,17 @@ function FilePicker({ label, detail, onFile, disabled }: { label: string; detail
   )
 }
 
-function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | null; onDone: () => void; onOther: () => void; onRenew: () => void }): JSX.Element {
+function UnlockView({
+  initial,
+  onDone,
+  onOther,
+  onRenew,
+}: {
+  initial: string | null
+  onDone: () => void
+  onOther: () => void
+  onRenew: (v?: VaultInfo) => void
+}): JSX.Element {
   const { vaults, unlock, forget, isLoading, step, lastIdentity } = useAuth()
   const [confirm, confirmDialog] = useConfirmAction()
   // The identity asked for, else the one signed in last (QW2-025), as an account switcher does.
@@ -457,7 +513,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
       ) : null}
       <ErrorBox error={error} />
       {expired ? (
-        <Button variant="outline" className="w-full" onClick={onRenew}>
+        <Button variant="outline" className="w-full" onClick={() => onRenew(v)}>
           Renew this browser&apos;s key
         </Button>
       ) : null}
@@ -465,8 +521,8 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
           registers a new key for this browser and disables the one it cannot open. */}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="unlock-forgot">
         {v.methods.includes('passphrase') ? 'Forgot the passphrase' : 'Lost the passkey'}?{' '}
-        <button type="button" onClick={onRenew} className="hit-area text-forge-700 underline dark:text-forge-400">
-          Replace this key with your recovery phrase or identity file
+        <button type="button" onClick={() => onRenew(v)} className="hit-area text-forge-700 underline dark:text-forge-400">
+          {v.fromDg ? 'Replace this key with dg' : 'Replace this key with your recovery phrase or identity file'}
         </button>
       </p>
       <div className="flex justify-between pt-1 text-[12px]">
@@ -491,6 +547,41 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
         Stored {formatDate(v.createdAt)} · key #{v.keyId}
       </p>
       {confirmDialog}
+    </div>
+  )
+}
+
+/**
+ * Renew: with `dg` (no recovery phrase in the browser) or with the identity file or phrase. A key
+ * that came from `dg` renews with `dg` by default (TS-06), so the phrase is asked for only when
+ * the user picks it.
+ */
+function RenewView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
+  const { vaults, identity } = useAuth()
+  const fromDg = vaults.find((v) => v.identityId === identity)?.fromDg === true
+  const [how, setHow] = useState<'dg' | 'master'>(fromDg ? 'dg' : 'master')
+  const options = [
+    ['dg', 'With dg'],
+    ['master', 'With identity file or phrase'],
+  ] as const
+  return (
+    <div className="space-y-3">
+      <div role="tablist" aria-label="Renew with" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
+        {options.map(([m, label]) => (
+          <button
+            key={m}
+            role="tab"
+            aria-selected={how === m}
+            type="button"
+            data-testid={`renew-with-${m}`}
+            onClick={() => setHow(m)}
+            className={cn('rounded px-3 py-1.5 text-dense font-medium coarse:min-h-11', how === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {how === 'dg' ? <DgHandoffFlow renew onDone={onDone} /> : <ImportView renew onDone={onDone} onStored={onStored} />}
     </div>
   )
 }
@@ -525,6 +616,7 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
   // A renewal is of the signed-in identity's key: its words are checked against it (QW3-031).
   const [identityId, setIdentityId] = useState(renew && identity !== null ? identity : '')
   const [error, setError] = useState<string | null>(null)
+  const [days, setDays] = useState<number>(BROWSER_KEY_DEFAULTS.days)
   // Errors show beside the button that caused them, scrolled into view: in a tall sheet the
   // button can sit at the bottom edge of a phone (or a 800 px laptop) screen.
   const errorRef = useRef<HTMLDivElement>(null)
@@ -598,7 +690,7 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
     try {
       const text = fileRef.current
       if (mode === 'file' && text === null) return
-      await importIdentity(mode === 'file' ? { fileText: text as string } : { mnemonic, identityId }, protection, undefined, {
+      await importIdentity(mode === 'file' ? { fileText: text as string } : { mnemonic, identityId }, protection, limitsFor(days), {
         enablePrivateRepos: enablePrivate && !carriesEncryption,
         // Signed in as the identity being imported: this is a renewal of its key.
         renew: identity !== null,
@@ -654,6 +746,7 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
         />
       ) : (
         <>
+          <PhraseWarning />
           <Field label="Recovery phrase (12 or 24 words)" htmlFor="import-mnemonic" hint="Used once to derive the master key; not stored.">
             {/* Uncontrolled: a controlled textarea's value is also its DOM text content. */}
             <Textarea
@@ -724,6 +817,7 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
         </div>
       ) : null}
       {fields}
+      <KeyLifetimeSelect id="import-days" value={days} onChange={setDays} />
       {carriesEncryption ? (
         <p className="rounded-md border border-anvil-200 p-3 text-dense dark:border-anvil-800" data-testid="import-carries-encryption">
           <span className="font-medium">Private repos stay enabled.</span>{' '}
@@ -754,7 +848,7 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
       </label>
       )}
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        {renew && keyId !== null ? `Disables key #${keyId} and registers` : 'Registers'} a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days
+        {renew && keyId !== null ? `Disables key #${keyId} and registers` : 'Registers'} a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {lifetimeLabel(days)}
         {renewing
           ? ` (renewing: ~${creditsAsDash(KEY_RENEW_CREDITS)} DASH, one master-key signature; the old key is disabled in the same update).`
           : // Platform meters the update: an identity that already holds a Forge key (from another

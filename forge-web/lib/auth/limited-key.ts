@@ -48,6 +48,19 @@ export function defaultLimits(now = Date.now()): LimitedKeyRequest {
   }
 }
 
+/** How long a new browser key may live, in days: renewals stay rare, and no key lives past a year (TS-06). */
+export const KEY_LIFETIME_DAYS = [30, 90, 180, 365] as const
+
+/** A lifetime as the picker words it. */
+export function lifetimeLabel(days: number): string {
+  return days === 365 ? '1 year' : days === 180 ? '6 months' : `${days} days`
+}
+
+/** The default budget for `days` from `now`. */
+export function limitsFor(days: number, now = Date.now()): LimitedKeyRequest {
+  return { ...defaultLimits(now), expiresAt: now + days * DAY_MS }
+}
+
 /**
  * The master key given is not a live MASTER key of the identity (QW3-028: the update was refused
  * as "that key is not this identity's master key", or by the SDK's "Signer does not have a
@@ -284,6 +297,39 @@ export async function disableHeldKeys(
   const identity = await authSdk(sdk).identities.fetch(params.identityId)
   if (!identity) throw new Error(`identity ${params.identityId} not found`)
   const ids = heldToDisable(identity.publicKeys, params.keys, params.network)
+  if (ids.length === 0) return false
+  await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
+  await withMasterSigner(params.masterWif, (signer) =>
+    sendIdentityUpdate(sdk, params.identityId, () => authSdk(sdk).identities.update({ identity, disablePublicKeys: ids, signer })),
+  )
+  return true
+}
+
+/**
+ * Disable keys of an identity with its master key (Devices & keys): AUTHENTICATION keys below
+ * MASTER that `allowed` accepts (the caller passes the page's rule, `./devices` `disableRefusal`,
+ * checked again here against the identity just read). Returns whether an update was sent (false
+ * when every key was already disabled).
+ */
+export async function disableIdentityKeys(
+  sdk: EvoSDK,
+  params: {
+    readonly network: Network
+    readonly identityId: string
+    readonly masterWif: string
+    readonly keyIds: readonly number[]
+    readonly allowed: (k: WasmKey) => boolean
+  },
+): Promise<boolean> {
+  const identity = await authSdk(sdk).identities.fetch(params.identityId)
+  if (!identity) throw new Error(`identity ${params.identityId} not found`)
+  const ids: number[] = []
+  for (const id of params.keyIds) {
+    const k = identity.publicKeys.find((x) => x.keyId === id)
+    if (!k) throw new Error(`key ${id} is not on this identity`)
+    if (k.securityLevelNumber === 0 || k.purposeNumber !== 0 || !params.allowed(k)) throw new Error(`key ${id} is not a Forge signing key below master; refusing to disable it here`)
+    if (k.disabledAt === undefined) ids.push(id)
+  }
   if (ids.length === 0) return false
   await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
   await withMasterSigner(params.masterWif, (signer) =>
