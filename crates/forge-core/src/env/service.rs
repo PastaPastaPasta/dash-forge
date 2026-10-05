@@ -22,6 +22,10 @@ use crate::rules::v2::Role;
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
+/// Debug builds only: skip the maintainer check before writing, so a test can post what a
+/// modified client would (a writer's snapshot, which every reader must ignore).
+pub const TEST_ANY_WRITER: &str = "DASH_FORGE_TEST_ENV_ANY_WRITER";
+
 /// Artifacts fetched at once.
 const FETCH_WINDOW: usize = 8;
 
@@ -260,7 +264,7 @@ impl Book {
                 if let Some(k) = keep {
                     return Err(UserError::new(
                         codes::USAGE,
-                        format!("{env} has no conflict to resolve; --keep {k} is not needed"),
+                        format!("{env} has no conflict to resolve, so --keep {k} is not needed"),
                     )
                     .into());
                 }
@@ -595,6 +599,11 @@ impl<'a> Environments<'a> {
     /// Refuse anyone but a current maintainer before anything is read or signed (phase 1:
     /// maintainers-only writes, security review H5).
     pub async fn require_maintainer(&self, repo: &RepoRef, action: &str) -> Result<()> {
+        // The e2e suite and live QA post a non-maintainer's snapshot this way, to show that
+        // readers ignore it (consensus admits it from any role-1 writer). Debug builds only.
+        if cfg!(debug_assertions) && std::env::var_os(TEST_ANY_WRITER).is_some() {
+            return Ok(());
+        }
         let Some((identity, _)) = self.signer else {
             return Err(
                 UserError::new(codes::NO_IDENTITY, format!("{action}: no identity"))

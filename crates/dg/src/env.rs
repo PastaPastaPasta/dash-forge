@@ -52,7 +52,9 @@ impl AudienceArg {
 /// `dg env` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum EnvCommand {
-    /// List the environments, or one environment's entries (values are never shown).
+    /// List environments, or one environment's entries
+    ///
+    /// Values are never shown: use `dg env get` or `dg env run`.
     #[command(visible_alias = "list")]
     Ls {
         /// The repository (`owner/name`; default: this clone's).
@@ -61,7 +63,9 @@ pub enum EnvCommand {
         #[arg(long)]
         env: Option<String>,
     },
-    /// Print one value (to stdout, for scripts).
+    /// Print one value
+    ///
+    /// The value goes to stdout, for scripts.
     Get {
         /// The repository.
         repo: String,
@@ -71,9 +75,11 @@ pub enum EnvCommand {
         #[arg(long)]
         env: String,
     },
-    /// Set one or more entries as one change: `NAME=value`, or `NAME` alone to be asked for the
-    /// value (or to read it from stdin when stdin is not a terminal; values on the command line
-    /// can be seen by other users of this computer).
+    /// Set entries, as one change
+    ///
+    /// Give `NAME=value`, or `NAME` alone to be asked for the value. With one `NAME` and no
+    /// terminal, the value is read from stdin. Values on the command line can be seen by other
+    /// users of this computer.
     Set {
         /// The repository.
         repo: String,
@@ -97,7 +103,7 @@ pub enum EnvCommand {
         #[arg(long, value_name = "ID")]
         keep: Option<String>,
     },
-    /// Remove entries, as one change.
+    /// Remove entries, as one change
     Unset {
         /// The repository.
         repo: String,
@@ -111,7 +117,10 @@ pub enum EnvCommand {
         #[arg(long, value_name = "ID")]
         keep: Option<String>,
     },
-    /// Edit the whole environment in $EDITOR, saved as one change.
+    /// Edit an environment in your editor
+    ///
+    /// Opens $VISUAL or $EDITOR on the whole environment and saves it as one change. The
+    /// temporary file is private to you and erased afterwards.
     Edit {
         /// The repository.
         repo: String,
@@ -128,7 +137,9 @@ pub enum EnvCommand {
         #[arg(long, value_name = "ID")]
         keep: Option<String>,
     },
-    /// Import a `.env` file (`-` for stdin) into an environment, as one change.
+    /// Import a .env file, as one change
+    ///
+    /// Give `-` to read stdin.
     Import {
         /// The repository.
         repo: String,
@@ -147,8 +158,10 @@ pub enum EnvCommand {
         #[arg(long, value_name = "ID")]
         keep: Option<String>,
     },
-    /// Run a command with the environment's values added to its environment variables. Nothing
-    /// is written to disk.
+    /// Run a command with an environment's values
+    ///
+    /// The values are added to the command's environment variables only. Nothing is written to
+    /// disk.
     Run {
         /// The repository.
         repo: String,
@@ -159,8 +172,9 @@ pub enum EnvCommand {
         #[arg(last = true, required = true, value_name = "COMMAND")]
         command: Vec<String>,
     },
-    /// Write the environment as `.env` text: to a file with -o (0600, kept out of git), or to
-    /// stdout for piping.
+    /// Write an environment as .env text
+    ///
+    /// With -o, to a file only you can read, kept out of git. Without it, to stdout for piping.
     Export {
         /// The repository.
         repo: String,
@@ -175,7 +189,9 @@ pub enum EnvCommand {
         #[arg(long, requires = "output")]
         force: bool,
     },
-    /// Show who changed an environment and when, and which entries each change touched.
+    /// Show who changed an environment, and when
+    ///
+    /// Each change lists the entries it touched, never their values.
     History {
         /// The repository.
         repo: String,
@@ -330,7 +346,8 @@ fn blocked_error(repo: &Repo, env: &str, blocked: Blocked) -> anyhow::Error {
             );
             if hidden > 0 {
                 u = u.cause(format!(
-                    "{hidden} environment(s) there can't be read by you; {env} may be one of them (environments are encrypted for the people who can read them)"
+                    "{} there can't be read by you. {env} may be one of them.",
+                    count(hidden, "environment")
                 ));
             }
             u.fix(format!("`dg env ls {}` lists the environments you can read", repo.display()))
@@ -679,7 +696,7 @@ async fn import(
 /// The header `dg env edit` puts above the entries.
 fn edit_header(repo: &Repo, env: &str, audience: Audience) -> String {
     format!(
-        "# dg env edit: {} · {env} ({})\n# One NAME=value per line; delete a line to remove the entry. Lines starting with # are ignored.\n# Saved as one change when you close the editor; nothing is saved if nothing changed.\n",
+        "# dg env edit: {} · {env} ({})\n# One NAME=value per line. Delete a line to remove the entry. Lines starting with # are ignored.\n# Saved as one change when you close the editor. Nothing is saved if nothing changed.\n",
         repo.display(),
         audience.label()
     )
@@ -836,7 +853,7 @@ async fn commit(
     let resolving = base.supersedes.len() > 1;
     if changes.is_empty() && base.audience == Some(audience) && !resolving {
         ctx.emit(json!({ "status": "unchanged", "env": env }), || {
-            println!("{env} already holds that; nothing to save.");
+            println!("{env} already holds that. Nothing to save.");
         });
         return Ok(());
     }
@@ -858,7 +875,7 @@ async fn commit(
     )];
     if let Some(old) = base.audience.filter(|a| *a != audience) {
         lines.push(format!(
-            "  Who can read it changes from {} to {}; earlier versions stay readable by whoever could read them.",
+            "  Who can read it changes from {} to {}. Earlier versions stay readable by whoever could read them.",
             old.label(),
             audience.label()
         ));
@@ -873,7 +890,8 @@ async fn commit(
     }
     if new_env && hidden > 0 {
         lines.push(format!(
-            "  You can't read {hidden} environment(s) here; if one of them is also called {env}, this makes a second {env} that conflicts with it."
+            "  You can't read {} here. If one of them is also called {env}, this makes a second {env} that conflicts with it.",
+            count(hidden, "environment")
         ));
     }
     if resolving {
@@ -929,6 +947,15 @@ fn audience_phrase(prepared: &Prepared, audience: Audience) -> String {
             }
         ),
         Audience::Members => "Members".into(),
+    }
+}
+
+/// `n thing` or `n things`.
+fn count(n: usize, thing: &str) -> String {
+    if n == 1 {
+        format!("1 {thing}")
+    } else {
+        format!("{n} {thing}s")
     }
 }
 
@@ -1131,7 +1158,7 @@ fn write_export(path: &Path, text: &str, force: bool) -> Result<GitGuard> {
         return Err(UserError::new(
             codes::REJECTED,
             format!(
-                "{} is tracked by git; writing secrets into it would commit them",
+                "{} is tracked by git, so secrets written to it would be committed",
                 path.display()
             ),
         )
@@ -1165,9 +1192,9 @@ async fn export(
     let guard = write_export(path, &text, force)?;
     let (ignored, note) = match &guard {
         GitGuard::NoRepository => (Value::Null, "not inside a git repository".to_owned()),
-        GitGuard::Ignored { added: Some(e) } => (json!(true), format!("added {e} to .git/info/exclude; git check-ignore confirms it")),
+        GitGuard::Ignored { added: Some(e) } => (json!(true), format!("added {e} to .git/info/exclude, and git check-ignore confirms it")),
         GitGuard::Ignored { added: None } => (json!(true), "already ignored by git (git check-ignore)".to_owned()),
-        GitGuard::NotIgnored => (json!(false), "WARNING: git still does not ignore it (a rule in a .gitignore un-ignores it); don't commit it".to_owned()),
+        GitGuard::NotIgnored => (json!(false), "WARNING: git still does not ignore it, because a .gitignore rule un-ignores it. Don't commit it.".to_owned()),
     };
     ctx.emit(
         json!({
@@ -1190,7 +1217,7 @@ async fn export(
     );
     if guard == GitGuard::NotIgnored {
         eprintln!(
-            "warning: {} is not ignored by git; check your .gitignore before committing",
+            "warning: {} is not ignored by git. Check your .gitignore before committing.",
             path.display()
         );
     }
@@ -1215,7 +1242,7 @@ async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
     ctx.emit(
         json!({ "env": env, "state": state.state, "heads": state.heads, "changes": items }),
         || {
-            println!("{env} in {} · {} change(s)", s.repo.display(), items.len());
+            println!("{env} in {} · {}", s.repo.display(), count(items.len(), "change"));
             for i in &items {
                 let what = match &i.unreadable {
                     Some(why) => format!("can't be read by you: {why}"),
