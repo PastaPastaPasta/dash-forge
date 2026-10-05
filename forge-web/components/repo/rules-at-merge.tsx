@@ -139,7 +139,8 @@ function Row({ label, text, met }: { label: string; text: string; met: boolean |
     <>
       <dt className="text-anvil-500 dark:text-anvil-400">{label}</dt>
       <dd className={cn('flex min-w-0 items-start gap-1.5 break-words', met === false && 'text-danger-700 dark:text-danger-400')}>
-        {met === true ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-verify" aria-label="met" /> : met === false ? <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-label="not met" /> : null}
+        {met === true ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-verify" aria-hidden /> : met === false ? <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+        {met === null ? null : <span className="sr-only">{met ? 'Met: ' : 'Not met: '}</span>}
         <span>{text}</span>
       </dd>
     </>

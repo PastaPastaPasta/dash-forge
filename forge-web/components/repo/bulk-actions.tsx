@@ -461,17 +461,47 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
 function StatusIcon({ status }: { status: BulkOutcome['status'] }): JSX.Element {
   switch (status) {
     case 'running':
-      return <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-forge-600" aria-label="In progress" />
+      return (
+        <>
+          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-forge-600" aria-hidden />
+          <span className="sr-only">In progress</span>
+        </>
+      )
     case 'done':
     case 'unchanged':
-      return <Check className="mt-0.5 h-4 w-4 shrink-0 text-verify" aria-label="Done" />
+      return (
+        <>
+          <Check className="mt-0.5 h-4 w-4 shrink-0 text-verify" aria-hidden />
+          <span className="sr-only">Done</span>
+        </>
+      )
     case 'unconfirmed':
-      return <Loader2 className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-label="Sent, not yet shown" />
+      return (
+        <>
+          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
+          <span className="sr-only">Sent, not yet shown</span>
+        </>
+      )
     case 'failed':
-      return <X className="mt-0.5 h-4 w-4 shrink-0 text-danger-600" aria-label="Failed" />
+      return (
+        <>
+          <X className="mt-0.5 h-4 w-4 shrink-0 text-danger-600" aria-hidden />
+          <span className="sr-only">Failed</span>
+        </>
+      )
     case 'stopped':
-      return <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-label="Not tried" />
+      return (
+        <>
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
+          <span className="sr-only">Not tried</span>
+        </>
+      )
     case 'waiting':
-      return <Circle className="mt-0.5 h-4 w-4 shrink-0 text-anvil-400" aria-label="Waiting" />
+      return (
+        <>
+          <Circle className="mt-0.5 h-4 w-4 shrink-0 text-anvil-400" aria-hidden />
+          <span className="sr-only">Waiting</span>
+        </>
+      )
   }
 }
