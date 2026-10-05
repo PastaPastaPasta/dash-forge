@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownEditor } from '@/components/repo/issue-bits'
-import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, readDraft, useDraftText, writeDraft } from './draft-text'
+import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, commentEditDraftKey, editDraftKey, newIssueDraftKey, readDraft, useDraftState, useDraftText, writeDraft } from './draft-text'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -108,6 +108,52 @@ describe('useDraftText', () => {
     type('secret plan')
     expect(field().value).toBe('secret plan')
     expect(localStorage.length).toBe(0)
+  })
+})
+
+describe('useDraftState (edits and new issues)', () => {
+  type Edit = { title: string; body: string; rev: number }
+  let api: { value: Edit | null; set: (v: Edit | null) => void; hold: (on: boolean, v: Edit | null) => void } | null = null
+  function Editor({ k, rev }: { k: string | null; rev: number }): JSX.Element {
+    const [value, set, hold] = useDraftState<Edit>(k, (d) => d.rev === rev)
+    api = { value, set, hold }
+    return <span>{value?.body ?? ''}</span>
+  }
+
+  it('keys edits and new issues per identity, public repos only', () => {
+    const pub = { repoId: 'R', visibility: 'public' }
+    expect(editDraftKey(pub, 'T', 'A')).toBe('A:R:T:edit')
+    expect(commentEditDraftKey(pub, 'T', 'A')).toBe('A:R:T:comment-edit')
+    expect(newIssueDraftKey(pub, 'A')).toBe('A:R:new:issue')
+    expect(editDraftKey({ repoId: 'R', visibility: 'private' }, 'T', 'A')).toBeNull()
+    expect(newIssueDraftKey(pub, null)).toBeNull()
+  })
+
+  it('restores an edit after a remount while the document is unchanged', () => {
+    act(() => root.render(<Editor k="A:R:T:edit" rev={3} />))
+    act(() => api!.set({ title: 'New title', body: 'half an edit', rev: 3 }))
+    act(() => root.unmount())
+    root = createRoot(host)
+    act(() => root.render(<Editor k="A:R:T:edit" rev={3} />))
+    expect(api!.value).toEqual({ title: 'New title', body: 'half an edit', rev: 3 })
+  })
+
+  it('drops an edit once the document changed since it started, never restoring it over the newer version', () => {
+    writeDraft('A:R:T:edit', JSON.stringify({ title: 't', body: 'old edit', rev: 3 }))
+    act(() => root.render(<Editor k="A:R:T:edit" rev={4} />))
+    expect(api!.value).toBeNull()
+    expect(readDraft('A:R:T:edit')).toBe('')
+  })
+
+  it('stores nothing while held, and clears on null', () => {
+    act(() => root.render(<Editor k="A:R:T:edit" rev={1} />))
+    act(() => api!.hold(true, null))
+    act(() => api!.set({ title: 't', body: 'b', rev: 1 }))
+    expect(readDraft('A:R:T:edit')).toBe('')
+    act(() => api!.hold(false, { title: 't', body: 'b', rev: 1 }))
+    expect(JSON.parse(readDraft('A:R:T:edit'))).toEqual({ title: 't', body: 'b', rev: 1 })
+    act(() => api!.set(null))
+    expect(readDraft('A:R:T:edit')).toBe('')
   })
 })
 

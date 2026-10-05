@@ -298,6 +298,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     setPending(true)
     setError(null)
     setNote(null)
+    // Until the outcome is known, a reload must not bring the PR back to be opened twice.
+    dropPrDraft(repo)
     try {
       // The PR, its draft mark and its code owners' review requests are one action: one toast
       // with their total (QW3-039).
@@ -332,6 +334,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         router.push(repoHref('/repo/pulls', addr))
         return
       }
+      // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays dropped.)
+      if (!(e instanceof UnconfirmedWriteError)) savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base })
       setError(guard.failed(e))
       setPending(false)
     }
