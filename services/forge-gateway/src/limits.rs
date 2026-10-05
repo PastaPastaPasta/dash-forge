@@ -29,7 +29,9 @@ pub struct RateLimiter {
     buckets: Mutex<HashMap<IpAddr, (f64, Instant)>>,
 }
 
-/// The most clients a limiter tracks before it drops the full (idle) buckets.
+/// The most clients a limiter tracks: when full, it drops the full (idle) buckets, and if
+/// that is not enough (many clients at once, or a host rotating addresses), the least recently
+/// seen tenth.
 const MAX_TRACKED: usize = 100_000;
 
 impl RateLimiter {
@@ -56,6 +58,12 @@ impl RateLimiter {
             b.retain(|_, (tokens, at)| {
                 *tokens + now.saturating_duration_since(*at).as_secs_f64() * rate < cap
             });
+            if b.len() >= MAX_TRACKED {
+                let mut seen: Vec<Instant> = b.values().map(|(_, at)| *at).collect();
+                let evict = b.len() - MAX_TRACKED * 9 / 10;
+                let cutoff = *seen.select_nth_unstable(evict - 1).1;
+                b.retain(|_, (_, at)| *at > cutoff);
+            }
         }
         let (tokens, at) = b.entry(key).or_insert((self.capacity, now));
         *tokens = (*tokens + now.saturating_duration_since(*at).as_secs_f64() * self.per_sec)
@@ -148,6 +156,22 @@ mod tests {
         assert!(l.check_at("192.0.2.2".parse().unwrap(), t).is_ok());
         // Half a period later, one token is back.
         assert!(l.check_at(ip, t + Duration::from_secs(30)).is_ok());
+    }
+
+    #[test]
+    fn the_tracked_clients_are_capped_even_when_none_is_idle() {
+        // One request an hour: no bucket refills while this runs, so none is idle.
+        let l = RateLimiter::new(1, Duration::from_secs(3600));
+        let t = Instant::now();
+        let client = |n: usize| IpAddr::from(u32::try_from(n).unwrap().to_be_bytes());
+        for n in 0..MAX_TRACKED + 5 {
+            let _ = l.check_at(client(n), t + Duration::from_millis(n as u64));
+        }
+        let b = l.buckets.lock().unwrap();
+        assert!(b.len() <= MAX_TRACKED, "{}", b.len());
+        // The least recently seen went; the newest stayed.
+        assert!(!b.contains_key(&client(0)));
+        assert!(b.contains_key(&client(MAX_TRACKED + 4)));
     }
 
     #[test]
