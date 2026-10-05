@@ -116,7 +116,8 @@ pub struct ServeArgs {
     /// Mails and pushes sent per day, in total (a global spam and cost ceiling).
     #[arg(long, env = "FORGE_NOTIFY_DAILY_SEND_BUDGET", default_value_t = 20_000)]
     pub daily_send_budget: u64,
-    /// Notices sent per subscriber per day (more go into the next digest).
+    /// Notices sent per subscriber per day (more go into the next digest; a subscriber with no
+    /// working address gets them as pushes, within the daily budget).
     #[arg(long, env = "FORGE_NOTIFY_PER_USER_DAILY", default_value_t = 200)]
     pub per_user_daily: u64,
     /// API requests per minute per client address.

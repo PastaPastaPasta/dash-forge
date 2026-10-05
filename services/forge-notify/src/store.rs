@@ -25,7 +25,8 @@ pub enum Delivery {
     /// As soon as the service sees the activity.
     #[default]
     Instant,
-    /// One mail a day ([`crate::config::Config::digest_hour`]); pushes are not sent.
+    /// One mail a day ([`crate::config::Config::digest_hour`]); pushes are not sent. Without a
+    /// working address (push only) notices go as pushes when they happen.
     Daily,
 }
 
@@ -770,19 +771,26 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Take (and delete) an identity's digest items, oldest first.
-    pub fn take_digest(&self, identity: &str) -> Result<Vec<String>> {
-        let mut db = self.db();
-        let tx = db.transaction()?;
-        let items = {
-            let mut st =
-                tx.prepare("SELECT item FROM digest_item WHERE identity = ?1 ORDER BY id")?;
-            let rows = st.query_map([identity], |r| r.get(0))?;
-            rows.collect::<rusqlite::Result<Vec<String>>>()?
-        };
-        tx.execute("DELETE FROM digest_item WHERE identity = ?1", [identity])?;
-        tx.commit()?;
-        Ok(items)
+    /// An identity's digest items, oldest first, and the row id of the newest (0 when there
+    /// is none). They stay until [`Store::drop_digest`]: a digest that fails to go keeps them.
+    pub fn digest(&self, identity: &str) -> Result<(Vec<String>, i64)> {
+        let db = self.db();
+        let mut st =
+            db.prepare("SELECT id, item FROM digest_item WHERE identity = ?1 ORDER BY id")?;
+        let rows = st.query_map([identity], |r| Ok((r.get::<_, i64>(0)?, r.get(1)?)))?;
+        let rows = rows.collect::<rusqlite::Result<Vec<(i64, String)>>>()?;
+        let upto = rows.last().map_or(0, |(id, _)| *id);
+        Ok((rows.into_iter().map(|(_, item)| item).collect(), upto))
+    }
+
+    /// Delete an identity's digest items up to row id `upto` (what a sent digest held; items
+    /// queued meanwhile wait for the next one).
+    pub fn drop_digest(&self, identity: &str, upto: i64) -> Result<()> {
+        self.db().execute(
+            "DELETE FROM digest_item WHERE identity = ?1 AND id <= ?2",
+            params![identity, upto],
+        )?;
+        Ok(())
     }
 
     /// Record that a notice reached an identity: false when it already had.
@@ -979,7 +987,7 @@ mod tests {
         assert!(s.subscriber("A").unwrap().is_none());
         assert!(s.follows("A").unwrap().is_empty());
         assert!(s.participants("R1", "issue:1").unwrap().is_empty());
-        assert!(s.take_digest("A").unwrap().is_empty());
+        assert!(s.digest("A").unwrap().0.is_empty());
         assert!(s.mark_sent("A", "n").unwrap());
     }
 }

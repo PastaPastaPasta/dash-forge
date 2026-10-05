@@ -217,7 +217,7 @@ A subscriber chooses topics, channels and timing in Settings → Notifications.
 | Releases (on) | Releases of those repositories |
 | Private activity (off) | "New activity in <repo>" for a private repository they own or are a member of, checked every 5 minutes, with no title or text. It counts pushes, new issues and pull requests, state changes and member events. Comments and reviews have no per-repository index, so they are not seen. |
 
-- **Delivery:** instant, or one daily digest mail at `FORGE_NOTIFY_DIGEST_HOUR` UTC. A digest sends no push.
+- **Delivery:** instant, or one daily digest mail at `FORGE_NOTIFY_DIGEST_HOUR` UTC. A digest sends no push. A subscriber with no working address (push only) gets every notice as a push when it happens. A digest that cannot go (budget spent, a failed send) keeps its notices for the next one, up to 7 days.
 - Nobody is told about their own actions. Each notice reaches an identity once.
 - The followed repositories are re-read every `FORGE_NOTIFY_INDEX_SECS` (watch documents, owned repositories, memberships), and right away after a subscriber changes their choices.
 
@@ -234,7 +234,7 @@ A subscriber chooses topics, channels and timing in Settings → Notifications.
 | Test sends | 5 a day per identity |
 | Subscribers | 10,000 (`FORGE_NOTIFY_MAX_SUBSCRIBERS`) |
 | Followed repositories | 50 per subscriber, 2,000 in total |
-| Sends | 200 instant notices per subscriber per day (more wait for the digest); 20,000 in total per day |
+| Sends | 200 instant notices per subscriber per day (more wait for the digest; a subscriber with no working address gets them as pushes); 20,000 in total per day, confirmation mails included |
 | Bad addresses | Paused after 3 permanent refusals in a row |
 
 A subscriber needs a Platform identity, which costs credits to create. That is the main brake on mass sign-ups. Confirmation mails are capped per address, so nobody can use the service to flood someone else's inbox.

@@ -500,8 +500,7 @@ async fn test_send(app: &App, id: &str) -> Result<Json<Value>> {
             ),
             unsubscribe: Some(d.unsubscribe_url(&s)),
         };
-        d.send_mail(m.as_ref(), &s, &mail).await?;
-        mailed = true;
+        mailed = d.send_mail(m.as_ref(), &s, &mail).await?;
     }
     let mut pushed = 0;
     if let Some(p) = &d.pusher {

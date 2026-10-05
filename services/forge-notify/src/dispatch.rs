@@ -141,16 +141,19 @@ impl Dispatcher {
         if !self.store.mark_sent(identity, &n.id)? {
             return Ok(());
         }
-        let digest = s.prefs.delivery == Delivery::Daily
-            || !self
-                .store
-                .take_quota(&format!("user:{identity}"), self.per_user_daily)?;
+        // A daily digest, and the notices past the daily cap, need a working address. Without
+        // one (a push-only subscriber) they go as pushes now, within the daily budget, rather
+        // than into a digest that is never sent.
+        let digest = s.mail_ok()
+            && self.mailer.is_some()
+            && (s.prefs.delivery == Delivery::Daily
+                || !self
+                    .store
+                    .take_quota(&format!("user:{identity}"), self.per_user_daily)?);
         if digest {
-            if s.mail_ok() && self.mailer.is_some() {
-                let item = serde_json::to_string(n)
-                    .map_err(|e| crate::error::NotifyError::Internal(e.to_string()))?;
-                self.store.push_digest(identity, &item)?;
-            }
+            let item = serde_json::to_string(n)
+                .map_err(|e| crate::error::NotifyError::Internal(e.to_string()))?;
+            self.store.push_digest(identity, &item)?;
             return Ok(());
         }
         if s.mail_ok() {
@@ -192,23 +195,23 @@ impl Dispatcher {
             text,
             unsubscribe: Some(self.unsubscribe_url(s)),
         };
-        self.send_mail(m, s, &mail).await
+        self.send_mail(m, s, &mail).await.map(drop)
     }
 
-    /// Send a mail, counting a permanent failure against the address.
-    pub async fn send_mail(&self, m: &dyn Mailer, s: &Subscriber, mail: &Mail) -> Result<()> {
+    /// Send a mail, counting a permanent failure against the address. Whether it was sent.
+    pub async fn send_mail(&self, m: &dyn Mailer, s: &Subscriber, mail: &Mail) -> Result<bool> {
         match m.send(mail).await {
-            Ok(()) => self.store.email_ok(&s.identity),
+            Ok(()) => self.store.email_ok(&s.identity).map(|()| true),
             Err(SendError::Permanent(why)) => {
                 let paused = self.store.email_failed(&s.identity, PAUSE_AFTER_FAILURES)?;
                 tracing::warn!(error = %why, paused, "mail refused");
-                Ok(())
+                Ok(false)
             }
             Err(e) => {
-                // A transient failure loses this notice (it is a hint, and the next ones
+                // A transient failure loses an instant notice (it is a hint, and the next ones
                 // follow); it does not count against the address.
                 tracing::warn!(error = %e, "mail failed");
-                Ok(())
+                Ok(false)
             }
         }
     }
@@ -251,24 +254,28 @@ impl Dispatcher {
         };
         let mut sent = 0;
         for identity in self.store.digest_identities()? {
-            let items: Vec<OutNotice> = self
-                .store
-                .take_digest(&identity)?
+            let (raw, upto) = self.store.digest(&identity)?;
+            let items: Vec<OutNotice> = raw
                 .iter()
                 .filter_map(|i| serde_json::from_str(i).ok())
                 .collect();
             let Some(s) = self.store.subscriber(&identity)? else {
+                self.store.drop_digest(&identity, upto)?;
                 continue;
             };
-            if items.is_empty()
-                || !s.mail_ok()
-                || !self.store.take_quota("global", self.daily_budget)?
-            {
+            if items.is_empty() {
+                self.store.drop_digest(&identity, upto)?;
                 continue;
             }
-            let Some(sealed) = &s.email_sealed else {
+            // A digest that cannot go now (mail paused or off, the day's budget spent, a failed
+            // send) keeps its items for the next one; the daily purge drops them after 7 days.
+            let Some(sealed) = s.email_sealed.as_ref().filter(|_| s.mail_ok()) else {
                 continue;
             };
+            if !self.store.take_quota("global", self.daily_budget)? {
+                tracing::warn!("the daily send budget is used up; digest kept for tomorrow");
+                continue;
+            }
             let to = self.vault.open_string(&email_context(&identity), sealed)?;
             let mut text = format!("{} notifications since the last digest.\n", items.len());
             let mut repo = String::new();
@@ -287,8 +294,10 @@ impl Dispatcher {
                 text,
                 unsubscribe: Some(self.unsubscribe_url(&s)),
             };
-            self.send_mail(m.as_ref(), &s, &mail).await?;
-            sent += 1;
+            if self.send_mail(m.as_ref(), &s, &mail).await? {
+                self.store.drop_digest(&identity, upto)?;
+                sent += 1;
+            }
         }
         Ok(sent)
     }
@@ -302,4 +311,140 @@ pub fn email_context(identity: &str) -> String {
 /// The associated data a push subscription is sealed under.
 pub fn push_context(identity: &str) -> String {
     format!("push:{identity}")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+    use crate::mail::{CaptureMailer, SendFuture};
+    use crate::push::CapturePusher;
+    use crate::store::{Pending, Prefs};
+
+    const ID: &str = "FrNpRnZQPP5gLFAjD7Foz4tZaML5DJ88CqaCvAkYNYjU";
+
+    /// Fails (temporarily) while `down` is set, else captures.
+    #[derive(Default)]
+    struct FlakyMailer {
+        down: AtomicBool,
+        inner: CaptureMailer,
+    }
+
+    impl Mailer for FlakyMailer {
+        fn send<'a>(&'a self, mail: &'a Mail) -> SendFuture<'a> {
+            if self.down.load(Ordering::SeqCst) {
+                return Box::pin(async {
+                    Err(SendError::Retry {
+                        after: None,
+                        why: "down".into(),
+                    })
+                });
+            }
+            self.inner.send(mail)
+        }
+    }
+
+    fn dispatcher(mailer: Option<Arc<dyn Mailer>>, pusher: Arc<CapturePusher>) -> Dispatcher {
+        Dispatcher {
+            store: Store::memory().unwrap(),
+            vault: Arc::new(Vault::new(&[3; 32])),
+            mailer,
+            pusher: Some(pusher),
+            public_url: "https://notify.test".into(),
+            web_url: "https://forge.test".into(),
+            operator: "notify.test".into(),
+            contact: None,
+            per_user_daily: 1,
+            daily_budget: 100,
+        }
+    }
+
+    fn subscribe(d: &Dispatcher, email: Option<&str>, delivery: Delivery) {
+        d.store.ensure_subscriber(ID).unwrap();
+        d.store
+            .set_prefs(
+                ID,
+                &Prefs {
+                    delivery,
+                    ..Prefs::default()
+                },
+            )
+            .unwrap();
+        if let Some(email) = email {
+            d.store
+                .add_pending(
+                    "tok",
+                    &Pending {
+                        identity: ID.into(),
+                        email_sealed: d.vault.seal(&email_context(ID), email.as_bytes()).unwrap(),
+                        email_idx: d.vault.email_index(email),
+                        expires_at: crate::store::now_ms() + 60_000,
+                    },
+                )
+                .unwrap();
+            d.store.confirm_pending("tok").unwrap().unwrap();
+        }
+        let target = PushTarget {
+            endpoint: "https://fcm.googleapis.com/x".into(),
+            p256dh: String::new(),
+            auth: String::new(),
+        };
+        let plain = serde_json::to_vec(&target).unwrap();
+        d.store
+            .add_push(
+                ID,
+                "h",
+                &d.vault.seal(&push_context(ID), &plain).unwrap(),
+                None,
+            )
+            .unwrap();
+    }
+
+    fn notice(id: &str) -> OutNotice {
+        OutNotice {
+            id: id.into(),
+            repo_id: "R".into(),
+            repo: "alice/x".into(),
+            title: format!("notice {id}"),
+            excerpt: String::new(),
+            url: "https://forge.test/x".into(),
+            tag: "t".into(),
+            reason: Reason::Watching,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_digest_that_fails_to_go_keeps_its_items() {
+        let mailer = Arc::new(FlakyMailer::default());
+        let d = dispatcher(
+            Some(Arc::clone(&mailer) as Arc<dyn Mailer>),
+            Arc::default(),
+        );
+        subscribe(&d, Some("a@example.org"), Delivery::Daily);
+        d.deliver(ID, &notice("1")).await.unwrap();
+        d.deliver(ID, &notice("2")).await.unwrap();
+
+        mailer.down.store(true, Ordering::SeqCst);
+        assert_eq!(d.send_digests().await.unwrap(), 0);
+        assert_eq!(d.store.digest(ID).unwrap().0.len(), 2);
+
+        mailer.down.store(false, Ordering::SeqCst);
+        assert_eq!(d.send_digests().await.unwrap(), 1);
+        assert!(d.store.digest(ID).unwrap().0.is_empty());
+        let sent = mailer.inner.sent.lock().unwrap();
+        assert!(sent[0].text.contains("notice 1") && sent[0].text.contains("notice 2"));
+    }
+
+    #[tokio::test]
+    async fn a_push_only_subscriber_gets_daily_and_over_cap_notices_as_pushes() {
+        let pusher = Arc::new(CapturePusher::default());
+        let mailer: Arc<dyn Mailer> = Arc::new(CaptureMailer::default());
+        let d = dispatcher(Some(mailer), Arc::clone(&pusher));
+        subscribe(&d, None, Delivery::Daily);
+        d.deliver(ID, &notice("1")).await.unwrap();
+        d.deliver(ID, &notice("2")).await.unwrap(); // past the cap of 1
+        assert_eq!(pusher.sent.lock().unwrap().len(), 2);
+        assert!(d.store.digest(ID).unwrap().0.is_empty());
+    }
 }
