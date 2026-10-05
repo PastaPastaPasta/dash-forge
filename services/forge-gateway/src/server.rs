@@ -731,28 +731,6 @@ async fn badge_route(
         );
     };
     let json = ext == "json";
-    let info = match resolve(&state, &owner, &name).await {
-        Ok(i) => i,
-        Err(r) => {
-            let b = Badge::new("dash forge", "repo not found", "lightgrey");
-            let status = r.status();
-            let mut resp = if json {
-                badge::endpoint_json(&b, 300).into_response()
-            } else {
-                svg_rendered(&b).body.into_response()
-            };
-            *resp.status_mut() = status;
-            resp.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(if json {
-                    "application/json"
-                } else {
-                    "image/svg+xml; charset=utf-8"
-                }),
-            );
-            return cors(resp);
-        }
-    };
     let ttl = state.cfg.render_ttl_secs;
     let to_rendered = move |b: &Badge| {
         if json {
@@ -764,6 +742,27 @@ async fn badge_route(
             svg_rendered(b)
         }
     };
+    let label = match kind {
+        Kind::Stars => "stars",
+        Kind::Ci => "checks",
+        Kind::Release => "release",
+        Kind::Issues => "issues",
+    };
+    let info = match resolve(&state, &owner, &name).await {
+        Ok(i) => i,
+        Err(r) => {
+            // Platform failing (503) is not a missing repository (404).
+            let status = r.status();
+            let b = if status == StatusCode::SERVICE_UNAVAILABLE {
+                Badge::unavailable(label)
+            } else {
+                Badge::new("dash forge", "repo not found", "lightgrey")
+            };
+            let mut resp = respond(to_rendered(&b), 60);
+            *resp.status_mut() = status;
+            return cors(resp);
+        }
+    };
     let Ok(branch) = badge_branch(&state, &info, kind, q.branch).await else {
         let b = Badge::new("checks", "no branch", "lightgrey");
         return cors(respond(to_rendered(&b), ttl));
@@ -773,12 +772,6 @@ async fn badge_route(
         info.repo_id,
         branch.as_deref().unwrap_or("")
     );
-    let label = match kind {
-        Kind::Stars => "stars",
-        Kind::Ci => "checks",
-        Kind::Release => "release",
-        Kind::Issues => "issues",
-    };
     let s = Arc::clone(&state);
     let resp = cached(
         &state,

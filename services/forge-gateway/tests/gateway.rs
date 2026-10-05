@@ -465,6 +465,13 @@ async fn a_refresh_follows_platform_and_platform_down_keeps_serving() {
     let (s, _, body) = gw.get("/badge/alice/proj/issues.svg").await;
     assert_eq!(s, 200);
     assert!(body.contains("unavailable"), "{body}");
+    // A repository never resolved cannot be looked up: unavailable, not "not found".
+    let (s, _, body) = gw.get("/badge/alice/other/stars.svg").await;
+    assert_eq!(s, 503);
+    assert!(
+        body.contains("unavailable") && !body.contains("not found"),
+        "{body}"
+    );
     let (s, _, _) = gw.get("/readyz").await;
     assert_eq!(s, 503);
     let (s, _, metrics) = gw.get("/metrics").await;
