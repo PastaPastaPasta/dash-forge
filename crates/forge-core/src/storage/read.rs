@@ -25,7 +25,6 @@ use crate::error::{Error, Result};
 
 use super::egress::{may_fetch, Trusted};
 use super::profiles::{Profile, S3Profile, StorageProfiles};
-use super::publish::is_public_https_url;
 
 /// Candidates raced concurrently (PRD 04: "≤2 parallel attempts").
 const RACE_WIDTH: usize = 2;
@@ -917,7 +916,7 @@ pub fn repo_gateways<'a>(uris: impl IntoIterator<Item = &'a String>) -> Vec<Stri
             continue;
         };
         let base = base.trim_end_matches('/');
-        if is_public_https_url(base) && !out.iter().any(|g| g == base) {
+        if may_fetch(base, &Trusted::default()) && !out.iter().any(|g| g == base) {
             out.push(base.to_string());
             if out.len() == MAX_REPO_GATEWAYS {
                 break;
@@ -1038,6 +1037,7 @@ mod tests {
             "http://127.0.0.1:8080/ipfs/bafyz".to_string(),
             "https://192.168.1.5/ipfs/bafyz".to_string(),
             "https://nas.local/ipfs/bafyz".to_string(),
+            "https://[64:ff9b::a00:1]/ipfs/bafyz".to_string(),
             "https://user:pw@gw.example/ipfs/bafyz".to_string(),
             "ipfs://bafyx".to_string(),
         ];
