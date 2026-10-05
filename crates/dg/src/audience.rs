@@ -96,7 +96,7 @@ pub fn why_hint(repo: &RepoRef, why: Unopened) -> Option<String> {
             "you're a member of {r}, but the key stored on this computer holds no encryption key (`dg auth status`)"
         )),
         Unopened::NoKeyShared => Some(format!(
-            "you're a member of {r}, but no key has been shared with you yet; a maintainer's client will fix this the next time they open the repo"
+            "you're a member of {r}, but no key has been shared with you yet. Ask a maintainer to share it: Repair in the repo's Settings, or `dg repo keys repair {r}`"
         )),
         Unopened::NotReadable => Some(format!(
             "written for a key you do not hold (after you were removed, or late); `dg repo keys status {r}` lists your keys"

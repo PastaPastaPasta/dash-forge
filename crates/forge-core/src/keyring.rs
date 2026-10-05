@@ -64,8 +64,10 @@ pub fn no_key_shared(repo: &RepoRef) -> Error {
         ),
     )
     .cause("members-only content is encrypted to each member's key, and no maintainer has shared that key with you yet")
-    .fix(fix_repair(repo))
-    .note("a maintainer's client fixes this the next time they open the repo")
+    .fix(format!(
+        "ask a maintainer to share it: Repair in the repo's Settings, or `dg repo keys repair {}`",
+        repo.display()
+    ))
     .into()
 }
 
@@ -250,7 +252,7 @@ pub fn no_encryption_key(member: &str, action: &str) -> Error {
         format!("{action}: {member} has no encryption key"),
     )
     .cause("private repositories encrypt their content to each member's identity ENCRYPTION key, and this identity has no enabled one")
-    .fix(format!("they add one themselves: `{FIX_ADD_ENCRYPTION_KEY}`, or Settings → Keys → Enable private repos in the web app"))
+    .fix(format!("they add one themselves: `{FIX_ADD_ENCRYPTION_KEY}`, or Settings → Private repos → Enable private repos in the web app"))
     .into()
 }
 
