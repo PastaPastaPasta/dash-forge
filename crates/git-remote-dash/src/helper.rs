@@ -1227,7 +1227,15 @@ async fn write_ref_updates(
     let (deletions, rest): (Vec<usize>, Vec<usize>) = accepted
         .iter()
         .partition(|&&i| planned[i].new_oid.is_none());
-    write_batch(svc, repo, planned, &deletions, progress, false).await?;
+    // Deletions that all failed reject the new refs that waited on them; the push's other
+    // refs are still written, and it fails as a whole only when none of them lands either.
+    let mut failed = None;
+    if let Err(e) = write_batch(svc, repo, planned, &deletions, progress, false).await {
+        for &d in &deletions {
+            planned[d].reject = Some(format!("ref update failed: {e:#}"));
+        }
+        failed = Some(e);
+    }
     for (i, needs) in gated {
         if let Some(&d) = needs.iter().find(|&&d| planned[d].reject.is_some()) {
             planned[i].reject = Some(format!(
@@ -1240,10 +1248,11 @@ async fn write_ref_updates(
         .into_iter()
         .filter(|&i| planned[i].reject.is_none())
         .collect();
-    if rest.is_empty() {
-        return Ok(());
+    match (rest.is_empty(), failed) {
+        (true, None) => Ok(()),
+        (true, Some(e)) => Err(e),
+        (false, failed) => write_batch(svc, repo, planned, &rest, progress, failed.is_none()).await,
     }
-    write_batch(svc, repo, planned, &rest, progress, true).await
 }
 
 /// Each accepted new ref (`planned[i]`) that collides with refs this push deletes, with those
@@ -1295,8 +1304,8 @@ async fn write_batch(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    // Test affordance, compiled only with `--features test-hooks`: fail after `n` ref updates
-    // landed, the state a push that dies part-way leaves behind (e2e scenario 32).
+    // Test affordance, compiled only with `--features test-hooks`: fail after `n` ref updates of
+    // a batch landed, the state a push that dies part-way leaves behind (e2e scenario 32).
     #[cfg(feature = "test-hooks")]
     let fail_after = std::env::var("DASH_FORGE_FAIL_AFTER_REFS")
         .ok()
@@ -1315,7 +1324,19 @@ async fn write_batch(
             let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
             progress.emit(&text, &event);
         })
-        .await?
+        .await
+    };
+    // After an earlier batch landed, a batch that fails before writing (a config read) must not
+    // hide what is on chain: its refs are rejected and the push goes on to its read-back.
+    let results = match results {
+        Ok(results) => results,
+        Err(e) if landed_before => {
+            for &i in accepted {
+                planned[i].reject = Some(format!("ref update failed: {e}"));
+            }
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
     };
     #[cfg(feature = "test-hooks")]
     if let Some(written) = fail_after {
@@ -1454,7 +1475,7 @@ struct Planned {
 /// Decide accept/reject for every refspec up front (no writes): deletions and new refs are
 /// accepted; an update is accepted iff forced, a no-op, or a fast-forward — otherwise
 /// rejected as `non-fast-forward` (§2.3 / PRD 02). A `--force-with-lease` expectation
-/// ([`OptionState::lease`]) makes the update forced while the ref still points where the lease
+/// ([`OptionState::lease`]) accepts any update while the ref still points where the lease
 /// says, and rejects it as `stale info` (git's words) otherwise. A new ref that git clients could
 /// not hold next to an existing one (`feature` and `feature/x`, or `Foo` and `foo`) is refused
 /// (`forge_core::rules::ref_collision`).
@@ -1467,12 +1488,20 @@ fn plan_pushes(
     for spec in specs {
         let prev = remote_tip(remote_refs, &spec.dst);
         let lease = options.lease(&spec.dst);
-        // A lease that holds forces the update, and it is recorded as forced (`write_ref_updates`
-        // writes `spec.force`), as a `+` refspec would be. The lease is checked against this
-        // read, not at the write: Platform has no compare-and-swap, so an update that lands in
-        // between is still superseded (docs/guides/collaborating.md says so).
+        // A lease that holds is written as a plain update naming the leased tip as its
+        // `prevOid`, which supersedes that tip without `force` (`resolve_ref`). Platform has no
+        // compare-and-swap, so an update that lands from elsewhere before this one is not
+        // overwritten: the ref reads as diverged and the read-back reports the push as lost. A
+        // ref that is already diverged takes a forced write, the only one that settles it.
+        let diverged = remote_refs
+            .iter()
+            .any(|(n, s)| n == &spec.dst && matches!(s, RefState::Diverged { .. }));
         let spec = PushSpec {
-            force: spec.force || lease.is_some(),
+            force: if lease.is_some() {
+                diverged
+            } else {
+                spec.force
+            },
             ..spec.clone()
         };
         if let Some(reject) = lease.and_then(|want| lease_reject(want, prev.as_deref())) {
@@ -1505,8 +1534,10 @@ fn plan_pushes(
             continue;
         };
         let reject = prev.as_ref().and_then(|tip| {
-            let fast_forward =
-                spec.force || tip == &new_oid || LocalRepo::is_ancestor(tip, &new_oid);
+            let fast_forward = spec.force
+                || lease.is_some()
+                || tip == &new_oid
+                || LocalRepo::is_ancestor(tip, &new_oid);
             (!fast_forward).then(|| "non-fast-forward".to_string())
         });
         planned.push(Planned {
