@@ -429,6 +429,7 @@ mod tests {
             comment_count: None,
             created_at: at,
             imported: None,
+            members_only: false,
         }
     }
 

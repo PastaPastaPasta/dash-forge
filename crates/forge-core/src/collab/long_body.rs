@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::private::DocKind;
 use crate::repo::{order_copies, PackManifestInfo, RepoService};
 use crate::rules::long_body::{self, LongBody};
-use crate::rules::v2::{Role, Visibility};
+use crate::rules::v2::{Audience, Role, Visibility};
 use crate::scope::RepoRef;
 use crate::storage::{PackReader, StorageTarget};
 use crate::user_error::{codes, UserError};
@@ -53,13 +53,38 @@ pub enum BodyField<'s> {
     Release,
 }
 
+/// The framing of a members-only `enc` (v0x03, DESIGN §4.1): version, nonce, key commitment,
+/// GCM tag.
+const MEMBERS_FRAMING: usize = 1 + 12 + 32 + 16;
+/// A members-only TLV is padded to a multiple of this (DESIGN D28), with a pad record of at
+/// least its 3-byte header.
+const MEMBERS_PAD_BLOCK: usize = 64;
+
 impl BodyField<'_> {
     /// How many UTF-8 bytes of text the field holds in a `visibility` repository, next to the
-    /// document's other sealed text and an importer's `imported` author and URL (sealed too).
+    /// document's other sealed text and an importer's `imported` author and URL (sealed too):
+    /// [`Self::room_for`] of the repository's own audience (public, or members in a private
+    /// repository).
     #[must_use]
     pub fn room(&self, visibility: Visibility, imported: Option<&Imported>) -> usize {
+        self.room_for(visibility, Audience::Public, imported)
+    }
+
+    /// How many UTF-8 bytes of text the field holds in a document of a `visibility` repository
+    /// written for `audience`: 5,120 for public text; the private-repository `enc` (v0x01)'s room
+    /// in a private repository whatever `audience` says; and in a public repository a
+    /// members-only document's (`enc` v0x03 with its 61 bytes of framing and the 64-byte padding,
+    /// conservatively). A release's notes are 5,120 either way.
+    #[must_use]
+    pub fn room_for(
+        &self,
+        visibility: Visibility,
+        audience: Audience,
+        imported: Option<&Imported>,
+    ) -> usize {
+        let members = visibility == Visibility::Public && audience != Audience::Public;
         let kind = match self {
-            _ if visibility == Visibility::Public => return FIELD_MAX,
+            _ if visibility == Visibility::Public && !members => return FIELD_MAX,
             Self::Release => return FIELD_MAX,
             Self::Issue { .. } => DocKind::Issue,
             Self::Patch { .. } => DocKind::Patch,
@@ -80,9 +105,13 @@ impl BodyField<'_> {
             Self::Review | Self::Release => 0,
         };
         let provenance = imported.map_or(0, |i| record(&i.author) + record(&i.url));
-        (kind.max_enc() - crate::private::doc::MIN_V1)
-            .saturating_sub(3 + others + provenance)
-            .min(FIELD_MAX)
+        let tlv = if members {
+            // the padded TLV, less the pad record's header
+            (kind.max_enc() - MEMBERS_FRAMING) / MEMBERS_PAD_BLOCK * MEMBERS_PAD_BLOCK - 3
+        } else {
+            kind.max_enc() - crate::private::doc::MIN_V1
+        };
+        tlv.saturating_sub(3 + others + provenance).min(FIELD_MAX)
     }
 }
 
@@ -159,6 +188,12 @@ impl Collab<'_> {
     ///
     /// Refused before anything is stored when the text is over 262,144 bytes, or when the
     /// signer is not a maintainer or role-1 writer of `repo` (only they may record artifacts).
+    ///
+    /// `audience` is who the document carrying the field is for ([`Collab::new_audience`],
+    /// [`Collab::audience_of_target`]; ignored in a private repository, where everything is
+    /// sealed). A members-only text in a public repository must fit its field: its full text
+    /// would otherwise be stored where everyone can read it, so a longer one is refused before
+    /// anything is stored (DESIGN §4.1: no members-only text in a public artifact).
     pub async fn store_long_body(
         &self,
         repo: &RepoRef,
@@ -166,10 +201,23 @@ impl Collab<'_> {
         imported: Option<&Imported>,
         full: &str,
         store: &BodyStore<'_>,
+        audience: Audience,
     ) -> Result<String> {
-        let room = field.room(repo.visibility, imported);
+        let room = field.room_for(repo.visibility, audience, imported);
         if !long_body::needs_artifact(full, room) {
             return Ok(full.to_string());
+        }
+        if repo.visibility == Visibility::Public && audience != Audience::Public {
+            return Err(UserError::new(
+                codes::USAGE,
+                format!(
+                    "the text is {} bytes, and a members-only text holds at most {room}",
+                    full.len()
+                ),
+            )
+            .fix("shorten it, or split it into several comments")
+            .note("nothing was written")
+            .into());
         }
         if full.len() as u64 > long_body::MAX_BYTES {
             return Err(UserError::new(

@@ -798,8 +798,9 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
         planned.clause()
     ))?;
     let before = s.balance().await;
+    let audience = collab.audience_of_comment(&s.repo, comment_id).await?;
     let body = planned
-        .field_text(&collab, &s.repo, stored.imported.as_ref())
+        .field_text(&collab, &s.repo, stored.imported.as_ref(), audience)
         .await?;
     let edited = collab.update_comment(&s.repo, comment_id, &body).await?;
     let spent = s.spent_since(before).await;
@@ -891,7 +892,8 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     {
         created
     } else {
-        let body = planned.field_text(&collab, &s.repo, None).await?;
+        let audience = collab.new_audience(&s.repo, None, None).await?;
+        let body = planned.field_text(&collab, &s.repo, None, audience).await?;
         collab.create_issue(&s.repo, title, &body, &journal).await?
     };
     let spent = s.spent_since(before).await;
@@ -1073,7 +1075,8 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     let collab = s.collab();
     let (id, spent) = s
         .metered(|| async {
-            let body = planned.field_text(&collab, &s.repo, None).await?;
+            let audience = collab.new_audience(&s.repo, Some(&target.id), None).await?;
+            let body = planned.field_text(&collab, &s.repo, None, audience).await?;
             Ok::<_, anyhow::Error>(
                 collab
                     .comment(&s.repo, &target.id, &body, None, None)

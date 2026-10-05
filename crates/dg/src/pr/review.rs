@@ -807,7 +807,14 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
         cost_line(est, price),
         planned.clause()
     ))?;
-    let body = planned.field_text(&collab, &s.repo, None).await?;
+    let audience = collab
+        .new_audience(
+            &s.repo,
+            Some(&view.patch.document_id),
+            anchor.as_ref().and_then(|a| a.reply_to.as_deref()),
+        )
+        .await?;
+    let body = planned.field_text(&collab, &s.repo, None, audience).await?;
     let id = collab
         .comment(
             &s.repo,

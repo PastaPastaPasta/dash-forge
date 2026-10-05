@@ -443,9 +443,13 @@ pub enum RepoCommand {
     /// Backend configuration.
     #[command(subcommand)]
     Backend(RepoBackendCommand),
-    /// A private repository's keys: epochs, wraps, pending rotation, repair.
+    /// A repository's members key (private repositories, and public ones with members-only
+    /// content): epochs, wraps, pending rotation, repair.
     #[command(subcommand)]
     Keys(RepoKeysCommand),
+    /// Members-only content in a public repository: turn it on, or see who has the key.
+    #[command(subcommand)]
+    Members(RepoMembersCommand),
     /// Edit a repo's settings: default branch (config, maintainers), description and topics
     /// (the repo document, its owner).
     Edit(RepoEditArgs),
@@ -584,6 +588,21 @@ pub enum RepoKeysCommand {
     },
     /// Rotate to a new key epoch now (maintainers). Removing a member rotates on its own.
     Rotate {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RepoMembersCommand {
+    /// Turn on members-only content (maintainers): sets up a key for the current members and
+    /// shares it with each (shows the cost and asks first; `--yes` skips the question).
+    Enable {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Whether members-only content is on, and who has no key yet.
+    Status {
         /// The repository (`owner/name`).
         repo: String,
     },

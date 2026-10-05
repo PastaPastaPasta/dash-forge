@@ -1,0 +1,18 @@
+{
+  "name": "public_edit_kept",
+  "description": "A public issue edited in public keeps its audience.",
+  "case": "mixed_edit",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "kind": "issue",
+      "title": "a"
+    },
+    "edited": {
+      "kind": "issue",
+      "title": "b",
+      "body": "c"
+    }
+  },
+  "expected": true
+}

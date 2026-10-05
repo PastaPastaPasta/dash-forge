@@ -234,7 +234,14 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     let before = s.balance().await;
     let mut input = superseding_input(existing.as_ref(), args, uploaded);
     if !args.notes.is_empty() {
-        input.notes = planned.field_text(&collab, &s.repo, None).await?;
+        input.notes = planned
+            .field_text(
+                &collab,
+                &s.repo,
+                None,
+                forge_core::rules::v2::Audience::Public,
+            )
+            .await?;
     }
     let doc_id = collab.create_release(&s.repo, &input).await.map_err(|e| {
         anyhow::Error::from(e).context(if input.assets.is_empty() {
@@ -399,7 +406,14 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
             };
             let field = forge_core::collab::long_body::BodyField::Release;
             collab
-                .store_long_body(&s.repo, field, None, &args.notes, &on)
+                .store_long_body(
+                    &s.repo,
+                    field,
+                    None,
+                    &args.notes,
+                    &on,
+                    forge_core::rules::v2::Audience::Public,
+                )
                 .await?
         }
         _ => args.notes.clone(),

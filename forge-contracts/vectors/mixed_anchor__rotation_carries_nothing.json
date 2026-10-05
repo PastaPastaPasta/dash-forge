@@ -1,0 +1,27 @@
+{
+  "name": "rotation_carries_nothing",
+  "description": "A rotation (epoch 1) of a PUBLIC repository's members key carries only its chain link (prevEpoch, prevEpochKey): no settings are carried forward.",
+  "case": "mixed_anchor",
+  "rules": "v2",
+  "input": {
+    "visibility": "public",
+    "current": {
+      "defaultBranch": "main",
+      "protectedPatterns": [
+        "refs/heads/main",
+        "refs/heads/release/*"
+      ],
+      "backendMode": 0,
+      "archived": false
+    },
+    "link": {
+      "prev": 0,
+      "prevKey": "0101010101010101010101010101010101010101010101010101010101010101"
+    }
+  },
+  "expected": {
+    "vis": "public",
+    "plaintext": [],
+    "tlv": "080004000000000900200101010101010101010101010101010101010101010101010101010101010101"
+  }
+}

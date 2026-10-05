@@ -1,5 +1,8 @@
-//! `dg repo keys` — a private repository's keys (`docs/security/private-repos.md` §5):
-//! `status` (epochs, wraps, alerts, pending repair), `repair` (§5.6) and `rotate` (§5.5).
+//! `dg repo keys` — a repository's members key (`docs/security/private-repos.md` §5, §17):
+//! `status` (epochs, wraps, alerts, pending repair), `repair` (§5.6) and `rotate` (§5.5), for
+//! every private repository and every public one with members-only content turned on; and
+//! `dg repo members enable|status`, which turns members-only content on in a public repository
+//! (DESIGN §4.1, §10).
 //!
 //! Nothing here prints key material: epochs are named by number, wraps by who holds them.
 
@@ -15,12 +18,19 @@ use forge_core::scope::RepoRef;
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line};
-use crate::RepoKeysCommand;
+use crate::{RepoKeysCommand, RepoMembersCommand};
 
 /// One `repoKey` wrap costs about this much (a 64-byte encrypted property, three integers).
 pub const WRAP_ESTIMATE_CREDITS: u64 = 30_000_000;
 /// One anchor `config` (sealed, up to ~1.5 KB).
 pub const ANCHOR_ESTIMATE_CREDITS: u64 = 60_000_000;
+
+/// One members-key anchor `config` (sealed, settings-free, epoch 0), as measured on sakura (S1:
+/// 36,836,680 credits), rounded up.
+pub const ENABLE_ANCHOR_CREDITS: u64 = 37_000_000;
+/// One `repoKey` wrap, as measured on sakura (S1: 57,058,360 to 73,518,360 credits), the upper
+/// figure rounded up.
+pub const ENABLE_WRAP_CREDITS: u64 = 74_000_000;
 
 /// Dispatch a `repo keys` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &RepoKeysCommand) -> Result<()> {
@@ -31,15 +41,23 @@ pub async fn run(ctx: &Ctx, cmd: &RepoKeysCommand) -> Result<()> {
     }
 }
 
-/// Refuse a public repository with a usage error.
-pub fn require_private(repo: &RepoRef) -> Result<()> {
-    if repo.visibility == Visibility::Private {
+/// Dispatch a `repo members` subcommand.
+pub async fn run_members(ctx: &Ctx, cmd: &RepoMembersCommand) -> Result<()> {
+    match cmd {
+        RepoMembersCommand::Enable { repo } => enable(ctx, repo).await,
+        RepoMembersCommand::Status { repo } => members_status(ctx, repo).await,
+    }
+}
+
+/// Refuse a repository with no members key: a public one where nobody turned members-only
+/// content on (E312). Every private repository has one.
+pub async fn require_members_key(s: &Session) -> Result<()> {
+    if s.repo.visibility == Visibility::Private
+        || keyring::has_members_key(&s.client, &s.repo).await?
+    {
         return Ok(());
     }
-    Err(crate::errors::usage(format!(
-        "{} is a public repository; it has no keys",
-        repo.display()
-    )))
+    Err(keyring::members_only_off(&s.repo).into())
 }
 
 pub(crate) fn signer(s: &Session) -> PrivateSigner<'_> {
@@ -121,7 +139,7 @@ fn status_json(kr: &Keyring) -> Value {
 
 async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     let session = Session::open(ctx, repo).await?;
-    require_private(&session.repo)?;
+    require_members_key(&session).await?;
     let kr = signer(&session)
         .keyring(&session.repo)
         .await
@@ -133,7 +151,11 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
 /// `dg repo keys status` for a person.
 fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
     let res = kr.resolution();
-    println!("{} (private)", handle.display());
+    if handle.visibility == Visibility::Private {
+        println!("{} (private)", handle.display());
+    } else {
+        println!("{} (public, members-only content on)", handle.display());
+    }
     match res.current_epoch {
         Some(epoch) => {
             let anchor = &res.anchors[&epoch];
@@ -204,7 +226,7 @@ fn require_maintainer(kr: &Keyring, repo: &RepoRef, action: &str) -> Result<()> 
     }
     Err(forge_core::Error::NotPermitted {
         action: format!("{action} of {}", repo.display()),
-        reason: "only a current maintainer can wrap or rotate a private repository's key".into(),
+        reason: "only a current maintainer can wrap or rotate a repository's members key".into(),
         needs: "maintainer".into(),
     }
     .into())
@@ -256,7 +278,7 @@ pub fn rotation_estimate(members: usize) -> (u64, String) {
 
 async fn repair(ctx: &Ctx, repo: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
-    require_private(&s.repo)?;
+    require_members_key(&s).await?;
     let kr = signer(&s).keyring(&s.repo).await?;
     require_maintainer(&kr, &s.repo, "repair the key")?;
     let (est, what) = repair_estimate(&kr);
@@ -316,7 +338,7 @@ fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, pri
 
 async fn rotate(ctx: &Ctx, repo: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
-    require_private(&s.repo)?;
+    require_members_key(&s).await?;
     let kr = signer(&s).keyring(&s.repo).await?;
     require_maintainer(&kr, &s.repo, "rotate the key")?;
     let (est, what) = rotation_cost(&kr, distinct_members(kr.members()));
@@ -385,4 +407,140 @@ pub async fn member_can_receive(
     keyring::member_can_receive(client, repo, member)
         .await
         .with_context(|| format!("reading {member}'s keys"))
+}
+
+/// The members who would receive the members key: every member whose role holds it
+/// ([`forge_core::members::holds_members_key`]; runners are not members), each once.
+fn key_holders(members: &[forge_core::members::Member], repo: &RepoRef) -> usize {
+    members
+        .iter()
+        .filter(|m| forge_core::members::holds_members_key(m.role, repo.visibility))
+        .map(|m| m.identity_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+/// The measured cost of turning members-only content on for `holders` members (the
+/// maintainer included): one anchor and one wrap each.
+#[must_use]
+pub fn enable_estimate(holders: usize) -> u64 {
+    ENABLE_ANCHOR_CREDITS + ENABLE_WRAP_CREDITS * holders as u64
+}
+
+/// The `dg repo members enable` question (DESIGN §10, "Turn on members-only content?", for the
+/// terminal).
+fn enable_prompt(repo: &RepoRef, holders: usize, price: Option<f64>) -> String {
+    format!(
+        "Turn on members-only content in {}?\n\
+         Members of this repo will be able to post comments, reviews and issues only members can \
+         read. Everyone can still see that something was posted, by whom and when.\n\
+         Setting up keys for {holders} member(s) costs {}; each later removal costs about the \
+         same again.\n\
+         People using older Forge builds will see fewer things until they update.\n\
+         Turn on",
+        repo.display(),
+        cost_line(enable_estimate(holders), price)
+    )
+}
+
+/// `dg repo members enable`: turn members-only content on in a public repository (a
+/// maintainer): the settings-free members-key anchor and a wrap to every member whose role holds
+/// the key, after the measured cost and a confirmation (`--yes` skips it).
+async fn enable(ctx: &Ctx, repo: &str) -> Result<()> {
+    let s = Session::open(ctx, repo).await?;
+    if s.repo.visibility == Visibility::Private {
+        return Err(crate::errors::usage(format!(
+            "{} is private: everything in it is already members-only",
+            s.repo.display()
+        )));
+    }
+    let kr = signer(&s).keyring(&s.repo).await?;
+    require_maintainer(&kr, &s.repo, "turn on members-only content")?;
+    if kr.has_members_key() && kr.resolution().repair.is_none() {
+        ctx.emit(
+            json!({ "status": "already_on", "repo": s.repo.display(), "epoch": kr.resolution().current_epoch }),
+            || println!("{}: members-only content is already on.", s.repo.display()),
+        );
+        return Ok(());
+    }
+    let holders = key_holders(kr.members(), &s.repo);
+    let price = ctx.usd_price();
+    if !ctx.confirm(&enable_prompt(&s.repo, holders, price))? {
+        return Err(crate::errors::cancelled());
+    }
+    let before = s.balance().await;
+    let done = keyring::enable_members_key(&signer(&s), &s.repo).await?;
+    let spent = s.spent_since(before).await;
+    ctx.emit(
+        json!({
+            "status": if done.anchored { "enabled" } else { "finished" },
+            "repo": s.repo.display(),
+            "wrapped": done.wrapped,
+            "skipped": done.skipped,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "{}: members-only content is on. The key was shared with {} other member(s).",
+                s.repo.display(),
+                done.wrapped.len()
+            );
+            for m in &done.skipped {
+                println!(
+                    "  not shared with {m} yet: they have no encryption key (`dg auth keys add --encryption`); run `dg repo keys repair {}` once they do",
+                    s.repo.display()
+                );
+            }
+            println!("  cost: {}", cost_line(spent, price));
+        },
+    );
+    Ok(())
+}
+
+/// `dg repo members status`: whether members-only content is on, and who has the key.
+async fn members_status(ctx: &Ctx, repo: &str) -> Result<()> {
+    let s = Session::open(ctx, repo).await?;
+    let kr = signer(&s)
+        .keyring(&s.repo)
+        .await
+        .context("reading the repository's keys")?;
+    let on = s.repo.visibility == Visibility::Private || kr.has_members_key();
+    let missing: Vec<String> = kr
+        .resolution()
+        .repair
+        .as_ref()
+        .map(|r| {
+            r.missing_wraps
+                .iter()
+                .map(|m| encode_identifier(*m))
+                .collect()
+        })
+        .unwrap_or_default();
+    ctx.emit(
+        json!({
+            "repo": s.repo.display(),
+            "on": on,
+            "epoch": kr.resolution().current_epoch,
+            "youCanRead": !kr.readable_epochs().is_empty(),
+            "noKeyYet": missing,
+        }),
+        || {
+            if !on {
+                println!(
+                    "{}: members-only content is off. A maintainer turns it on with `dg repo members enable {}`.",
+                    s.repo.display(),
+                    s.repo.display()
+                );
+                return;
+            }
+            println!("{}: members-only content is on.", s.repo.display());
+            if kr.readable_epochs().is_empty() {
+                println!("  you can't read it: you're not a member, or no key has been shared with you yet");
+            }
+            for m in &missing {
+                println!("  no key shared with {m} yet: `dg repo keys repair {}` (a maintainer)", s.repo.display());
+            }
+        },
+    );
+    Ok(())
 }

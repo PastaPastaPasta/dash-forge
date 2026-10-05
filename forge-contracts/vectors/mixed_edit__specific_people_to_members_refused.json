@@ -1,0 +1,19 @@
+{
+  "name": "specific_people_to_members_refused",
+  "description": "A specific-people document cannot be re-sealed to the members.",
+  "case": "mixed_edit",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "kind": "comment",
+      "enc": "04000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "comment",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    }
+  },
+  "expected": false
+}
