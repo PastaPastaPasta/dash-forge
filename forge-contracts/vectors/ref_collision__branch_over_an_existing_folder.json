@@ -1,0 +1,18 @@
+{
+  "name": "branch_over_an_existing_folder",
+  "description": "A new refs/heads/release while refs/heads/release/1.0 exists.",
+  "case": "ref_collision",
+  "rules": "v2",
+  "input": {
+    "existing": [
+      "refs/heads/main",
+      "refs/heads/release/1.0",
+      "refs/heads/release/2.0"
+    ],
+    "name": "refs/heads/release"
+  },
+  "expected": {
+    "collision": "refs/heads/release/1.0",
+    "reason": "refs/heads/release/1.0 exists under it"
+  }
+}

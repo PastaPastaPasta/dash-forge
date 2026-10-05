@@ -54,6 +54,7 @@ pub mod mirror;
 pub mod moderation;
 pub mod parity;
 pub mod profile;
+pub mod ref_collision;
 pub mod review;
 pub mod search;
 pub mod signature;
@@ -2491,6 +2492,24 @@ mod tests {
         assert_eq!(got, expected::<v2::Approvals>(v), "vector `{}`", v.name);
     }
 
+    fn run_ref_collision_case(v: &Vector) {
+        use super::ref_collision::{collision_reason, ref_collision};
+        #[derive(Serialize, Deserialize)]
+        struct In {
+            existing: Vec<String>,
+            name: String,
+        }
+        let inp: In = input(v);
+        let collision = ref_collision(inp.existing.iter().map(String::as_str), &inp.name);
+        let reason = collision.as_deref().map(|c| collision_reason(&inp.name, c));
+        assert_eq!(
+            serde_json::json!({ "collision": collision, "reason": reason }),
+            v.expected,
+            "vector `{}`",
+            v.name
+        );
+    }
+
     fn run_merge_content_case(v: &Vector) {
         use super::merge_check;
         let got = merge_check::merge_content(&input::<merge_check::MergeFacts>(v));
@@ -2544,6 +2563,7 @@ mod tests {
                 );
                 assert_eq!(got, expected::<v2::MergeBase>(v), "vector `{ctx}`");
             }
+            "ref_collision" => run_ref_collision_case(v),
             "merge_content" => run_merge_content_case(v),
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);

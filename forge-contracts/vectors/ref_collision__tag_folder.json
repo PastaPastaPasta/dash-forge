@@ -1,0 +1,16 @@
+{
+  "name": "tag_folder",
+  "description": "Tags collide the same way.",
+  "case": "ref_collision",
+  "rules": "v2",
+  "input": {
+    "existing": [
+      "refs/tags/v1"
+    ],
+    "name": "refs/tags/v1/rc1"
+  },
+  "expected": {
+    "collision": "refs/tags/v1",
+    "reason": "refs/tags/v1 exists, so refs/tags/v1/rc1 cannot be created under it"
+  }
+}
