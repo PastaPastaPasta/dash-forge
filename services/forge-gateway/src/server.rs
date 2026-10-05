@@ -68,6 +68,17 @@ const FEED_ENTRIES: usize = 30;
 /// A resolution and when it was made (`None`: no such repository).
 type Resolved = (Instant, Option<RepoInfo>);
 
+/// A repository's branch and tag tips (`refs/heads/main` → oid) and its default branch, as the
+/// mirror's manifest or a proved snapshot names them.
+#[derive(Debug)]
+struct RepoTips {
+    default_branch: Option<String>,
+    tips: std::collections::BTreeMap<String, String>,
+}
+
+/// The most repositories whose snapshot tips are kept ([`AppState::tips`]).
+const MAX_TIPS: usize = 10_000;
+
 /// Shared state.
 pub struct AppState {
     /// Settings.
@@ -83,6 +94,9 @@ pub struct AppState {
     clones: Arc<Semaphore>,
     renders: RenderCache,
     resolved: Mutex<HashMap<(String, String), Resolved>>,
+    /// Snapshot tips of repositories without a mirror, by repo id, for the render TTL: a badge
+    /// for any `?branch=` costs at most one snapshot read per repository per TTL.
+    tips: Mutex<HashMap<String, (Instant, Arc<RepoTips>)>>,
     fonts: Arc<resvg::usvg::fontdb::Database>,
     allowed: Mutex<HashSet<String>>,
 }
@@ -99,6 +113,7 @@ impl AppState {
             clones: Arc::new(Semaphore::new(cfg.clones_max.max(1))),
             renders: RenderCache::new(Duration::from_secs(cfg.render_ttl_secs), 10_000),
             resolved: Mutex::default(),
+            tips: Mutex::default(),
             fonts: og::fonts(cfg.font_dir.as_deref()),
             allowed: Mutex::default(),
             cfg,
@@ -631,6 +646,18 @@ async fn repo_page(State(state): St, Path((owner, repo)): Path<(String, String)>
         .into_response()
 }
 
+/// `r`, cacheable for `max_age` seconds.
+fn respond(r: Rendered, max_age: u64) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, r.content_type.to_string()),
+            (header::CACHE_CONTROL, format!("public, max-age={max_age}")),
+        ],
+        r.body,
+    )
+        .into_response()
+}
+
 /// A cached render: fresh from the cache, else rendered now, else (Platform failing) the stale
 /// copy, else `fallback`.
 async fn cached<F, Fut>(
@@ -644,16 +671,6 @@ where
     Fut: std::future::Future<Output = anyhow::Result<Rendered>>,
 {
     let ttl = state.renders.ttl().as_secs();
-    let respond = |r: Rendered, max_age: u64| {
-        (
-            [
-                (header::CONTENT_TYPE, r.content_type.to_string()),
-                (header::CACHE_CONTROL, format!("public, max-age={max_age}")),
-            ],
-            r.body,
-        )
-            .into_response()
-    };
     let expired = match state.renders.get(&key) {
         Lookup::Fresh(r) => return respond(r, ttl),
         Lookup::Stale(r) => Some(r),
@@ -736,20 +753,6 @@ async fn badge_route(
             return cors(resp);
         }
     };
-    let branch = q
-        .branch
-        .filter(|b| crate::mirror::servable_ref(&format!("refs/heads/{b}")));
-    let key = format!(
-        "badge:{}:{file}:{}",
-        info.repo_id,
-        branch.as_deref().unwrap_or("")
-    );
-    let label = match kind {
-        Kind::Stars => "stars",
-        Kind::Ci => "checks",
-        Kind::Release => "release",
-        Kind::Issues => "issues",
-    };
     let ttl = state.cfg.render_ttl_secs;
     let to_rendered = move |b: &Badge| {
         if json {
@@ -760,6 +763,21 @@ async fn badge_route(
         } else {
             svg_rendered(b)
         }
+    };
+    let Ok(branch) = badge_branch(&state, &info, kind, q.branch).await else {
+        let b = Badge::new("checks", "no branch", "lightgrey");
+        return cors(respond(to_rendered(&b), ttl));
+    };
+    let key = format!(
+        "badge:{}:{file}:{}",
+        info.repo_id,
+        branch.as_deref().unwrap_or("")
+    );
+    let label = match kind {
+        Kind::Stars => "stars",
+        Kind::Ci => "checks",
+        Kind::Release => "release",
+        Kind::Issues => "issues",
     };
     let s = Arc::clone(&state);
     let resp = cached(
@@ -794,33 +812,80 @@ async fn badge_route(
     cors(resp)
 }
 
-/// The tip of `branch` (default: the default branch), from the mirror's manifest when it has
-/// one, else from a proved snapshot.
+/// The `?branch=` a badge reads: only the checks badge reads one, and only a servable name.
+/// `Err` when the repository has no such branch, which is known without a render (or a cache
+/// entry, or a Platform read) per name.
+async fn badge_branch(
+    state: &AppState,
+    info: &RepoInfo,
+    kind: Kind,
+    branch: Option<String>,
+) -> Result<Option<String>, ()> {
+    let Some(b) = branch
+        .filter(|b| kind == Kind::Ci && crate::mirror::servable_ref(&format!("refs/heads/{b}")))
+    else {
+        return Ok(None);
+    };
+    match repo_tips(state, info).await {
+        Ok(t) if !t.tips.contains_key(&format!("refs/heads/{b}")) => Err(()),
+        // Platform failing: render as usual, so a stale render can still answer.
+        _ => Ok(Some(b)),
+    }
+}
+
+/// The tip of `branch` (default: the default branch), from [`repo_tips`].
 async fn branch_tip(
     state: &AppState,
     info: &RepoInfo,
     branch: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    let pick = |default: Option<&str>, tips: &[(String, String)]| {
-        let want = branch.or(default).map(|b| format!("refs/heads/{b}"));
-        let want = want.unwrap_or_else(|| "refs/heads/main".into());
-        tips.iter()
-            .find(|(n, _)| *n == want)
-            .map(|(_, o)| o.clone())
-    };
+    let t = repo_tips(state, info).await?;
+    let want = branch
+        .or(t.default_branch.as_deref())
+        .map_or_else(|| "refs/heads/main".into(), |b| format!("refs/heads/{b}"));
+    Ok(t.tips.get(&want).cloned())
+}
+
+/// `info`'s tips: from the mirror's manifest when it has one, else from a proved snapshot read
+/// at most once per render TTL.
+async fn repo_tips(state: &AppState, info: &RepoInfo) -> anyhow::Result<Arc<RepoTips>> {
     if state.mirrors.known(&info.repo_id) {
         if let Some(m) = state.mirrors.slot(info).manifest() {
-            let tips: Vec<(String, String)> = m
-                .refs
-                .iter()
-                .map(|r| (r.name.clone(), r.oid.clone()))
-                .collect();
-            return Ok(pick(m.default_branch.as_deref(), &tips));
+            return Ok(Arc::new(RepoTips {
+                default_branch: m.default_branch.clone(),
+                tips: m
+                    .refs
+                    .iter()
+                    .map(|r| (r.name.clone(), r.oid.clone()))
+                    .collect(),
+            }));
         }
     }
+    let ttl = state.renders.ttl();
+    let cached = state
+        .tips
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&info.repo_id)
+        .filter(|(at, _)| at.elapsed() < ttl)
+        .map(|(_, t)| Arc::clone(t));
+    if let Some(t) = cached {
+        return Ok(t);
+    }
     let snap = state.mirrors.upstream().snapshot(info).await?;
-    let tips: Vec<(String, String)> = snap.tips().into_iter().collect();
-    Ok(pick(snap.default_branch.as_deref(), &tips))
+    let t = Arc::new(RepoTips {
+        tips: snap.tips(),
+        default_branch: snap.default_branch,
+    });
+    let mut all = state.tips.lock().unwrap_or_else(PoisonError::into_inner);
+    if all.len() >= MAX_TIPS {
+        all.retain(|_, (at, _)| at.elapsed() < ttl);
+        if all.len() >= MAX_TIPS {
+            all.clear();
+        }
+    }
+    all.insert(info.repo_id.clone(), (Instant::now(), Arc::clone(&t)));
+    Ok(t)
 }
 
 /// `s` percent-encoded as one URL path segment.

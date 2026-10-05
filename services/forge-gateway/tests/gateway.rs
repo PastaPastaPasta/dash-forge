@@ -29,6 +29,8 @@ struct World {
     down: bool,
     pack_bytes: u64,
     time_ms: u64,
+    /// Snapshots read.
+    snapshots: usize,
 }
 
 #[derive(Clone, Default)]
@@ -86,7 +88,8 @@ impl Upstream for Stub {
     async fn snapshot(&self, repo: &RepoInfo) -> Result<Snapshot> {
         let src = self.src(repo)?;
         let (time_ms, pack_bytes) = {
-            let w = self.world();
+            let mut w = self.world();
+            w.snapshots += 1;
             (w.time_ms, w.pack_bytes)
         };
         let refs = git_out(&src, &["for-each-ref", "--format=%(objectname) %(refname)"]);
@@ -632,4 +635,27 @@ async fn a_client_trickling_its_request_body_holds_no_gateway_slot() {
         String::from_utf8_lossy(&out.stderr)
     );
     drop(slow);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn badges_for_branches_a_repo_lacks_read_platform_once() {
+    let gw = start(|_| {}).await;
+    let src = source(&gw.tmp);
+    gw.stub.add("alice", "proj", true, &src);
+
+    let (s, _, body) = gw.get("/badge/alice/proj/ci.json?branch=feature").await;
+    assert_eq!(s, 200, "{body}");
+    assert!(body.contains("passing"), "{body}");
+    assert_eq!(gw.stub.world().snapshots, 1);
+    for n in 0..5 {
+        let (s, _, body) = gw
+            .get(&format!("/badge/alice/proj/ci.json?branch=nope{n}"))
+            .await;
+        assert_eq!(s, 200, "{body}");
+        assert!(body.contains("no branch"), "{body}");
+    }
+    // Other badges ignore the parameter.
+    let (s, _, body) = gw.get("/badge/alice/proj/stars.svg?branch=nope").await;
+    assert_eq!(s, 200, "{body}");
+    assert_eq!(gw.stub.world().snapshots, 1, "one snapshot read per TTL");
 }
