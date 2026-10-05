@@ -215,7 +215,7 @@ Restrict `/metrics` at the proxy if you do not want it public (it holds no perso
 
 One line per request: method, path, status and duration. Plus refresh outcomes (repository id, whether refs moved, duration) and warnings.
 
-Never logged: client addresses, user agents, request headers, query strings and request bodies. Client addresses live in memory only, in rate-limit buckets that are dropped once full again. git's own output stays inside the gateway (debug level only). `docker compose logs` keeps what Docker keeps: set Docker's log rotation (`max-size`, `max-file`) to match the privacy notice.
+Never logged: client addresses, user agents, request headers, query strings and request bodies. Client addresses live in memory only, in rate-limit buckets that are dropped once full again: at most two limiter periods after a client's last request (two minutes for the request limits, two hours for the new-mirror limit). git's own output stays inside the gateway (debug level only). `docker compose logs` keeps what Docker keeps: set Docker's log rotation (`max-size`, `max-file`) to match the privacy notice.
 
 ## Backups and upgrades
 
@@ -251,7 +251,7 @@ The MVP is free with rate limits. A paid tier is a later spike, and needs no con
 >
 > The gateway at `git.forge.dashhq.org` is run by dashhq. It serves read-only copies of **public** Dash Forge repositories, which anyone can already read on Dash Platform.
 >
-> **What we process.** To answer a request we see your IP address, the URL you request and your client's request headers. We use your IP address only to apply rate limits, in memory, for at most a few minutes. We do not log IP addresses, user agents or request headers. Our logs record the requested path, the response status and its duration, and are kept for 14 days.
+> **What we process.** To answer a request we see your IP address, the URL you request and your client's request headers. We use your IP address only to apply rate limits, in memory, for at most two hours after your last request. We do not log IP addresses, user agents or request headers. Our logs record the requested path, the response status and its duration, and are kept for 14 days.
 >
 > **What we do not do.** We use no cookies, no analytics and no tracking. We do not serve private repositories and hold no keys for them. We do not sell or share data.
 >

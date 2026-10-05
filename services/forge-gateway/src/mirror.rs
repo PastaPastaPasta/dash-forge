@@ -774,7 +774,7 @@ impl Mirrors {
     /// Evict the least recently served mirrors (never a pinned, refreshing or serving one)
     /// while the total exceeds the cap.
     pub async fn evict(&self) {
-        let doomed: Vec<Arc<Slot>> = {
+        let doomed: Vec<(Arc<Slot>, Option<PathBuf>)> = {
             let mut slots = self.slots();
             let mut total: u64 = slots.values().map(|s| s.state().size).sum();
             if total <= self.cfg.cache_max_bytes {
@@ -796,17 +796,20 @@ impl Mirrors {
                 }
                 if let Some(slot) = slots.remove(&id) {
                     total = total.saturating_sub(size);
-                    out.push(slot);
+                    // Moved aside under the lock (a cheap rename), so a new slot for the same
+                    // repo can never find the old directory; deleted after the lock is released.
+                    let n = self.trash_seq.fetch_add(1, Ordering::Relaxed);
+                    let trash = self.root.join(format!(".trash-{}-{n}", slot.repo.repo_id));
+                    let moved = std::fs::rename(&slot.dir, &trash).is_ok();
+                    out.push((slot, moved.then_some(trash)));
                 }
             }
             out
         };
-        for slot in doomed {
+        for (slot, trash) in doomed {
             Metrics::inc(&self.metrics.mirrors_evicted);
             tracing::info!(repo = %slot.repo.repo_id, "evicting mirror (disk cap)");
-            let n = self.trash_seq.fetch_add(1, Ordering::Relaxed);
-            let trash = self.root.join(format!(".trash-{}-{n}", slot.repo.repo_id));
-            if tokio::fs::rename(&slot.dir, &trash).await.is_ok() {
+            if let Some(trash) = trash {
                 let _ = tokio::fs::remove_dir_all(&trash).await;
             }
         }

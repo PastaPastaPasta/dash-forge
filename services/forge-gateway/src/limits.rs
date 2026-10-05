@@ -1,7 +1,8 @@
 //! Abuse controls: per-client token buckets and per-client concurrency, keyed by the client's
 //! address (an IPv6 address by its /64, so one host cannot rotate through its prefix). The
-//! addresses live in memory only, for as long as a bucket is not full again, and are never
-//! logged.
+//! addresses live in memory only, and are never logged. A bucket that is full again is dropped
+//! at the next sweep (at most one limiter period later), so an address is kept for at most two
+//! periods after its last request.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -26,7 +27,10 @@ pub fn client_key(ip: IpAddr) -> IpAddr {
 pub struct RateLimiter {
     capacity: f64,
     per_sec: f64,
+    period: Duration,
     buckets: Mutex<HashMap<IpAddr, (f64, Instant)>>,
+    /// When full buckets were last dropped.
+    swept: Mutex<Instant>,
 }
 
 /// The most clients a limiter tracks: when full, it drops the full (idle) buckets, and if
@@ -41,7 +45,9 @@ impl RateLimiter {
         Self {
             capacity,
             per_sec: capacity / period.as_secs_f64().max(0.001),
+            period,
             buckets: Mutex::default(),
+            swept: Mutex::new(Instant::now()),
         }
     }
 
@@ -53,7 +59,16 @@ impl RateLimiter {
     fn check_at(&self, ip: IpAddr, now: Instant) -> Result<(), Duration> {
         let key = client_key(ip);
         let mut b = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
-        if b.len() >= MAX_TRACKED {
+        let sweep = {
+            let mut swept = self.swept.lock().unwrap_or_else(PoisonError::into_inner);
+            let due = now.saturating_duration_since(*swept) >= self.period;
+            if due {
+                *swept = now;
+            }
+            due
+        };
+        if sweep || b.len() >= MAX_TRACKED {
+            // Drop the clients whose bucket is full again: they are idle.
             let (cap, rate) = (self.capacity, self.per_sec);
             b.retain(|_, (tokens, at)| {
                 *tokens + now.saturating_duration_since(*at).as_secs_f64() * rate < cap
@@ -156,6 +171,20 @@ mod tests {
         assert!(l.check_at("192.0.2.2".parse().unwrap(), t).is_ok());
         // Half a period later, one token is back.
         assert!(l.check_at(ip, t + Duration::from_secs(30)).is_ok());
+    }
+
+    #[test]
+    fn an_idle_client_is_forgotten_within_two_periods() {
+        let l = RateLimiter::new(2, Duration::from_secs(60));
+        let t = Instant::now();
+        assert!(l.check_at("192.0.2.1".parse().unwrap(), t).is_ok());
+        // Two periods on, any request sweeps the full bucket away.
+        assert!(l
+            .check_at("192.0.2.2".parse().unwrap(), t + Duration::from_secs(121))
+            .is_ok());
+        let b = l.buckets.lock().unwrap();
+        assert!(!b.contains_key(&"192.0.2.1".parse::<IpAddr>().unwrap()));
+        assert_eq!(b.len(), 1);
     }
 
     #[test]

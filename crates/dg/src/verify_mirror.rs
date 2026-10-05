@@ -104,7 +104,8 @@ pub fn manifest_problems(
 }
 
 fn short(oid: &str) -> &str {
-    &oid[..oid.len().min(12)]
+    // By characters: a hostile manifest's "oid" need not be ASCII.
+    oid.char_indices().nth(12).map_or(oid, |(i, _)| &oid[..i])
 }
 
 /// `git ls-remote <url>`, with no prompts and no credential helpers.
@@ -330,6 +331,14 @@ fn report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_never_splits_a_character() {
+        assert_eq!(short("0123456789abcdef"), "0123456789ab");
+        assert_eq!(short("abc"), "abc");
+        // A multibyte character across byte 12 of a hostile manifest's oid.
+        assert_eq!(short("aaaaaaaaaaaéééé"), "aaaaaaaaaaaé");
+    }
     use forge_core::mirror::MANIFEST_SCHEMA;
     use forge_core::repo::RefTip;
 

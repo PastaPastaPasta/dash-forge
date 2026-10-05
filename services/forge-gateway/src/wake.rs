@@ -97,6 +97,9 @@ pub fn read_answer(
     serde_json::from_slice(body).context("the relay's answer is not a wake answer")
 }
 
+/// The largest wake answer the gateway reads.
+const MAX_ANSWER: usize = 1024 * 1024;
+
 async fn ask(
     http: &reqwest::Client,
     base: &str,
@@ -110,7 +113,7 @@ async fn ask(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let sig = sign_body(secret, request_message(&target, time).as_bytes());
-    let resp = http
+    let mut resp = http
         .get(format!("{base}{target}"))
         .header("X-Forge-Wake-Time", time.to_string())
         .header("X-Forge-Wake-Signature", &sig)
@@ -122,9 +125,16 @@ async fn ask(
         .get("x-forge-wake-signature")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let body = resp.bytes().await?;
-    if body.len() > 1024 * 1024 {
+    // Capped while it is read: a spoofed relay must not make the gateway buffer a huge body.
+    if resp.content_length().is_some_and(|n| n > MAX_ANSWER as u64) {
         bail!("the relay's answer is too large");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if body.len() + chunk.len() > MAX_ANSWER {
+            bail!("the relay's answer is too large");
+        }
+        body.extend_from_slice(&chunk);
     }
     read_answer(secret, &sig, &body, answer_sig.as_deref())
 }
