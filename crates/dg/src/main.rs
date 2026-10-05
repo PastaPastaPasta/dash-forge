@@ -243,8 +243,10 @@ pub enum Command {
     /// Manage webhooks.
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
-    /// Environments: configuration and secrets per environment (dev, staging, production),
-    /// encrypted for Maintainers or Members, injected with `dg env run`, never in git.
+    /// Environments: secrets and settings kept out of git
+    ///
+    /// Each environment (dev, staging, production) is encrypted for Maintainers or Members.
+    /// Run code with one through `dg env run`.
     #[command(subcommand)]
     Env(env::EnvCommand),
     /// CI: runner keys and memberships, and check runs on commits.

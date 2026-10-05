@@ -18,6 +18,7 @@ Commands:
   reseed         Re-upload packs and record the new copies (maintainers and writers; --from-local writes nothing to Platform)
   storage        Storage availability
   webhook        Manage webhooks
+  env            Environments: secrets and settings kept out of git
   ci             CI: runner keys and memberships, and check runs on commits
   search         Search issues and pull requests (in one repository) and repositories, with the web search box's qualifiers (`is:open label:bug author:@me -label:wontfix`)
   api            Raw Platform reads: a proved document query, printed as JSON (gh api)
