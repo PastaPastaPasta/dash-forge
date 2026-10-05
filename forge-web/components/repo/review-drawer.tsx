@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, MessageSquareDashed } from 'lucide-react'
 
 import {
+  createComment,
   discardReviewDraft,
   loadReviewDraft,
   saveReviewDraft,
@@ -23,12 +24,18 @@ import {
   type ReviewDraft,
   type VerdictInput,
 } from '@/lib/repo'
-import { newIntent } from '@/lib/sdk'
+import { SupersededWriteError, newIntent, sumPreviews } from '@/lib/sdk'
+import type { RepoHome } from '@/lib/view'
+import type { Membership } from '@/lib/rules/v2'
+import { publicLineQuestion, submitSummary } from '@/lib/view/audience'
+import { AudienceChip, useComposerAudience, warningName } from '@/components/repo/audience'
+import { composeCost } from '@/components/repo/private-compose'
+import { Field, Input } from '@/components/ui/input'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { plural } from '@/lib/view/format'
 import {
   addDraftComment,
-  draftCost,
+  draftAudienceCounts,
   draftIsEmpty,
   draftWhereabouts,
   editDraftComment,
@@ -36,6 +43,7 @@ import {
   partialSubmitMessage,
   reanchorDraft,
   removeDraftComment,
+  setDraftAudience,
   setDraftVerdict,
   splitDraftComments,
   startSubmit,
@@ -129,9 +137,9 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
             ...(({ onLines, elsewhere }) => ({ comments: onLines, elsewhere }))(splitDraftComments(draft, headOid)),
             count: draft?.comments.length ?? 0,
             frozen: draft !== null && submitStarted(draft),
-            onAdd: (anchor: AnchorInput, body: string) => {
+            onAdd: (anchor: AnchorInput, body: string, audience?: 'public' | 'members') => {
               const d = ensure()
-              if (d !== null) update(addDraftComment(d, newIntent(), anchor, body))
+              if (d !== null) update(addDraftComment(d, newIntent(), anchor, body, audience))
             },
             onEdit: (localId, body) => {
               if (latest.current !== null) update(editDraftComment(latest.current, localId, body))
@@ -146,6 +154,10 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
 }
 
 export function ReviewDrawer({
+  home,
+  members = null,
+  maintainer = false,
+  author,
   repo,
   pullId,
   headOid,
@@ -160,6 +172,14 @@ export function ReviewDrawer({
   onSubmitted,
   membersOnly = false,
 }: {
+  /** The repo page (the audience chip reads the viewer's members access from it). */
+  home: RepoHome
+  /** The repo's members (the chip's count, who can read members-only text). */
+  members?: readonly Membership[] | null
+  /** The viewer may turn members-only content on. */
+  maintainer?: boolean
+  /** Who opened the PR: a members-only "Request changes" they can't read asks for one public line. */
+  author: string
   /** The PR is members-only: its pending review lives in this tab only. */
   membersOnly?: boolean
   repo: RepoRef
@@ -188,6 +208,11 @@ export function ReviewDrawer({
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const [open, setOpen] = useState(false)
+  // Who the review's own text is for (its verdict is always public, D15): the PR's, or Members.
+  const prAudience = membersOnly ? 'members' : 'public'
+  const textAudience = useComposerAudience(home, { parent: prAudience, members, maintainer })
+  // A members-only "Request changes" the author can't read: one public line beside it (product H8).
+  const [publicLine, setPublicLine] = useState('')
   const [summary, setSummary] = useState(draft?.summary ?? '')
   const [chosen, setVerdict] = useState<VerdictInput>(draft?.verdict ?? 'comment')
   // A draft saved with a verdict before the viewer's authorship was known still submits as a comment.
@@ -201,21 +226,25 @@ export function ReviewDrawer({
   useEffect(() => {
     setSummary(draft?.summary ?? '')
     setVerdict(draft?.verdict ?? 'comment')
+    if (draft?.audience === 'members') textAudience.setAudience('members')
   }, [draft?.draftId, identity]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // The summary and verdict are part of the draft: kept in this browser as they change (shortly
   // after typing stops), so closing the panel or reloading the page loses neither.
   const frozen = draft !== null && submitStarted(draft)
+  // Members-only text is never kept on disk: the draft says so before its summary is saved.
+  const textChoice = textAudience.audience
   useEffect(() => {
     if (!loaded || frozen || progress !== null) return
-    const same = draft === null ? summary === '' && verdict === 'comment' : draft.summary === summary && draft.verdict === verdict
+    const sameAudience = (draft?.audience === 'members') === (textChoice === 'members')
+    const same = draft === null ? summary === '' && verdict === 'comment' : draft.summary === summary && draft.verdict === verdict && sameAudience
     if (same) return
     const t = setTimeout(() => {
       const d = ensure()
-      if (d !== null && !submitStarted(d)) update(setDraftVerdict(d, verdict, summary))
-    }, 250)
+      if (d !== null && !submitStarted(d)) update(setDraftAudience(setDraftVerdict(d, verdict, summary), textChoice))
+    }, sameAudience ? 250 : 0)
     return () => clearTimeout(t)
-  }, [summary, verdict, draft, loaded, frozen, progress, ensure, update])
+  }, [summary, verdict, textChoice, draft, loaded, frozen, progress, ensure, update])
 
   const count = draft?.comments.length ?? 0
   const headMoved = draft !== null && draft.headOid !== headOid && !frozen
@@ -223,8 +252,16 @@ export function ReviewDrawer({
     identity === null
       ? null
       : draft ?? newReviewDraft({ draftId: 'preview', network, identity, repoId: repo.repoId, prId: pullId, headOid, private: repo.visibility === 'private', membersOnly, now: 0 })
-  const planned = working === null ? null : frozen ? working : { ...working, summary, verdict }
-  const { documents, cost } = planned === null ? { documents: 0, cost: null } : draftCost(planned)
+  const planned = working === null ? null : frozen ? working : setDraftAudience({ ...working, summary, verdict }, textAudience.audience)
+  // What a submit writes, each document priced for its audience (members-only text is stored encrypted).
+  const toWrite = planned === null ? [] : [
+    ...(planned.reviewId === undefined ? [composeCost(repo, 'review', { body: planned.summary }, {}, planned.audience === 'members' ? 'members' : prAudience)] : []),
+    ...planned.comments.filter((c) => c.landedId === undefined).map((c) => composeCost(repo, 'comment', { body: c.body, path: c.anchor.path }, {}, c.audience === 'members' ? 'members' : prAudience)),
+  ]
+  const documents = toWrite.length
+  const cost = planned === null ? null : sumPreviews(toWrite)
+  const summaryLine = planned === null || repo.visibility !== 'public' ? null : submitSummary(draftAudienceCounts(planned, prAudience))
+  const question = planned === null ? null : publicLineQuestion({ verdict, audience: planned.audience === 'members' || prAudience === 'members' ? 'members' : 'public', author, authorName: warningName(network, author), holders: textAudience.holders })
 
   const submit = async (): Promise<void> => {
     if (!sdk || !signer || identity === null || planned === null) return
@@ -248,9 +285,19 @@ export function ReviewDrawer({
     setProgress({ done: 0, total: documents })
     try {
       // The review and its inline comments are one action: one toast with their total (QW3-039).
-      const r = await spendAction({ running: 'Submitting the review…', done: 'Review submitted', failed: 'Review submitted part-way' }, (tag) =>
-        submitReviewDraft(sdk, tag(signer), repo, toSubmit, { isMember, locked }, (p) => setProgress(p)),
-      )
+      const line = question !== null ? publicLine.trim() : ''
+      const r = await spendAction({ running: 'Submitting the review…', done: 'Review submitted', failed: 'Review submitted part-way' }, async (tag) => {
+        const submitted = await submitReviewDraft(sdk, tag(signer), repo, toSubmit, { isMember, locked }, (p) => setProgress(p))
+        // The one public line the author can read, after the members-only review.
+        if (line !== '') {
+          await createComment(sdk, tag(signer), repo, { targetId: pullId, body: line, intent: `review:${toSubmit.draftId}:public-line`, post: { isMember, locked }, audience: 'public' }).catch((e: unknown) => {
+            if (!(e instanceof SupersededWriteError)) throw e
+          })
+        }
+        return submitted
+      })
+      setPublicLine('')
+      textAudience.reset()
       update(null)
       setOpen(false)
       setProgress(null)
@@ -290,7 +337,7 @@ export function ReviewDrawer({
         >
           <h3 className="text-dense font-semibold">Finish your review</h3>
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="draft-whereabouts">
-            {draftWhereabouts(repo.visibility === 'private', membersOnly)} Nothing is on Platform until you submit.
+            {draftWhereabouts(repo.visibility === 'private', membersOnly || (planned !== null && (planned.audience === 'members' || planned.comments.some((c) => c.audience === 'members'))))} Nothing is on Platform until you submit.
           </p>
           {headMoved && draft ? (
             <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" data-testid="draft-head-moved">
@@ -311,6 +358,11 @@ export function ReviewDrawer({
           ) : (
             <>
               <MarkdownEditor id="review-summary" label="Review summary" value={summary} onChange={setSummary} placeholder="Leave a summary (optional)" />
+              {textAudience.choice !== null ? (
+                <p className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+                  Review text: <AudienceChip home={home} state={textAudience} testId="review-audience-chip" />
+                </p>
+              ) : null}
               <fieldset className="space-y-1.5">
                 <legend className="sr-only">Verdict</legend>
                 {VERDICTS.filter((v) => !isAuthor || v.value === 'comment').map((v) => (
@@ -340,10 +392,24 @@ export function ReviewDrawer({
                     {anchorLabel({ path: c.anchor.path, line: c.anchor.line ?? null, startLine: c.anchor.startLine ?? null, side: c.anchor.side ?? null, commitOid: c.anchor.commitOid ?? '' })}
                   </span>
                   <span className="truncate text-anvil-600 dark:text-anvil-300">{c.body.split('\n')[0]}</span>
+                  {c.audience === 'members' || membersOnly ? <span className="shrink-0 text-anvil-500 dark:text-anvil-400">members-only</span> : null}
                   {c.landedId ? <span>landed</span> : null}
                 </li>
               ))}
             </ul>
+          ) : null}
+          {question !== null && !frozen ? (
+            <div className="space-y-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2" data-testid="public-line-question">
+              <p className="text-dense text-anvil-800 dark:text-anvil-100">{question}</p>
+              <Field label="Public line (optional)" htmlFor="review-public-line">
+                <Input id="review-public-line" value={publicLine} onChange={(e) => setPublicLine(e.target.value)} maxLength={500} />
+              </Field>
+            </div>
+          ) : null}
+          {summaryLine !== null ? (
+            <p className="text-dense font-medium" data-testid="review-submit-summary">
+              {summaryLine}
+            </p>
           ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
             <span className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="review-documents">

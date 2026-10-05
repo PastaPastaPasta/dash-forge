@@ -49,6 +49,7 @@ import {
   membersOnlyNoun,
   membersOnlyTitle,
   membersSentence,
+  removalReads,
   turnOnText,
   type AudienceChoice,
   type ComposerAudience,
@@ -95,22 +96,27 @@ export interface ComposerAudienceState {
  * `members`: the repo's members when the page read them (else they are read here, members only).
  */
 export function useComposerAudience(
-  home: RepoHome,
+  /** The repo page; null where the composer has none (its writes then take their parents' audience). */
+  home: RepoHome | null,
   { parent = 'public', members = null, maintainer = false }: { parent?: ComposerAudience; members?: readonly Membership[] | null; maintainer?: boolean },
 ): ComposerAudienceState {
-  const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
-  const choice = audienceChoice({ visibility: home.repo.visibility, parent, lane: home.lane, maintainer })
+  const repo = home?.repo ?? null
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const choice = home === null ? null : audienceChoice({ visibility: home.repo.visibility, parent, lane: home.lane, maintainer })
   // Only a member's chip shows a count, so only a member reads the members for it.
-  const wants = members === null && choice !== null && choice.members !== null
-  const read = useAsync(() => readMembershipsCached(sdk!, home.repo, network), [ready, home.repo.repoId, network], { enabled: ready && sdk !== null && wants })
+  const wants = repo !== null && members === null && choice !== null && choice.members !== null
+  const read = useAsync(() => readMembershipsCached(sdk!, repo!, network), [ready, repo?.repoId ?? '', network], { enabled: ready && sdk !== null && wants })
   const list = members ?? read.data
-  const count = list === null || list === undefined ? null : membersCount(list, home.repo.visibility)
-  const holders = list === null || list === undefined ? EMPTY : keyHolders(list, home.repo.visibility)
+  const visibility = repo?.visibility ?? 'public'
+  const count = list === null || list === undefined ? null : membersCount(list, visibility)
+  const holders = list === null || list === undefined ? EMPTY : keyHolders(list, visibility)
   const initial = choice?.initial ?? 'members'
   const [audience, setAudience] = useState<ComposerAudience>(initial)
   // The thread loaded, or turned out members-only: follow its audience.
   useEffect(() => setAudience(initial), [initial])
-  return { choice, audience: choice === null ? 'members' : audience, setAudience, count, holders, maintainer, reset: () => setAudience(initial) }
+  // A private repo's composer writes members-only content; one with no page takes its parents'.
+  const settled: ComposerAudience = choice !== null ? audience : repo?.visibility === 'private' ? 'members' : parent
+  return { choice, audience: settled, setAudience, count, holders, maintainer, reset: () => setAudience(initial) }
 }
 
 const EMPTY: ReadonlySet<string> = new Set()
@@ -511,7 +517,7 @@ export const MEMBERS_CARD_HEADER = 'bg-anvil-100 dark:bg-anvil-850'
  * who opened it, when, its state and how many comments it has; never "not found".
  */
 export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target: MembersOnlyTarget }): JSX.Element {
-  const kind = target.membersOnly.type === 'patch' ? 'pull' : 'issue'
+  const kind = target.placeholder.type === 'patch' ? 'pull' : 'issue'
   const Icon = kind === 'pull' ? GitPullRequest : CircleDot
   const state = target.merged ? 'merged' : target.open ? 'open' : 'closed'
   const why = memberCantRead(home.lane)
@@ -523,11 +529,11 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
       </h1>
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-dense text-anvil-600 dark:text-anvil-300">
         <Icon className="h-4 w-4 shrink-0" aria-hidden />
-        <span>{membersOnlyTitle(target.membersOnly.type)}</span>
+        <span>{membersOnlyTitle(target.placeholder.type)}</span>
         <span aria-hidden>·</span>
         <span>opened by</span>
-        <Author identityId={target.membersOnly.author} link={false} className="align-middle" />
-        <span className={MUTED}>{timeAgo(target.membersOnly.createdAt)}</span>
+        <Author identityId={target.placeholder.author} link={false} className="align-middle" />
+        <span className={MUTED}>{timeAgo(target.placeholder.createdAt)}</span>
         <span aria-hidden>·</span>
         <span data-testid="members-only-state">{state}</span>
         {target.comments > 0 ? (
@@ -542,7 +548,7 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
           <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="members-only-target-unlock" forgot={false} />
         ) : why === 'no-key' ? (
           <p>
-            Only members of this repo can read this {membersOnlyNoun(target.membersOnly.type)}.{' '}
+            Only members of this repo can read this {membersOnlyNoun(target.placeholder.type)}.{' '}
             <Link href={PRIVATE_REPOS_SETTINGS} className="hit-area font-medium text-forge-700 underline dark:text-forge-400">
               {SET_UP_KEY}
             </Link>{' '}
@@ -551,9 +557,62 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
         ) : home.lane?.access === 'member' ? (
           <p>You can&apos;t read this one. It was written with a key you don&apos;t hold.</p>
         ) : why === 'no-key-shared' ? null : (
-          <p>Only members of this repo can read this {membersOnlyNoun(target.membersOnly.type)}. Everyone can see that it exists, who opened it and when.</p>
+          <p>Only members of this repo can read this {membersOnlyNoun(target.placeholder.type)}. Everyone can see that it exists, who opened it and when.</p>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * Settings → Members-only content (a member of a public repo): whether it is on, and for a
+ * maintainer the way to turn it on ({@link TurnOnMembersSheet}).
+ */
+export function MembersContentSetting({ home, maintainer }: { home: RepoHome; maintainer: boolean }): JSX.Element | null {
+  const [turnOn, setTurnOn] = useState(false)
+  const access = home.lane?.access
+  if (home.repo.visibility !== 'public' || access === undefined) return null
+  const on = access !== 'none'
+  return (
+    <div className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800" data-testid="members-content-setting" data-on={on ? 'true' : 'false'}>
+      <p className="flex flex-wrap items-center gap-2">
+        <Lock className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+        <span className="font-medium">Members-only content</span>
+        <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] font-medium text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">{on ? 'On' : 'Off'}</span>
+      </p>
+      <p className={cn('mt-1 text-[12px]', MUTED)}>
+        {on
+          ? 'Members can post comments, reviews and issues only members can read. Everyone can still see that something was posted, by whom and when.'
+          : maintainer
+            ? 'Members can only post what everyone can read.'
+            : MEMBERS_OPTION_TEXT['ask-maintainer']}
+      </p>
+      {!on && maintainer ? (
+        <Button className="mt-2" size="sm" variant="outline" onClick={() => setTurnOn(true)} data-testid="settings-turn-on">
+          {TURN_ON}
+        </Button>
+      ) : null}
+      {turnOn ? <TurnOnMembersSheet home={home} open={turnOn} onClose={() => setTurnOn(false)} /> : null}
+    </div>
+  )
+}
+
+/**
+ * What a member being removed could read, in plain words (stream 1F): they keep it, and nothing
+ * posted after the removal. `extras`: other features' lines (environments add theirs).
+ */
+export function RemovalReads({ lane, extras = [] }: { lane: boolean; extras?: readonly string[] }): JSX.Element | null {
+  const reads = removalReads(lane, extras)
+  if (reads.length === 0) return null
+  return (
+    <div className="space-y-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="removal-reads">
+      <p>They could read:</p>
+      <ul className="list-disc pl-5">
+        {reads.map((r) => (
+          <li key={r}>{r}</li>
+        ))}
+      </ul>
+      <p className={cn('text-[12px]', MUTED)}>They keep what they could already read. They can&apos;t read anything members-only posted after this.</p>
     </div>
   )
 }

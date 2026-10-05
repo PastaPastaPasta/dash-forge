@@ -46,6 +46,7 @@ import {
 import { createIssue, issueFirsts, queryIssues, readLabels, contentKey, repoContractIds, repoKey, rowFiltersOf, setLabel, type IssueListPage, type IssueSelection } from '@/lib/repo'
 import { SupersededWriteError, UnconfirmedWriteError, previewCreate, sumPreviews } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { AudienceChip, useComposerAudience } from '@/components/repo/audience'
 import { useRepoWriteGeneration, useViewerRole } from '@/hooks/use-repo-chrome'
 import { toast } from '@/hooks/use-toasts'
 import { useIntent } from '@/hooks/use-intent'
@@ -427,7 +428,10 @@ function ComposeIssueDialog({
   // another template is picked, so arrowing through the picker loses nothing (QW4-037).
   const [answersByFile, setAnswersByFile] = useState<Readonly<Record<string, Record<string, FormValue>>>>({})
   const chooser = useIssueChooser(home, open)
-  const canLabel = capabilitiesOf(useViewerRole(repo).role).canLabel
+  const viewerRole = useViewerRole(repo).role
+  const canLabel = capabilitiesOf(viewerRole).canLabel
+  // Who it is for (DESIGN §10): public, or Members when a member picks it.
+  const audience = useComposerAudience(home, { maintainer: viewerRole === 'maintainer' })
   // The repo's labels, read only when a template asks for some and the author may apply them.
   const wantsLabels = open && canLabel && (template?.labels.length ?? 0) > 0
   const labelDefs = useAsync(() => readLabels(sdk!, repo), [repoKey(repo), wantsLabels ? 1 : 0], { enabled: wantsLabels && sdk !== null })
@@ -456,7 +460,7 @@ function ComposeIssueDialog({
   }, [wantsLabels, labelDefs.data, template])
   // Submit waits for them, so a member's issue never opens without its template's labels.
   const labelsLoading = wantsLabels && labelDefs.data === null && labelDefs.error === null
-  const cost = sumPreviews([composeCost(repo, 'issue', { title: title.trim(), body: issueBody }, first), ...labelsToApply.map(() => previewCreate('event'))])
+  const cost = sumPreviews([composeCost(repo, 'issue', { title: title.trim(), body: issueBody }, first, audience.audience), ...labelsToApply.map(() => previewCreate('event'))])
   const bodyBytes = utf8Length(issueBody)
   // A body over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
   const longBody = useLongCompose(repo, 'issue', issueBody, { title: title.trim() })
@@ -498,7 +502,7 @@ function ComposeIssueDialog({
     setError(null)
     setNote(null)
     try {
-      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body: issueBody, intent: draft.intent }, (taken, next) =>
+      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body: issueBody, intent: draft.intent, ...(audience.choice !== null ? { audience: audience.audience } : {}) }, (taken, next) =>
         setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
       )
       await applyLabels(created, labelsToApply)
@@ -507,6 +511,7 @@ function ComposeIssueDialog({
       setTemplate(null)
       setAnswersByFile({})
       draft.renew()
+      audience.reset()
       onCreated(created.number)
       onClose()
     } catch (e) {
@@ -535,6 +540,7 @@ function ComposeIssueDialog({
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>
+          <AudienceChip home={home} state={audience} />
           <Button
             variant="primary"
             onClick={submit}

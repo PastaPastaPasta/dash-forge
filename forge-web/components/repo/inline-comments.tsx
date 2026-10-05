@@ -49,6 +49,23 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong } from '@/components/repo/private-compose'
 import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
+import type { RepoHome } from '@/lib/view'
+import type { Membership } from '@/lib/rules/v2'
+import { AudienceChip, AudienceWarnings, VisibleToMembers, MEMBERS_CARD, useAudienceWarnings, useComposerAudience } from '@/components/repo/audience'
+import { cn } from '@/lib/utils'
+
+/** Who a diff composer may write for: the page, its members, and the PR (DESIGN §10). */
+export interface InlineAudience {
+  readonly home: RepoHome
+  readonly members: readonly Membership[] | null
+  /** The viewer may turn members-only content on. */
+  readonly maintainer: boolean
+  /** The PR's own audience. */
+  readonly pr: 'public' | 'members'
+  readonly author: string
+}
+
+const InlineAudienceOf = createContext<InlineAudience | null>(null)
 
 /** What the page lets the threads do: resolve, edit and delete (it confirms and signs). */
 export interface ThreadActions {
@@ -99,7 +116,7 @@ export interface PendingReview {
   readonly count: number
   /** Frozen: a submit began (only retry or discard). */
   readonly frozen: boolean
-  readonly onAdd: (anchor: AnchorInput, body: string) => void
+  readonly onAdd: (anchor: AnchorInput, body: string, audience?: 'public' | 'members') => void
   readonly onEdit: (localId: string, body: string) => void
   readonly onRemove: (localId: string) => void
 }
@@ -120,8 +137,11 @@ export function InlineCommentsProvider({
   pending,
   suggestions,
   onLinesKnown,
+  audience = null,
   children,
 }: {
+  /** Who the diff's composers may write for (absent: their parents' audience, no chip). */
+  audience?: InlineAudience | null
   repo: RepoRef
   /** The viewer's membership and the PR's lock, for the comments posted here. */
   post?: PostContext
@@ -263,6 +283,7 @@ export function InlineCommentsProvider({
   )
 
   return (
+    <InlineAudienceOf.Provider value={audience}>
     <PostContextOf.Provider value={post}>
     <InlineCommentsContext.Provider value={value}>
       {placed.fileLevel.length > 0 ? (
@@ -331,6 +352,7 @@ export function InlineCommentsProvider({
       {children}
     </InlineCommentsContext.Provider>
     </PostContextOf.Provider>
+    </InlineAudienceOf.Provider>
   )
 }
 
@@ -401,6 +423,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
               repo={repo}
               pullId={pullId}
               replyTo={thread.root.id}
+              parent={[thread.root, ...thread.replies].some((c) => c.audience === 'members') ? 'members' : 'public'}
               label="Reply"
               onDone={(id) => {
                 setReplying(false)
@@ -469,10 +492,11 @@ function CommentBlock({
     )
   }
   return (
-    <div className="border-b border-anvil-100 px-3 py-2 last:border-b-0 dark:border-anvil-850" data-testid="thread-comment" data-id={c.id}>
-      <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+    <div className={cn('border-b border-anvil-100 px-3 py-2 last:border-b-0 dark:border-anvil-850', c.audience === 'members' && MEMBERS_CARD)} data-testid="thread-comment" data-id={c.id} data-audience={c.audience ?? 'public'}>
+      <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
         <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} />
         <EditedMarker createdAt={c.createdAt} updatedAt={c.updatedAt} />
+        {c.audience === 'members' ? <VisibleToMembers /> : null}
         {own && editing === null ? (
           <span className="ml-auto flex items-center gap-2">
             <button type="button" onClick={() => setEditing(c.body)} className="inline-flex items-center gap-1 hover:text-forge-700 dark:hover:text-forge-400" aria-label="Edit comment">
@@ -605,6 +629,7 @@ function PendingComment({
     <div className="rounded-md border border-dashed border-caution/60 bg-caution/5 px-3 py-2" data-testid="pending-comment" data-local={draft.localId}>
       <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
         <span className="rounded-full bg-caution/20 px-2 py-0.5 text-[11px] font-medium text-caution-800 dark:text-caution-300">Pending</span>
+        {draft.audience === 'members' ? <VisibleToMembers /> : null}
         {draft.anchor.startLine !== undefined ? <span className="font-mono">lines {draft.anchor.startLine}–{draft.anchor.line}</span> : null}
         {pending && !pending.frozen && editing === null ? (
           <span className="ml-auto flex items-center gap-2">
@@ -651,6 +676,7 @@ function Composer({
   pullId,
   anchor,
   replyTo,
+  parent,
   label,
   pending,
   suggestions,
@@ -661,6 +687,8 @@ function Composer({
   pullId: string
   anchor?: AnchorInput
   replyTo?: string
+  /** The thread's audience (a reply): a members-only thread's reply is members-only. Absent: the PR's. */
+  parent?: 'public' | 'members'
   label: string
   /** The pending review (a line comment only): offers "Start a review" / "Add review comment". */
   pending?: PendingReview | undefined
@@ -675,6 +703,10 @@ function Composer({
   const draft = useIntent()
   const post = useContext(PostContextOf)
   const [body, setBody] = useState('')
+  // Who it is for (DESIGN §10): the thread's or the PR's audience, or Members when picked.
+  const who = useContext(InlineAudienceOf)
+  const audience = useComposerAudience(who?.home ?? null, { parent: parent ?? who?.pr ?? 'public', members: who?.members ?? null, maintainer: who?.maintainer ?? false })
+  const warnings = useAudienceWarnings(audience, body, who === null ? null : { author: who.author, kind: 'pull' })
   const [posting, setPosting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Which subtrees this comment would create, read once the viewer starts typing, so the price
@@ -695,6 +727,7 @@ function Composer({
       ...(anchor ? { path: anchor.path } : {}),
     },
     first,
+    audience.audience,
   )
   const tooLong = composeTooLong(repo, 'comment', { body: body.trim(), ...(anchor ? { path: anchor.path } : {}) })
   const submit = async (): Promise<void> => {
@@ -708,6 +741,8 @@ function Composer({
         ...(anchor ? { anchor } : {}),
         ...(replyTo ? { replyTo } : {}),
         ...(post ? { post } : {}),
+        // The chosen audience, checked against the thread's; with no chip, the thread's own.
+        ...(audience.choice !== null ? { audience: audience.audience } : {}),
         intent: draft.intent,
       })
       draft.renew()
@@ -751,7 +786,7 @@ function Composer({
   const reviewing = pending !== undefined && anchor !== undefined && !pending.frozen
   const addToReview = (): void => {
     if (!reviewing || body.trim() === '' || anchor === undefined) return
-    pending.onAdd(anchor, body)
+    pending.onAdd(anchor, body, audience.choice !== null ? audience.audience : undefined)
     setBody('')
     onDone()
   }
@@ -789,9 +824,11 @@ function Composer({
       />
       <SealedLimit repo={repo} kind="comment" text={body.trim() + (anchor?.path ?? '')} />
       <BodyCounter repo={repo} text={body.trim()} field="comment" />
+      <AudienceWarnings warnings={warnings} />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <CostPreview cost={cost} />
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {who !== null ? <AudienceChip home={who.home} state={audience} testId="inline-audience-chip" /> : null}
           <Button size="sm" variant="ghost" onClick={onCancel} disabled={posting}>
             Cancel
           </Button>

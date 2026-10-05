@@ -199,6 +199,8 @@ export interface CommentInput {
   readonly intent?: string
   /** Whether the signer is a member and the thread locked (a member's post to a locked thread proves membership). */
   readonly post?: PostContext
+  /** Who it is for, as its composer chose (absent: its parents', settled by the write). */
+  readonly audience?: Audience
 }
 
 /**
@@ -216,8 +218,14 @@ export function commentData(input: CommentInput, signer: string): Record<string,
 }
 
 /** Post one comment (a "single comment", review-parity R2). */
-export function postComment(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: CommentInput): Promise<WriteResult> {
-  return write(sdk, auth, repo, DOC.comment, commentData(input, auth.identityId), input.intent)
+export async function postComment(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: CommentInput): Promise<WriteResult> {
+  // A chosen audience is checked against the comment's parents first (DESIGN §3.3): a public reply
+  // in a members-only thread is refused, never written.
+  const options =
+    input.audience === undefined
+      ? {}
+      : { audience: await childAudience(sdk, repo, { targetId: input.targetId, ...(input.replyTo ? { replyTo: input.replyTo } : {}), requested: input.audience }) }
+  return write(sdk, auth, repo, DOC.comment, commentData(input, auth.identityId), input.intent, undefined, undefined, options)
 }
 
 /** A review verdict with the number of comments the submit will attach. */
@@ -260,8 +268,18 @@ export interface DraftComment {
   readonly localId: string
   readonly anchor: AnchorInput
   readonly body: string
+  /**
+   * Members-only (a public repo, DESIGN §4.1): this comment's text is for members, whatever the
+   * review's is. Absent: its PR's audience.
+   */
+  readonly audience?: 'members'
   /** Set once the comment landed. */
   readonly landedId?: string
+}
+
+/** Whether a draft holds members-only text (its summary's or a comment's): it is then kept in memory only. */
+export function draftHasMembersText(d: Pick<ReviewDraft, 'audience' | 'comments'>): boolean {
+  return d.audience === 'members' || d.comments.some((c) => c.audience === 'members')
 }
 
 /**
@@ -323,7 +341,7 @@ export async function loadReviewDraft(network: string, identity: string, prId: s
   if (memory !== undefined) return memory
   const stored = await idbGet<ReviewDraft>('journal', key)
   // A private or members-only draft never belongs in IndexedDB (one from an earlier build is dropped).
-  if (stored?.private === true || stored?.audience === 'members') {
+  if (stored !== undefined && (stored.private === true || draftHasMembersText(stored))) {
     await idbDelete('journal', key)
     return undefined
   }
@@ -340,10 +358,12 @@ export function saveReviewDraft(draft: ReviewDraft, repo?: RepoRef): Promise<voi
     memoryDrafts.set(key, { ...draft, private: true })
     return idbDelete('journal', key)
   }
-  if (draft.audience === 'members') {
+  if (draftHasMembersText(draft)) {
     memoryDrafts.set(key, draft)
     return idbDelete('journal', key)
   }
+  // Public again (its members-only comments removed or made public): no memory copy shadows it.
+  memoryDrafts.delete(key)
   return idbPut('journal', key, draft)
 }
 
@@ -525,13 +545,15 @@ export async function submitReviewDraft(
   // Who its text is for: the PR's audience, or narrower when the draft asks (its verdict is public).
   const audience =
     repo.visibility === 'private' ? 'members' : await childAudience(sdk, repo, { targetId: draft.prId, ...(draft.audience ? { requested: draft.audience } : {}) })
+  // Members-only text (the review's, or one comment's): written under one members key read.
+  const membersText = audience === 'members' || draft.comments.some((c) => c.audience === 'members')
   // Members-only: the reconcile reads the landed comments through the reader's members key.
-  if (repo.visibility === 'public' && audience === 'members' && repo.lane === undefined) throw new Error('a members-only review is submitted by a member reading the repo with their key')
+  if (repo.visibility === 'public' && membersText && repo.lane === undefined) throw new Error('a members-only review is submitted by a member reading the repo with their key')
   // One writer (one fresh key read) for the review and all its comments.
   const fresh = repo.visibility === 'private' ? await privateWriterWithSession(sdk, auth, repo) : undefined
-  const members = repo.visibility === 'public' && audience === 'members' ? await membersWriter(sdk, auth, repo) : undefined
+  const members = repo.visibility === 'public' && membersText ? await membersWriter(sdk, auth, repo) : undefined
   try {
-    return await submitWith(sdk, auth, repo, members ? { ...draft, audience: 'members' } : draft, post, fresh, onProgress, reads, members)
+    return await submitWith(sdk, auth, repo, audience === 'members' && repo.visibility === 'public' ? { ...draft, audience: 'members' } : draft, post, fresh, onProgress, reads, members)
   } finally {
     fresh?.session.close()
   }
@@ -549,7 +571,11 @@ async function submitWith(
   members?: MembersWriter,
 ): Promise<SubmittedReview> {
   const writer = fresh?.writer
-  const options = members ? { audience: 'members' as const, membersWriter: members } : {}
+  // Who each document is for: the review's text by the draft, each comment by its own audience
+  // (else its PR's, settled by the write itself, failing closed).
+  const membersOptions = members ? { audience: 'members' as const, membersWriter: members } : {}
+  const options = draft.audience === 'members' ? membersOptions : {}
+  const commentOptions = (c: DraftComment) => (c.audience === 'members' ? membersOptions : {})
   if (repo.visibility === 'private' && draft.private !== true) draft = { ...draft, private: true }
   // The reconcile reads through the writer's fresh session: a comment an earlier attempt sealed
   // under a newer epoch than the page's session knows still opens, and is not posted again.
@@ -596,7 +622,7 @@ async function submitWith(
       anchor: { ...c.anchor, commitOid: c.anchor.commitOid ?? draft.headOid },
       reviewId,
       post: settled,
-    }, auth.identityId), `review:${draft.draftId}:comment:${c.localId}`, writer, undefined, options)
+    }, auth.identityId), `review:${draft.draftId}:comment:${c.localId}`, writer, undefined, commentOptions(c))
     ids.push(r.documentId)
     const comments = [...current.comments]
     comments[i] = { ...c, landedId: r.documentId }

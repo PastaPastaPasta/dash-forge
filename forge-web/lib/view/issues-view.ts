@@ -248,7 +248,7 @@ export interface MembersOnlyEntry {
  * never "not found" (DESIGN D14, D19).
  */
 export interface MembersOnlyTarget {
-  readonly membersOnly: MembersOnlyItem
+  readonly placeholder: MembersOnlyItem
   readonly number: number
   readonly open: boolean
   readonly merged: boolean
@@ -258,7 +258,7 @@ export interface MembersOnlyTarget {
 
 /** Whether a thread read found a members-only issue or PR this reader cannot open. */
 export function isMembersOnlyTarget(t: unknown): t is MembersOnlyTarget {
-  return typeof t === 'object' && t !== null && 'membersOnly' in t
+  return typeof t === 'object' && t !== null && 'placeholder' in t
 }
 
 /** The placeholders a thread shows (D14) from what its read could not open: comments, plus `reviews` this reader counts but cannot open. */
@@ -273,7 +273,7 @@ function membersOnlyEntries(tally: HiddenTally, reviews: readonly ReviewView[]):
 /** The members-only target page of `placeholder` (a well-formed sealed issue or PR this reader cannot open). */
 function membersOnlyTarget(placeholder: MembersOnlyItem, number: number, transitions: readonly TransitionView[], comments: number): MembersOnlyTarget {
   const status = statusOfCode(stateCode(transitions))
-  return { membersOnly: placeholder, number, open: status.open, merged: status.merged, comments }
+  return { placeholder, number, open: status.open, merged: status.merged, comments }
 }
 
 /** A full issue detail: the folded issue + its merged timeline. */

@@ -69,12 +69,35 @@ function editable(d: ReviewDraft): void {
  * draft's head); one made on another head (the PR moved since the draft began, and the diff now
  * shows the new head) keeps that head, so it is never filed under a line of the old one.
  */
-export function addDraftComment(d: ReviewDraft, localId: string, anchor: AnchorInput, body: string): ReviewDraft {
+export function addDraftComment(d: ReviewDraft, localId: string, anchor: AnchorInput, body: string, audience: 'public' | 'members' = 'public'): ReviewDraft {
   editable(d)
   if (body.trim() === '') throw new Error('a comment needs a body')
   const { commitOid, ...rest } = anchor
   const own = commitOid === undefined || commitOid.toLowerCase() === d.headOid.toLowerCase()
-  return { ...d, comments: [...d.comments, { localId, anchor: own ? rest : { ...rest, commitOid }, body: body.trim() }] }
+  const comment = { localId, anchor: own ? rest : { ...rest, commitOid }, body: body.trim(), ...(audience === 'members' ? { audience } : {}) }
+  return { ...d, comments: [...d.comments, comment] }
+}
+
+/** Who the review's own text is for (a public repo): members-only, or the PR's audience. */
+export function setDraftAudience(d: ReviewDraft, audience: 'public' | 'members'): ReviewDraft {
+  if ((d.audience === 'members') === (audience === 'members')) return d
+  editable(d)
+  if (audience === 'members') return { ...d, audience: 'members' }
+  const { audience: _dropped, ...rest } = d
+  void _dropped
+  return rest
+}
+
+/**
+ * How many of a review's texts (its summary, when it has one, and each comment) are members-only
+ * and how many public, for the submit summary (product H8). `pr`: the PR's own audience, which a
+ * text without its own follows.
+ */
+export function draftAudienceCounts(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments'>, pr: 'public' | 'members'): { members: number; public: number } {
+  const of = (own: 'members' | undefined): 'public' | 'members' => (own === 'members' || pr === 'members' ? 'members' : 'public')
+  const all = [...(d.summary.trim() !== '' ? [of(d.audience)] : []), ...d.comments.map((c) => of(c.audience))]
+  const members = all.filter((a) => a === 'members').length
+  return { members, public: all.length - members }
 }
 
 /**

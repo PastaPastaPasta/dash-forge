@@ -598,6 +598,11 @@ function PullPage({
   // The unsent comment survives a reload (never stored for a private repo, nor while members-only).
   const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity, pull.audience ?? 'public'), audience.audience === 'public')
   const warnings = useAudienceWarnings(audience, comment, { author: pull.author, kind: 'pull' })
+  // The diff's composers pick their audience the same way (stable while these are).
+  const inlineAudience = useMemo(
+    () => ({ home, members: thread.members, maintainer: holdings.data?.maintain === true, pr: pull.audience ?? ('public' as const), author: pull.author }),
+    [home, thread.members, holdings.data?.maintain, pull.audience, pull.author],
+  )
   const blockingQuestion = (p: { verdict: VerdictInput; audience: 'public' | 'members' }): string | null =>
     publicLineQuestion({ verdict: p.verdict, audience: p.audience, author: pull.author, authorName: warningName(network, pull.author), holders: audience.holders })
   // A public comment that repeats members-only text asks first (product H8).
@@ -1788,6 +1793,10 @@ function PullPage({
               action={
                 identity !== null && open && !writeBlocked ? (
                   <ReviewDrawer
+                    home={home}
+                    members={thread.members}
+                    maintainer={holdings.data?.maintain === true}
+                    author={pull.author}
                     membersOnly={pull.audience === 'members'}
                     repo={repo}
                     pullId={pull.id}
@@ -1812,6 +1821,7 @@ function PullPage({
               wrap={(c, diff) => (
                 <InlineCommentsProvider
                   repo={repo}
+                  audience={inlineAudience}
                   post={postContext}
                   writeBlock={composeBlock}
                   pullId={pull.id}

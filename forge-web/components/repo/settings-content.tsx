@@ -17,6 +17,7 @@ import { ConsentMissingError, changeMemberRole, grantMember, invalidateMembers, 
 import { addMemberCost, planRotation, removalCost, removalEffect, roleChangeCost } from '@/lib/repo/private-members'
 import { usePrivateWrite } from '@/hooks/use-private-write'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
+import { MembersContentSetting, RemovalReads } from '@/components/repo/audience'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
@@ -192,6 +193,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       <BranchSettings home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
 
       <Section id="collaborators" title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
+        <div className="mb-4">
+          <MembersContentSetting home={home} maintainer={viewerRole === 'maintainer'} />
+        </div>
         {home.private?.access === 'member' ? (
           <PrivateMembers home={home} session={home.private.session} />
         ) : (
@@ -334,7 +338,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               : action?.kind === 'change'
                 ? `Makes ${shortId(action.member)} ${ROLE_NOUN[action.to]} instead of ${ROLE_NOUN[action.role]}. They don't need to accept again.`
                 : keyed
-                  ? `Removes them from this repo and changes the key to its members-only content: they won't be able to read members-only issues and comments posted after this. What they could already read stays readable to them.`
+                  ? 'Removes them from this repo and changes the key to its members-only content.'
                   : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
           cost={
@@ -352,7 +356,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           }
           confirmLabel={action?.kind === 'grant' ? 'Sign & add' : action?.kind === 'change' ? 'Sign & change' : 'Sign & remove'}
           onConfirm={runAction}
-        />
+        >
+          {action?.kind === 'revoke' && keyed ? <RemovalReads lane={keyed} /> : null}
+        </ConfirmDialog>
         </>
         )}
       </Section>
