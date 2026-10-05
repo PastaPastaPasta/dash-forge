@@ -26,11 +26,26 @@
       "contractGroupId": "524edcYDs34MG2ArVDapjBBtWeLKxr4qTCK8uGV5a182",
       "status": "registered",
       "sizeBytes": 16677,
-      "schemaHash": "a1147c9e798c64e2a4ceb94ff4c356f032410568181189cdd4ffca3d30b9f3b7",
+      "schemaHash": "28940bb805f649483c9fac2469715ba7d95c8c5b7c5e7fccd124386e63856324",
       "balanceBefore": "493181497210",
       "deployedAt": "2026-10-01T17:49:59.236Z",
       "costCredits": "64700933550",
-      "costDash": 0.6470093355
+      "costDash": 0.6470093355,
+      "updates": [
+        {
+          "version": 2,
+          "identityNonce": "2",
+          "sizeBytes": 17533,
+          "schemaHash": "28940bb805f649483c9fac2469715ba7d95c8c5b7c5e7fccd124386e63856324",
+          "previousSchemaHash": "a1147c9e798c64e2a4ceb94ff4c356f032410568181189cdd4ffca3d30b9f3b7",
+          "balanceBefore": "313075483540",
+          "status": "updated",
+          "costCredits": "68050257810",
+          "costDash": 0.6805025781,
+          "updatedAt": "2026-10-05T05:41:38.183Z"
+        }
+      ],
+      "version": 2
     },
     "forgeCollab": {
       "contractId": "6scu1j9FQkt3EYr9yoAfEL1SUaYX7F7mnaUFYiRLgjgb",
@@ -39,11 +54,26 @@
       "contractGroupId": "524edcYDs34MG2ArVDapjBBtWeLKxr4qTCK8uGV5a182",
       "status": "registered",
       "sizeBytes": 16952,
-      "schemaHash": "637a2072c08b3aa8ccaa18f4b6313e560001037801e6dea28397789ee69eb2af",
+      "schemaHash": "9ad5068b310a3f57bd135dd1e4f4b41cdf7dba5dbc74a809fbe0ff24dc405f39",
       "balanceBefore": "428480563660",
       "deployedAt": "2026-10-01T17:50:01.273Z",
       "costCredits": "43636280570",
-      "costDash": 0.4363628057
+      "costDash": 0.4363628057,
+      "updates": [
+        {
+          "version": 2,
+          "identityNonce": "2",
+          "sizeBytes": 17704,
+          "schemaHash": "9ad5068b310a3f57bd135dd1e4f4b41cdf7dba5dbc74a809fbe0ff24dc405f39",
+          "previousSchemaHash": "637a2072c08b3aa8ccaa18f4b6313e560001037801e6dea28397789ee69eb2af",
+          "balanceBefore": "245025225730",
+          "status": "updated",
+          "costCredits": "46042378760",
+          "costDash": 0.4604237876,
+          "updatedAt": "2026-10-05T05:41:40.616Z"
+        }
+      ],
+      "version": 2
     },
     "forgeCommunity": {
       "contractId": "6fVegRiRdQtLitWjSugTjYcV8CWnAMv6QxH5r8ezTRur",
@@ -52,11 +82,26 @@
       "contractGroupId": "524edcYDs34MG2ArVDapjBBtWeLKxr4qTCK8uGV5a182",
       "status": "registered",
       "sizeBytes": 17001,
-      "schemaHash": "92a5e36268550f2e8025b4477fb921f0369e2faf471acfc64f478e3391cae533",
+      "schemaHash": "99ce7a959375c955b43b7c7ac4a84ddc83190e7dfbe5f3226091ff1756b1a3c4",
       "balanceBefore": "384844283090",
       "deployedAt": "2026-10-01T17:50:03.661Z",
       "costCredits": "57689287470",
-      "costDash": 0.5768928747
+      "costDash": 0.5768928747,
+      "updates": [
+        {
+          "version": 2,
+          "identityNonce": "2",
+          "sizeBytes": 17584,
+          "schemaHash": "99ce7a959375c955b43b7c7ac4a84ddc83190e7dfbe5f3226091ff1756b1a3c4",
+          "previousSchemaHash": "92a5e36268550f2e8025b4477fb921f0369e2faf471acfc64f478e3391cae533",
+          "balanceBefore": "198982846970",
+          "status": "updated",
+          "costCredits": "57028714220",
+          "costDash": 0.5702871422,
+          "updatedAt": "2026-10-05T05:41:43.018Z"
+        }
+      ],
+      "version": 2
     },
     "contractGroupId": "524edcYDs34MG2ArVDapjBBtWeLKxr4qTCK8uGV5a182",
     "contractGroup": {

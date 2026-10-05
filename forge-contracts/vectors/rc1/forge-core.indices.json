@@ -1,0 +1,28 @@
+[
+ {
+  "item": "U1",
+  "name": "mirrors of one pack, one per writer",
+  "type": "packMirror",
+  "index": "byHash",
+  "expect": "present",
+  "properties": [
+   "repoId",
+   "packHash",
+   "$ownerId"
+  ],
+  "has": {
+   "unique": true
+  }
+ },
+ {
+  "item": "U1",
+  "name": "what one mirror recorded",
+  "type": "packMirror",
+  "index": "byOwner",
+  "expect": "present",
+  "properties": [
+   "$ownerId",
+   "$createdAt"
+  ]
+ }
+]
