@@ -69,7 +69,7 @@ impl ReindexQueue {
     }
 }
 
-/// How long a repository's name and visibility are cached.
+/// How long a repository's name and visibility, and an identity's DPNS label, are cached.
 const REPO_TTL: Duration = Duration::from_secs(3600);
 
 /// Builds the follow index and runs the pollers.
@@ -88,8 +88,38 @@ pub struct Indexer {
     pub limits: Limits,
     /// The forge-web origin, for links.
     pub web_url: String,
-    repos: Mutex<HashMap<String, (Option<RepoInfo>, Instant)>>,
-    names: Mutex<HashMap<String, (Option<String>, Instant)>>,
+    repos: TtlCache<Option<RepoInfo>>,
+    names: TtlCache<Option<String>>,
+}
+
+/// A small read cache: entries live [`REPO_TTL`], and the whole cache is dropped past 20,000.
+struct TtlCache<V>(Mutex<HashMap<String, (V, Instant)>>);
+
+impl<V: Clone> TtlCache<V> {
+    fn new() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, (V, Instant)>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, key: &str) -> Option<V> {
+        self.lock()
+            .get(key)
+            .filter(|(_, at)| at.elapsed() < REPO_TTL)
+            .map(|(v, _)| v.clone())
+    }
+
+    fn put(&self, key: &str, v: V) {
+        let mut cache = self.lock();
+        if cache.len() > 20_000 {
+            cache.clear();
+        }
+        cache.insert(key.to_string(), (v, Instant::now()));
+    }
 }
 
 fn repo_url(web: &str, r: &RepoInfo) -> String {
@@ -119,56 +149,30 @@ impl Indexer {
             mentions,
             limits,
             web_url,
-            repos: Mutex::new(HashMap::new()),
-            names: Mutex::new(HashMap::new()),
+            repos: TtlCache::new(),
+            names: TtlCache::new(),
         }
     }
 
     /// A repository's name and visibility (cached).
     pub async fn repo(&self, id: &str) -> Result<Option<RepoInfo>> {
-        if let Some((r, at)) = self
-            .repos
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-        {
-            if at.elapsed() < REPO_TTL {
-                return Ok(r.clone());
-            }
+        if let Some(r) = self.repos.get(id) {
+            return Ok(r);
         }
         let r = self.chain.repo(id).await?;
-        let mut cache = self
-            .repos
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cache.len() > 20_000 {
-            cache.clear();
-        }
-        cache.insert(id.to_string(), (r.clone(), Instant::now()));
+        self.repos.put(id, r.clone());
         Ok(r)
     }
 
     /// An identity as a notice names it: its DPNS label (cached), else a short id.
     async fn name(&self, id: &str) -> String {
-        let cached = self
-            .names
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .filter(|(_, at)| at.elapsed() < REPO_TTL)
-            .map(|(n, _)| n.clone());
-        if let Some(label) = cached {
-            return label.unwrap_or_else(|| short(id));
-        }
-        let label = self.chain.dpns_label(id).await.unwrap_or(None);
-        let mut cache = self
-            .names
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cache.len() > 20_000 {
-            cache.clear();
-        }
-        cache.insert(id.to_string(), (label.clone(), Instant::now()));
+        let label = if let Some(label) = self.names.get(id) {
+            label
+        } else {
+            let label = self.chain.dpns_label(id).await.unwrap_or(None);
+            self.names.put(id, label.clone());
+            label
+        };
         label.unwrap_or_else(|| short(id))
     }
 
