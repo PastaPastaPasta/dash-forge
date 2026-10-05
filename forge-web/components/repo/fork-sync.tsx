@@ -29,7 +29,7 @@ import { spendAction } from '@/lib/spend-toast'
 import { ARCHIVED_REASON, formatBytes, plural, type RepoHome } from '@/lib/view'
 import { historyWalker } from '@/lib/view/pull-diff'
 import { syncAncestry, SYNC_COUNT_CAP } from '@/lib/view/fork-sync'
-import { abbreviate } from '@/lib/utils'
+import { shortId } from '@/lib/utils'
 import { useAsync } from '@/hooks/use-async'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import { useSdk } from '@/hooks/use-sdk'
@@ -44,7 +44,7 @@ import { Spinner } from '@/components/ui/states'
 
 /** `owner/name:branch`, as GitHub names the parent's branch. */
 function parentLabel(parent: RepoRef, branch: string): string {
-  return `${abbreviate(parent.ownerId)}/${parent.name}:${branch}`
+  return `${shortId(parent.ownerId)}/${parent.name}:${branch}`
 }
 
 /** "N commits", or "more than 1,000 commits" past the count's cap. */

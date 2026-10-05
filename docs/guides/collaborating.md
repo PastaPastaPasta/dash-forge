@@ -301,6 +301,14 @@ dg search repos  forge                       # name prefix; or topic:rust, owner
 
 A pull request is a `patch` document in the **base** repository. It points at the commit you want merged and at the repository that holds that commit (`sourceRepoId`): the base itself, or a fork. The code itself lives in that repository, not in the PR.
 
+### Pushing branches
+
+`git push` to `dash://` works as it does with any git server, with three differences worth knowing:
+
+- **Rewriting a branch.** After a rebase or an amend, push with `git push --force-with-lease`. It overwrites the branch only if it still points where you last fetched it when the push starts, so you don't drop commits someone pushed since. If the branch has moved, the push is rejected as `stale info`: fetch, look, then push again. If someone else's push lands while yours is being written, neither replaces the other: git reports yours as rejected and the branch shows both until one of you pushes again. `git push --force` overwrites without that check.
+- **No atomic pushes.** Each branch and tag is a separate Platform write, so `git push --atomic` is refused: some refs could land while another fails. Push without it. git reports each ref, and you can push a failed one again.
+- **Names git cannot hold side by side.** A new branch or tag is refused when a ref already uses its name as a folder or as a file (`feature` and `feature/x`), or differs from it only in letter case (`Fix` and `fix`, which are the same file on macOS and Windows). The web's **New branch** refuses the same names.
+
 ### The flow
 
 **1. Have a repository you can push to.** If you are a writer on the base repository, push a branch to it directly and skip to step 3. Otherwise, fork it:

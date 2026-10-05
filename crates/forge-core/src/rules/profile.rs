@@ -103,7 +103,7 @@ pub struct ProfileCheck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AvatarSpec {
-    /// No `avatarConfig`: the initial on a colour of the identity's own.
+    /// No `avatarConfig`: the identicon of the identity id.
     Default,
     /// `identicon` or `identicon:<seed>`: a pattern drawn from the seed (the identity id by
     /// default).

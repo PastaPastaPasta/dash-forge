@@ -279,16 +279,45 @@ pub fn wake_subscription(repo_id: &str) -> WebhookSub {
     }
 }
 
+/// The URL that marks a watch-mode subscription ([`watch_subscription`]).
+const WATCH_URL: &str = "forge-relay:watch";
+
+/// A subscription that only makes the relay poll `repo_id` for `events` (empty = all), for its
+/// sinks and embedders ([`crate::sinks`]), with no `webhook` document. Like a wake-up, it is
+/// never delivered as a webhook ([`WebhookSub::is_internal`]). `since` is when the repo joined
+/// the watch set (0 at startup): a repo added later is read from then, not from the relay's
+/// start.
+pub fn watch_subscription(repo_id: &str, events: &[String], since: u64) -> WebhookSub {
+    WebhookSub {
+        repo_id: repo_id.to_string(),
+        hook_id: format!("watch:{repo_id}"),
+        url: WATCH_URL.to_string(),
+        events: events.to_vec(),
+        secret: SecretBytes::new(Vec::new()),
+        created_at: since,
+        document_id: None,
+    }
+}
+
 impl WebhookSub {
     /// A runner wake-up subscription ([`wake_subscription`]), not a webhook.
     pub fn is_wake(&self) -> bool {
         self.url == WAKE_URL && self.document_id.is_none()
+    }
+
+    /// A wake-up or watch subscription: it makes a repo polled and is never delivered.
+    pub fn is_internal(&self) -> bool {
+        self.document_id.is_none() && (self.url == WAKE_URL || self.url == WATCH_URL)
     }
 }
 
 /// The repo ids with at least one subscription, and the earliest `$createdAt` among each
 /// repo's hooks (0 when a static hook serves it).
 pub fn repos_of(subs: &[WebhookSub]) -> BTreeMap<String, u64> {
+    earliest(subs)
+}
+
+fn earliest<'a>(subs: impl IntoIterator<Item = &'a WebhookSub>) -> BTreeMap<String, u64> {
     let mut out: BTreeMap<String, u64> = BTreeMap::new();
     for s in subs {
         out.entry(s.repo_id.clone())
@@ -296,6 +325,13 @@ pub fn repos_of(subs: &[WebhookSub]) -> BTreeMap<String, u64> {
             .or_insert(s.created_at);
     }
     out
+}
+
+/// The repos the operator chose (a subscription from the config or an embedder: no `webhook`
+/// document), each with its earliest `created_at`, as [`repos_of`]. A repo served only for
+/// `webhook` documents is left out: anyone can create a repo and point a hook at the relay.
+pub fn chosen_repos(subs: &[WebhookSub]) -> BTreeMap<String, u64> {
+    earliest(subs.iter().filter(|s| s.document_id.is_none()))
 }
 
 #[cfg(test)]
@@ -321,6 +357,31 @@ mod tests {
             secret: vec![0; 64],
             disabled,
         }
+    }
+
+    #[test]
+    fn chosen_repos_leave_out_repos_served_only_for_webhook_documents() {
+        let mut hook = watch_subscription("HOOKED", &[], 7);
+        hook.document_id = Some("doc".into());
+        let mut both = hook.clone();
+        both.repo_id = "BOTH".into();
+        let subs = vec![
+            hook,
+            both,
+            watch_subscription("BOTH", &[], 50),
+            wake_subscription("WAKE"),
+            watch_subscription("WATCHED", &[], 30),
+        ];
+        let got = chosen_repos(&subs);
+        assert_eq!(
+            got,
+            BTreeMap::from([
+                ("BOTH".to_string(), 50),
+                ("WAKE".to_string(), 0),
+                ("WATCHED".to_string(), 30),
+            ])
+        );
+        assert_eq!(repos_of(&subs).get("BOTH"), Some(&7));
     }
 
     #[test]

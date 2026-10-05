@@ -1388,9 +1388,9 @@ async fn view(
                 print_conversations(printed_conv.as_ref().unwrap_or(&conv));
             } else if !comments.is_empty() {
                 println!(
-                    "\n{} comment(s) in {} thread(s) ({unresolved} unresolved) — `--comments` shows them",
-                    comments.len(),
-                    conv.threads.len() + conv.general.len()
+                    "\n{} in {} ({unresolved} unresolved) — `--comments` shows them",
+                    crate::fmt::plural(comments.len(), "comment"),
+                    crate::fmt::plural(conv.threads.len() + conv.general.len(), "thread")
                 );
             }
             if hidden_comments + hidden_reviews > 0 {
@@ -1707,7 +1707,8 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     };
     if !ctx.json && omitted > 0 {
         eprintln!(
-            "note: the description closes {omitted} more issue(s) than a merge closes ({LINKED_ISSUES_MAX}); close them from their pages"
+            "note: the description closes {} more than a merge closes ({LINKED_ISSUES_MAX}); close them from their pages",
+            crate::fmt::plural(omitted, "issue")
         );
     }
     if !ctx.json && imported {
@@ -2461,9 +2462,9 @@ fn policy_refusal(
         )
     } else {
         format!(
-            "{} of {} required approval(s){}",
+            "{} of {}{}",
             status.have,
-            status.need,
+            crate::fmt::plural(status.need, "required approval"),
             if policy.approver_role == 1 {
                 " from maintainers"
             } else {
@@ -2494,9 +2495,9 @@ fn policy_refusal(
         };
         u.fix("a maintainer can merge anyway with `--override-policy` (recorded on the PR)")
     };
-    Some(
-        u.note("the policy is a client rule every Forge client applies; consensus does not enforce it. Nothing was pushed and no merge event was posted"),
-    )
+    Some(u.note(
+        "nothing was pushed and no merge event was posted. Forge apps enforce the branch policy, not Platform",
+    ))
 }
 
 /// The PR's standing against a read policy: its approvals status and its required checks.
@@ -3983,7 +3984,7 @@ pub(crate) mod tests {
         };
         // No override: refused (a maintainer too; QW-001).
         let e = judge_policy(unmet(), false, None, "o/r", 7).err().unwrap();
-        assert!(format!("{e:#}").contains("0 of 1 required approval(s) from maintainers"));
+        assert!(format!("{e:#}").contains("0 of 1 required approval from maintainers"));
         // The override bypasses the approvals, and names them for the record.
         let r = judge_policy(unmet(), true, None, "o/r", 7).unwrap();
         assert_eq!(
@@ -4168,11 +4169,14 @@ pub(crate) mod tests {
         assert_eq!((u.code, u.exit_code()), ("E804", 8));
         let text = u.to_json().to_string();
         assert!(
-            text.contains("1 of 2 required approval(s) from maintainers"),
+            text.contains("1 of 2 required approvals from maintainers"),
             "{text}"
         );
         assert!(text.contains("--override-policy"), "{text}");
-        assert!(text.contains("consensus does not enforce it"), "{text}");
+        assert!(
+            text.contains("Forge apps enforce the branch policy"),
+            "{text}"
+        );
         assert!(policy_refusal(&policy(2, false, 0), &status(2, 2), None, "o/r", 7).is_none());
     }
 
@@ -4406,7 +4410,7 @@ pub(crate) mod tests {
         };
         let u = policy_refusal(&policy, &status, None, "o/r", 4).unwrap();
         let u = name_every_unmet_rule(u, &policy, &status, Some(&met), "o/r", 4);
-        assert_eq!(u.cause.as_deref(), Some("0 of 1 required approval(s)"));
+        assert_eq!(u.cause.as_deref(), Some("0 of 1 required approval"));
     }
 
     #[test]

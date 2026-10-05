@@ -55,9 +55,9 @@ pub async fn repack(
     let live_bytes: u64 = space.iter().map(|m| m.size_bytes).sum();
     if !ctx.json {
         println!(
-            "Repack {}: {} git pack(s), {live_bytes} bytes",
+            "Repack {}: {}, {live_bytes} bytes",
             handle.display(),
-            space.len()
+            crate::fmt::plural(space.len(), "git pack")
         );
         println!(
             "  writes one consolidated pack + manifest; deletes nothing (Platform packs are \
@@ -396,19 +396,19 @@ fn print_history_plan(
             .versions
             .as_ref()
             .map_or(0, |v| v.lists.values().map(|l| l.versions.len()).sum());
-        format!(", {n} path version(s)")
+        format!(", {}", crate::fmt::plural(n, "path version"))
     } else {
         ", the column index only".to_string()
     };
     let manifests = h.cost().manifests();
     println!(
-        "History index of {}: {} path(s), {} commit(s){versions}, {} bytes ({}) to {label} + \
-         {manifests} manifest(s)   {price}",
+        "History index of {}: {}, {}{versions}, {} bytes ({}) to {label} + {}   {price}",
         handle.display(),
-        ix.paths.len(),
-        ix.commit_count,
+        crate::fmt::plural(ix.paths.len(), "path"),
+        crate::fmt::plural(ix.commit_count, "commit"),
         h.plain_len(),
         if h.is_delta() { "delta" } else { "full" },
+        crate::fmt::plural(manifests, "manifest"),
     );
 }
 
@@ -439,10 +439,10 @@ fn print_reindex_plan(
 ) {
     let missing_bytes: u64 = plan.missing.iter().map(|p| p.size_bytes).sum();
     println!(
-        "Reindex {}: {} pack(s) without a browse index ({missing_bytes} bytes, read not \
+        "Reindex {}: {} without a browse index ({missing_bytes} bytes, read not \
          re-uploaded)",
         handle.display(),
-        plan.missing.len()
+        crate::fmt::plural(plan.missing.len(), "pack")
     );
     println!(
         "  uploads one index fragment over {} objects{} to {label} + its manifest   {price}",
@@ -602,10 +602,10 @@ fn print_reindex(
     match &report.manifest_id {
         Some(id) => {
             println!(
-                "Published the browse index of {}: {} object(s) over {} pack(s).",
+                "Published the browse index of {}: {} over {}.",
                 handle.display(),
-                report.index_objects,
-                report.indexed.len()
+                crate::fmt::plural(report.index_objects, "object"),
+                crate::fmt::plural(report.indexed.len(), "pack")
             );
             println!("  index manifest:  {id}");
         }
@@ -618,10 +618,10 @@ fn print_reindex(
     }
     if let Some(h) = history {
         println!(
-            "Published the history index of {}: {} path(s), {} commit(s){}.",
+            "Published the history index of {}: {}, {}{}.",
             handle.display(),
-            h.rows,
-            h.commit_count,
+            crate::fmt::plural(h.rows, "path"),
+            crate::fmt::plural(h.commit_count, "commit"),
             if h.delta { " (delta)" } else { "" }
         );
         for (what, id) in [
@@ -681,15 +681,16 @@ fn emit_repack_report(
             );
             println!("  new pack:        {}", hex::encode(report.new_pack_hash));
             println!(
-                "  supersedes:      {} pack(s), {} bytes (kept; nothing deleted)",
-                report.superseded_count, report.superseded_bytes
+                "  supersedes:      {}, {} bytes (kept; nothing deleted)",
+                crate::fmt::plural(report.superseded_count, "pack"),
+                report.superseded_bytes
             );
             if report.remaining > 0 {
                 println!(
-                    "  not named:       {} older pack(s): a manifest names at most {} packs, so \
+                    "  not named:       {}: a manifest names at most {} packs, so \
                      they stay live and keep the copies they have (the new pack holds their \
                      objects too)",
-                    report.remaining,
+                    crate::fmt::plural(report.remaining, "older pack"),
                     forge_core::repo::MAX_SUPERSEDES
                 );
             }
@@ -782,8 +783,8 @@ pub async fn reseed(
         }),
         || {
             println!(
-                "Reseeded {} pack(s) of {} to {target_label}.",
-                report.reseeded.len(),
+                "Reseeded {} of {} to {target_label}.",
+                crate::fmt::plural(report.reseeded.len(), "pack"),
                 handle.display()
             );
             for h in &report.unreadable {
@@ -861,8 +862,8 @@ pub async fn reseed_from_local(
     emit_local_reseed(ctx, &handle, &git_dir, &label, &report);
     if !report.missing.is_empty() {
         bail!(
-            "{} pack(s) could not be restored from this clone",
-            report.missing.len()
+            "{} could not be restored from this clone",
+            crate::fmt::plural(report.missing.len(), "pack")
         );
     }
     Ok(())
@@ -935,8 +936,8 @@ fn emit_local_reseed(
         }),
         || {
             println!(
-                "Restored {} pack(s) of {} from {} to {label} ({} still healthy).",
-                report.restored.len(),
+                "Restored {} of {} from {} to {label} ({} still healthy).",
+                crate::fmt::plural(report.restored.len(), "pack"),
                 handle.display(),
                 git_dir.display(),
                 report.healthy.len()
