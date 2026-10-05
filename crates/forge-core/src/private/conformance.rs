@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 
 use super::doc::{self, AnchorRef, DocHeader, OpenContext, Opened};
 use super::epoch::{resolve_epochs, ConfigRow, MemberRow, WrapRow};
-use super::keys::{sha256, EpochKey, EpochKeys};
+use super::keys::{sha256, EpochKey, EpochKeys, ObjKeys};
+use super::named::{self, LetterOpened};
 use super::pack::{self, PackHeader};
 use super::tlv::Fields;
 use super::{release, wrap, PrivateError};
@@ -248,6 +249,123 @@ impl StoredDocIn {
             serde_json::from_value(Value::Object(m.into_iter().collect())).expect("doc header");
         (header, hex::decode(enc).unwrap())
     }
+}
+
+/// A `mixed_doc_seal` vector: a members-only (v0x03) seal under the lane's epoch key.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MixedSealIn {
+    repo_id: String,
+    key: String,
+    doc: DocHeader,
+    fields: Fields,
+    nonce: String,
+}
+
+/// A party of a letter vector: an identity and its ENCRYPTION key pair.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PartyIn {
+    identity_id: String,
+    #[serde(rename = "priv")]
+    private: String,
+    #[serde(rename = "pub")]
+    public: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key_id: Option<u32>,
+}
+
+impl PartyIn {
+    fn key(&self) -> crate::envelope::PrivateKey {
+        crate::envelope::PrivateKey::from_hex(&self.private).unwrap()
+    }
+    fn recipient(&self) -> named::Recipient {
+        named::Recipient {
+            identity_id: h32(&self.identity_id),
+            public_key: hex::decode(&self.public).unwrap().try_into().unwrap(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NamedSealIn {
+    repo_id: String,
+    doc: DocHeader,
+    fields: Fields,
+    sender: PartyIn,
+    recipients: Vec<PartyIn>,
+    k_obj: String,
+    nonce: String,
+    ivs: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OwnerKeyIn {
+    id: u32,
+    purpose: u8,
+    key_type: u8,
+    data: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReaderIn {
+    identity_id: String,
+    keys: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NamedOpenIn {
+    repo_id: String,
+    doc: StoredDocIn,
+    owner_keys: Vec<OwnerKeyIn>,
+    readers: Vec<ReaderIn>,
+}
+
+fn owner_keys(keys: &[OwnerKeyIn]) -> Vec<named::OwnerKey> {
+    keys.iter()
+        .map(|k| named::OwnerKey {
+            id: k.id,
+            purpose: k.purpose,
+            key_type: k.key_type,
+            data: hex::decode(&k.data).unwrap(),
+        })
+        .collect()
+}
+
+fn letter_json(o: &LetterOpened) -> Value {
+    match o {
+        LetterOpened::Readable(l) => json!({
+            "status": "readable",
+            "fields": l.fields,
+            "recipients": l.recipients.iter().map(hex::encode).collect::<Vec<_>>(),
+            "slot": l.slot,
+        }),
+        LetterOpened::Unreadable(r) => json!({ "status": "unreadable", "reason": r }),
+        LetterOpened::Malformed => json!({ "status": "malformed" }),
+    }
+}
+
+/// Open `enc` as each reader in turn.
+fn open_letters(
+    repo_id: &[u8; 32],
+    header: &DocHeader,
+    enc: &[u8],
+    owner: &[named::OwnerKey],
+    readers: impl Iterator<Item = ([u8; 32], Vec<crate::envelope::PrivateKey>)>,
+) -> Vec<Value> {
+    readers
+        .map(|(id, keys)| {
+            let reader = named::Reader {
+                identity_id: id,
+                keys: &keys,
+            };
+            letter_json(&named::open(repo_id, header, enc, owner, &reader))
+        })
+        .collect()
 }
 
 #[derive(Deserialize, Serialize)]
@@ -714,7 +832,132 @@ fn run(v: &Vector) -> Value {
                 Err(e) => panic!("vector `{}`: {e}", v.name),
             }
         }
-        "private_doc_open" => {
+        "mixed_doc_seal" => {
+            let i: MixedSealIn = input(v);
+            let keys = EpochKeys::derive(&h32(&i.repo_id), i.doc.epoch, &key(&i.key));
+            let nonce = nonce12(&i.nonce);
+            match doc::seal_members_with_nonce(&keys, &i.doc, &i.fields, nonce) {
+                Ok(enc) => {
+                    let ad = i.doc.ad(&keys, doc::V3).unwrap();
+                    let k_obj = keys.obj_key(&nonce, &ad);
+                    let obj = ObjKeys::derive(keys.repo_id(), &k_obj);
+                    let max = i.doc.kind.max_enc() - doc::MIN_V3;
+                    let tlv = doc::padded(i.doc.kind, &super::tlv::encode(&i.fields), max);
+                    json!({
+                        "ad": hex::encode(&ad),
+                        "kObj": hex::encode(*k_obj),
+                        "commit": hex::encode(obj.commit()),
+                        "tlv": hex::encode(&*tlv),
+                        "enc": hex::encode(enc),
+                    })
+                }
+                Err(e) => error_json(&e),
+            }
+        }
+        "named_envelope" => {
+            let i: NamedSealIn = input(v);
+            let repo_id = h32(&i.repo_id);
+            let sender = i.sender.key();
+            let recipients: Vec<named::Recipient> =
+                i.recipients.iter().map(PartyIn::recipient).collect();
+            let k_obj = h32(&i.k_obj);
+            let ivs: Vec<[u8; 16]> = i
+                .ivs
+                .iter()
+                .map(|x| hex::decode(x).unwrap().try_into().unwrap())
+                .collect();
+            let enc = named::seal_with(
+                &repo_id,
+                &sender,
+                i.sender.key_id.unwrap(),
+                &i.doc,
+                &i.fields,
+                &recipients,
+                &k_obj,
+                nonce12(&i.nonce),
+                &ivs,
+            )
+            .unwrap();
+            let n = recipients.len();
+            let obj = ObjKeys::derive(&repo_id, &k_obj);
+            let head = &enc[1..named::framing(n) - 28];
+            let mut ad = i.doc.ad_without_keys(&repo_id, doc::V4).unwrap();
+            ad.extend_from_slice(&sha256(head));
+            let mut body = super::tlv::encode(&i.fields).to_vec();
+            super::tlv::push_recipients(
+                &mut body,
+                &recipients.iter().map(|r| r.identity_id).collect::<Vec<_>>(),
+            );
+            let tlv = doc::padded(i.doc.kind, &body, named::max_tlv(i.doc.kind, n));
+            let sender_secret = secret(&i.sender.private);
+            // the SDK's own decrypt opens every slot of the letter to 0x02 ‖ KCV_obj ‖ K_obj: the
+            // slots are still the encryptedFor scheme (drift check, both directions of the ECDH)
+            let carrier = wrap_contract();
+            for (r, slot) in i.recipients.iter().zip(head[37..].chunks(named::SLOT_LEN)) {
+                let pt = crate::platform::wrap::sdk_decrypt_for_vectors(
+                    &carrier,
+                    slot,
+                    &secret(&r.private),
+                    &hex::decode(&i.sender.public).unwrap(),
+                )
+                .expect("the SDK opens a letter slot");
+                assert_eq!(pt[0], named::SLOT_VERSION, "vector `{}`", v.name);
+                assert_eq!(&pt[1..15], &obj.commit()[..14], "vector `{}`", v.name);
+                assert_eq!(&pt[15..], &k_obj, "vector `{}`", v.name);
+            }
+            let owner = vec![named::OwnerKey {
+                id: i.sender.key_id.unwrap(),
+                purpose: named::PURPOSE_ENCRYPTION,
+                key_type: named::KEY_TYPE_ECDSA_SECP256K1,
+                data: hex::decode(&i.sender.public).unwrap(),
+            }];
+            let opened = open_letters(
+                &repo_id,
+                &i.doc,
+                &enc,
+                &owner,
+                i.recipients
+                    .iter()
+                    .map(|r| (h32(&r.identity_id), vec![r.key()])),
+            );
+            json!({
+                "shared": i.recipients.iter().map(|r| hex::encode(
+                    crate::platform::wrap::shared_key_for_vectors(
+                        &sender_secret,
+                        &hex::decode(&r.public).unwrap(),
+                    )
+                )).collect::<Vec<_>>(),
+                "commit": hex::encode(obj.commit()),
+                "kcv": hex::encode(&obj.commit()[..14]),
+                "headerSha256": hex::encode(sha256(head)),
+                "ad": hex::encode(ad),
+                "tlv": hex::encode(&*tlv),
+                "enc": hex::encode(&enc),
+                "opened": opened,
+            })
+        }
+        "named_envelope_open" => {
+            let i: NamedOpenIn = input(v);
+            let repo_id = h32(&i.repo_id);
+            let (header, enc) = i.doc.split();
+            let owner = owner_keys(&i.owner_keys);
+            let results = open_letters(
+                &repo_id,
+                &header,
+                &enc,
+                &owner,
+                i.readers.iter().map(|r| {
+                    let keys = r
+                        .keys
+                        .iter()
+                        .map(|k| crate::envelope::PrivateKey::from_hex(k).unwrap())
+                        .collect();
+                    (h32(&r.identity_id), keys)
+                }),
+            );
+            json!({ "results": results })
+        }
+        "private_doc_open" | "mixed_doc_open" => {
             let i: DocOpenIn = input(v);
             let repo_id = h32(&i.repo_id);
             let (header, enc) = i.doc.split();
@@ -1061,6 +1304,14 @@ fn a_reseal_edit_is_the_create_transform() {
     assert!(checked >= 15, "re-sealed {checked} vectors");
 }
 
+/// The vector files this harness runs: the private-repository cases and the mixed-visibility
+/// envelopes (members-only content, specific-people letters).
+fn is_crypto_vector(file_name: &str) -> bool {
+    ["private_", "mixed_doc_", "named_envelope"]
+        .iter()
+        .any(|p| file_name.starts_with(p))
+}
+
 #[test]
 fn private_conformance_vectors() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../forge-contracts/vectors");
@@ -1070,7 +1321,7 @@ fn private_conformance_vectors() {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("private_"))
+                .is_some_and(is_crypto_vector)
                 && p.extension().is_some_and(|x| x == "json")
         })
         .collect();

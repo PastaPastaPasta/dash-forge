@@ -1804,6 +1804,464 @@ def release_fold_vectors():
       out({"v1": rid("a")}, [], 1, hidden=2))
 
 
+# --- mixed visibility: members-only content (enc v0x03) and specific-people letters (v0x04) -----
+#
+# Members (v0x03, private-repos.md §4.1): a per-object key bound to the nonce and the AD, a key
+# commitment, and 64-byte padding for discussion types. Specific people (v0x04): a fresh K_obj
+# wrapped to each recipient's ENCRYPTION key by ECDH (the encryptedFor bytes, slot version 0x02),
+# the sender in slot 0, the recipients' identity ids in TLV tag 25.
+
+V3, V4 = 0x03, 0x04
+MIN_V3 = 1 + 12 + 32 + 16
+MAX_ENC = {"issue": 5120, "patch": 5120, "comment": 5120, "review": 5120, "event": 5120, "refUpdate": 1536,
+           "protectedRefUpdate": 1536, "config": 1536}
+PADDED = ("issue", "patch", "comment", "review")
+DOC_PAD_BUCKET = 64
+RECIPIENT_TAG = 25
+SLOT_VERSION = 0x02
+PURPOSE_ENCRYPTION, PURPOSE_AUTHENTICATION = 1, 0
+KEY_TYPE_SECP256K1, KEY_TYPE_BLS = 0, 1
+
+
+def k_obj_members(K, e, nonce, A):
+    """K_obj = HKDF-Expand(PRK_e, "dash-forge/v2/obj" ‖ 0x00 ‖ u32(e) ‖ nonce ‖ SHA-256(AD), 32)."""
+    return subkey(K, b"obj", e, nonce + sha256(A))
+
+
+def obj_keys(k_obj, repo=repoId):
+    """(K_doc,obj, COMMIT_obj) of a per-object key: PRK_obj = HKDF-Extract(repoId, K_obj)."""
+    P = hmac.new(repo, k_obj, hashlib.sha256).digest()
+    return expand(P, b"dash-forge/v2/obj-doc\x00"), expand(P, b"dash-forge/v2/obj-commit\x00")
+
+
+def doc_pad(n, room):
+    """The tag-64 record that brings a TLV of n bytes to a multiple of 64 within `room`, or b""."""
+    if n + 3 > room:
+        return b""
+    return rec(64, bytes(min((-(n + 3)) % DOC_PAD_BUCKET, room - 3 - n)))
+
+
+def members_tlv(doc_type, records):
+    room = MAX_ENC[doc_type] - MIN_V3
+    return records + (doc_pad(len(records), room) if doc_type in PADDED else b"")
+
+
+def seal_members(doc, K, records, nonce=NONCE, pt=None):
+    """(AD, K_obj, COMMIT_obj, TLV, enc) of a members document; `pt` overrides the padded TLV."""
+    A = ad(doc, K, V3)
+    pt = members_tlv(doc["type"], records) if pt is None else pt
+    ko = k_obj_members(K, doc["epoch"], nonce, A)
+    kd, C = obj_keys(ko)
+    return A, ko, C, pt, bytes([V3]) + nonce + C + AESGCM(kd).encrypt(nonce, pt, A + C)
+
+
+def open_members(doc, K, enc):
+    """The reference reader of a v0x03 enc (framing aside): commitment, then GCM, then the raw TLV."""
+    A = ad(doc, K, V3)
+    nonce, C, ct = enc[1:13], enc[13:45], enc[45:]
+    kd, C2 = obj_keys(k_obj_members(K, doc["epoch"], nonce, A))
+    if C2 != C:
+        return "commitMismatch"
+    try:
+        return AESGCM(kd).decrypt(nonce, ct, A + C)
+    except Exception:
+        return "badTag"
+
+
+MDOC = dict(type="comment", vis="public", ownerId=H(ownerId), epoch=0, targetId="33" * 32)
+MBODY = "members-only: the fix is in sec/cve-1"
+MISSUE = dict(type="issue", vis="public", ownerId=H(ownerId), epoch=0, number=7)
+MREVIEW = dict(type="review", vis="public", ownerId=H(ownerId), epoch=0, patchId="44" * 32)
+MALLORY_ID = bytes([0x99]) * 32
+
+
+def private_vis(doc):
+    """`doc` as a private repository's document: `vis` absent (the readers' default)."""
+    return {k: x for k, x in doc.items() if k != "vis"}
+
+
+def long_body_text():
+    """A comment body at the v0x03 room: a long text's prefix and the forge-v2.md §6.3 trailer."""
+    full = ("Members-only post-mortem.\n\n" + "The signing service rotated its key at 03:12 and the old key stayed "
+            "cached in two regions. " * 120).encode()
+    trailer = b"<!-- forge:body sha256=" + H(sha256(full)).encode() + b" bytes=" + str(len(full)).encode() + b" -->"
+    room = MAX_ENC["comment"] - MIN_V3 - 3
+    prefix = full[:room - 2 - len(trailer)]
+    text = prefix + b"\n\n" + trailer
+    assert len(text) == room
+    return text.decode()
+
+
+def mixed_vectors():
+    seal_cases = [
+        ("v03_comment", MDOC, {"body": MBODY}, tlv((2, MBODY.encode())),
+         "a members-only comment: K_obj from PRK_0, the nonce and SHA-256(AD v0x03); COMMIT_obj after the nonce; "
+         "the TLV padded to 64 bytes with a tag-64 record (§4.1, D28)."),
+        ("v03_issue", MISSUE, ISSUE_FIELDS, ISSUE_TLV, "a members-only issue #7: title and body, padded."),
+        ("v03_review", MREVIEW, {"body": "Blocking: the token is logged."}, tlv((2, b"Blocking: the token is logged.")),
+         "a members-only review body; its verdict stays a plaintext field of the document."),
+        ("v03_inline", MDOC, {"body": "nit: rename", "path": "src/lib.rs"}, COMMENT_TLV,
+         "a members-only inline comment: path is TLV tag 10 (line, side, commitOid stay plaintext)."),
+        ("v03_long_body", MDOC, {"body": long_body_text()}, tlv((2, long_body_text().encode())),
+         "a comment at the v0x03 room (5,120 - 61 - 3 bytes of body): a long text's prefix and its §6.3 trailer; "
+         "no room is left for the padding record, so the enc is exactly 5,120 bytes."),
+        ("v03_review_empty", MREVIEW, {}, b"", "an empty members-only review is padded to one 64-byte bucket, so "
+         "its length says nothing."),
+        ("v03_event_not_padded", dict(EVENT, vis="public"), {"eventValue": "bug"}, EVENT_TLV,
+         "a members-only event value is not padded (D28: off for events and ref updates)."),
+    ]
+    for name, doc, fields, records, desc in seal_cases:
+        A, ko, C, pt, e = seal_members(doc, K0, records)
+        if name == "v03_long_body":
+            assert len(e) == 5120 and pt == records
+        vector("mixed_doc_seal", name, desc,
+               dict(repoId=H(repoId), key=H(K0), doc=doc, fields=fields, nonce=H(NONCE)),
+               dict(ad=H(A), kObj=H(ko), commit=H(C), tlv=H(pt), enc=H(e)))
+    for name, doc, fields, err, desc in [
+        ("v03_private_header_refused", private_vis(MDOC), {"body": MBODY}, "malformed",
+         "a writer never seals v0x03 for a private repository's document (v0x01 there)."),
+        ("v03_config_refused", dict(CONFIG0, vis="public"), {"defaultBranch": "refs/heads/main"}, "malformed",
+         "a config is always v0x02, members lane or not."),
+        ("v03_body_over_cap", MDOC, {"body": "b" * (MAX_ENC["comment"] - MIN_V3 - 2)}, "tooLarge",
+         "a comment body one byte over the v0x03 room (5,056 bytes) does not fit."),
+        ("v03_tag_not_for_kind", MDOC, {"body": "x", "title": "t"}, "malformed", "title is not a comment field."),
+    ]:
+        vector("mixed_doc_seal", name, desc, dict(repoId=H(repoId), key=H(K0), doc=doc, fields=fields, nonce=H(NONCE)),
+               dict(error=err))
+
+    def v(name, desc, doc, context, expected, enc, height=50):
+        d = dict(doc, enc=H(enc))
+        if "id" in d:
+            d["id"] = H(cid(d["id"]))
+        if height is not None:
+            d.setdefault("createdAtBlockHeight", height)
+        vector("mixed_doc_open", name, desc, dict(repoId=H(repoId), context=context, doc=d), expected)
+
+    _, ko, C, pt, enc = seal_members(MDOC, K0, tlv((2, MBODY.encode())))
+    assert open_members(MDOC, K0, enc) == pt
+    v("member", "a member holding K_0 opens the members-only comment.", MDOC, CTX0, readable({"body": MBODY}), enc)
+    v("outsider_placeholder", "an outsider holds no lane key: Unreadable(NoKey), which readers show as a "
+      "members-only placeholder (never not-found, never an error).", MDOC, ctx({}, {0: ("c0", 10)}),
+      unreadable("noKey"), enc)
+    v("no_lane", "a public repository without a members lane has no epoch 0: Unreadable(NoEpoch).", MDOC, ctx({}, {}),
+      unreadable("noEpoch"), enc)
+    flipped = bytearray(enc)
+    flipped[13] ^= 0x01
+    assert open_members(MDOC, K0, bytes(flipped)) == "commitMismatch"
+    v("commit_mismatch", "COMMIT_obj with one bit flipped: the reader compares it before GCM runs, so "
+      "Unreadable(CommitMismatch), never BadTag and never a silent drop.", MDOC, CTX0, unreadable("commitMismatch"),
+      bytes(flipped))
+    tampered = bytearray(enc)
+    tampered[-1] ^= 0x01
+    assert open_members(MDOC, K0, bytes(tampered)) == "badTag"
+    v("body_tampered", "the commitment matches but the GCM tag does not: Unreadable(BadTag).", MDOC, CTX0,
+      unreadable("badTag"), bytes(tampered))
+    # A non-member who learned this comment's K_obj (a reveal) re-encrypts her own text under it, with the same
+    # nonce and commitment, as her own document. Members derive K_obj from her AD, so the commitment fails.
+    forged_doc = dict(MDOC, ownerId=H(MALLORY_ID))
+    kd, _ = obj_keys(ko)
+    forged = bytes([V3]) + NONCE + C + AESGCM(kd).encrypt(NONCE, members_tlv("comment", tlv((2, b"FORGED"))),
+                                                            ad(forged_doc, K0, V3) + C)
+    assert open_members(forged_doc, K0, forged) == "commitMismatch"
+    v("forged_after_reveal_refused", "Mallory, not a member, re-encrypts her own text under a revealed K_obj, nonce "
+      "and commitment as her own comment: members derive K_obj from her AD (the key is AD-bound), get another key, "
+      "and refuse it as CommitMismatch.", forged_doc, CTX0, unreadable("commitMismatch"), forged)
+    moved = dict(MDOC, targetId="34" * 32)
+    assert open_members(moved, K0, enc) == "commitMismatch"
+    v("moved_to_other_target", "the enc copied onto another thread: another AD, another K_obj: CommitMismatch.", moved,
+      CTX0, unreadable("commitMismatch"), enc)
+    _, v1_enc = seal_doc(private_vis(MDOC), K0, tlv((2, MBODY.encode())))
+    v("v01_relabelled_refused", "a private repository's v0x01 enc, valid under K_0, on a public repository's document "
+      "is malformed: v0x01 is admitted only where vis is private.", MDOC, CTX0, MALFORMED, v1_enc)
+    relabelled = bytes([V3]) + v1_enc[1:]
+    assert len(relabelled) >= MIN_V3 and open_members(MDOC, K0, relabelled) == "commitMismatch"
+    v("v01_byte_relabelled_as_v03", "the same v0x01 bytes with enc[0] rewritten to 0x03 read as a v0x03 envelope "
+      "whose commitment is not the derived one: CommitMismatch.", MDOC, CTX0, unreadable("commitMismatch"),
+      relabelled)
+    v("v03_in_private_refused", "a v0x03 enc on a private repository's document is malformed: members-only content "
+      "exists only in public repositories.", private_vis(MDOC), CTX0, MALFORMED, enc)
+    v("v03_too_short", "a v0x03 enc under 61 bytes is malformed before any key is used.", MDOC, CTX0, MALFORMED,
+      enc[:60])
+    padded_issue = members_tlv("issue", ISSUE_TLV)
+    assert padded_issue[len(ISSUE_TLV)] == 64 and len(padded_issue) % 64 == 0
+    _, _, _, _, issue_enc = seal_members(MISSUE, K0, ISSUE_TLV)
+    v("pad_roundtrip", "the padded issue opens to its title and body: the tag-64 record is skipped like every "
+      "extension record.", MISSUE, CTX0, readable(ISSUE_FIELDS), issue_enc)
+    for name, desc, pt, exp in [
+        ("pad_mid_bucket", "a padding record of any length, even one not reaching a bucket boundary, is skipped.",
+         ISSUE_TLV + rec(64, bytes(5)), readable(ISSUE_FIELDS)),
+        ("pad_twice_refused", "two tag-64 records are a repeated extension tag: malformed.",
+         ISSUE_TLV + rec(64, b"") + rec(64, b""), MALFORMED),
+        ("pad_before_content_refused", "a padding record before the content breaks the ascending order: malformed.",
+         rec(64, b"") + ISSUE_TLV, MALFORMED),
+        ("recipient_tag_refused", "tag 25 (a letter's recipient list) is reserved outside enc v0x04: malformed.",
+         ISSUE_TLV + rec(25, bytes(32)), MALFORMED),
+        ("blind_tags_reserved", "tags 22-24 and 27 (sealed ref values, defined for later clients) stay reserved: "
+         "malformed.", ISSUE_TLV + rec(22, bytes(20)), MALFORMED),
+    ]:
+        _, _, _, _, e = seal_members(MISSUE, K0, b"", pt=pt)
+        v(name, desc, MISSUE, CTX0, exp, e)
+    late = dict(MISSUE, createdAtBlockHeight=1000 + GRACE_BLOCKS + 1)
+    v("late", "the late-content rule applies to the members lane as to a private repository: under epoch 0 after the "
+      "epoch-1 anchor + 240 by a non-member, Unreadable(Late).", late, CTX01, unreadable("late"), issue_enc)
+    v("config_anchor_public", "the lane-0 anchor of a public repository is a v0x02 config with vis public: it opens "
+      "as in a private repository.", dict(CONFIG0, vis="public", id="c0"), CTX0,
+      readable({"defaultBranch": "refs/heads/main"}), seal_doc(CONFIG0, K0, CONFIG0_TLV)[1])
+
+
+# --- specific-people letters (enc v0x04) ------------------------------------------------------------
+
+
+def named_party(name):
+    d = priv(b"dash-forge vectors: named " + name.encode())
+    return dict(name=name, id=cid("named " + name), priv=d, pub=comp(ec_mul(d, G)))
+
+
+NAMED_SENDER = named_party("alice")
+NAMED_OTHERS = [named_party(f"r{i}") for i in range(1, 16)]
+NAMED_OUTSIDER = named_party("dave")
+
+
+def named_doc(sender=NAMED_SENDER, **kw):
+    return dict(dict(type="comment", vis="public", ownerId=H(sender["id"]), epoch=0, targetId="33" * 32), **kw)
+
+
+def named_inputs(n):
+    label = b"dash-forge vectors: named n%d " % n
+    return sha256(label + b"kObj"), sha256(label + b"nonce")[:12], [sha256(label + b"iv %d" % i)[:16] for i in range(n)]
+
+
+def ecdh(d, pub_bytes):
+    x = int.from_bytes(pub_bytes[1:], "big")
+    y = pow((x * x * x + 7) % P, (P + 1) // 4, P)
+    if y % 2 != pub_bytes[0] - 2:
+        y = P - y
+    return sha256(comp(ec_mul(d, (x, y))))
+
+
+def seal_named(doc, sender, key_id, recipients, records, k_obj, nonce, ivs, slot_pt=None, slot_override=None,
+               tlv_override=None):
+    """(shared keys, COMMIT_obj, H, AD', TLV, enc) of a letter; the overrides build negative vectors."""
+    n = len(recipients)
+    kd, C = obj_keys(k_obj)
+    spt = bytes([SLOT_VERSION]) + C[:14] + k_obj if slot_pt is None else slot_pt
+    shared = [ecdh(sender["priv"], r["pub"]) for r in recipients]
+    slots = [cbc(S, iv, spt) for S, iv in zip(shared, ivs)]
+    if slot_override:
+        for i, s in slot_override.items():
+            slots[i] = s
+    head = bytes([n]) + u32(key_id) + C + b"".join(slots)
+    A = ad(doc, None, V4) + sha256(head)
+    if tlv_override is None:
+        body = records + b"".join(rec(RECIPIENT_TAG, r["id"]) for r in recipients)
+        room = MAX_ENC[doc["type"]] - (66 + 64 * n)
+        pt = body + (doc_pad(len(body), room) if doc["type"] in PADDED else b"")
+    else:
+        pt = tlv_override
+    return shared, C, head, A, pt, bytes([V4]) + head + nonce + AESGCM(kd).encrypt(nonce, pt, A)
+
+
+def cbc_open(key, data):
+    dec = Cipher(algorithms.AES(key), modes.CBC(data[:16]), backend=default_backend()).decryptor()
+    out = dec.update(data[16:]) + dec.finalize()
+    pad = out[-1] if out else 0
+    if not 1 <= pad <= 16 or out[-pad:] != bytes([pad]) * pad:
+        return None
+    return out[:-pad]
+
+
+def parse_letter_tlv(pt):
+    """(body, recipient ids) of a comment letter's TLV, or None (the strictness the vectors need)."""
+    pos, last, body, ids = 0, -1, None, []
+    while pos < len(pt):
+        if len(pt) - pos < 3:
+            return None
+        tag, ln = pt[pos], struct.unpack(">H", pt[pos + 1:pos + 3])[0]
+        val = pt[pos + 3:pos + 3 + ln]
+        if len(val) != ln or tag < last or (tag == last and tag != RECIPIENT_TAG):
+            return None
+        last, pos = tag, pos + 3 + ln
+        if tag >= 64:
+            continue
+        if tag == 2:
+            body = val.decode()
+        elif tag == RECIPIENT_TAG and ln == 32:
+            ids.append(val)
+        else:
+            return None
+    return (body, ids) if body else None
+
+
+def open_named(doc, enc, owner_keys, reader_id, reader_privs):
+    """The reference reader rule of a letter (§4.1): sender key, slot trial, commitment, GCM, recipient list."""
+    n = enc[1]
+    if enc[0] != V4 or not 1 <= n <= 16 or len(enc) < 66 + 64 * n or doc["epoch"] != 0:
+        return MALFORMED
+    kid = struct.unpack(">I", enc[2:6])[0]
+    sk = [k for k in owner_keys if k["id"] == kid]
+    if not sk or sk[0]["purpose"] != PURPOSE_ENCRYPTION or sk[0]["keyType"] != KEY_TYPE_SECP256K1:
+        return MALFORMED
+    sender_pub = bytes.fromhex(sk[0]["data"])
+    C, head = enc[6:38], enc[1:38 + 64 * n]
+    found = None
+    for d in reader_privs:
+        S = ecdh(d, sender_pub)
+        for i in range(n):
+            spt = cbc_open(S, enc[38 + 64 * i:38 + 64 * (i + 1)])
+            if spt is None or len(spt) != 47 or spt[0] != SLOT_VERSION or spt[1:15] != C[:14]:
+                continue
+            if obj_keys(spt[15:])[1] == C:
+                found = (i, spt[15:])
+                break
+        if found:
+            break
+    if found is None:
+        return unreadable("notARecipient")
+    slot, k_obj = found
+    try:
+        pt = AESGCM(obj_keys(k_obj)[0]).decrypt(enc[38 + 64 * n:50 + 64 * n], enc[50 + 64 * n:],
+                                                ad(doc, None, V4) + sha256(head))
+    except Exception:
+        return unreadable("badTag")
+    parsed = parse_letter_tlv(pt)
+    if parsed is None or len(parsed[1]) != n or parsed[1][slot] != reader_id:
+        return MALFORMED
+    return dict(status="readable", fields={"body": parsed[0]}, recipients=[H(r) for r in parsed[1]], slot=slot)
+
+
+def owner_key(party, key_id=4, purpose=PURPOSE_ENCRYPTION, key_type=KEY_TYPE_SECP256K1):
+    return dict(id=key_id, purpose=purpose, keyType=key_type, data=H(party["pub"]))
+
+
+def party_json(p):
+    return dict(identityId=H(p["id"]), priv=p["priv"].to_bytes(32, "big").hex(), pub=H(p["pub"]))
+
+
+def reader_json(p, keys=None):
+    return dict(identityId=H(p["id"]), keys=[(p["priv"] if k is None else k).to_bytes(32, "big").hex()
+                                             for k in (keys or [None])])
+
+
+NAMED_N3 = [NAMED_SENDER] + NAMED_OTHERS[:2]
+
+
+def named_vectors():
+    for n in (1, 3, 16):
+        recipients = [NAMED_SENDER] + NAMED_OTHERS[:n - 1]
+        k_obj, nonce, ivs = named_inputs(n)
+        body = f"A letter to {n} people (the sender included): the embargo ends on Friday."
+        doc = named_doc()
+        shared, C, head, A, pt, enc = seal_named(doc, NAMED_SENDER, 4, recipients, tlv((2, body.encode())), k_obj,
+                                                 nonce, ivs)
+        assert len(enc) == 66 + 64 * n + len(pt) and (len(pt) % 64 == 0)
+        okeys = [owner_key(NAMED_SENDER)]
+        opened = []
+        for p in recipients:
+            r = open_named(doc, enc, okeys, p["id"], [p["priv"]])
+            assert r["status"] == "readable", (n, p["name"], r)
+            opened.append(r)
+        assert open_named(doc, enc, okeys, NAMED_OUTSIDER["id"], [NAMED_OUTSIDER["priv"]]) == unreadable("notARecipient")
+        vector("named_envelope", f"n{n}",
+               f"a specific-people comment to {n} recipient(s), the sender in slot 0: each slot is IV ‖ "
+               "AES-256-CBC(S, IV, 0x02 ‖ KCV_obj ‖ K_obj) under S = SHA-256 of the compressed ECDH point; "
+               "AD' = AD(0x04, epoch 0) ‖ SHA-256(H); tag 25 lists the recipients in slot order (§4.1).",
+               dict(repoId=H(repoId), doc=doc, fields={"body": body}, sender=dict(party_json(NAMED_SENDER), keyId=4),
+                    recipients=[party_json(p) for p in recipients], kObj=H(k_obj), nonce=H(nonce),
+                    ivs=[H(i) for i in ivs]),
+               dict(shared=[H(s) for s in shared], commit=H(C), kcv=H(C[:14]), headerSha256=H(sha256(head)), ad=H(A),
+                    tlv=H(pt), enc=H(enc), opened=opened))
+
+    # negatives over the n = 3 letter (alice, r1, r2)
+    k_obj, nonce, ivs = named_inputs(3)
+    body = tlv((2, b"A letter to 3 people (the sender included): the embargo ends on Friday."))
+    doc = named_doc()
+    okeys = [owner_key(NAMED_SENDER)]
+    _, C, head, _, _, enc = seal_named(doc, NAMED_SENDER, 4, NAMED_N3, body, k_obj, nonce, ivs)
+    readers3 = [reader_json(p) for p in NAMED_N3]
+
+    def neg(name, desc, enc_, readers, owner_keys=okeys, doc_=doc):
+        results = []
+        for r in readers:
+            privs = [int(k, 16) for k in r["keys"]]
+            results.append(open_named(doc_, enc_, owner_keys, bytes.fromhex(r["identityId"]), privs))
+        vector("named_envelope_open", name, desc,
+               dict(repoId=H(repoId), doc=dict(doc_, enc=H(enc_)), ownerKeys=owner_keys, readers=readers),
+               dict(results=results))
+        return results
+
+    slot = lambda e, i: e[38 + 64 * i:38 + 64 * (i + 1)]
+    swapped = enc[:38] + slot(enc, 0) + slot(enc, 2) + slot(enc, 1) + enc[38 + 192:]
+    res = neg("swapped_slots", "slots 1 and 2 exchanged, each intact: every reader still finds its slot, but "
+              "SHA-256(H) in AD' changed, so BadTag for all three.", swapped, readers3)
+    assert all(r == unreadable("badTag") for r in res)
+    res = neg("not_a_recipient", "dave holds an ENCRYPTION key but no slot opens under it: NotARecipient.", enc,
+              [reader_json(NAMED_OUTSIDER)])
+    assert res == [unreadable("notARecipient")]
+    flipped = bytearray(enc)
+    flipped[38 + 20] ^= 0x01
+    res = neg("other_slot_flipped", "one byte flipped inside alice's slot (slot 0): r2 still opens its own slot, "
+              "then GCM fails under the changed H (BadTag); alice's slot no longer opens.", bytes(flipped),
+              [reader_json(NAMED_OUTSIDER), reader_json(NAMED_N3[2])])
+    assert res[1] == unreadable("badTag")
+    # r1's slot re-wrapped to another key K' with its own valid KCV: the KCV no longer matches COMMIT_obj
+    k_alt = sha256(b"dash-forge vectors: named equivocating key")
+    alt_pt = bytes([SLOT_VERSION]) + obj_keys(k_alt)[1][:14] + k_alt
+    eq = seal_named(doc, NAMED_SENDER, 4, NAMED_N3, body, k_obj, nonce, ivs,
+                    slot_override={1: cbc(ecdh(NAMED_SENDER["priv"], NAMED_N3[1]["pub"]), ivs[1], alt_pt)})[5]
+    res = neg("equivocating_slot", "the sender wraps a different K' (with K''s own KCV) into r1's slot, the "
+              "S3 equivocation: r1's slot fails the KCV prefix of the header's COMMIT_obj, so NotARecipient; the "
+              "other readers open the letter (the header they hash is the one sealed).", eq, readers3)
+    assert res[1] == unreadable("notARecipient") and res[0]["status"] == "readable"
+    res = neg("wrong_sender_key_type", "the owner's key 4 is a BLS12_381 key: the sender key must be "
+              "ECDSA_SECP256K1 with purpose ENCRYPTION, so the letter is malformed for every reader.", enc, readers3,
+              owner_keys=[owner_key(NAMED_SENDER, key_type=KEY_TYPE_BLS)])
+    assert all(r == MALFORMED for r in res)
+    res = neg("wrong_sender_key_purpose", "the owner's key 4 is an AUTHENTICATION key: malformed.", enc, readers3[:1],
+              owner_keys=[owner_key(NAMED_SENDER, purpose=PURPOSE_AUTHENTICATION)])
+    assert res == [MALFORMED]
+    res = neg("sender_key_missing", "senderKeyId names a key the owner does not have: malformed.", enc, readers3[:1],
+              owner_keys=[owner_key(NAMED_SENDER, key_id=5)])
+    assert res == [MALFORMED]
+    other_owner = dict(doc, ownerId=H(NAMED_OTHERS[5]["id"]))
+    res = neg("other_owner", "the same enc as another identity's document, whose key 4 is not alice's: no slot opens "
+              "(the ECDH binds the sender), NotARecipient.", enc, readers3[1:2],
+              owner_keys=[owner_key(NAMED_OTHERS[5])], doc_=other_owner)
+    assert res == [unreadable("notARecipient")]
+    res = neg("second_key_opens", "a reader holding two ENCRYPTION keys (after a rekey) tries each: the second opens "
+              "its slot.", enc, [reader_json(NAMED_N3[1], keys=[NAMED_OUTSIDER["priv"], None])])
+    assert res[0]["status"] == "readable"
+    short = seal_named(doc, NAMED_SENDER, 4, NAMED_N3, body, k_obj, nonce, ivs,
+                       tlv_override=body + rec(25, NAMED_N3[0]["id"]) + rec(25, NAMED_N3[1]["id"]))[5]
+    res = neg("recipient_list_short", "a letter to 3 whose TLV lists 2 recipients: count(tag 25) != n, malformed.",
+              short, readers3[:1])
+    assert res == [MALFORMED]
+    misplaced = seal_named(doc, NAMED_SENDER, 4, NAMED_N3, body, k_obj, nonce, ivs,
+                           tlv_override=body + b"".join(rec(25, p["id"]) for p in (NAMED_N3[0], NAMED_N3[2], NAMED_N3[1])))[5]
+    res = neg("reader_not_at_its_slot", "the TLV lists r2 at slot 1 and r1 at slot 2: r1 opens slot 1, whose listed "
+              "identity is not r1's, so malformed.", misplaced, readers3[1:2])
+    assert res == [MALFORMED]
+    res = neg("epoch_not_zero", "a letter carries epoch 0 (D20): another epoch is malformed.", enc, readers3[:1],
+              doc_=dict(doc, epoch=1))
+    assert res == [MALFORMED]
+    wrong_ver = seal_named(doc, NAMED_SENDER, 4, NAMED_N3, body, k_obj, nonce, ivs,
+                           slot_pt=bytes([0x01]) + obj_keys(k_obj)[1][:14] + k_obj)[5]
+    res = neg("slot_version_1_refused", "a slot whose plaintext starts 0x01 (a repoKey wrap's version) never opens as "
+              "a letter slot: NotARecipient.", wrong_ver, readers3[:1])
+    assert res == [unreadable("notARecipient")]
+
+
+# Vector files committed by hand (efbb9f1e, d0e66072) that this generator does not produce yet: kept
+# as they are rather than deleted on every run. Porting them here is a follow-up.
+HAND_WRITTEN = {
+    "private_doc_open__issue_edited_after_stated_height_late.json",
+    "private_doc_open__late_cutoff_from_stated_height.json",
+    "private_epoch__burned_next_epoch_reanchored_keeps_first_height.json",
+    "private_epoch__config_without_enc_not_a_candidate.json",
+    "private_epoch__late_cutoff_ignores_other_key_config.json",
+    "private_epoch__reanchored_next_epoch_keeps_first_height.json",
+}
+
+
 def write_vectors(out_dir):
     kdf_vectors()
     ref_hash_vectors()
@@ -1817,8 +2275,12 @@ def write_vectors(out_dir):
     release_seal_vectors()
     release_open_vectors()
     release_fold_vectors()
-    for old in glob.glob(os.path.join(out_dir, "private_*.json")):
-        os.remove(old)
+    mixed_vectors()
+    named_vectors()
+    for pattern in ("private_*.json", "mixed_doc_*.json", "named_envelope*.json"):
+        for old in glob.glob(os.path.join(out_dir, pattern)):
+            if os.path.basename(old) not in HAND_WRITTEN:
+                os.remove(old)
     names = set()
     for v in VECTORS:
         fname = f"{v['case']}__{v['name']}.json"
