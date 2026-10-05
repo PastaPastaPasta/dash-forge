@@ -131,7 +131,7 @@ async fn fetch_manifest(url: &str) -> Result<Option<Manifest>, String> {
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
-    let resp = http
+    let mut resp = http
         .get(format!("{url}/{MANIFEST_FILE}"))
         .send()
         .await
@@ -142,9 +142,20 @@ async fn fetch_manifest(url: &str) -> Result<Option<Manifest>, String> {
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    let body = resp.bytes().await.map_err(|e| e.to_string())?;
-    if body.len() > MAX_MANIFEST_BYTES {
-        return Err("the manifest is too large".into());
+    let too_large = || "the manifest is too large".to_string();
+    if resp
+        .content_length()
+        .is_some_and(|n| n > MAX_MANIFEST_BYTES as u64)
+    {
+        return Err(too_large());
+    }
+    // Read with a running cap: a missing or lying Content-Length must not make us buffer more.
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if body.len() + chunk.len() > MAX_MANIFEST_BYTES {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&body)
         .map(Some)
@@ -321,6 +332,58 @@ mod tests {
     use super::*;
     use forge_core::mirror::MANIFEST_SCHEMA;
     use forge_core::repo::RefTip;
+
+    /// A one-route server answering `head` and then `body_len` bytes of `{`, then closing.
+    fn serve_manifest(head: &'static str, body_len: usize) -> String {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                }
+                let _ = stream.write_all(head.as_bytes());
+                let chunk = vec![b'{'; 64 * 1024];
+                let mut sent = 0;
+                while sent < body_len {
+                    let n = chunk.len().min(body_len - sent);
+                    if stream.write_all(&chunk[..n]).is_err() {
+                        break;
+                    }
+                    sent += n;
+                }
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn an_oversized_manifest_is_refused_before_it_is_read() {
+        // Announced too large: refused on the header alone.
+        let url = serve_manifest(
+            "HTTP/1.1 200 OK\r\ncontent-length: 1000000000\r\nconnection: close\r\n\r\n",
+            0,
+        );
+        assert_eq!(
+            fetch_manifest(&url).await.unwrap_err(),
+            "the manifest is too large"
+        );
+        // No length given: cut off once the cap is passed, not read to the end.
+        let url = serve_manifest(
+            "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n",
+            MAX_MANIFEST_BYTES + 1024 * 1024,
+        );
+        assert_eq!(
+            fetch_manifest(&url).await.unwrap_err(),
+            "the manifest is too large"
+        );
+    }
 
     #[test]
     fn mirror_urls_name_the_repository() {
