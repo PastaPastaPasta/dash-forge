@@ -22,6 +22,7 @@ Commands:
   search         Search issues and pull requests (in one repository) and repositories, with the web search box's qualifiers (`is:open label:bug author:@me -label:wontfix`)
   api            Raw Platform reads: a proved document query, printed as JSON (gh api)
   import         Import or re-sync a GitHub or GitLab repo: code, issues, pull requests, releases
+  verify-app     Check a deployed copy of the web app file by file against its published build manifest (a release's, or the one this repository's CI attested)
   doctor         Diagnose the identity, network, contracts, storage, git config and toolchain
   init           Publish this directory's git repo to Forge (creates it if needed, safe to re-run)
   completions    Print a shell completion script to stdout [alias: completion]
@@ -33,6 +34,7 @@ Options:
       --network <NETWORK>       Target network (default: testnet, or the configured default) [possible values: testnet, mainnet, devnet]
       --devnet-name <NAME>      Devnet name (e.g. `sakura`); implies `--network devnet`
       --dapi-addresses <ADDRS>  Devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults to the built-in list for that devnet
+      --quorum-url <URL>        Check proofs against quorum keys from this service instead of the network's, for when that one is down or blocked. Also DASH_FORGE_QUORUM_URL or git config dash.quorumUrl
       --identity <FILE>         Override the identity file for this invocation
       --allow-archived          Write to an archived repository anyway (issues, PRs, comments, reviews, merges, releases). Forge apps enforce archiving, not Platform
   -h, --help                    Print help (see more with '--help')
