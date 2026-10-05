@@ -275,6 +275,45 @@ describe('the private session', () => {
   })
 })
 
+describe('a reader holding several encryption keys (DESIGN D27)', () => {
+  /** BOB's wraps: epoch 0 to his older key 4, epoch 1 (after a rotation) to his newer key 9. */
+  async function twoKeyWorld(): Promise<World> {
+    const w = await world()
+    await rotate(w)
+    w.wraps = w.wraps.filter((d) => !(d['memberId'] === b58(BOB) && d['epoch'] === 1))
+    w.wraps.push(wrapDoc(ALICE, BOB, 1, 99, 9))
+    return w
+  }
+  /** BOB's keys: the wallet's auth key 8 (HASH160) and its encryption key 9, beside key 4. */
+  const bobKeys: EncKeyLike[] = [...encKeys(4), { keyId: 8, purposeNumber: 0, keyTypeNumber: 2, data: '' }, ...encKeys(9)]
+  const load = (w: World, held: number[]) =>
+    loadPrivateSession({
+      repo: REPO_REF,
+      network: 'devnet',
+      reader: b58(BOB),
+      source: { ...source(w), identityKeys: async (id) => (id === b58(BOB) ? bobKeys : encKeys()) },
+      unwrapper: { ...unwrapper(w), keyId: Math.max(...held), keyIds: held },
+    })
+
+  it('opens the wraps to the older key and to the newer one', async () => {
+    const w = await twoKeyWorld()
+    const both = await load(w, [9, 4])
+    expect([...both.resolution.keys.keys()].sort()).toEqual([0, 1])
+    expect(both.missingKey ?? null).toBeNull()
+    // Holding only the older key: epoch 0 opens, epoch 1 (wrapped to key 9) does not. (Only the
+    // newer key would open both: epoch 1's anchor carries epoch 0's key.)
+    const older = await load(w, [4])
+    expect([...older.resolution.keys.keys()]).toEqual([0])
+  })
+
+  it('holding none of the keys its wraps went to: names the newest, and whether a wallet approval registered it', async () => {
+    const w = await twoKeyWorld()
+    const none = await load(w, [7])
+    expect(none.resolution.keys.size).toBe(0)
+    expect(none.missingKey).toEqual({ keyId: 9, otherApproval: true })
+  })
+})
+
 describe('config rows', () => {
   it('a config without enc states no key and is no row, as in forge-core (§5.3)', () => {
     const doc = {
@@ -469,6 +508,20 @@ describe('rotation and repair planning', () => {
     expect(plan.recipients.filter((r) => !r.done).map((r) => r.identity)).toEqual([]) // just the anchor
     // A removal never finishes a resumed epoch: a lagging read may hide a wrap to the one leaving.
     expect(planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4).burn).toBe(true)
+  })
+
+  it('holding several keys: the rotator plans with its newest usable one among them; a held key since disabled is never it', async () => {
+    const w = await world()
+    const s = await sessionFor(w, ALICE)
+    // ALICE's usable key on chain is 4; this browser also holds 9 (a key disabled since, say).
+    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, [9, 4])
+    expect(plan.recipients.find((r) => r.identity === b58(ALICE))?.keyId).toBe(4)
+    expect(() => planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, [9])).toThrow(/holds encryption key 9, but your identity's current key is 4/)
+    expect(() => planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, [7, 9])).toThrow(/holds encryption keys 7 and 9/)
+    // A pending self-wrap to any held key resumes.
+    w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50, 3))
+    const s2 = await sessionFor(w, ALICE)
+    expect(planRotation(s2, b58(ALICE), [], FORGE.core, [4, 3]).resume?.row.recipientKeyId).toBe(3)
   })
 
   it('a pending n + 1 to a key this browser does not hold is refused, not skipped', async () => {

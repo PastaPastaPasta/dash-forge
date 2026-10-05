@@ -57,6 +57,7 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
             download(ctx, repo, tag, asset.as_deref(), output).await
         }
         ReleaseCommand::Unpublish { repo, tag } => unpublish(ctx, repo, tag).await,
+        ReleaseCommand::Verify { repo, tag } => crate::release_verify::verify(ctx, repo, tag).await,
     }
 }
 

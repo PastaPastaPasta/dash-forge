@@ -27,6 +27,7 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
+import { ENCRYPTION_KEY_ELSEWHERE, ENCRYPTION_KEY_OTHER_APPROVAL } from '@/lib/auth/encryption-key'
 
 function Note({ tone, icon, children, testId }: { tone: 'caution' | 'danger' | 'info'; icon: React.ReactNode; children: React.ReactNode; testId?: string }): JSX.Element {
   const klass =
@@ -99,7 +100,9 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
   const maintainer = isMaintainer(session, identity)
   const alerts = r.alerts.filter((a) => a.kind !== 'rotationRequired')
   const closed = currentBurned(r)
-  const cannotReadCurrent = r.currentEpoch !== null && r.writeEpoch === null && !closed
+  // Wrapped to this reader, but only to keys this browser does not hold: say which way to get one.
+  const missing = session.missingKey ?? null
+  const cannotReadCurrent = r.currentEpoch !== null && r.writeEpoch === null && !closed && missing === null
   const repair = identity === null ? null : planRepair(session, identity, home.repo.forge.core)
   const parts: JSX.Element[] = []
   if (alerts.length > 0) {
@@ -108,6 +111,13 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
         {alerts.map((a) => (
           <AlertLine key={`${a.kind}:${a.epoch}:${'author' in a ? bytesToHex(a.author) : ''}`} alert={a} />
         ))}
+      </Note>,
+    )
+  }
+  if (missing !== null) {
+    parts.push(
+      <Note key="missing-key" tone="caution" icon={<KeyRound className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />} testId="private-missing-key">
+        {missing.otherApproval ? ENCRYPTION_KEY_OTHER_APPROVAL : ENCRYPTION_KEY_ELSEWHERE}
       </Note>,
     )
   }
@@ -156,7 +166,7 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
   const [open, setOpen] = useState(false)
   let cost = null
   try {
-    cost = write.context === null ? null : repairCost(session, plan, self, home.repo.forge.core, write.context.ops.keyId)
+    cost = write.context === null ? null : repairCost(session, plan, self, home.repo.forge.core, write.context.ops.keyIds)
   } catch {
     cost = null
   }

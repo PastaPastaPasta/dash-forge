@@ -1,0 +1,62 @@
+{
+  "name": "late_tag",
+  "description": "An import wrote the release before the code: the tag's first tip is the baseline, flagged as late.",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "mirror",
+        "createdAt": 300
+      }
+    ],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "mirror",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "aa"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "mirror"
+    },
+    "baseline": {
+      "oid": "A",
+      "by": "mirror",
+      "at": 300
+    },
+    "pinnedBy": "tag",
+    "lateTag": true,
+    "current": {
+      "oid": "A",
+      "by": "mirror",
+      "at": 300
+    },
+    "moves": [],
+    "tag": "unchanged",
+    "assets": {
+      "added": [],
+      "removed": [],
+      "replaced": []
+    }
+  }
+}

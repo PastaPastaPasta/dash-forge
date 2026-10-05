@@ -1,0 +1,83 @@
+{
+  "name": "republished_keeps_first_publish",
+  "description": "Unpublished and published again: the first publish stays the baseline for the tag and the assets.",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      }
+    ],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "aa"
+          }
+        ]
+      },
+      {
+        "id": "r2",
+        "createdAt": 300,
+        "delta": -1,
+        "publisher": "alice",
+        "assets": []
+      },
+      {
+        "id": "r3",
+        "createdAt": 400,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": [
+          {
+            "name": "app.tgz",
+            "sha256": "ee"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "alice"
+    },
+    "baseline": {
+      "oid": "A",
+      "by": "alice",
+      "at": 100
+    },
+    "pinnedBy": "tag",
+    "lateTag": false,
+    "current": {
+      "oid": "A",
+      "by": "alice",
+      "at": 100
+    },
+    "moves": [],
+    "tag": "unchanged",
+    "assets": {
+      "added": [],
+      "removed": [],
+      "replaced": [
+        "app.tgz"
+      ]
+    }
+  }
+}

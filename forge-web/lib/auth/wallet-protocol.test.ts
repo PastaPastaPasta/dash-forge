@@ -21,6 +21,7 @@ import {
   sameIdentifier,
   newLoginRequest,
   walletSignInSupported,
+  wipeAnswer,
   type ResponseSource,
 } from './app-connect'
 import { buildKeyRegistration, isUnlimited, keyScope, loginKeys, nextGrant, scopeCovers, RevokedWalletKey } from './key-registration'
@@ -335,10 +336,12 @@ describe('login poll against a simulated wallet', () => {
   it('a returning shipped wallet (legacy contract): a forge-core key, unlimited', async () => {
     const chain = fakeChain()
     const req = newLoginRequest('devnet', FORGE.core)
-    const { authPriv } = await chain.answer(req.uri, ALICE, { source: 'legacy' })
+    const { authPriv, login } = await chain.answer(req.uri, ALICE, { source: 'legacy' })
     const a = await awaitWalletAnswer(chain.sdk, req, fast)
     expect(a.kind).toBe('keys')
     if (a.kind !== 'keys') throw new Error('unreachable')
+    // The encryption key the login key stands for travels with the answer (DESIGN D27).
+    expect(a.encryptionKeys.map(bytesToHex)).toEqual([bytesToHex(encryptionKeyFromLogin(login, ALICE))])
     expect(a.identityId).toBe(ALICE)
     expect(a.source).toBe('legacy')
     expect(a.keys[0]!.scope).toEqual({ core: true, collab: false, community: false, unbounded: false })
@@ -355,6 +358,13 @@ describe('login poll against a simulated wallet', () => {
     expect(a.kind).toBe('register')
     if (a.kind !== 'register') throw new Error('unreachable')
     expect(bytesToHex(a.keys.authData)).toBe(bytesToHex(loginKeys(login, ALICE).authData))
+    // A copy of the encryption key: building QR #2 wipes the login keys, not this one.
+    const enc = bytesToHex(encryptionKeyFromLogin(login, ALICE))
+    expect(a.encryptionKeys.map(bytesToHex)).toEqual([enc])
+    a.keys.encPriv.fill(0)
+    expect(bytesToHex(a.encryptionKeys[0]!)).toBe(enc)
+    wipeAnswer(a)
+    expect(a.encryptionKeys[0]!.every((b) => b === 0)).toBe(true)
   })
 
   it('an App Connect wallet: a group-bound key with limits', async () => {
