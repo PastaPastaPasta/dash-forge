@@ -59,6 +59,7 @@ import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, loadPullThread, pl
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
 import { RulesAtMerge } from './rules-at-merge'
+import { deleteNeedsForce, dependentsWarning, type Dependents } from '@/lib/view/branch-dependents'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
@@ -67,6 +68,7 @@ import type { HideReason } from '@/lib/rules/moderation'
 import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine, unrecordedMerge, unrecordedMergeCandidate } from '@/lib/view/pull-actions'
 import {
   baseRefReaders,
+  openPullsOnBranch,
   createComment,
   recordPolicyBypass,
   requestRerun,
@@ -169,7 +171,7 @@ import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
 import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
-import { cn, shortId } from '@/lib/utils'
+import { cn, errorMessage, shortId } from '@/lib/utils'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 
 /** No pending review comments (a stable empty list). */
@@ -225,7 +227,7 @@ type Pending =
   | { kind: 'assignees'; change: SetChange }
   | { kind: 'milestone'; title: string | null }
   /** Delete the source branch of a closed PR (QW2-057). */
-  | { kind: 'delete-branch'; label: string; run: () => Promise<void> }
+  | { kind: 'delete-branch'; label: string; run: () => Promise<void>; dependents?: Dependents | null }
   /** Point a closed PR's deleted source branch at its head again (QW3-052). */
   | { kind: 'restore-branch'; label: string; run: () => Promise<void> }
   | { kind: 'define-label'; name: string; color: string; description: string }
@@ -500,6 +502,7 @@ function PullPage({
   // A branch this page just deleted or restored, until a read of it catches up (QW3-053: right
   // after "Delete … after merging" the node may still answer with the old tip).
   const [branchWrite, setBranchWrite] = useState<BranchWrite | null>(null)
+  const [checkingDependents, setCheckingDependents] = useState(false)
   // Once a read shows the write, the read alone speaks again (later changes by others included).
   if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
   const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
@@ -1468,7 +1471,27 @@ function PullPage({
                       Restore branch
                     </Button>
                   ) : (
-                    <Button variant="outline" size="sm" onClick={() => setPending({ kind: 'delete-branch', label: closedBranch.label, run: closedBranch.run })} data-testid="delete-branch">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      loading={checkingDependents}
+                      disabled={checkingDependents}
+                      onClick={async () => {
+                        // Open PRs that use the branch, read now (never on page load): the confirm names them.
+                        const src = closedSource
+                        const ref = pull.sourceRefName
+                        let dependents: Dependents | null = null
+                        if (sdk !== null && src !== null && ref !== null) {
+                          setCheckingDependents(true)
+                          dependents = await openPullsOnBranch(sdk, src, ref, { except: src.repoId === repo.repoId ? pull.number : null, network }).catch(
+                            (e: unknown): Dependents => ({ error: errorMessage(e, 'the read failed') }),
+                          )
+                          setCheckingDependents(false)
+                        }
+                        setPending({ kind: 'delete-branch', label: closedBranch.label, run: closedBranch.run, dependents })
+                      }}
+                      data-testid="delete-branch"
+                    >
                       Delete branch
                     </Button>
                   )}
@@ -2129,12 +2152,14 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         description: `Records a ref update that points the branch at this PR's head, ${head.slice(0, 9)}, again. Its commits are still stored in the repo.`,
         label: 'Sign & restore branch',
       }
-    case 'delete-branch':
+    case 'delete-branch': {
+      const warning = pending.dependents == null ? null : dependentsWarning(pending.label, pending.dependents)
       return {
         title: `Delete branch ${pending.label}`,
-        description: 'Records a ref update that deletes the branch. Its commits stay reachable from this PR by their ids, and anyone who has them can push the branch again.',
-        label: 'Sign & delete branch',
+        description: `${warning === null ? '' : `${warning} `}Records a ref update that deletes the branch. Its commits stay reachable from this PR by their ids, and anyone who has them can push the branch again.`,
+        label: deleteNeedsForce(pending.dependents ?? null) ? 'Sign & delete anyway' : 'Sign & delete branch',
       }
+    }
     case 'define-label':
       return { title: `Create label "${pending.name}"`, description: 'Creates the label for this repo and adds it here.', label: 'Sign & create' }
     case 'retarget':
