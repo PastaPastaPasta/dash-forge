@@ -8,7 +8,7 @@
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { idbEntries, resetMemoryStores } from '../idb'
+import { idbEntries, idbGet, idbPut, resetMemoryStores } from '../idb'
 import {
   encryptionMaterialFromFile,
   isUsableEncryptionKey,
@@ -103,6 +103,24 @@ describe('the vault encryption-key slot', () => {
     // Removing removes them all.
     await removeEncryptionKey('devnet', ID)
     expect(await storedEncryptionKeyIds('devnet', ID)).toEqual([])
+  }, 60_000)
+
+  it('a renewal carries every key that opens and reports the one that does not, by id', async () => {
+    const ENC2 = new Uint8Array(32).fill(0x43)
+    await storeInVault('devnet', SECRET, { passphrase: PASS })
+    await storeEncryptionKey('devnet', ID, 4, new Uint8Array(ENC))
+    await storeEncryptionKey('devnet', ID, 7, new Uint8Array(ENC2))
+    // Key 7's entry is damaged on disk: it no longer opens.
+    const at = (await idbEntries('vault')).map(([k]) => String(k)).find((k) => k.startsWith('vault-enc:'))!
+    const entries = (await idbGet<{ keyId: number; iv: Uint8Array; ciphertext: Uint8Array }[]>('vault', at))!
+    const bad = entries.find((e) => e.keyId === 7)!
+    bad.ciphertext[0] = (bad.ciphertext[0] ?? 0) ^ 0xff
+    await idbPut('vault', at, entries)
+    const outcome = await storeInVault('devnet', { ...SECRET, keyId: 6 }, { passphrase: 'another passphrase!' })
+    expect(outcome.encryptionKeyDropped).toBe(true)
+    expect(outcome.encryptionKeysDropped).toEqual([7])
+    expect(await storedEncryptionKeyIds('devnet', ID)).toEqual([4])
+    expect(await withEncryptionKey('devnet', ID, async (k, s) => [k, bytesToHex(s)])).toEqual([4, bytesToHex(ENC)])
   }, 60_000)
 
   it('a tab-only session keeps several keys too', async () => {

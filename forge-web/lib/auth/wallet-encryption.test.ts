@@ -18,7 +18,7 @@ import { AuthController } from './controller'
 import { ENCRYPTION_KEY_ELSEWHERE, ENCRYPTION_KEY_OTHER_APPROVAL, adoptWalletEncryptionKey, encryptionKeyState, encryptionOps, type EncryptionOps, type UnwrapInput } from './encryption-key'
 import { WrapError } from '../private'
 import type { WalletKey } from './key-registration'
-import { lockVault, releaseUnlocked, storeEncryptionKey, storeInVault, storedEncryptionKeyId, storedEncryptionKeyIds, withEncryptionKey } from './vault'
+import { holdForSession, lockVault, releaseUnlocked, storeEncryptionKey, storeInVault, storedEncryptionKeyId, storedEncryptionKeyIds, withEncryptionKey } from './vault'
 import { encryptionKeyFromLogin } from './wallet-protocol'
 import { decodeWif, encodeWif } from './wif'
 
@@ -389,6 +389,21 @@ describe('wallet login and the encryption key (D27)', () => {
     expect(other.getState().notice ?? null).toBeNull()
     expect(await storedEncryptionKeyIds(NET, ID)).toEqual([6])
     expect(ENCRYPTION_KEY_OTHER_APPROVAL).toMatch(/another approval in your wallet/)
+  }, 30_000)
+
+  it('a tab holding a tab-only key cannot open the stored keys: their drop is reported, by their stored ids (L2)', async () => {
+    const OLD = new Uint8Array(32).fill(0x45)
+    keys = [encKey(3, OLD), authKey(5, AUTH_WIF), encKey(6, WALLET_ENC)]
+    await storeInVault(NET, { identityId: ID, keyId: 9, wif: encodeWif(new Uint8Array(32).fill(9), NET) }, PASSKEY)
+    await storeEncryptionKey(NET, ID, 3, new Uint8Array(OLD))
+    // This tab now holds a pasted key for the identity: it sees no stored encryption key.
+    lockVault()
+    holdForSession(NET, { identityId: ID, keyId: 9, wif: encodeWif(new Uint8Array(32).fill(9), NET) })
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([])
+    const c = make()
+    await login(c)
+    expect(c.getState().notice).toMatch(/not carried over/)
+    expect(await storedEncryptionKeyIds(NET, ID)).toEqual([6])
   }, 30_000)
 
   it('a different key the vault could not carry over is still reported as dropped', async () => {

@@ -20,7 +20,7 @@ import type { EvoSDK, IdentityPublicKey } from '@dashevo/evo-sdk'
 
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import type { EncKeyLike, EncryptionOps } from '../auth/encryption-key'
-import { fetchIdentityKeys, usableEncryptionKey } from '../auth/encryption-key'
+import { fetchIdentityKeys, heldKeysText, usableEncryptionKey } from '../auth/encryption-key'
 import type { Network } from '../constants'
 import {
   EpochKeys,
@@ -134,12 +134,16 @@ export function planRotation(
   self: string,
   exclude: readonly string[],
   coreId: string,
-  /** The id of the encryption key this browser holds: only a self-wrap to it can be resumed. */
-  heldKeyId: number,
+  /**
+   * The ids of the encryption keys this browser holds (one id: that key alone): only a self-wrap
+   * to one of them can be resumed, and the rotator's newest usable key must be among them.
+   */
+  held: number | readonly number[],
   /** The epoch the rotation chains from: the current one, or the one a maintainer's removal keeps. */
   from: number | null = session.resolution.currentEpoch,
 ): RotationPlan {
   const r = session.resolution
+  const heldIds = typeof held === 'number' ? [held] : held
   const n = from
   if (n === null) throw new PrivateMembersError('this repo has no key epoch yet')
   // The current key must be readable to chain from (a burned current epoch still chains).
@@ -160,7 +164,7 @@ export function planRotation(
   const epoch = n + 1
   if (epoch > 0xffff_ffff) throw new PrivateMembersError('no key epoch number is left')
   const resume = pendingSelfWrap(session, self, epoch)
-  if (resume !== null && resume.row.recipientKeyId !== heldKeyId) {
+  if (resume !== null && !heldIds.includes(resume.row.recipientKeyId)) {
     throw notHeldKey(epoch, resume.row.recipientKeyId)
   }
   const mine = ownWraps(session, selfId, epoch)
@@ -177,20 +181,21 @@ export function planRotation(
     }
     // §5.2: the new key goes to each member's newest usable key, the rotator's own included. If
     // this browser holds an older one, the rotator would lose the epoch it creates: refused.
-    if (id === self && key.keyId !== heldKeyId) throw staleHeldKey(heldKeyId, key.keyId)
+    if (id === self && !heldIds.includes(key.keyId)) throw staleHeldKey(heldIds, key.keyId)
     recipients.push({ identity: id, keyId: key.keyId, done: wrappedBySelf.has(id) })
   }
   const burn = mustBurn(exclude.length > 0, resume !== null, mine, recipients, remaining)
   return { from: n, epoch, resume, burn, recipients, unreachable, excluded: [...excluded] }
 }
 
-/** This browser holds encryption key `held`, but the identity's newest usable key is `current`. */
-function staleHeldKey(held: number, current: number): PrivateMembersError {
+/** This browser holds encryption keys `held`, but not the identity's newest usable key `current`. */
+function staleHeldKey(held: readonly number[], current: number): PrivateMembersError {
   return new PrivateMembersError(
-    `this browser holds encryption key ${held}, but your identity's current key is ${current}: the new repo key would go to key ${current}, which you couldn't read here. Import key ${current} (Settings → Private repos), or rotate from the CLI with it.`,
+    `this browser holds ${heldKeysText(held)}, but your identity's current key is ${current}: the new repo key would go to key ${current}, which you couldn't read here. Import key ${current} (Settings → Private repos), or rotate from the CLI with it.`,
     'E306',
   )
 }
+
 
 /** A pending self-wrap of `epoch` to a key of ours this browser does not hold: it cannot be resumed here. */
 function notHeldKey(epoch: number, keyId: number): PrivateMembersError {
@@ -330,12 +335,15 @@ function keyOf(session: PrivateSession, identity: string, keyId: number): Identi
   return k as unknown as IdentityPublicKey
 }
 
-/** This identity's stored encryption key, as the sender of a wrap: it must still be usable. */
+/**
+ * This identity's writer key: the newest usable ENCRYPTION key on chain among those this browser
+ * holds (a held key disabled since is never it). It sends every wrap, and gets the self-wraps.
+ */
 function senderKey(session: PrivateSession, c: PrivateWriteContext): IdentityPublicKey {
   const mine = session.memberKeys.get(c.auth.identityId) ?? []
-  const k = mine.find((x) => x.keyId === c.ops.keyId) as (EncKeyLike & IdentityPublicKey) | undefined
-  if (k === undefined || usableEncryptionKey([k], c.repo.forge.core) === null) {
-    throw new PrivateMembersError('the encryption key in this browser is no longer enabled on your identity; import your current one', 'E306')
+  const k = usableEncryptionKey(mine.filter((x) => c.ops.keyIds.includes(x.keyId)), c.repo.forge.core) as (EncKeyLike & IdentityPublicKey) | null
+  if (k === null) {
+    throw new PrivateMembersError('no encryption key in this browser is still enabled on your identity; import your current one', 'E306')
   }
   return k
 }
@@ -670,7 +678,7 @@ async function rotateWith(
   minFrom?: number,
   drop: readonly { readonly identity: string; readonly role?: Role }[] = [],
 ): Promise<{ epoch: number; commit: Uint8Array } | { lost: number }> {
-  const plan = planRotation(session, c.auth.identityId, exclude, c.repo.forge.core, c.ops.keyId)
+  const plan = planRotation(session, c.auth.identityId, exclude, c.repo.forge.core, c.ops.keyIds)
   // The read must be at least as new as the removal it follows: a current epoch below the one
   // before the removal means its re-anchor is not visible here yet, and chaining from it would
   // skip that epoch.
@@ -807,8 +815,8 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
     // created unreadable to its own owner.
     const pending = pendingSelfWrap(session, c.auth.identityId, 0)
     if (pending !== null && !c.ops.keyIds.includes(pending.row.recipientKeyId)) throw notHeldKey(0, pending.row.recipientKeyId)
-    if (pending === null && selfKey.keyId !== c.ops.keyId) {
-      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds key ${c.ops.keyId}; add key ${selfKey.keyId} here (Settings → Private repos)`, 'E306')
+    if (pending === null && !c.ops.keyIds.includes(selfKey.keyId)) {
+      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds ${heldKeysText(c.ops.keyIds)}; add key ${selfKey.keyId} here (Settings → Private repos)`, 'E306')
     }
     const k0 = await ownEpochKey(c, session, { identity: c.auth.identityId, keyId: pending?.row.recipientKeyId ?? selfKey.keyId }, 0, intent)
     try {
@@ -1052,7 +1060,7 @@ export async function removePrivateMember(
     // The rotation after the delete is planned now (its own checks: the rotator's key among them),
     // so a removal it would refuse is refused before the membership goes.
     if (kept !== null && s.resolution.keys.has(kept)) {
-      planRotation(s, c.auth.identityId, effect === 'rotate-exclude' ? [memberId] : [], c.repo.forge.core, c.ops.keyId, kept)
+      planRotation(s, c.auth.identityId, effect === 'rotate-exclude' ? [memberId] : [], c.repo.forge.core, c.ops.keyIds, kept)
     }
     // Another staying maintainer's config that would come before this browser's re-anchor, and
     // is not the same anchor, is known now: refuse before paying for anything.
@@ -1337,7 +1345,7 @@ async function keepCurrentKey(c: PrivateWriteContext, session: PrivateSession, l
     }
     const kn = await rawEpochKey(session, c, n)
     try {
-      requireSame(await postWrap(c, session, kn.keys, kn.raw, c.auth.identityId, c.ops.keyId, `${intent}:keep`), c.auth.identityId, n)
+      requireSame(await postWrap(c, session, kn.keys, kn.raw, c.auth.identityId, senderKey(session, c).keyId, `${intent}:keep`), c.auth.identityId, n)
     } finally {
       kn.raw.fill(0)
     }
@@ -1470,8 +1478,8 @@ async function wrapMissing(
 }
 
 /** The cost of a repair: a rotation (members + 1) when needed, plus one wrap per unwrapped member. */
-export function repairCost(session: PrivateSession, plan: RepairPlan, self: string, coreId: string, heldKeyId: number): CostPreview {
+export function repairCost(session: PrivateSession, plan: RepairPlan, self: string, coreId: string, held: number | readonly number[]): CostPreview {
   const wraps = plan.wrap.map(() => previewCreate('repoKey'))
   if (plan.rotate.length === 0 && !plan.burned) return sumPreviews(wraps)
-  return rotationCost(planRotation(session, self, plan.rotate, coreId, heldKeyId))
+  return rotationCost(planRotation(session, self, plan.rotate, coreId, held))
 }

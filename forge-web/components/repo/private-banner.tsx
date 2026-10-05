@@ -166,7 +166,7 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
   const [open, setOpen] = useState(false)
   let cost = null
   try {
-    cost = write.context === null ? null : repairCost(session, plan, self, home.repo.forge.core, write.context.ops.keyId)
+    cost = write.context === null ? null : repairCost(session, plan, self, home.repo.forge.core, write.context.ops.keyIds)
   } catch {
     cost = null
   }

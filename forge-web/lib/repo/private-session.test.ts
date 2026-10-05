@@ -510,6 +510,20 @@ describe('rotation and repair planning', () => {
     expect(planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4).burn).toBe(true)
   })
 
+  it('holding several keys: the rotator plans with its newest usable one among them; a held key since disabled is never it', async () => {
+    const w = await world()
+    const s = await sessionFor(w, ALICE)
+    // ALICE's usable key on chain is 4; this browser also holds 9 (a key disabled since, say).
+    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, [9, 4])
+    expect(plan.recipients.find((r) => r.identity === b58(ALICE))?.keyId).toBe(4)
+    expect(() => planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, [9])).toThrow(/holds encryption key 9, but your identity's current key is 4/)
+    expect(() => planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, [7, 9])).toThrow(/holds encryption keys 7 and 9/)
+    // A pending self-wrap to any held key resumes.
+    w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50, 3))
+    const s2 = await sessionFor(w, ALICE)
+    expect(planRotation(s2, b58(ALICE), [], FORGE.core, [4, 3]).resume?.row.recipientKeyId).toBe(3)
+  })
+
   it('a pending n + 1 to a key this browser does not hold is refused, not skipped', async () => {
     const w = await world()
     w.members = w.members.filter((m) => m.identity !== b58(CAROL))

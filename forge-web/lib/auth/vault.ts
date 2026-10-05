@@ -545,9 +545,12 @@ export interface StoreOutcome {
   readonly storageSettingsDropped: boolean
   /**
    * An encryption key was stored but could not be carried across (the vault was locked when the
-   * key was renewed). It is deleted; the user imports it again in Settings → Keys.
+   * key was renewed, or this tab holds a tab-only key that cannot open the stored ones). It is
+   * deleted; the user imports it again in Settings → Private repos.
    */
   readonly encryptionKeyDropped: boolean
+  /** The key ids of the dropped encryption keys (the ones that did carry across are kept). */
+  readonly encryptionKeysDropped?: readonly number[]
   /**
    * The record was written but did not read back: this browser's storage may not keep it. The
    * session works; the UI warns to keep the identity file handy.
@@ -762,10 +765,10 @@ export async function recoverStaged(
   // Carry the old record's blobs across when this session has them open (the old key was
   // unlocked just before), sealed under the staged record's blob keys.
   const carried = await readStorageBlob(network, identityId).catch(() => null)
-  const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => null) : null
+  const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => []) : []
   const hadBlob = (await idbGet('vault', storageBlobKey(network, identityId))) !== undefined
-  const hadEnc = (await idbGet('vault', encryptionBlobKey(network, identityId))) !== undefined
-  const encBlob = carriedEnc !== null ? await sealEncryptionBlobs(opened.blobKeys.encryption, network, identityId, carriedEnc) : undefined
+  const droppedEnc = await droppedEncryptionIds(network, identityId, carriedEnc)
+  const encBlob = await sealEncryptionBlobs(opened.blobKeys.encryption, network, identityId, carriedEnc)
   const blob = carried !== null ? await sealBlob(opened.blobKeys.storage, network, identityId, carried) : undefined
   const { replaces: _replaces, ...promoted } = record
   let raced = false
@@ -796,7 +799,7 @@ export async function recoverStaged(
   return {
     status: 'adopted',
     secret: opened.secret,
-    outcome: { storageSettingsDropped: hadBlob && carried === null, encryptionKeyDropped: hadEnc && carriedEnc === null },
+    outcome: { storageSettingsDropped: hadBlob && carried === null, encryptionKeyDropped: droppedEnc.length > 0, encryptionKeysDropped: droppedEnc },
   }
 }
 
@@ -912,8 +915,9 @@ export async function storeInVault(
   const carried = hadBlob ? await readStorageBlob(network, identityId).catch(() => null) : null
   // The encryption key is carried the same way, but only from the stored vault blob: a tab-only
   // session's key stays in that session. One that cannot be opened is dropped, and reported.
-  const hadEnc = (await idbGet<StoredEncryption>('vault', encryptionBlobKey(network, identityId))) !== undefined
-  const carriedEnc = hadEnc && unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => null) : null
+  // Each key that opens is carried; any other is dropped, and reported by id.
+  const carriedEnc = unlocked?.sessionEnc === undefined ? await readEncryptionBlobs(network, identityId).catch(() => []) : []
+  const droppedEnc = await droppedEncryptionIds(network, identityId, carriedEnc)
   const dataKey = random(32)
   let storageKey: CryptoKey
   let encryptionKey: CryptoKey
@@ -926,7 +930,7 @@ export async function storeInVault(
     const blob = carried !== null ? await sealBlob(storageKey, network, identityId, carried) : undefined
     const extraBlob = extra?.length ? await sealBlob(storageKey, network, identityId, extra, 'extra') : undefined
     encryptionKey = await deriveEncryptionKey(dataKey, network, identityId)
-    const encBlob = carriedEnc !== null ? await sealEncryptionBlobs(encryptionKey, network, identityId, carriedEnc) : undefined
+    const encBlob = await sealEncryptionBlobs(encryptionKey, network, identityId, carriedEnc)
     // One transaction: a crash between the writes must not leave settings sealed under a
     // data key no record holds any more. The key is now the main record, so a staged copy of
     // THIS key (the renewal that registered it) is done; a stage of another key (a renewal
@@ -948,7 +952,8 @@ export async function storeInVault(
   setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey }, { lockMarkerAt })
   return {
     storageSettingsDropped: hadBlob && carried === null,
-    encryptionKeyDropped: hadEnc && carriedEnc === null,
+    encryptionKeyDropped: droppedEnc.length > 0,
+    encryptionKeysDropped: droppedEnc,
     ...(readBackOk ? {} : { readBackFailed: true }),
   }
 }
@@ -1483,18 +1488,31 @@ async function encryptionSource(network: Network, identityId: string): Promise<{
   return blobs.length === 0 ? null : { key: k, blobs }
 }
 
-/** Every stored encryption key's plaintext, for re-sealing on renewal (null: none can be opened). Needs the vault unlocked. */
-async function readEncryptionBlobs(network: Network, identityId: string): Promise<{ keyId: number; secret: Uint8Array }[] | null> {
+/**
+ * The plaintext of every stored encryption key this unlocked session can open, for re-sealing on
+ * renewal: an entry that does not open is left out (and reported dropped), never the whole set.
+ */
+async function readEncryptionBlobs(network: Network, identityId: string): Promise<{ keyId: number; secret: Uint8Array }[]> {
   const src = await encryptionSource(network, identityId)
-  if (src === null) return null
+  if (src === null) return []
   const out: { keyId: number; secret: Uint8Array }[] = []
-  try {
-    for (const b of src.blobs) out.push({ keyId: b.keyId, secret: await openEncryptionBlob(src.key, network, identityId, b) })
-  } catch (e) {
-    for (const o of out) o.secret.fill(0)
-    throw e
+  for (const b of src.blobs) {
+    try {
+      out.push({ keyId: b.keyId, secret: await openEncryptionBlob(src.key, network, identityId, b) })
+    } catch {
+      /* not carried: reported by droppedEncryptionIds */
+    }
   }
   return out
+}
+
+/**
+ * The key ids stored in the vault for the identity (its raw entries, whatever this tab can open)
+ * that `carried` does not include: what a re-key is about to delete.
+ */
+async function droppedEncryptionIds(network: Network, identityId: string, carried: readonly { readonly keyId: number }[]): Promise<number[]> {
+  const stored = encryptionEntries(await idbGet<StoredEncryption>('vault', encryptionBlobKey(network, identityId))).map((b) => b.keyId)
+  return stored.filter((id) => !carried.some((c) => c.keyId === id))
 }
 
 const encListeners = new Set<() => void>()

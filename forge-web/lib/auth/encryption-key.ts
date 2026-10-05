@@ -409,9 +409,19 @@ export async function registerEncryptionKey(
   }
 }
 
+/** "encryption key 6" / "encryption keys 6 and 8" (held key ids, in any order). */
+export function heldKeysText(held: readonly number[]): string {
+  const ids = [...held].sort((a, b) => a - b)
+  return ids.length === 1 ? `encryption key ${ids[0]}` : `encryption keys ${ids.slice(0, -1).join(', ')} and ${ids[ids.length - 1]}`
+}
+
 /** What a private-repo read or write may do with the vault's encryption key. */
 export interface EncryptionOps {
-  /** The highest key id this browser holds for the identity: the one its own wraps are sent from. */
+  /**
+   * The highest key id this browser holds for the identity. Not necessarily still enabled: a
+   * writer sends from the newest USABLE key among {@link keyIds} (`usableEncryptionKey` over the
+   * identity's keys filtered to them).
+   */
   readonly keyId: number
   /** Every key id this browser holds for the identity, highest first ({@link keyId} among them). */
   readonly keyIds: readonly number[]

@@ -47,7 +47,6 @@ import { withTimeout } from '../timeout'
 import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
 import { ENCRYPTION_KEY_ELSEWHERE, adoptWalletEncryptionKey, type WalletEncryptionOutcome } from './encryption-key'
-import { storedEncryptionKeyIds } from './vault'
 import { clearDrafts } from '../view/draft-text'
 import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
@@ -1019,14 +1018,14 @@ export class AuthController {
     const kept = [...held, ...(given ? [given] : [])].filter((h, i, all) => !fresh.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
     const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
     const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
-    const heldBefore = await storedEncryptionKeyIds(this.network, identityId)
     const stored = await storeInVault(this.network, secret, protection, pending !== null ? { dropStagedKeyId: pending.keyId } : {})
     const encryption = await this.keepWalletEncryptionKey(identityId, forge, options)
-    // Keys the vault could not carry over are not reported when the wallet's own keys are every
-    // one of them again, or when the notice already says where the identity's key is.
-    const restored = heldBefore.every((id) => encryption.outcome?.stored.includes(id) === true)
+    // Keys the vault could not carry over (by id, from its stored entries) are not reported only
+    // when the wallet's own keys put every one of them back.
+    const dropped = stored.encryptionKeysDropped ?? []
+    const restored = dropped.length > 0 && dropped.every((id) => encryption.outcome?.stored.includes(id) === true)
     this.noteDropped(
-      restored || encryption.notice === ENCRYPTION_KEY_ELSEWHERE ? { ...stored, encryptionKeyDropped: false } : stored,
+      restored ? { ...stored, encryptionKeyDropped: false } : stored,
       'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
       encryption.notice,
     )
