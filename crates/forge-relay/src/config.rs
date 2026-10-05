@@ -15,6 +15,7 @@ use forge_core::envelope::SecretBytes;
 use forge_core::network::{NetworkSettings, NetworkTarget};
 
 use crate::error::{RelayError, Result};
+use crate::sinks::{SinkFile, SinkSpec, WatchConfig, WatchFile};
 
 /// The default poll interval. The acceptance is push → webhook in < 30 s, so 15 s keeps the
 /// worst case (poll interval + block time + delivery) under budget.
@@ -148,6 +149,11 @@ struct FileConfig {
     #[serde(default)]
     webhook: Vec<StaticWebhook>,
     wake: Option<WakeFile>,
+    /// Chat, push and email sinks (secrets as references).
+    #[serde(default)]
+    sink: Vec<SinkFile>,
+    /// Watch mode: repos polled for the sinks with no webhook document.
+    watch: Option<WatchFile>,
 }
 
 /// The fully resolved relay configuration.
@@ -189,6 +195,10 @@ pub struct RelayConfig {
     pub retry_schedule: Vec<Duration>,
     /// Runner wake-ups (`[wake]`), served on `listen`.
     pub wake: Option<WakeConfig>,
+    /// `[[sink]]` blocks: chat, push and email delivery from this file ([`crate::sinks`]).
+    pub sinks: Vec<SinkSpec>,
+    /// `[watch]`: repos polled for the sinks with no `webhook` document.
+    pub watch: Option<WatchConfig>,
 }
 
 /// CLI overrides applied on top of the file config.
@@ -253,6 +263,24 @@ impl RelayConfig {
             .map_err(|e| RelayError::Config(e.to_string()))?;
 
         let wake = file.wake.map(WakeFile::resolve).transpose()?;
+        let sinks = file
+            .sink
+            .into_iter()
+            .map(SinkFile::resolve)
+            .collect::<Result<Vec<_>>>()?;
+        let mut names = std::collections::BTreeSet::new();
+        if let Some(dup) = sinks.iter().find(|s| !names.insert(s.name.as_str())) {
+            return Err(RelayError::Config(format!(
+                "two [[sink]] blocks are named {:?}",
+                dup.name
+            )));
+        }
+        let watch = file.watch.map(WatchFile::resolve).transpose()?;
+        if watch.is_some() && sinks.is_empty() {
+            return Err(RelayError::Config(
+                "[watch] delivers to sinks: add a [[sink]] block (see the README, Sinks)".into(),
+            ));
+        }
         let listen = cli.listen.clone().or(file.listen);
         if wake.is_some() && listen.is_none() {
             return Err(RelayError::Config(
@@ -292,6 +320,8 @@ impl RelayConfig {
                 .or_else(|| crate::queue::default_state_dir().ok()),
             retry_schedule: retry_schedule(file.retry_schedule_secs)?,
             wake,
+            sinks,
+            watch,
         })
     }
 }
