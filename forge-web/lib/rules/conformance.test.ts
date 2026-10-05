@@ -37,6 +37,7 @@ import {
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import { refUpdateType } from '../repo/push'
 import { releaseProvenance, type ProvenanceInput } from './releaseProvenance'
+import { auditMerge, type MergeAuditInput } from './merge-audit'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
@@ -568,6 +569,11 @@ function runCaseV2(v: Vector): void {
     case 'merge_content': {
       onlyKeys(v, ['headOid', 'mergeOid', 'tipBefore', 'mergeParents', 'headInMerge', 'tipBeforeInMerge', 'mergeChange', 'prChange', 'baseChange'])
       expect(v2.mergeContent(v.input as v2.MergeFacts)).toEqual(v.expected)
+      break
+    }
+    case 'merge_audit': {
+      onlyKeys(v, ['mergedAt', 'merger', 'mergeOid', 'mergeHead', 'prAuthor', 'policies', 'protection', 'memberships', 'reviews', 'dismissals', 'runs', 'runners', 'bypasses'])
+      expect(auditMerge(v.input as MergeAuditInput)).toEqual(v.expected)
       break
     }
     case 'ref_name_hashes': {

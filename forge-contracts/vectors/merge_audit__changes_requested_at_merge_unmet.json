@@ -1,0 +1,87 @@
+{
+  "name": "changes_requested_at_merge_unmet",
+  "description": "A maintainer's standing request for changes at the merge blocked it.",
+  "case": "merge_audit",
+  "rules": "v2",
+  "input": {
+    "mergedAt": 10000000,
+    "merger": "maint",
+    "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prAuthor": "auth",
+    "policies": [
+      {
+        "id": "p1",
+        "createdAt": 100,
+        "policy": {
+          "requiredApprovals": 1,
+          "approverRole": 0,
+          "requireChecks": false,
+          "mergeMethods": 0
+        }
+      }
+    ],
+    "protection": [],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint2",
+        "verdict": 1,
+        "commitOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "createdAt": 5000000
+      },
+      {
+        "id": "r2",
+        "reviewer": "writ",
+        "verdict": 2,
+        "commitOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "createdAt": 6000000
+      }
+    ],
+    "dismissals": [],
+    "runs": [],
+    "runners": [],
+    "bypasses": []
+  },
+  "expected": {
+    "verdict": "unmet",
+    "policy": {
+      "requiredApprovals": 1,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0
+    },
+    "protected": false,
+    "mergerRole": "maintainer",
+    "protectionUnmet": false,
+    "approvals": {
+      "met": false,
+      "have": 1,
+      "need": 1,
+      "blockedBy": [
+        "writ"
+      ]
+    },
+    "checks": null,
+    "checksUnread": false,
+    "bypass": null,
+    "rulesChanged": false
+  }
+}
