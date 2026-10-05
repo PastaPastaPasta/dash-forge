@@ -7,8 +7,8 @@ name: Contracts
 # propertyConstraints rule (the accept/refuse vectors of forge-contracts/vectors/rc1), the
 # create-transition size against the 20,480-byte limit, the replace and index vectors of the RC2
 # items, every combination of the RC2 flags (forge-contracts/schema/variants.py), and — for
-# forge-core, which only ever changes by an in-place DataContractUpdate (platform-parity-spec
-# §6) — that the update from the registered schema is accepted. negative.sh then proves the
+# each contract, which only ever changes by an in-place DataContractUpdate (platform-parity-spec
+# §6, UPDATE-1) — that the update from its registered schema is accepted. negative.sh then proves the
 # validator refuses each broken rule the design relies on. Last, every seed and verify script
 # runs against an in-memory chain (seed-offline.mjs), and each document it writes is judged the
 # same way.
@@ -68,15 +68,17 @@ jobs:
           key: contract-validate-${{ hashFiles('tools/contract-validate/Cargo.lock') }}
       - name: Build the validator
         run: cargo +1.98.1 build -q --locked --manifest-path tools/contract-validate/Cargo.toml
-      # registered/forge-core.v1.json is the schema registered fresh at the v5 re-cut (devnet sakura, 2026-10-01): a later
-      # forge-core change must stay an in-place update of it
-      - name: Validate forge-core (as an update of the registered schema), forge-collab and forge-community
+      # registered/<contract>.v1.json are the schemas registered fresh at the v5 re-cut (devnet sakura, 2026-10-01): every
+      # later change to any of the three must stay an in-place update of them (UPDATE-1, roadmap D4)
+      - name: Validate forge-core, forge-collab and forge-community (each as an update of its registered schema)
         run: |
           "$CARGO_TARGET_DIR/debug/contract-validate" --vectors forge-contracts/vectors/rc1 \
             forge-contracts/contracts/forge-core.json \
             --expect-update forge-contracts/contracts/registered/forge-core.v1.json \
             forge-contracts/contracts/forge-collab.json \
-            forge-contracts/contracts/forge-community.json
+            --expect-update forge-contracts/contracts/registered/forge-collab.v1.json \
+            forge-contracts/contracts/forge-community.json \
+            --expect-update forge-contracts/contracts/registered/forge-community.v1.json
       - name: Negative mutations are refused
         run: tools/contract-validate/negative.sh
       # RC2: S1, S2, S3, C1 and MOD are build.py flags decided at registration (fee probes), so every

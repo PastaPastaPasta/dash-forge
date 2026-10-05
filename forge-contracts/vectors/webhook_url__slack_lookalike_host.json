@@ -1,0 +1,12 @@
+{
+  "name": "slack_lookalike_host",
+  "description": "A host that only starts with hooks.slack.com is someone else's.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://hooks.slack.com.example.org/services/x"
+  },
+  "expected": {
+    "secret": null
+  }
+}

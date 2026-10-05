@@ -1070,6 +1070,33 @@ impl KeyReport {
     }
 }
 
+#[cfg(test)]
+impl KeyReport {
+    /// A live key `#key_id`: a Forge limited key (0.25 DASH, 0.2 left, no expiry), or an
+    /// unlimited one.
+    pub(crate) fn for_test(key_id: u32, limited: bool) -> Self {
+        Self {
+            key_id: Some(key_id),
+            disabled_id: None,
+            limited,
+            doc_type: None,
+            total: limited.then_some(25_000_000_000),
+            remaining: limited.then_some(20_000_000_000),
+            expires_at: None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl PrivateAccess {
+    pub(crate) fn for_test(held: &[u32], on_identity: bool) -> Self {
+        Self {
+            held: held.to_vec(),
+            on_identity,
+        }
+    }
+}
+
 pub(crate) async fn key_report(
     client: &PlatformClient,
     identity: &LoadedIdentity,
@@ -1197,6 +1224,9 @@ async fn status(ctx: &Ctx) -> Result<()> {
                 println!("Balance:  {} DASH", dash_amount(credits_to_dash(b)));
             }
             println!("Stored:   {where_}");
+            if report.as_ref().is_some_and(|r| r.key_id.is_some() && !r.is_capped()) {
+                println!("          warning: this key has no budget or expiry, so it can spend the whole balance; `dg auth login <identity file>` registers a capped key");
+            }
             if master == Some(true) {
                 println!("          (holds the master key: `dg auth login <file>` would store only a limited key and the encryption key)");
                 if kind == "keychain" {
