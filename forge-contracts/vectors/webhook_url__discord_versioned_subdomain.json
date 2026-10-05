@@ -1,0 +1,13 @@
+{
+  "name": "discord_versioned_subdomain",
+  "description": "An API version in the path and a canary subdomain are still Discord webhooks.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://canary.discord.com/api/v10/webhooks/1/tok"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Discord"
+  }
+}
