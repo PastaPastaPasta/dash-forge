@@ -8,7 +8,7 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { hasShortUrl, RESERVED_SEGMENTS, SHORT_URL_EXPAND_SOURCE, shortRepoPath, shortRepoUrl, shortUrlShimScript, type ShortTarget } from './short-url'
+import { hasShortUrl, RESERVED_SEGMENTS, SHORT_URL_EXPAND_SOURCE, shortRepoPath, shortRepoUrl, shortUrlShimScript, upstreamAliasPath, type ShortTarget } from './short-url'
 
 type Expand = (pathname: string, base: string, reserved: readonly string[]) => string | null
 // The shim is plain JS in a string; evaluate it as the page does.
@@ -142,6 +142,29 @@ describe('GitHub URLs that map onto an existing page (L-27)', () => {
       expect(expand(path)).toBeNull()
     },
   )
+})
+
+describe('the GitHub alias: /github.com/<owner>/<repo> (CJ-3)', () => {
+  it('opens the mirror finder for a GitHub repo', () => {
+    expect(expand('/github.com/dashpay/dash')).toBe('/github.com/?owner=dashpay&name=dash')
+    expect(expand('/gh/dashpay/dash/')).toBe('/github.com/?owner=dashpay&name=dash')
+    expect(expand('/GitHub.com/DashPay/Dash.git')).toBe('/github.com/?owner=DashPay&name=Dash')
+  })
+  it('carries the rest of a GitHub path, to open the same view of the mirror', () => {
+    expect(expand('/github.com/dashpay/dash/issues/12')).toBe('/github.com/?owner=dashpay&name=dash&rest=issues%2F12')
+    expect(expand('/github.com/dashpay/dash/tree/develop/src')).toBe('/github.com/?owner=dashpay&name=dash&rest=tree%2Fdevelop%2Fsrc')
+  })
+  it('honors the base path', () => {
+    expect(expand('/dash-forge/github.com/a/b', '/dash-forge')).toBe('/dash-forge/github.com/?owner=a&name=b')
+  })
+  it('leaves an owner-only or malformed alias alone', () => {
+    expect(expand('/github.com/dashpay')).toBeNull()
+    expect(expand('/github.com/.hidden/x')).toBeNull()
+  })
+  it('matches the page link the app builds', () => {
+    expect(upstreamAliasPath('dashpay', 'dash')).toBe('/github.com/?owner=dashpay&name=dash')
+    expect(upstreamAliasPath('dashpay', 'dash', 'issues/12')).toBe(expand('/github.com/dashpay/dash/issues/12'))
+  })
 })
 
 describe('the shim leaves everything else alone', () => {

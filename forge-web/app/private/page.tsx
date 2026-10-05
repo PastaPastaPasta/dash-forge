@@ -69,7 +69,7 @@ export default function PrivateReposPage(): JSX.Element {
           </p>
         </div>
 
-        <Section icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />} title="How sealing works" id="private-how">
+        <Section icon={<Lock className="h-4 w-4 text-fg-muted" aria-hidden />} title="How sealing works" id="private-how">
           <ol className="list-decimal space-y-1 pl-5">
             <li>Each private repository has its own key. Every member gets a copy, encrypted to their identity.</li>
             <li>Your browser or the command line encrypts code, branch names, issues, pull requests, comments, reviews and releases before they leave your device.</li>
@@ -105,14 +105,14 @@ export default function PrivateReposPage(): JSX.Element {
           </div>
         </section>
 
-        <Section icon={<UserMinus className="h-4 w-4 text-forge-500" aria-hidden />} title="When you remove a member" id="private-remove">
+        <Section icon={<UserMinus className="h-4 w-4 text-fg-muted" aria-hidden />} title="When you remove a member" id="private-remove">
           <p>
             Removing a member changes the key. Everything written after that uses the new key, which they never receive. What they could read
             before stays readable to them: nothing can take back a copy they may have kept.
           </p>
         </Section>
 
-        <Section icon={<KeyRound className="h-4 w-4 text-forge-500" aria-hidden />} title="What private repositories can't do" id="private-limits">
+        <Section icon={<KeyRound className="h-4 w-4 text-fg-muted" aria-hidden />} title="What private repositories can't do" id="private-limits">
           <p>
             Forks and webhooks are turned off, because both would publish content unencrypted. Merging a pull request needs the{' '}
             <code className="font-mono">dg</code> command line for now.

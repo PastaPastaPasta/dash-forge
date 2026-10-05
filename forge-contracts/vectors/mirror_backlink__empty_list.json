@@ -1,0 +1,14 @@
+{
+  "name": "empty_list",
+  "description": "An empty list is valid and lists nothing.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "{\"mirrors\": []}",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": true,
+    "listed": false
+  }
+}

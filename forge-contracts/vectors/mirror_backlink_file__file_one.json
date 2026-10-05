@@ -1,0 +1,14 @@
+{
+  "name": "file_one",
+  "description": "The file for one mirror: compact JSON and a final newline.",
+  "case": "mirror_backlink_file",
+  "rules": "v2",
+  "input": {
+    "repoIds": [
+      "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+    ]
+  },
+  "expected": {
+    "file": "{\"mirrors\":[\"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"]}\n"
+  }
+}

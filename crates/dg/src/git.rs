@@ -207,6 +207,15 @@ fn pin_network_with(ctx: &Ctx, root: &Path, env: &[(String, String)]) -> Result<
             }
         }
     }
+    // A quorum service chosen for testnet or mainnet (Dash's is down or blocked): a later
+    // plain `git fetch` in this clone needs it too.
+    if let Some(q) = &ctx.target.quorum_url {
+        let current = git(root, &["config", "--local", "--get", "dash.quorumUrl"], env).ok();
+        if current.as_deref() != Some(q.as_str()) {
+            set("dash.quorumUrl", q)?;
+            out.push(format!("dash.quorumUrl={q}"));
+        }
+    }
     let helper = NetworkSettings::from_env().overlay(local());
     if !helper.resolve().is_ok_and(|t| t.network == *want) {
         tracing::warn!(

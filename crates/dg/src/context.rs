@@ -291,11 +291,14 @@ impl Ctx {
     /// Network: see [`stack`]. Identity: `--identity` > `DASH_FORGE_KEY` env > config
     /// default.
     pub fn resolve(cli: &Cli, config: &Config) -> Result<Self> {
-        let flags = NetworkSettings::from_flags(
-            cli.network.map(|n| n.kind().to_string()),
-            cli.devnet_name.clone(),
-            cli.dapi_addresses.clone(),
-        );
+        let flags = NetworkSettings {
+            quorum_base_url: cli.quorum_url.clone(),
+            ..NetworkSettings::from_flags(
+                cli.network.map(|n| n.kind().to_string()),
+                cli.devnet_name.clone(),
+                cli.dapi_addresses.clone(),
+            )
+        };
         let explicit = cli
             .identity
             .clone()
