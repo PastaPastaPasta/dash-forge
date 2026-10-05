@@ -11,6 +11,7 @@ export {
   branchName,
   creditsAsDash,
   dashToUsd,
+  mainnetCents,
   dashValueNote,
   formatBytes,
   formatDash,
