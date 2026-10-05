@@ -148,7 +148,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
     try {
       const exclude = effect === 'rotate-exclude' ? [removing.member] : []
       const from = chainFrom(session, removing.member, removing.role)
-      return { plan: planRotation(session, identity, exclude, repo.forge.core, write.context.ops.keyId, from), error: null }
+      return { plan: planRotation(session, identity, exclude, repo.forge.core, write.context.ops.keyIds, from), error: null }
     } catch (e) {
       return { plan: null, error: e instanceof Error ? e.message : String(e) }
     }

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
  * Wallet sign-in over an unfinished renewal whose key is locked: the renewal's passphrase input is
- * uncontrolled, so the typed passphrase never lands in the DOM's `value` attribute.
+ * uncontrolled, so the typed passphrase never lands in the DOM's `value` attribute. The wallet's
+ * encryption key goes to the sign-in with every attempt, and is wiped once it is done (D27).
  */
 
 import { act } from 'react'
@@ -9,9 +10,11 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PendingRenewalChoiceError, PendingRenewalLockedError } from '@/lib/auth/controller'
 
-const { ID, FORGE } = vi.hoisted(() => ({
+const { ID, FORGE, answered } = vi.hoisted(() => ({
   ID: '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD',
   FORGE: { core: 'CoreContract111', collab: 'CollabContract111', community: 'CommunityContract111', group: 'Group111' },
+  /** The encryption keys of the last answer the fake wallet gave. */
+  answered: { keys: [] as Uint8Array[] },
 }))
 const FAKE_VAULT_PASSPHRASE = 'fake-vault-passphrase-000'
 const FAKE_RENEWAL_PASSPHRASE = 'fake-renewal-passphrase-789'
@@ -30,7 +33,10 @@ vi.mock('@/lib/auth/app-connect', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/auth/app-connect')>()),
   responseSources: async () => [{}],
   newLoginRequest: () => ({ uri: 'dash-key:fake', expiresAt: Date.now() + 60_000 }),
-  awaitWalletAnswer: async () => ({ kind: 'keys', identityId: ID, keys: [{ scope: {}, limits: {} }] }),
+  awaitWalletAnswer: async () => {
+    answered.keys = [new Uint8Array(32).fill(0x42)]
+    return { kind: 'keys', identityId: ID, keys: [{ scope: {}, limits: {} }], encryptionKeys: answered.keys }
+  },
 }))
 vi.mock('@/lib/auth/key-registration', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/auth/key-registration')>()),
@@ -99,7 +105,21 @@ describe('WalletConnectFlow: a locked unfinished renewal', () => {
     expect(adoptWalletKeys).toHaveBeenLastCalledWith(ID, expect.anything(), expect.anything(), {
       discardPendingRenewal: true,
       renewalUnlock: { passphrase: FAKE_RENEWAL_PASSPHRASE },
+      encryptionKeys: answered.keys,
+      justRegistered: false,
     })
     expect(onDone).toHaveBeenCalled()
+    // Passed intact on each of the three attempts, and wiped once signed in.
+    expect(adoptWalletKeys).toHaveBeenCalledTimes(3)
+    expect(answered.keys[0]!.every((b) => b === 0)).toBe(true)
+  })
+
+  it("wipes the wallet's encryption key when the sheet closes before signing in", async () => {
+    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
+    await flush()
+    expect(host.querySelector('[data-testid="wallet-confirm"]')).not.toBeNull()
+    expect(answered.keys[0]!.every((b) => b === 0x42)).toBe(true)
+    act(() => root.render(<></>))
+    expect(answered.keys[0]!.every((b) => b === 0)).toBe(true)
   })
 })
