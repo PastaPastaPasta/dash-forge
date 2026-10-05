@@ -38,7 +38,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::collab::v2::{approvals_over, Collab, Patch, PatchInput, PatchView};
+use forge_core::collab::v2::{
+    approvals_over, Collab, Patch, PatchInput, PatchView, TargetKind, TargetRead,
+};
 use forge_core::create::default_journal_dir;
 use forge_core::rules::v2::{Role, StateAction};
 use forge_core::rules::RefState;
@@ -256,7 +258,7 @@ pub(crate) struct Pr<S = Session> {
 /// Open `repo` to read (an archived repository is readable; a public one needs no identity)
 /// and read PR `number`'s view.
 pub(crate) async fn open_pr_read(ctx: &Ctx, repo: &str, number: u64) -> Result<Pr<Reader>> {
-    let s = Reader::open(ctx, repo).await?;
+    let s = Reader::open_discussion(ctx, repo).await?;
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     let view = collab.patch_view(&s.repo, p).await?;
@@ -798,6 +800,7 @@ fn same_head_and_base(v: &PatchView, source_id: &str, head_ref: &str, base: &str
 // list / view
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_lines)] // the reads, then the JSON and the human list
 async fn list(
     ctx: &Ctx,
     repo: &str,
@@ -805,40 +808,70 @@ async fn list(
     state: crate::PrStateArg,
     include_hidden: bool,
 ) -> Result<()> {
-    let s = Reader::open(ctx, repo).await?;
+    let s = Reader::open_discussion(ctx, repo).await?;
     let handle = &s.repo;
     let collab = s.collab();
     // A fixed number of requests for the whole page (D-500: it was about 9 per PR).
-    let page = collab.list_patch_views(handle, limit).await?;
-    let (hidden, more) = (page.hidden, page.more);
-    let read = page.rows.len();
-    let rows: Vec<_> = page
+    let (page, sealed) = collab.list_patch_views_read(handle, limit).await?;
+    // A public repo's members-only PRs this reader cannot open are rows of their own ("#4 ·
+    // members-only pull request by @alice · open", DESIGN D14), filtered and moderated like
+    // the others; malformed ones are counted.
+    let sealed: Vec<forge_core::collab::v2::SealedTarget> =
+        if handle.visibility == forge_core::rules::v2::Visibility::Public {
+            sealed
+                .into_iter()
+                .map(|mut x| {
+                    x.placeholder = s
+                        .placeholders(vec![x.placeholder])
+                        .pop()
+                        .expect("one in, one out");
+                    x
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+    let (hidden, more) = (page.hidden - sealed.len(), page.more);
+    let read = page.rows.len() + sealed.len();
+    let mut rows: Vec<PrRow> = page
         .rows
         .into_iter()
-        .filter(|(v, _)| state.matches(v.state.open, v.state.merged))
+        .map(PrRow::Pr)
+        .chain(sealed.into_iter().map(PrRow::Sealed))
+        .filter(|r| {
+            let (open, merged) = r.open_merged();
+            state.matches(open, merged)
+        })
         .collect();
+    // newest first, the two kinds interleaved by number
+    rows.sort_by_key(|r| std::cmp::Reverse(r.number()));
     // The PRs the state filter left out, for the empty list's hint.
     let others = read - rows.len();
     // RC2 MOD: the PRs a maintainer hid, from the events already read (the feed).
-    let threads: Vec<(forge_core::collab::v2::Target, &[forge_core::rules::Event])> = rows
-        .iter()
-        .map(|(v, _)| (v.patch.target(), v.log.events.as_slice()))
-        .collect();
+    let threads: Vec<(forge_core::collab::v2::Target, &[forge_core::rules::Event])> =
+        rows.iter().map(|r| (r.target(), r.events())).collect();
     let hides = collab.hidden_threads(handle, &threads).await;
-    let (rows, omitted) = crate::fmt::split_hidden(
-        rows,
-        &hides,
-        |(v, _)| v.patch.document_id.as_str(),
-        include_hidden,
-    );
-    let names =
-        crate::common::hider_names(ctx, &s.client, rows.iter().filter_map(|(_, h)| *h)).await;
+    let (rows, omitted) = crate::fmt::split_hidden(rows, &hides, PrRow::id, include_hidden);
+    let total_sealed = rows
+        .iter()
+        .filter(|(r, _)| matches!(r, PrRow::Sealed(_)))
+        .count();
+    let names = if ctx.json {
+        std::collections::BTreeMap::new()
+    } else {
+        let moderators = rows.iter().filter_map(|(_, h)| h.map(|h| h.by.as_str()));
+        let authors = rows.iter().filter_map(|(r, _)| match r {
+            PrRow::Sealed(x) => Some(x.placeholder.author.as_str()),
+            PrRow::Pr(_) => None,
+        });
+        s.client.dpns_first_names(moderators.chain(authors)).await
+    };
     let who = |id: &str| crate::fmt::with_name(id, &names);
     let json_rows: Vec<_> = rows
         .iter()
-        .map(|((v, a), h)| {
-            crate::fmt::with_hidden_by(
-                json!({
+        .map(|(r, h)| {
+            let row = match r {
+                PrRow::Pr((v, a)) => json!({
                     "number": v.patch.number,
                     "title": v.patch.title,
                     "author": v.patch.author,
@@ -854,14 +887,29 @@ async fn list(
                     "draft": v.state.draft,
                     "approvals": a.approvers.len(),
                     "changesRequested": a.changes_requested.len(),
+                    "audience": crate::audience::json(v.patch.audience),
+                    "readable": true,
                 }),
-                *h,
-            )
+                PrRow::Sealed(x) => json!({
+                    "number": x.placeholder.number,
+                    "title": null,
+                    "author": x.placeholder.author,
+                    "state": crate::audience::state_word(
+                        forge_core::collab::v2::TargetKind::Patch,
+                        &x.log
+                    ),
+                    "audience": crate::audience::json(x.placeholder.audience),
+                    "readable": false,
+                    "why": crate::audience::why_word(x.placeholder.why),
+                }),
+            };
+            crate::fmt::with_hidden_by(row, *h)
         })
         .collect();
     ctx.emit(
         json!({
             "count": rows.len(),
+            "membersOnly": total_sealed,
             "prs": json_rows,
             "hidden": hidden,
             "hiddenOmitted": omitted,
@@ -884,9 +932,34 @@ async fn list(
                     );
                 }
             }
-            for ((v, a), h) in &rows {
-                let hid = h.map(|h| crate::fmt::hidden_row_mark(h, &who));
-                println!("{}", pr_line(v, a, &hid.unwrap_or_default()));
+            for (r, h) in &rows {
+                let hid = h
+                    .map(|h| crate::fmt::hidden_row_mark(h, &who))
+                    .unwrap_or_default();
+                match r {
+                    PrRow::Pr((v, a)) => {
+                        let mark = crate::audience::suffix(handle, v.patch.audience);
+                        println!("{}{mark}", pr_line(v, a, &hid));
+                    }
+                    PrRow::Sealed(x) => println!(
+                        "#{:<4} {:<6} · {} by {}{}",
+                        x.placeholder.number.unwrap_or_default(),
+                        crate::audience::state_word(
+                            forge_core::collab::v2::TargetKind::Patch,
+                            &x.log
+                        ),
+                        crate::audience::sealed_noun(x.placeholder.audience, "pull request"),
+                        crate::audience::at_name(&x.placeholder.author, &names),
+                        safe(&hid)
+                    ),
+                }
+            }
+            if total_sealed > 0 {
+                println!(
+                    "Pull requests {} ({total_sealed} members-only; only members of {} can read them)",
+                    rows.len(),
+                    handle.display()
+                );
             }
             if let Some(note) = crate::fmt::hidden_rows_note(omitted) {
                 println!("{note}");
@@ -902,6 +975,59 @@ async fn list(
         },
     );
     Ok(())
+}
+
+/// One row of `dg pr list`: a PR, or a members-only one this reader cannot open.
+#[allow(clippy::large_enum_variant)] // a page of at most 100, built once
+enum PrRow {
+    Pr((PatchView, forge_core::rules::v2::Approvals)),
+    Sealed(forge_core::collab::v2::SealedTarget),
+}
+
+impl PrRow {
+    fn id(&self) -> &str {
+        match self {
+            PrRow::Pr((v, _)) => &v.patch.document_id,
+            PrRow::Sealed(x) => &x.placeholder.document_id,
+        }
+    }
+
+    fn number(&self) -> u32 {
+        match self {
+            PrRow::Pr((v, _)) => v.patch.number,
+            PrRow::Sealed(x) => x.placeholder.number.unwrap_or_default(),
+        }
+    }
+
+    /// Open, and merged: a members-only PR's from its transitions (public).
+    fn open_merged(&self) -> (bool, bool) {
+        match self {
+            PrRow::Pr((v, _)) => (v.state.open, v.state.merged),
+            PrRow::Sealed(x) => {
+                let st = forge_core::rules::v2::status_of_code(x.log.state_code());
+                (st.open, st.merged)
+            }
+        }
+    }
+
+    fn events(&self) -> &[forge_core::rules::Event] {
+        match self {
+            PrRow::Pr((v, _)) => &v.log.events,
+            PrRow::Sealed(x) => &x.log.events,
+        }
+    }
+
+    fn target(&self) -> forge_core::collab::v2::Target {
+        match self {
+            PrRow::Pr((v, _)) => v.patch.target(),
+            PrRow::Sealed(x) => forge_core::collab::v2::Target {
+                kind: TargetKind::Patch,
+                id: x.placeholder.document_id.clone(),
+                number: x.placeholder.number.unwrap_or_default(),
+                author: x.placeholder.author.clone(),
+            },
+        }
+    }
 }
 
 /// One `dg pr list` row: number, state, title, head, approvals and change requests, and `hid`,
@@ -967,6 +1093,9 @@ fn reviews_json(
                 "body": r.body,
                 "bodyIncomplete": incomplete.get(&r.document_id),
                 "createdAt": r.created_at,
+                "audience": crate::audience::json(r.audience),
+                // a members-only review this reader cannot open: its verdict counts (D15)
+                "readable": !r.members_only,
             })
         })
         .collect()
@@ -991,6 +1120,7 @@ fn comments_json(
                 "reviewId": c.review_id,
                 "anchor": forge_core::rules::v2::anchor_of(&c.anchor),
                 "createdAt": c.created_at,
+                "audience": crate::audience::json(c.audience),
             })
         })
         .collect()
@@ -1010,24 +1140,52 @@ async fn view(
     // A public PR is read without opening any key (a sealed one would ask for its
     // passphrase); a private repo's sealed documents open with the identity's keys. The
     // viewer ("new commits since your review") is named when the key source says who it is.
-    let s = Reader::open(ctx, repo).await?;
+    let s = Reader::open_discussion(ctx, repo).await?;
     let (client, handle, collab) = (&s.client, &s.repo, s.collab());
+    let num = number_arg(number)?;
+    // A members-only PR this reader cannot open is its row, exit 0 (its number is public).
+    match collab.target_read(handle, TargetKind::Patch, num).await? {
+        None => return Err(not_found(repo, number)),
+        Some(TargetRead::MembersOnly(sealed)) => {
+            return crate::audience::target_view(ctx, &s, TargetKind::Patch, num, &sealed).await
+        }
+        Some(TargetRead::Readable(_)) => {}
+    }
     let p = patch(&collab, handle, repo, number).await?;
     let mut v = collab.patch_view(handle, p).await?;
     let oracle = collab.member_oracle(handle).await?;
     let doc_id = v.patch.document_id.clone();
-    let (mut reviews, hidden_reviews) = collab.reviews_counted(handle, &doc_id).await?;
+    // Every review that counts, a members-only one this reader cannot open included (its
+    // verdict counts for everyone, DESIGN D15); the members-only ones that neither open nor
+    // count, and the members-only comments this reader cannot open, as placeholders.
+    let (mut reviews, uncounted_reviews, malformed_reviews) =
+        collab.reviews_read(handle, &doc_id).await?;
     let approvals = approvals_over(&reviews, &v, &oracle);
-    let (mut comments, hidden_comments) = collab.comments_counted(handle, &doc_id).await?;
+    let (mut comments, members_only, malformed_comments) =
+        collab.comments_read(handle, &doc_id).await?;
+    let (members_only, uncounted_reviews) = (
+        s.placeholders(members_only),
+        s.placeholders(uncounted_reviews),
+    );
+    let hidden_comments = malformed_comments + members_only.len();
+    let hidden_reviews = malformed_reviews + uncounted_reviews.len();
+    let (placeholders, _) = crate::audience::shown(handle, &members_only);
+    let pr_audience = v.patch.audience;
     // Long bodies (forge-v2.md §6.3): each field's full text, fetched and checked; a text whose
     // rest cannot be read keeps its first part and says why: in `bodyIncomplete` (the
     // description's, and by id each comment's and review's), and in a line under it when printed.
     let mut why = crate::long_body::read_in_place(
         &collab,
         handle,
-        std::iter::once(&mut v.patch.body)
-            .chain(comments.iter_mut().map(|c| &mut c.body))
-            .chain(reviews.iter_mut().map(|r| &mut r.body))
+        std::iter::once((&mut v.patch.body, pr_audience))
+            .chain(comments.iter_mut().map(|c| {
+                let aud = c.audience;
+                (&mut c.body, aud)
+            }))
+            .chain(reviews.iter_mut().map(|r| {
+                let aud = r.audience;
+                (&mut r.body, aud)
+            }))
             .collect(),
     )
     .await
@@ -1056,6 +1214,12 @@ async fn view(
     threads::drop_untrusted_hunks(&mut conv, trusted);
     // The conversations as printed: a hidden comment's body is its one "hidden by" line, and a
     // long body read only in part has the line saying why under it.
+    // members-only comments, marked beside their author when printed
+    let members_ids: std::collections::BTreeSet<&str> = comments
+        .iter()
+        .filter(|c| crate::audience::marked(handle, c.audience))
+        .map(|c| c.document_id.as_str())
+        .collect();
     let printed_conv = if (show_hidden || moderation.items.is_empty()) && incomplete.is_empty() {
         None
     } else {
@@ -1138,6 +1302,18 @@ async fn view(
     };
 
     let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed, &incomplete);
+    let unread_comments: Vec<_> = members_only.iter().collect();
+    let unread_reviews: Vec<_> = uncounted_reviews.iter().collect();
+    let members_notes: Vec<String> =
+        crate::audience::hidden_notes(handle, malformed_comments, &unread_comments, "comment")
+            .into_iter()
+            .chain(crate::audience::hidden_notes(
+                handle,
+                malformed_reviews,
+                &unread_reviews,
+                "review",
+            ))
+            .collect();
     let unresolved = conv.threads.iter().filter(|t| !t.resolved).count();
     // Merge integrity: whether the recorded merge contains the PR, checked here only when the
     // current repository already holds the commits (`dg pr verify` fetches them).
@@ -1211,8 +1387,19 @@ async fn view(
             "hiddenEventValues": v.log.hidden_values,
             "plaintextEventValues": v.log.plaintext_values,
     });
-    if let (Some(o), serde_json::Value::Object(extra)) = (out.as_object_mut(), standing) {
-        o.extend(extra);
+    // Who it is for, and the members-only comments this reader cannot open: the ones D14
+    // shows, and how many (kept out of the `json!` above: its macro depth is at the limit).
+    let audience = json!({
+        "audience": crate::audience::json(pr_audience),
+        "readable": true,
+        "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),
+        "membersOnlyHidden": members_only.len(),
+        "membersOnlyReviewsHidden": uncounted_reviews.len(),
+    });
+    for extra in [standing, audience] {
+        if let (Some(o), serde_json::Value::Object(extra)) = (out.as_object_mut(), extra) {
+            o.extend(extra);
+        }
     }
     // DPNS names for the human view, as `dg issue view` shows them (QW3-070), read together;
     // a failed read shows the bare id.
@@ -1225,6 +1412,7 @@ async fn view(
             .chain(approvals.changes_requested.iter().map(String::as_str))
             .chain(rows.iter().map(|r| r.identity.as_str()))
             .chain(reviews.iter().map(|r| r.reviewer.as_str()))
+            .chain(placeholders.iter().map(|m| m.author.as_str()))
             .chain(bypasses.iter().map(|b| b.actor.as_str()))
             // who hid the thread or a review, for its "hidden by" line
             .chain(moderation.thread.iter().map(|h| h.by.as_str()))
@@ -1242,6 +1430,9 @@ async fn view(
                 safe(&v.patch.title)
             );
             println!("author: {}", who(&v.patch.author));
+            if crate::audience::marked(handle, pr_audience) {
+                println!("members-only: visible to members of {}", handle.display());
+            }
             if let Some(h) = &moderation.thread {
                 println!("{}", crate::fmt::hidden_line("this pull request", h, &who, show_hidden));
                 if !show_hidden {
@@ -1362,12 +1553,21 @@ async fn view(
                     " (stale — new commits since)"
                 };
                 println!(
-                    "\n{} — {} on {}{tag}  [{}]",
+                    "\n{} — {} on {}{tag}  [{}]{}",
                     r.verdict.label(),
                     who(&r.reviewer),
                     short(&r.commit_oid),
-                    short(&r.document_id)
+                    short(&r.document_id),
+                    if r.members_only {
+                        ""
+                    } else {
+                        crate::audience::suffix(handle, r.audience)
+                    }
                 );
+                if r.members_only {
+                    // DESIGN §10: "Approved by @bob · review text visible to members"
+                    println!("  review text visible to members (its verdict counts)");
+                }
                 if let Some(h) = moderation.item(&r.document_id) {
                     // Still counted: hiding is display only (dismiss to stop it counting).
                     println!(
@@ -1386,7 +1586,18 @@ async fn view(
                 }
             }
             if show_comments {
-                print_conversations(printed_conv.as_ref().unwrap_or(&conv));
+                print_conversations(printed_conv.as_ref().unwrap_or(&conv), &members_ids);
+                if !placeholders.is_empty() {
+                    println!("\nMembers-only");
+                    for m in &placeholders {
+                        println!(
+                            "  — {} [{}]: [{}]",
+                            who(&m.author),
+                            short(&m.document_id),
+                            crate::audience::sealed_noun(m.audience, "comment")
+                        );
+                    }
+                }
             } else if !comments.is_empty() {
                 println!(
                     "\n{} in {} ({unresolved} unresolved) — `--comments` shows them",
@@ -1394,11 +1605,8 @@ async fn view(
                     crate::fmt::plural(conv.threads.len() + conv.general.len(), "thread")
                 );
             }
-            if hidden_comments + hidden_reviews > 0 {
-                println!(
-                    "\n{}",
-                    crate::fmt::hidden_note(handle, hidden_comments + hidden_reviews)
-                );
+            for note in &members_notes {
+                println!("\n{note}");
             }
             if let Some(n) =
                 crate::fmt::event_values_note(v.log.hidden_values, v.log.plaintext_values)
@@ -1466,7 +1674,16 @@ fn check_word(state: forge_core::rules::v2::CheckState) -> &'static str {
 }
 
 /// The threads under their file and line, then the general comments.
-fn print_conversations(conv: &threads::Conversations) {
+fn print_conversations(conv: &threads::Conversations, members: &std::collections::BTreeSet<&str>) {
+    // " · members-only" beside a members-only comment's author, added here (never written into
+    // the comment: who wrote it is what the hunk-trust check reads)
+    let mark = |id: &str| {
+        if members.contains(id) {
+            " · members-only"
+        } else {
+            ""
+        }
+    };
     let mut last_path = "";
     for t in &conv.threads {
         if t.anchor.path != last_path {
@@ -1492,7 +1709,7 @@ fn print_conversations(conv: &threads::Conversations) {
             }
         }
         for c in &t.comments {
-            println!("    — {} [{}]:", c.author, short(&c.id));
+            println!("    — {}{} [{}]:", c.author, mark(&c.id), short(&c.id));
             for line in safe(&c.body).lines() {
                 println!("      {line}");
             }
@@ -1507,7 +1724,7 @@ fn print_conversations(conv: &threads::Conversations) {
     if !conv.general.is_empty() {
         println!("\nConversation");
         for c in &conv.general {
-            println!("  — {} [{}]:", c.author, short(&c.id));
+            println!("  — {}{} [{}]:", c.author, mark(&c.id), short(&c.id));
             for line in safe(&c.body).lines() {
                 println!("    {line}");
             }

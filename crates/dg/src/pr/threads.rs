@@ -431,6 +431,7 @@ mod tests {
             created_at: at,
             imported: None,
             members_only: false,
+            audience: forge_core::rules::v2::Audience::Public,
         }
     }
 
