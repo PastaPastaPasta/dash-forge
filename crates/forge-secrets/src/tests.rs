@@ -3,8 +3,8 @@
 
 use crate::util::{crc32, encode_base};
 use crate::{
-    github_checksum_ok, gitlab_checksum_ok, is_env_file_name, is_test_path, scan_file, verdict,
-    AllowList, Rule, Severity, WarnReason,
+    decide, git_blob_id, github_checksum_ok, gitlab_checksum_ok, is_env_file_name, is_test_path,
+    scan_file, scan_unread, verdict, AllowList, Rule, Severity, WarnReason,
 };
 
 const B62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -33,7 +33,7 @@ fn pem() -> String {
 }
 
 fn rules(path: &str, text: &str) -> Vec<Rule> {
-    scan_file(path, Some(text.as_bytes()))
+    scan_file(path, text.as_bytes())
         .into_iter()
         .map(|f| f.rule)
         .collect()
@@ -66,10 +66,10 @@ fn env_file_names() {
 
 #[test]
 fn a_new_env_refuses_and_its_example_passes() {
-    let f = scan_file(".env", Some(b"SECRET=x\n"));
+    let f = scan_file(".env", b"SECRET=x\n");
     assert_eq!(f.len(), 1);
     assert_eq!(verdict(&f[0], false).severity, Severity::Refuse);
-    assert!(scan_file(".env.example", Some(b"SECRET=x\n")).is_empty());
+    assert!(scan_file(".env.example", b"SECRET=x\n").is_empty());
 }
 
 #[test]
@@ -78,10 +78,10 @@ fn test_folders_and_history_warn() {
     assert!(is_test_path("a/testdata/b/key.pem"));
     assert!(!is_test_path("test"));
     assert!(!is_test_path("latest/key.pem"));
-    let f = &scan_file("test/key.pem", Some(pem().as_bytes()))[0];
+    let f = &scan_file("test/key.pem", pem().as_bytes())[0];
     assert_eq!(f.rule, Rule::PrivateKey);
     assert_eq!(verdict(f, false).reason, Some(WarnReason::TestPath));
-    let f = &scan_file("key.pem", Some(pem().as_bytes()))[0];
+    let f = &scan_file("key.pem", pem().as_bytes())[0];
     assert_eq!(verdict(f, false).severity, Severity::Refuse);
     assert_eq!(verdict(f, true).reason, Some(WarnReason::History));
 }
@@ -153,7 +153,7 @@ fn private_key_markers_need_a_body() {
 fn wifs_warn_and_need_their_checksum() {
     // Dash Core src/test/data/key_io_valid.json (public test vectors).
     let w = "XK9kG3y8JeDgSNrXdomWiCiBMs7D2eNJSrux1rx7GuGLWpMxEH3w";
-    let f = scan_file("contrib/k.py", Some(format!("K = '{w}'\n").as_bytes()));
+    let f = scan_file("contrib/k.py", format!("K = '{w}'\n").as_bytes());
     assert_eq!(f.len(), 1);
     assert_eq!(f[0].rule, Rule::Wif);
     assert_eq!(verdict(&f[0], false).reason, Some(WarnReason::Rule));
@@ -178,15 +178,79 @@ fn assignments_warn_once_per_line() {
 
 #[test]
 fn fingerprints_are_short_stable_and_per_path() {
-    let a = &scan_file(".env", Some(b"A=1\n"))[0];
-    let b = &scan_file(".env", Some(b"A=1\n"))[0];
-    let c = &scan_file("x/.env", Some(b"A=1\n"))[0];
+    let a = &scan_file(".env", b"A=1\n")[0];
+    let b = &scan_file(".env", b"A=1\n")[0];
+    let c = &scan_file("x/.env", b"A=1\n")[0];
     assert_eq!(a.fingerprint.len(), 12);
     assert_eq!(a.fingerprint, b.fingerprint);
     assert_ne!(a.fingerprint, c.fingerprint);
     let mut allow = AllowList::new();
     assert!(allow.add_fingerprint(&a.fingerprint));
-    assert!(allow.allows(a) && !allow.allows(c));
+    assert!(allow.allows_fingerprint(a) && !allow.allows_fingerprint(c));
+    // The name-only fingerprint of an unread file is the same as the read one's: both use the
+    // blob id, never the path alone.
+    let unread = &scan_unread(".env", &git_blob_id(b"A=1\n"))[0];
+    assert_eq!(unread.fingerprint, a.fingerprint);
+    assert_ne!(
+        scan_unread(".env", &"0".repeat(40))[0].fingerprint,
+        a.fingerprint
+    );
+}
+
+#[test]
+fn blob_ids_match_git() {
+    // `printf 'A=1\n' | git hash-object --stdin`
+    assert_eq!(
+        git_blob_id(b"A=1\n"),
+        "bd2c89c15cf5290bc8b5e0d71f071132864134c3"
+    );
+    assert_eq!(git_blob_id(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+}
+
+#[test]
+fn a_stray_begin_does_not_hide_a_later_key() {
+    let marker = format!("-----BEGIN {}-----", "RSA PRIVATE KEY");
+    let text = format!("{marker} is how a key starts\n{}", pem());
+    assert_eq!(rules("notes.md", &text), [Rule::PrivateKey]);
+    // Thousands of markers stay cheap and find nothing.
+    let many = format!("{marker}\n").repeat(10_000);
+    assert!(rules("many.txt", &many).is_empty());
+}
+
+#[test]
+fn env_files_case_bom_and_colons() {
+    assert!(is_env_file_name("APP/.ENV"));
+    assert!(is_env_file_name(".Env.Production"));
+    assert!(!is_env_file_name(".ENV.EXAMPLE"));
+    assert_eq!(rules(".env", "\u{feff}A=1\n"), [Rule::EnvFile]);
+    assert_eq!(
+        rules(".env.yaml", "DB_PASSWORD: not-real\n"),
+        [Rule::EnvFile]
+    );
+    assert!(rules(".env", "# fill in: later\n").is_empty());
+}
+
+#[test]
+fn a_tests_env_is_still_refused() {
+    let f = &scan_file("tests/.env", b"A=1\n")[0];
+    assert_eq!(verdict(f, false).severity, Severity::Refuse);
+    assert_eq!(verdict(f, true).reason, Some(WarnReason::History));
+}
+
+#[test]
+fn a_path_glob_warns_and_a_fingerprint_silences() {
+    let f = &scan_file("deploy/k.pem", pem().as_bytes())[0];
+    let by_path = AllowList::parse("deploy/*.pem\n");
+    let v = decide(f, false, &by_path).expect("printed");
+    assert_eq!(
+        (v.severity, v.reason),
+        (Severity::Warn, Some(WarnReason::AllowedPath))
+    );
+    let by_fp = AllowList::parse(&format!("{}\n", f.fingerprint));
+    assert!(decide(f, false, &by_fp).is_none());
+    // A bare name is anchored at the root.
+    assert!(decide(f, false, &AllowList::parse("k.pem\n"))
+        .is_some_and(|v| v.severity == Severity::Refuse));
 }
 
 #[test]
@@ -196,7 +260,7 @@ fn binary_and_oversized_files_are_matched_by_name_only() {
     let big = format!("{token}\n{}", "a".repeat(crate::MAX_SCAN_BYTES));
     assert!(rules("big.txt", &big).is_empty());
     assert_eq!(
-        scan_file(".env", None)
+        scan_unread(".env", &"a".repeat(40))
             .iter()
             .map(|f| f.rule)
             .collect::<Vec<_>>(),

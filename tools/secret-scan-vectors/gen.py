@@ -10,8 +10,10 @@ key marker or AWS id appears in this repository's bytes (GitHub push protection 
 The WIF vectors are Dash Core's public test vectors (src/test/data/key_io_valid.json).
 
 A vector: {name, description, case: "secret_scan", input: {path, content: [pieces] | null,
-history, allowFile?, allowSecrets?}, expected: [{rule, line, fingerprint, severity, reason,
-allowed}]}. `content: null` means the bytes were not read (a file over the size limit).
+blobId?, history, allowFile?, allowSecrets?}, expected: [{rule, line, fingerprint, severity,
+reason}]}. `content: null` means the bytes were not read (a file over the size limit); `blobId`
+is then its git blob id. `severity` is refuse, warn or silent (a listed fingerprint); a path glob
+in the allow file turns a refusal into warn with reason allowed_path.
 """
 
 import hashlib
@@ -45,7 +47,11 @@ def fingerprint(rule, path, material):
     return h.hexdigest()[:12]
 
 
-ENV_FP = fingerprint('env_file', '.env', b'DB_PASSWORD=hunter2-not-real\n')
+def blob_id(data):
+    return hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest()
+
+
+ENV_FP = fingerprint('env_file', '.env', blob_id(b'DB_PASSWORD=hunter2-not-real\n').encode())
 
 
 # --- fake secrets ---------------------------------------------------------------------------
@@ -104,7 +110,15 @@ VECTORS = [
     ('env_without_values_passes', 'A .env with comments and empty values only: no finding.',
      '.env', ['# fill these in\nDB_PASSWORD=\nAPI_KEY=""\n'], {}),
     ('env_not_read_refuses_by_name', 'A .env too large to read refuses by its name.',
-     'deploy/.env', None, {}),
+     'deploy/.env', None, {'blobId': 'b' * 40}),
+    ('env_upper_case_refused', 'Env file names compare case-insensitively.',
+     'APP/.ENV', ['DB_PASSWORD=hunter2-not-real\n'], {}),
+    ('env_bom_refused', 'A leading UTF-8 BOM does not hide the first variable.',
+     '.env', ['\ufeffDB_PASSWORD=hunter2-not-real\n'], {}),
+    ('env_yaml_colon_refused', 'NAME: value counts as setting a variable.',
+     'config/.env.yaml', ['DB_PASSWORD: hunter2-not-real\n'], {}),
+    ('env_under_tests_refused', 'A real tests/.env is refused: test folders only soften content rules.',
+     'tests/.env', ['DB_PASSWORD=hunter2-not-real\n'], {}),
     ('envrc_warns', 'A .envrc that sets a variable warns.',
      '.envrc', ['use flake\nexport API_URL=https://forge.example\n'], {}),
     ('envrc_without_values_passes', 'A .envrc with no variables: no finding.',
@@ -120,6 +134,8 @@ VECTORS = [
     ('pem_json_escaped_refused', 'A key inside a JSON string with \\n escapes refuses.',
      'config/service.json',
      ['{"private_key": "'] + PEM_BEGIN + ['\\n' + PEM_LINE + '\\n' + PEM_LINE + '\\n'] + PEM_END + ['\\n"}\n'], {}),
+    ('pem_after_stray_begin_refused', 'A stray BEGIN marker before a real key does not hide it.',
+     'docs/keys.md', PEM_BEGIN + [' starts a key.\n'] + PEM, {}),
     ('pem_public_key_passes', 'A public key is not a secret.',
      'keys/id.pub', ['-----BEGIN PUB', 'LIC KEY-----\n' + PEM_LINE + '\n' + PEM_LINE + '\n-----END PUB', 'LIC KEY-----\n'], {}),
     ('aws_pair_refused', 'An AWS access key id with its secret refuses.',
@@ -162,8 +178,10 @@ VECTORS = [
      '.env', ['DB_PASSWORD=hunter2-not-real\n'], {'history': True}),
     ('allow_file_fingerprint', "The allow file lists the finding's fingerprint.",
      '.env', ['DB_PASSWORD=hunter2-not-real\n'], {'allowFile': ENV_FP + '  # staging, reviewed\n'}),
-    ('allow_file_glob', 'The allow file lists the path.',
+    ('allow_file_glob', 'A path in the allow file turns the refusal into a printed warning.',
      'deploy/server.pem', PEM, {'allowFile': '# deploy keys are revoked test keys\ndeploy/*.pem\n'}),
+    ('allow_file_bare_name_is_rooted', 'A bare name in the allow file matches at the root only.',
+     'app/.env', ['DB_PASSWORD=hunter2-not-real\n'], {'allowFile': '.env\n'}),
     ('allow_push_option', 'git push -o allow-secret=<fingerprint> allows the finding.',
      '.env', ['DB_PASSWORD=hunter2-not-real\n'], {'allowSecrets': [ENV_FP]}),
     ('binary_file_by_name_only', 'A file with a NUL byte is matched by its name only.',
@@ -180,6 +198,8 @@ def main():
             with open(file) as f:
                 expected = json.load(f).get('expected')
         inp = {'path': path, 'content': content, 'history': extra.get('history', False)}
+        if 'blobId' in extra:
+            inp['blobId'] = extra['blobId']
         if 'allowFile' in extra:
             inp['allowFile'] = extra['allowFile']
         if 'allowSecrets' in extra:

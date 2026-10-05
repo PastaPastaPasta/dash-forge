@@ -3,8 +3,8 @@
 use crate::util::{base58_decode, crc32, encode_base, sha256, shannon_entropy, BASE58};
 use crate::{
     Rule, ASSIGNMENT_MAX_LEN, ASSIGNMENT_MIN_ENTROPY, ASSIGNMENT_MIN_LEN, AWS_ID_PREFIXES,
-    GITHUB_FINE_GRAINED_PREFIX, GITHUB_PREFIXES, GITLAB_PREFIXES, PEM_MIN_BODY, PLACEHOLDER_WORDS,
-    SECRET_NAME_WORDS, WIF_VERSIONS,
+    GITHUB_FINE_GRAINED_PREFIX, GITHUB_PREFIXES, GITLAB_PREFIXES, PEM_MAX_MARKERS, PEM_MIN_BODY,
+    PLACEHOLDER_WORDS, SECRET_NAME_WORDS, WIF_VERSIONS,
 };
 
 /// One content match: the rule, the byte offset where it starts, and the fingerprint material.
@@ -40,14 +40,17 @@ pub(crate) fn scan_text(text: &str) -> Vec<Match> {
     out
 }
 
-/// Whether one line of `text` sets a variable to a non-empty value: `NAME=value` or
-/// `export NAME=value`, where `NAME` starts with a letter or `_` and holds letters, digits,
+/// Whether one line of `text` sets a variable to a non-empty value: `NAME=value`,
+/// `export NAME=value` or `NAME: value` (a leading UTF-8 BOM ignored), where `NAME` starts with a letter or `_` and holds letters, digits,
 /// `_`, `.` or `-`, and the value is not empty, `""` or `''`.
 pub(crate) fn sets_a_value(text: &str) -> bool {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     text.lines().any(|line| {
-        let Some((name, value)) = strip_export(line).split_once('=') else {
+        let l = strip_export(line);
+        let Some(at) = l.find(['=', ':']) else {
             return false;
         };
+        let (name, value) = (&l[..at], &l[at + 1..]);
         let name = name.trim_end();
         let ok_name = name
             .chars()
@@ -96,10 +99,15 @@ fn pem_body(body: &str) -> Option<String> {
 
 fn private_keys(text: &str, out: &mut Vec<Match>) {
     // A label whose END marker is missing after some point is missing after every later one:
-    // remembered, so many unmatched BEGIN markers cost one search each, not one per pair.
+    // remembered, so unmatched BEGIN markers cost one search each, not one per pair.
     let mut unmatched: Vec<&str> = Vec::new();
     let mut from = 0;
+    let mut markers = 0;
     while let Some(i) = text[from..].find(BEGIN) {
+        markers += 1;
+        if markers > PEM_MAX_MARKERS {
+            break;
+        }
         let start = from + i;
         let label_start = start + BEGIN.len();
         let Some(label_len) = text[label_start..].find(DASHES) else {
@@ -115,10 +123,12 @@ fn private_keys(text: &str, out: &mut Vec<Match>) {
             unmatched.push(label);
             continue;
         };
+        // Only a real key consumes its span: a body that is not one (a stray BEGIN whose END
+        // belongs to a later block) must not hide the BEGIN of that later block.
         if let Some(material) = pem_body(&text[from..from + body_len]) {
             out.push(Match::new(Rule::PrivateKey, start, material));
+            from += body_len + end.len();
         }
-        from += body_len + end.len();
     }
 }
 

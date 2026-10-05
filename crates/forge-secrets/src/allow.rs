@@ -3,16 +3,18 @@
 //! File format, one entry per line:
 //!
 //! ```text
-//! # Dash Core's key test vectors are public.
-//! src/test/data/key_io_valid.json
 //! 3f9a1c2d4e5f      # the staging .env, reviewed 2026-10-05
+//! # revoked demo keys: still printed, never refused
 //! docs/examples/**/*.pem
 //! ```
 //!
 //! - A line is trimmed; an empty line, or one starting with `#`, is ignored. Text after ` #`
 //!   (whitespace then `#`) is a comment.
 //! - Exactly [`crate::FINGERPRINT_HEX`] hex digits is a fingerprint (case-insensitive).
-//! - Anything else is a path glob ([`crate::path_matches`]).
+//! - Anything else is a path glob ([`crate::path_matches`]), matched from the repository's root.
+//!
+//! A fingerprint silences its finding. A path glob only turns a refusal into a printed warning:
+//! it never silences, so a broad path entry cannot hide a secret nobody has looked at.
 
 use std::collections::BTreeSet;
 
@@ -66,10 +68,23 @@ impl AllowList {
         }
     }
 
-    /// Whether `finding` is allowed: its fingerprint is listed, or a glob matches its path.
-    pub fn allows(&self, finding: &Finding) -> bool {
+    /// Whether `finding`'s fingerprint is listed (it is silenced).
+    pub fn allows_fingerprint(&self, finding: &Finding) -> bool {
         self.fingerprints.contains(&finding.fingerprint)
-            || self.globs.iter().any(|g| path_matches(g, &finding.path))
+    }
+
+    /// Whether a path glob covers `finding`'s path (a refusal becomes a warning).
+    pub fn allows_path(&self, finding: &Finding) -> bool {
+        self.globs.iter().any(|g| path_matches(g, &finding.path))
+    }
+
+    /// Only the fingerprints of this list (what another ref's allow file may contribute).
+    #[must_use]
+    pub fn fingerprints_only(&self) -> AllowList {
+        AllowList {
+            fingerprints: self.fingerprints.clone(),
+            globs: Vec::new(),
+        }
     }
 
     /// Whether the list has no entries.
@@ -115,10 +130,16 @@ mod tests {
         let list = AllowList::parse(
             "# header\n\n  3F9A1C2D4E5F   # staging\nsrc/test/data/key_io_valid.json\nnot#acomment\n",
         );
-        assert!(list.allows(&f(".env", "3f9a1c2d4e5f")));
-        assert!(list.allows(&f("src/test/data/key_io_valid.json", "000000000000")));
-        assert!(!list.allows(&f("other", "000000000000")));
-        assert!(list.allows(&f("not#acomment", "000000000000")));
+        assert!(list.allows_fingerprint(&f(".env", "3f9a1c2d4e5f")));
+        assert!(!list.allows_path(&f(".env", "3f9a1c2d4e5f")));
+        let vectors = f("src/test/data/key_io_valid.json", "000000000000");
+        assert!(list.allows_path(&vectors) && !list.allows_fingerprint(&vectors));
+        assert!(!list.allows_path(&f("other", "000000000000")));
+        assert!(list.allows_path(&f("not#acomment", "000000000000")));
+        assert!(list
+            .fingerprints_only()
+            .allows_fingerprint(&f(".env", "3f9a1c2d4e5f")));
+        assert!(!list.fingerprints_only().allows_path(&vectors));
         assert!(AllowList::parse("# only\n").is_empty());
     }
 

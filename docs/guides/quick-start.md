@@ -286,7 +286,7 @@ Anything pushed to a public repository stays public, even after you delete it. S
 
 It **refuses** a branch or tag that adds one of these, with [E807](../errors.md#e807):
 
-- a `.env` file that sets a value: `.env`, `.env.local`, `.env.production` and the like, in any folder. Names ending in `.example`, `.sample` or `.template` are fine.
+- a `.env` file that sets a value: `.env`, `.env.local`, `.env.production` and the like, in any folder and in any letter case, even in a test folder. Names ending in `.example`, `.sample` or `.template` are fine.
 - a PEM private key (`-----BEGIN … PRIVATE KEY-----` with a key inside)
 - an AWS access key ID together with its secret
 - a GitHub or GitLab token whose built-in checksum is valid
@@ -297,7 +297,7 @@ It **warns** and pushes anyway for:
 - a value that looks random, assigned to a name like `API_TOKEN` or `password`
 - a Dash or Bitcoin private key in WIF form (the test vectors many wallets ship)
 - a GitHub or GitLab token it cannot verify
-- anything that would be refused, when it is in a `test`, `tests`, `testdata` or `fixtures` folder
+- a private key, AWS key or token that would be refused, when it is in a `test`, `tests`, `testdata` or `fixtures` folder (test keys are common there; a `.env` is not)
 - anything that would be refused, when it is only in history older than the repository on Forge: commits made more than a day before you created the repo, or anything `forge-import` mirrors
 
 ```
@@ -317,22 +317,24 @@ dash:   note:  checked before anything was signed or stored: these refs were not
 
 Only the refused branch or tag is held back. The rest of the push goes ahead.
 
-The code in brackets is the finding's **fingerprint**. It names that secret in that file without revealing it. To push a finding you've checked, pass its fingerprint for this push:
+The code in brackets is the finding's **fingerprint**. It names that secret in that file. It is a short hash, so treat it as public, but for a tiny file or a short value someone could guess the content from it. To push a finding you've checked, pass its fingerprint for this push:
 
 ```sh
 git push -o allow-secret=b93e02318f67 origin main
 ```
 
-To allow it for everyone, commit a `.forge/secret-scan-allow` file. Each line is a fingerprint or a path, and `#` starts a comment. An allowed finding is neither refused nor warned about.
+To allow it for good, commit a `.forge/secret-scan-allow` file. Each line is a fingerprint or a path, and `#` starts a comment:
 
 ```
-# Dash Core's key test vectors are public
-src/test/data/key_io_valid.json
 b93e02318f67      # the demo .env, holds no real keys
+# revoked example keys: still shown, never refused
 docs/examples/**/*.pem
 ```
 
-A path without `/` matches that name in any folder (`*.pem`). A path with `/` matches from the repository's root. `*` stays within a folder, `**` crosses folders, and a folder's path covers everything in it. The file is read from the tip of each branch or tag you push.
+- A **fingerprint** allows that one finding: it is neither refused nor shown again.
+- A **path** only turns a refusal into a warning. Every finding under it is still printed on each push, so a broad path can't hide a secret nobody has looked at.
+
+Paths match from the repository's root: `.env` is the root `.env` only, and `config/*.env` is a file in `config`. Start with `**/` to match at any depth (`**/*.pem`). `*` stays within a folder, `**` crosses folders, and a folder's path covers everything in it. Each branch or tag is checked against the allow file at its own tip.
 
 The check is a safety net, not a guarantee: it knows a handful of formats, and it never runs on a private repository, whose content is encrypted. Keep secrets out of git altogether.
 

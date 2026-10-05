@@ -115,23 +115,6 @@ fn git_read_output(
     )
 }
 
-/// The tips of `refs/remotes/<remote>/*` (what this clone last fetched from `remote`).
-pub fn remote_tracking_tips(repo: Option<&Path>, remote: &str) -> Vec<String> {
-    let prefix = format!("refs/remotes/{remote}/");
-    git_read_in(
-        repo,
-        &["for-each-ref", "--format=%(objectname)", &prefix],
-        None,
-    )
-    .map(|out| {
-        String::from_utf8_lossy(&out)
-            .lines()
-            .map(str::to_string)
-            .collect()
-    })
-    .unwrap_or_default()
-}
-
 /// What `index-pack --stdin` reported: the pack's sha (its `pack\t<sha>` or `keep\t<sha>`
 /// line), and the `.gitmodules`/`.gitattributes` blobs its checks could not read (the oid
 /// lines after it: blobs a tree in this pack names, held by a pack not yet indexed).
@@ -287,6 +270,29 @@ impl LocalRepo {
     /// `--get` (see [`forge_core::storage::policy::git_config_scoped`]) — never dropped.
     pub fn config_get_scoped(key: &str) -> Option<(String, String)> {
         forge_core::storage::policy::git_config_scoped(key)
+    }
+
+    /// The repository's common directory (`git rev-parse --git-common-dir`, absolute): the
+    /// `.git` every worktree of a clone shares, where `GIT_DIR` may be `.git/worktrees/<name>`.
+    /// Falls back to [`Self::git_dir`] on a git too old for `--path-format`.
+    pub fn common_dir() -> Result<PathBuf> {
+        let out = run_git(
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            None,
+            false,
+            None,
+        );
+        match out {
+            Ok(out) => {
+                let p = String::from_utf8_lossy(&out).trim().to_string();
+                if p.is_empty() {
+                    Self::git_dir()
+                } else {
+                    std::fs::canonicalize(&p).map_err(|e| anyhow!("resolving {p}: {e}"))
+                }
+            }
+            Err(_) => Self::git_dir(),
+        }
     }
 
     /// Whether the local repository has any ref at all (a fresh clone or `git init` has none).

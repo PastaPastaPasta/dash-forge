@@ -274,10 +274,9 @@ impl Helper {
     /// into the local odb. Full clone indexes the self-contained packs directly; a
     /// `--filter` partial clone re-packs through a scratch repo and writes `.promisor`.
     pub async fn fetch(&mut self, wants: &[Want], options: &OptionState) -> Result<()> {
-        // The sealed-object ledger, created empty on a clone or a first fetch ([`crate::ledger`]).
-        if let Ok(dir) = LocalRepo::git_dir() {
-            crate::ledger::ensure_on_fetch(&dir, options.cloning);
-        }
+        // The sealed-object ledger, created empty on a clone or a fetch into a repository with
+        // no refs ([`crate::ledger`]).
+        crate::ledger::ensure_for_new_clone(options.cloning);
         // The local git odb is the cache — never re-download objects git already has
         // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
         // already present locally there is nothing to transfer. (A promisor fetch still
@@ -455,7 +454,6 @@ impl Helper {
         } else {
             None
         };
-        let remote = self.remote.clone();
         let conn = self.ensure_signer().await?;
         // How the repo is named in fixes the user may paste into `dg`: `owner/name`.
         let repo_label = conn.repo.display();
@@ -488,7 +486,7 @@ impl Helper {
         let mut planned = plan_pushes(specs, &remote_refs);
         // Before anything is built, signed or stored: a public push publishes for good.
         if conn.repo.visibility == forge_core::rules::v2::Visibility::Public {
-            check_secrets(conn, remote.as_deref(), &mut planned, &remote_refs, options).await;
+            check_secrets(conn, &mut planned, &remote_refs, options).await;
         }
         let progress = Progress::new(options.verbosity);
         let balance_before = conn.identity().balance();
@@ -1444,31 +1442,34 @@ fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Pl
 }
 
 /// The secret scan of a public push ([`secret_scan`]): prints its warnings, and refuses (E807)
-/// each ref whose new commits add a likely secret nothing allows. When the scan itself cannot
-/// run (git failed), it says so and the push goes ahead: the scan is a safety net, and a broken
-/// one must not block every push.
+/// each ref whose new commits add a likely secret nothing allows. When the full scan cannot run
+/// (git failed), the name-only check still refuses a new `.env`; when that fails too, the push
+/// goes ahead with a warning: the scan is a safety net, and a broken one must not block every
+/// push.
 async fn check_secrets(
     conn: &Conn,
-    remote: Option<&str>,
     planned: &mut [Planned],
     remote_refs: &[(String, RefState)],
     options: &OptionState,
 ) {
-    let tips: Vec<(usize, String)> = planned
+    let tips: Vec<secret_scan::Tip> = planned
         .iter()
         .enumerate()
         .filter(|(_, p)| p.reject.is_none())
-        .filter_map(|(i, p)| p.new_oid.clone().map(|oid| (i, oid)))
+        .filter_map(|(index, p)| {
+            p.new_oid.clone().map(|oid| secret_scan::Tip {
+                index,
+                oid,
+                name: p.spec.dst.clone(),
+            })
+        })
         .collect();
     if tips.is_empty() {
         return;
     }
-    // Already public: the remote's tips now, and what this clone last fetched from it (a tip
-    // someone else moved since is not held here, but its history mostly is).
-    let mut known: Vec<String> = remote_refs.iter().filter_map(|(_, s)| tip_oid(s)).collect();
-    if let Some(r) = remote {
-        known.extend(crate::git::remote_tracking_tips(None, r));
-    }
+    // Already public: only the remote's tips as Forge lists them. A remote-tracking ref is
+    // what this clone once fetched, not proof that it is still public.
+    let known: Vec<String> = remote_refs.iter().filter_map(|(_, s)| tip_oid(s)).collect();
     let created_at_ms = forge_core::resolve::repo_created_at(&conn.client, &conn.repo)
         .await
         .unwrap_or_else(|e| {
@@ -1483,15 +1484,39 @@ async fn check_secrets(
         mirror: secret_scan::spawned_by_import(),
         allow: secret_scan::allow_from_options(options),
     };
+    let progress = Progress {
+        enabled: true,
+        ..Progress::new(options.verbosity)
+    };
     let scan = match secret_scan::scan(&request) {
         Ok(scan) => scan,
         Err(e) => {
-            eprintln!("dash: warning: couldn't check this push for secrets, pushing anyway: {e:#}");
-            return;
+            let names_only = secret_scan::scan_names_only(&request);
+            let (text, outcome) = match &names_only {
+                Ok(_) => (
+                    "couldn't check this push's file contents for secrets; checked its .env files by name only",
+                    "names-only",
+                ),
+                Err(_) => (
+                    "couldn't check this push for secrets, pushing anyway",
+                    "skipped",
+                ),
+            };
+            progress.emit(
+                &format!("dash: warning: {text}: {e:#}"),
+                &serde_json::json!({
+                    "event": "secretScanFailed",
+                    "outcome": outcome,
+                    "message": forge_core::user_error::redact(&format!("{e:#}")),
+                }),
+            );
+            match names_only {
+                Ok(scan) => scan,
+                Err(_) => return,
+            }
         }
     };
-    let json = Progress::new(options.verbosity).json;
-    scan.print_warnings(json);
+    scan.print_warnings(progress.json);
     let refs: Vec<String> = scan
         .refused
         .iter()
@@ -1500,7 +1525,7 @@ async fn check_secrets(
     let Some(error) = scan.refusal(&refs) else {
         return;
     };
-    if !json {
+    if !progress.json {
         scan.print_refusals();
     }
     error.eprint("dash: ");

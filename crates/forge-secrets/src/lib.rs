@@ -3,7 +3,8 @@
 //! The push helper (`git-remote-dash`) runs it over the files a public push publishes for the
 //! first time; the web editor and the publish dialog are to run the same rules later
 //! (mixed-visibility design §4.5). This crate is **pure**: no I/O, no clock, no randomness.
-//! Give it a path and the file's bytes, and it returns the same findings everywhere. A
+//! Give it a path and the file's bytes ([`scan_file`]), or a path and the git blob id of a file
+//! that was not read ([`scan_unread`]), and it returns the same findings everywhere. A
 //! TypeScript port must reproduce the conformance vectors in
 //! `forge-contracts/vectors/secret_scan/` byte for byte (findings, severities, fingerprints).
 //!
@@ -14,9 +15,9 @@
 //!
 //! | Rule id | Severity | Matches |
 //! |---|---|---|
-//! | `env_file` | refuse | A file named exactly `.env`, or `.env.<anything>` not ending in one of [`ENV_TEMPLATE_SUFFIXES`] (`.env.local` included), in any folder, that sets at least one variable to a non-empty value. |
-//! | `envrc` | warn | A file named exactly `.envrc` (direnv) that sets a variable to a non-empty value. |
-//! | `private_key` | refuse | A PEM block `-----BEGIN <label>-----` … `-----END <label>-----` whose label is `PGP PRIVATE KEY BLOCK` or ends in `PRIVATE KEY` (RSA, EC, DSA, OPENSSH, ENCRYPTED, plain), with at least [`PEM_MIN_BODY`] base64 characters between the markers. `\n` escapes count as line breaks; header lines (with a `:`) are skipped. A mention of the marker alone is not a key. |
+//! | `env_file` | refuse | A file named `.env`, or `.env.<anything>` not ending in one of [`ENV_TEMPLATE_SUFFIXES`] (`.env.local` included), in any folder, names compared case-insensitively, that sets at least one variable to a non-empty value (`NAME=value`, `export NAME=value` or `NAME: value`; a leading UTF-8 BOM is ignored). A file that was not read counts as setting one. |
+//! | `envrc` | warn | A file named `.envrc` (direnv, case-insensitive) that sets a variable to a non-empty value. |
+//! | `private_key` | refuse | A PEM block `-----BEGIN <label>-----` … `-----END <label>-----` whose label is `PGP PRIVATE KEY BLOCK` or ends in `PRIVATE KEY` (RSA, EC, DSA, OPENSSH, ENCRYPTED, plain), with at least [`PEM_MIN_BODY`] base64 characters between the markers. `\n` escapes count as line breaks; header lines (with a `:`) are skipped. A mention of the marker alone is not a key. A block whose body is not a key does not hide a later `BEGIN` inside it. At most [`PEM_MAX_MARKERS`] `BEGIN` markers per file are examined. |
 //! | `aws_key_pair` | refuse | An AWS access key id (`AKIA`, `ASIA`, `ABIA`, `ACCA` or `A3T?`, then 16 of `A-Z2-7`) **and**, in the same file, a 40-character secret (`A-Za-z0-9/+`, with an upper-case letter, a lower-case letter and a digit or `/`/`+`, not all hex). Either containing `EXAMPLE` (AWS's documentation pair) does not count. An id alone is not a finding. |
 //! | `github_token` | refuse | `ghp_`, `gho_`, `ghu_`, `ghs_` or `ghr_` and 36 alphanumerics whose last 6 are the CRC32 checksum of the 30 before them, in base62 ([`github_checksum_ok`]). |
 //! | `gitlab_token` | refuse | A GitLab routable token ([`GITLAB_PREFIXES`], a base64url payload of 27–300 characters, `.`, an optional 2-character version and `.`, the 2-character payload length and a 7-character CRC32, all base36) whose length and checksum agree ([`gitlab_checksum_ok`]). |
@@ -30,26 +31,32 @@
 //!
 //! # From a finding to a verdict
 //!
-//! [`verdict`] turns a refusing rule into a warning when the file is under a test folder
-//! ([`TEST_DIRS`], any folder of the path) or the finding is in **history** (the caller decides
-//! what history is: the push helper uses commits from before the repository's import point).
-//! Warning rules stay warnings.
+//! [`verdict`] turns a refusing content rule (`private_key`, `aws_key_pair`, `github_token`,
+//! `gitlab_token`) into a warning when the file is under a test folder ([`TEST_DIRS`], any
+//! folder of the path). The `env_file` name rule is never downgraded by a test folder: a real
+//! `tests/.env` is refused. Any refusal becomes a warning when the finding is in **history**
+//! (the caller decides what history is: the push helper uses commits from before the
+//! repository's import point). Warning rules stay warnings. [`decide`] then applies an allow
+//! list.
 //!
 //! # Fingerprints
 //!
 //! A finding's fingerprint is the first [`FINGERPRINT_HEX`] hex digits of
 //! `SHA-256("forge-secrets/v1" 0x00 rule-id 0x00 path 0x00 material)`, where the material is
-//! the file's bytes for `env_file` and `envrc` (empty when they were not read or are not
-//! [`is_scannable`]), the base64 body for `private_key`,
-//! `<id>:<secret>` for `aws_key_pair`, the token, the WIF, or `<name>=<value>` for
-//! `secret_assignment`. It names one secret in one file, never reveals it, and stays the same
-//! across commits while the secret and the path do.
+//! the file's git blob id for `env_file` and `envrc` (lower-case hex: [`git_blob_id`] of its
+//! bytes, or the id the caller gives for a file it did not read), the base64 body for
+//! `private_key`, `<id>:<secret>` for `aws_key_pair`, the token, the WIF, or `<name>=<value>`
+//! for `secret_assignment`. It names one secret in one file and stays the same across commits
+//! while the secret and the path do. It is a short hash, not a secret: for a tiny file or a
+//! short value, someone holding the fingerprint could guess the content offline.
 //!
 //! # Allowing a finding
 //!
 //! [`AllowList`] reads `.forge/secret-scan-allow` ([`ALLOW_FILE`]): one fingerprint or path glob
 //! per line, `#` comments. `git push -o allow-secret=<fingerprint>` ([`ALLOW_PUSH_OPTION`]) adds
-//! fingerprints for one push. An allowed finding is neither refused nor warned about.
+//! fingerprints for one push. A listed **fingerprint** silences its finding. A **path** glob
+//! only turns a refusal under it into a printed warning (reason `allowed_path`); it never
+//! silences anything, so a path entry cannot hide a secret nobody looked at.
 
 #![forbid(unsafe_code)]
 
@@ -70,7 +77,8 @@ pub const MAX_SCAN_BYTES: usize = 1 << 20;
 pub const BINARY_SNIFF_BYTES: usize = 8000;
 /// Hex digits in a fingerprint.
 pub const FINGERPRINT_HEX: usize = 12;
-/// Folders whose files warn instead of refusing (any folder of the path, exact name).
+/// Folders whose content findings warn instead of refusing (any folder of the path, exact
+/// name). The design lists `test`, `testdata` and `fixtures`; `tests` is added (Rust, Python).
 pub const TEST_DIRS: &[&str] = &["test", "tests", "testdata", "fixtures"];
 /// `.env.<name>` files with these endings are templates, not secrets.
 pub const ENV_TEMPLATE_SUFFIXES: &[&str] = &[".example", ".sample", ".template"];
@@ -80,6 +88,8 @@ pub const ALLOW_FILE: &str = ".forge/secret-scan-allow";
 pub const ALLOW_PUSH_OPTION: &str = "allow-secret";
 /// Fewest base64 characters in a PEM body for it to be a key.
 pub const PEM_MIN_BODY: usize = 64;
+/// `-----BEGIN ` markers examined per file at most (a file of thousands of markers stays cheap).
+pub const PEM_MAX_MARKERS: usize = 64;
 /// WIF version bytes: Bitcoin mainnet (0x80), Dash mainnet (0xCC), testnet and regtest (0xEF).
 pub const WIF_VERSIONS: &[u8] = &[0x80, 0xCC, 0xEF];
 /// GitHub token prefixes whose last six characters are a CRC32 checksum.
@@ -255,6 +265,8 @@ pub enum WarnReason {
     TestPath,
     /// The finding is in history (before the import point).
     History,
+    /// A path glob in the allow file covers a refusal.
+    AllowedPath,
 }
 
 impl WarnReason {
@@ -264,6 +276,7 @@ impl WarnReason {
             WarnReason::Rule => "rule",
             WarnReason::TestPath => "test_path",
             WarnReason::History => "history",
+            WarnReason::AllowedPath => "allowed_path",
         }
     }
 }
@@ -285,7 +298,7 @@ pub fn verdict(finding: &Finding, history: bool) -> Verdict {
     };
     if !finding.rule.refuses() {
         warn(WarnReason::Rule)
-    } else if is_test_path(&finding.path) {
+    } else if finding.rule != Rule::EnvFile && is_test_path(&finding.path) {
         warn(WarnReason::TestPath)
     } else if history {
         warn(WarnReason::History)
@@ -295,6 +308,22 @@ pub fn verdict(finding: &Finding, history: bool) -> Verdict {
             reason: None,
         }
     }
+}
+
+/// [`verdict`] with an allow list applied: `None` when a listed fingerprint silences the
+/// finding; a refusal whose path a glob covers becomes a warning ([`WarnReason::AllowedPath`]).
+pub fn decide(finding: &Finding, history: bool, allow: &AllowList) -> Option<Verdict> {
+    if allow.allows_fingerprint(finding) {
+        return None;
+    }
+    let v = verdict(finding, history);
+    if v.severity == Severity::Refuse && allow.allows_path(finding) {
+        return Some(Verdict {
+            severity: Severity::Warn,
+            reason: Some(WarnReason::AllowedPath),
+        });
+    }
+    Some(v)
 }
 
 /// Whether any folder of `path` is one of [`TEST_DIRS`].
@@ -308,11 +337,30 @@ fn base_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Whether `path` names an env file the `env_file` rule covers.
+/// Whether `path` names an env file the `env_file` rule covers (case-insensitive).
 pub fn is_env_file_name(path: &str) -> bool {
-    let name = base_name(path);
+    let name = base_name(path).to_ascii_lowercase();
     name == ".env"
         || (name.starts_with(".env.") && !ENV_TEMPLATE_SUFFIXES.iter().any(|s| name.ends_with(s)))
+}
+
+/// The git blob id of `bytes` (SHA-1 of `blob <len>` 0x00 bytes, lower-case hex), as
+/// `git hash-object` prints it in a SHA-1 repository.
+pub fn git_blob_id(bytes: &[u8]) -> String {
+    use sha1::{Digest as _, Sha1};
+    let mut h = Sha1::new();
+    h.update(format!("blob {}\0", bytes.len()).as_bytes());
+    h.update(bytes);
+    hex(&h.finalize())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    bytes
+        .iter()
+        .flat_map(|b| [HEX[usize::from(b >> 4)], HEX[usize::from(b & 0x0f)]])
+        .map(char::from)
+        .collect()
 }
 
 /// Whether `content` is text worth matching: within [`MAX_SCAN_BYTES`] and no NUL in its first
@@ -321,21 +369,32 @@ pub fn is_scannable(content: &[u8]) -> bool {
     content.len() <= MAX_SCAN_BYTES && !content.iter().take(BINARY_SNIFF_BYTES).any(|&b| b == 0)
 }
 
-/// Every finding in the file at `path` (`/`-separated, relative to the tree's root).
-/// `content` is the file's bytes, or `None` when they were not read (too large); content that
-/// is not [`is_scannable`] is matched by name only. Findings come in a fixed order: whole-file
-/// rules first, then by line, then by rule, then by fingerprint.
-pub fn scan_file(path: &str, content: Option<&[u8]>) -> Vec<Finding> {
-    let content = content.filter(|c| is_scannable(c));
-    let bytes = content.unwrap_or_default();
+/// Every finding in the file at `path` (`/`-separated, relative to the tree's root), from its
+/// bytes. Content that is not [`is_scannable`] is matched by name only. Findings come in a
+/// fixed order: whole-file rules first, then by line, then by rule, then by fingerprint.
+pub fn scan_file(path: &str, bytes: &[u8]) -> Vec<Finding> {
+    scan(
+        path,
+        Some(bytes).filter(|b| is_scannable(b)),
+        &git_blob_id(bytes),
+    )
+}
+
+/// The findings of a file that was not read (too large, or over a budget), by its name and its
+/// git blob id (which goes into an `env_file` or `envrc` fingerprint).
+pub fn scan_unread(path: &str, blob_id: &str) -> Vec<Finding> {
+    scan(path, None, &blob_id.to_ascii_lowercase())
+}
+
+fn scan(path: &str, content: Option<&[u8]>, blob_id: &str) -> Vec<Finding> {
     let mut out = Vec::new();
-    let name = base_name(path);
+    let name = base_name(path).to_ascii_lowercase();
     let text = content.map(String::from_utf8_lossy);
     let sets_values = text.as_deref().is_none_or(content::sets_a_value);
     if is_env_file_name(path) && sets_values {
-        out.push(finding(Rule::EnvFile, path, None, bytes));
+        out.push(finding(Rule::EnvFile, path, None, blob_id.as_bytes()));
     } else if name == ".envrc" && sets_values {
-        out.push(finding(Rule::Envrc, path, None, bytes));
+        out.push(finding(Rule::Envrc, path, None, blob_id.as_bytes()));
     }
     if let Some(text) = text.as_deref() {
         let matches = content::scan_text(text);
@@ -379,7 +438,6 @@ fn finding(rule: Rule, path: &str, line: Option<u32>, material: &[u8]) -> Findin
 
 /// The fingerprint of `material` found by `rule` in `path` (see the crate docs).
 pub fn fingerprint(rule: Rule, path: &str, material: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut h = Sha256::new();
     h.update(b"forge-secrets/v1\0");
     h.update(rule.id().as_bytes());
@@ -387,13 +445,7 @@ pub fn fingerprint(rule: Rule, path: &str, material: &[u8]) -> String {
     h.update(path.as_bytes());
     h.update([0]);
     h.update(material);
-    let digest = h.finalize();
-    digest
-        .iter()
-        .take(FINGERPRINT_HEX / 2)
-        .flat_map(|b| [HEX[usize::from(b >> 4)], HEX[usize::from(b & 0x0f)]])
-        .map(char::from)
-        .collect()
+    hex(&h.finalize()[..FINGERPRINT_HEX / 2])
 }
 
 #[cfg(test)]

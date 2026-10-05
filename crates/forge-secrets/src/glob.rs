@@ -1,37 +1,27 @@
-//! Path globs for the allow file, close to `.gitignore`'s:
+//! Path globs for the allow file, matched from the repository's root:
 //!
 //! - `*` matches any characters except `/`; `?` matches one character except `/`; `**` matches
 //!   anything, `/` included, and `**/` also matches nothing (`a/**/b` matches `a/b`).
-//! - A pattern with no `/` (a trailing one aside) matches a file or folder of that name at any
-//!   depth: `*.pem` matches `certs/dev.pem`, `fixtures` matches `src/fixtures/key.pem`.
-//! - Any other pattern matches from the root (a leading `/` is dropped): `config/dev.env`.
-//! - A pattern also matches every file under a folder it matches; a trailing `/` makes it match
-//!   folders only.
+//! - Every pattern is anchored at the root (a leading `/` is allowed and dropped): `.env` is the
+//!   root `.env` only, `config/*.env` is a file in `config/`. For any depth, start with `**/`
+//!   (`**/*.pem`).
+//! - A pattern also matches every file under a folder it matches (`docs/examples` covers
+//!   `docs/examples/a/key.pem`); a trailing `/` makes it match folders only.
 
 /// Whether `path` (`/`-separated, relative to the root) matches `pattern`.
 pub fn path_matches(pattern: &str, path: &str) -> bool {
     let folders_only = pattern.ends_with('/');
-    let p = pattern.trim_end_matches('/');
-    let rooted = p.contains('/');
-    let p = p.trim_start_matches('/');
+    let p = pattern.trim_end_matches('/').trim_start_matches('/');
     if p.is_empty() {
         return false;
     }
     let pat: Vec<char> = p.chars().collect();
     let parts: Vec<&str> = path.split('/').collect();
     let n = parts.len();
-    if rooted {
-        // Every leading run of parts: the folders, then (unless folders only) the whole path.
-        (1..=n)
-            .filter(|&k| k < n || !folders_only)
-            .any(|k| glob(&pat, &parts[..k].join("/").chars().collect::<Vec<_>>()))
-    } else {
-        parts
-            .iter()
-            .enumerate()
-            .filter(|&(i, _)| i + 1 < n || !folders_only)
-            .any(|(_, part)| glob(&pat, &part.chars().collect::<Vec<_>>()))
-    }
+    // Every leading run of parts: the folders, then (unless folders only) the whole path.
+    (1..=n)
+        .filter(|&k| k < n || !folders_only)
+        .any(|k| glob(&pat, &parts[..k].join("/").chars().collect::<Vec<_>>()))
 }
 
 /// Whether all of `s` matches all of `p`. Memoized on (pattern position, text position), so
@@ -77,14 +67,16 @@ mod tests {
     use super::path_matches;
 
     #[test]
-    fn a_name_matches_at_any_depth() {
-        assert!(path_matches("*.pem", "certs/dev.pem"));
+    fn names_are_anchored_at_the_root() {
         assert!(path_matches(".env", ".env"));
-        assert!(path_matches(".env", "app/.env"));
-        assert!(!path_matches(".env", "app/.env.local"));
-        assert!(path_matches("fixtures", "src/fixtures/key.pem"));
-        assert!(path_matches("fixtures/", "src/fixtures/key.pem"));
-        assert!(!path_matches("key.pem/", "src/key.pem"));
+        assert!(!path_matches(".env", "app/.env"));
+        assert!(path_matches("**/.env", "app/.env"));
+        assert!(path_matches("**/.env", ".env"));
+        assert!(!path_matches("*.pem", "certs/dev.pem"));
+        assert!(path_matches("**/*.pem", "certs/dev.pem"));
+        assert!(path_matches("fixtures/", "fixtures/key.pem"));
+        assert!(!path_matches("fixtures/", "src/fixtures/key.pem"));
+        assert!(!path_matches("key.pem/", "key.pem"));
     }
 
     #[test]

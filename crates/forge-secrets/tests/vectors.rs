@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use forge_secrets::{scan_file, verdict, AllowList, Severity};
+use forge_secrets::{decide, scan_file, scan_unread, AllowList, Severity};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -13,6 +13,9 @@ use serde_json::{json, Value};
 struct Input {
     path: String,
     content: Option<Vec<String>>,
+    /// The git blob id of a file that was not read (`content: null`).
+    #[serde(default)]
+    blob_id: Option<String>,
     history: bool,
     #[serde(default)]
     allow_file: Option<String>,
@@ -35,22 +38,28 @@ fn run(input: &Input) -> Value {
     for fp in &input.allow_secrets {
         assert!(allow.add_fingerprint(fp), "allowSecrets entry {fp:?}");
     }
-    let findings = scan_file(&input.path, content.as_deref().map(str::as_bytes));
+    let findings = match content.as_deref() {
+        Some(text) => scan_file(&input.path, text.as_bytes()),
+        None => scan_unread(
+            &input.path,
+            input.blob_id.as_deref().expect("blobId for an unread file"),
+        ),
+    };
     Value::from(
         findings
             .iter()
             .map(|f| {
-                let v = verdict(f, input.history);
+                let v = decide(f, input.history, &allow);
                 json!({
                     "rule": f.rule.id(),
                     "line": f.line,
                     "fingerprint": f.fingerprint,
-                    "severity": match v.severity {
-                        Severity::Refuse => "refuse",
-                        Severity::Warn => "warn",
+                    "severity": match v.map(|v| v.severity) {
+                        Some(Severity::Refuse) => "refuse",
+                        Some(Severity::Warn) => "warn",
+                        None => "silent",
                     },
-                    "reason": v.reason.map(forge_secrets::WarnReason::id),
-                    "allowed": allow.allows(f),
+                    "reason": v.and_then(|v| v.reason).map(forge_secrets::WarnReason::id),
                 })
             })
             .collect::<Vec<_>>(),

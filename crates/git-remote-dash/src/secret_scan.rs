@@ -2,10 +2,11 @@
 //! publish for the first time (mixed-visibility design §4.5; the rules are [`forge_secrets`]).
 //!
 //! **What is scanned.** Every file a commit new to Forge introduces: the commits reachable from
-//! the pushed tips and not from the remote's tips this clone knows (its current tips held
-//! locally, and the remote-tracking refs it last fetched), `git log <tips> --not <known>`. For
-//! a merge, only the files that differ from every parent (`-c`), so a merge of an old branch
-//! does not re-report that branch's files as the merge's.
+//! the pushed tips and not from the remote's current tips as Forge lists them (`git log <tips>
+//! --not <remote tips>`; a tip this clone does not hold only means more is scanned). For a
+//! merge, only the files that differ from every parent (`-c`), so a merge of an old branch does
+//! not re-report that branch's files as the merge's. A tag of a tree or a blob is scanned too:
+//! every file of the tree, or the blob under the tag's name.
 //!
 //! **New or history.** Forge records no import marker in git, so the import point is when the
 //! repository was created on Forge (its `repo` document's `$createdAt`), less
@@ -14,11 +15,16 @@
 //! (`DASH_FORGE_SPAWNED_BY=forge-import`) is all history: a mirror republishes its source. When
 //! the creation time cannot be read, every new commit counts as new.
 //!
-//! **Allowing.** `-o allow-secret=<fingerprint>` and the `.forge/secret-scan-allow` file at
-//! the tip of any branch or tag in the push ([`forge_secrets::AllowList`]).
+//! **Allowing.** `-o allow-secret=<fingerprint>` silences a finding for the whole push. The
+//! `.forge/secret-scan-allow` file at a ref's tip applies to that ref only: its fingerprints
+//! silence, its path globs turn a refusal into a printed warning ([`forge_secrets::decide`]).
+//! Warnings (which refuse nothing) are silenced by a fingerprint in any pushed ref's file.
 //!
-//! **Refusing.** A ref is refused (wire reason [`WIRE`]) when its new commits introduce a
-//! finding that refuses. Other refs in the push go ahead.
+//! **Refusing.** A ref is refused (wire reason [`WIRE`]) when its new history introduces a
+//! finding that refuses under its own allow file. Other refs in the push go ahead.
+//!
+//! **When the scan cannot run** (git fails), [`scan_names_only`] still refuses a new `.env`
+//! file found by listing the tips' trees; if that fails too, the push goes ahead with a warning.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -26,8 +32,8 @@ use std::path::Path;
 use anyhow::Result;
 use forge_core::user_error::{codes, UserError};
 use forge_secrets::{
-    scan_file, verdict, AllowList, Finding, Rule, Severity, Verdict, WarnReason, ALLOW_FILE,
-    ALLOW_PUSH_OPTION, FINGERPRINT_HEX, MAX_SCAN_BYTES,
+    decide, is_env_file_name, scan_file, scan_unread, AllowList, Finding, Rule, Severity, Verdict,
+    WarnReason, ALLOW_FILE, ALLOW_PUSH_OPTION, FINGERPRINT_HEX, MAX_SCAN_BYTES,
 };
 use serde_json::json;
 
@@ -53,14 +59,24 @@ pub const MAX_WARNINGS_SHOWN: usize = 20;
 /// The per-ref reason git prints: `! [remote rejected] main -> main (possible secret in new files)`.
 pub const WIRE: &str = "possible secret in new files";
 
+/// One ref the push writes.
+#[derive(Debug, Clone)]
+pub struct Tip {
+    /// Its index in the push plan.
+    pub index: usize,
+    /// The new tip (a commit, or a tag object).
+    pub oid: String,
+    /// The ref name (`refs/tags/v1`): the path of a blob a tag points at.
+    pub name: String,
+}
+
 /// What to scan.
 pub struct Request<'a> {
     /// The repository (`None`: the one git spawned the helper for).
     pub repo: Option<&'a Path>,
-    /// `(index, new tip)` of each ref the push writes (not deletions).
-    pub tips: Vec<(usize, String)>,
-    /// Commits already public on the remote: its current tips and this clone's
-    /// remote-tracking refs. Ones this clone does not hold are skipped.
+    /// Each ref the push writes (not deletions).
+    pub tips: Vec<Tip>,
+    /// The remote's current tips as Forge lists them. Ones this clone does not hold are skipped.
     pub known: Vec<String>,
     /// When the repository was created on Forge (ms), when known.
     pub created_at_ms: Option<u64>,
@@ -91,12 +107,12 @@ pub struct Item {
     pub finding: Finding,
     /// Refuse or warn, and why.
     pub verdict: Verdict,
-    /// Every commit that introduced this file version, newest first.
+    /// Every commit (or tag object) that introduced this file version, newest first.
     commits: Vec<String>,
 }
 
 impl Item {
-    /// The newest commit that introduced the file.
+    /// The newest commit (or tag object) that introduced the file.
     pub fn commit(&self) -> &str {
         &self.commits[0]
     }
@@ -107,11 +123,11 @@ impl Item {
 pub struct Scan {
     /// Findings that warn.
     pub warnings: Vec<Item>,
-    /// Findings that refuse.
+    /// Findings that refuse at least one ref.
     pub refusals: Vec<Item>,
-    /// The index (in [`Request::tips`]) of each ref refused.
+    /// The plan index of each ref refused.
     pub refused: Vec<usize>,
-    /// Findings the allow list allowed.
+    /// Findings a fingerprint silenced.
     pub allowed: usize,
     /// Files matched by name only: over a content budget, or not readable.
     pub unscanned: usize,
@@ -121,7 +137,8 @@ pub struct Scan {
 struct Introduced {
     path: String,
     blob: String,
-    /// `(commit, committer time in seconds)`, newest first.
+    /// `(commit or tag object, committer time in seconds)`, newest first. A tag of a tree or
+    /// blob has no time: `u64::MAX` (always new).
     commits: Vec<(String, u64)>,
 }
 
@@ -134,23 +151,36 @@ fn is_oid(s: &str) -> bool {
 /// Scan the push in `req`.
 pub fn scan(req: &Request<'_>) -> Result<Scan> {
     let mut scan = Scan::default();
-    let tip_oids: Vec<String> = req.tips.iter().map(|(_, t)| t.clone()).collect();
-    let tips = commits_only(req.repo, &tip_oids)?;
-    if tips.is_empty() {
-        return Ok(scan);
-    }
-    let known = commits_only(req.repo, &req.known)?;
-    let files = introduced(req.repo, &tips, &known)?;
+    let peeled = peel(req.repo, &req.tips)?;
+    let commit_tips: BTreeSet<String> = peeled
+        .iter()
+        .filter(|(_, _, kind)| kind == "commit")
+        .map(|(_, oid, _)| oid.clone())
+        .collect();
+    let known: Vec<String> = peel_known(req.repo, &req.known)?;
+    let mut files = if commit_tips.is_empty() {
+        Vec::new()
+    } else {
+        introduced(
+            req.repo,
+            &commit_tips.into_iter().collect::<Vec<_>>(),
+            &known,
+        )?
+    };
+    files.extend(tag_files(req.repo, &req.tips, &peeled)?);
     if files.is_empty() {
         return Ok(scan);
     }
-    let mut allow = req.allow.clone();
-    allow.extend(committed_allow_list(req.repo, &tips)?);
+    let per_tip_allow = committed_allow_lists(req.repo, &req.tips)?;
+    let mut any_tip_fingerprints = AllowList::new();
+    for a in &per_tip_allow {
+        any_tip_fingerprints.extend(a.fingerprints_only());
+    }
     let new_since = |secs: u64| {
         !req.mirror
             && req
                 .created_at_ms
-                .is_none_or(|c| secs.saturating_mul(1000) + IMPORT_GRACE_MS >= c)
+                .is_none_or(|c| secs.saturating_mul(1000).saturating_add(IMPORT_GRACE_MS) >= c)
     };
     let history: Vec<bool> = files
         .iter()
@@ -164,38 +194,238 @@ pub fn scan(req: &Request<'_>) -> Result<Scan> {
     findings.sort_by(|(_, a), (_, b)| {
         (&a.path, a.line, a.rule, &a.fingerprint).cmp(&(&b.path, b.line, b.rule, &b.fingerprint))
     });
+    let mut refused: BTreeSet<usize> = BTreeSet::new();
     for (i, finding) in findings {
-        if allow.allows(&finding) {
+        let commits: Vec<String> = files[i].commits.iter().map(|(c, _)| c.clone()).collect();
+        // `-o allow-secret` applies to the whole push.
+        let Some(v) = decide(&finding, history[i], &req.allow) else {
             scan.allowed += 1;
             continue;
-        }
-        let v = verdict(&finding, history[i]);
-        let item = Item {
-            finding,
-            verdict: v,
-            commits: files[i].commits.iter().map(|(c, _)| c.clone()).collect(),
         };
-        match v.severity {
-            Severity::Refuse => scan.refusals.push(item),
-            Severity::Warn => scan.warnings.push(item),
+        if v.severity == Severity::Warn {
+            if any_tip_fingerprints.allows_fingerprint(&finding) {
+                scan.allowed += 1;
+            } else {
+                scan.warnings.push(Item {
+                    finding,
+                    verdict: v,
+                    commits,
+                });
+            }
+            continue;
+        }
+        // A refusal: each ref that carries it judges it by its own allow file.
+        let (mut blocks, mut path_allowed) = (false, false);
+        for (t, tip) in req.tips.iter().enumerate() {
+            if !carries(req.repo, &commits, &tip.oid) {
+                continue;
+            }
+            match decide(&finding, history[i], &per_tip_allow[t]) {
+                Some(v) if v.severity == Severity::Refuse => {
+                    blocks = true;
+                    refused.insert(tip.index);
+                }
+                Some(_) => path_allowed = true,
+                None => {}
+            }
+        }
+        if blocks {
+            scan.refusals.push(Item {
+                finding,
+                verdict: v,
+                commits,
+            });
+        } else if path_allowed {
+            scan.warnings.push(Item {
+                finding,
+                verdict: Verdict {
+                    severity: Severity::Warn,
+                    reason: Some(WarnReason::AllowedPath),
+                },
+                commits,
+            });
+        } else {
+            scan.allowed += 1;
         }
     }
-
-    scan.refused = refused_refs(req, &scan.refusals);
+    scan.refused = refused.into_iter().collect();
     Ok(scan)
 }
 
-/// The union of the `.forge/secret-scan-allow` files at `tips` (one `cat-file --batch`; a tip
-/// without the file, or with something other than a file there, adds nothing).
-fn committed_allow_list(repo: Option<&Path>, tips: &[String]) -> Result<AllowList> {
-    let specs: Vec<String> = tips.iter().map(|t| format!("{t}:{ALLOW_FILE}")).collect();
-    let mut allow = AllowList::new();
-    for (kind, bytes) in read_batch(repo, &specs)? {
-        if kind == "blob" {
-            allow.extend(AllowList::parse(&String::from_utf8_lossy(&bytes)));
+/// Whether the ref at `tip` carries a file introduced by one of `commits`.
+fn carries(repo: Option<&Path>, commits: &[String], tip: &str) -> bool {
+    commits
+        .iter()
+        .any(|c| c == tip || git_read_ok_in(repo, &["merge-base", "--is-ancestor", c, tip]))
+}
+
+/// The name-based check, for when [`scan`] cannot run: a `.env` file (the `env_file` name rule)
+/// at a tip's tree that is not, with the same content, at any of the remote's tips. History and
+/// content are not judged; a fingerprint from `-o allow-secret` or the tip's allow file
+/// silences, a path glob there warns.
+pub fn scan_names_only(req: &Request<'_>) -> Result<Scan> {
+    let mut scan = Scan::default();
+    if req.mirror {
+        return Ok(scan);
+    }
+    let mut public: BTreeSet<(String, String)> = BTreeSet::new();
+    for k in req.known.iter().filter(|k| is_oid(k)) {
+        if let Ok(entries) = tree_files(req.repo, k) {
+            public.extend(entries);
         }
     }
-    Ok(allow)
+    let per_tip_allow = committed_allow_lists(req.repo, &req.tips).unwrap_or_default();
+    let mut refused = BTreeSet::new();
+    let mut listed = 0;
+    for (t, tip) in req.tips.iter().enumerate() {
+        let Ok(entries) = tree_files(req.repo, &tip.oid) else {
+            continue;
+        };
+        listed += 1;
+        for (path, blob) in entries {
+            if !is_env_file_name(&path) || public.contains(&(path.clone(), blob.clone())) {
+                continue;
+            }
+            for finding in scan_unread(&path, &blob) {
+                if req.allow.allows_fingerprint(&finding) {
+                    scan.allowed += 1;
+                    continue;
+                }
+                let allow = per_tip_allow.get(t).cloned().unwrap_or_default();
+                let commits = vec![tip.oid.clone()];
+                match decide(&finding, false, &allow) {
+                    Some(v) if v.severity == Severity::Refuse => {
+                        refused.insert(tip.index);
+                        scan.refusals.push(Item {
+                            finding,
+                            verdict: v,
+                            commits,
+                        });
+                    }
+                    Some(v) => scan.warnings.push(Item {
+                        finding,
+                        verdict: v,
+                        commits,
+                    }),
+                    None => scan.allowed += 1,
+                }
+            }
+        }
+    }
+    if listed == 0 && !req.tips.is_empty() {
+        anyhow::bail!("could not list the files of any pushed ref");
+    }
+    scan.refused = refused.into_iter().collect();
+    Ok(scan)
+}
+
+/// `(path, blob)` of every regular file in the tree of `rev`.
+fn tree_files(repo: Option<&Path>, rev: &str) -> Result<Vec<(String, String)>> {
+    let out = git_read_in(repo, &["ls-tree", "-r", "-z", "--full-tree", rev], None)?;
+    Ok(out
+        .split(|&b| b == 0)
+        .filter_map(|entry| {
+            let entry = String::from_utf8_lossy(entry);
+            let (meta, path) = entry.split_once('\t')?;
+            let mut f = meta.split(' ');
+            let (mode, kind, oid) = (f.next()?, f.next()?, f.next()?);
+            (kind == "blob" && matches!(mode, "100644" | "100755"))
+                .then(|| (path.to_string(), oid.to_string()))
+        })
+        .collect())
+}
+
+/// `(tip index in req.tips, peeled oid, type)` of each tip that resolves (tags peeled).
+fn peel(repo: Option<&Path>, tips: &[Tip]) -> Result<Vec<(usize, String, String)>> {
+    let ok: Vec<(usize, &str)> = tips
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| is_oid(&t.oid))
+        .map(|(i, t)| (i, t.oid.as_str()))
+        .collect();
+    if ok.is_empty() {
+        return Ok(Vec::new());
+    }
+    let revs: Vec<&str> = ok.iter().map(|(_, o)| *o).collect();
+    let out = git_read_in(
+        repo,
+        &["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        Some(lines(&revs, "^{}").as_bytes()),
+    )?;
+    Ok(ok
+        .iter()
+        .zip(String::from_utf8_lossy(&out).lines())
+        .filter_map(|((i, _), l)| {
+            let (oid, kind) = l.split_once(' ')?;
+            (kind != "missing" && is_oid(oid)).then(|| (*i, oid.to_string(), kind.to_string()))
+        })
+        .collect())
+}
+
+/// The commits among the remote's tips this clone holds (tags peeled).
+fn peel_known(repo: Option<&Path>, known: &[String]) -> Result<Vec<String>> {
+    let tips: Vec<Tip> = known
+        .iter()
+        .map(|k| Tip {
+            index: 0,
+            oid: k.clone(),
+            name: String::new(),
+        })
+        .collect();
+    let commits: BTreeSet<String> = peel(repo, &tips)?
+        .into_iter()
+        .filter(|(_, _, kind)| kind == "commit")
+        .map(|(_, oid, _)| oid)
+        .collect();
+    Ok(commits.into_iter().collect())
+}
+
+/// The files of the tips that are tags of a tree (every file in it) or of a blob (the blob,
+/// under the ref's name), introduced by the tip object itself (so only that ref carries them).
+fn tag_files(
+    repo: Option<&Path>,
+    tips: &[Tip],
+    peeled: &[(usize, String, String)],
+) -> Result<Vec<Introduced>> {
+    let mut out = Vec::new();
+    for (i, oid, kind) in peeled {
+        let tip = &tips[*i];
+        let commits = vec![(tip.oid.clone(), u64::MAX)];
+        match kind.as_str() {
+            "tree" => {
+                for (path, blob) in tree_files(repo, oid)? {
+                    out.push(Introduced {
+                        path,
+                        blob,
+                        commits: commits.clone(),
+                    });
+                }
+            }
+            "blob" => out.push(Introduced {
+                path: tip.name.clone(),
+                blob: oid.clone(),
+                commits,
+            }),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The `.forge/secret-scan-allow` file at each tip, in `tips` order (one `cat-file --batch`; a
+/// tip without the file, or with something other than a file there, has an empty list).
+fn committed_allow_lists(repo: Option<&Path>, tips: &[Tip]) -> Result<Vec<AllowList>> {
+    let specs: Vec<String> = tips
+        .iter()
+        .map(|t| format!("{}:{ALLOW_FILE}", t.oid))
+        .collect();
+    let mut lists = vec![AllowList::new(); tips.len()];
+    for (list, (kind, bytes)) in lists.iter_mut().zip(read_batch(repo, &specs)?) {
+        if kind == "blob" {
+            *list = AllowList::parse(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    Ok(lists)
 }
 
 /// The blobs to read, with their sizes: within [`MAX_SCAN_BYTES`], and within
@@ -268,7 +498,7 @@ fn find_all(
             for &i in by_blob.get(blob.as_str()).into_iter().flatten() {
                 scanned.insert(i);
                 findings.extend(
-                    scan_file(&files[i].path, Some(&bytes))
+                    scan_file(&files[i].path, &bytes)
                         .into_iter()
                         .map(|f| (i, f)),
                 );
@@ -279,25 +509,10 @@ fn find_all(
     for (i, f) in files.iter().enumerate() {
         if !scanned.contains(&i) {
             unreadable += usize::from(read.contains_key(f.blob.as_str()));
-            findings.extend(scan_file(&f.path, None).into_iter().map(|x| (i, x)));
+            findings.extend(scan_unread(&f.path, &f.blob).into_iter().map(|x| (i, x)));
         }
     }
     Ok((findings, unreadable))
-}
-
-/// The index of each ref in `req` whose new history holds a refusal.
-fn refused_refs(req: &Request<'_>, refusals: &[Item]) -> Vec<usize> {
-    req.tips
-        .iter()
-        .filter(|(_, tip)| {
-            refusals.iter().any(|r| {
-                r.commits.iter().any(|c| {
-                    c == tip || git_read_ok_in(req.repo, &["merge-base", "--is-ancestor", c, tip])
-                })
-            })
-        })
-        .map(|(index, _)| *index)
-        .collect()
 }
 
 /// One `<item><suffix>\n` line per item: the stdin of a batch git command.
@@ -309,26 +524,6 @@ fn lines<T: std::fmt::Display>(items: &[T], suffix: &str) -> String {
         out.push('\n');
     }
     out
-}
-
-/// The commits among `revs` (tags peeled; anything that is not an object id, or that this
-/// clone does not hold, is left out, as is a tag of a tree or blob).
-fn commits_only(repo: Option<&Path>, revs: &[String]) -> Result<Vec<String>> {
-    let revs: Vec<&String> = revs.iter().filter(|r| is_oid(r)).collect();
-    if revs.is_empty() {
-        return Ok(Vec::new());
-    }
-    let out = git_read_in(
-        repo,
-        &["cat-file", "--batch-check=%(objectname) %(objecttype)"],
-        Some(lines(&revs, "^{}").as_bytes()),
-    )?;
-    let commits: BTreeSet<String> = String::from_utf8_lossy(&out)
-        .lines()
-        .filter_map(|l| l.strip_suffix(" commit"))
-        .map(str::to_string)
-        .collect();
-    Ok(commits.into_iter().collect())
 }
 
 /// Every file version the commits reachable from `tips` and not from `known` introduce.
@@ -514,6 +709,7 @@ fn why(reason: Option<WarnReason>) -> &'static str {
     match reason {
         Some(WarnReason::TestPath) => " (test folder)",
         Some(WarnReason::History) => " (history from before the import)",
+        Some(WarnReason::AllowedPath) => " (its path is in the allow file)",
         _ => "",
     }
 }
@@ -709,23 +905,36 @@ mod tests {
             created_s: Option<u64>,
             allow: &[&str],
         ) -> Scan {
+            scan(&self.request(tips, known, created_s, allow)).unwrap()
+        }
+
+        fn request(
+            &self,
+            tips: &[&str],
+            known: &[&str],
+            created_s: Option<u64>,
+            allow: &[&str],
+        ) -> Request<'_> {
             let mut list = AllowList::new();
             for fp in allow {
                 assert!(list.add_fingerprint(fp));
             }
-            scan(&Request {
+            Request {
                 repo: Some(self.dir.path()),
                 tips: tips
                     .iter()
                     .enumerate()
-                    .map(|(i, t)| (i, (*t).to_string()))
+                    .map(|(i, t)| Tip {
+                        index: i,
+                        oid: (*t).to_string(),
+                        name: format!("refs/tags/t{i}"),
+                    })
                     .collect(),
                 known: known.iter().map(|k| (*k).to_string()).collect(),
                 created_at_ms: created_s.map(|s| s * 1000),
                 mirror: false,
                 allow: list,
-            })
-            .unwrap()
+            }
         }
     }
 
@@ -830,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn the_committed_allow_file_allows_by_path() {
+    fn an_allow_file_path_warns_and_its_fingerprint_silences() {
         let r = Repo::new();
         let tip = r.commit(
             &[
@@ -840,8 +1049,67 @@ mod tests {
             T0,
         );
         let s = r.scan(&[&tip], &[], Some(T0), &[]);
+        assert!(s.refused.is_empty(), "{s:?}");
+        assert_eq!(s.warnings.len(), 1);
+        assert_eq!(s.warnings[0].verdict.reason, Some(WarnReason::AllowedPath));
+        let fp = s.warnings[0].finding.fingerprint.clone();
+        let tip = r.commit(&[(ALLOW_FILE, &format!("{fp}\n"))], T0 + 1);
+        let s = r.scan(&[&tip], &[], Some(T0), &[]);
         assert!(s.refused.is_empty() && s.warnings.is_empty(), "{s:?}");
         assert_eq!(s.allowed, 1);
+    }
+
+    #[test]
+    fn each_ref_is_judged_by_its_own_allow_file() {
+        let r = Repo::new();
+        let base = r.commit(&[("README", "hi\n")], T0);
+        let with_env = r.commit(&[(".env", "A=1\n")], T0 + 1);
+        let fp = r.scan(&[&with_env], &[&base], Some(T0), &[]).refusals[0]
+            .finding
+            .fingerprint
+            .clone();
+        // main allows it in its own allow file; dev carries the same .env without one.
+        let main = r.commit(&[(ALLOW_FILE, &format!("{fp}\n"))], T0 + 2);
+        let s = r.scan(&[&main, &with_env], &[&base], Some(T0), &[]);
+        assert_eq!(s.refused, vec![1], "{s:?}");
+    }
+
+    #[test]
+    fn a_tag_of_a_blob_or_tree_is_scanned() {
+        let r = Repo::new();
+        let base = r.commit(&[("README", "hi\n")], T0);
+        std::fs::write(r.dir.path().join("k.pem"), pem()).unwrap();
+        let blob = r.git(&["hash-object", "-w", "k.pem"], T0);
+        let s = r.scan(&[&blob], &[&base], Some(T0), &[]);
+        assert_eq!(s.refused, vec![0], "{s:?}");
+        assert_eq!(s.refusals[0].finding.path, "refs/tags/t0");
+        r.git(&["add", "k.pem"], T0);
+        let tree = r.git(&["write-tree"], T0);
+        let s = r.scan(&[&tree], &[&base], Some(T0), &[]);
+        assert_eq!(s.refused, vec![0], "{s:?}");
+        assert_eq!(s.refusals[0].finding.path, "k.pem");
+    }
+
+    #[test]
+    fn the_name_only_fallback_refuses_a_new_env() {
+        let r = Repo::new();
+        let base = r.commit(&[(".env.example", "A=\n"), ("app/.env", "A=1\n")], T0);
+        let tip = r.commit(&[(".env", "B=2\n")], T0 + 1);
+        let req = r.request(&[&tip], &[&base], Some(T0), &[]);
+        let s = scan_names_only(&req).unwrap();
+        assert_eq!(s.refused, vec![0], "{s:?}");
+        let paths: Vec<&str> = s.refusals.iter().map(|i| i.finding.path.as_str()).collect();
+        assert_eq!(paths, [".env"], "app/.env is already public");
+    }
+
+    #[test]
+    fn a_real_env_under_tests_is_refused() {
+        let r = Repo::new();
+        let tip = r.commit(&[("tests/.env", "A=1\n"), ("tests/k.pem", &pem())], T0);
+        let s = r.scan(&[&tip], &[], Some(T0), &[]);
+        assert_eq!(s.refusals.len(), 1, "{s:?}");
+        assert_eq!(s.refusals[0].finding.path, "tests/.env");
+        assert_eq!(s.warnings[0].finding.path, "tests/k.pem");
     }
 
     #[test]
@@ -893,22 +1161,6 @@ mod tests {
         assert_eq!(shell_word("app/.env"), "app/.env");
         assert_eq!(shell_word("my app/.env"), "'my app/.env'");
         assert_eq!(shell_word("it's/.env"), "'it'\\''s/.env'");
-    }
-
-    #[test]
-    fn what_this_clone_last_fetched_counts_as_public() {
-        let r = Repo::new();
-        let old = r.commit(&[(".env", "A=1\n")], T0);
-        r.git(&["update-ref", "refs/remotes/origin/main", &old], T0);
-        let tip = r.commit(&[("README", "hi\n")], T0 + 1);
-        let fetched = crate::git::remote_tracking_tips(Some(r.dir.path()), "origin");
-        assert_eq!(fetched, std::slice::from_ref(&old));
-        let known: Vec<&str> = fetched.iter().map(String::as_str).collect();
-        let s = r.scan(&[&tip], &known, Some(T0), &[]);
-        assert!(s.refusals.is_empty(), "{s:?}");
-        // Not fetched: the old .env counts as new.
-        let s = r.scan(&[&tip], &[], Some(T0), &[]);
-        assert_eq!(s.refused, vec![0]);
     }
 
     #[test]

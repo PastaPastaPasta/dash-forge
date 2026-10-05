@@ -9,6 +9,7 @@ description = "Likely-secret detection for public pushes: one pure rule set shar
 
 [dependencies]
 sha2 = "0.10"
+sha1 = "0.10"
 
 [dev-dependencies]
 serde = { workspace = true }
