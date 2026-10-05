@@ -112,7 +112,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
     const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
     if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read members-only content')
     // E311: a member nobody has shared the key with yet (added by an older client). No key, no
-    // wrap to them: the next maintainer visit's repair shares it.
+    // wrap to them: a maintainer's Repair (the repair check) shares it.
     const mine = session.wraps.some((w) => base58Encode(w.row.memberId) === identity)
     if (session.resolution.keys.size === 0 && !mine) return { ...base, lane: { access: 'no-key-shared' } }
     const out = withMembersSession(base, session)

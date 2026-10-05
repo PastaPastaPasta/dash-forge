@@ -49,8 +49,16 @@ vi.mock('./private-members', () => ({
     flows.push(`remove:${role}:${id}`)
     return 1
   }),
-  rotateRepoKey: vi.fn(async () => {
-    flows.push('rotate')
+  waitForMembers: vi.fn(async () => {
+    flows.push('wait')
+    return []
+  }),
+  holds: () => true,
+  runRepair: vi.fn(async () => {
+    flows.push('repair')
+  }),
+  rotateRepoKey: vi.fn(async (_c: unknown, exclude: string[]) => {
+    flows.push(`rotate-excluding:${exclude.join(',')}`)
     return 1
   }),
 }))
@@ -108,7 +116,7 @@ describe('membership changes of a public repo with members-only content', () => 
   it('without an unlocked encryption key: an add, a removal and a role change are refused before anything is written', async () => {
     configs = [plainConfig, membersAnchor]
     await expect(grantMember(sdk, auth, REPO, BOB, 'reader')).rejects.toBeInstanceOf(MembersKeyMembershipError)
-    await expect(revokeMember(sdk, auth, REPO, BOB, 'writer', null)).rejects.toBeInstanceOf(MembersKeyMembershipError)
+    await expect(revokeMember(sdk, auth, REPO, BOB, 'writer', undefined, null)).rejects.toBeInstanceOf(MembersKeyMembershipError)
     await expect(changeMemberRole(sdk, auth, REPO, BOB, 'writer', 'reader')).rejects.toThrow(/Unlock your encryption key/)
     expect(created).toEqual([])
     expect(flows).toEqual([])
@@ -117,7 +125,7 @@ describe('membership changes of a public repo with members-only content', () => 
   it('an add shares the key and a removal rotates it (the key-aware flows), never a bare document write', async () => {
     configs = [plainConfig, membersAnchor]
     await grantMember(sdk, auth, REPO, BOB, 'reader', 'i1', ops)
-    await revokeMember(sdk, auth, REPO, BOB, 'reader', ops, 'i2')
+    await revokeMember(sdk, auth, REPO, BOB, 'reader', 'i2', ops)
     expect(flows).toEqual([`add:reader:${BOB}`, `remove:reader:${BOB}`])
     expect(created).toEqual([])
   })
@@ -125,7 +133,7 @@ describe('membership changes of a public repo with members-only content', () => 
   it('without members-only content a membership change is the bare document write it always was', async () => {
     configs = [plainConfig]
     memberships = {}
-    await revokeMember(sdk, auth, REPO, BOB, 'writer', ops)
+    await revokeMember(sdk, auth, REPO, BOB, 'writer', undefined, ops)
     expect(flows).toEqual([])
   })
 
@@ -138,7 +146,8 @@ describe('membership changes of a public repo with members-only content', () => 
     await changeMemberRole(sdk, auth, REPO, BOB, 'maintainer', 'writer', 'i3', ops)
     // the writer document first (they never stop being a member), then the key-aware removal
     expect(created).toEqual(['writer'])
-    expect(flows).toEqual([`remove:maintainer:${BOB}`])
+    // the member list shows the new role before the removal plans its rotation from it
+    expect(flows).toEqual(['wait', `remove:maintainer:${BOB}`])
   })
 
   it('a new maintainer goes through the key-aware add; the writer document they leave is a bare delete (they keep the key)', async () => {
@@ -161,5 +170,22 @@ describe('membership changes of a public repo with members-only content', () => 
     await changeMemberRole(sdk, auth, REPO, BOB, 'writer', 'reader', 'i5', ops)
     expect(created).toEqual(['delete', 'writer'])
     expect(flows).toEqual([])
+  })
+})
+
+describe('a failed role change on a repo with members-only content', () => {
+  it('rotates the key away from someone left without a role, never silently', async () => {
+    configs = [plainConfig, membersAnchor]
+    memberships = {
+      consent: [{ $id: 'k', $ownerId: BOB }],
+      writer: [{ $id: 'w', $ownerId: ALICE, memberId: BOB, role: 1 }],
+    }
+    const real = await import('../sdk')
+    const create = vi.mocked(real.createDocumentIdempotent)
+    create.mockImplementationOnce(async () => {
+      throw new Error('node dropped the write')
+    })
+    await expect(changeMemberRole(sdk, auth, REPO, BOB, 'writer', 'reader', 'i6', ops)).rejects.toThrow(/members-only key was changed/)
+    expect(flows).toEqual([`rotate-excluding:${BOB}`])
   })
 })

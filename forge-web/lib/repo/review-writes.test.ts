@@ -22,6 +22,7 @@ vi.mock('./members-writes', async (orig) => ({
   targetAudience: async () => 'public',
   childAudience: async () => 'public',
   storedAudience: async () => ({ audience: 'public', doc: {} }),
+  repoHasMembersKey: async () => false,
 }))
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()

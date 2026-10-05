@@ -105,7 +105,7 @@ export type PrivateAccess =
  * How a signed-in member reads a public repo's members-only content: `none`, it has none (nobody
  * turned it on); `no-key`, their browser holds no encryption key; `locked`, the tab resumed
  * signing-only; `no-key-shared`, no maintainer has shared the key with them yet (E311, a member
- * added by an older client: the next maintainer visit repairs it); `member`, they read it through
+ * added by an older client: a maintainer's Repair shares it); `member`, they read it through
  * their members-key session (`repo.lane`). Never changes the public config, branches or packs.
  */
 export type MembersAccess =

@@ -52,6 +52,7 @@ import {
 import { sleep } from '../sdk/facade'
 import { DOC, withVis, type RepoRef } from './contract'
 import { anchorContent, type AnchorContent, type ChainLink } from './members-anchor'
+import { noteMembersKey } from './members-writes'
 import { holdsMembersKey } from '../rules/roles'
 import { invalidateMembers, memberDocOf, readMemberships } from './members'
 import {
@@ -873,6 +874,7 @@ export async function enableMembersContent(c: PrivateWriteContext, intent: strin
     return 'mint' as const
   })
   const anchored = step === 'mint' ? await createEpochZero(c, 'main', `${intent}:enable`) : false
+  noteMembersKey(c.repo)
   await runRepair(c, `${intent}:share`)
   return anchored
 }
@@ -1038,7 +1040,7 @@ export async function hasUsableEncryptionKey(sdk: EvoSDK, coreId: string, id: st
 }
 
 /** Poll the membership (uncached) until `ok` holds for it; returns that membership. */
-async function waitForMembers(c: PrivateWriteContext, ok: (rows: readonly Membership[]) => boolean): Promise<readonly Membership[]> {
+export async function waitForMembers(c: PrivateWriteContext, ok: (rows: readonly Membership[]) => boolean): Promise<readonly Membership[]> {
   for (let i = 0; i < POLL_ATTEMPTS; i++) {
     invalidateMembers(c.repo, c.network)
     const rows = await readMemberships(c.sdk, c.repo)
@@ -1048,7 +1050,7 @@ async function waitForMembers(c: PrivateWriteContext, ok: (rows: readonly Member
   throw new PrivateMembersError('the membership change is not visible yet; reload to check it, then repair')
 }
 
-const holds = (rows: readonly Membership[], identity: string, role?: Role): boolean =>
+export const holds = (rows: readonly Membership[], identity: string, role?: Role): boolean =>
   rows.some((m) => m.identity === identity && (role === undefined || m.role === role))
 
 /**

@@ -10,21 +10,47 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 /** Stored documents by `$id`, as the parent lookups read them. */
 let stored: Record<string, Record<string, unknown>> = {}
-const writes: { documentType: string; data: Record<string, unknown>; intent?: string }[] = []
+const writes: { documentType: string; data: Record<string, unknown>; intent?: string; contentKey?: string }[] = []
+/** Documents the queries answer by type (comments for `readComments`). */
+let byType: Record<string, Record<string, unknown>[]> = {}
+/** Artifacts stored (a long body): must stay empty for members-only text. */
+const artifacts: string[] = []
 const replaces: { documentType: string; changes: Record<string, unknown> }[] = []
 
+// Lag retries happen once here (no real time in tests).
+vi.mock('../view/retry', () => ({ retryWhileMissing: vi.fn(async (f: () => Promise<unknown>) => f()) }))
+/** The repo's configs: a members-key anchor beside the plaintext one (members-only content is on). */
+let configs: Record<string, unknown>[] = []
+let reads = 0
+vi.mock('../storage/upload', async (orig) => ({
+  ...(await orig<typeof import('../storage/upload')>()),
+  storeArtifact: vi.fn(async () => {
+    artifacts.push('stored')
+    throw new Error('a test stores no artifact')
+  }),
+}))
+// The signer may record artifacts (a maintainer): the long-body checks get past the role check.
+vi.mock('./members', async (orig) => ({
+  ...(await orig<typeof import('./members')>()),
+  readRoleOracle: async () => ({ currentRole: () => 'maintainer' }),
+}))
 vi.mock('./role-claim', async (orig) => ({ ...(await orig<typeof import('./role-claim')>()), roleClaim: async () => ({}) }))
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {
     ...real,
+    queryAllDocuments: vi.fn(async (_sdk: unknown, q: { documentTypeName: string }) => {
+      reads += 1
+      return q.documentTypeName === 'config' ? configs : byType[q.documentTypeName] ?? []
+    }),
     queryDocumentsWithProof: vi.fn(async (_sdk: unknown, q: { where?: [string, string, unknown][] }) => {
+      reads += 1
       const id = q.where?.find(([f]) => f === '$id')?.[2]
       const doc = typeof id === 'string' ? stored[id] : undefined
       return { documents: doc === undefined ? [] : [doc] }
     }),
-    createDocumentIdempotent: vi.fn(async (_sdk: unknown, _a: unknown, p: { documentType: string; data: Record<string, unknown>; intent?: string }) => {
-      writes.push({ documentType: p.documentType, data: p.data, ...(p.intent ? { intent: p.intent } : {}) })
+    createDocumentIdempotent: vi.fn(async (_sdk: unknown, _a: unknown, p: { documentType: string; data: Record<string, unknown>; intent?: string; contentKey?: string }) => {
+      writes.push({ documentType: p.documentType, data: p.data, ...(p.intent ? { intent: p.intent } : {}), ...(p.contentKey ? { contentKey: p.contentKey } : {}) })
       return { documentId: '8rSFEyS7gidGdS4r8m22YtMEc519otpDNQ242Zw9c1Gb', confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: null }
     }),
     precheckEdit: vi.fn(async () => undefined),
@@ -46,6 +72,9 @@ import { admitAll, laneGate } from './private-content'
 import { SEALED_TEXT_LIMIT } from './private-writes'
 import { saveReviewDraft, loadReviewDraft, updateComment, type ReviewDraft } from './review-writes'
 import { assertNoPlaintext, writeRepoDoc } from './writes'
+import { postComment, updateTarget } from './review-writes'
+import { contentHash } from '../sdk'
+import { readComments } from '../view/issues-view'
 import { commentDraftKey } from '../view/draft-text'
 import { newReviewDraft } from '../view/pending-review'
 
@@ -64,8 +93,13 @@ const ISSUE_MEMBERS = b58(id(0x52))
 const ROOT_PUBLIC = b58(id(0x61))
 const REPLY_MEMBERS = b58(id(0x62))
 const SEALED = Uint8Array.from([0x03, ...new Uint8Array(60)])
+const SEALED_CONFIG = Uint8Array.from([0x02, ...new Uint8Array(84)])
 
 beforeEach(() => {
+  configs = [{ $id: 'c1', defaultBranch: 'main' }, { $id: 'c2', enc: SEALED_CONFIG, epoch: 0 }]
+  reads = 0
+  byType = {}
+  artifacts.length = 0
   writes.length = 0
   replaces.length = 0
   resetMemoryStores()
@@ -209,5 +243,90 @@ describe('no members-only text at rest', () => {
     const pub = newReviewDraft({ draftId: 'd2', network: 'devnet', identity: auth.identityId, repoId: REPO.repoId, prId: ISSUE_MEMBERS, headOid: 'ab'.repeat(20), private: false, now: 1 })
     await saveReviewDraft(pub, REPO)
     expect((await idbEntries('journal')).length).toBe(1)
+  })
+})
+
+describe('review round 1 regressions', () => {
+  const ISSUE_SEALED_STORED = b58(id(0xa1))
+  const COMMENT_SEALED_STORED = b58(id(0xa2))
+  const seal = { current: { body: 'old' }, bind: { targetId: ISSUE_MEMBERS } }
+
+  it('C1: a long edit of a members-only comment or issue is refused before any artifact is stored', async () => {
+    stored[COMMENT_SEALED_STORED] = { $id: COMMENT_SEALED_STORED, repoId: REPO.repoId, enc: SEALED, epoch: 0, targetId: decodeIdentifier(ISSUE_MEMBERS) }
+    stored[ISSUE_SEALED_STORED] = { $id: ISSUE_SEALED_STORED, repoId: REPO.repoId, enc: SEALED, epoch: 0, number: 9 }
+    const long = 'z'.repeat(6000)
+    await expect(updateComment(sdk, auth, REPO, { id: COMMENT_SEALED_STORED, body: long, expectedRevision: 1n, seal })).rejects.toBeInstanceOf(LongBodyRefusedError)
+    await expect(
+      updateTarget(sdk, auth, REPO, { type: 'issue', id: ISSUE_SEALED_STORED, body: long, expectedRevision: 1n, seal: { current: { title: 't' }, bind: { number: 9 } } }),
+    ).rejects.toBeInstanceOf(LongBodyRefusedError)
+    expect(artifacts).toEqual([])
+    expect(writes).toEqual([])
+    expect(replaces).toEqual([])
+  })
+
+  it('C1 backstop: a public long body for an edit of a stored sealed document is refused', async () => {
+    stored[COMMENT_SEALED_STORED] = { $id: COMMENT_SEALED_STORED, repoId: REPO.repoId, enc: SEALED, epoch: 0 }
+    await expect(longBodyField(sdk, auth, REPO, 'comment', 'q'.repeat(6000), {}, undefined, 'public', { type: 'comment', id: COMMENT_SEALED_STORED })).rejects.toThrow(/members-only/)
+    expect(artifacts).toEqual([])
+  })
+
+  it('H2: a reply under a members-only root posted with no audience is never public plaintext', async () => {
+    const root = b58(id(0xa3))
+    stored[root] = { $id: root, repoId: REPO.repoId, enc: SEALED, epoch: 0 }
+    // postComment (a quick reply, an inline thread's Reply) settles nothing itself
+    await expect(postComment(sdk, auth, REPO, { targetId: ISSUE_PUBLIC, body: 'QAMARK reply', replyTo: root })).rejects.toThrow()
+    expect(writes).toEqual([])
+    // with the members key it is sealed
+    const writer = { keys: await EpochKeys.import(REPO_ID, 0, new Uint8Array(K0)) }
+    await writeRepoDoc(sdk, auth, REPO, 'comment', { targetId: decodeIdentifier(ISSUE_PUBLIC), replyTo: decodeIdentifier(root), body: 'QAMARK reply' }, 'r1', undefined, undefined, { membersWriter: writer })
+    expect(writes[0]?.data['body']).toBeUndefined()
+    expect((writes[0]?.data['enc'] as Uint8Array)[0]).toBe(0x03)
+    // a review on a members-only PR, settled by nobody, follows it too
+    await writeRepoDoc(sdk, auth, REPO, 'review', { patchId: decodeIdentifier(ISSUE_MEMBERS), verdict: 3, commitOid: new Uint8Array(20), body: 'QAMARK review' }, 'r2', undefined, undefined, { membersWriter: writer })
+    expect(writes[1]?.data['body']).toBeUndefined()
+    expect((writes[1]?.data['enc'] as Uint8Array)[0]).toBe(0x03)
+  })
+
+  it('an author event with a value on a members-only target is refused (it cannot be sealed)', async () => {
+    await expect(writeRepoDoc(sdk, auth, REPO, 'authorEvent', { targetId: decodeIdentifier(ISSUE_MEMBERS), targetNumber: 3, kind: 7, value: 'secret' }, 'a1')).rejects.toThrow(/members-only/)
+    expect(writes).toEqual([])
+  })
+
+  it('M5: a public repo with no members key reads no parent for a comment (one cached config read)', async () => {
+    const other: RepoRef = { ...REPO, repoId: b58(id(0x33)) }
+    configs = [{ $id: 'c1', defaultBranch: 'main' }]
+    await writeRepoDoc(sdk, auth, other, 'comment', { targetId: decodeIdentifier(b58(id(0x34))), body: 'plain' }, 'p1')
+    await writeRepoDoc(sdk, auth, other, 'comment', { targetId: decodeIdentifier(b58(id(0x35))), body: 'plain too' }, 'p2')
+    expect(writes.map((w) => w.data['body'])).toEqual(['plain', 'plain too'])
+    expect(reads).toBe(1)
+  })
+
+  it('M6: a members-only verdict read as a non-member (4 / 5) is written as the member it is, with the proof', async () => {
+    const writer = { keys: await EpochKeys.import(REPO_ID, 0, new Uint8Array(K0)) }
+    const out = await sealMembersContent(auth, 'review', { patchId: decodeIdentifier(ISSUE_MEMBERS), verdict: 4, commitOid: new Uint8Array(20), body: 'ok' }, writer)
+    expect(out['verdict']).toBe(1)
+    expect(base58Encode(out['asMember'] as Uint8Array)).toBe(auth.identityId)
+    const req = await sealMembersContent(auth, 'review', { patchId: decodeIdentifier(ISSUE_MEMBERS), verdict: 5, commitOid: new Uint8Array(20) }, writer)
+    expect(req['verdict']).toBe(2)
+  })
+
+  it('L9: the retry cache keys a sealed write by an HMAC under the epoch key, not a plain hash', async () => {
+    const writer = { keys: await EpochKeys.import(REPO_ID, 0, new Uint8Array(K0)) }
+    const data = { targetId: decodeIdentifier(ISSUE_MEMBERS), body: 'QAMARK keyed' }
+    await writeRepoDoc(sdk, auth, REPO, 'comment', data, 'k1', undefined, undefined, { audience: 'members', membersWriter: writer })
+    const key = writes[0]?.contentKey
+    expect(key).toMatch(/^[0-9a-f]{64}$/)
+    expect(key).not.toBe(contentHash('comment', { repoId: decodeIdentifier(REPO.repoId), ...data }))
+  })
+
+  it('L8: readComments shows a sealed comment it cannot open as nothing, never a blank public comment', async () => {
+    byType = {
+      comment: [
+        { $id: b58(id(0xb1)), $ownerId: auth.identityId, $createdAt: 1, repoId: REPO.repoId, targetId: ISSUE_PUBLIC, body: 'public words' },
+        { $id: b58(id(0xb2)), $ownerId: auth.identityId, $createdAt: 2, $createdAtBlockHeight: 5, repoId: REPO.repoId, targetId: ISSUE_PUBLIC, enc: SEALED, epoch: 0 },
+      ],
+    }
+    const shown = await readComments(sdk, REPO, ISSUE_PUBLIC)
+    expect(shown.map((c) => c.body)).toEqual(['public words'])
   })
 })

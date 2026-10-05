@@ -19,6 +19,7 @@ import { storeArtifact } from '../storage/upload'
 import { writePackManifest } from './push'
 import type { RepoRef } from './contract'
 import { SEALED_TEXT_LIMIT, sealArtifact, sealedTextUse, type SealedKind } from './private-writes'
+import { storedAudience } from './members-writes'
 import { readRoleOracle } from './members'
 import { capabilitiesOf } from '../rules/roles'
 import type { Audience, Role } from '../rules/v2'
@@ -126,6 +127,8 @@ export async function longBodyField(
   intent?: string,
   /** A public repo's members-only text: it is never stored as a plaintext artifact. */
   audience: Audience = 'public',
+  /** An edit of this stored document: checked again before a plaintext artifact is stored. */
+  editing?: { readonly type: string; readonly id: string },
 ): Promise<string> {
   const room = audience === 'members' && repo.visibility === 'public' && kind !== 'release' ? membersBodyRoom(kind, others) : bodyRoom(repo, kind, others)
   if (!needsLongBodyArtifact(full, room)) return full
@@ -142,6 +145,11 @@ export async function longBodyField(
   // a `packManifest` from a maintainer or a role-1 writer only).
   if (!mayStoreLongBodies((await readRoleOracle(sdk, repo, auth.network)).currentRole(auth.identityId))) {
     throw new LongBodyRefusedError(`${tooLongFor(repo, kind, full, others)}. A longer text is stored as a repository artifact, which only the repo's maintainers and writers may record: shorten it, or split it into comments`)
+  }
+  // Backstop: a public repo's artifact is stored as plaintext for good, so an edit's long body is
+  // stored only when the document it edits is itself plaintext (read now, failing closed).
+  if (repo.visibility === 'public' && editing !== undefined && (await storedAudience(sdk, repo, editing.type, editing.id)).audience !== 'public') {
+    throw new LongBodyRefusedError(`this ${kind} is members-only: its text is never stored where everyone can read it; shorten it, or split it into comments`)
   }
   // The field must hold the trailer (its length does not depend on the hash): checked before
   // anything is paid for.

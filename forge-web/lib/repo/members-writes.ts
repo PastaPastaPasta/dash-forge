@@ -16,17 +16,22 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { encryptionOps } from '../auth/encryption-key'
-import { EpochKeys, MalformedError, TooLargeError, sealMembersDoc, type PrivateDocType } from '../private'
+import { EpochKeys, MalformedError, TooLargeError, bytesToHex, refNameHash, sealMembersDoc, type PrivateDocType } from '../private'
 import { fitsUnder, narrower, type Audience } from '../rules/v2'
-import { queryDocumentsWithProof, type PlainDocument, type WriteAuth } from '../sdk'
+import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument, type WriteAuth } from '../sdk'
+import { retryWhileMissing } from '../view/retry'
 import { DOC, asIdentifierString, type RepoRef } from './contract'
 import { docAudience } from './private-content'
 import { loadPrivateSessionUncached, sessionUnwrapper } from './private-session'
 import { PrivateWriteError, editFields, isSealedKind, sealContent, sealedTextUse, writeBlockReason } from './private-writes'
-import { contractOf } from './source'
+import { contractOf, repoSource } from './source'
 
-/** E311 (DESIGN §4.1, §10), word for word. */
-export const NO_KEY_SHARED = "You're a member, but no key has been shared with you yet. A maintainer's client will fix this the next time they open the repo."
+/**
+ * E311 (DESIGN §4.1, §10): a member nobody has shared the members key with yet (added by an older
+ * client). Nothing repairs it on its own: a maintainer runs the repair check. The one copy of it
+ * (the repo banner and the write refusal show this text).
+ */
+export const NO_KEY_SHARED_TEXT = "You're a member, but no key has been shared with you yet. Ask a maintainer to share it: Repair in the repo's Settings, or dg repo keys repair."
 
 /**
  * The combined text cap of a members-only document: the private-repo cap less the 32 bytes the
@@ -36,7 +41,7 @@ export const MEMBERS_TEXT_LIMIT = { issue: 5053, patch: 5047, comment: 5053, rev
 
 /** Why a members-only write cannot go ahead: the refusal is the message, nothing was written. */
 function refused(message: string, code?: string): PrivateWriteError {
-  return new PrivateWriteError(`${message}; nothing was written`, code)
+  return new PrivateWriteError(message.endsWith('.') ? `${message} Nothing was written.` : `${message}; nothing was written`, code)
 }
 
 /** A stored document of `repo` by id, or null (one proof-checked read). */
@@ -57,14 +62,82 @@ function parentNotFound(what: string, id: string): PrivateWriteError {
   return refused(`the ${what} ${id} could not be read, and who can read this depends on it; check it, or try again in a moment`)
 }
 
+/** Whether a stored `enc` holds bytes (any encoding the SDK returns). */
+function hasBytes(v: unknown): boolean {
+  if (v === null || v === undefined) return false
+  if (typeof v === 'string') return v.length > 0
+  const n = (v as { length?: unknown }).length
+  return typeof n === 'number' && n > 0
+}
+
+/**
+ * Whether `repo` has a members key: every private repo, and a public one with any sealed `config`
+ * (the members-key anchor, even one that does not resolve: the check fails toward the key-aware
+ * flow). The same definition `dg` uses (`keyring::has_members_key`). Uncached.
+ */
+export async function hasMembersKey(sdk: EvoSDK, repo: RepoRef): Promise<boolean> {
+  if (repo.visibility === 'private') return true
+  const rows = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'asc']] }))
+  const has = rows.some((d) => hasBytes(d['enc']))
+  if (has) knownKeys.set(repo.repoId, { has: true, at: Date.now() })
+  return has
+}
+
+/** Members keys seen, by repo id: a key, once there, never goes; "none" is re-read after {@link NO_KEY_TTL_MS}. */
+const knownKeys = new Map<string, { readonly has: boolean; readonly at: number }>()
+const NO_KEY_TTL_MS = 15_000
+
+/**
+ * {@link hasMembersKey} for the audience lookups of a write. Without a members key nothing in a
+ * public repo can be members-only content (it is sealed under that key), so a write needs no
+ * parent lookup there: every public repo without members-only content keeps its writes as cheap
+ * as before. A "none" answer is trusted for a few seconds only; a held members-key session
+ * (`repo.lane`) proves one.
+ */
+export async function repoHasMembersKey(sdk: EvoSDK, repo: RepoRef): Promise<boolean> {
+  if (repo.visibility === 'private' || repo.lane !== undefined) return true
+  const hit = knownKeys.get(repo.repoId)
+  if (hit !== undefined && (hit.has || Date.now() - hit.at < NO_KEY_TTL_MS)) return hit.has
+  const has = await hasMembersKey(sdk, repo)
+  knownKeys.set(repo.repoId, { has, at: Date.now() })
+  return has
+}
+
+/** Note that `repo` has a members key now (this client just turned it on). */
+export function noteMembersKey(repo: RepoRef): void {
+  knownKeys.set(repo.repoId, { has: true, at: Date.now() })
+}
+
+/** Audiences of documents this tab wrote or read, by `repoId/docId` (a document's audience never changes). */
+const knownAudiences = new Map<string, Audience>()
+const MAX_KNOWN_AUDIENCES = 500
+
+/** Remember the audience of `repo`'s document `id` (a create that just landed: a node may not show it yet). */
+export function noteAudience(repo: RepoRef, id: string, audience: Audience): void {
+  if (id === '') return
+  if (knownAudiences.size >= MAX_KNOWN_AUDIENCES) knownAudiences.delete(knownAudiences.keys().next().value as string)
+  knownAudiences.set(`${repo.repoId}/${id}`, audience)
+}
+
+/** How often a parent that is not visible yet is read again (a block behind) before the write is refused. */
+const PARENT_RETRIES = 3
+
 /** The audience of `repo`'s issue or pull request `targetId`, read from the stored document. */
 export async function targetAudience(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<Audience> {
   if (repo.visibility === 'private') return 'members'
-  for (const type of [DOC.issue, DOC.patch]) {
-    const doc = await storedDoc(sdk, repo, type, targetId)
-    if (doc !== null) return docAudience(doc)
-  }
-  throw parentNotFound('issue or pull request', targetId)
+  const known = knownAudiences.get(`${repo.repoId}/${targetId}`)
+  if (known !== undefined) return known
+  if (!(await repoHasMembersKey(sdk, repo))) return 'public'
+  const found = await retryWhileMissing(async () => {
+    for (const type of [DOC.issue, DOC.patch]) {
+      const doc = await storedDoc(sdk, repo, type, targetId)
+      if (doc !== null) return docAudience(doc)
+    }
+    return null
+  }, PARENT_RETRIES)
+  if (found === null) throw parentNotFound('issue or pull request', targetId)
+  noteAudience(repo, targetId, found)
+  return found
 }
 
 /**
@@ -98,6 +171,8 @@ export async function childAudience(
   input: { readonly targetId: string; readonly replyTo?: string; readonly requested?: Audience },
 ): Promise<Audience> {
   if (repo.visibility === 'private') return audienceFor(repo, input.requested, null)
+  // No members key: nothing here is members-only, so no parent needs reading.
+  if (!(await repoHasMembersKey(sdk, repo))) return audienceFor(repo, input.requested, 'public')
   let parent = await targetAudience(sdk, repo, input.targetId)
   if (input.replyTo !== undefined && input.replyTo !== '') {
     const replied = await storedAudience(sdk, repo, DOC.comment, input.replyTo)
@@ -106,6 +181,11 @@ export async function childAudience(
     if (root !== '') parent = narrower(parent, (await storedAudience(sdk, repo, DOC.comment, root)).audience)
   }
   return audienceFor(repo, input.requested, parent)
+}
+
+/** The retry-cache key of a sealed write saying `said` (a content hash): an HMAC under the epoch's ref key. */
+export async function keyedContentKey(keys: EpochKeys, said: string): Promise<string> {
+  return bytesToHex(await refNameHash(keys, `write-journal:${said}`))
 }
 
 /** What one members-only action seals under: the members key's current write epoch, read now. */
@@ -132,9 +212,9 @@ export async function membersWriter(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef)
     if (s.configRows.length === 0) throw refused("members-only content isn't turned on in this repo; a maintainer can turn it on", 'E312')
     const r = s.resolution
     const mine = s.wraps.some((w) => base58Encode(w.row.memberId) === auth.identityId)
-    if (r.keys.size === 0 && !mine) throw refused(NO_KEY_SHARED, 'E311')
+    if (r.keys.size === 0 && !mine) throw refused(NO_KEY_SHARED_TEXT, 'E311')
     const keys = r.writeEpoch === null ? undefined : r.keys.get(r.writeEpoch)
-    if (keys === undefined) throw refused(writeBlockReason(r) as string, 'E310')
+    if (keys === undefined) throw refused(writeBlockReason(r) ?? "you can't write under this repo's current key yet; a maintainer can repair it", 'E310')
     return { keys }
   } finally {
     s.close()
@@ -157,8 +237,13 @@ export async function sealMembersContent(auth: WriteAuth, type: PrivateDocType, 
     if (used > limit) throw refused(`the text is too long: a members-only ${type} holds at most ${limit} bytes of text (this one has ${used})`)
   }
   const owner = decodeIdentifier(auth.identityId)
+  // {@link membersWriter} proved the signer a member just now: a verdict a stale "not a member"
+  // read made a non-member's (4 / 5) is the member's (1 / 2), with the proof; consensus refuses a
+  // 4 / 5 with `asMember`, and a member's verdict without it would not count (forge-core `stamp`).
+  const verdict = data['verdict']
+  const member = verdict === 4 ? { ...data, verdict: 1 } : verdict === 5 ? { ...data, verdict: 2 } : data
   try {
-    const sealed = await sealContent(writer.keys, type, owner, data, (k, doc, f) => sealMembersDoc(k, { ...doc, vis: 'public' }, f))
+    const sealed = await sealContent(writer.keys, type, owner, member, (k, doc, f) => sealMembersDoc(k, { ...doc, vis: 'public' }, f))
     // An event carries no proof field (its gate is the member event type itself).
     return type === 'event' ? sealed : { ...sealed, asMember: owner }
   } catch (e) {
@@ -193,7 +278,7 @@ export async function sealMembersEdit(
 
 /** The audience of `repo`'s stored `documentType` document `id`, failing closed. */
 export async function storedAudience(sdk: EvoSDK, repo: RepoRef, documentType: string, id: string): Promise<{ readonly audience: Audience; readonly doc: PlainDocument }> {
-  const doc = await storedDoc(sdk, repo, documentType, id)
+  const doc = await retryWhileMissing(() => storedDoc(sdk, repo, documentType, id), PARENT_RETRIES)
   if (doc === null) throw parentNotFound(documentType, id)
   return { audience: docAudience(doc), doc }
 }

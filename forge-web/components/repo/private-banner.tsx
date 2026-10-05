@@ -27,6 +27,7 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
+import { NO_KEY_SHARED_TEXT } from '@/lib/repo/members-writes'
 import { ENCRYPTION_KEY_ELSEWHERE, ENCRYPTION_KEY_OTHER_APPROVAL } from '@/lib/auth/encryption-key'
 
 function Note({ tone, icon, children, testId }: { tone: 'caution' | 'danger' | 'info'; icon: React.ReactNode; children: React.ReactNode; testId?: string }): JSX.Element {
@@ -72,8 +73,6 @@ function AlertLine({ alert }: { alert: EpochAlert }): JSX.Element | null {
   }
 }
 
-/** E311, word for word (DESIGN §4.1 "Failure modes", §10). */
-export const NO_KEY_SHARED_TEXT = "You're a member, but no key has been shared with you yet. A maintainer's client will fix this the next time they open the repo."
 
 export function PrivateBanner({ home }: { home: RepoHome }): JSX.Element | null {
   // A public repo with members-only content: a member with no key shared yet (added by an older
