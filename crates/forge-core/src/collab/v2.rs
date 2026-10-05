@@ -173,7 +173,7 @@ pub fn approvals_over(reviews: &[Review], view: &PatchView, oracle: &RoleOracle)
 
 /// What a reader holds for a repository's sealed documents.
 #[derive(Clone)]
-enum DocKeys {
+pub(super) enum DocKeys {
     /// Nothing that opens a sealed document, and why.
     None(Unopened),
     /// A keyring holding at least one epoch key.
@@ -529,6 +529,8 @@ pub struct Review {
     /// are known (`body` is empty). It counts toward approvals like any member's review
     /// (DESIGN D15), and its text is for members.
     pub members_only: bool,
+    /// Who it is for, read from the stored document (public, or members-only).
+    pub audience: Audience,
 }
 
 /// A target's history: its state changes (`transition`) and its events, by the gate that
@@ -580,6 +582,12 @@ pub enum Unopened {
     /// made for this repository's key (forged, relabelled or moved). The "not encrypted for
     /// this repo" bucket, as `keyring::hidden_bucket` files `BadTag` and `CommitMismatch`.
     NotForThisRepo,
+    /// The repository's keys could not be read just now (a network or chain read failed):
+    /// nothing is said about the reader's membership or the document.
+    KeysUnreadable,
+    /// The reader's own key could not be opened on this computer (a passphrase with no terminal
+    /// to ask on, a locked keychain): a client sets this, core never does.
+    Locked,
 }
 
 /// A members-only document this reader cannot open, as DESIGN D14 shows it: who wrote it, when
@@ -728,6 +736,41 @@ impl IssueView {
             &self.issue.author,
         )
     }
+}
+
+/// A members-only issue this reader cannot open, with what is public of it: its placeholder,
+/// its state (open or closed) and its log (transitions, and events without their sealed values).
+#[derive(Debug, Clone)]
+pub struct SealedIssue {
+    /// Who wrote it, when, its number.
+    pub placeholder: MembersOnly,
+    /// Open or closed (labels and assignees are not readable: an event value follows its
+    /// target's audience).
+    pub state: IssueState,
+    /// Its `transition`, `event` and `authorEvent` documents.
+    pub log: TargetLog,
+}
+
+/// A members-only issue or PR this reader cannot open, with its log (its transitions and
+/// events, which are public: open, merged or closed, and what moderation reads).
+#[derive(Debug, Clone)]
+pub struct SealedTarget {
+    /// Who wrote it, when, its number.
+    pub placeholder: MembersOnly,
+    /// Its `transition`, `event` and `authorEvent` documents.
+    pub log: TargetLog,
+}
+
+/// Every issue of a repository as [`Collab::issues_with_state_read`] reads it.
+#[derive(Debug, Clone)]
+pub struct IssuesRead {
+    /// The issues that read, newest first, with their state.
+    pub rows: Vec<IssueView>,
+    /// The members-only issues this reader cannot open (placeholders), newest first, each with
+    /// its state (the transitions that open and close an issue are public).
+    pub members_only: Vec<SealedIssue>,
+    /// How many were not well-formed (§5).
+    pub malformed: usize,
 }
 
 /// A pull request with its folded state and approvals.
@@ -1196,6 +1239,7 @@ fn review_from_doc(d: &FetchedDocument) -> Review {
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
         members_only: false,
+        audience: stored_audience(d),
     }
 }
 
@@ -2489,7 +2533,11 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
         Unopened::NoEncryptionKey => {
             crate::keyring::no_encryption_key_held(&format!("members-only {what}"))
         }
-        Unopened::NotAMember | Unopened::NotReadable | Unopened::NotForThisRepo => {
+        Unopened::NotAMember
+        | Unopened::NotReadable
+        | Unopened::NotForThisRepo
+        | Unopened::KeysUnreadable
+        | Unopened::Locked => {
             let mut e = UserError::new(codes::MEMBERS_ONLY, format!("{what} is members-only"))
                 .cause(format!(
                     "only members of {} can read it; it was opened by {}",
@@ -2504,6 +2552,8 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
                 Unopened::NotForThisRepo => e.fix(
                     "it does not open with this repository's key: it was not encrypted for this repo",
                 ),
+                Unopened::KeysUnreadable => e.fix("the repository's keys could not be read just now: try again in a moment"),
+                Unopened::Locked => e.fix("unlock your key (enter its passphrase in a terminal, or set DASH_FORGE_PASSPHRASE), then read it again"),
                 _ => e.fix(format!(
                     "it was written for a key or for people you do not hold (after you were removed, late, or to specific people); `dg repo keys status {}` lists the keys you hold",
                     repo.display()
@@ -2797,6 +2847,12 @@ impl<'a> Collab<'a> {
         // a key source with no ENCRYPTION key at all (a limited `dg auth login` key): say so
         // (E306) rather than "no maintainer wrapped the key to you" (E307)
         if signer.encryption_keys(repo).is_empty() {
+            if repo.visibility != Visibility::Private {
+                return Err(crate::keyring::no_members_encryption_key_held(&format!(
+                    "members-only content of {}",
+                    repo.display()
+                )));
+            }
             return Err(crate::keyring::no_encryption_key_held(&format!(
                 "private repo {}",
                 repo.display()
@@ -2986,17 +3042,24 @@ impl<'a> Collab<'a> {
     /// refused, before anything is signed, for a non-member (only members write members-only
     /// content), a key source with no encryption key (E306), a repository where nobody turned
     /// members-only content on (E312), and a member the key was not shared with yet (E311).
-    async fn members_writer(&self, repo: &RepoRef) -> Result<Arc<Keyring>> {
+    pub(super) async fn members_writer(&self, repo: &RepoRef) -> Result<Arc<Keyring>> {
         let (identity, bridge) = self.signer()?;
         if !self.is_member(repo).await? {
-            return Err(Error::NotPermitted {
-                action: "post members-only content".into(),
-                reason: format!(
-                    "only members of {} can write what only members can read",
+            return Err(UserError::new(
+                codes::NOT_A_WRITER,
+                format!(
+                    "only members of {} can post members-only content",
                     repo.display()
                 ),
-                needs: "member".into(),
-            });
+            )
+            .cause("members-only content is for the repository's members, and you are not one")
+            .fix("post it publicly (without --members)")
+            .fix(format!(
+                "or become a member: `dg collab accept {}`, then ask a maintainer to add you",
+                repo.display()
+            ))
+            .note("checked before anything was signed; nothing was written or paid")
+            .into());
         }
         let signer = crate::keyring::PrivateSigner {
             client: self.client,
@@ -3004,19 +3067,39 @@ impl<'a> Collab<'a> {
             bridge,
         };
         if signer.encryption_keys(repo).is_empty() {
-            return Err(crate::keyring::no_encryption_key_held(&format!(
-                "members-only content of {}",
-                repo.display()
-            )));
+            let action = format!("members-only content of {}", repo.display());
+            let core = &repo.forge().core;
+            let on_chain = identity
+                .public_keys()
+                .iter()
+                .any(|k| k.is_usable_encryption_key(core));
+            return Err(if on_chain {
+                crate::keyring::no_members_encryption_key_held(&action)
+            } else {
+                crate::keyring::no_encryption_key_set_up(&action)
+            });
         }
         let kr = self.fresh_keyring(repo).await?;
         if !kr.has_members_key() {
-            return Err(crate::keyring::members_only_off(repo));
+            let maintainer = self.cached_role(repo).await? == Some(Role::Maintainer);
+            return Err(crate::keyring::members_only_off_for(repo, maintainer));
         }
         if kr.resolution().keys.is_empty() {
             return Err(crate::keyring::no_key_shared(repo));
         }
         Ok(kr)
+    }
+
+    /// Refuse, before anything is priced or signed, a members-only write the signer cannot
+    /// make in public `repo`: not a member, no encryption key ("set up your encryption key"),
+    /// members-only content not turned on (a maintainer is told how, anyone else to ask one),
+    /// or no key shared yet (E311). Nothing to check in a private repository (its keys are
+    /// checked by every write) or for a public write.
+    pub async fn require_members_writer(&self, repo: &RepoRef, audience: Audience) -> Result<()> {
+        if repo.visibility == Visibility::Private || audience == Audience::Public {
+            return Ok(());
+        }
+        self.members_writer(repo).await.map(|_| ())
     }
 
     /// The reader's keys when `repo` is private (`None` for a public one). A reader with no key
@@ -3044,7 +3127,7 @@ impl<'a> Collab<'a> {
     /// 0"): the repository's key chain, loaded only when a sealed document is met. An outsider,
     /// an anonymous reader and a member whose key has not been shared yet get the reason
     /// instead, never an error: they see placeholders.
-    async fn lane_keys(&self, repo: &RepoRef) -> Result<DocKeys> {
+    pub(super) async fn lane_keys(&self, repo: &RepoRef) -> Result<DocKeys> {
         let Some((identity, bridge)) = self.signer else {
             return Ok(DocKeys::None(Unopened::NotAMember));
         };
@@ -3071,7 +3154,7 @@ impl<'a> Collab<'a> {
             Ok(kr) => kr,
             Err(e) => {
                 tracing::warn!(error = %e, "the members key could not be read; members-only content stays hidden");
-                return Ok(DocKeys::None(Unopened::NotReadable));
+                return Ok(DocKeys::None(Unopened::KeysUnreadable));
             }
         };
         if kr.resolution().keys.is_empty() {
@@ -3219,6 +3302,17 @@ impl<'a> Collab<'a> {
         repo: &RepoRef,
         docs: Vec<FetchedDocument>,
     ) -> Result<(Vec<(FetchedDocument, Review)>, usize)> {
+        let (out, uncounted, malformed) = self.readable_reviews_read(repo, docs).await?;
+        Ok((out, malformed + uncounted.len()))
+    }
+
+    /// [`Self::readable_reviews`] with the members-only reviews that neither open nor count
+    /// (no `asMember`: D14 hides them) as placeholders, and how many were malformed.
+    async fn readable_reviews_read(
+        &self,
+        repo: &RepoRef,
+        docs: Vec<FetchedDocument>,
+    ) -> Result<(Vec<(FetchedDocument, Review)>, Vec<MembersOnly>, usize)> {
         let mut sealed: BTreeMap<String, FetchedDocument> = docs
             .iter()
             .filter(|d| is_sealed(d))
@@ -3273,10 +3367,19 @@ impl<'a> Collab<'a> {
                     (d, r)
                 }),
         );
-        let hidden = read.malformed + read.members_only.len()
-            - out.iter().filter(|(_, r)| r.members_only).count();
+        let shown: BTreeSet<&str> = out
+            .iter()
+            .filter(|(_, r)| r.members_only)
+            .map(|(d, _)| d.id.as_str())
+            .collect();
+        let uncounted: Vec<MembersOnly> = read
+            .members_only
+            .iter()
+            .filter(|m| !shown.contains(m.document_id.as_str()))
+            .cloned()
+            .collect();
         out.sort_by(|a, b| (a.0.created_at, &a.0.id).cmp(&(b.0.created_at, &b.0.id)));
-        Ok((out, hidden))
+        Ok((out, uncounted, read.malformed))
     }
 
     /// The signer's identity id.
@@ -3792,6 +3895,15 @@ impl<'a> Collab<'a> {
     /// cache. Open or closed is the sum of each issue's transitions; labels and assignees fold
     /// from its events. Requests: about `⌈issues/100⌉` plus the feed's new rows.
     pub async fn issues_with_state(&self, repo: &RepoRef) -> Result<(Vec<IssueView>, usize)> {
+        let read = self.issues_with_state_read(repo).await?;
+        Ok((read.rows, read.malformed + read.members_only.len()))
+    }
+
+    /// [`Self::issues_with_state`] with the members-only issues this reader cannot open as
+    /// placeholders, each with its state (open or closed: the transitions are public), so a
+    /// list can show "#N · members-only issue by @alice · open" (DESIGN D14: an issue is a
+    /// thread's root, so it always gets a row), and how many were malformed.
+    pub async fn issues_with_state_read(&self, repo: &RepoRef) -> Result<IssuesRead> {
         let collab = self.collab_contract(repo).await?;
         let mut docs: Vec<FetchedDocument> = Vec::new();
         let mut seen = BTreeSet::new();
@@ -3837,9 +3949,22 @@ impl<'a> Collab<'a> {
             .await?,
         );
         let logs = self.feed_logs(repo, feed).await?;
-        // Malformed rows, and in a private repo rows this reader cannot open, are hidden.
-        let (readable, hidden) = self.readable_all(repo, ContentKind::Issue, docs).await?;
-        let shown: Vec<IssueView> = readable
+        // Malformed rows are hidden; members-only rows this reader cannot open are placeholders.
+        let read = self.readable(repo, ContentKind::Issue, docs).await?;
+        let members_only = read
+            .members_only
+            .into_iter()
+            .map(|m| {
+                let log = logs.get(&m.document_id).cloned().unwrap_or_default();
+                SealedIssue {
+                    placeholder: m,
+                    state: fold_issue(&log),
+                    log,
+                }
+            })
+            .collect();
+        let shown: Vec<IssueView> = read
+            .rows
             .iter()
             .map(|d| {
                 let issue = issue_from_doc(d);
@@ -3853,7 +3978,11 @@ impl<'a> Collab<'a> {
                 }
             })
             .collect();
-        Ok((shown, hidden))
+        Ok(IssuesRead {
+            rows: shown,
+            members_only,
+            malformed: read.malformed,
+        })
     }
 
     /// The newest `limit` pull requests (0 = one page of 100), newest first.
@@ -4088,6 +4217,27 @@ impl<'a> Collab<'a> {
         Ok((reviews.into_iter().map(|(_, r)| r).collect(), hidden))
     }
 
+    /// [`Self::reviews_counted`] with the members-only reviews that neither open nor count for
+    /// this reader as placeholders (DESIGN D14: no `asMember`, so hidden and counted), and how
+    /// many were malformed. A members-only review that carries `asMember` and does not open is
+    /// in the reviews, with [`Review::members_only`] set: its verdict counts (D15).
+    pub async fn reviews_read(
+        &self,
+        repo: &RepoRef,
+        patch_id: &str,
+    ) -> Result<(Vec<Review>, Vec<MembersOnly>, usize)> {
+        let collab = self.collab_contract(repo).await?;
+        let docs = self
+            .by_target(&collab, DOC_REVIEW, "patchId", patch_id)
+            .await?;
+        let (reviews, uncounted, malformed) = self.readable_reviews_read(repo, docs).await?;
+        Ok((
+            reviews.into_iter().map(|(_, r)| r).collect(),
+            uncounted,
+            malformed,
+        ))
+    }
+
     // --- reads: folded state --------------------------------------------------------
 
     /// An issue's state: its transitions' sum, and its events' labels and assignees.
@@ -4206,6 +4356,17 @@ impl<'a> Collab<'a> {
         repo: &RepoRef,
         limit: u32,
     ) -> Result<Listed<(PatchView, Approvals)>> {
+        Ok(self.list_patch_views_read(repo, limit).await?.0)
+    }
+
+    /// [`Self::list_patch_views`] with, for each members-only PR of the page this reader cannot
+    /// open, its placeholder and its log (transitions and events: open, merged or closed, and
+    /// what moderation needs), so a list can filter and order it like the others.
+    pub async fn list_patch_views_read(
+        &self,
+        repo: &RepoRef,
+        limit: u32,
+    ) -> Result<(Listed<(PatchView, Approvals)>, Vec<SealedTarget>)> {
         let forge = repo.forge();
         self.client
             .prefetch_contracts(&[&forge.collab, &forge.core, &forge.community])
@@ -4277,12 +4438,22 @@ impl<'a> Collab<'a> {
             let approvals = approvals_over(&patch_reviews, &view, &oracle);
             rows.push((view, approvals));
         }
-        Ok(Listed {
-            rows,
-            hidden,
-            more,
-            members_only,
-        })
+        let sealed = members_only
+            .iter()
+            .map(|m| SealedTarget {
+                placeholder: m.clone(),
+                log: logs.remove(&m.document_id).unwrap_or_default(),
+            })
+            .collect();
+        Ok((
+            Listed {
+                rows,
+                hidden,
+                more,
+                members_only,
+            },
+            sealed,
+        ))
     }
 
     /// Complete the review lookup of [`Self::list_patch_views`] ([`reviews_to_reread`]): the
