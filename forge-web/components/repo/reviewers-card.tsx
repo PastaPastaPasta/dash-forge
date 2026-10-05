@@ -14,7 +14,7 @@ import { Check, Clock, Eye, MessageSquare, MinusCircle, RotateCcw, X, XCircle } 
 import type { Membership } from '@/lib/rules/v2'
 import { STANDING_LABEL, type ImportedReviewer, type ReviewerCardRow, type Standing } from '@/lib/view/review-fold'
 import type { ImportedVerdict } from '@/lib/repo/provenance'
-import { isIdentityId } from '@/lib/utils'
+import { isIdentityId, shortId } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -128,7 +128,7 @@ export function ReviewersCard({
                 <button
                   type="button"
                   onClick={() => onRequest(r.identity, false)}
-                  aria-label={`Re-request review from ${r.identity.slice(0, 8)}`}
+                  aria-label={`Re-request review from ${shortId(r.identity)}`}
                   title="Re-request review"
                   className="ml-auto rounded p-0.5 text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400"
                 >
@@ -139,7 +139,7 @@ export function ReviewersCard({
                 <button
                   type="button"
                   onClick={() => onRequest(r.identity, true)}
-                  aria-label={`Remove review request for ${r.identity.slice(0, 8)}`}
+                  aria-label={`Remove review request for ${shortId(r.identity)}`}
                   title="Remove the request"
                   className="ml-auto rounded p-0.5 text-anvil-500 hover:text-danger-700 dark:text-anvil-400 dark:hover:text-danger-400"
                 >

@@ -54,6 +54,7 @@ import { Oid } from '@/components/ui/oid'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { ForkSyncBar } from '@/components/repo/fork-sync'
+import { ownerLabel } from '@/lib/page-title'
 
 /** The ref bar counts at most this many commits (one read each), then shows `100+`. */
 const HOME_COMMIT_COUNT_CAP = 100
@@ -252,7 +253,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         <Rocket className="h-5 w-5 text-fg-muted" aria-hidden />
         <h2 className="text-prose">
           <span className="font-mono">
-            {addr.owner.length > 20 ? `${addr.owner.slice(0, 8)}…` : addr.owner}/{home.repo.name || addr.name}
+            {ownerLabel(addr.owner)}/{home.repo.name || addr.name}
           </span>{' '}
           is empty.
         </h2>

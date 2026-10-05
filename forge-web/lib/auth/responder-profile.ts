@@ -12,6 +12,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { NETWORKS, type Network } from '../constants'
 import { queryDocuments } from '../sdk'
+import { shortId } from '../utils'
 
 /** Named less than this long ago: "new". */
 export const NEW_IDENTITY_MS = 24 * 60 * 60 * 1000
@@ -68,7 +69,7 @@ export function responderWarnings(
   const others = storedIdentities.filter((id) => id !== p.identityId)
   if (others.length > 0 && !storedIdentities.includes(p.identityId)) {
     out.push(
-      `This is NOT the identity this device already holds a key for (${others.map((id) => `${id.slice(0, 10)}…`).join(', ')}). If you meant to sign in as that one, someone else answered your QR code: close this and start again.`,
+      `This is NOT the identity this device already holds a key for (${others.map(shortId).join(', ')}). If you meant to sign in as that one, someone else answered your QR code: close this and start again.`,
     )
   }
   if (p.name === null) {

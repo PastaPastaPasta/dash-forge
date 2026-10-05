@@ -1,34 +1,26 @@
-import { avatarFill, avatarHue } from '@/lib/design/avatar'
-import { abbreviate, cn } from '@/lib/utils'
+import { Identicon } from '@/components/ui/identicon'
+import { cn, shortId } from '@/lib/utils'
 
 /**
- * Identity pill — signature element (style guide §A). DPNS name + avatar +
- * abbreviated identity id (base58), consistent everywhere an owner/author appears.
- * The dash-blue accent is reserved for platform identity. The real dicebear avatar
- * (yappr generator) drops in later; this stub renders a deterministic initial swatch.
- * Collaborators may carry a token-role badge (WRITE / MAINTAIN).
+ * Identity pill — signature element (style guide §A): identicon, DPNS name and short identity
+ * id, the same everywhere an owner or author appears. The dash-blue accent is reserved for
+ * platform identity.
+ *
+ * Two things here resist impersonation (TS-02). The identicon is drawn from the whole id, and the
+ * id shows its first 7 and last 5 characters ({@link shortId}). An identity id is a hash, so an
+ * attacker can grind one whose first characters match a maintainer's; matching the last five and
+ * the picture as well is out of reach. The full id is in the title.
  */
-
-export type TokenRole = 'WRITE' | 'MAINTAIN'
 
 export interface IdentityPillProps {
   /** base58-encoded identity id. */
   identityId: string
   /** Resolved DPNS name, when known. */
   name?: string
-  role?: TokenRole
   className?: string
 }
 
-export function IdentityPill({
-  identityId,
-  name,
-  role,
-  className,
-}: IdentityPillProps): JSX.Element {
-  const initial = (name ?? identityId).charAt(0).toUpperCase()
-  const fill = avatarFill(avatarHue(identityId))
-
+export function IdentityPill({ identityId, name, className }: IdentityPillProps): JSX.Element {
   return (
     <span
       className={cn(
@@ -39,29 +31,13 @@ export function IdentityPill({
         className,
       )}
     >
-      <span
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
-        style={{ backgroundColor: fill }}
-        aria-hidden
-      >
-        {initial}
-      </span>
+      <Identicon seed={identityId} size={20} />
       {name ? (
         <span className="min-w-0 truncate font-medium text-dash-600 dark:text-dash-400" title={name}>{name}</span>
       ) : null}
-      <span className="shrink-0 font-mono text-anvil-500 dark:text-anvil-400" title={identityId}>
-        {abbreviate(identityId)}
+      <span className="shrink-0 font-mono text-anvil-500 dark:text-anvil-400" title={identityId} data-testid="identity-id">
+        {shortId(identityId)}
       </span>
-      {role ? (
-        <span
-          className={cn(
-            'shrink-0 rounded px-1 text-[10px] font-semibold uppercase tracking-wide',
-            'bg-forge-500/15 text-forge-800 dark:text-forge-400',
-          )}
-        >
-          {role}
-        </span>
-      ) : null}
     </span>
   )
 }
