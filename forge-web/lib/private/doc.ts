@@ -336,9 +336,15 @@ async function sealMembersWith(keys: EpochKeys, doc: PrivateDoc, fields: DocFiel
   const nonce = await nonceOf(ad, tlv)
   if (nonce.length !== NONCE_LEN) throw new RangeError('a nonce is 12 bytes')
   const kObj = await keys.objKey(nonce, ad)
-  const obj = await objKeys(keys.repoId, kObj)
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: concat(ad, obj.commit) }, obj.docKey, tlv)
-  return { ad, kObj, commit: obj.commit, tlv, enc: concat(new Uint8Array([V3]), nonce, obj.commit, new Uint8Array(ct)) }
+  try {
+    const obj = await objKeys(keys.repoId, kObj)
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: concat(ad, obj.commit) }, obj.docKey, tlv)
+    return { ad, kObj, commit: obj.commit, tlv, enc: concat(new Uint8Array([V3]), nonce, obj.commit, new Uint8Array(ct)) }
+  } catch (e) {
+    kObj.fill(0)
+    tlv.fill(0)
+    throw e
+  }
 }
 
 /**
@@ -349,10 +355,14 @@ async function sealMembersWith(keys: EpochKeys, doc: PrivateDoc, fields: DocFiel
  */
 export async function sealMembersDoc(keys: EpochKeys, doc: PrivateDoc, fields: DocFields): Promise<Bytes> {
   const hedged: NonceOf = async (ad, tlv) => hedgeNonce(keys, randomBytes(32), ad, await sha256(tlv))
-  const sealed = await sealMembersWith(keys, doc, fields, hedged)
-  sealed.tlv.fill(0)
-  sealed.kObj.fill(0)
-  return sealed.enc
+  let sealed: MembersSealed | undefined
+  try {
+    sealed = await sealMembersWith(keys, doc, fields, hedged)
+    return sealed.enc
+  } finally {
+    sealed?.tlv.fill(0)
+    sealed?.kObj.fill(0)
+  }
 }
 
 /**
@@ -363,7 +373,11 @@ export function __unsafeSealMembersDocWithNonce(keys: EpochKeys, doc: PrivateDoc
   return sealMembersWith(keys, doc, fields, async () => new Uint8Array(nonce))
 }
 
-export type UnreadableReason = 'noEpoch' | 'noKey' | 'commitMismatch' | 'badTag' | 'late' | 'lateEdit'
+/**
+ * Why a document is unreadable. `letter`: a well-framed specific-people letter (`enc` v0x04),
+ * which the epoch keys cannot open; `./named`'s `openLetter` can, for its recipients.
+ */
+export type UnreadableReason = 'noEpoch' | 'noKey' | 'commitMismatch' | 'badTag' | 'late' | 'lateEdit' | 'letter'
 
 export type OpenResult =
   | { readonly status: 'readable'; readonly fields: DocFields }
@@ -447,7 +461,7 @@ function encShapeOk(doc: PrivateDoc, enc: Uint8Array): boolean {
 export async function openWithKey(doc: StoredPrivateDoc, keys: EpochKeys, anchor: boolean): Promise<OpenResult> {
   const enc = doc.enc
   if (!encShapeOk(doc, enc) || !isU32(doc.epoch)) return MALFORMED
-  if (enc[0] === V4) return unreadable('noKey')
+  if (enc[0] === V4) return unreadable('letter')
   if (enc[0] === V3) return openMembers(doc, keys)
   let body = enc.subarray(1)
   if (doc.type === 'config') {
@@ -572,11 +586,11 @@ function isHeight(h: number | undefined): h is number {
  * `open_content` (§8.1): decrypt and check a private or members-only document, in the normative
  * order, dispatching on `enc[0]` and `doc.vis`. A specific-people letter (v0x04) needs the
  * reader's encryption key and the sender's public key, which an {@link OpenContext} does not
- * hold: a well-framed one is `noKey` here and opens through `./named`'s `openLetter`.
+ * hold: a well-framed one is `letter` here and opens through `./named`'s `openLetter`.
  */
 export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Promise<OpenResult> {
   if (!encShapeOk(doc, doc.enc) || !isU32(doc.epoch)) return MALFORMED
-  if (doc.enc[0] === V4) return unreadable('noKey')
+  if (doc.enc[0] === V4) return unreadable('letter')
   const anchor = ctx.anchors.get(doc.epoch)
   if (anchor === undefined) return unreadable('noEpoch')
   const keys = ctx.keys.get(doc.epoch)

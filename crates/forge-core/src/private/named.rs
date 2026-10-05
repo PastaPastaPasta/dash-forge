@@ -20,8 +20,8 @@
 //! `senderKeyId`, which must be an `ECDSA_SECP256K1` key of purpose `ENCRYPTION` (disabled is
 //! fine for reading); consensus checks none of this. One ECDH per key the reader holds, then every
 //! slot is tried; a slot counts only when its padding, version byte, `KCV_obj` prefix and the full
-//! `COMMIT_obj` all match. Then GCM, then `count(tag 25) = n` and the reader's own id at its slot
-//! index. The recipient list is "as listed by the sender": nothing proves the writer sealed the
+//! `COMMIT_obj` all match. Then GCM, then `count(tag 25) = n`, the owner at slot 0, no identity
+//! listed twice, and the reader's own id at its slot index. The recipient list is "as listed by the sender": nothing proves the writer sealed the
 //! same key into every slot except the commitment, which is exactly what stops a writer showing
 //! two recipients two letters.
 
@@ -326,12 +326,17 @@ fn public_ref_names_match(header: &DocHeader, fields: &Fields) -> bool {
 }
 
 /// The sender's public key under the reader rule: the owner's key `sender_key_id`, which must be
-/// an `ECDSA_SECP256K1` `ENCRYPTION` key (disabled or not). `None` is `Malformed`.
+/// an `ECDSA_SECP256K1` `ENCRYPTION` key (disabled or not) of 33 bytes, as Platform stores one.
+/// `None` is `Malformed` (so is a 33-byte value that is not a point, when the ECDH refuses it).
 pub(crate) fn sender_key(owner_keys: &[OwnerKey], sender_key_id: u32) -> Option<&[u8]> {
     owner_keys
         .iter()
         .find(|k| k.id == sender_key_id)
-        .filter(|k| k.purpose == PURPOSE_ENCRYPTION && k.key_type == KEY_TYPE_ECDSA_SECP256K1)
+        .filter(|k| {
+            k.purpose == PURPOSE_ENCRYPTION
+                && k.key_type == KEY_TYPE_ECDSA_SECP256K1
+                && k.data.len() == 33
+        })
         .map(|k| k.data.as_slice())
 }
 
@@ -360,8 +365,8 @@ pub(crate) fn find_slot(
             {
                 continue;
             }
-            let k_obj: [u8; 32] = pt[15..].try_into().expect("47-byte slot plaintext");
-            let k_obj = Zeroizing::new(k_obj);
+            let mut k_obj = Zeroizing::new([0u8; 32]);
+            k_obj.copy_from_slice(&pt[15..]);
             let obj = ObjKeys::derive(repo_id, &k_obj);
             if ct_eq(obj.commit(), commit) {
                 return Ok(Some((i, obj)));
@@ -373,6 +378,10 @@ pub(crate) fn find_slot(
 
 /// Open the letter `enc` of the document `header` in the repository `repo_id`, as `reader`,
 /// with the document owner's keys `owner_keys` (the reader rule in the module docs).
+///
+/// `owner_keys` must be the identity keys of **this document's** `$ownerId`, fetched for it: the
+/// rule takes the sender key from nowhere else, and the ECDH with it is what binds a slot to its
+/// writer.
 #[must_use]
 pub fn open(
     repo_id: &[u8; 32],
@@ -409,7 +418,15 @@ pub fn open(
     let Some((fields, recipients)) = tlv::parse_letter(&pt, header.kind) else {
         return LetterOpened::Malformed;
     };
+    // the list as the writer rule makes it: n ids, the owner in slot 0, none twice, and the
+    // reader at the slot it opened
+    let unique = recipients
+        .iter()
+        .enumerate()
+        .all(|(i, r)| !recipients[..i].contains(r));
     if recipients.len() != n
+        || recipients[0] != header.owner_id
+        || !unique
         || recipients[slot] != reader.identity_id
         || !public_ref_names_match(header, &fields)
     {
@@ -588,6 +605,11 @@ fn seal_artifact_inner(
 /// `reader`, with the manifest owner's keys `owner_keys` (the letter reader rule: the sender key
 /// is the owner's ECDSA_SECP256K1 ENCRYPTION key `senderKeyId`; a slot counts only when its
 /// KCV prefix and full commitment match). The length is checked before anything else.
+///
+/// Callers must first check that `sealed` hashes to the `packHash` of the **owner-signed
+/// `packManifest`** it was fetched for (the pack reader rule), and pass that manifest's
+/// `$ownerId`'s keys as `owner_keys`: an artifact carries no owner of its own, so the manifest is
+/// what says who wrote it. Bytes from storage that no manifest names are never opened.
 pub fn open_artifact(
     repo_id: &[u8; 32],
     sealed: &[u8],

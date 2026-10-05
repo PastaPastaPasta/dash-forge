@@ -426,6 +426,9 @@ pub enum Unreadable {
     /// different key, never this repository's current content. Set by the reading layer, not by
     /// [`open_content`].
     EarlierUse,
+    /// A well-framed specific-people letter (`enc` v0x04): the epoch keys cannot open it; the
+    /// letter reader ([`super::named::open`]) can, for its recipients.
+    Letter,
 }
 
 /// The result of [`open_content`].
@@ -547,8 +550,10 @@ fn well_framed(header: &DocHeader, enc: &[u8]) -> bool {
 
 fn decrypt(keys: &EpochKeys, header: &DocHeader, enc: &[u8], is_anchor: bool) -> Opened {
     let version = enc[0];
-    if version == V3 {
-        return decrypt_members(keys, header, enc);
+    match version {
+        V3 => return decrypt_members(keys, header, enc),
+        V4 => return Opened::Unreadable(Unreadable::Letter),
+        _ => {}
     }
     let body = if version == V2 {
         // the commitment is compared before GCM runs: a mismatch is CommitMismatch, never BadTag
@@ -613,7 +618,7 @@ fn decrypt_members(keys: &EpochKeys, header: &DocHeader, enc: &[u8]) -> Opened {
 /// key, commitment (config, v0x03), AES-GCM, TLV, ref-name hash, late content. Dispatches on
 /// `enc[0]` and the document's `vis` (see [`DocHeader::vis`]). A specific-people letter (v0x04)
 /// needs the reader's encryption keys and the sender's public key, which an [`OpenContext`] does
-/// not hold: a well-framed one is `Unreadable(NoKey)` here and opens through
+/// not hold: a well-framed one is `Unreadable(Letter)` here and opens through
 /// [`super::named::open`].
 #[must_use]
 pub fn open_content(ctx: &OpenContext, header: &DocHeader, enc: &[u8]) -> Opened {
@@ -621,7 +626,7 @@ pub fn open_content(ctx: &OpenContext, header: &DocHeader, enc: &[u8]) -> Opened
         return Opened::Malformed;
     }
     if enc[0] == V4 {
-        return Opened::Unreadable(Unreadable::NoKey);
+        return Opened::Unreadable(Unreadable::Letter);
     }
     let Some(anchor) = ctx.anchors.get(&header.epoch) else {
         return Opened::Unreadable(Unreadable::NoEpoch);
