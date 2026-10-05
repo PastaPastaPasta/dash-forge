@@ -270,7 +270,14 @@ pub struct Reader {
 impl Reader {
     /// Parse `repo`, connect and resolve it; load the identity only if it is private.
     pub async fn open(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
-        Self::open_for(ctx, repo, true).await
+        Self::open_for(ctx, repo, Keys::Sealed).await
+    }
+
+    /// [`Self::open`] for a read of issues, PRs and their discussion: in a public repository
+    /// with members-only content, a member's identity is loaded too, so the members-only items
+    /// open for them ([`members_signer`]). Two membership reads more for a signed-in reader.
+    pub async fn open_discussion(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
+        Self::open_for(ctx, repo, Keys::Members).await
     }
 
     /// [`Self::open`] for a read of what a private repository keeps in the clear (its members:
@@ -278,10 +285,11 @@ impl Reader {
     /// anyone can read it signed out, as the web shows it (QW4-054: `dg collab list` stopped
     /// with E301).
     pub async fn open_unsealed(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
-        Self::open_for(ctx, repo, false).await
+        Self::open_for(ctx, repo, Keys::Public).await
     }
 
-    async fn open_for(ctx: &crate::context::Ctx, repo: &str, sealed: bool) -> Result<Self> {
+    async fn open_for(ctx: &crate::context::Ctx, repo: &str, keys: Keys) -> Result<Self> {
+        let sealed = keys != Keys::Public;
         let repo_ref = RepoRef::parse(repo)?;
         let client = ctx.connect().await?;
         let hint = ctx.identity_id_hint();
@@ -304,7 +312,7 @@ impl Reader {
             }
             signer = Some(ctx.signer_on(&client).await?);
         }
-        if sealed && repo.visibility == Visibility::Public && signer.is_none() {
+        if keys == Keys::Members && repo.visibility == Visibility::Public && signer.is_none() {
             if let Some(viewer) = owner.as_deref() {
                 // boxed: every read command awaits this, and it is rarely taken
                 signer = Box::pin(members_signer(ctx, &client, &repo, viewer)).await;
@@ -355,9 +363,21 @@ impl Reader {
     }
 }
 
+/// Which keys a [`Reader`] loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Keys {
+    /// None: what a private repository keeps in the clear.
+    Public,
+    /// A private repository's, for its sealed documents.
+    Sealed,
+    /// [`Self::Sealed`], and a member's for a public repository's members-only discussion.
+    Members,
+}
+
 /// The identity of `viewer` (the configured key source's, known without opening it) for a read
-/// of public `repo`, when `viewer` is a member of it and members-only content is on there:
-/// their keys open the members-only documents (DESIGN §4.1). `None` otherwise, and whenever
+/// of public `repo`, when `viewer` holds a share of its members key (a member, or a removed
+/// member: what was written before the removal still opens), or is a member of it with
+/// members-only content on: their keys open the members-only documents (DESIGN §4.1). `None` otherwise, and whenever
 /// the key cannot be opened here (a passphrase with no terminal to ask on, a locked keychain, a
 /// wrong passphrase): the read shows placeholders, and a hint on stderr says why. A failed
 /// membership read is `None` too: a public read never fails for its members-only part.
@@ -368,12 +388,22 @@ async fn members_signer(
     viewer: &str,
 ) -> Option<(forge_core::keystore::BridgeIdentity, LoadedIdentity)> {
     let path = ctx.identity_path.as_ref()?;
+    // A wrap to the viewer (a member, or a removed one who still opens what was written while
+    // they were one); else a member of a repo with members-only content (whose key was not
+    // shared yet: they are told so).
     let members = forge_core::members::MemberReader::new(client);
-    let (role, lane) = futures::join!(
-        members.best_role(repo, viewer),
-        forge_core::keyring::has_members_key(client, repo)
+    let (wrap, role) = futures::join!(
+        forge_core::keyring::holds_wrap(client, repo, viewer),
+        members.best_role(repo, viewer)
     );
-    if !matches!((role, lane), (Ok(Some(_)), Ok(true))) {
+    let load = match (wrap, role) {
+        (Ok(true), _) => true,
+        (_, Ok(Some(_))) => forge_core::keyring::has_members_key(client, repo)
+            .await
+            .unwrap_or(false),
+        _ => false,
+    };
+    if !load {
         return None;
     }
     let hint = |why: &str| {

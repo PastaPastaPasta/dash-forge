@@ -507,11 +507,12 @@ mod tests {
     fn a_members_only_long_body_is_sealed_within_the_readers_cap() {
         use crate::private::{EpochKey, EpochResolution, Lane};
         assert_eq!(crate::pack::KIND_MEMBERS_LONG_BODY, 70);
+        assert_eq!(long_body::MAX_BYTES, 262_144);
         let mut res = EpochResolution::default();
         res.keys.insert(0, EpochKey::from_bytes([4; 32]));
         res.write_epoch = Some(0);
         let lane = Lane::from_resolution(&[8; 32], &res).unwrap();
-        for len in [5_200usize, 70_000, long_body::MAX_BYTES as usize] {
+        for len in [5_200usize, 70_000, 262_144] {
             let text = "m".repeat(len);
             let sealed = lane.seal_artifact(text.as_bytes()).unwrap();
             assert!(sealed.len() as u64 <= sealed_cap(len as u64), "{len}");

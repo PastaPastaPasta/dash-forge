@@ -1259,6 +1259,29 @@ pub async fn has_members_key(client: &PlatformClient, repo: &RepoRef) -> Result<
     Ok(configs.iter().any(|d| config_row(d).is_some()))
 }
 
+/// Whether `member` holds any wrap (`repoKey`) of `repo`'s members key: one read of the
+/// `memberEpoch` index. A member, and also a removed member, who can still open what was
+/// written while they were one (DESIGN §9 phase 1: "a removed member ... can read earlier
+/// ones").
+pub async fn holds_wrap(client: &PlatformClient, repo: &RepoRef, member: &str) -> Result<bool> {
+    let scope = repo.scope()?;
+    let collab = client.fetch_contract(&repo.forge().collab).await?;
+    let docs = client
+        .query_documents(
+            &collab,
+            DOC_REPO_KEY,
+            &scope.filters([QueryFilter::eq(
+                "memberId",
+                FieldValue::identifier(platform::decode_identifier(member)?),
+            )]),
+            &[],
+            1,
+            None,
+        )
+        .await?;
+    Ok(!docs.is_empty())
+}
+
 /// A signer's view of a private repository: its client, identity, key file and the keys that
 /// file holds.
 pub struct PrivateSigner<'a> {

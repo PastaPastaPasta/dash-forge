@@ -808,7 +808,7 @@ async fn list(
     state: crate::PrStateArg,
     include_hidden: bool,
 ) -> Result<()> {
-    let s = Reader::open(ctx, repo).await?;
+    let s = Reader::open_discussion(ctx, repo).await?;
     let handle = &s.repo;
     let collab = s.collab();
     // A fixed number of requests for the whole page (D-500: it was about 9 per PR).
@@ -1059,7 +1059,7 @@ async fn view(
     // A public PR is read without opening any key (a sealed one would ask for its
     // passphrase); a private repo's sealed documents open with the identity's keys. The
     // viewer ("new commits since your review") is named when the key source says who it is.
-    let s = Reader::open(ctx, repo).await?;
+    let s = Reader::open_discussion(ctx, repo).await?;
     let (client, handle, collab) = (&s.client, &s.repo, s.collab());
     let num = number_arg(number)?;
     // A members-only PR this reader cannot open is its row, exit 0 (its number is public).

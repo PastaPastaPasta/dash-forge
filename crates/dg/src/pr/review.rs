@@ -391,7 +391,7 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
                     println!(
                         "✓ discarded the pending review on PR #{} (it could not be read)",
                         a.number
-                    )
+                    );
                 },
             );
             return Ok(());

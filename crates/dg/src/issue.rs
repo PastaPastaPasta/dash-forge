@@ -346,7 +346,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     if args.page == 0 {
         return Err(crate::errors::usage("--page starts at 1"));
     }
-    let s = Reader::open(ctx, &args.repo).await?;
+    let s = Reader::open_discussion(ctx, &args.repo).await?;
     let author = match &args.author {
         Some(a) => Some(identity_arg(&s.client, || s.me(ctx), a).await?),
         None => None,
@@ -632,7 +632,7 @@ fn issue_line(v: &IssueView, pinned: bool, hid: &str) -> String {
 
 #[allow(clippy::too_many_lines)] // one view: the reads, then its JSON and its human rendering
 async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<()> {
-    let s = Reader::open(ctx, repo).await?;
+    let s = Reader::open_discussion(ctx, repo).await?;
 
     let collab = s.collab();
     let num = number_arg(number)?;
