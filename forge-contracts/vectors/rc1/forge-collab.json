@@ -3080,5 +3080,106 @@
    "asAuthor": 7,
    "r": 2
   }
+ },
+ {
+  "item": "U1",
+  "name": "an issue closed by PR #12",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "r": 1,
+   "closedByPr": 12
+  }
+ },
+ {
+  "item": "U1",
+  "name": "closedByPr 0",
+  "type": "transition",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "r": 1,
+   "closedByPr": 0
+  }
+ },
+ {
+  "item": "base",
+  "name": "ban ok",
+  "type": "ban",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "identityId": {
+    "$id": 9
+   },
+   "reason": 1
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a ban without a reason",
+  "type": "ban",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "identityId": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a ban without an identity",
+  "type": "ban",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "reason": 1
+  }
+ },
+ {
+  "item": "U1",
+  "name": "a ban reason over 255",
+  "type": "ban",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "identityId": {
+    "$id": 9
+   },
+   "reason": 256
+  }
  }
 ]
