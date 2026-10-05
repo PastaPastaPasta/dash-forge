@@ -46,7 +46,7 @@ import { dapiBudget, installDapiFetchGate } from './budget'
 import { isContractMissingError } from './contract-missing'
 import { isQuorumMiss, isStaleConnectionError } from './unreachable'
 import { loadContractSnapshots } from './contract-seed'
-import { followSdkVersion, setStaleContractHandler } from './query'
+import { followSdkVersion, setStaleContractHandler, type StaleContractCause } from './query'
 import { compileWasm, onWasmProgress, type DownloadProgress } from './wasm-fetch'
 import { setWriteHold } from './write'
 
@@ -559,7 +559,7 @@ export class EvoSdkService {
       this.outdated.add(id)
     }
     // Counted like any call, so a swap does not free the connection under them.
-    setStaleContractHandler((id) => this.track(connection, () => refreshSeeded(connection, id, replaced)))
+    setStaleContractHandler((id, cause, documentVersion) => this.track(connection, () => refreshStale(connection, id, cause, replaced, documentVersion)))
     // Off the critical path, on every connection (at most once an hour while the versions
     // match): are the seeded contracts still the network's current versions?
     if (this.network !== null) {
@@ -1071,22 +1071,81 @@ async function revalidateSeeded(connection: Connection, deploymentKey: string, r
   }
 }
 
+/** A recent contract refresh for a stale read: when, its outcome, and (once fetched) the version it got. */
+interface StaleRefresh {
+  readonly at: number
+  readonly done: Promise<boolean>
+  version?: number
+}
+/** Each connection's recent contract refreshes for a stale read. */
+const staleRefreshes = new WeakMap<Connection, Map<string, StaleRefresh>>()
+/** A contract is refreshed for a stale read at most this often; reads in between share it. */
+export const STALE_REFRESH_MS = 60_000
+
 /**
- * Drop a seeded contract from the connection's cache and fetch the current one. True when it
- * was seeded and was refetched (the caller may retry its read once). Used when the versions
- * differ, and when a read names a document type the seeded contract does not have.
+ * A read failed against a contract older than the network's ({@link StaleContractCause}): true
+ * when the contract was refetched and the read may be retried once. A seeded contract is
+ * refreshed ({@link refreshSeeded}) for either cause. One the SDK fetched (or a seeded one
+ * already refreshed) is refetched only for a newer document, which proves the network holds a
+ * newer version: an in-place update since it was fetched (a tab left open across UPDATE-1).
+ * Reads that fail together (a page's parallel panels) share one refresh and all retry, and a
+ * contract is refreshed at most once per {@link STALE_REFRESH_MS}, unless the failed read's
+ * document (`documentVersion`) is newer than the version that refresh fetched (a second update
+ * within the window); a refresh that failed is forgotten, so the next stale read tries again.
  */
-async function refreshSeeded(connection: Connection, id: string, replaced: (id: string) => void): Promise<boolean> {
-  const { sdk, seeded } = connection
-  if (!seeded.delete(id)) return false
-  replaced(id)
+export function refreshStale(
+  connection: Connection,
+  id: string,
+  cause: StaleContractCause,
+  replaced: (id: string) => void,
+  documentVersion?: number,
+): Promise<boolean> {
+  const recent = staleRefreshes.get(connection) ?? new Map<string, StaleRefresh>()
+  staleRefreshes.set(connection, recent)
+  const held = recent.get(id)
+  const outran = documentVersion !== undefined && held?.version !== undefined && documentVersion > held.version
+  if (held !== undefined && Date.now() - held.at < STALE_REFRESH_MS && !outran) return held.done
+  const seeded = connection.seeded.has(id)
+  if (!seeded && cause !== 'newerDocument') return Promise.resolve(false)
+  const fetched = seeded ? refreshSeeded(connection, id, replaced) : refetchContract(connection.sdk, id)
+  const entry: StaleRefresh = { at: Date.now(), done: fetched.then((v) => v !== null) }
+  recent.set(id, entry)
+  void fetched.then((v) => {
+    if (v !== null) entry.version = v
+    else if (recent.get(id) === entry) recent.delete(id)
+  })
+  return entry.done
+}
+
+/** Drop contract `id` from the SDK's cache and fetch the current one: its version, or null when not found. */
+async function refetchContract(sdk: EvoSDK, id: string): Promise<number | null> {
   try {
     const { Identifier } = await import('@dashevo/evo-sdk')
     sdk.wasm.removeCachedContract(Identifier.fromBase58(id))
-    return (await sdk.contracts.fetch(id)) !== undefined
+    const contract = await sdk.contracts.fetch(id)
+    if (contract === undefined || contract === null) return null
+    const version = Number((contract as { version?: unknown }).version)
+    return Number.isFinite(version) ? version : 0
   } catch {
-    return false
+    return null
   }
+}
+
+/**
+ * Drop a seeded contract from the connection's cache and fetch the current one: its version
+ * when it was seeded and was refetched (the caller may retry its read once), else null. Used
+ * when the versions differ, and when a read against the seeded contract finds it stale
+ * ({@link refreshStale}). A refetch that failed leaves it seeded, so the next stale read of
+ * either cause tries again.
+ */
+async function refreshSeeded(connection: Connection, id: string, replaced: (id: string) => void): Promise<number | null> {
+  const { sdk, seeded } = connection
+  const seededVersion = seeded.get(id)
+  if (seededVersion === undefined || !seeded.delete(id)) return null
+  replaced(id)
+  const version = await refetchContract(sdk, id)
+  if (version === null) seeded.set(id, seededVersion)
+  return version
 }
 
 /** Reject with `what` timed out after `ms`, aborting `controller` so the work stops spending requests. */

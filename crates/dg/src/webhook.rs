@@ -15,8 +15,8 @@ use serde_json::json;
 use forge_core::envelope::SecretBytes;
 use forge_core::user_error::{codes, UserError};
 use forge_core::webhooks::{
-    generate_secret, hook_id_for_label, newest_per_hook, random_hook_id, NewWebhook, WebhookReader,
-    WebhookService,
+    check_url_and_events, generate_secret, hook_id_for_label, newest_per_hook, random_hook_id,
+    url_secret, NewWebhook, UrlSecret, WebhookReader, WebhookService, CHAT_WEBHOOK_GUIDE,
 };
 
 use crate::common::{resolve, Reader, RepoRef};
@@ -74,7 +74,8 @@ pub struct AddArgs {
     /// random hook id.
     #[arg(long)]
     name: Option<String>,
-    /// Accept a URL with a query string (it is public on Platform).
+    /// Accept a URL with a query string or a token-like path segment (it is public on Platform).
+    /// A chat service's webhook URL (Discord, Slack, Teams, Google Chat) is refused anyway.
     #[arg(long)]
     force: bool,
 }
@@ -146,6 +147,35 @@ fn parse_hook(input: &str) -> [u8; 32] {
     hook_id_for_label(input)
 }
 
+/// Refuse `url` and `events` before `add` asks or reads anything, with a user error: a chat
+/// service's webhook URL always (its token is the URL, and a hook's URL is public on chain),
+/// else whatever `check_url_and_events` refuses.
+fn refuse_url(url: &str, events: &[String], force: bool) -> Result<()> {
+    if let Some(UrlSecret::ChatService(service)) = url_secret(url) {
+        return Err(UserError::new(codes::USAGE, "webhook not added")
+            .cause(format!(
+                "a {service} webhook URL contains its token, and a hook's URL is public on chain: \
+                 anyone could post to your channel"
+            ))
+            .fix(format!(
+                "keep the URL in your own relay's config instead: {CHAT_WEBHOOK_GUIDE}"
+            ))
+            .note("nothing was written or paid")
+            .into());
+    }
+    if let Err(e) = check_url_and_events(url, events, force) {
+        let cause = match e {
+            forge_core::Error::Config(m) => m,
+            other => other.to_string(),
+        };
+        return Err(UserError::new(codes::USAGE, "webhook not added")
+            .cause(cause)
+            .note("nothing was written or paid")
+            .into());
+    }
+    Ok(())
+}
+
 async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     let AddArgs {
         repo,
@@ -155,6 +185,8 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         ..
     } = args;
     let repo_ref = RepoRef::parse(repo)?;
+    // The URL first: a chat service's webhook URL is refused before anything is asked or read.
+    refuse_url(url, events, args.force)?;
     let (secret, show) = hook_secret(ctx, args)?;
     let hook_id = args
         .name
@@ -444,6 +476,17 @@ async fn remove(ctx: &Ctx, repo: &str, hook: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chat service's webhook URL is refused even with --force, naming where it belongs.
+    #[test]
+    fn a_chat_service_url_is_refused_with_the_guide() {
+        let e = refuse_url("https://discord.com/api/webhooks/1/t/github", &[], true).unwrap_err();
+        let u = e.downcast_ref::<UserError>().expect("a user error");
+        assert_eq!(u.code, codes::USAGE);
+        assert!(format!("{u:?}").contains(CHAT_WEBHOOK_GUIDE), "{u:?}");
+        assert!(refuse_url("https://ci.example/hook?x=1", &[], false).is_err());
+        assert!(refuse_url("https://ci.example/hook?x=1", &[], true).is_ok());
+    }
 
     /// QW3-023: the listed 12-digit id removes its hook; an unknown or shared one is an error.
     #[test]

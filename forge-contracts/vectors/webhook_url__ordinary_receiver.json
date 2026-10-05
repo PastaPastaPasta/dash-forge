@@ -1,0 +1,12 @@
+{
+  "name": "ordinary_receiver",
+  "description": "An ordinary receiver URL carries no secret.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://ci.example.com/forge-hook"
+  },
+  "expected": {
+    "secret": null
+  }
+}

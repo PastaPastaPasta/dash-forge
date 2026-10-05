@@ -1,0 +1,13 @@
+{
+  "name": "teams_legacy",
+  "description": "The older outlook.office.com/webhook form.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://outlook.office.com/webhook/abc/IncomingWebhook/x"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Microsoft Teams"
+  }
+}

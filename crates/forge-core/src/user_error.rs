@@ -1057,14 +1057,16 @@ fn insufficient(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
 }
 
 /// The document types only a `maintainer` may create: their `ownerRefersTo` gate admits a
-/// maintainer document alone (RC1 contracts; checked against them in the tests).
-const MAINTAINER_ONLY: [&str; 6] = [
+/// maintainer document alone (RC1 contracts, and UPDATE-1's `ban`; checked against them in the
+/// tests).
+const MAINTAINER_ONLY: [&str; 7] = [
     "protectedRefUpdate",
     "config",
     "release",
     "repoKey",
     "policy",
     "webhook",
+    "ban",
 ];
 
 /// E601 for a maintainer-only write by someone who is not a maintainer (possibly a writer).
