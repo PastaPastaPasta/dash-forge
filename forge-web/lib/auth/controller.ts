@@ -506,6 +506,21 @@ export class AuthController {
     return { identityId, network, getSigningKeyWif: pick }
   }
 
+  /**
+   * The session's main key, for signing an off-chain request to an optional Forge service
+   * (`docs/design/service-auth.md`). Those signatures cover a domain-separated digest that can
+   * never be a state transition, so this is not a way around the vault's contract scoping: the
+   * key still signs no write outside Forge. Throws a {@link WriteAuthError} when signed out or
+   * locked.
+   */
+  serviceKey(): { readonly identityId: string; readonly keyId: number; readonly wif: string } {
+    const session = this.state.session
+    if (!session) throw new WriteAuthError('this browser is signed out — sign in to sign')
+    const secret = unlockedSecret(this.network, session.identityId)
+    if (!secret) throw new WriteAuthError('this browser is locked — unlock it to sign')
+    return { identityId: session.identityId, keyId: secret.keyId, wif: secret.wif }
+  }
+
   /** Times the named steps of the running sign-in (`lib/step-timing.ts`, L-20); one clock per run. */
   private stepTimer = stepClock('sign-in')
 

@@ -3535,6 +3535,7 @@ mod tests {
             public_key: hex::decode(&e.public_key_hex).unwrap(),
             disabled: false,
             bound_to: None,
+            bounds: None,
         };
         let chain = [on_chain(&entry(7, 4))];
         let kept = EncryptionKeys::held(&bridge, &chain, "CORE", &net).to_identity_keys(&net);
@@ -3567,6 +3568,7 @@ mod tests {
             public_key: vec![2; 33],
             disabled,
             bound_to: None,
+            bounds: None,
         };
         let keys = vec![
             k(4, false, "ENCRYPTION"),
