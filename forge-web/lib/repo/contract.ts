@@ -100,6 +100,15 @@ export interface RepoRef {
    * content is hidden. Never set on a public repo.
    */
   readonly session?: PrivateSession
+  /**
+   * A public repo with members-only content, read by a member who holds its members key: the
+   * reader's members-key session. Only the content gate reads it (`gateFor`: members-only issues,
+   * comments, reviews and event values open through it). It is NOT a private session: the public
+   * config, refs, packs and browse plane never look at it (they read `session` only), so a member
+   * sees the repo's settings and branches exactly as everyone does (DESIGN §4.1). Never set on a
+   * private repo.
+   */
+  readonly lane?: PrivateSession
 }
 
 /** The contracts a repo's reads touch, for the SDK's contract preload (none for `null`). */
@@ -114,6 +123,17 @@ export function repoContractIds(repo: RepoRef | null): string[] {
  */
 export function repoKey(repo: RepoRef): string {
   return repo.session === undefined ? repo.repoId : `${repo.repoId}#${repo.session.id}`
+}
+
+/**
+ * The identity of a repo's **discussion** reads (issues, PRs, comments, reviews): {@link repoKey}
+ * plus the members-key session of a public repo read by a member. Caches and page reads of
+ * content key by it, so a member's decrypted members-only content never outlives the session
+ * that opened it, and a page re-reads once the session is ready. The git plane keeps
+ * {@link repoKey}: a members-key session changes nothing there.
+ */
+export function contentKey(repo: RepoRef): string {
+  return repo.lane === undefined ? repoKey(repo) : `${repoKey(repo)}#${repo.lane.id}`
 }
 
 /** A string field, or `''` when absent or not a string. */

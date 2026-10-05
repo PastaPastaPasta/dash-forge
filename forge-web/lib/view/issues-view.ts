@@ -27,7 +27,7 @@ import {
   policyFromDocs,
   readPolicy,
   readPull,
-  reviewViewOf,
+  readableReviews,
   seedMemberships,
   sharedIssueCloses,
   sharedRepoCounts,
@@ -660,7 +660,9 @@ export async function loadPullThread(
 
   const tally = new HiddenTally()
   const admittedComments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
-  const admittedReviews = (await admitAll(gate, 'review', [...reviewDocs].sort(byTime), tally)).docs.map(reviewViewOf)
+  // D15: a members-only review this reader cannot open still counts for its plaintext verdict.
+  const readReviews = await readableReviews(gate, repo.visibility, [...reviewDocs].sort(byTime), tally)
+  const admittedReviews = readReviews.shown
   // Long bodies (forge-v2.md §6.3): each full text read beside the rest; none read nothing. The
   // merge box's squash message, the linked issues and a suggestion read the whole text.
   const [pull, comments, reviews] = await Promise.all([
@@ -675,7 +677,10 @@ export async function loadPullThread(
   const policy: Promise<Policy | null> = policyDocs === null ? readPolicy(sdk, repo) : Promise.resolve(policyFromDocs(policyDocs))
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
   const proved = hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false)
-  const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead, proved])
+  // The fold counts what the reader can read, with long bodies, plus the members-only verdicts it cannot.
+  const readable = new Map(reviews.map((r) => [r.id, r]))
+  const countedReviews = readReviews.counted.map((r) => readable.get(r.id) ?? r)
+  const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, countedReviews, review, pull.author), verdictsRead, proved])
   const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews })
   return {
     moderation: foldModeration(modInput),

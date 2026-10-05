@@ -32,7 +32,7 @@ import {
   type PlainDocument,
 } from '../sdk'
 import { rerunRequest, type RerunRequest } from '../rules/ci-rerun'
-import { foldPrReviewV2, issueStateV2, mergeTransition, prMergeBase, prStateV2, stateCode, statusOfCode, type PrReviewState } from '../rules/v2'
+import { countedReviews, foldPrReviewV2, issueStateV2, mergeTransition, prMergeBase, prStateV2, stateCode, statusOfCode, type PrReviewState, type ReadReview } from '../rules/v2'
 import {
   asIdentifierString,
   byteFieldToHex,
@@ -42,12 +42,12 @@ import {
   toEvent,
   toRerunEvent,
   type RepoRef,
-  repoKey,
+  contentKey,
 } from './contract'
 import { repoChromeTimelines, type ChromeTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
-import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents } from './private-content'
+import { HiddenTally, SEALED_EPOCH, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -279,6 +279,11 @@ export interface ReviewView {
   readonly createdAt: number
   /** See {@link IssueView.origin}. */
   readonly origin?: Origin | null
+  /**
+   * A members-only review this reader cannot open: counted for its plaintext verdict (DESIGN
+   * D15), with no body. Never part of a thread's readable reviews.
+   */
+  readonly membersOnly?: true
 }
 
 
@@ -371,9 +376,9 @@ const listeners = new Set<() => void>()
 const feedKey = (repo: RepoRef): string => `${repo.forge.collab}:${repo.repoId}`
 /**
  * The key of a repo's cached pages: a private repo's hold decrypted titles and bodies, so they are
- * keyed by the reader's session too (`repoKey`) and go with it (below).
+ * keyed by the reader’s session too (`contentKey`, a members-key session included) and go with it (below).
  */
-const pageKey = (repo: RepoRef): string => `${repo.forge.collab}:${repoKey(repo)}`
+const pageKey = (repo: RepoRef): string => `${repo.forge.collab}:${contentKey(repo)}`
 
 onPrivateSessionEnded((id) => {
   for (const k of [...feedCache.keys()]) if (k.includes(`#${id}`)) feedCache.delete(k)
@@ -630,10 +635,52 @@ export async function readReviews(
       ],
     }),
   )
-  // A private review whose `enc` does not open is left out entirely: its plaintext verdict is
-  // never counted as an approval (`private-repos.md` §8.1).
-  const { docs } = await admitAll(gateFor(repo), 'review', raw, tally)
-  return docs.map(reviewViewOf)
+  // The reviews this reader can read. A private review whose `enc` does not open is left out
+  // entirely (`private-repos.md` §8.1); a public repo's members-only review that does not open is
+  // a placeholder here, and its verdict still counts ({@link readableReviews}, DESIGN D15).
+  return (await readableReviews(gateFor(repo), repo.visibility, raw, tally)).shown
+}
+
+/**
+ * A PR's reviews as one reader reads them (DESIGN D15; forge-core `readable_reviews`): `shown`,
+ * the ones this reader can read (plaintext, or opened); `counted`, the ones whose verdict the
+ * approval fold takes ({@link countedReviews}): `shown`, plus in a public repo every members-only
+ * review this reader cannot open that carries `asMember` (its `verdict` and `commitOid` are
+ * plaintext, and consensus admits a member verdict only with the proof, so members and outsiders
+ * count it alike). Such a review is counted with an empty body and {@link ReviewView.membersOnly};
+ * its text is never read. In a private repo an unopened review never counts (§8.1).
+ */
+export async function readableReviews(
+  gate: ContentGate,
+  visibility: RepoRef['visibility'],
+  raw: readonly PlainDocument[],
+  tally: HiddenTally = new HiddenTally(),
+): Promise<{ readonly shown: ReviewView[]; readonly counted: ReviewView[] }> {
+  const read = await Promise.all(raw.map(async (d) => ({ d, a: await gate.admit('review', d) })))
+  const shown: ReviewView[] = []
+  const rows: ReadReview[] = []
+  const views = new Map<string, ReviewView>()
+  for (const { d, a } of read) {
+    if (a.ok) shown.push(reviewViewOf(a.doc))
+    else tally.add(a.reason, a.placeholder)
+    // Only a well-formed sealed review has a placeholder: a malformed one never counts.
+    const sealed = isSealedDoc(d)
+    if (!a.ok && a.placeholder === undefined) continue
+    const view = a.ok ? reviewViewOf(a.doc) : { ...reviewViewOf(d), body: '', membersOnly: true as const }
+    views.set(view.id, view)
+    rows.push({
+      id: view.id,
+      reviewer: view.reviewer,
+      verdict: view.verdictCode,
+      commitOid: view.commitOid,
+      createdAt: view.createdAt,
+      sealed,
+      opened: a.ok,
+      asMember: asIdentifierString(d['asMember']) !== '',
+    })
+  }
+  const counted = countedReviews(rows, visibility).map((r) => views.get(r.id) as ReviewView)
+  return { shown, counted }
 }
 
 /** An (admitted) `review` document as a {@link ReviewView}. */

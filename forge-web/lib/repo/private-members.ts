@@ -51,6 +51,8 @@ import {
 } from '../sdk'
 import { sleep } from '../sdk/facade'
 import { DOC, withVis, type RepoRef } from './contract'
+import { anchorContent, type AnchorContent, type ChainLink } from './members-anchor'
+import { holdsMembersKey } from '../rules/roles'
 import { invalidateMembers, memberDocOf, readMemberships } from './members'
 import {
   isMaintainer,
@@ -150,7 +152,9 @@ export function planRotation(
   }
   const selfId = decodeIdentifier(self)
   const excluded = new Set(exclude)
-  const remaining = [...new Set(session.members.map((m) => m.identity))].filter((id) => !excluded.has(id))
+  // Who holds the key (`holdsMembersKey`): every member of a private repo; a public repo's roles that hold its members key.
+  const visibility = session.gate.visibility
+  const remaining = [...new Set(session.members.filter((m) => holdsMembersKey(m.role, visibility)).map((m) => m.identity))].filter((id) => !excluded.has(id))
   if (!remaining.includes(self)) throw new PrivateMembersError('you cannot remove yourself this way')
 
   // Epochs are contiguous (§5.3): the new one is always n + 1. A rotation that stopped after its
@@ -426,9 +430,23 @@ async function postConfig(c: PrivateWriteContext, data: Record<string, unknown>,
   await createDocumentIdempotent(c.sdk, c.auth, { contractId: c.repo.forge.core, documentType: DOC.config, data: withVis(c.repo.visibility, DOC.config, data), intent })
 }
 
-/** The config fields a new anchor repeats: the current branch and patterns (a `main` default when none opens). */
-function currentConfigFields(session: PrivateSession): { defaultBranch: string; protectedPatterns: string[] } {
-  return { defaultBranch: session.config?.defaultBranch ?? 'main', protectedPatterns: [...(session.config?.protectedPatterns ?? [])] }
+/**
+ * What a new anchor (a rotation, a re-anchor, epoch 0) of `c.repo` carries ({@link anchorContent},
+ * pinned by the `mixed_anchor__*` vectors): a private repo repeats its current branch and patterns
+ * (a `main` default when none opens) sealed, and `backend` / `archived` in plaintext; a public
+ * repo's members key carries none of its settings, so no anchor is ever read as them (DESIGN D1).
+ */
+function anchorOf(c: PrivateWriteContext, session: PrivateSession, link: ChainLink | null): AnchorContent {
+  return anchorContent(
+    c.repo.visibility,
+    {
+      defaultBranch: session.config?.defaultBranch ?? 'main',
+      protectedPatterns: session.config?.protectedPatterns ?? [],
+      backend: session.configPlain?.backend ?? { mode: 0 },
+      archived: session.configPlain?.archived ?? false,
+    },
+    link,
+  )
 }
 
 /** A short, public tag of an epoch key (its commitment): binds a signed write to the key it carries. */
@@ -787,7 +805,9 @@ async function skipBelow(session: PrivateSession, c: PrivateWriteContext, burned
 /**
  * The last step of a private create (§5.3 epoch 0; parity: forge-core
  * `keyring::create_private_state`): the owner's self-wrap of a fresh epoch-0 key, then the
- * epoch-0 anchor `config` (`defaultBranch`, `protectedPatterns`, backend in plaintext). A
+ * epoch-0 anchor `config` (`defaultBranch`, `protectedPatterns`, backend in plaintext). For a
+ * public repo (members-only content, {@link enableMembersContent}) the anchor carries `vis:
+ * "public"` and none of the settings ({@link anchorContent}; `defaultBranch` is ignored). A
  * resumed create reuses its own standing epoch-0 self-wrap; one whose anchor already exists
  * does nothing. Returns whether it wrote the anchor.
  */
@@ -811,14 +831,43 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
     }
     const k0 = await ownEpochKey(c, session, { identity: c.auth.identityId, keyId: pending?.row.recipientKeyId ?? selfKey.keyId }, 0, intent)
     try {
-      const fields = { defaultBranch: shortBranch(defaultBranch), protectedPatterns: [...protectedPatterns] }
-      const enc = await sealDoc(k0.keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch: 0 }, fields, { anchor: true })
-      await postConfig(c, { repoId: decodeIdentifier(c.repo.repoId), epoch: 0, enc, backend: { mode: 0 }, archived: false }, `${intent}:anchor:0:${keyTag(k0.keys)}`)
+      const anchor = anchorContent(
+        c.repo.visibility,
+        { defaultBranch: shortBranch(defaultBranch), protectedPatterns: [...protectedPatterns], backend: { mode: 0 }, archived: false },
+        null,
+      )
+      const enc = await sealDoc(k0.keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch: 0 }, anchor.fields, { anchor: true })
+      await postConfig(c, { repoId: decodeIdentifier(c.repo.repoId), epoch: 0, enc, ...anchor.plaintext }, `${intent}:anchor:0:${keyTag(k0.keys)}`)
       return true
     } finally {
       k0.raw.fill(0)
     }
   })
+}
+
+/**
+ * Turn members-only content on in a public repo (DESIGN D1, §4.1; parity: forge-core
+ * `keyring::enable_members_key`): epoch 0 of its members key, the signer's self-wrap then the
+ * settings-free anchor (`vis: "public"`, an empty TLV, no `backend` / `archived`:
+ * {@link anchorContent}), then the key shared with every current member who holds it (the repair
+ * check, §5.6). A maintainer only; resumable. Epoch 0 is minted only when the repo has no sealed
+ * config at all: one that does not resolve is never papered over by a second epoch 0. Returns
+ * whether this run wrote the anchor. No UI calls it yet (stream 1D's "Turn on members-only
+ * content" sheet will).
+ */
+export async function enableMembersContent(c: PrivateWriteContext, intent: string): Promise<boolean> {
+  if (c.repo.visibility !== 'public') throw new PrivateMembersError('a private repo is members-only already')
+  const step = await withFreshSession(c, async (s) => {
+    if (!isMaintainer(s, c.auth.identityId)) throw new PrivateMembersError('only a maintainer can turn on members-only content')
+    if (s.resolution.anchors.size > 0) return 'repair' as const
+    if (s.configRows.length > 0) {
+      throw new PrivateMembersError("this repo's members-only key exists but can't be read; a maintainer who holds it can repair it", 'E310')
+    }
+    return 'mint' as const
+  })
+  const anchored = step === 'mint' ? await createEpochZero(c, 'main', `${intent}:enable`) : false
+  await runRepair(c, `${intent}:share`)
+  return anchored
 }
 
 /**
@@ -882,24 +931,18 @@ async function postAnchor(
   /** The key of the nearest non-burned epoch below a burned `prevEpoch` (§5.3 `skipEpochKey`). */
   skipEpochKey: Uint8Array | null = null,
 ): Promise<void> {
-  const fields = {
-    ...currentConfigFields(session),
+  const anchor = anchorOf(c, session, {
     prevEpoch,
     ...(prevEpochKey !== null ? { prevEpochKey: new Uint8Array(prevEpochKey) } : {}),
     ...(skipEpochKey !== null ? { skipEpochKey: new Uint8Array(skipEpochKey) } : {}),
-    ...(burned ? { burned: true as const } : {}),
-  }
+    ...(burned ? { burned: true } : {}),
+  })
+  const fields = anchor.fields
   try {
     const enc = await sealDoc(keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch }, fields, { anchor: true })
     await postConfig(
       c,
-      {
-        repoId: decodeIdentifier(c.repo.repoId),
-        epoch,
-        enc,
-        backend: session.configPlain?.backend ?? { mode: 0 },
-        archived: session.configPlain?.archived ?? false,
-      },
+      { repoId: decodeIdentifier(c.repo.repoId), epoch, enc, ...anchor.plaintext },
       `${intent}:anchor:${epoch}:${keyTag(keys)}${burned ? ':burned' : ''}`,
     )
   } finally {
@@ -913,10 +956,15 @@ async function postAnchor(
  * the invitation), write the membership document, then a wrap of the current epoch to them. Two
  * transitions.
  */
-export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<void> {
+export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<AddOutcome> {
   if ((await retryWhileMissing(() => findConsent(c.sdk, c.repo, memberId), CONSENT_LAG_RETRIES)) === null) throw new ConsentMissingError(memberId)
   const keys = await fetchIdentityKeys(c.sdk, memberId)
-  if (usableEncryptionKey(keys ?? [], c.repo.forge.core) === null) throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
+  const canReceive = usableEncryptionKey(keys ?? [], c.repo.forge.core) !== null
+  // A private repo's member with no encryption key could be granted a role but never read it:
+  // refused. In a public one they can still do everything public; the members key is shared once
+  // they add one (the repair check wraps them), as `dg collab add` does.
+  if (!canReceive && c.repo.visibility === 'private') throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
+  const receives = canReceive && holdsMembersKey(role, c.repo.visibility)
   // Nothing is written unless the wrap can follow, and a new maintainer's old configs must not
   // take over any epoch (§5.3: under contiguity an earlier config of theirs would come first).
   await withFreshSession(c, async (s) => {
@@ -938,8 +986,15 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
     }
   })
   await grantMembershipDoc(c.sdk, c.auth, c.repo, memberId, role, `${intent}:member`)
+  if (!receives) return { shared: false }
   await waitForMembers(c, (rows) => holds(rows, memberId, role))
   await withFreshSession(c, (session) => wrapForMember(c, session, memberId, intent))
+  return { shared: true }
+}
+
+/** What an add did with the key: `shared` false, a public repo's member with no encryption key yet (the repair check wraps them later). */
+export interface AddOutcome {
+  readonly shared: boolean
 }
 
 /** The epoch a key can be handed out under; refuses a burned or unreadable current epoch. */
@@ -1394,23 +1449,22 @@ async function reanchorEpochsOf(
     try {
       // The same key and the whole chain link (§5.3: prevEpoch, prevEpochKey, skipEpochKey,
       // burned): the re-anchor stands in for the anchor.
-      const fields = {
-        ...currentConfigFields(session),
-        ...(prevEpoch !== undefined ? { prevEpoch } : {}),
-        ...(prevEpochKey !== undefined ? { prevEpochKey } : {}),
-        ...(skipEpochKey !== undefined ? { skipEpochKey } : {}),
-        ...(burned === true ? { burned } : {}),
-      }
-      const enc = await sealDoc(keys, { type: 'config', ownerId: self, epoch: e }, fields, { anchor: true })
+      const anchorFields = anchorOf(
+        c,
+        session,
+        prevEpoch === undefined
+          ? null
+          : {
+              prevEpoch,
+              ...(prevEpochKey !== undefined ? { prevEpochKey } : {}),
+              ...(skipEpochKey !== undefined ? { skipEpochKey } : {}),
+              ...(burned === true ? { burned } : {}),
+            },
+      )
+      const enc = await sealDoc(keys, { type: 'config', ownerId: self, epoch: e }, anchorFields.fields, { anchor: true })
       await postConfig(
         c,
-        {
-          repoId: decodeIdentifier(c.repo.repoId),
-          epoch: e,
-          enc,
-          backend: session.configPlain?.backend ?? { mode: 0 },
-          archived: session.configPlain?.archived ?? false,
-        },
+        { repoId: decodeIdentifier(c.repo.repoId), epoch: e, enc, ...anchorFields.plaintext },
         `${intent}:reanchor:${e}:${keyTag(keys)}`,
       )
     } finally {

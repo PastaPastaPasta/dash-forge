@@ -301,9 +301,9 @@ describe("the owner's pending invitations while Settings is open", () => {
 })
 
 describe('invitedRole: the role an invite link suggests', () => {
-  it('names a role the owner could grant here, never a reader on a public repo', () => {
+  it('names a role the owner could grant here (a reader on public and private repos)', () => {
     expect(invitedRole('triage', 'public')).toBe('triage')
-    expect(invitedRole('reader', 'public')).toBeNull()
+    expect(invitedRole('reader', 'public')).toBe('reader')
     expect(invitedRole('reader', 'private')).toBe('reader')
     expect(invitedRole('1', 'private')).toBeNull()
     expect(invitedRole(null, 'public')).toBeNull()
@@ -325,7 +325,7 @@ describe('a pending invitation picks its own role (QW4-034)', () => {
     const select = row.querySelector<HTMLSelectElement>('select')!
     const add = row.querySelector<HTMLButtonElement>('button')!
     expect(select.value).toBe('')
-    expect([...select.options].map((o) => o.value)).toEqual(['', 'writer', 'triage', 'maintainer'])
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'writer', 'triage', 'reader', 'maintainer'])
     expect(add.textContent).toBe('Add')
     expect(add.disabled).toBe(true)
     await act(async () => {

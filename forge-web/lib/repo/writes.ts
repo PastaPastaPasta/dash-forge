@@ -61,7 +61,7 @@ import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
-import { WRITER_ROLE_CODE, grantableRoles } from '../rules/roles'
+import { WRITER_ROLE_CODE, grantableRoles, holdsMembersKey } from '../rules/roles'
 import { repoSource } from './source'
 import { MAX_PATTERN_CHARS } from './settings'
 import { starShape } from './star-shape'
@@ -1010,9 +1010,9 @@ export class MemberRoleTakenError extends Error {
   }
 }
 
-/** Refuse a role the owner cannot grant on `repo` (a reader on a public repo: everyone can read it). */
+/** Refuse a role the owner cannot grant on `repo` ({@link grantableRoles}). */
 function assertGrantable(repo: RepoRef, role: Role): void {
-  if (!grantableRoles(repo.visibility).includes(role)) throw new Error('a reader role is only for private repos: everyone can read a public one')
+  if (!grantableRoles(repo.visibility).includes(role)) throw new Error(`the ${role} role can't be granted on this repo`)
 }
 
 /**
@@ -1042,14 +1042,14 @@ export class PrivateMembershipError extends Error {
 }
 
 /**
- * A public repo with members-only content turned on: its membership changes must share and
- * rotate the members key (`private-repos.md` §17), which this web app does not do yet (stream
- * 1F-web). Until it does, it refuses them rather than add a member who gets no key or remove one
- * who keeps reading.
+ * A public repo with members-only content: its membership changes share and rotate the members
+ * key (`private-repos.md` §17, DESIGN §4.1 "Lane membership"), which needs the owner's encryption
+ * key unlocked in this tab. Without it nothing is written: an add would leave a member with no
+ * key, a removal a removed member reading new members-only content.
  */
 export class MembersKeyMembershipError extends Error {
   constructor() {
-    super('This repo has members-only content turned on. Change its members with dg for now.')
+    super("This repo has members-only content, so adding or removing a member shares or changes its key. Unlock your encryption key in this tab to manage members.")
     this.name = 'MembersKeyMembershipError'
   }
 }
@@ -1064,8 +1064,8 @@ function hasBytes(v: unknown): boolean {
 
 /**
  * Whether `repo` has a members key: every private repo, and a public one with any sealed `config`
- * (the members-key anchor, even one that does not resolve: the check fails toward refusing). The
- * same definition `dg` uses (`keyring::has_members_key`).
+ * (the members-key anchor, even one that does not resolve: the check fails toward the key-aware
+ * flow). The same definition `dg` uses (`keyring::has_members_key`).
  */
 export async function hasMembersKey(sdk: EvoSDK, repo: RepoRef): Promise<boolean> {
   if (repo.visibility === 'private') return true
@@ -1073,9 +1073,27 @@ export async function hasMembersKey(sdk: EvoSDK, repo: RepoRef): Promise<boolean
   return rows.some((d) => hasBytes(d['enc']))
 }
 
-/** Refuse a public repo's membership change while it has a members key ({@link MembersKeyMembershipError}). */
-async function refuseWithMembersKey(sdk: EvoSDK, repo: RepoRef): Promise<void> {
-  if (repo.visibility === 'public' && (await hasMembersKey(sdk, repo))) throw new MembersKeyMembershipError()
+/**
+ * The key-aware context of a membership change of public `repo` (stream 1F), or null when it has
+ * no members key (a bare document write, as always). With a key and no unlocked encryption key
+ * (`ops`), refused before anything is written ({@link MembersKeyMembershipError}).
+ */
+async function membersKeyContext(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  ops: EncryptionOps | null | undefined,
+): Promise<{ readonly c: import('./private-members').PrivateWriteContext; readonly flows: typeof import('./private-members') } | null> {
+  if (repo.visibility !== 'public' || !(await hasMembersKey(sdk, repo))) return null
+  if (ops === null || ops === undefined) throw new MembersKeyMembershipError()
+  // Loaded on use: `private-members.ts` imports this module.
+  const flows = await import('./private-members')
+  return { c: { sdk, auth, repo, network: auth.network, ops }, flows }
+}
+
+/** What a key-aware membership change returns in place of its several writes. */
+function keyedResult(): WriteResult {
+  return { documentId: '', confirmed: true, cost: previewCredits(0), actualCredits: null }
 }
 
 // ---------------------------------------------------------------------------
@@ -1152,7 +1170,10 @@ export function membershipData(repo: RepoRef, memberId: string, extra: Record<st
  * Grant `memberId` a role on a public repo: the owner creates a `maintainer` or `writer`
  * document (consensus refuses anyone else). Idempotent: an existing membership is success.
  * Refused on a private repo ({@link PrivateMembershipError}), and while the member has not
- * accepted ({@link ConsentMissingError}).
+ * accepted ({@link ConsentMissingError}). A public repo with members-only content goes through
+ * the key-aware add (`addPrivateMember`: the document, then the key shared with them; one with
+ * no encryption key yet is added and shared with by a later repair), with the owner's unlocked
+ * encryption `ops` ({@link MembersKeyMembershipError} without them).
  */
 export async function grantMember(
   sdk: EvoSDK,
@@ -1161,10 +1182,13 @@ export async function grantMember(
   memberId: string,
   role: Role,
   intent?: string,
+  ops?: EncryptionOps | null,
 ): Promise<WriteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('add')
-  await refuseWithMembersKey(sdk, repo)
-  return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
+  const keyed = await membersKeyContext(sdk, auth, repo, ops)
+  if (keyed === null) return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
+  await keyed.flows.addPrivateMember(keyed.c, memberId, role, intent ?? `members:add:${memberId}:${role}`)
+  return keyedResult()
 }
 
 /**
@@ -1209,7 +1233,10 @@ export async function grantMembershipDoc(
 
 /**
  * Revoke a role on a public repo: the owner deletes the membership document. No-op when there
- * is none. Refused on a private repo ({@link PrivateMembershipError}).
+ * is none. Refused on a private repo ({@link PrivateMembershipError}). A public repo with
+ * members-only content goes through the key-aware removal (`removePrivateMember`: a maintainer's
+ * epochs re-anchored first, then the delete, then the key rotated so they cannot read what is
+ * written after), with the owner's unlocked encryption `ops`.
  */
 export async function revokeMember(
   sdk: EvoSDK,
@@ -1217,10 +1244,14 @@ export async function revokeMember(
   repo: RepoRef,
   memberId: string,
   role: Role,
+  ops?: EncryptionOps | null,
+  intent?: string,
 ): Promise<DeleteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  await refuseWithMembersKey(sdk, repo)
-  return revokeMembershipDoc(sdk, auth, repo, memberId, role)
+  const keyed = await membersKeyContext(sdk, auth, repo, ops)
+  if (keyed === null) return revokeMembershipDoc(sdk, auth, repo, memberId, role)
+  await keyed.flows.removePrivateMember(keyed.c, memberId, role, intent ?? `members:remove:${memberId}:${role}`)
+  return { deleted: true, actualCredits: null }
 }
 
 /**
@@ -1230,6 +1261,13 @@ export async function revokeMember(
  * grantable here, the contract has it, their consent is present, and they hold no other document
  * of the new role's type. Refused on a private repo (there a removal rotates the key: remove and
  * add again through the private-repo flow).
+ *
+ * A public repo with members-only content (stream 1F, with the owner's unlocked `ops`): a change
+ * between roles that hold the members key keeps it (`holdsMembersKey`; parity: `dg collab add`
+ * `add_plan`); one to a role that does not rotates it away from them; a maintainer leaving that
+ * role goes through the key-aware removal of it (their epochs are re-anchored, then the key
+ * rotates: what they handed out as a maintainer stops counting); a new maintainer through the
+ * key-aware add (its anchor checks).
  */
 export async function changeMemberRole(
   sdk: EvoSDK,
@@ -1239,9 +1277,10 @@ export async function changeMemberRole(
   from: Role,
   to: Role,
   intent?: string,
+  ops?: EncryptionOps | null,
 ): Promise<WriteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  await refuseWithMembersKey(sdk, repo)
+  const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
   if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
   if (from === to) throw new Error(`they are already a ${to}`)
@@ -1257,7 +1296,23 @@ export async function changeMemberRole(
   if (current === null || current.role !== from) {
     throw new Error(`they are no longer a ${from} here (their role changed meanwhile); reload the members and try again`)
   }
+  if (keyed !== null && (from === 'maintainer' || to === 'maintainer')) {
+    const base = intent ?? `members:role:${memberId}:${from}:${to}`
+    if (to === 'maintainer') {
+      // The new maintainer document through the key-aware add (its anchor checks), then the old
+      // writer document goes: they stay a maintainer, so the key does not change.
+      await keyed.flows.addPrivateMember(keyed.c, memberId, to, `${base}:add`)
+      await revokeMembershipDoc(sdk, auth, repo, memberId, from)
+    } else {
+      // The new role first, so they never stop being a member; then the maintainer role goes
+      // through the key-aware removal (re-anchors, then a rotation they are part of).
+      await grantMembershipDoc(sdk, auth, repo, memberId, to, `${base}:add`)
+      await keyed.flows.removePrivateMember(keyed.c, memberId, from, `${base}:remove`)
+    }
+    return keyedResult()
+  }
   await revokeMembershipDoc(sdk, auth, repo, memberId, from)
+  let granted: WriteResult
   try {
     // A node a block behind may still list the deleted document: wait until it is gone before the
     // add, which would otherwise read it as a membership they already hold.
@@ -1267,11 +1322,17 @@ export async function changeMemberRole(
         return held === null || held.id !== current.id ? true : null
       }, CONSENT_LAG_RETRIES + 2)
     }
-    return await grantMembershipDoc(sdk, auth, repo, memberId, to, intent)
+    granted = await grantMembershipDoc(sdk, auth, repo, memberId, to, intent)
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e)
     throw new Error(`their ${from} role was removed, but adding them as ${to} failed (${reason}); add them again as ${to}`)
   }
+  // Between roles that hold the members key, they keep it; to one that does not, it rotates away
+  // from them (no such role while readers are in the key: `READERS_IN_MEMBERS_KEY`).
+  if (keyed !== null && holdsMembersKey(from, repo.visibility) && !holdsMembersKey(to, repo.visibility)) {
+    await keyed.flows.rotateRepoKey(keyed.c, [memberId], `${intent ?? `members:role:${memberId}`}:rotate`)
+  }
+  return granted
 }
 
 /**

@@ -40,12 +40,14 @@ import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, num, str, stringArray, type RepoRef } from './contract'
 import type { RepoConfig } from './config'
 import { readMemberships } from './members'
+import { holdsMembersKey } from '../rules/roles'
 import {
   admitAll,
   blockHeightOf,
   bytesField,
+  defaultGate,
   idField,
-  privateGate,
+  sessionGate,
   type ContentGate,
 } from './private-content'
 import { repoSource } from './source'
@@ -285,6 +287,9 @@ export async function loadPrivateSession(input: {
   const drop = input.drop ?? []
   const members = read.filter((m) => !drop.some((d) => d.identity === m.identity && (d.role === undefined || d.role === m.role)))
   const maintainers = new IdSet(members.filter((m) => m.role === 'maintainer').map((m) => decodeIdentifier(m.identity)))
+  // Who the key is for: every member of a private repo; in a public one, the roles that hold its
+  // members key (`holdsMembersKey`, DESIGN §2.1; runners are never members).
+  const keyHolders = members.filter((m) => holdsMembersKey(m.role, repo.visibility))
 
   const memberIds = [...new Set(members.map((m) => m.identity))]
   const memberKeys = new Map<string, readonly EncKeyLike[] | null>(
@@ -320,17 +325,19 @@ export async function loadPrivateSession(input: {
   const resolution = await resolveEpochs({
     repoId,
     reader: readerId,
-    memberships: members.map((m) => ({ identity: decodeIdentifier(m.identity), role: m.role })),
+    memberships: keyHolders.map((m) => ({ identity: decodeIdentifier(m.identity), role: m.role })),
     configs: configRows,
     wraps: wraps.map((w) => w.row),
   })
   const ctx = openContextOf(resolution)
-  const gate = privateGate(repo, ctx)
+  const gate = sessionGate(repo, ctx)
 
   // The config timeline: every config that opens (§4.2 commitment first), as plaintext. Configs
   // under epochs this reader holds no key for are not in it, so protected-ref routing cannot see
-  // them; the ref updates of those epochs are unreadable to this reader anyway.
-  const { docs: opened } = await admitAll(gate, 'config', configDocs)
+  // them; the ref updates of those epochs are unreadable to this reader anyway. A public repo's
+  // members key carries no settings (DESIGN D1): its session has no config timeline at all, and
+  // the public config stays the only settings.
+  const { docs: opened } = repo.visibility === 'private' ? await admitAll(gate, 'config', configDocs) : { docs: [] as PlainDocument[] }
   const configHistory: ConfigDoc[] = opened.map((d) => ({
     id: str(d, '$id'),
     createdAt: num(d, '$createdAt'),
@@ -350,6 +357,8 @@ export async function loadPrivateSession(input: {
   const unanchored = new Set(resolution.unanchored)
   const unanchoredDocs = [...configRows, ...wraps.map((w) => w.row)].filter((r) => unanchored.has(r.epoch)).length
 
+  const closedGate: ContentGate =
+    repo.visibility === 'private' ? { visibility: 'private', admit: async () => ({ ok: false, reason: 'wrongKey' }) } : defaultGate(repo)
   const headerCache = new PackHeaderCache()
   let refs: Promise<Map<string, RefUpdate[]>> | null = null
   let closed = false
@@ -361,8 +370,10 @@ export async function loadPrivateSession(input: {
     resolution,
     ctx,
     gate: {
-      visibility: 'private',
-      admit: (type, doc) => (closed ? Promise.resolve({ ok: false, reason: 'wrongKey' }) : gate.admit(type, doc)),
+      visibility: repo.visibility,
+      // A closed session admits nothing it would have opened: a sealed document is hidden, as for
+      // a reader without keys (a public repo's plaintext still reads through the public rule).
+      admit: (type, doc) => (closed ? closedGate.admit(type, doc) : gate.admit(type, doc)),
     },
     headerCache,
     members,

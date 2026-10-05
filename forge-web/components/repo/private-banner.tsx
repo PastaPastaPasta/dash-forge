@@ -71,7 +71,22 @@ function AlertLine({ alert }: { alert: EpochAlert }): JSX.Element | null {
   }
 }
 
+/** E311, word for word (DESIGN §4.1 "Failure modes", §10). */
+export const NO_KEY_SHARED_TEXT = "You're a member, but no key has been shared with you yet. A maintainer's client will fix this the next time they open the repo."
+
 export function PrivateBanner({ home }: { home: RepoHome }): JSX.Element | null {
+  // A public repo with members-only content: a member with no key shared yet (added by an older
+  // client) is told so; a member who holds the key gets the same key alerts and, as a
+  // maintainer, the repair check that shares the key with members who have none.
+  const lane = home.lane
+  if (lane?.access === 'no-key-shared') {
+    return (
+      <Note tone="caution" icon={<KeyRound className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />} testId="members-no-key-shared">
+        <p>{NO_KEY_SHARED_TEXT}</p>
+      </Note>
+    )
+  }
+  if (lane?.access === 'member') return <MemberAlerts home={home} session={lane.session} />
   const access = home.private
   if (access === undefined) return null
   if (access.access === 'no-key') {

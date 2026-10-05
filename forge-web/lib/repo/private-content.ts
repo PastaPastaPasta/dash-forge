@@ -9,25 +9,35 @@
  * `enc` / `epoch` removed, so every fold and view downstream works unchanged. Admitted documents
  * live in memory only: nothing here writes them anywhere.
  *
- * Hidden documents are counted by the three reasons the UI names (`ux-dx-spec.md` §9):
- * "not encrypted for this repo" (plaintext, malformed, or an outsider's bytes), "wrong or missing
- * key" (no key for its epoch, or an epoch with no anchor), and "written after the key was
- * rotated" (the late-content rule, §8.2).
+ * Hidden documents are counted by the reasons the UI names (`ux-dx-spec.md` §9): "not encrypted
+ * for this repo" (plaintext, malformed, or an outsider's bytes), "wrong or missing key" (no key
+ * for its epoch, or an epoch with no anchor), "written after the key was rotated" (the
+ * late-content rule, §8.2), and in a public repo "members-only" and "for specific people".
+ *
+ * A public repo holds plaintext and members-only documents side by side (DESIGN §4.1): reads are
+ * **per document**. A plaintext one passes through; a sealed one opens through the reader's
+ * members-key session (`repo.lane`, {@link laneGate}) or comes back as a {@link MembersOnlyItem}
+ * placeholder, never as an error. A members-key session is never a private session: it never
+ * stands in for the repo's public config, refs or packs (those read `repo.session` only).
  */
 
 import { decodeIdentifier } from '../auth/base58'
-import { openContent, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc } from '../private'
-import type { ContentKind } from '../rules/v2'
+import { openContent, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc, type UnreadableReason } from '../private'
+import { ENC_SPECIFIC_PEOPLE, type Audience, type ContentKind } from '../rules/v2'
 import { base64ToBytes, type PlainDocument } from '../sdk'
 import { asIdentifierString, num, wellFormed, type RepoRef } from './contract'
 
-/** Why a document is hidden. */
-export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late' | 'lateEdit'
+/**
+ * Why a document is hidden. `membersOnly`: a members-only document of a public repo this reader
+ * holds no key for; `letter`: a specific-people document (`enc` v0x04), opened only by its
+ * recipients (not in this release).
+ */
+export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late' | 'lateEdit' | 'membersOnly' | 'letter'
 
 /** Hidden documents, by reason. */
 export type HiddenCounts = Readonly<Record<HiddenReason, number>>
 
-const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0 }
+const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 0, letter: 0 }
 
 /** The sentence each reason is shown with. */
 export const HIDDEN_REASON_TEXT: Readonly<Record<HiddenReason, string>> = {
@@ -35,18 +45,62 @@ export const HIDDEN_REASON_TEXT: Readonly<Record<HiddenReason, string>> = {
   wrongKey: 'wrong or missing key',
   late: 'written after the key was rotated',
   lateEdit: 'edited after its author was removed; the original text is gone',
+  membersOnly: 'members-only',
+  letter: 'for specific people',
 }
 
 export function totalHidden(h: HiddenCounts): number {
-  return h.notEncrypted + h.wrongKey + h.late + h.lateEdit
+  return (Object.values(h) as number[]).reduce((a, b) => a + b, 0)
 }
 
-/** A tally that counts hidden documents while a read runs. */
+/**
+ * Why this reader cannot open a sealed document (forge-core `Unopened`): `noKey`, it holds no
+ * members key of this repo here (not a member, not unlocked, or not shared with yet: the page's
+ * members access says which); `notReadable`, it holds keys of this repo but not one this document
+ * opens with (written after their removal, or late); `notForThisRepo`, it fails this repo's key
+ * checks (forged, relabelled or moved: the commitment or the tag); `letter`, it is for specific
+ * people.
+ */
+export type Unopened = 'noKey' | 'notReadable' | 'notForThisRepo' | 'letter'
+
+/**
+ * A sealed document of a public repo this reader cannot open, as DESIGN D14 shows it: who wrote
+ * it, when and where, never what. Every field is plaintext of the stored document.
+ */
+export interface MembersOnlyItem {
+  readonly type: PrivateDocType
+  /** `$id`. */
+  readonly id: string
+  /** `$ownerId`. */
+  readonly author: string
+  /** `$createdAt` (ms). */
+  readonly createdAt: number
+  /** It carries `asMember`: consensus proved its writer a member when it was written. */
+  readonly asMember: boolean
+  /** An issue's or PR's number (public anyway: numbers are dense). */
+  readonly number: number | null
+  /** A comment's `replyTo` (thread placement), when it has one. */
+  readonly replyTo: string | null
+  readonly audience: Exclude<Audience, 'public'>
+  readonly why: Unopened
+}
+
+/**
+ * Whether a placeholder is shown (DESIGN D14): when it carries `asMember` or is the thread's root
+ * (an issue or PR, which always gets a row); otherwise it is hidden and only counted.
+ */
+export function placeholderShown(p: MembersOnlyItem): boolean {
+  return p.asMember || p.type === 'issue' || p.type === 'patch'
+}
+
+/** A tally that counts hidden documents (and keeps their placeholders) while a read runs. */
 export class HiddenTally {
   private counts: Record<HiddenReason, number> = { ...NO_HIDDEN }
+  private items: MembersOnlyItem[] = []
 
-  add(reason: HiddenReason): void {
+  add(reason: HiddenReason, placeholder?: MembersOnlyItem): void {
     this.counts[reason] += 1
+    if (placeholder !== undefined) this.items.push(placeholder)
   }
 
   get value(): HiddenCounts {
@@ -56,9 +110,16 @@ export class HiddenTally {
   get total(): number {
     return totalHidden(this.counts)
   }
+
+  /** The placeholders of the sealed documents counted, in read order. */
+  get placeholders(): readonly MembersOnlyItem[] {
+    return [...this.items]
+  }
 }
 
-export type Admission = { readonly ok: true; readonly doc: PlainDocument } | { readonly ok: false; readonly reason: HiddenReason }
+export type Admission =
+  | { readonly ok: true; readonly doc: PlainDocument }
+  | { readonly ok: false; readonly reason: HiddenReason; readonly placeholder?: MembersOnlyItem }
 
 /** Admits a repo's content documents (see the module doc). */
 export interface ContentGate {
@@ -82,12 +143,54 @@ function wellFormedAs(repo: RepoRef, type: PrivateDocType, doc: PlainDocument): 
   return type === 'event' || wellFormed(repo, KIND_OF[type], doc)
 }
 
-/** A public repo's gate: well-formed documents, as they are. */
+/** Whether a raw document carries a non-empty `enc` (the per-document switch, DESIGN §4.1). */
+export function isSealedDoc(doc: PlainDocument): boolean {
+  return (bytesField(doc, 'enc')?.length ?? 0) > 0
+}
+
+/** The audience a raw document was written for (its `enc`, never the repo's visibility). */
+export function docAudience(doc: PlainDocument): Audience {
+  const enc = bytesField(doc, 'enc')
+  if (enc === undefined || enc.length === 0) return 'public'
+  return enc[0] === ENC_SPECIFIC_PEOPLE ? 'specificPeople' : 'members'
+}
+
+/** The placeholder of `doc`, a well-formed sealed `type` document this reader could not open for `why`. */
+export function membersOnlyItem(type: PrivateDocType, doc: PlainDocument, why: Unopened): MembersOnlyItem {
+  const audience = docAudience(doc)
+  const replyTo = asIdentifierString(doc['replyTo'])
+  return {
+    type,
+    id: asIdentifierString(doc['$id']),
+    author: asIdentifierString(doc['$ownerId']),
+    createdAt: typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : 0,
+    asMember: asIdentifierString(doc['asMember']) !== '',
+    number: typeof doc['number'] === 'number' ? doc['number'] : null,
+    replyTo: replyTo === '' ? null : replyTo,
+    audience: audience === 'specificPeople' ? 'specificPeople' : 'members',
+    why: audience === 'specificPeople' ? 'letter' : why,
+  }
+}
+
+/** The hidden admission of a sealed document this reader cannot open. */
+function unopened(type: PrivateDocType, doc: PlainDocument, why: Unopened, reason: HiddenReason): Admission {
+  const placeholder = membersOnlyItem(type, doc, why)
+  return { ok: false, reason: placeholder.why === 'letter' ? 'letter' : reason, placeholder }
+}
+
+/**
+ * A public repo's gate without a members key: plaintext documents as they are; a well-formed
+ * members-only or specific-people document becomes its placeholder ({@link MembersOnlyItem}),
+ * never an error and never "not found".
+ */
 function publicGate(repo: RepoRef): ContentGate {
   return {
     visibility: repo.visibility,
     async admit(type, doc) {
-      return wellFormedAs(repo, type, doc) ? { ok: true, doc } : { ok: false, reason: 'notEncrypted' }
+      if (!wellFormedAs(repo, type, doc)) return { ok: false, reason: 'notEncrypted' }
+      if (!isSealedDoc(doc)) return { ok: true, doc }
+      // an event's sealed value is dropped by its reader (`readableEvents`), the event kept
+      return unopened(type, doc, 'noKey', 'membersOnly')
     },
   }
 }
@@ -146,7 +249,7 @@ export function blockHeightOf(doc: PlainDocument, field: '$createdAtBlockHeight'
  * The {@link StoredPrivateDoc} of a raw document of `type`: its plaintext bind fields as bytes.
  * Null when a field the AD needs cannot be decoded (the caller treats that as malformed).
  */
-function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument): StoredPrivateDoc | null {
+function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument, vis: RepoRef['visibility'] = 'private'): StoredPrivateDoc | null {
   const ownerId = idField(doc, '$ownerId')
   const id = idField(doc, '$id')
   const enc = bytesField(doc, 'enc')
@@ -154,6 +257,7 @@ function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument): StoredPriva
   const updated = blockHeightOf(doc, '$updatedAtBlockHeight')
   const base = {
     type,
+    vis,
     ownerId,
     epoch: num(doc, 'epoch'),
     id,
@@ -196,6 +300,19 @@ function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument): StoredPriva
 
 /** Where an admitted private document keeps the key epoch it was sealed under. */
 export const SEALED_EPOCH = '$sealedEpoch'
+
+/**
+ * Where an admitted members-only document of a public repo says so (`'members'`): its decrypted
+ * fields look like plaintext downstream, and a reply, an edit, a draft and a view must still
+ * know who it was written for (DESIGN §2.4, §3.3).
+ */
+export const AUDIENCE_FIELD = '$audience'
+
+/** The audience of an admitted document ({@link AUDIENCE_FIELD}; plaintext otherwise). */
+export function admittedAudience(doc: PlainDocument): Audience {
+  const a = doc[AUDIENCE_FIELD]
+  return a === 'members' || a === 'specificPeople' ? a : 'public'
+}
 
 /** The plaintext-shaped copy of an opened document: `enc` and `epoch` dropped, fields set. */
 function asPlaintext(doc: PlainDocument, fields: DocFields): PlainDocument {
@@ -251,11 +368,69 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
           return { ok: false, reason: 'lateEdit' }
         case 'badTag':
           return { ok: false, reason: 'notEncrypted' }
+        case 'letter':
+          return { ok: false, reason: 'letter' }
         default:
           return { ok: false, reason: 'wrongKey' }
       }
     },
   }
+}
+
+/**
+ * The bucket of an unreadable members-only document (forge-core `keyring::hidden_bucket`, as the
+ * lane reads v0x03): a failed tag or a commitment that does not match is a document made for
+ * another key (forged, relabelled or moved), "not encrypted for this repo", never an earlier use
+ * of the epoch; a letter is for specific people; the late rule has its own; anything else is
+ * "wrong or missing key". (A private repo's v0x01 reads keep their own mapping, {@link privateGate}.)
+ */
+export function hiddenReasonOf(reason: UnreadableReason): HiddenReason {
+  switch (reason) {
+    case 'late':
+      return 'late'
+    case 'lateEdit':
+      return 'lateEdit'
+    case 'badTag':
+    case 'commitMismatch':
+      return 'notEncrypted'
+    case 'letter':
+      return 'letter'
+    default:
+      return 'wrongKey'
+  }
+}
+
+/**
+ * A public repo's gate over a member's members-key {@link OpenContext} (DESIGN §4.1): **per
+ * document**. A plaintext document passes through as the public gate admits it; a sealed one
+ * (members-only `enc` v0x03) opens with `vis: "public"` and comes back with its fields as
+ * plaintext and {@link AUDIENCE_FIELD} set; one that does not open is its placeholder.
+ */
+export function laneGate(repo: RepoRef, ctx: OpenContext): ContentGate {
+  return {
+    visibility: repo.visibility,
+    async admit(type, doc) {
+      if (!wellFormedAs(repo, type, doc)) return { ok: false, reason: 'notEncrypted' }
+      if (!isSealedDoc(doc)) return { ok: true, doc }
+      const stored = storedPrivateDoc(type, doc, 'public')
+      if (stored === null) return { ok: false, reason: 'notEncrypted' }
+      const opened = await openContent(stored, ctx)
+      if (opened.status === 'readable') {
+        const out = asPlaintext(doc, opened.fields)
+        out[AUDIENCE_FIELD] = 'members'
+        return { ok: true, doc: out }
+      }
+      if (opened.status === 'malformed') return { ok: false, reason: 'notEncrypted' }
+      const reason = hiddenReasonOf(opened.reason)
+      const why: Unopened = reason === 'notEncrypted' ? 'notForThisRepo' : 'notReadable'
+      return unopened(type, doc, why, reason)
+    },
+  }
+}
+
+/** The gate of a reader's session over `ctx`: a private repo's {@link privateGate}, a public repo's {@link laneGate}. */
+export function sessionGate(repo: RepoRef, ctx: OpenContext): ContentGate {
+  return repo.visibility === 'private' ? privateGate(repo, ctx) : laneGate(repo, ctx)
 }
 
 /** Admit every document of `docs`, in order: the admitted ones and the hidden tally. */
@@ -269,12 +444,12 @@ export async function admitAll(
   for (const d of docs) {
     const a = await gate.admit(type, d)
     if (a.ok) out.push(a.doc)
-    else tally.add(a.reason)
+    else tally.add(a.reason, a.placeholder)
   }
   return { docs: out, hidden: tally }
 }
 
-/** A private repo's member events as read ({@link readableEvents}), and what their values were. */
+/** A repo's member events as read ({@link readableEvents}), and what their values were. */
 export interface ReadableEvents {
   readonly docs: readonly PlainDocument[]
   /** Events whose sealed value is not readable here: kept, without their value. */
@@ -301,20 +476,26 @@ async function readableEvent(gate: ContentGate, d: PlainDocument): Promise<Event
  * event is kept, so its kind and `refId` stand (a dismissed review stays dismissed); a sealed
  * `value` is opened in place, or dropped when it does not open, as is a plaintext value next
  * to `enc`. A plaintext value on its own came from an older client and is kept, and counted.
- * An empty value is no value. A public repo's events are returned unchanged.
+ * An empty value is no value. In a public repo an event of a members-only issue carries its value
+ * sealed (it follows its target, DESIGN §3.3): opened through the members key, else dropped; a
+ * public repo with no sealed event is returned unchanged.
  */
 export async function readableEvents(repo: RepoRef, docs: readonly PlainDocument[]): Promise<ReadableEvents> {
-  if (repo.visibility !== 'private') return { docs, hiddenValues: 0, plaintextValues: 0 }
+  if (repo.visibility !== 'private' && !docs.some(isSealedDoc)) return { docs, hiddenValues: 0, plaintextValues: 0 }
   const gate = gateFor(repo)
   const read = await Promise.all(docs.map((d) => readableEvent(gate, d)))
   return {
     docs: read.map((r) => r.doc),
     hiddenValues: read.filter((r) => r.value === 'hidden').length,
-    plaintextValues: read.filter((r) => r.value === 'plaintext').length,
+    // a public repo's plaintext values are simply public
+    plaintextValues: repo.visibility === 'private' ? read.filter((r) => r.value === 'plaintext').length : 0,
   }
 }
 
-/** The gate a read of `repo` goes through: its session's for a member, else {@link defaultGate}. */
+/**
+ * The gate a read of `repo` goes through: a private repo's session for a member, a public repo's
+ * members-key session (`repo.lane`) for a member who holds it, else {@link defaultGate}.
+ */
 export function gateFor(repo: RepoRef): ContentGate {
-  return repo.session?.gate ?? defaultGate(repo)
+  return repo.session?.gate ?? repo.lane?.gate ?? defaultGate(repo)
 }
