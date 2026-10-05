@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { idbEntries, resetMemoryStores } from '../idb'
 import {
+  VaultChangedError,
   VaultLockedError,
   forgetVault,
   listVaults,
@@ -55,6 +56,18 @@ describe('vault', () => {
     expect(unlockedSecret('testnet', ID)).toBeNull()
     lockVault()
     expect(unlockedSecret('devnet', ID)).toBeNull()
+  }, 60_000)
+
+  it('refuses to store when another tab stored a key after the caller looked (CodeRabbit, PR #375)', async () => {
+    const protection = { passphrase: 'correct horse battery' }
+    // The caller saw no key, but one is there by the time it writes: nothing changes.
+    await storeInVault('devnet', SECRET, protection)
+    await expect(storeInVault('devnet', { ...SECRET, keyId: 6 }, protection, { expectHeldKeyId: null })).rejects.toBeInstanceOf(VaultChangedError)
+    expect((await listVaults('devnet')).map((v) => v.keyId)).toEqual([5])
+    expect(unlockedSecret('devnet', ID)?.keyId).toBe(5)
+    // The caller saw key 5 and it is still there: the write goes ahead.
+    await storeInVault('devnet', { ...SECRET, keyId: 6 }, protection, { expectHeldKeyId: 5 })
+    expect((await listVaults('devnet')).map((v) => v.keyId)).toEqual([6])
   }, 60_000)
 
   it('refuses short passphrases and an unprotected vault', async () => {

@@ -38,6 +38,7 @@
 //! (`test_support` validates with rs-dpp directly, and never ships).
 
 pub mod backends;
+pub mod browser_key;
 pub mod budget;
 pub mod cache;
 pub mod ci;

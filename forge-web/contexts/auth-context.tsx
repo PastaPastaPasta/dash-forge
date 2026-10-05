@@ -9,6 +9,7 @@
  * spend ledger, a toast shows what it actually cost, and the balance is re-read.
  */
 
+import type { HandoffRequest } from '@/lib/auth/key-handoff'
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -107,6 +108,8 @@ interface AuthContextValue {
     options?: { readonly enablePrivateRepos?: boolean; readonly renew?: boolean },
   ) => Promise<void>
   adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
+  /** Keep the key `dg auth keys add --for-browser` sealed to this tab's request (`lib/auth/key-handoff`). */
+  adoptHandoffKey: (reply: string, request: HandoffRequest, protection: Protection, options?: { readonly renew?: boolean }) => Promise<void>
   /** Store the keys a wallet granted (verified on chain) and open the session. */
   adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection, options?: Parameters<AuthController['adoptWalletKeys']>[3]) => Promise<void>
   /** Add a wallet grant for another Forge contract to the signed-in identity. */
@@ -214,6 +217,7 @@ export function AuthProvider({
     () => ({
       importIdentity: withReload(controller.importIdentity.bind(controller)),
       adoptLimitedKey: withReload(controller.adoptLimitedKey.bind(controller)),
+      adoptHandoffKey: withReload(controller.adoptHandoffKey.bind(controller)),
       adoptWalletKeys: withReload(controller.adoptWalletKeys.bind(controller)),
       addWalletGrant: withReload(controller.addWalletGrant.bind(controller)),
       unlock: withReload(controller.unlock.bind(controller)),

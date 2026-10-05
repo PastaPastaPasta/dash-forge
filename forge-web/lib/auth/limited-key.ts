@@ -48,6 +48,19 @@ export function defaultLimits(now = Date.now()): LimitedKeyRequest {
   }
 }
 
+/** How long a new browser key may live, in days: renewals stay rare, and no key lives past a year (TS-06). */
+export const KEY_LIFETIME_DAYS = [30, 90, 180, 365] as const
+
+/** A lifetime as the picker words it. */
+export function lifetimeLabel(days: number): string {
+  return days === 365 ? '1 year' : days === 180 ? '6 months' : `${days} days`
+}
+
+/** The default budget for `days` from `now`. */
+export function limitsFor(days: number, now = Date.now()): LimitedKeyRequest {
+  return { ...defaultLimits(now), expiresAt: now + days * DAY_MS }
+}
+
 /**
  * The master key given is not a live MASTER key of the identity (QW3-028: the update was refused
  * as "that key is not this identity's master key", or by the SDK's "Signer does not have a
