@@ -15,7 +15,7 @@ import type { EvoSDK, IdentityPublicKey } from '@dashevo/evo-sdk'
 
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import type { EncKeyLike, EncryptionOps } from '../auth/encryption-key'
-import { fetchIdentityKeys, isUsableEncryptionKey } from '../auth/encryption-key'
+import { fetchIdentityKeys, isUsableEncryptionKey, walletRegistered } from '../auth/encryption-key'
 import { onEncryptionKeyChange } from '../auth/vault'
 import type { Network } from '../constants'
 import {
@@ -104,6 +104,12 @@ export interface PrivateSession {
   readonly memberKeys: ReadonlyMap<string, readonly EncKeyLike[] | null>
   /** Pack manifests (`$id`) found uploaded under an old key (§8.2), shown to maintainers. */
   readonly suspectManifests: Set<string>
+  /**
+   * The reader holds encryption keys, but none of the keys its wraps here went to: the newest
+   * wrap's key id, and whether a wallet approval registered that key (DESIGN D27: each first
+   * approval for another contract registers one). Absent when a held key opens a wrap here.
+   */
+  readonly missingKey?: { readonly keyId: number; readonly otherApproval: boolean } | null
   /** Whether the session is closed (vault locked, key changed). */
   readonly closed: boolean
   /** End this session now (its keys and caches are dropped; its gate admits nothing). */
@@ -125,8 +131,10 @@ export interface SessionSource {
 
 /** The reader's side: decrypt one of its wraps (the vault's {@link EncryptionOps} in production). */
 export interface SessionUnwrapper {
-  /** The id of the encryption key the reader holds. */
+  /** The id of the encryption key the reader holds (its newest, when it holds several). */
   readonly keyId: number
+  /** Every key id the reader holds (default: {@link keyId} alone); a wrap to any of them is opened. */
+  readonly keyIds?: readonly number[]
   unwrap(p: { document: PlainDocument; counterpartyKey: EncKeyLike; repoId: Uint8Array; epoch: number }): Promise<EpochKeys>
 }
 
@@ -139,6 +147,7 @@ export function isMaintainer(session: PrivateSession, identity: string | null): 
 export function sessionUnwrapper(ops: EncryptionOps): SessionUnwrapper {
   return {
     keyId: ops.keyId,
+    keyIds: ops.keyIds,
     unwrap: (p) =>
       ops.unwrap({ document: p.document, counterpartyKey: p.counterpartyKey as unknown as IdentityPublicKey, repoId: p.repoId, epoch: p.epoch }),
   }
@@ -298,6 +307,9 @@ export async function loadPrivateSession(input: {
   const keyOf = (identity: string, keyId: number): EncKeyLike | undefined => memberKeys.get(identity)?.find((k) => k.keyId === keyId)
 
   const parsed = wrapDocs.map(parseWrapDoc).filter((w): w is NonNullable<typeof w> => w !== null)
+  const held = unwrapper === null ? [] : (unwrapper.keyIds ?? [unwrapper.keyId])
+  /** The reader's own wraps from current maintainers (§5.4 checks 1–2). */
+  const ownWrap = (w: (typeof parsed)[number]): boolean => bytesEqual(w.row.memberId, readerId) && maintainers.has(w.row.owner)
   const wraps: WrapDoc[] = await Promise.all(
     parsed.map(async (w) => {
       const memberB58 = base58Encode(w.row.memberId)
@@ -306,7 +318,7 @@ export async function loadPrivateSession(input: {
       let keys: EpochKeys | undefined
       // Only the reader's own wraps from current maintainers are opened (§5.4 checks 1–2); the
       // anchor check (5) is resolveEpochs'.
-      if (unwrapper !== null && bytesEqual(w.row.memberId, readerId) && maintainers.has(w.row.owner) && w.row.recipientKeyId === unwrapper.keyId) {
+      if (unwrapper !== null && ownWrap(w) && held.includes(w.row.recipientKeyId)) {
         const sender = keyOf(base58Encode(w.row.owner), w.senderKeyId)
         if (sender !== undefined) {
           // Only a wrap that does not open is skipped (§5.4 check 4); a locked vault or an SDK
@@ -320,6 +332,14 @@ export async function loadPrivateSession(input: {
       return { ...w, row: { ...w.row, keyEnabled, ...(keys !== undefined ? { keys } : {}) } }
     }),
   )
+
+  // Wraps to this reader, none to a key its browser holds: say which key they need.
+  const own = parsed.filter(ownWrap)
+  let missingKey: PrivateSession['missingKey'] = null
+  if (unwrapper !== null && own.length > 0 && !own.some((w) => held.includes(w.row.recipientKeyId))) {
+    const newest = own.reduce((a, b) => (b.row.epoch > a.row.epoch ? b : a)).row.recipientKeyId
+    missingKey = { keyId: newest, otherApproval: walletRegistered(memberKeys.get(reader) ?? [], newest) }
+  }
 
   const configRows = configDocs.map(parseConfigRow).filter((c): c is ConfigRow => c !== null)
   const resolution = await resolveEpochs({
@@ -383,6 +403,7 @@ export async function loadPrivateSession(input: {
     configHistory,
     anchors,
     unanchoredDocs,
+    missingKey,
     memberKeys,
     suspectManifests: new Set(),
     configRows,

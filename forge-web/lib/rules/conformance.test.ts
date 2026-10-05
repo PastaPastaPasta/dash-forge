@@ -36,6 +36,7 @@ import {
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import { refUpdateType } from '../repo/push'
+import { releaseProvenance, type ProvenanceInput } from './releaseProvenance'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { encodeTlv } from '../private/tlv'
 import { anchorContent } from '../repo/members-anchor'
@@ -43,7 +44,7 @@ import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLon
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
 import { avatarSpec, checkProfile, type ProfileInput } from './profile'
 import { backlinkFile, readBacklink } from './mirror-backlink'
-import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
+import { readPubkeyEntry, verifyCommitSignature, verifyTagSignature, type Signer } from './signature'
 import { HandoffError, RECOVERY_PHRASE_WARNING, handoffRequest, openHandoffReply } from '../auth/key-handoff'
 import { planRefs, syncDecision } from '../repo/fork'
 import { webhookUrlSecret } from '../repo/webhooks'
@@ -166,6 +167,10 @@ function runCaseBase(v: Vector): void {
     case 'matches_protected': {
       const inp = v.input as MatchesProtectedInput
       expect(matchesProtected(inp.refName, inp.patterns)).toEqual(v.expected)
+      break
+    }
+    case 'release_provenance': {
+      expect(releaseProvenance(v.input as ProvenanceInput)).toEqual(v.expected)
       break
     }
     case 'ref_update_route': {
@@ -786,12 +791,18 @@ function stateOf(v: Vector, inp: StateInput): [number, string | null] {
 }
 
 /** The signature cases (`./signature`): asynchronous, since OpenPGP.js is. */
-const SIGNATURE_CASES: ReadonlySet<string> = new Set(['pubkey_entry', 'commit_signature'])
+const SIGNATURE_CASES: ReadonlySet<string> = new Set(['pubkey_entry', 'commit_signature', 'tag_signature'])
 
 async function runSignatureVector(v: Vector): Promise<void> {
   if (v.case === 'pubkey_entry') {
     onlyKeys(v, ['entry'])
     expect(await readPubkeyEntry((v.input as { readonly entry: string }).entry)).toEqual(v.expected)
+    return
+  }
+  if (v.case === 'tag_signature') {
+    onlyKeys(v, ['tag', 'signers'], {})
+    const inp = v.input as { readonly tag: string; readonly signers: readonly Signer[] }
+    expect(await verifyTagSignature(new TextEncoder().encode(inp.tag), inp.signers)).toEqual(v.expected)
     return
   }
   onlyKeys(v, ['commit', 'signers'], {})

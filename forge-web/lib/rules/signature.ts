@@ -110,6 +110,26 @@ export function splitSignedCommit(bytes: Uint8Array, sha256Repo = false): { payl
   return { payload: Uint8Array.from(payload), signature: new TextDecoder('utf-8', { fatal: false }).decode(Uint8Array.from(signature)) }
 }
 
+/** The lines that open a signature block, as git's `get_format_by_sig` knows them. */
+const SIGNATURE_STARTS = ['-----BEGIN PGP SIGNATURE-----', '-----BEGIN PGP MESSAGE-----', '-----BEGIN SIGNED MESSAGE-----', '-----BEGIN SSH SIGNATURE-----']
+
+/**
+ * An annotated tag's signature and the bytes it signs, as git's `parse_signed_buffer` splits
+ * them: the signature starts at the last line that opens a signature block and runs to the end;
+ * the payload is everything before it. Null for an unsigned tag.
+ */
+export function splitSignedTag(bytes: Uint8Array): { payload: Uint8Array; signature: string } | null {
+  let found = -1
+  let line = 0
+  while (line < bytes.length) {
+    if (SIGNATURE_STARTS.some((p) => startsWith(bytes, line, p))) found = line
+    const next = bytes.indexOf(0x0a, line)
+    line = next === -1 ? bytes.length : next + 1
+  }
+  if (found === -1) return null
+  return { payload: bytes.slice(0, found), signature: new TextDecoder('utf-8', { fatal: false }).decode(bytes.slice(found)) }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Bytes, base64, SSH wire strings
 // ---------------------------------------------------------------------------------------------
@@ -411,7 +431,21 @@ function entriesOf(signers: readonly Signer[]): Promise<Entries> {
  */
 export async function verifyCommitSignature(bytes: Uint8Array, signers: readonly Signer[], sha256Repo = false): Promise<SignatureVerdict | null> {
   const split = splitSignedCommit(bytes, sha256Repo)
-  if (split === null) return null
+  return split === null ? null : verifySplit(split, signers)
+}
+
+/**
+ * The verdict on an annotated tag (its raw object bytes) against `signers`, or null for an
+ * unsigned tag: the same keys and rules as {@link verifyCommitSignature}, over the tag object
+ * without its trailing signature, exactly as `git verify-tag` reads it.
+ */
+export async function verifyTagSignature(bytes: Uint8Array, signers: readonly Signer[]): Promise<SignatureVerdict | null> {
+  const split = splitSignedTag(bytes)
+  return split === null ? null : verifySplit(split, signers)
+}
+
+/** The verdict on `split.signature` over `split.payload`. */
+async function verifySplit(split: { payload: Uint8Array; signature: string }, signers: readonly Signer[]): Promise<SignatureVerdict> {
   const entries = await entriesOf(signers)
   const first = split.signature.split('\n', 1)[0]?.trim() ?? ''
   try {

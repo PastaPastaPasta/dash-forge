@@ -16,6 +16,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/utils'
 
+/**
+ * The prompt over members-only content this tab cannot read yet (DESIGN §4.8, §10):
+ * `<UnlockMore title={UNLOCK_MEMBERS_ONLY} />`. The unlock is per tab, not per repo: one gesture
+ * opens the encryption key for every repo in the tab (`encryptionKeyState` says whether it is
+ * needed), and every private read re-resolves when `useAuth().unlockScope` turns `full`.
+ */
+export const UNLOCK_MEMBERS_ONLY = 'Unlock to read members-only content'
+
 export function UnlockMore({
   title,
   testId = 'unlock-more',

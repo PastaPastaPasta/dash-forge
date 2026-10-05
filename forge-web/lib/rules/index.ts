@@ -32,7 +32,18 @@ export {
   isRc1TagName,
 } from './oid'
 export { ALL_TAGS_PATTERN, defaultProtectedPatterns, matchesProtected, missingDefaultProtection, neutralizeWildmatch, wildmatch } from './matchesProtected'
-export { displayRefName, mergeBaseTips, prBaseTips, resolveRef } from './resolveRef'
+export { displayRefName, mergeBaseTips, prBaseTips, resolveRef, validRefUpdates } from './resolveRef'
+export {
+  provenanceAltered,
+  releaseProvenance,
+  type AssetChanges,
+  type ProvenanceInput,
+  type ProvenanceRevision,
+  type ProvenanceTip,
+  type ReleaseProvenance,
+  type TagMove,
+  type TagVerdict,
+} from './releaseProvenance'
 export { overlayTree } from './overlay'
 // FORGE_RULES_V2: the forge-v2 membership, event-fold, pack and numbering rules
 export * as v2 from './v2'

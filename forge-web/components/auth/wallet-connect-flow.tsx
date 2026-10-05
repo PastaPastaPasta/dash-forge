@@ -20,7 +20,10 @@
  * wallet grants one contract per approval) and adds it to the session: no confirmation step,
  * since only answers from the signed-in identity are read.
  *
- * Granted keys are held in refs, never React state, and dropped when the sheet closes.
+ * Granted keys are held in refs, never React state, and dropped when the sheet closes. So is the
+ * encryption key the wallet's login key stands for: signing in (or a grant) seals it into the vault
+ * beside the wallet key when it is the identity's (DESIGN D27), and the bytes are wiped once the
+ * sheet is done.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -35,7 +38,18 @@ import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 import { Waiting } from '@/components/auth/step-status'
 import { ACTIVE_NETWORK } from '@/lib/constants'
-import { REQUEST_TTL_MS, RequestExpired, awaitRegisteredKey, awaitWalletAnswer, newLoginRequest, responseSources, walletSignInSupported, type PollStatus } from '@/lib/auth/app-connect'
+import {
+  REQUEST_TTL_MS,
+  RequestExpired,
+  awaitRegisteredKey,
+  awaitWalletAnswer,
+  newLoginRequest,
+  responseSources,
+  walletSignInSupported,
+  wipeAnswer,
+  type PollStatus,
+  type WalletAnswer,
+} from '@/lib/auth/app-connect'
 import { isUnlimited, keyRegistrationUri, scopeCovers, type WalletKey } from '@/lib/auth/key-registration'
 import { responderProfile, type ResponderProfile } from '@/lib/auth/responder-profile'
 import { isAbort } from '@/lib/sdk/facade'
@@ -96,7 +110,12 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   const [preparing, setPreparing] = useState(PHASE_TEXT.connecting)
   const [attempt, setAttempt] = useState(0)
   const [confirmed, setConfirmed] = useState(false)
-  const grant = useRef<{ identityId: string; keys: readonly WalletKey[] } | null>(null)
+  const grant = useRef<{ identityId: string; keys: readonly WalletKey[]; answer: WalletAnswer } | null>(null)
+  /** Wipe the held answer's private key bytes and drop the grant. */
+  const dropGrant = useCallback(() => {
+    if (grant.current) wipeAnswer(grant.current.answer)
+    grant.current = null
+  }, [])
   const mobile = onMobile()
   const unlimited = step?.kind === 'confirm' && step.unlimited
   const { fields, protection, problem } = useProtection({ preferPasskey: unlimited })
@@ -126,8 +145,10 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
         discardPendingRenewal: discard,
         ...(renewalUnlock ? { renewalUnlock } : {}),
         ...(drop ? { dropUnopened: true } : {}),
+        encryptionKeys: g.answer.encryptionKeys,
+        justRegistered: g.answer.kind === 'register',
       })
-      grant.current = null
+      dropGrant()
       setPendingRenewal(null)
       setRenewalLocked(null)
       if (renewalPassphraseRef.current) renewalPassphraseRef.current.value = ''
@@ -173,27 +194,35 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           ...(mode === 'grant' && grantFor ? { identityId: grantFor } : {}),
         })
         let keys: readonly WalletKey[]
-        if (answer.kind === 'register') {
-          // First login from this wallet: QR #2 registers the key, then wait for it on chain.
-          const until = Date.now() + REQUEST_TTL_MS
-          const uri = await keyRegistrationUri(sdk, { identityId: answer.identityId, keys: answer.keys, contractId: target, network: ACTIVE_NETWORK.network })
+        // Its private key bytes are wiped here unless the confirm step holds them (`grant`).
+        let held = false
+        try {
+          if (answer.kind === 'register') {
+            // First login from this wallet: QR #2 registers the key, then wait for it on chain.
+            const until = Date.now() + REQUEST_TTL_MS
+            const uri = await keyRegistrationUri(sdk, { identityId: answer.identityId, keys: answer.keys, contractId: target, network: ACTIVE_NETWORK.network })
+            if (signal.aborted) return
+            setStep({ kind: 'register', uri, expiresAt: until })
+            keys = [await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network: ACTIVE_NETWORK.network, forge, until, signal })]
+          } else {
+            keys = answer.keys
+          }
           if (signal.aborted) return
-          setStep({ kind: 'register', uri, expiresAt: until })
-          keys = [await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network: ACTIVE_NETWORK.network, forge, until, signal })]
-        } else {
-          keys = answer.keys
+          if (mode === 'grant') {
+            // The key that covers what was asked for (a wallet may grant several, or the wrong one).
+            const key = keys.find((k) => scopeCovers(k.scope, forge, target))
+            if (!key) throw new Error("The wallet's answer does not cover issues and pull requests. Try again, or sign in with your identity file.")
+            // Its first approval registered an encryption key too: the sign-in keeps it.
+            await latest.current.addWalletGrant(answer.identityId, key, target, { encryptionKeys: answer.encryptionKeys, justRegistered: answer.kind === 'register' })
+            if (signal.aborted) return
+            latest.current.onDone()
+            return
+          }
+          grant.current = { identityId: answer.identityId, keys, answer }
+          held = true
+        } finally {
+          if (!held) wipeAnswer(answer)
         }
-        if (signal.aborted) return
-        if (mode === 'grant') {
-          // The key that covers what was asked for (a wallet may grant several, or the wrong one).
-          const key = keys.find((k) => scopeCovers(k.scope, forge, target))
-          if (!key) throw new Error("The wallet's answer does not cover issues and pull requests. Try again, or sign in with your identity file.")
-          await latest.current.addWalletGrant(answer.identityId, key, target)
-          if (signal.aborted) return
-          latest.current.onDone()
-          return
-        }
-        grant.current = { identityId: answer.identityId, keys }
         const profile = await responderProfile(sdk, answer.identityId, ACTIVE_NETWORK.network, latest.current.stored)
         if (signal.aborted) return
         setStep({ kind: 'confirm', profile, unlimited: keys.some(isUnlimited), unbounded: keys.some((k) => k.scope.unbounded) })
@@ -205,10 +234,10 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
     })()
     return () => {
       controller.abort()
-      grant.current = null
+      dropGrant()
     }
     // `attempt` restarts the whole request (a new ephemeral key and QR).
-  }, [attempt, forge, target, mode, grantFor])
+  }, [attempt, forge, target, mode, grantFor, dropGrant])
 
   const restart = useCallback(() => setAttempt((a) => a + 1), [])
 
