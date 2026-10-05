@@ -1859,12 +1859,11 @@ fn plan_removal(book: &Book, member: &str) -> (Vec<Pin>, Vec<String>) {
                         cannot.push(env.clone());
                         continue;
                     };
-                    let named: Vec<[u8; 32]> = hashes_of(book, &predicted)
-                        .into_iter()
-                        .filter(|h| m.supersedes.contains(h))
-                        .collect();
+                    // Their version again, linked to the versions it came from that still
+                    // count: it stays one of the versions at the same time, sharing their
+                    // history, without replacing any other head.
                     let mut first = vec![m.pack_hash];
-                    first.extend(named);
+                    first.extend(kept_ancestors(book, &state.snapshots, &kept_ids, m));
                     pins.push(Pin {
                         env: env.clone(),
                         supersedes: joined(first, Vec::new()),
@@ -1883,6 +1882,42 @@ fn plan_removal(book: &Book, member: &str) -> (Vec<Pin>, Vec<String>) {
         }
     }
     (pins, cannot)
+}
+
+/// The pack hashes of the snapshots among `kept` (those that still count without the removed
+/// member) that `head` descends from through the links among `counted` (the resolution before),
+/// newest first.
+fn kept_ancestors(
+    book: &Book,
+    counted: &[String],
+    kept: &[String],
+    head: &forge_core::repo::PackManifestInfo,
+) -> Vec<[u8; 32]> {
+    let manifests: Vec<&forge_core::repo::PackManifestInfo> = counted
+        .iter()
+        .filter_map(|id| book.manifest_of(id))
+        .collect();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut todo = vec![head];
+    let mut found = Vec::new();
+    while let Some(m) = todo.pop() {
+        for parent in manifests.iter().filter(|p| {
+            m.supersedes.contains(&p.pack_hash)
+                && p.created_at_block_height < m.created_at_block_height
+        }) {
+            if seen.insert(parent.document_id.as_str()) {
+                if kept.contains(&parent.document_id) {
+                    found.push(*parent);
+                }
+                todo.push(parent);
+            }
+        }
+    }
+    found.sort_by(|a, b| {
+        (b.created_at_block_height, &b.document_id)
+            .cmp(&(a.created_at_block_height, &a.document_id))
+    });
+    found.into_iter().map(|m| m.pack_hash).collect()
 }
 
 /// After the membership change: save each planned snapshot, as the signer, but only those whose
@@ -2052,6 +2087,137 @@ pub async fn prepare_promotion(s: &Session, member: &str) -> Result<Promotion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ALICE: &str = "alice";
+    const BOB: &str = "bob";
+
+    /// A kind-8 manifest `id` by `owner` at block `height`, superseding the snapshots `sup`.
+    fn manifest(
+        id: &str,
+        owner: &str,
+        height: u64,
+        sup: &[&str],
+    ) -> forge_core::repo::PackManifestInfo {
+        let hash = |s: &str| {
+            let mut h = [0u8; 32];
+            h[..s.len()].copy_from_slice(s.as_bytes());
+            h
+        };
+        forge_core::repo::PackManifestInfo {
+            document_id: id.into(),
+            created_at: height * 1000,
+            owner_id: owner.into(),
+            pack_hash: hash(id),
+            kind: 8,
+            size_bytes: 512,
+            object_count: 0,
+            chunk_count: 1,
+            storage: 0,
+            uris: Vec::new(),
+            supersedes: sup.iter().map(|s| hash(s)).collect(),
+            tips: Vec::new(),
+            created_at_block_height: height,
+        }
+    }
+
+    /// A book of `production` snapshots `manifests` (newest last) with `maintainers`.
+    fn book(maintainers: &[&str], manifests: Vec<forge_core::repo::PackManifestInfo>) -> Book {
+        let opened = manifests
+            .iter()
+            .map(|m| {
+                let snap = Snapshot {
+                    env: "production".into(),
+                    audience: Audience::Maintainers,
+                    generated_at: m.created_at,
+                    saved_for: None,
+                    to: Vec::new(),
+                    vars: [("V".to_owned(), var(&m.document_id))].into(),
+                };
+                (
+                    m.document_id.clone(),
+                    forge_core::env::service::Opened::Snapshot(snap),
+                )
+            })
+            .collect();
+        let maintainers: BTreeSet<String> = maintainers.iter().map(|&m| m.to_owned()).collect();
+        let mut b = Book {
+            maintainers: maintainers.clone(),
+            manifests: manifests.into_iter().rev().collect(),
+            opened,
+            resolution: forge_core::env::Resolution::default(),
+        };
+        b.resolution = b.resolution_with(&maintainers);
+        b
+    }
+
+    /// The book after the removal of `member` and the planned saves (by alice, at `height`).
+    fn after_saves(b: &Book, member: &str, height: u64) -> Book {
+        let (pins, cannot) = plan_removal(b, member);
+        assert!(cannot.is_empty());
+        let mut manifests: Vec<_> = b.manifests.iter().rev().cloned().collect();
+        for (i, p) in pins.iter().enumerate() {
+            let mut m = manifest(&format!("pin{i}"), ALICE, height + i as u64, &[]);
+            m.supersedes.clone_from(&p.supersedes);
+            manifests.push(m);
+        }
+        let left: Vec<&str> = b
+            .maintainers
+            .iter()
+            .map(String::as_str)
+            .filter(|&m| m != member)
+            .collect();
+        let mut a = book(&left, manifests);
+        for (i, p) in pins.iter().enumerate() {
+            a.opened.insert(
+                format!("pin{i}"),
+                forge_core::env::service::Opened::Snapshot(p.snapshot.clone()),
+            );
+        }
+        a
+    }
+
+    #[test]
+    fn a_removed_maintainers_version_in_a_conflict_keeps_its_shared_history() {
+        // h by alice; d (alice) and bob's f1 -> f2 both from h: a conflict between d and f2.
+        let b = book(
+            &[ALICE, BOB],
+            vec![
+                manifest("h", ALICE, 10, &[]),
+                manifest("d", ALICE, 11, &["h"]),
+                manifest("f1", BOB, 11, &["h"]),
+                manifest("f2", BOB, 12, &["f1"]),
+            ],
+        );
+        assert_eq!(b.heads("production").len(), 2);
+        let a = after_saves(&b, BOB, 20);
+        let st = a.state("production").unwrap();
+        assert_eq!(st.state, forge_core::env::State::Conflict);
+        let heads: BTreeSet<&str> = st.heads.iter().map(String::as_str).collect();
+        assert_eq!(heads, ["d", "pin0"].into());
+        assert!(
+            matches!(
+                a.current("production"),
+                Err(Blocked::Conflict { split: false, .. })
+            ),
+            "the saved version shares h with d"
+        );
+    }
+
+    #[test]
+    fn a_removed_maintainers_latest_version_is_saved_again_and_stays_current() {
+        let b = book(
+            &[ALICE, BOB],
+            vec![
+                manifest("h", ALICE, 10, &[]),
+                manifest("f", BOB, 11, &["h"]),
+            ],
+        );
+        let a = after_saves(&b, BOB, 20);
+        let st = a.state("production").unwrap();
+        assert_eq!(st.state, forge_core::env::State::Current);
+        assert_eq!(st.heads, ["pin0"]);
+        assert_eq!(a.current("production").unwrap().vars["V"].value, "f");
+    }
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = std::process::Command::new("git")
