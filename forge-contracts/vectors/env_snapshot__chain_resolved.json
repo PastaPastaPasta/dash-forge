@@ -1,0 +1,83 @@
+{
+  "name": "chain_resolved",
+  "description": "a fork resolved by a maintainer's snapshot that supersedes both heads (supersedes is a list): one head again.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+    ],
+    "manifests": [
+      {
+        "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "supersedes": [],
+        "createdAt": 1000
+      },
+      {
+        "id": "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+        "supersedes": [
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "createdAt": 2000
+      },
+      {
+        "id": "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB",
+        "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+        "packHash": "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde",
+        "supersedes": [
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "createdAt": 2001
+      },
+      {
+        "id": "BbNCNSXsjMG7Tg74LiUFTZfMyyNAqoGXicz9uhYmuEfe",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "399f3e15c189cfa12f05c52e3f47398599848a39742366a23f1f81ebfd87a99b",
+        "supersedes": [
+          "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+          "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde"
+        ],
+        "createdAt": 3000
+      }
+    ],
+    "opened": {
+      "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c": {
+        "env": "production"
+      },
+      "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02": {
+        "env": "production"
+      },
+      "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde": {
+        "env": "production"
+      },
+      "399f3e15c189cfa12f05c52e3f47398599848a39742366a23f1f81ebfd87a99b": {
+        "env": "production"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [],
+    "environments": [
+      {
+        "env": "production",
+        "state": "current",
+        "heads": [
+          "BbNCNSXsjMG7Tg74LiUFTZfMyyNAqoGXicz9uhYmuEfe"
+        ],
+        "snapshots": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+          "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
+          "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB",
+          "BbNCNSXsjMG7Tg74LiUFTZfMyyNAqoGXicz9uhYmuEfe"
+        ]
+      }
+    ],
+    "hidden": []
+  }
+}

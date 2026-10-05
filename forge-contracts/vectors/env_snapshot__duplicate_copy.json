@@ -1,0 +1,57 @@
+{
+  "name": "duplicate_copy",
+  "description": "a second manifest of the same artifact counts once, the earliest.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+    ],
+    "manifests": [
+      {
+        "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "supersedes": [],
+        "createdAt": 1000
+      },
+      {
+        "id": "GpVsRyrCmsBaApL7rMar6DJwtWPy2SFt1HiDFArUeSQ",
+        "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "supersedes": [
+          "3534f3c550db2d274abadee12c9f66c9e043edebe01ba32242956329fd1d3543"
+        ],
+        "createdAt": 1500
+      }
+    ],
+    "opened": {
+      "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c": {
+        "env": "production"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [
+      {
+        "id": "GpVsRyrCmsBaApL7rMar6DJwtWPy2SFt1HiDFArUeSQ",
+        "reason": "duplicate"
+      }
+    ],
+    "environments": [
+      {
+        "env": "production",
+        "state": "current",
+        "heads": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th"
+        ],
+        "snapshots": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th"
+        ]
+      }
+    ],
+    "hidden": []
+  }
+}

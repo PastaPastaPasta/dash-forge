@@ -1,0 +1,64 @@
+{
+  "name": "cross_environment_link_dropped",
+  "description": "a snapshot of dev naming a production snapshot in supersedes does not end production: links count only between snapshots of the same environment.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
+    ],
+    "manifests": [
+      {
+        "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "supersedes": [],
+        "createdAt": 1000
+      },
+      {
+        "id": "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19",
+        "supersedes": [
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "createdAt": 2000
+      }
+    ],
+    "opened": {
+      "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c": {
+        "env": "production"
+      },
+      "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19": {
+        "env": "dev"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [],
+    "environments": [
+      {
+        "env": "dev",
+        "state": "current",
+        "heads": [
+          "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
+        ],
+        "snapshots": [
+          "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
+        ]
+      },
+      {
+        "env": "production",
+        "state": "current",
+        "heads": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th"
+        ],
+        "snapshots": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th"
+        ]
+      }
+    ],
+    "hidden": []
+  }
+}

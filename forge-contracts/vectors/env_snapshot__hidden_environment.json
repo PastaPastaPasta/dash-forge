@@ -1,0 +1,74 @@
+{
+  "name": "hidden_environment",
+  "description": "an environment none of whose snapshots open for this reader is counted, not named.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
+    ],
+    "manifests": [
+      {
+        "id": "BY3JvH2dg453QX3ghMZxSsp99fAPE4Q7kvhkoGHnMjJC",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "9aa71454fe3b0ef7e430de77c0ccb8e449e7611906d7e8b06c7799d8fa5a4bf1",
+        "supersedes": [],
+        "createdAt": 1000
+      },
+      {
+        "id": "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19",
+        "supersedes": [],
+        "createdAt": 1100
+      },
+      {
+        "id": "5pRmChXHKNTaNL8C19qyPEGYKp1u2fGYXWKkjLUeRK1o",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "dde65ac202d4078d985c3ff1ff67fce3352c3ddfdf94b06893d6cc01f1a22b29",
+        "supersedes": [
+          "9aa71454fe3b0ef7e430de77c0ccb8e449e7611906d7e8b06c7799d8fa5a4bf1"
+        ],
+        "createdAt": 2000
+      }
+    ],
+    "opened": {
+      "9aa71454fe3b0ef7e430de77c0ccb8e449e7611906d7e8b06c7799d8fa5a4bf1": {
+        "unreadable": "notARecipient"
+      },
+      "dde65ac202d4078d985c3ff1ff67fce3352c3ddfdf94b06893d6cc01f1a22b29": {
+        "unreadable": "notARecipient"
+      },
+      "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19": {
+        "env": "dev"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [],
+    "environments": [
+      {
+        "env": "dev",
+        "state": "current",
+        "heads": [
+          "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
+        ],
+        "snapshots": [
+          "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
+        ]
+      }
+    ],
+    "hidden": [
+      {
+        "heads": [
+          "5pRmChXHKNTaNL8C19qyPEGYKp1u2fGYXWKkjLUeRK1o"
+        ],
+        "snapshots": [
+          "BY3JvH2dg453QX3ghMZxSsp99fAPE4Q7kvhkoGHnMjJC",
+          "5pRmChXHKNTaNL8C19qyPEGYKp1u2fGYXWKkjLUeRK1o"
+        ]
+      }
+    ]
+  }
+}

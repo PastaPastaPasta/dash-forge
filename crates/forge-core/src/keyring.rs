@@ -154,6 +154,15 @@ impl EncryptionKeys {
             .collect()
     }
 
+    /// Every key held, enabled or not (a letter or artifact sent to a since-disabled key still
+    /// opens), for [`crate::private::named::Reader`].
+    pub fn private_keys(&self) -> Vec<PrivateKey> {
+        self.keys
+            .values()
+            .filter_map(|(k, _)| PrivateKey::from_slice(&*k.secret_bytes()).ok())
+            .collect()
+    }
+
     /// The private key with `id`, enabled or not.
     fn get(&self, id: u32) -> Option<&PrivateKey> {
         self.keys.get(&id).map(|(k, _)| k)
