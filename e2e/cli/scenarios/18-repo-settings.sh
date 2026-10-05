@@ -45,7 +45,7 @@ main_tip() { # the remote's refs/heads/main, read as OWNER
 
 step "OWNER creates ${NAME}, pushes main + trunk, adds COLLAB as a writer"
 _retry "$LOG-create.err" _dg_read "$ID_OWNER" "$LOG-create.json" "$LOG-create.err" \
-  --yes --json repo create "$NAME" --storage platform --description "Dash Forge e2e: repo settings" \
+  --yes --json repo create "$NAME" --no-protect --storage platform --description "Dash Forge e2e: repo settings" \
   || fail_with "$LOG-create" "create"
 seed_tiny_repo "$SRC" main >/dev/null
 git -C "$SRC" branch trunk

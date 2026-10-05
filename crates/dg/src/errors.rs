@@ -144,6 +144,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         }
         Command::Repo(Rp::Protect(
             crate::RepoProtectCommand::Add { repo, .. }
+            | crate::RepoProtectCommand::Defaults { repo }
             | crate::RepoProtectCommand::Remove { repo, .. },
         )) => ("protection not changed", Some(repo)),
         Command::Repo(Rp::Policy(crate::RepoPolicyCommand::Show { repo })) => {

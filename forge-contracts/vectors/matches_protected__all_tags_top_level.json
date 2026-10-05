@@ -1,0 +1,12 @@
+{
+  "name": "all_tags_top_level",
+  "description": "The default tag pattern covers a top-level tag: ** matches one segment too.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/tags/v1.2.3",
+    "patterns": [
+      "refs/tags/**"
+    ]
+  },
+  "expected": true
+}

@@ -74,6 +74,11 @@ const PRIVATE_FACTS: readonly string[] = [
 /** The CLI's note when a private create has a description (`publish.rs`). */
 const PUBLIC_DESCRIPTION_NOTE = 'note: the description and display name are public; leave them empty to keep them private'
 
+/** The confirmation's sentence on protection, with a trailing space; empty when the create opts out. */
+function protectionNote(i: CreateRepoInput): string {
+  return i.protect === true ? `Only maintainers will be able to push to ${i.defaultBranch ?? 'main'} or move tags. ` : ''
+}
+
 type StepState = 'todo' | 'running' | 'done'
 const INITIAL_PROGRESS: Record<CreateRepoStep, StepState> = { repo: 'todo', maintainer: 'todo', config: 'todo' }
 
@@ -95,6 +100,9 @@ export default function NewRepoPage(): JSX.Element {
   const [description, setDescription] = useState('')
   const [defaultBranch, setDefaultBranch] = useState('main')
   const [visibility, setVisibility] = useState<Visibility>('public')
+  // D6: a new repo protects its default branch and tags unless its creator opts out.
+  const [protect, setProtect] = useState(true)
+  const branchShown = defaultBranch.trim() || 'main'
   // `/new/?visibility=private` (the Private repositories page's button) starts on Private, after
   // hydration so the static page and the first client render agree.
   useEffect(() => {
@@ -153,13 +161,16 @@ export default function NewRepoPage(): JSX.Element {
   }, [repoName, nameError, pending])
   const differs =
     resuming !== null &&
-    ((resuming.input.description ?? '') !== description.trim() || (resuming.input.defaultBranch ?? 'main') !== (defaultBranch.trim() || 'main'))
+    ((resuming.input.description ?? '') !== description.trim() ||
+      (resuming.input.defaultBranch ?? 'main') !== (defaultBranch.trim() || 'main') ||
+      (resuming.input.protect === true) !== protect)
 
   const input = (): CreateRepoInput => ({
     name: repoName ?? '',
     ...(description.trim() ? { description: description.trim() } : {}),
     ...(defaultBranch.trim() && defaultBranch.trim() !== 'main' ? { defaultBranch: defaultBranch.trim() } : {}),
     ...(isPrivate ? { visibility: 'private' as const } : {}),
+    ...(protect ? { protect: true } : {}),
   })
   const costOf = (i: CreateRepoInput) => previewRepoCreate(i, firsts)
   const cost = costOf(name.trim() && nameError === null ? input() : { name: 'x' })
@@ -334,10 +345,32 @@ export default function NewRepoPage(): JSX.Element {
             </div>
           </Field>
 
+          <div className="flex items-start gap-2.5 rounded-md border border-anvil-200 p-3 dark:border-anvil-750">
+            <input
+              id="repo-protect"
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-forge-700"
+              checked={protect}
+              onChange={(e) => setProtect(e.target.checked)}
+              aria-describedby="repo-protect-hint"
+              data-testid="repo-protect"
+            />
+            <div className="min-w-0">
+              <label htmlFor="repo-protect" className="text-dense font-medium">
+                Protect <span className="break-all font-mono">{branchShown}</span> and tags
+              </label>
+              <p id="repo-protect-hint" className="text-[12px] text-anvil-500 dark:text-anvil-400">
+                {protect
+                  ? 'Only maintainers can push to it or create and move tags. Writers open pull requests. Change this later in Settings.'
+                  : 'Any writer can push to it and move tags, including the ones releases point to.'}
+              </p>
+            </div>
+          </div>
+
           {differs ? (
             <p className="text-[12px] text-caution-700 dark:text-caution-400">
-              An unfinished creation of this name started with a different description or branch; finishing it keeps those
-              values. Change them after it exists.
+              An unfinished creation of this name started with different settings; finishing it keeps those. Change them after
+              it exists.
             </p>
           ) : null}
           <CostPreview cost={cost} />
@@ -383,8 +416,8 @@ export default function NewRepoPage(): JSX.Element {
         title={confirm ? `Create ${confirm.name}?` : 'Create repository?'}
         description={
           confirm?.visibility === 'private'
-            ? `You'll be its maintainer. ${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. The name and visibility are permanent, and repos can be archived but not deleted.`
-            : "You'll be its maintainer. The name is permanent, and repos can be archived but not deleted."
+            ? `You'll be its maintainer. ${protectionNote(confirm)}${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. The name and visibility are permanent, and repos can be archived but not deleted.`
+            : `You'll be its maintainer. ${confirm ? protectionNote(confirm) : ''}The name is permanent, and repos can be archived but not deleted.`
         }
         cost={confirm ? costOf(confirm) : cost}
         confirmLabel="Sign & create"

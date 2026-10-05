@@ -159,7 +159,7 @@ fn coin_type(network: &Network) -> u32 {
 /// A fresh 12-word English recovery phrase (128 bits of entropy from the OS).
 pub fn new_mnemonic() -> Result<Secret> {
     let m = Mnemonic::generate(12, Language::English)
-        .map_err(|e| Error::Config(format!("generating the recovery words: {e}")))?;
+        .map_err(|e| Error::Config(format!("generating the recovery phrase: {e}")))?;
     Ok(Secret::new(m.phrase()))
 }
 

@@ -16,7 +16,7 @@ describe('pageTitle (L-59)', () => {
   })
 
   it('shortens an identity id until its DPNS name is known', () => {
-    expect(pageTitle('/repo/pulls', q(`owner=${ID}&name=dash`))).toBe('Pull requests · Bdx8pb9V…/dash · Dash Forge')
+    expect(pageTitle('/repo/pulls', q(`owner=${ID}&name=dash`))).toBe('Pull requests · Bdx8pb9…ajRDB/dash · Dash Forge')
   })
 
   it('never shows a private repo’s sealed path or ref', () => {

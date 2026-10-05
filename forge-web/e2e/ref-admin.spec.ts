@@ -85,7 +85,7 @@ test.beforeAll(() => {
   g('add', '.')
   g('commit', '-qm', 'first')
   mainTip = g('rev-parse', 'HEAD')
-  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform')
+  dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--no-protect')
   dg('OWNER', 'repo', 'protect', 'add', SLUG, 'release/*')
   git('OWNER', src, ['push', '-q', `dash://${SLUG}`, 'main:refs/heads/main', 'main:refs/heads/release/1'])
   dg('COLLAB', 'collab', 'accept', SLUG)

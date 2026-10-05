@@ -1,0 +1,16 @@
+{
+  "name": "tag_prefix_globs",
+  "description": "Prefix globs leave some tags movable (1.0, release-2), so every-tag protection is still needed.",
+  "case": "missing_default_protection",
+  "input": {
+    "defaultBranch": "main",
+    "patterns": [
+      "refs/heads/main",
+      "refs/tags/v*",
+      "refs/tags/*/v*"
+    ]
+  },
+  "expected": [
+    "refs/tags/**"
+  ]
+}

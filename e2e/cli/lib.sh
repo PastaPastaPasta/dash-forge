@@ -337,7 +337,7 @@ harness_init() {
 # `dg repo create` otherwise follows the runner's dash.storage / storage.toml, or stops (E508).
 harness_ensure_repo() { # harness_ensure_repo <name>
   local name="$1" out="${WORKROOT}/create-$1"
-  if _retry "${out}.err" _dg_read "$ID_OWNER" "${out}.json" "${out}.err" --yes --json repo create "$name" \
+  if _retry "${out}.err" _dg_read "$ID_OWNER" "${out}.json" "${out}.err" --yes --json repo create "$name" --no-protect \
       --storage platform \
       --description "Dash Forge CLI e2e fixture (reserved; see e2e/README.md)"; then
     info "repo ${name}: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["status"], d["cost"]["dash"], "DASH")' "${out}.json" 2>/dev/null)"

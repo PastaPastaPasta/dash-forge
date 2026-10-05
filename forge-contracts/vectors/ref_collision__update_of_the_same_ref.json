@@ -1,0 +1,17 @@
+{
+  "name": "update_of_the_same_ref",
+  "description": "Pushing to a ref that exists is an update, never a collision.",
+  "case": "ref_collision",
+  "rules": "v2",
+  "input": {
+    "existing": [
+      "refs/heads/main",
+      "refs/heads/feature"
+    ],
+    "name": "refs/heads/feature"
+  },
+  "expected": {
+    "collision": null,
+    "reason": null
+  }
+}

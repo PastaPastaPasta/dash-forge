@@ -1,0 +1,12 @@
+{
+  "name": "main",
+  "description": "A new repository protects its default branch and every tag.",
+  "case": "default_protection",
+  "input": {
+    "defaultBranch": "main"
+  },
+  "expected": [
+    "refs/heads/main",
+    "refs/tags/**"
+  ]
+}

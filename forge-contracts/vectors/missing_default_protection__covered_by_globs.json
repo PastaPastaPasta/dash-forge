@@ -1,0 +1,13 @@
+{
+  "name": "covered_by_globs",
+  "description": "Broad patterns that already cover the branch and every tag need nothing.",
+  "case": "missing_default_protection",
+  "input": {
+    "defaultBranch": "trunk",
+    "patterns": [
+      "refs/heads/*",
+      "refs/tags/**"
+    ]
+  },
+  "expected": []
+}
