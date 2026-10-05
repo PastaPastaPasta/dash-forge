@@ -1,0 +1,15 @@
+{
+  "name": "file_two",
+  "description": "Several mirrors keep their order.",
+  "case": "mirror_backlink_file",
+  "rules": "v2",
+  "input": {
+    "repoIds": [
+      "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq",
+      "H3xi5biFj6wbxmpbdhHx1D2D3ofKJJ7anDG58ixhqvry"
+    ]
+  },
+  "expected": {
+    "file": "{\"mirrors\":[\"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\",\"H3xi5biFj6wbxmpbdhHx1D2D3ofKJJ7anDG58ixhqvry\"]}\n"
+  }
+}

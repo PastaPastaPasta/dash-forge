@@ -37,6 +37,7 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
 import { avatarSpec, checkProfile, type ProfileInput } from './profile'
+import { backlinkFile, readBacklink } from './mirror-backlink'
 import { readPubkeyEntry, verifyCommitSignature, type Signer } from './signature'
 import { HandoffError, RECOVERY_PHRASE_WARNING, handoffRequest, openHandoffReply } from '../auth/key-handoff'
 import { planRefs, syncDecision } from '../repo/fork'
@@ -642,6 +643,17 @@ function runCaseV2(v: Vector): void {
         }
       })
       expect(got).toEqual(v.expected)
+      break
+    }
+    case 'mirror_backlink': {
+      onlyKeys(v, ['file', 'repoId'])
+      const inp = v.input as { readonly file: string; readonly repoId: string }
+      expect(readBacklink(inp.file, inp.repoId)).toEqual(v.expected)
+      break
+    }
+    case 'mirror_backlink_file': {
+      onlyKeys(v, ['repoIds'])
+      expect({ file: backlinkFile((v.input as { readonly repoIds: readonly string[] }).repoIds) }).toEqual(v.expected)
       break
     }
     default:

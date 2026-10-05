@@ -317,6 +317,8 @@ dg storage status <owner>/<repo>              # does every recorded copy of ever
 
 On the web: `https://forge.dashhq.org/<owner>/<repo>`. Each imported issue and PR opens with a line naming its GitHub original and author.
 
+Visitors can also put the GitHub address after the site's: `https://forge.dashhq.org/github.com/<github owner>/<github repo>` (or `/gh/…`) opens the mirror, and the rest of a GitHub path opens the same page of it (`…/issues/12`, `…/tree/main/src`). So does `https://forge.dashhq.org/<github owner>/<github repo>` when no Forge repo has that address. The web app finds the mirror by its description (`… (mirror of github.com/<owner>/<repo>)`, which the import writes). When several repos claim to mirror the same GitHub repo, it lists them and lets the visitor choose, unless exactly one of them is featured on the site; with none, it offers to set one up.
+
 If the page says **Not indexed for browsing yet**, the import stored the code but not its browse index; the import's summary says so as a warning. The repository still clones. To publish the index without storing the code again, run:
 
 ```sh
@@ -334,3 +336,15 @@ git ls-remote https://github.com/alice/project refs/heads/main
 ```
 
 The two ids must match. A commit id is a hash over the commit and everything it reaches, so equal ids mean identical history for that branch. Repeat for other branches and tags, or compare the full `git ls-remote` output of both. [Verify Forge](verify-forge.md) goes further.
+
+### Confirm the mirror is yours
+
+Anyone can create a repository whose description says it mirrors your project, so Forge shows that claim as "Says it mirrors github.com/alice/project" until your project confirms it. To confirm it, add a file named `.dash-forge.json` to the root of your default branch on GitHub, listing the mirror's repo id:
+
+```json
+{"mirrors":["<repo id>"]}
+```
+
+forge-import prints the file after it creates a mirror, and on the mirror's page a maintainer sees a link that opens GitHub's new-file page with the file filled in. The repo id is on the repository's Settings page. List several ids to vouch for several mirrors.
+
+Visitors can then press **Check with GitHub** on the mirror's page. Their browser reads the file from GitHub and compares GitHub's default branch with the mirror's, and the page says "Mirror of github.com/alice/project" with both results. The check is optional and asks github.com directly, so nothing is checked until a visitor asks. On the "Repo not found" page, mirrors their source lists come first once checked.

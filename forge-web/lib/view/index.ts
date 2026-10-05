@@ -11,6 +11,7 @@ export {
   branchName,
   creditsAsDash,
   dashToUsd,
+  mainnetCents,
   dashValueNote,
   formatBytes,
   formatDash,
@@ -120,7 +121,7 @@ export {
   type TrustRow,
   type TrustState,
 } from './trust'
-export { QUORUM_CHECK_MAX_AGE_MS, crossCheckQuorumKeysCached, lastQuorumCheck, quorumCheckDueInMs, type QuorumCrossCheck } from './quorum-check'
+export { QUORUM_CHECK_MAX_AGE_MS, crossCheckQuorumKeysCached, lastQuorumCheck, probeQuorumService, QuorumProbeError, quorumCheckDueInMs, type QuorumCrossCheck } from './quorum-check'
 export {
   describeUnavailable,
   onlyGatewaysFailed,
