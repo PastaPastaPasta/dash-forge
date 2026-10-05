@@ -19,7 +19,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useCallback, useRef, useState, type SetStateAction } from 'react'
+import { useCallback, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
@@ -27,7 +27,7 @@ import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
-import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
+import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftState, useDraftText } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
@@ -195,8 +195,19 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // "Close with comment": the comment a close already posted, by the confirm's intent, so a retry
   // of a close that failed after it never posts the comment twice.
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
-  const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
-  const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
+  // Unsaved edits survive a reload (public repos only), bound to the revision they started from:
+  // once the issue or the comment changes, the old edit is dropped, never restored over it.
+  const editIssueId = data?.issue.id ?? ''
+  const issueRev = data?.issue.revision ?? -1
+  const [editDraft, setEditDraft] = useDraftState<{ title: string; body: string; rev: number }>(editDraftKey(home.repo, editIssueId, identity), (d) => d.rev === issueRev)
+  const editing = editDraft
+  const setEditing = (e: { title: string; body: string } | null): void => setEditDraft(e === null ? null : { title: e.title, body: e.body, rev: issueRev })
+  const comments = useMemo(() => (data?.timeline ?? []).flatMap((t) => (t.kind === 'comment' ? [t.comment] : [])), [data])
+  const [editingComment, setCommentEdit] = useDraftState<{ id: string; body: string; rev: number | null }>(commentEditDraftKey(home.repo, editIssueId, identity), (d) =>
+    comments.some((c) => c.id === d.id && (c.revision ?? null) === d.rev),
+  )
+  const setEditingComment = (e: { id: string; body: string } | null): void =>
+    setCommentEdit(e === null ? null : { id: e.id, body: e.body, rev: comments.find((c) => c.id === e.id)?.revision ?? null })
   // A hidden issue's body and timeline show only after "Show it anyway" (RC2 MOD).
   const [threadRevealed, setThreadRevealed] = useState(false)
 

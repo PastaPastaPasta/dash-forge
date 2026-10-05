@@ -17,7 +17,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { HiddenRowMark, HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -103,6 +103,7 @@ import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
 import { applyTemplate, type IssueTemplate } from '@/lib/view/issue-templates'
 import { formBody, initialFormValues, missingAnswers, type FormValue } from '@/lib/view/issue-forms'
 import { capabilitiesOf, whoCan } from '@/lib/rules/roles'
+import { newIssueDraftKey, useDraftState } from '@/lib/view/draft-text'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
 const ISSUE_GRAMMAR: ListGrammar<IssueListQuery> = { text: searchText, parse: parseSearchText, unresolved: unresolvedQualifiers, submitBase: searchSubmitBase }
@@ -428,6 +429,26 @@ function ComposeIssueDialog({
   const guard = useWriteGuard()
   const [title, setTitle] = useState(prefill.title)
   const [body, setBody] = useState(prefill.body)
+  // The unsent issue survives a reload (per identity, public repos only; nothing is kept while a
+  // submit's outcome is unknown). Kept only while the form is open, and restored when it opens
+  // empty (a link's prefill wins).
+  const [kept, keep, holdKept] = useDraftState<{ title: string; body: string }>(newIssueDraftKey(repo, identity), () => true)
+  const seeded = useRef(false)
+  useEffect(() => {
+    if (!open) {
+      seeded.current = false
+      return
+    }
+    if (!seeded.current) {
+      seeded.current = true
+      if (title === '' && body === '' && kept !== null) {
+        setTitle(kept.title)
+        setBody(kept.body)
+        return
+      }
+    }
+    if (!pending) keep(title.trim() === '' && body.trim() === '' ? null : { title, body })
+  }, [open, title, body]) // eslint-disable-line react-hooks/exhaustive-deps
   const [template, setTemplate] = useState<IssueTemplate | null>(null)
   // Each YAML issue form's answers, by file (the issue's body is made from them): kept while
   // another template is picked, so arrowing through the picker loses nothing (QW4-037).
@@ -503,11 +524,14 @@ function ComposeIssueDialog({
     setPending(true)
     setError(null)
     setNote(null)
+    // Until the outcome is known, a reload must not bring the issue back to be posted again.
+    holdKept(true, null)
     try {
       const created = await createIssue(sdk, signer, repo, { title: title.trim(), body: issueBody, intent: draft.intent }, (taken, next) =>
         setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
       )
       await applyLabels(created, labelsToApply)
+      holdKept(false, null)
       setTitle('')
       setBody('')
       setTemplate(null)
@@ -518,6 +542,7 @@ function ComposeIssueDialog({
     } catch (e) {
       if (e instanceof SupersededWriteError) {
         // The earlier version was posted: this draft is done (never post it a second time).
+        holdKept(false, null)
         setTitle('')
         setBody('')
         setTemplate(null)
@@ -526,6 +551,8 @@ function ComposeIssueDialog({
         onClose()
         return
       }
+      // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays held.)
+      if (!(e instanceof UnconfirmedWriteError)) holdKept(false, { title, body })
       setError(guard.failed(e))
     } finally {
       setPending(false)

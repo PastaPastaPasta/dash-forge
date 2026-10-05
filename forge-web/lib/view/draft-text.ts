@@ -32,6 +32,29 @@ export function commentDraftKey(repo: { readonly repoId: string; readonly visibi
   return `${viewer}:${repo.repoId}:${targetId}:comment`
 }
 
+type DraftRepo = { readonly repoId: string; readonly visibility?: string }
+
+/** Where `viewer`'s draft `what` of `targetId` is kept, or null (a private repo, signed out). */
+function draftKeyOf(repo: DraftRepo, targetId: string, viewer: string | null, what: string): string | null {
+  if (repo.visibility !== 'public' || viewer === null || targetId === '') return null
+  return `${viewer}:${repo.repoId}:${targetId}:${what}`
+}
+
+/** `viewer`'s unsaved edit of an issue's or PR's title and description. */
+export function editDraftKey(repo: DraftRepo, targetId: string, viewer: string | null): string | null {
+  return draftKeyOf(repo, targetId, viewer, 'edit')
+}
+
+/** `viewer`'s unsaved edit of one of their comments on `targetId` (one at a time, as the page edits them). */
+export function commentEditDraftKey(repo: DraftRepo, targetId: string, viewer: string | null): string | null {
+  return draftKeyOf(repo, targetId, viewer, 'comment-edit')
+}
+
+/** `viewer`'s new issue in `repo` (its title and description). */
+export function newIssueDraftKey(repo: DraftRepo, viewer: string | null): string | null {
+  return draftKeyOf(repo, 'new', viewer, 'issue')
+}
+
 function parse(raw: string | null): { text: string; at: number } | null {
   if (raw === null) return null
   try {
@@ -133,4 +156,32 @@ export function useDraftText(key: string | null): [string, (text: string) => voi
     [key],
   )
   return [current, set, hold]
+}
+
+/**
+ * {@link useDraftText} for a structured value (its `hold` the same: nothing stored while a write's
+ * outcome is unknown) (an edit's title and body, with the revision it
+ * started from), kept as JSON under `key`. A stored value `valid` rejects (the document changed
+ * since the edit started, the comment is gone) reads as none and is dropped, so an old edit never
+ * resurrects over a newer saved version. `null` removes it.
+ */
+export function useDraftState<T>(key: string | null, valid: (value: T) => boolean): [T | null, (value: T | null) => void, (held: boolean, value: T | null) => void] {
+  const [text, setText, holdText] = useDraftText(key)
+  const validRef = useRef(valid)
+  validRef.current = valid
+  let value: T | null = null
+  if (text !== '') {
+    try {
+      value = JSON.parse(text) as T
+    } catch {
+      value = null
+    }
+  }
+  const stale = value !== null && !valid(value)
+  useEffect(() => {
+    if (stale) setText('')
+  }, [stale, setText])
+  const set = useCallback((v: T | null) => setText(v === null ? '' : JSON.stringify(v)), [setText])
+  const hold = useCallback((on: boolean, v: T | null) => holdText(on, v === null ? '' : JSON.stringify(v)), [holdText])
+  return [stale ? null : value, set, hold]
 }

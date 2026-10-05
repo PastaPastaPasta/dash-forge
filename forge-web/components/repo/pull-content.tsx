@@ -56,7 +56,7 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
-import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
+import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftState, useDraftText } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
 import { RulesAtMerge } from './rules-at-merge'
 import { deleteNeedsForce, dependentsWarning, type Dependents } from '@/lib/view/branch-dependents'
@@ -613,8 +613,16 @@ function PullPage({
   // "Close with comment": the comment a close already posted, by the confirm's intent, so a retry
   // of a close that failed after it never posts the comment twice.
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
-  const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
-  const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
+  // Unsaved edits survive a reload (public repos only), bound to the revision they started from:
+  // once the PR or the comment changes, the old edit is dropped, never restored over it.
+  const [editDraft, setEditDraft] = useDraftState<{ title: string; body: string; rev: number }>(editDraftKey(repo, pull.id, identity), (d) => d.rev === pull.revision)
+  const editing = editDraft
+  const setEditing = (e: { title: string; body: string } | null): void => setEditDraft(e === null ? null : { title: e.title, body: e.body, rev: pull.revision })
+  const commentRev = (id: string): number | null => thread.comments.find((c) => c.id === id)?.revision ?? null
+  const [editingComment, setCommentEdit] = useDraftState<{ id: string; body: string; rev: number | null }>(commentEditDraftKey(repo, pull.id, identity), (d) =>
+    thread.comments.some((c) => c.id === d.id && (c.revision ?? null) === d.rev),
+  )
+  const setEditingComment = (e: { id: string; body: string } | null): void => setCommentEdit(e === null ? null : { id: e.id, body: e.body, rev: commentRev(e.id) })
 
   // Which subtrees this viewer's comment, review or event would create (D-011). Read only once
   // the viewer turns to a write (typing, or a confirm opening); the previews are upper bounds
