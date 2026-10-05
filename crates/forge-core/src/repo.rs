@@ -2612,13 +2612,52 @@ impl<'a> RepoService<'a> {
                 return Ok(hash);
             }
         }
+        let bytes = self.pack_codec(repo).await?.seal(plain.to_vec())?;
+        let kind = crate::pack::KIND_LONG_BODY;
+        self.store_long_body_bytes(repo, bytes, kind, external, platform, required)
+            .await
+    }
+
+    /// Store a members-only long body of public `repo`: `sealed`, its full text already sealed
+    /// under the repository's members key by the caller (`private::Lane::seal_artifact`), as a
+    /// kind-70 artifact ([`crate::pack::KIND_MEMBERS_LONG_BODY`]) on `external` and Platform, as
+    /// [`Self::store_long_body`] stores a public one. Returns the sealed bytes' `packHash`, what
+    /// the members-only field's trailer names. The plaintext never reaches storage.
+    pub async fn store_members_long_body(
+        &self,
+        repo: &RepoRef,
+        sealed: Vec<u8>,
+        external: &[&dyn StorageTarget],
+        platform: bool,
+        required: usize,
+    ) -> Result<[u8; 32]> {
+        if repo.visibility != Visibility::Public {
+            return Err(Error::Config(
+                "a members-only long body belongs to a public repository".into(),
+            ));
+        }
+        let kind = crate::pack::KIND_MEMBERS_LONG_BODY;
+        self.store_long_body_bytes(repo, sealed, kind, external, platform, required)
+            .await
+    }
+
+    /// Store a long body's stored form `bytes` (plaintext, or sealed) as a `kind` artifact and
+    /// record its `packManifest`. Returns its `packHash`.
+    async fn store_long_body_bytes(
+        &self,
+        repo: &RepoRef,
+        bytes: Vec<u8>,
+        kind: u8,
+        external: &[&dyn StorageTarget],
+        platform: bool,
+        required: usize,
+    ) -> Result<[u8; 32]> {
         let chain = platform
             .then(|| PlatformChunkTarget::new(self, repo, crate::storage::PLATFORM_PROFILE));
         let mut targets: Vec<&dyn StorageTarget> = external.to_vec();
         if let Some(c) = &chain {
             targets.push(c);
         }
-        let bytes = self.pack_codec(repo).await?.seal(plain.to_vec())?;
         let meta = PackMeta::for_bytes(&bytes);
         let pack_hash = meta.pack_hash_bytes()?;
         let rep = crate::storage::replicate(
@@ -2640,7 +2679,7 @@ impl<'a> RepoService<'a> {
             repo,
             &PackManifestInput {
                 pack_hash,
-                kind: u64::from(crate::pack::KIND_LONG_BODY),
+                kind: u64::from(kind),
                 size_bytes: bytes.len() as u64,
                 object_count: 0,
                 chunk_count: stored.chunk_count,
