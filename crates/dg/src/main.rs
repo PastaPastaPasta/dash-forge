@@ -1528,11 +1528,12 @@ pub enum ReleaseCommand {
         /// The release tag.
         tag: String,
     },
-    /// Check that a release's tag and assets are what was first published: the tag's history
-    /// on Platform against the release's first publish (who pushed it, every later move), the
-    /// assets against the first publish, and the tag's signature when this directory's git
-    /// holds the tag. Exits with E504 when the tag moved, was deleted or races, or the assets
-    /// changed. Needs no identity for a public repository.
+    /// Check that a release's tag and assets are still what was first published. Exits with
+    /// E504 when the tag moved, was deleted or races, or the assets changed.
+    ///
+    /// It compares the tag's history on Platform (who pushed it, every later move) and the
+    /// assets with the first publish, and checks the tag's signature when this directory's git
+    /// holds the tag. Needs no identity for a public repository.
     Verify {
         /// The repository (`owner/name`).
         repo: String,
