@@ -24,8 +24,10 @@ import { describe, expect, it } from 'vitest'
 
 import {
   ancestryFromPairs,
+  defaultProtectedPatterns,
   displayRefName,
   matchesProtected,
+  missingDefaultProtection,
   mergeBaseTips,
   overlayTree,
   prBaseTips,
@@ -33,6 +35,7 @@ import {
   v2,
 } from './index'
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
+import { refUpdateType } from '../repo/push'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
@@ -160,6 +163,20 @@ function runCaseBase(v: Vector): void {
     case 'matches_protected': {
       const inp = v.input as MatchesProtectedInput
       expect(matchesProtected(inp.refName, inp.patterns)).toEqual(v.expected)
+      break
+    }
+    case 'ref_update_route': {
+      const inp = v.input as { readonly refName: string; readonly patterns: readonly string[] | null; readonly pusherIsOwner: boolean }
+      expect(refUpdateType(inp.refName, inp.patterns, inp.pusherIsOwner)).toEqual(v.expected)
+      break
+    }
+    case 'missing_default_protection': {
+      const inp = v.input as { readonly defaultBranch: string; readonly patterns: readonly string[] }
+      expect(missingDefaultProtection(inp.defaultBranch, inp.patterns)).toEqual(v.expected)
+      break
+    }
+    case 'default_protection': {
+      expect(defaultProtectedPatterns((v.input as { readonly defaultBranch: string }).defaultBranch)).toEqual(v.expected)
       break
     }
     case 'overlay': {
@@ -533,6 +550,13 @@ function runCaseV2(v: Vector): void {
         readonly mergedAt?: number
       }
       expect(v2.prMergeBase(inp.baseRefName, inp.openedAt, inp.events, inp.mergedAt ?? null)).toEqual(v.expected)
+      break
+    }
+    case 'ref_collision': {
+      onlyKeys(v, ['existing', 'name'])
+      const inp = v.input as { readonly existing: readonly string[]; readonly name: string }
+      const collision = v2.refCollision(inp.existing, inp.name)
+      expect({ collision, reason: collision === null ? null : v2.collisionReason(inp.name, collision) }).toEqual(v.expected)
       break
     }
     case 'merge_content': {

@@ -12,6 +12,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LabelDef } from '@/lib/repo'
+import { shortId } from '@/lib/utils'
 
 vi.mock('next/link', () => ({ default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a> }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>{identityId}</span> }))
@@ -108,7 +109,7 @@ describe('issue sidebar pickers (QW2-066)', () => {
     render(<AssigneeAvatars ids={[A, B]} />)
     const el = host.querySelector('[data-testid="assignees"]')
     expect(el?.getAttribute('role')).toBe('img')
-    expect(el?.getAttribute('aria-label')).toBe(`Assigned to ${A.slice(0, 8)}, ${B.slice(0, 8)}`)
+    expect(el?.getAttribute('aria-label')).toBe(`Assigned to ${shortId(A)}, ${shortId(B)}`)
   })
 })
 

@@ -1121,7 +1121,7 @@ async fn fold_head_updates(
     // Watch the current head (not every intermediate one) of each recently active PR.
     for t in targets
         .values()
-        .filter(|t| t.is_pr && t.head_set_by.is_some())
+        .filter(|t| t.is_pr && t.head_set_by.is_some() && !t.members_only)
     {
         if t.last_activity >= recent {
             heads.insert(
@@ -1189,7 +1189,8 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
             } else {
                 TargetInfo::from_issue(&d, baseline)
             };
-            if is_pr && !t.head_oid.is_empty() && t.last_activity >= recent {
+            // A members-only PR's head is a blind (DESIGN D4): no check run is reported on it.
+            if is_pr && !t.head_oid.is_empty() && !t.members_only && t.last_activity >= recent {
                 heads.insert(
                     t.head_oid.clone(),
                     Head {
@@ -1591,7 +1592,7 @@ async fn poll_repo_rest(
                     } else {
                         TargetInfo::from_issue(d, Baseline::Beginning)
                     };
-                    if doc_type == DOC_PATCH && !t.head_oid.is_empty() {
+                    if doc_type == DOC_PATCH && !t.head_oid.is_empty() && !t.members_only {
                         let seen = t.last_activity;
                         st.heads
                             .entry(t.head_oid.clone())
@@ -1630,7 +1631,7 @@ async fn poll_repo_rest(
                     if d.field_u64("kind") == Some(16) && !moved {
                         None
                     } else {
-                        ingest::translate_event(&st.meta, d, &st.targets, &st.closed).map(
+                        ingest::translate_event(doc_type, &st.meta, d, &st.targets, &st.closed).map(
                             |mut e| {
                                 // GitHub's `edited` names the base the PR left.
                                 if let Some(from) = retargeted_from {
@@ -1734,7 +1735,12 @@ async fn poll_threads(
                 continue;
             };
             for d in &r.docs {
-                if let Some(t) = st.targets.get_mut(&tid) {
+                // A stranger's members-only comment is not activity anyone is shown (D14).
+                if let Some(t) = st
+                    .targets
+                    .get_mut(&tid)
+                    .filter(|_| ingest::reportable(doc_type, d))
+                {
                     t.last_activity = t.last_activity.max(d.created_at.unwrap_or(0));
                 }
                 let event = if doc_type == DOC_REVIEW {
@@ -1927,6 +1933,11 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
 /// delta-0 revision needs to tell a fresh yank from a further edit of one already yanked
 /// ([`ingest::translate_release`]).
 fn note_release_yanked(s: &mut RepoState, d: &FetchedDocument) -> bool {
+    // A members-only revision's `tagName` is keyed, and may equal a public tag: it is not
+    // reported and must not move the public tag's yanked state.
+    if ingest::is_sealed(d) {
+        return false;
+    }
     let tag = d.field_str("tagName").unwrap_or_default();
     let was_yanked = s.yanked_tags.contains(&tag);
     if d.field_bool("yanked") {
@@ -1952,6 +1963,9 @@ fn follow_head(s: &mut RepoState, d: &FetchedDocument, author_path: bool) -> boo
     let Some(head) = t.apply_head_update(d, author_path) else {
         return false;
     };
+    if t.members_only {
+        return true;
+    }
     let seen = d.created_at.unwrap_or(t.last_activity);
     s.heads.entry(head).or_insert(Head::since(seen));
     prune_heads(&mut s.heads, &mut s.runs);
@@ -2166,6 +2180,7 @@ mod tests {
                         last_activity: 0,
                         draft: false,
                         merged: false,
+                        members_only: false,
                     },
                 )
             })
@@ -2247,6 +2262,7 @@ mod tests {
             last_activity: 0,
             draft: false,
             merged: false,
+            members_only: false,
         };
         st.tips
             .entry(hash.clone())
@@ -2297,6 +2313,7 @@ mod tests {
             last_activity: 0,
             draft: false,
             merged: false,
+            members_only: false,
         };
         st.targets.insert(target.clone(), pr);
         st.tips
@@ -2581,5 +2598,16 @@ mod tests {
         assert_eq!(step(&mut st, &rel(4, 0, true)), "edited");
         assert_eq!(step(&mut st, &rel(5, 0, false)), "edited");
         assert_eq!(step(&mut st, &rel(6, 0, true)), "unpublished");
+
+        // A members-only revision may carry the public tag's name (its `tagName` is keyed and
+        // consensus admits any): it is not reported and leaves the public tag's state alone.
+        let mut sealed = rel(7, 0, false);
+        sealed
+            .fields
+            .insert("enc".into(), FieldValue::bytes(vec![3; 61]));
+        assert!(!note_release_yanked(&mut st, &sealed));
+        assert!(ingest::translate_release(&st.meta, &sealed, false).is_none());
+        assert!(st.yanked_tags.contains("v1"));
+        assert_eq!(step(&mut st, &rel(8, 0, true)), "edited");
     }
 }

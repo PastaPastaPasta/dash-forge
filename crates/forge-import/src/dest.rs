@@ -213,6 +213,9 @@ pub async fn create(
         backend_uris: Vec::new(),
         visibility: Visibility::Public,
         fork_of: None,
+        // A mirror follows its source, which may move tags and the default branch on its own;
+        // its maintainers protect what they want with `dg repo protect`.
+        protect: false,
     };
     let res = create_repo(
         client,

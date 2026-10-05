@@ -42,7 +42,8 @@ import { authSdk, sleep } from '../sdk/facade'
 import { timed } from '../step-timing'
 import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, invalidMnemonicMessage, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
-import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate, shortId } from './limited-key'
+import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate } from './limited-key'
+import { shortId } from '../utils'
 import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockScope, unlockedSecret, withEncryptionKey } from './vault'
 
 /** The step-timing flow of enabling private repos at sign-in (L-20). */

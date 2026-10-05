@@ -68,7 +68,7 @@ for line in open(log):
         break' "$@"
 }
 new_repo() { # new_repo <name> <tag>
-  dg_read_retry "$ID" "$LOG-$2.json" "$LOG-$2.err" --yes --json repo create "$1" --storage platform
+  dg_read_retry "$ID" "$LOG-$2.json" "$LOG-$2.err" --yes --json repo create "$1" --storage platform --no-protect
 }
 
 step "1. the first push of main publishes a full history index"

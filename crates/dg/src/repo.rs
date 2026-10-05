@@ -249,10 +249,12 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>, default_branch_only: bo
     let estimate = fork_estimate(&manifest_uris, refs as u64);
     if !ctx.json {
         println!(
-            "Forking {} as {}/{slug} on {}\n  repo + {packs} pack manifest(s), nothing re-uploaded, + {refs} ref(s)   {}",
+            "Forking {} as {}/{slug} on {}\n  repo + {}, nothing re-uploaded, + {}   {}",
             parent.display(),
             identity.id(),
             ctx.network_label(),
+            crate::fmt::plural(packs, "pack"),
+            crate::fmt::plural(refs, "ref"),
             cost_line(estimate, price)
         );
     }
@@ -283,8 +285,8 @@ fn warn_unreadable_packs(
         return;
     }
     eprintln!(
-        "warning: {n} of {p}'s {} pack(s) are recorded only at {}, which other computers don't read: a fork records the copies its parent has when it is made, so cloning this one fails (E503). Ask {p}'s maintainers to record them at a public https address first (`dg repack {p} --profile <profile>`), then fork",
-        planned.len(),
+        "warning: {n} of {p}'s {} are recorded only at {}, which other computers don't read: a fork records the copies its parent has when it is made, so cloning this one fails (E503). Ask {p}'s maintainers to record them at a public https address first (`dg repack {p} --profile <profile>`), then fork",
+        crate::fmt::plural(planned.len(), "pack"),
         if places.is_empty() {
             "no address".to_string()
         } else {
@@ -371,8 +373,8 @@ fn report_fork(
             forge_core::user_error::UserError::new(
                 forge_core::user_error::codes::PACKS_UNREADABLE,
                 format!(
-                    "fork incomplete: {} pack(s) of {} have no copy a fork can reference",
-                    result.unreferenceable.len(),
+                    "fork incomplete: {} of {} have no copy a fork can reference",
+                    crate::fmt::plural(result.unreferenceable.len(), "pack"),
                     parent.display()
                 ),
             )
@@ -382,9 +384,9 @@ fn report_fork(
                 fork.remote_url()
             ))
             .note(format!(
-                "{} exists with {} pack(s) recorded; no ref was copied",
+                "{} exists with {} recorded; no ref was copied",
                 fork.display(),
-                result.manifests_written
+                crate::fmt::plural(result.manifests_written, "pack")
             )),
             body,
         ));
@@ -496,7 +498,9 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
             "cost": spent.map(|c| cost_json(c, price)),
         }),
         || {
-            let n = count.map(|c| format!(" ({c} star(s))")).unwrap_or_default();
+            let n = count
+                .map(|c| format!(" ({})", crate::fmt::plural(c, "star")))
+                .unwrap_or_default();
             let paid = spent.map_or(String::new(), |c| format!(" · {}", cost_line(c, price)));
             println!("✓ {} {what}{n}{paid}", handle.display());
         },
@@ -890,7 +894,10 @@ async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
     ctx.emit(
         json!({ "owner": owner_id, "count": rows.len(), "repos": rows }),
         || {
-            println!("{} repo(s) for {owner_id}:", repos.len());
+            println!(
+                "{} for {owner_id}:",
+                crate::fmt::plural(repos.len(), "repo")
+            );
             for r in &repos {
                 println!("  {}  {}", r.repo.name(), r.description);
             }

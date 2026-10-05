@@ -38,12 +38,40 @@ pub struct OptionState {
     pub fatal: Option<String>,
     /// `git push -o <value>` values (`option push-option <value>`), in order.
     pub push_options: Vec<String>,
+    /// `git push --force-with-lease` expectations (`option cas <ref>:<oid>`): each ref and
+    /// the tip it must still have for the push to overwrite it; `""` (or a null oid) means the
+    /// ref must not exist.
+    pub leases: Vec<(String, String)>,
 }
 
 impl OptionState {
+    /// The `--force-with-lease` expectation for `dst`, when one was given: the tip it must
+    /// still have, or `""` when it must not exist (git sends a null oid or nothing for that).
+    pub fn lease(&self, dst: &str) -> Option<&str> {
+        self.leases
+            .iter()
+            .rev()
+            .find(|(r, _)| r == dst)
+            .map(|(_, oid)| {
+                if oid.bytes().all(|b| b == b'0') {
+                    ""
+                } else {
+                    oid.as_str()
+                }
+            })
+    }
+
     /// Whether `git push -o <name>` was given.
     pub fn has_push_option(&self, name: &str) -> bool {
         self.push_options.iter().any(|o| o == name)
+    }
+
+    /// The values of every `git push -o <key>=<value>`, in order (`-o allow-secret=3f9a…`
+    /// gives `3f9a…` for `allow-secret`). An option without `=` has no value and is skipped.
+    pub fn push_option_values<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.push_options
+            .iter()
+            .filter_map(move |o| o.split_once('=').filter(|(k, _)| *k == key).map(|(_, v)| v))
     }
 }
 
@@ -72,6 +100,48 @@ impl OptionReply {
 /// git sends option *values* as `1`/`0`/`true`/`false` — treat `1` and `true` as set.
 fn truthy(value: &str) -> bool {
     matches!(value, "true" | "1")
+}
+
+/// `git push --atomic` cannot be honoured: Platform takes one write per state transition, so
+/// each ref is its own write and some can land when another fails (git then reports each).
+pub const ATOMIC_UNSUPPORTED: &str = "dash:// cannot push atomically: each branch and tag is a separate Platform write, so some can land while another fails. Push without --atomic: git reports each ref, and a failed one can be pushed again";
+
+/// Undo git's C-style quoting of an option value (`quote_c_style`): only applied when the value
+/// holds a character that needs it.
+fn unquote(value: &str) -> String {
+    let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+        return value.to_string();
+    };
+    let bytes = inner.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' || i + 1 >= bytes.len() {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        let octal = bytes
+            .get(i + 1..i + 4)
+            .filter(|d| d.iter().all(|b| (b'0'..=b'7').contains(b)));
+        if let Some(d) = octal {
+            out.push((d[0] - b'0') * 64 + (d[1] - b'0') * 8 + (d[2] - b'0'));
+            i += 4;
+            continue;
+        }
+        out.push(match bytes[i + 1] {
+            b'n' => b'\n',
+            b't' => b'\t',
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b'f' => 0x0c,
+            b'r' => b'\r',
+            b'v' => 0x0b,
+            other => other,
+        });
+        i += 2;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 const SHALLOW_UNSUPPORTED: &str =
@@ -103,9 +173,34 @@ pub fn handle_option(state: &mut OptionState, rest: &str) -> OptionReply {
         }
         // Harmless modifiers / capabilities git always probes. `deepen-relative` is only a
         // modifier for a real deepen; on its own it is inert.
+        "atomic" => {
+            if truthy(value) {
+                OptionReply::Error(ATOMIC_UNSUPPORTED.to_string())
+            } else {
+                OptionReply::Ok
+            }
+        }
+        // `git push --force-with-lease`: `<ref>:<expected oid>` (empty: must not exist). The
+        // push plan overwrites the ref only while it still points there (`plan_pushes`).
+        "cas" => {
+            let value = unquote(value);
+            match value.split_once(':') {
+                Some((r, oid))
+                    if r.starts_with("refs/")
+                        && (oid.is_empty()
+                            || (matches!(oid.len(), 40 | 64)
+                                && oid.bytes().all(|b| b.is_ascii_hexdigit()))) =>
+                {
+                    state.leases.push((r.to_string(), oid.to_ascii_lowercase()));
+                    OptionReply::Ok
+                }
+                _ => OptionReply::Error(format!(
+                    "--force-with-lease expects <ref>:<full commit id>, got {value:?}"
+                )),
+            }
+        }
         "followtags"
         | "check-connectivity"
-        | "atomic"
         | "no-recurse-submodules"
         | "object-format"
         | "report-status"
@@ -161,6 +256,44 @@ pub fn handle_option(state: &mut OptionState, rest: &str) -> OptionReply {
 #[cfg(test)]
 mod tests {
     use super::{handle_option, OptionReply, OptionState};
+
+    #[test]
+    fn atomic_is_refused_with_a_reason() {
+        let mut s = OptionState::default();
+        match handle_option(&mut s, "atomic true") {
+            OptionReply::Error(msg) => assert!(msg.contains("cannot push atomically")),
+            other => panic!("expected error, got {other:?}"),
+        }
+        assert_eq!(handle_option(&mut s, "atomic false"), OptionReply::Ok);
+        assert!(s.fatal.is_none(), "a refused --atomic stops only that push");
+    }
+
+    #[test]
+    fn leases_are_recorded_quoted_or_not() {
+        let mut s = OptionState::default();
+        let oid = "a".repeat(40);
+        assert_eq!(
+            handle_option(&mut s, &format!("cas refs/heads/main:{oid}")),
+            OptionReply::Ok
+        );
+        assert_eq!(
+            handle_option(&mut s, "cas \"refs/heads/new:\""),
+            OptionReply::Ok
+        );
+        assert_eq!(s.lease("refs/heads/main"), Some(oid.as_str()));
+        assert_eq!(s.lease("refs/heads/new"), Some(""));
+        assert_eq!(s.lease("refs/heads/other"), None);
+        // git's C quoting writes non-ASCII bytes as octal escapes.
+        assert_eq!(
+            handle_option(&mut s, &format!("cas \"refs/heads/na\\303\\257ve:{oid}\"")),
+            OptionReply::Ok
+        );
+        assert_eq!(s.lease("refs/heads/naïve"), Some(oid.as_str()));
+        assert!(matches!(
+            handle_option(&mut s, "cas refs/heads/main:abc"),
+            OptionReply::Error(_)
+        ));
+    }
 
     #[test]
     fn verbosity_and_flags_are_recorded() {
@@ -227,6 +360,26 @@ mod tests {
         assert!(s.has_push_option("allow-private-uri"));
         assert!(!s.has_push_option("allow"));
         assert_eq!(s.push_options, ["allow-private-uri", "ci.skip"]);
+    }
+
+    #[test]
+    fn key_value_push_options_are_read_by_key() {
+        let mut s = OptionState::default();
+        for o in [
+            "allow-secret=3f9a1c2d4e5f",
+            "allow-secret",
+            "allow-secrets=000000000000",
+            "allow-secret=0123456789ab",
+        ] {
+            assert_eq!(
+                handle_option(&mut s, &format!("push-option {o}")),
+                OptionReply::Ok
+            );
+        }
+        let got: Vec<&str> = s.push_option_values("allow-secret").collect();
+        assert_eq!(got, ["3f9a1c2d4e5f", "0123456789ab"]);
+        assert!(s.has_push_option("allow-secret"));
+        assert_eq!(s.push_option_values("ci.skip").count(), 0);
     }
 
     #[test]

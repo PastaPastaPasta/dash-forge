@@ -1,0 +1,12 @@
+{
+  "name": "refs_everything",
+  "description": "A pattern over every ref covers the branch and every tag.",
+  "case": "missing_default_protection",
+  "input": {
+    "defaultBranch": "main",
+    "patterns": [
+      "refs/**"
+    ]
+  },
+  "expected": []
+}

@@ -196,8 +196,8 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
             println!("  repair: rotate (a non-member holds the current key): `dg repo keys repair {arg}`");
         } else if !repair.missing_wraps.is_empty() {
             println!(
-                "  repair: {} member(s) have no wrap for the current epoch: `dg repo keys repair {arg}`",
-                repair.missing_wraps.len()
+                "  repair: {} without the current key: `dg repo keys repair {arg}`",
+                crate::fmt::plural(repair.missing_wraps.len(), "member")
             );
         } else {
             println!("  repair: nothing to do");
@@ -239,7 +239,7 @@ fn repair_estimate(kr: &Keyring) -> (u64, String) {
         Some(p) if p.rotate => rotation_cost(kr, distinct_members(kr.members())),
         Some(p) if !p.missing_wraps.is_empty() => (
             WRAP_ESTIMATE_CREDITS * p.missing_wraps.len() as u64,
-            format!("{} wrap(s)", p.missing_wraps.len()),
+            crate::fmt::plural(p.missing_wraps.len(), "wrap"),
         ),
         _ => (0, "nothing".into()),
     }
@@ -262,8 +262,8 @@ pub fn burn_estimate(members: usize) -> (u64, String) {
     (
         2 * one,
         format!(
-            "up to {} wrap(s) + 2 anchors (an earlier run's key must be burned)",
-            2 * members
+            "up to {} + 2 anchors (an earlier run's key must be burned)",
+            crate::fmt::plural(2 * members, "wrap")
         ),
     )
 }
@@ -272,7 +272,7 @@ pub fn burn_estimate(members: usize) -> (u64, String) {
 pub fn rotation_estimate(members: usize) -> (u64, String) {
     (
         WRAP_ESTIMATE_CREDITS * members as u64 + ANCHOR_ESTIMATE_CREDITS,
-        format!("{members} wrap(s) + 1 anchor"),
+        format!("{} + 1 anchor", crate::fmt::plural(members, "wrap")),
     )
 }
 
@@ -378,10 +378,10 @@ pub fn print_rotation(repo: &RepoRef, r: &Rotation) {
     }
     if r.won {
         println!(
-            "{}: key rotated to epoch {} (wrapped to {} member(s), you first)",
+            "{}: key rotated to epoch {} (wrapped to {}, you first)",
             repo.display(),
             r.epoch,
-            r.wrapped.len()
+            crate::fmt::plural(r.wrapped.len(), "member")
         );
         for m in &r.skipped {
             println!(

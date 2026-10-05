@@ -43,11 +43,13 @@ mod fetched;
 mod git;
 mod helper;
 mod journal;
+mod ledger;
 mod options;
 mod pin;
 mod policy;
 mod pr_sync;
 mod progress;
+mod secret_scan;
 mod url;
 
 use std::io::{self, BufRead, Write};
@@ -254,6 +256,10 @@ fn protocol_loop<R: BufRead, W: Write>(
             "option" => {
                 let rest = line.strip_prefix("option ").unwrap_or("");
                 let reply = handle_option(&mut opts, rest);
+                // git does not print an option's error text (and ignores it for `cas`): say it.
+                if let options::OptionReply::Error(msg) = &reply {
+                    eprintln!("error: {msg}");
+                }
                 writeln!(writer, "{}", reply.wire())?;
                 writer.flush()?;
             }
@@ -261,6 +267,11 @@ fn protocol_loop<R: BufRead, W: Write>(
                 goal.set(line.contains("for-push"), &opts);
                 fail_if_shallow(&opts)?;
                 let for_push = line.split_whitespace().nth(1) == Some("for-push");
+                // git sends `option cloning` only before a fetch, and a clone of an empty
+                // repository never fetches: a repository with no refs gets its ledger here.
+                if !for_push {
+                    ledger::ensure_for_new_clone(false);
+                }
                 let out = step(rt.block_on(helper.list(for_push)), "list refs")?;
                 for l in &out {
                     writeln!(writer, "{l}")?;

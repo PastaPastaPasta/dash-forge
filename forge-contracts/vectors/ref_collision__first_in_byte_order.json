@@ -1,0 +1,18 @@
+{
+  "name": "first_in_byte_order",
+  "description": "Two collisions: the first in byte order is named, so every client names the same ref.",
+  "case": "ref_collision",
+  "rules": "v2",
+  "input": {
+    "existing": [
+      "refs/heads/a/z",
+      "refs/heads/a/b",
+      "refs/heads/A"
+    ],
+    "name": "refs/heads/a"
+  },
+  "expected": {
+    "collision": "refs/heads/A",
+    "reason": "refs/heads/A exists and differs only in letter case"
+  }
+}

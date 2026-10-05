@@ -75,6 +75,14 @@ check "remote origin = ${REMOTE}" assert_eq "$REMOTE" "$(git -C "$SRC" remote ge
 check "repo-local dash.storage = ${PROFILE}" assert_eq "$PROFILE" "$(git -C "$SRC" config --local dash.storage)"
 check "main tracks origin/main" assert_eq "origin/main" "$(git -C "$SRC" rev-parse --abbrev-ref 'main@{u}')"
 
+step "the new repository protects main and every tag (the default; --no-protect opts out)"
+if dg_read_retry "$ID_OWNER" "$LOG-protect.json" "$LOG-protect.err" --json repo protect list "${E2E_OWNER_ID}/${NAME}"; then
+  check "protected: main and every tag" assert_eq '["refs/heads/main", "refs/tags/**"]' \
+    "$(jq_py "$LOG-protect.json" 'json.dumps(d["protectedPatterns"])')"
+else
+  cat "$LOG-protect.err" >&2; bad "dg repo protect list failed"
+fi
+
 step "a second dg init changes nothing"
 if _retry "$LOG-init2.err" _init "$LOG-init2" --json; then
   check "status exists" assert_eq "exists" "$(jq_py "$LOG-init2.out" 'd["status"]')"

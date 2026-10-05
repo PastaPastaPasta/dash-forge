@@ -55,6 +55,7 @@ Maintainers change a repository's settings from the CLI or from **Settings** in 
 
 ```sh
 dg repo protect add    <owner>/<repo> main              # or a glob: 'release/*', 'refs/tags/v*'
+dg repo protect defaults <owner>/<repo>                  # the default branch and every tag
 dg repo protect remove <owner>/<repo> main
 dg repo protect list   <owner>/<repo>
 dg repo edit <owner>/<repo> --default-branch trunk       # maintainers
@@ -67,7 +68,7 @@ dg repo unarchive <owner>/<repo>
 
 What each one enforces:
 
-- **Protected branches** are enforced by Platform. A ref matching a pattern moves only through a maintainer-only document; a writer's push is refused ([`E601`](../errors.md#e601)), and a plain update of a protected ref is ignored by every reader. A bare name means `refs/heads/<name>`; `*` stays within one path segment and `**` crosses segments. Up to 8 patterns.
+- **Protected branches** are enforced by Platform. A ref matching a pattern moves only through a maintainer-only document; a writer's push is refused ([`E601`](../errors.md#e601)), and a plain update of a protected ref is ignored by every reader. A bare name means `refs/heads/<name>`; `*` stays within one path segment and `**` crosses segments. `refs/tags/**` covers every tag. Up to 8 patterns. A new repository protects its default branch and every tag (`refs/tags/**`) unless its creator opts out (`dg repo create --no-protect`, or the checkbox on the web's **New repository** form), so a release tag cannot be moved by a writer. Forks and mirrors start unprotected. For an older repository, **Settings → Branches** offers the same protection in one click, and `dg repo protect defaults` adds it from the CLI.
 - **The default branch** is what a clone checks out and what the web opens on.
 - **The branch policy** is a client rule. Every Forge client applies it: the web disables the merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). The PR author's own approval never counts. When the policy requires approvals, a request for changes from a maintainer or writer whose approval would count blocks the merge, as on GitHub, until they approve or the review is dismissed. A maintainer can bypass it, as on GitHub: tick "bypass rules" in the merge box and confirm, or pass `dg pr merge --override-policy`. The code is really merged, and an event on the PR records which rules were bypassed. Unlike a comment, the event cannot be edited or deleted, by the maintainer who bypassed or anyone else. Nothing on Platform requires approvals.
 - **Mark as merged (done elsewhere)** records a merge that already happened some other way (a push). It moves no code, so the web offers it only once the PR's head is on the base branch (`dg pr merge --event-only`).
@@ -299,6 +300,14 @@ dg search repos  forge                       # name prefix; or topic:rust, owner
 ## Pull requests
 
 A pull request is a `patch` document in the **base** repository. It points at the commit you want merged and at the repository that holds that commit (`sourceRepoId`): the base itself, or a fork. The code itself lives in that repository, not in the PR.
+
+### Pushing branches
+
+`git push` to `dash://` works as it does with any git server, with three differences worth knowing:
+
+- **Rewriting a branch.** After a rebase or an amend, push with `git push --force-with-lease`. It overwrites the branch only if it still points where you last fetched it when the push starts, so you don't drop commits someone pushed since. If the branch has moved, the push is rejected as `stale info`: fetch, look, then push again. If someone else's push lands while yours is being written, neither replaces the other: git reports yours as rejected and the branch shows both until one of you pushes again. `git push --force` overwrites without that check.
+- **No atomic pushes.** Each branch and tag is a separate Platform write, so `git push --atomic` is refused: some refs could land while another fails. Push without it. git reports each ref, and you can push a failed one again.
+- **Names git cannot hold side by side.** A new branch or tag is refused when a ref already uses its name as a folder or as a file (`feature` and `feature/x`), or differs from it only in letter case (`Fix` and `fix`, which are the same file on macOS and Windows). The web's **New branch** refuses the same names.
 
 ### The flow
 

@@ -47,6 +47,7 @@ use crate::git::{names_missing_object, LocalRepo, ScratchRepo};
 use crate::options::OptionState;
 use crate::policy::{self, PushPolicy};
 use crate::progress::{self, Charge, PlanFacts, PlatformWrites, Progress};
+use crate::secret_scan;
 use crate::url::DashUrl;
 
 /// Packs downloaded concurrently by a fetch — the same window the platform backend
@@ -273,6 +274,9 @@ impl Helper {
     /// into the local odb. Full clone indexes the self-contained packs directly; a
     /// `--filter` partial clone re-packs through a scratch repo and writes `.promisor`.
     pub async fn fetch(&mut self, wants: &[Want], options: &OptionState) -> Result<()> {
+        // The sealed-object ledger, created empty on a clone or a fetch into a repository with
+        // no refs ([`crate::ledger`]).
+        crate::ledger::ensure_for_new_clone(options.cloning);
         // The local git odb is the cache — never re-download objects git already has
         // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
         // already present locally there is nothing to transfer. (A promisor fetch still
@@ -479,7 +483,11 @@ impl Helper {
             specs
         };
 
-        let mut planned = plan_pushes(specs, &remote_refs);
+        let mut planned = plan_pushes(specs, &remote_refs, options);
+        // Before anything is built, signed or stored: a public push publishes for good.
+        if conn.repo.visibility == forge_core::rules::v2::Visibility::Public {
+            check_secrets(conn, &mut planned, &remote_refs, options).await;
+        }
         let progress = Progress::new(options.verbosity);
         let balance_before = conn.identity().balance();
         let mut est_credits = push_fees::estimate_ref_updates(
@@ -1206,6 +1214,11 @@ fn packs_to_fetch(
 /// landed and others did not, the ones that did not are rejected in `planned`, so the push
 /// goes on to its read-back, reports each ref to git and syncs the PRs of the refs that
 /// moved; when none landed, the first failure is the push's error.
+///
+/// A new ref that only fits because this push deletes a ref it collides with (`feature`
+/// deleted, `feature/x` created) is written after that deletion landed, and refused when it
+/// did not: written together, a failed deletion would leave both refs live. So when a push
+/// has such a ref, its deletions are written first, on their own.
 async fn write_ref_updates(
     svc: &RepoService<'_>,
     repo: &RepoRef,
@@ -1215,6 +1228,75 @@ async fn write_ref_updates(
     let accepted: Vec<usize> = (0..planned.len())
         .filter(|&i| planned[i].reject.is_none())
         .collect();
+    let gated = gated_creations(planned, &accepted);
+    if gated.is_empty() {
+        return write_batch(svc, repo, planned, &accepted, progress, false).await;
+    }
+    let (deletions, rest): (Vec<usize>, Vec<usize>) = accepted
+        .iter()
+        .partition(|&&i| planned[i].new_oid.is_none());
+    // Deletions that all failed reject the new refs that waited on them; the push's other
+    // refs are still written, and it fails as a whole only when none of them lands either.
+    let mut failed = None;
+    if let Err(e) = write_batch(svc, repo, planned, &deletions, progress, false).await {
+        for &d in &deletions {
+            planned[d].reject = Some(format!("ref update failed: {e:#}"));
+        }
+        failed = Some(e);
+    }
+    for (i, needs) in gated {
+        if let Some(&d) = needs.iter().find(|&&d| planned[d].reject.is_some()) {
+            planned[i].reject = Some(format!(
+                "not written: deleting {} failed, and git cannot hold both names",
+                planned[d].spec.dst
+            ));
+        }
+    }
+    let rest: Vec<usize> = rest
+        .into_iter()
+        .filter(|&i| planned[i].reject.is_none())
+        .collect();
+    match (rest.is_empty(), failed) {
+        (true, None) => Ok(()),
+        (true, Some(e)) => Err(e),
+        (false, failed) => write_batch(svc, repo, planned, &rest, progress, failed.is_none()).await,
+    }
+}
+
+/// Each accepted new ref (`planned[i]`) that collides with refs this push deletes, with those
+/// deletions: it may be written only once they all landed.
+fn gated_creations(planned: &[Planned], accepted: &[usize]) -> Vec<(usize, Vec<usize>)> {
+    use forge_core::rules::ref_collision::ref_collision;
+    let deletions: Vec<usize> = accepted
+        .iter()
+        .copied()
+        .filter(|&d| planned[d].new_oid.is_none())
+        .collect();
+    accepted
+        .iter()
+        .copied()
+        .filter(|&i| planned[i].new_oid.is_some() && planned[i].prev_oid.is_none())
+        .filter_map(|i| {
+            let dst = planned[i].spec.dst.as_str();
+            let needs: Vec<usize> = deletions
+                .iter()
+                .copied()
+                .filter(|&d| ref_collision([planned[d].spec.dst.as_str()], dst).is_some())
+                .collect();
+            (!needs.is_empty()).then_some((i, needs))
+        })
+        .collect()
+}
+
+/// Write `planned[accepted[..]]` in one batch and settle it ([`settle_ref_writes`]).
+async fn write_batch(
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    planned: &mut [Planned],
+    accepted: &[usize],
+    progress: Progress,
+    landed_before: bool,
+) -> Result<()> {
     let writes = accepted
         .iter()
         .map(|&i| {
@@ -1230,8 +1312,8 @@ async fn write_ref_updates(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    // Test affordance, compiled only with `--features test-hooks`: fail after `n` ref updates
-    // landed, the state a push that dies part-way leaves behind (e2e scenario 32).
+    // Test affordance, compiled only with `--features test-hooks`: fail after `n` ref updates of
+    // a batch landed, the state a push that dies part-way leaves behind (e2e scenario 32).
     #[cfg(feature = "test-hooks")]
     let fail_after = std::env::var("DASH_FORGE_FAIL_AFTER_REFS")
         .ok()
@@ -1250,26 +1332,39 @@ async fn write_ref_updates(
             let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
             progress.emit(&text, &event);
         })
-        .await?
+        .await
+    };
+    // After an earlier batch landed, a batch that fails before writing (a config read) must not
+    // hide what is on chain: its refs are rejected and the push goes on to its read-back.
+    let results = match results {
+        Ok(results) => results,
+        Err(e) if landed_before => {
+            for &i in accepted {
+                planned[i].reject = Some(format!("ref update failed: {e}"));
+            }
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
     };
     #[cfg(feature = "test-hooks")]
     if let Some(written) = fail_after {
         bail!("simulated failure after {written} ref update(s) (DASH_FORGE_FAIL_AFTER_REFS)");
     }
-    settle_ref_writes(planned, &accepted, results)
+    settle_ref_writes(planned, accepted, results, landed_before)
 }
 
 /// Fold a batch's per-ref `results` (for `planned[accepted[i]]`, in order; shorter when a
-/// sequential write stopped at its failure) into the plan. Nothing landed: the first failure
-/// is the error (a whole-push failure, classified for the user as before). Some landed: each
-/// ref that failed, or was not attempted after a failure, is rejected with its reason, and
-/// the push goes on for the rest.
+/// sequential write stopped at its failure) into the plan. Nothing landed, in this batch or an
+/// earlier one of the push (`landed_before`): the first failure is the error (a whole-push
+/// failure, classified for the user as before). Some landed: each ref that failed, or was not
+/// attempted after a failure, is rejected with its reason, and the push goes on for the rest.
 fn settle_ref_writes(
     planned: &mut [Planned],
     accepted: &[usize],
     results: Vec<forge_core::Result<String>>,
+    landed_before: bool,
 ) -> Result<()> {
-    if !results.iter().any(Result::is_ok) {
+    if !landed_before && !results.iter().any(Result::is_ok) {
         let failed = accepted
             .iter()
             .zip(results)
@@ -1387,15 +1482,49 @@ struct Planned {
 
 /// Decide accept/reject for every refspec up front (no writes): deletions and new refs are
 /// accepted; an update is accepted iff forced, a no-op, or a fast-forward — otherwise
-/// rejected as `non-fast-forward` (§2.3 / PRD 02).
-fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Planned> {
+/// rejected as `non-fast-forward` (§2.3 / PRD 02). A `--force-with-lease` expectation
+/// ([`OptionState::lease`]) accepts any update while the ref still points where the lease
+/// says, and rejects it as `stale info` (git's words) otherwise. A new ref that git clients could
+/// not hold next to an existing one (`feature` and `feature/x`, or `Foo` and `foo`) is refused
+/// (`forge_core::rules::ref_collision`).
+fn plan_pushes(
+    specs: &[PushSpec],
+    remote_refs: &[(String, RefState)],
+    options: &OptionState,
+) -> Vec<Planned> {
     let mut planned = Vec::with_capacity(specs.len());
     for spec in specs {
         let prev = remote_tip(remote_refs, &spec.dst);
+        let lease = options.lease(&spec.dst);
+        // A lease that holds is written as a plain update naming the leased tip as its
+        // `prevOid`, which supersedes that tip without `force` (`resolve_ref`). Platform has no
+        // compare-and-swap, so an update that lands from elsewhere before this one is not
+        // overwritten: the ref reads as diverged and the read-back reports the push as lost. A
+        // ref that is already diverged takes a forced write, the only one that settles it.
+        let diverged = remote_refs
+            .iter()
+            .any(|(n, s)| n == &spec.dst && matches!(s, RefState::Diverged { .. }));
+        let spec = PushSpec {
+            force: if lease.is_some() {
+                diverged
+            } else {
+                spec.force
+            },
+            ..spec.clone()
+        };
+        if let Some(reject) = lease.and_then(|want| lease_reject(want, prev.as_deref())) {
+            planned.push(Planned {
+                spec,
+                new_oid: None,
+                prev_oid: prev,
+                reject: Some(reject),
+            });
+            continue;
+        }
         if spec.src.is_empty() {
             // Deletion.
             planned.push(Planned {
-                spec: spec.clone(),
+                spec,
                 new_oid: None,
                 prev_oid: prev,
                 reject: None,
@@ -1403,34 +1532,165 @@ fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Pl
             continue;
         }
         let Some(new_oid) = LocalRepo::rev_parse(&spec.src) else {
+            let reject = Some(format!("cannot resolve local source {:?}", spec.src));
             planned.push(Planned {
-                spec: spec.clone(),
+                spec,
                 new_oid: None,
                 prev_oid: prev,
-                reject: Some(format!("cannot resolve local source {:?}", spec.src)),
+                reject,
             });
             continue;
         };
-        let reject = match &prev {
-            None => None, // new ref
-            Some(tip) => {
-                let fast_forward =
-                    spec.force || tip == &new_oid || LocalRepo::is_ancestor(tip, &new_oid);
-                if fast_forward {
-                    None
-                } else {
-                    Some("non-fast-forward".to_string())
-                }
-            }
-        };
+        let reject = prev.as_ref().and_then(|tip| {
+            let fast_forward = spec.force
+                || lease.is_some()
+                || tip == &new_oid
+                || LocalRepo::is_ancestor(tip, &new_oid);
+            (!fast_forward).then(|| "non-fast-forward".to_string())
+        });
         planned.push(Planned {
-            spec: spec.clone(),
+            spec,
             new_oid: Some(new_oid),
             prev_oid: prev,
             reject,
         });
     }
+    reject_collisions(&mut planned, remote_refs);
     planned
+}
+
+/// The secret scan of a public push ([`secret_scan`]): prints its warnings, and refuses (E807)
+/// each ref whose new commits add a likely secret nothing allows. When the full scan cannot run
+/// (git failed), the name-only check still refuses a new `.env`; when that fails too, the push
+/// goes ahead with a warning: the scan is a safety net, and a broken one must not block every
+/// push.
+async fn check_secrets(
+    conn: &Conn,
+    planned: &mut [Planned],
+    remote_refs: &[(String, RefState)],
+    options: &OptionState,
+) {
+    let tips: Vec<secret_scan::Tip> = planned
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.reject.is_none())
+        .filter_map(|(index, p)| {
+            p.new_oid.clone().map(|oid| secret_scan::Tip {
+                index,
+                oid,
+                name: p.spec.dst.clone(),
+            })
+        })
+        .collect();
+    if tips.is_empty() {
+        return;
+    }
+    // Already public: only the remote's tips as Forge lists them. A remote-tracking ref is
+    // what this clone once fetched, not proof that it is still public.
+    let known: Vec<String> = remote_refs.iter().filter_map(|(_, s)| tip_oid(s)).collect();
+    let created_at_ms = forge_core::resolve::repo_created_at(&conn.client, &conn.repo)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read when the repo was created; every new commit counts as new");
+            None
+        });
+    let request = secret_scan::Request {
+        repo: None,
+        tips,
+        known,
+        created_at_ms,
+        mirror: secret_scan::spawned_by_import(),
+        allow: secret_scan::allow_from_options(options),
+    };
+    let progress = Progress {
+        enabled: true,
+        ..Progress::new(options.verbosity)
+    };
+    let scan = match secret_scan::scan(&request) {
+        Ok(scan) => scan,
+        Err(e) => {
+            let names_only = secret_scan::scan_names_only(&request);
+            let (text, outcome) = match &names_only {
+                Ok(_) => (
+                    "couldn't check this push's file contents for secrets; checked its .env files by name only",
+                    "names-only",
+                ),
+                Err(_) => (
+                    "couldn't check this push for secrets, pushing anyway",
+                    "skipped",
+                ),
+            };
+            progress.emit(
+                &format!("dash: warning: {text}: {e:#}"),
+                &serde_json::json!({
+                    "event": "secretScanFailed",
+                    "outcome": outcome,
+                    "message": forge_core::user_error::redact(&format!("{e:#}")),
+                }),
+            );
+            match names_only {
+                Ok(scan) => scan,
+                Err(_) => return,
+            }
+        }
+    };
+    scan.print_warnings(progress.json);
+    let refs: Vec<String> = scan
+        .refused
+        .iter()
+        .map(|&i| planned[i].spec.dst.clone())
+        .collect();
+    let Some(error) = scan.refusal(&refs) else {
+        return;
+    };
+    if !progress.json {
+        scan.print_refusals();
+    }
+    error.eprint("dash: ");
+    let mut event = error.to_json();
+    event["event"] = serde_json::json!("error");
+    progress::report(&event);
+    for &i in &scan.refused {
+        planned[i].reject = Some(secret_scan::WIRE.to_string());
+    }
+}
+
+/// A `--force-with-lease` that no longer holds: the ref is not where the lease expects (`want`,
+/// `""` for "must not exist"). git reports it as `stale info`.
+fn lease_reject(want: &str, prev: Option<&str>) -> Option<String> {
+    let holds = match prev {
+        None => want.is_empty(),
+        Some(p) => want.eq_ignore_ascii_case(p),
+    };
+    (!holds).then(|| "stale info".to_string())
+}
+
+/// Refuse each accepted new ref that git clients could not hold next to the refs there will be
+/// (`forge_core::rules::ref_collision`): the remote's live refs, less the ones this push deletes
+/// (an accepted deletion), plus the new refs accepted before it in this push.
+fn reject_collisions(planned: &mut [Planned], remote_refs: &[(String, RefState)]) {
+    use forge_core::rules::ref_collision::{collision_reason, ref_collision};
+    let deleted: std::collections::HashSet<&str> = planned
+        .iter()
+        .filter(|p| p.reject.is_none() && p.new_oid.is_none() && p.spec.src.is_empty())
+        .map(|p| p.spec.dst.as_str())
+        .collect();
+    let mut live: Vec<String> = remote_refs
+        .iter()
+        .filter(|(name, state)| tip_oid(state).is_some() && !deleted.contains(name.as_str()))
+        .map(|(name, _)| name.clone())
+        .collect();
+    for p in planned.iter_mut() {
+        let creates = p.reject.is_none() && p.new_oid.is_some() && p.prev_oid.is_none();
+        if !creates {
+            continue;
+        }
+        let dst = p.spec.dst.clone();
+        match ref_collision(live.iter().map(String::as_str), &dst) {
+            Some(existing) => p.reject = Some(collision_reason(&dst, &existing)),
+            None => live.push(dst),
+        }
+    }
 }
 
 /// What [`upload_push_pack`] needs from the push.
@@ -2529,7 +2789,7 @@ fn history_skipped(ctx: &PushContext<'_>, why: &str) {
 /// (`DASH_FORGE_SPAWNED_BY=forge-import`): a stray variable in a user's shell never picks the
 /// branch an index describes.
 fn default_branch_hint() -> Option<String> {
-    let spawned = std::env::var("DASH_FORGE_SPAWNED_BY").is_ok_and(|v| v == "forge-import");
+    let spawned = secret_scan::spawned_by_import();
     spawned
         .then(|| std::env::var("DASH_FORGE_DEFAULT_BRANCH").ok())
         .flatten()
@@ -2856,7 +3116,7 @@ fn archived_refusal(repo: &str) -> Denied {
             "ask a maintainer to run `dg repo unarchive {repo}`"
         ))
         .fix(format!(
-            "push anyway: `git push -o {ALLOW_ARCHIVED_PUSH_OPTION} …` (archiving is a client rule; consensus does not enforce it)"
+            "push anyway: `git push -o {ALLOW_ARCHIVED_PUSH_OPTION} …` (Forge apps enforce archiving, not Platform)"
         ))
         .note(NOTE_PRECHECK),
         wire: "repository archived",
@@ -3201,6 +3461,70 @@ mod tests {
     };
     use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
 
+    #[test]
+    fn a_lease_holds_only_where_the_ref_still_points() {
+        use super::lease_reject;
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        assert_eq!(lease_reject(&a, Some(&a)), None);
+        assert_eq!(lease_reject(&a, Some(&b)).as_deref(), Some("stale info"));
+        assert_eq!(lease_reject(&a, None).as_deref(), Some("stale info"));
+        assert_eq!(lease_reject("", None), None);
+        assert_eq!(lease_reject("", Some(&a)).as_deref(), Some("stale info"));
+    }
+
+    #[test]
+    fn a_new_ref_that_collides_is_refused_unless_this_push_deletes_the_other() {
+        use super::reject_collisions;
+        use forge_core::rules::RefState;
+        let live = RefState::Resolved {
+            oid: "a".repeat(40),
+            author: String::new(),
+            created_at: 0,
+        };
+        let refs = vec![("refs/heads/feature".to_string(), live)];
+        let delete = |dst: &str| Planned {
+            spec: PushSpec {
+                force: false,
+                src: String::new(),
+                dst: dst.into(),
+            },
+            new_oid: None,
+            prev_oid: Some("a".repeat(40)),
+            reject: None,
+        };
+        let rejects = |mut p: Vec<Planned>| {
+            reject_collisions(&mut p, &refs);
+            p.into_iter().map(|p| p.reject).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rejects(vec![planned("refs/heads/feature/x")]),
+            vec![Some(
+                "refs/heads/feature exists, so refs/heads/feature/x cannot be created under it"
+                    .to_string()
+            )]
+        );
+        assert_eq!(
+            rejects(vec![
+                delete("refs/heads/feature"),
+                planned("refs/heads/feature/x")
+            ]),
+            vec![None, None]
+        );
+        // A deletion the plan refused (a stale lease) does not clear the way.
+        let mut stale = delete("refs/heads/feature");
+        stale.reject = Some("stale info".into());
+        assert!(rejects(vec![stale, planned("refs/heads/feature/x")])[1].is_some());
+        // Two new refs of the same push collide with each other: the second is refused.
+        let r = rejects(vec![planned("refs/heads/a"), planned("refs/heads/A/b")]);
+        assert_eq!(r[0], None);
+        assert!(
+            r[1].as_deref()
+                .is_some_and(|w| w.contains("refs/heads/a exists")),
+            "{r:?}"
+        );
+    }
+
     fn planned(dst: &str) -> Planned {
         Planned {
             spec: PushSpec {
@@ -3236,6 +3560,7 @@ mod tests {
             &mut p,
             &[0, 1, 2],
             vec![Ok("1".into()), fail(), Ok("3".into())],
+            false,
         )
         .unwrap();
         let r = rejects(&p);
@@ -3247,7 +3572,7 @@ mod tests {
 
         // Sequential (private): a landed, b failed, c never attempted.
         let mut p = three();
-        settle_ref_writes(&mut p, &[0, 1, 2], vec![Ok("1".into()), fail()]).unwrap();
+        settle_ref_writes(&mut p, &[0, 1, 2], vec![Ok("1".into()), fail()], false).unwrap();
         let r = rejects(&p);
         assert!(r[0].is_none(), "{r:?}");
         assert!(r[1].as_deref().is_some_and(|w| w.contains("refused")));
@@ -3257,16 +3582,26 @@ mod tests {
 
         // Nothing landed: the first failure is the push's error, naming its ref.
         let mut p = three();
-        let err = settle_ref_writes(&mut p, &[0, 1, 2], vec![fail()]).unwrap_err();
+        let err = settle_ref_writes(&mut p, &[0, 1, 2], vec![fail()], false).unwrap_err();
         assert!(
             format!("{err:#}").contains("writing ref update for refs/heads/a"),
             "{err:#}"
         );
 
+        // Nothing landed in a batch written after one that did: each ref is rejected instead.
+        let mut p = three();
+        settle_ref_writes(&mut p, &[1, 2], vec![fail()], true).unwrap();
+        let r = rejects(&p);
+        assert!(r[0].is_none(), "{r:?}");
+        assert!(r[1].as_deref().is_some_and(|w| w.contains("refused")));
+        assert!(r[2]
+            .as_deref()
+            .is_some_and(|w| w.contains("earlier ref update")));
+
         // An already-rejected spec is not in `accepted` and keeps its own reason.
         let mut p = three();
         p[0].reject = Some("non-fast-forward".into());
-        settle_ref_writes(&mut p, &[1, 2], vec![Ok("2".into()), fail()]).unwrap();
+        settle_ref_writes(&mut p, &[1, 2], vec![Ok("2".into()), fail()], false).unwrap();
         assert_eq!(p[0].reject.as_deref(), Some("non-fast-forward"));
         assert!(p[1].reject.is_none() && p[2].reject.is_some());
 
@@ -3276,9 +3611,41 @@ mod tests {
             &mut p,
             &[0, 1, 2],
             vec![Ok("1".into()), Ok("2".into()), Ok("3".into())],
+            false,
         )
         .unwrap();
         assert!(rejects(&p).iter().all(Option::is_none));
+    }
+
+    /// CodeRabbit (PR #377): a new ref that only fits because the push deletes a ref it
+    /// collides with waits for that deletion; other refs, and a new ref with no such
+    /// collision, do not.
+    #[test]
+    fn a_new_ref_waits_for_the_deletion_that_makes_room_for_it() {
+        use super::gated_creations;
+        let deletion = |dst: &str| Planned {
+            spec: PushSpec {
+                force: false,
+                src: String::new(),
+                dst: dst.into(),
+            },
+            new_oid: None,
+            prev_oid: Some("2".repeat(40)),
+            reject: None,
+        };
+        let p = vec![
+            deletion("refs/heads/feature"),
+            planned("refs/heads/feature/x"),
+            planned("refs/heads/other"),
+            deletion("refs/heads/old"),
+            planned("refs/heads/FEATURE"),
+        ];
+        assert_eq!(
+            gated_creations(&p, &[0, 1, 2, 3, 4]),
+            vec![(1, vec![0]), (4, vec![0])]
+        );
+        // A deletion the plan refused is not accepted, so nothing waits on it.
+        assert!(gated_creations(&p, &[1, 2, 3, 4]).is_empty());
     }
     use forge_core::network::NetworkSettings;
     use forge_core::user_error::{codes, UserError};
