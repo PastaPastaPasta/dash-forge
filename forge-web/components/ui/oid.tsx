@@ -4,15 +4,18 @@
  * Oid — a git object id / hash / identity id rendered as a struck-metal serial: monospace,
  * 7-char abbreviated, click-to-copy the full value. The signature treatment of identifiers
  * throughout the forge (style guide: "OIDs always mono, 7-char abbreviated, click-to-copy").
+ *
+ * A Platform id (an identity, document or contract id) shows both ends instead ({@link shortId}):
+ * its prefix alone can be ground to match someone else's.
  */
 
 import { Check, Copy } from 'lucide-react'
 import { useState } from 'react'
-import { cn } from '@/lib/utils'
+import { cn, isIdentityId, shortId } from '@/lib/utils'
 
 export interface OidProps {
   value: string
-  /** Abbreviation length (default 7). */
+  /** Abbreviation length of a hash (default 7); a Platform id always shows its first 7 and last 5. */
   chars?: number
   /** Show the copy affordance (default true). */
   copyable?: boolean
@@ -23,7 +26,7 @@ export interface OidProps {
 
 export function Oid({ value, chars = 7, copyable = true, label, className }: OidProps): JSX.Element {
   const [copied, setCopied] = useState(false)
-  const shown = value.length > chars ? value.slice(0, chars) : value
+  const shown = isIdentityId(value) ? shortId(value) : value.length > chars ? value.slice(0, chars) : value
 
   const copy = async (): Promise<void> => {
     try {

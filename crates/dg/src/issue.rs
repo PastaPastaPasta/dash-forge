@@ -722,8 +722,9 @@ fn timeline<'a>(
 fn empty_issues_line(args: &IssueListArgs, total: usize, pages: usize) -> String {
     if total > 0 {
         return format!(
-            "page {} is past the last page ({pages}) of {total} issue(s)",
-            args.page
+            "page {} is past the last page ({pages}) of {}",
+            args.page,
+            crate::fmt::plural(total, "issue")
         );
     }
     let filtered = !args.labels.is_empty()
@@ -1359,8 +1360,9 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
         .map(|n| crate::quote::event(n.len() as u64, false))
         .sum();
     ctx.confirm_or_cancel(&format!(
-        "{} label(s) {} on issue #{number}? (one event each, {}; members only)",
+        "{} {} {} on issue #{number}? (one event each, {}; members only)",
         if add { "Add" } else { "Remove" },
+        if names.len() == 1 { "label" } else { "labels" },
         names.join(", "),
         cost_line(quote, ctx.usd_price())
     ))?;

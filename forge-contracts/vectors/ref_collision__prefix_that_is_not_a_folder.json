@@ -1,0 +1,16 @@
+{
+  "name": "prefix_that_is_not_a_folder",
+  "description": "refs/heads/feature and refs/heads/featured share a prefix but not a folder.",
+  "case": "ref_collision",
+  "rules": "v2",
+  "input": {
+    "existing": [
+      "refs/heads/feature"
+    ],
+    "name": "refs/heads/featured"
+  },
+  "expected": {
+    "collision": null,
+    "reason": null
+  }
+}

@@ -17,6 +17,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
+import { shortId } from '../utils'
 
 import { ACTIVE_NETWORK, CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
 import { keepIndexRange, loadIndexArtifact, storedIndexArtifact, storedIndexRanges } from './index-cache'
@@ -1100,7 +1101,7 @@ export async function loadArtifactBytesProgress(
     try {
       const bytes = await open(copy)
       if (verified(copy, bytes)) return bytes
-      failures.push(new Error(`copy ${copy.documentId.slice(0, 8)}… does not hash to the pack`))
+      failures.push(new Error(`copy ${shortId(copy.documentId)} does not hash to the pack`))
     } catch (e) {
       // A cancelled load stops here: the next copy is not tried.
       if (cancel?.aborted) throw e

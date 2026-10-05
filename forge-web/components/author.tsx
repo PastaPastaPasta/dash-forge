@@ -7,24 +7,22 @@
  */
 
 import Link from 'next/link'
-import { IdentityPill, type TokenRole } from '@/components/ui/identity-pill'
+import { IdentityPill } from '@/components/ui/identity-pill'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { identityHref } from '@/lib/view/profile-links'
 
 export function Author({
   identityId,
-  role,
   link = true,
   className,
 }: {
   identityId: string
-  role?: TokenRole
   link?: boolean
   className?: string
 }): JSX.Element {
   const name = useDpnsName(identityId)
 
-  const pill = <IdentityPill identityId={identityId} name={name} role={role} className={className} />
+  const pill = <IdentityPill identityId={identityId} name={name} className={className} />
   if (!link) return pill
   return (
     <Link href={identityHref(identityId)} className="hit-area inline-flex min-w-0 max-w-full rounded-full">
