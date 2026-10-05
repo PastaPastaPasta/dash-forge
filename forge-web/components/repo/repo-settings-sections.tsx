@@ -551,10 +551,10 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
   const what = branch !== null && tags ? `${branch} and tags` : (branch ?? 'tags')
   const exposure =
     branch !== null && tags
-      ? `Any writer can push to ${branch} and create or move tags, including the tags your releases point to.`
+      ? `Any writer can push to ${branch} and create or move tags that no pattern protects yet.`
       : branch !== null
         ? `Any writer can push to ${branch}.`
-        : 'Any writer can create or move tags, including the tags your releases point to.'
+        : 'Any writer can create or move tags that no pattern protects yet.'
   const tooMany = patternsProblem([...cfg.current.protectedPatterns, ...missing])
   const dismiss = (): void => {
     window.localStorage.setItem(key, '1')

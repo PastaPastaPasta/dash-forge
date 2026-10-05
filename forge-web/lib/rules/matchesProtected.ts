@@ -39,19 +39,23 @@ export function defaultProtectedPatterns(defaultBranch: string): string[] {
   return [`refs/heads/${short}`, ALL_TAGS_PATTERN]
 }
 
-/** Tag names unlike each other in their first character, shape and depth (see {@link missingDefaultProtection}). */
-const TAG_PROBES = ['refs/tags/v1.0.0', 'refs/tags/1.0', 'refs/tags/release-2', 'refs/tags/Z_9', 'refs/tags/a/b/c'] as const
+/**
+ * The patterns that cover every tag (see {@link missingDefaultProtection}). A list, not a test
+ * against sample tags: a glob can match any finite sample and still miss a tag (one that
+ * excludes names starting with `q` misses `q1`).
+ */
+const ALL_TAG_PATTERNS: readonly string[] = ['refs/tags/**', 'refs/**', '**']
 
 /**
  * What of the default protection `patterns` leave uncovered on a repository whose default branch
  * is `defaultBranch`: the default patterns still needed, empty when existing patterns cover both
- * the branch and every tag. Every tag counts as covered only when one pattern matches a set of
- * unlike tag names (`refs/tags/**`, `refs/**`): `refs/tags/*` misses nested tags and
- * `refs/tags/v*` misses `1.0`, so either still needs `refs/tags/**`. Parity: forge-core
+ * the branch and every tag. Every tag counts as covered only by a pattern that names them all
+ * (`refs/tags/**`, `refs/**`, `**`): `refs/tags/*` misses nested tags and `refs/tags/v*` misses
+ * `1.0`, so either still needs `refs/tags/**`. Parity: forge-core
  * `rules::missing_default_protection` (vectors `missing_default_protection__*`).
  */
 export function missingDefaultProtection(defaultBranch: string, patterns: readonly string[]): string[] {
-  const allTags = patterns.some((p) => TAG_PROBES.every((t) => matchesProtected(t, [p])))
+  const allTags = patterns.some((p) => ALL_TAG_PATTERNS.includes(p))
   return defaultProtectedPatterns(defaultBranch).filter((d) => (d === ALL_TAGS_PATTERN ? !allTags : !matchesProtected(d, patterns)))
 }
 

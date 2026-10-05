@@ -62,6 +62,7 @@ import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
 import { WRITER_ROLE_CODE, grantableRoles } from '../rules/roles'
 import { repoSource } from './source'
+import { MAX_PATTERN_CHARS } from './settings'
 import { starShape } from './star-shape'
 import { writeLock, writeTransition, type StateTarget } from './transitions'
 import { LAG_RETRY_MS, retryAfterLag } from './lag-retry'
@@ -1331,6 +1332,11 @@ export function checkRepoInput(input: CreateRepoInput): void {
     throw new Error(`${JSON.stringify(input.defaultBranch)} is not a branch name git accepts.`)
   }
   if (input.visibility === 'private' && input.forkOf !== undefined) throw new Error('a fork is public: a private repository cannot be a fork')
+  // The first config's patterns, checked before the repo and its maintainer are written:
+  // `refs/heads/<branch>` can outgrow a pattern's 100 characters.
+  if (createPatterns(input).some((p) => [...p].length > MAX_PATTERN_CHARS)) {
+    throw new Error(`The default branch name is too long to protect (a protected pattern is at most ${MAX_PATTERN_CHARS} characters). Choose a shorter one, or create the repository unprotected.`)
+  }
 }
 
 function journalKey(network: Network, ownerId: string, name: string): string {

@@ -882,30 +882,23 @@ pub fn routes_protected(
     }
 }
 
-/// Tag names unlike each other in their first character, shape and depth: one pattern that
-/// matches all of them is taken to cover every tag ([`missing_default_protection`]).
-const TAG_PROBES: [&str; 5] = [
-    "refs/tags/v1.0.0",
-    "refs/tags/1.0",
-    "refs/tags/release-2",
-    "refs/tags/Z_9",
-    "refs/tags/a/b/c",
-];
+/// The patterns that cover every tag ([`missing_default_protection`]). A list, not a test
+/// against sample tags: a glob can match any finite sample and still miss a tag
+/// (`refs/tags/**/[!q]*` misses `q1`).
+const ALL_TAG_PATTERNS: [&str; 3] = ["refs/tags/**", "refs/**", "**"];
 
 /// What of the default protection `patterns` leave uncovered on a repository whose default
 /// branch is `default_branch`: the default patterns still needed, empty when existing patterns
-/// cover both the branch and every tag. Every tag counts as covered only when one pattern matches
-/// a set of unlike tag names (`refs/tags/**`, `refs/**`): `refs/tags/*` misses nested tags and
-/// `refs/tags/v*` misses `1.0`, so either still needs `refs/tags/**`. Parity:
+/// cover both the branch and every tag. Every tag counts as covered only by a pattern that names
+/// them all (`refs/tags/**`, `refs/**`, `**`): `refs/tags/*` misses nested tags and `refs/tags/v*`
+/// misses `1.0`, so either still needs `refs/tags/**`. Parity:
 /// `missingDefaultProtection` in `forge-web/lib/rules/matchesProtected.ts` (vectors
 /// `missing_default_protection__*`).
 #[must_use]
 pub fn missing_default_protection(default_branch: &str, patterns: &[String]) -> Vec<String> {
-    let all_tags = patterns.iter().any(|p| {
-        TAG_PROBES
-            .iter()
-            .all(|t| matches_protected(t, std::slice::from_ref(p)))
-    });
+    let all_tags = patterns
+        .iter()
+        .any(|p| ALL_TAG_PATTERNS.contains(&p.as_str()));
     default_protected_patterns(default_branch)
         .into_iter()
         .filter(|d| {
