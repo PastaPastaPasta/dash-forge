@@ -266,10 +266,11 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
     let view = collab.patch_view(handle, p).await?;
     let merge_oid = require_revertable(&view, repo, number)?;
     let base_ref = view.merge_base.ref_name.clone();
+    let short_base = forge_core::repo::short_branch_name(&base_ref).to_string();
     let Some(base_tip) = view.base_tip.clone() else {
         return Err(refusal(
             codes::NOT_FOUND,
-            format!("the base branch {} has been deleted", safe(&base_ref)),
+            format!("the base branch {} has been deleted", safe(&short_base)),
             "a revert is opened as a pull request into the branch the PR merged into",
         )
         .into());
@@ -337,7 +338,7 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
     let dir = scratch.path();
     steps.ok(
         "fetch",
-        format!("{} at {}", safe(&base_ref), short(&base_tip)),
+        format!("{} at {}", safe(&short_base), short(&base_tip)),
     );
     if !git::has_object(dir, &merge_oid) {
         return Err(refusal(
@@ -345,7 +346,7 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
             format!(
                 "the merge commit {} is not in {}'s history any more",
                 short(&merge_oid),
-                safe(&base_ref)
+                safe(&short_base)
             ),
             "the base branch was rewritten after the merge, so its commit could not be fetched",
         )
@@ -360,7 +361,7 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
             format!(
                 "the merge {} is no longer in {}",
                 short(&merge_oid),
-                safe(&base_ref)
+                safe(&short_base)
             ),
             "the base branch was rewritten after the merge, so there is nothing of it to undo there",
         )
@@ -399,7 +400,7 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
         Err(paths) => {
             let mut cause = format!(
                 "{} has changed since the merge, and undoing it conflicts",
-                safe(&base_ref)
+                safe(&short_base)
             );
             if !paths.is_empty() {
                 cause.push_str(" in ");
@@ -407,12 +408,12 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
             }
             return Err(UserError::new(
                 codes::MERGE_CONFLICT,
-                format!("revert failed: PR #{number} does not revert cleanly onto {}", safe(&base_ref)),
+                format!("revert failed: PR #{number} does not revert cleanly onto {}", safe(&short_base)),
             )
             .cause(cause)
             .fix(format!(
                 "revert it by hand in a clone: fetch {}, run `git revert{} {merge_oid}`, resolve the conflicts, push a branch and open a PR with `dg pr create`",
-                safe(&base_ref),
+                safe(&short_base),
                 if inv.landed == Landed::MergeCommit { " -m 1" } else { "" }
             ))
             .note("nothing was pushed or written")
@@ -423,7 +424,7 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
     if tree == tip_tree {
         return Err(refusal(
             codes::REJECTED,
-            format!("{} no longer has PR #{number}'s changes", safe(&base_ref)),
+            format!("{} no longer has PR #{number}'s changes", safe(&short_base)),
             "undoing the merge changes nothing: it was reverted or overwritten since",
         )
         .into());
@@ -456,7 +457,7 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
             safe(&title),
             handle.display(),
             short(&commit),
-            safe(&base_ref)
+            safe(&short_base)
         );
     }
     ctx.confirm_or_cancel(&format!(
