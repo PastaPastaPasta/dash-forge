@@ -270,38 +270,72 @@ impl Policy {
 }
 
 /// How far the approvals are from a policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyStatus {
-    /// `have >= need`.
+    /// `have >= need`, and no approver's standing request for changes blocks the merge.
     pub met: bool,
     /// Approvers whose **current** role satisfies `approver_role`.
     pub have: u32,
     /// `required_approvals`.
     pub need: u32,
+    /// Reviewers whose standing request for changes blocks the merge (sorted): when the policy
+    /// requires approvals, a request for changes from someone whose approval would count
+    /// blocks it, as on GitHub, until they approve or it is dismissed (event kind 15).
+    #[serde(default)]
+    pub blocked_by: Vec<String>,
+}
+
+impl PolicyStatus {
+    /// Met with nothing required: what only the policy's merge methods are judged against.
+    #[must_use]
+    pub fn nothing_required() -> Self {
+        Self {
+            met: true,
+            have: 0,
+            need: 0,
+            blocked_by: Vec::new(),
+        }
+    }
+
+    /// The approvals are short of `need` (a block by a request for changes aside).
+    #[must_use]
+    pub fn short(&self) -> bool {
+        self.have < self.need
+    }
 }
 
 /// Whether `approvals` (from [`super::v2::count_approvals`] on the current head, dismissed
 /// reviews and the PR author's own reviews excluded) meet `policy`. An approver counts when their current role satisfies
 /// `approver_role` (0: a maintainer or role-1 writer, never triage or reader; 1: maintainer
-/// only). A client rule for the merge box, never consensus.
+/// only). When the policy requires approvals, a standing request for changes from a reviewer
+/// whose approval would count blocks it (`blocked_by`). A client rule for the merge box, never
+/// consensus.
 #[must_use]
 pub fn meets_policy(approvals: &Approvals, oracle: &RoleOracle, policy: &Policy) -> PolicyStatus {
-    let have = approvals
-        .approvers
-        .iter()
-        .filter(|a| match oracle.current_role(a) {
-            Some(Role::Maintainer) => true,
-            Some(Role::Writer) => policy.approver_role == 0,
-            // Never approvers: their verdicts are shown, not counted.
-            Some(Role::Triage | Role::Reader) | None => false,
-        })
-        .count();
+    let counts = |a: &String| match oracle.current_role(a) {
+        Some(Role::Maintainer) => true,
+        Some(Role::Writer) => policy.approver_role == 0,
+        // Never approvers: their verdicts are shown, not counted.
+        Some(Role::Triage | Role::Reader) | None => false,
+    };
+    let have = approvals.approvers.iter().filter(|a| counts(a)).count();
     let have = u32::try_from(have).unwrap_or(u32::MAX);
+    let blocked_by: Vec<String> = if policy.required_approvals == 0 {
+        Vec::new()
+    } else {
+        approvals
+            .changes_requested
+            .iter()
+            .filter(|a| counts(a))
+            .cloned()
+            .collect()
+    };
     PolicyStatus {
-        met: have >= policy.required_approvals,
+        met: have >= policy.required_approvals && blocked_by.is_empty(),
         have,
         need: policy.required_approvals,
+        blocked_by,
     }
 }
 

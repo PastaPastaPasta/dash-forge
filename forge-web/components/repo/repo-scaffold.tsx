@@ -26,12 +26,14 @@ import { RepoNotFound } from '@/components/repo/repo-not-found'
 import { failedRows, selectRef, type RepoHome, type RepoHomeRefs, type SelectedRef } from '@/lib/view'
 import { useRepoTrust } from '@/hooks/use-repo-trust'
 import { TrustFailureBanner } from '@/components/ui/trust-alert'
+import { TrustPanel } from '@/components/ui/trust-panel'
 import { repoHref, useExpiredLink, type RepoAddress } from '@/hooks/use-query-param'
 
 export function RepoScaffold({
   addr,
   children,
   rail = true,
+  verification = false,
   refParam = '',
   sealedOk = false,
   browse = false,
@@ -41,6 +43,11 @@ export function RepoScaffold({
   /** The page body; `reload` re-reads the repo home (after a write that changes it). */
   children: (home: RepoHome, reload: () => void) => ReactNode
   rail?: boolean
+  /**
+   * With no rail: lead the page with the rail's Verification card, collapsed to one line (code
+   * pages give the width to the code and keep the card).
+   */
+  verification?: boolean
   /** The `?ref=` selection of a ref-aware route — the rail's assay attests this ref's tip. */
   refParam?: string
   /**
@@ -182,10 +189,21 @@ export function RepoScaffold({
           <RepoRail home={home} addr={addr} selected={selected} />
         </div>
       ) : (
-        <div className="min-w-0">{children(home, reload)}</div>
+        <div className="min-w-0 space-y-4">
+          {verification ? <RepoVerification home={home} selected={selected} /> : null}
+          <div className="min-w-0">{children(home, reload)}</div>
+        </div>
       )}
     </>
   )
+}
+
+/**
+ * The Verification card of a page with no rail (code pages, compare): a leaf, so a content check
+ * re-renders only it.
+ */
+export function RepoVerification({ home, selected }: { home: RepoHome; selected: SelectedRef }): JSX.Element {
+  return <TrustPanel report={useRepoTrust(home, selected)} />
 }
 
 /**

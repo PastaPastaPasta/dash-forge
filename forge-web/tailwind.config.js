@@ -2,6 +2,9 @@
 // Design tokens are the single source of truth from docs/design/style-guide.md §A.
 // "Foundry, not startup SaaS": warm dark metals + ember accent, zero decorative gradients.
 // Dark mode is the PRIMARY theme (class-based, driven by next-themes).
+/** A colour read from a CSS variable of `R G B` channels, so `/alpha` modifiers still work. */
+const token = (name) => `rgb(var(--${name}) / <alpha-value>)`
+
 module.exports = {
   darkMode: 'class',
   content: [
@@ -69,6 +72,22 @@ module.exports = {
           400: '#4aaef0', // text on dark surfaces (anvil-950…800)
           600: '#006bb0', // text on light surfaces (white, anvil-50/100)
           700: '#005a94', // solid fill behind white text (7.27:1; the brand value is 3.54:1)
+        },
+        // Theme tokens: CSS variables in app/globals.css, one value per theme, so a class needs
+        // no `dark:` twin. New colour roles go here rather than as `light dark:` class pairs.
+        focus: token('focus'),
+        'surface-raised': token('surface-raised'),
+        'fg-muted': token('fg-muted'),
+        'line-highlight': token('line-highlight'),
+        state: {
+          open: token('state-open'),
+          done: token('state-done'),
+          closed: token('state-closed'),
+          draft: token('state-draft'),
+          'open-fill': token('state-open-fill'),
+          'done-fill': token('state-done-fill'),
+          'closed-fill': token('state-closed-fill'),
+          'draft-fill': token('state-draft-fill'),
         },
       },
       fontFamily: {

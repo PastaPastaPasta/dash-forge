@@ -83,7 +83,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
   const previous = data ? data.previous.filter((r) => !shownAbove.has(r.id)) : []
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className="max-w-4xl space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="text-xl">Releases</h1>
         <div className="ml-auto flex items-center gap-2">
@@ -299,7 +299,7 @@ function ReleasePage({
     )
   }
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className="max-w-4xl space-y-4">
       <Link href={repoHref('/repo/releases', addr)} className="hit-area text-dense text-anvil-600 underline dark:text-anvil-300">
         ← All releases
       </Link>

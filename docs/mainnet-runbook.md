@@ -94,5 +94,6 @@ Host the Dash Forge repo itself on mainnet Forge: `dg repo create dash-forge` (o
 - [ ] `node forge-contracts/scripts/deploy-v2.mjs --identity <deployer-mainnet.identity.json> --network mainnet --dry-run` clean
 - [ ] forge-v2 registered; `deployments/mainnet.json` (`v2`) committed; `dg doctor --network mainnet` green
 - [ ] forge-web built for mainnet, deployed, Playwright smoke green
+- [ ] Landing showcase configured for the network: `SHOWCASE` in `forge-web/lib/view/showcase.ts` lists the repos the landing page and Explore feature (owner, name, repo id)
 - [ ] Smoke suite scheduled; balance watchdog + alerting wired
 - [ ] Dogfood repo created and pushed

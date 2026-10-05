@@ -1,3 +1,4 @@
+// copy-lint-ignore-file: test and script helper; app code never imports it.
 /**
  * An offline judge of forge-v2 RC1 documents: does a node accept this document create?
  *

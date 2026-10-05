@@ -59,7 +59,7 @@ const SPEND_TITLES: Readonly<Record<string, string>> = {
   'key:register': "This browser's key registered",
   'key:renew': "This browser's key renewed",
   'key:topup': 'Key budget topped up',
-  'key:revoke': 'Key disabled on chain',
+  'key:revoke': 'Key disabled on Platform',
   'key:encryption': 'Encryption key registered',
   'key:runner': 'Runner key registered',
   'identity:create': 'Identity created',

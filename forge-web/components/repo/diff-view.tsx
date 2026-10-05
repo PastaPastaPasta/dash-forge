@@ -35,6 +35,7 @@ import {
 import { compactDiffLines, DIFF_CONTEXT, EXPAND_STEP, expandGap, splitRows, type DiffGap, type Revealed } from '@/lib/view/text-diff'
 import { createBatcher } from '@/lib/view/batcher'
 import { DIFF_PALETTES, type DiffPalette } from '@/lib/view/prefs'
+import { highlightDiff, lineHtml, wordsOnly, type DiffHighlight, type DiffSide } from '@/lib/view/diff-highlight'
 import { lineKey } from '@/lib/view/inline-threads'
 import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
 import { Button } from '@/components/ui/button'
@@ -460,9 +461,17 @@ function FilePatchView({
 export const GUTTER_TEXT = 'text-anvil-600 dark:text-anvil-400'
 const GUTTER = `w-12 select-none border-r border-anvil-100 px-2 text-right align-top dark:border-anvil-850 ${GUTTER_TEXT}`
 
-function lineTint(kind: TextDiffLine['kind'] | null, palette: DiffPalette): string {
-  if (kind === 'added') return DIFF_PALETTES[palette].added.row
-  if (kind === 'deleted') return DIFF_PALETTES[palette].deleted.row
+/** A changed row's tint (the table's `data-diff-palette` picks the colours; app/globals.css). */
+function lineTint(kind: TextDiffLine['kind'] | null): string {
+  if (kind === 'added') return 'diff-add'
+  if (kind === 'deleted') return 'diff-del'
+  return ''
+}
+
+/** The 2px edge on a changed line's code cell, in its marker colour: a cue that is not only a tint. */
+function lineEdge(kind: TextDiffLine['kind'] | null): string {
+  if (kind === 'added') return 'diff-add-edge'
+  if (kind === 'deleted') return 'diff-del-edge'
   return ''
 }
 
@@ -473,10 +482,13 @@ function Marker({ kind, palette }: { kind: TextDiffLine['kind']; palette: DiffPa
   return <span className="select-none"> </span>
 }
 
-function LineText({ line }: { line: TextDiffLine }): JSX.Element {
+/** A line's text: syntax-coloured and with its changed words marked once those are known, else plain. */
+function LineText({ line, side, hl }: { line: TextDiffLine; side: DiffSide; hl: DiffHighlight }): JSX.Element {
+  const html = lineHtml(hl, line, side)
   return (
     <>
-      {line.text || ' '}
+      {/* highlight.js escapes all text and emits only hljs-* spans; word marks are our own <mark>s. */}
+      {html === null ? line.text || ' ' : <span dangerouslySetInnerHTML={{ __html: html || ' ' }} />}
       {line.noNewline ? <span className="ml-2 select-none font-sans text-anvil-600 dark:text-anvil-400">(no newline at end of file)</span> : null}
     </>
   )
@@ -490,7 +502,7 @@ function LineNumber({ path, side, line, rove }: { path: string; side: 0 | 1; lin
   const inline = useContext(InlineCommentsContext)
   if (line === null) return <td className={GUTTER} />
   const mark = inline?.mark?.(path, side, line) ?? null
-  const tint = mark === 'selected' ? 'bg-forge-500/25' : mark === 'range' ? 'bg-caution/15' : ''
+  const tint = mark === 'selected' ? 'bg-line-highlight/25' : mark === 'range' ? 'bg-line-highlight/15' : ''
   if (inline === null || !inline.canComment) return <td className={cn(GUTTER, tint)}>{line}</td>
   return (
     <td className={cn(GUTTER, 'p-0', tint)} data-mark={mark ?? undefined}>
@@ -547,7 +559,7 @@ function GapRow({ gap, colSpan, total, onExpand }: { gap: DiffGap; colSpan: numb
   )
   const small = gap.hidden <= EXPAND_STEP
   return (
-    <tr className="bg-dash/5 text-anvil-600 dark:text-anvil-400" data-testid="diff-gap">
+    <tr className="bg-surface-raised text-anvil-600 dark:text-anvil-400" data-testid="diff-gap">
       <td colSpan={colSpan} className="px-3 py-0.5">
         <span className="sticky left-3 inline-flex flex-wrap items-center gap-1">
           {small ? (
@@ -567,6 +579,32 @@ function GapRow({ gap, colSpan, total, onExpand }: { gap: DiffGap; colSpan: numb
 }
 
 /**
+ * A side-by-side code cell. Long lines wrap at word and punctuation boundaries first, and break
+ * inside a token only when one is wider than the cell (`env│ironment` was `break-all`).
+ */
+const SPLIT_CODE = 'overflow-hidden whitespace-pre-wrap [overflow-wrap:anywhere] px-2 text-anvil-800 dark:text-anvil-200'
+
+/**
+ * A diff's syntax colours and word marks. The word marks are there at once; the colours follow
+ * when highlight.js (its own lazy chunk, shared with the blob view) has run over both sides.
+ */
+function useDiffHighlight(full: readonly TextDiffLine[], path: string, oldPath: string): DiffHighlight {
+  const words = useMemo(() => wordsOnly(full), [full])
+  const [highlighted, setHighlighted] = useState<DiffHighlight | null>(null)
+  useEffect(() => {
+    let live = true
+    void highlightDiff(words, path, oldPath).then((hl) => {
+      if (live) setHighlighted(hl)
+    })
+    return () => {
+      live = false
+    }
+  }, [words, path, oldPath])
+  // A stale result (the lines changed, as with "hide whitespace") is never shown over new lines.
+  return highlighted !== null && highlighted.sides === words.sides ? highlighted : words
+}
+
+/**
  * A text patch's rows. A renamed file's old side is its old path: inline comments on it anchor
  * there (as they did when the file showed as deleted), and its new side at its new path.
  */
@@ -578,6 +616,7 @@ export function PatchLines({ path, oldPath = path, full }: { path: string; oldPa
   const expand = (range: readonly [number, number]): void => setRevealed((r) => [...r, range])
   const inline = useContext(InlineCommentsContext)
   const visible = useMemo(() => lines.slice(0, limit), [lines, limit])
+  const hl = useDiffHighlight(full, path, oldPath)
   // Report the rows on screen (not past the "show more" cut), and withdraw them on unmount
   // (a collapsed file), so threads under lines nobody can see are listed elsewhere.
   useEffect(() => {
@@ -634,6 +673,7 @@ export function PatchLines({ path, oldPath = path, full }: { path: string; oldPa
           className={cn('w-full border-collapse font-mono text-[12px] leading-5', split && 'table-fixed')}
           aria-label={`Changes to ${path}${split ? ' (side by side)' : ''}`}
           data-layout={split ? 'split' : 'unified'}
+          data-diff-palette={palette}
           onKeyDown={onGutterKey}
         >
           {split ? (
@@ -656,18 +696,18 @@ export function PatchLines({ path, oldPath = path, full }: { path: string; oldPa
                     <Fragment key={`${left?.oldLine ?? 'n'}-${right?.newLine ?? 'n'}-${index}`}>
                       <tr>
                         <LineNumber path={pathOf(0)} side={0} line={left?.oldLine ?? null} rove={rove} />
-                        <td className={cn('overflow-hidden whitespace-pre-wrap break-all px-2 text-anvil-800 dark:text-anvil-200', lineTint(same ? null : left?.kind ?? null, palette), left === null && 'bg-anvil-100 dark:bg-anvil-900')}>
+                        <td className={cn(SPLIT_CODE, lineTint(same ? null : left?.kind ?? null), lineEdge(same ? null : left?.kind ?? null), left === null && 'bg-surface-raised')}>
                           {left ? (
                             <>
-                              <Marker kind={same ? 'context' : left.kind} palette={palette} /> <LineText line={left} />
+                              <Marker kind={same ? 'context' : left.kind} palette={palette} /> <LineText line={left} side="old" hl={hl} />
                             </>
                           ) : null}
                         </td>
                         <LineNumber path={path} side={1} line={right?.newLine ?? null} rove={rove} />
-                        <td className={cn('overflow-hidden whitespace-pre-wrap break-all px-2 text-anvil-800 dark:text-anvil-200', lineTint(same ? null : right?.kind ?? null, palette), right === null && 'bg-anvil-100 dark:bg-anvil-900')}>
+                        <td className={cn(SPLIT_CODE, lineTint(same ? null : right?.kind ?? null), lineEdge(same ? null : right?.kind ?? null), right === null && 'bg-surface-raised')}>
                           {right ? (
                             <>
-                              <Marker kind={same ? 'context' : right.kind} palette={palette} /> <LineText line={right} />
+                              <Marker kind={same ? 'context' : right.kind} palette={palette} /> <LineText line={right} side="new" hl={hl} />
                             </>
                           ) : null}
                         </td>
@@ -680,12 +720,12 @@ export function PatchLines({ path, oldPath = path, full }: { path: string; oldPa
                   if (line.kind === 'gap') return gap(line, 3)
                   return (
                     <Fragment key={`${line.oldLine ?? 'n'}-${line.newLine ?? 'n'}`}>
-                      <tr className={lineTint(line.kind, palette)}>
+                      <tr className={lineTint(line.kind)}>
                         <LineNumber path={pathOf(0)} side={0} line={line.kind === 'added' ? null : line.oldLine} rove={rove} />
                         <LineNumber path={path} side={1} line={line.kind === 'deleted' ? null : line.newLine} rove={rove} />
-                        <td className="whitespace-pre px-3 text-anvil-800 dark:text-anvil-200">
+                        <td className={cn('whitespace-pre px-3 text-anvil-800 dark:text-anvil-200', lineEdge(line.kind))}>
                           <Marker kind={line.kind} palette={palette} />
-                          <LineText line={line} />
+                          <LineText line={line} side={line.kind === 'deleted' ? 'old' : 'new'} hl={hl} />
                         </td>
                       </tr>
                       <ThreadRow pathOf={pathOf} colSpan={3} keys={[[0, line.oldLine], [1, line.kind === 'deleted' ? null : line.newLine]]} />

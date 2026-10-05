@@ -36,7 +36,7 @@ import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
 import { writesPausedReason } from '../devnet-notice'
 import { previewCreate, previewCredits, previewDelete, previewReplace, STEADY, type CostPreview } from './cost'
-import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite } from './query'
+import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite, refreshStaleContract, retryOnStaleContract, staleContractCause } from './query'
 import { currentSpendAction } from './spend-scope'
 
 export type { CostPreview } from './cost'
@@ -104,6 +104,11 @@ interface SdkFacades {
 
 function facades(sdk: EvoSDK): SdkFacades {
   return sdk as unknown as SdkFacades
+}
+
+/** `documents.get`, retried once after a refresh when its contract was stale (`retryOnStaleContract`). */
+function getDocument(sdk: EvoSDK, contractId: string, documentType: string, documentId: string): Promise<unknown> {
+  return retryOnStaleContract(contractId, () => facades(sdk).documents.get(contractId, documentType, documentId))
 }
 
 /**
@@ -700,8 +705,13 @@ export const WAIT_SETTINGS: WaitSettings = { retries: 0, timeoutMs: WAIT_REQUEST
  * the SDK's affected-state wait, which accepts that proof (the one `documents.create` itself
  * uses for an indexOnly type from 4.2.0-beta.7, platform#5136); every other write keeps the
  * strict one.
+ *
+ * A proof holding a document written under a newer version of `contractId` than this tab holds
+ * (an in-place contract update since it loaded) cannot be decoded, though the transition is in a
+ * block: the contract is refreshed and the outcome is `'unknown'`, which the caller settles by
+ * the nonce and a read under the new version.
  */
-async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean): Promise<'landed' | 'unknown'> {
+async function awaitOutcome(sdk: EvoSDK, st: StateTransition, contractId: string, indexOnly: boolean): Promise<'landed' | 'unknown'> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     await Promise.race([
@@ -715,6 +725,10 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean
     ])
     return 'landed'
   } catch (e) {
+    if (staleContractCause(e) === 'newerDocument') {
+      await refreshStaleContract(contractId, e)
+      return 'unknown'
+    }
     // A nonce answer is settled by reading the chain (the caller's `settleUnanswered`).
     const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
     // The result wait answers with the transition's verdict in a block, whatever kind the error
@@ -794,7 +808,7 @@ async function settleUnanswered(
       const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
       if (refusal !== null) throw refusal.atBroadcast()
     }
-    if ((await awaitOutcome(sdk, st, indexOnly)) === 'landed') return 'landed'
+    if ((await awaitOutcome(sdk, st, owner.contractId, indexOnly)) === 'landed') return 'landed'
   }
   return (await landed(confirmTimeoutMs)) ? 'landed' : 'unknown'
 }
@@ -1006,7 +1020,7 @@ function repoOf(data: Readonly<Record<string, unknown>>, documentType?: string, 
 /** Whether a stored document exists: `null` when the read failed (unknown is not "gone"). */
 async function documentExists(sdk: EvoSDK, contractId: string, documentType: string, documentId: string): Promise<boolean | null> {
   try {
-    const doc = await facades(sdk).documents.get(contractId, documentType, documentId)
+    const doc = await getDocument(sdk, contractId, documentType, documentId)
     return doc !== undefined && doc !== null
   } catch {
     return null
@@ -1490,7 +1504,7 @@ async function createDocumentUnlocked(
     const { documentId } = signed
     let outcome: 'landed' | 'lost' | 'unknown'
     try {
-      outcome = await awaitOutcome(sdk, signed.st, indexOnly)
+      outcome = await awaitOutcome(sdk, signed.st, contractId, indexOnly)
       if (outcome === 'unknown') {
         outcome = await settleUnanswered(
           sdk,
@@ -1601,6 +1615,7 @@ async function signCreate(
   })
   if (document.id.toBase58() !== documentId) {
     throw new Error(
+      // copy-lint-ignore: an invariant that stops a broken write before it is sent
       `document id drifted while building the create transition (${documentId}); ` +
         'refusing to broadcast a write whose id the idempotency cache does not know',
     )
@@ -1781,7 +1796,7 @@ export async function precheckEdit(
   auth: WriteAuth,
   p: { contractId: string; documentType: string; documentId: string; expectRepoId?: string; expectedRevision?: bigint },
 ): Promise<void> {
-  const doc = (await facades(sdk).documents.get(p.contractId, p.documentType, p.documentId)) as FetchedDocumentLike | null
+  const doc = (await getDocument(sdk, p.contractId, p.documentType, p.documentId)) as FetchedDocumentLike | null
   if (doc === null || doc === undefined) throw new Error(`${p.documentType} ${p.documentId} was not found`)
   if (doc.ownerId.toBase58() !== auth.identityId) throw new WriteAuthError('only the author can edit this')
   checkOwnRepo(doc.toJSON(sdk.version())['repoId'], p.expectRepoId)
@@ -1795,7 +1810,7 @@ export async function precheckEdit(
 export function checkOwnRepo(storedRepoId: unknown, expected: string | undefined): void {
   if (expected === undefined) return
   const got = typeof storedRepoId === 'string' ? storedRepoId : storedRepoId instanceof Uint8Array ? base58Encode(storedRepoId) : ''
-  if (got !== expected) throw new WriteAuthError('this document belongs to another repo than the page; reload it from its own repo')
+  if (got !== expected) throw new WriteAuthError('this belongs to a different repo than this page; reload it from its own repo')
 }
 
 /**
@@ -1851,7 +1866,7 @@ async function replaceDocumentUnlocked(
   const cost = previewReplace(documentType, changes)
 
   const read = async (): Promise<FetchedDocumentLike | null> => {
-    const doc = await facades(sdk).documents.get(contractId, documentType, documentId)
+    const doc = await getDocument(sdk, contractId, documentType, documentId)
     return (doc ?? null) as FetchedDocumentLike | null
   }
   const current = await read()

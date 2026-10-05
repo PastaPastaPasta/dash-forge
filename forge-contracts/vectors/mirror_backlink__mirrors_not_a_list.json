@@ -1,0 +1,14 @@
+{
+  "name": "mirrors_not_a_list",
+  "description": "A `mirrors` that is not a list makes the file invalid.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "{\"mirrors\": \"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"}",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": false,
+    "listed": false
+  }
+}

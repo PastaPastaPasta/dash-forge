@@ -512,13 +512,48 @@ pub struct NetworkTarget {
     /// none are registered there (repository operations then fail with
     /// [`Error::V2NotDeployed`]).
     pub v2: Option<ForgeIds>,
+    /// A quorum service chosen for testnet or mainnet (`--quorum-url`, `DASH_FORGE_QUORUM_URL`,
+    /// `dash.quorumUrl`): a self-hosted one, for when Dash's is down or blocked. A devnet keeps
+    /// its own in [`Network::Devnet`].
+    pub quorum_url: Option<String>,
 }
 
 impl NetworkTarget {
     /// `network` with the contracts its embedded deployment records.
     pub fn for_network(network: Network) -> Result<Self> {
         let v2 = deployment(&network.key())?.and_then(|d| d.v2);
-        Ok(Self { network, v2 })
+        Ok(Self {
+            network,
+            v2,
+            quorum_url: None,
+        })
+    }
+
+    /// The quorum service every proof is checked against: the one chosen, else the network's.
+    pub fn quorum_base_url(&self) -> String {
+        self.quorum_url
+            .clone()
+            .unwrap_or_else(|| self.network.quorum_base_url())
+    }
+
+    /// [`Self::quorum_base_url`], refused when a chosen one is not `https://` on testnet or
+    /// mainnet, as the SDK would (`TrustedHttpContextProvider::new_with_url`) but with the
+    /// settings that chose it named. Checked at connect, so a command that never reads the
+    /// network is not stopped by it.
+    pub fn checked_quorum_base_url(&self) -> Result<String> {
+        if let Some(url) = &self.quorum_url {
+            let https = url
+                .get(..8)
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"));
+            if !https {
+                return Err(Error::Config(format!(
+                    "the quorum service on {} must be an https:// URL, not {url:?} \
+                     (--quorum-url, DASH_FORGE_QUORUM_URL or dash.quorumUrl)",
+                    self.network.key()
+                )));
+            }
+        }
+        Ok(self.quorum_base_url())
     }
 
     /// The forge-v2 contracts, or the actionable "not deployed here" error.
@@ -531,7 +566,15 @@ impl NetworkTarget {
     /// The env vars that hand this exact target to a child process (`git` →
     /// git-remote-dash): [`Network::env_vars`].
     pub fn env_vars(&self) -> Vec<(&'static str, String)> {
-        self.network.env_vars()
+        // The exact quorum service, on every network: an empty value would let the child fall
+        // through to a git config layer this process never read (a global `dash.quorumUrl`).
+        let mut vars = self.network.env_vars();
+        for (k, v) in &mut vars {
+            if *k == ENV_QUORUM_URL {
+                *v = self.quorum_base_url();
+            }
+        }
+        vars
     }
 }
 
@@ -545,7 +588,7 @@ pub struct NetworkSettings {
     pub devnet_name: Option<String>,
     /// Comma-separated DAPI addresses (devnet only).
     pub dapi_addresses: Option<String>,
-    /// Quorum service base URL (devnet only).
+    /// Quorum service base URL (any network; a devnet's default comes from its deployment).
     pub quorum_base_url: Option<String>,
 }
 
@@ -780,6 +823,12 @@ impl NetworkSettings {
             (None, Some(_)) => "devnet",
             (None, None) => "testnet",
         };
+        // One form on every network: the SDK appends `/quorums` to it.
+        let chosen_quorum = self
+            .quorum_base_url
+            .as_deref()
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty());
         let (network, recorded) = match kind.to_ascii_lowercase().as_str() {
             "testnet" => (Network::Testnet, deployment("testnet")?),
             "mainnet" => (Network::Mainnet, deployment("mainnet")?),
@@ -800,8 +849,8 @@ impl NetworkSettings {
                         .map(|d| d.dapi_addresses.clone())
                         .unwrap_or_default(),
                 };
-                let quorum_base_url = self
-                    .quorum_base_url
+                let quorum_base_url = chosen_quorum
+                    .clone()
                     .or_else(|| recorded.as_ref().and_then(|d| d.quorum_base_url.clone()));
                 let network = Network::Devnet {
                     name,
@@ -823,7 +872,15 @@ impl NetworkSettings {
             }
         };
         let v2 = recorded.and_then(|d| d.v2);
-        Ok(NetworkTarget { network, v2 })
+        let quorum_url = match network {
+            Network::Devnet { .. } => None,
+            _ => chosen_quorum,
+        };
+        Ok(NetworkTarget {
+            network,
+            v2,
+            quorum_url,
+        })
     }
 }
 
@@ -1059,6 +1116,95 @@ mod tests {
             t.network.quorum_base_url(),
             "https://quorums.moutai.networks.dash.org"
         );
+    }
+
+    #[test]
+    fn a_chosen_quorum_service_reaches_testnet_and_its_child_processes() {
+        let t = NetworkSettings {
+            network: Some("testnet".into()),
+            quorum_base_url: Some("https://quorums.example.org/".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(t.network, Network::Testnet);
+        assert_eq!(t.quorum_base_url(), "https://quorums.example.org");
+        let vars = t.env_vars();
+        assert!(vars.contains(&(ENV_QUORUM_URL, "https://quorums.example.org".to_string())));
+        assert!(vars.contains(&(ENV_NETWORK, "testnet".to_string())));
+
+        // Unset, testnet keeps Dash's service and names it to the child, so the child can't
+        // pick up a service from a layer this process never read.
+        let t = NetworkSettings {
+            network: Some("testnet".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        let default = "https://quorums.testnet.networks.dash.org".to_string();
+        assert_eq!(t.quorum_base_url(), default);
+        assert!(t.env_vars().contains(&(ENV_QUORUM_URL, default)));
+
+        // Blank means unset; a devnet's trailing slash is trimmed like testnet's.
+        let t = NetworkSettings {
+            network: Some("testnet".into()),
+            quorum_base_url: Some("  ".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(t.quorum_url, None);
+        let t = NetworkSettings {
+            network: Some("devnet".into()),
+            devnet_name: Some("sakura".into()),
+            quorum_base_url: Some("https://q.example/".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(t.quorum_base_url(), "https://q.example");
+    }
+
+    #[test]
+    fn a_plain_http_quorum_service_is_refused_on_mainnet_at_connect() {
+        // Resolving succeeds: a command that never reads the network is not stopped by it.
+        let t = NetworkSettings {
+            network: Some("mainnet".into()),
+            quorum_base_url: Some("http://quorums.example.org".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        let err = t.checked_quorum_base_url().unwrap_err();
+        assert!(err.to_string().contains("https://"), "{err}");
+        let t = NetworkSettings {
+            network: Some("mainnet".into()),
+            quorum_base_url: Some("HTTPS://quorums.example.org".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(
+            t.checked_quorum_base_url().unwrap(),
+            "HTTPS://quorums.example.org"
+        );
+    }
+
+    #[test]
+    fn a_devnet_keeps_its_chosen_quorum_service_in_the_network() {
+        let t = NetworkSettings {
+            network: Some("devnet".into()),
+            devnet_name: Some("sakura".into()),
+            quorum_base_url: Some("http://127.0.0.1:8080".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        assert_eq!(t.quorum_url, None);
+        assert_eq!(t.quorum_base_url(), "http://127.0.0.1:8080");
+        assert!(t
+            .env_vars()
+            .contains(&(ENV_QUORUM_URL, "http://127.0.0.1:8080".to_string())));
     }
 
     #[test]

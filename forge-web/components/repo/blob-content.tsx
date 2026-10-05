@@ -487,7 +487,7 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
         key={i}
         id={`L${n}`}
         data-selected={on || undefined}
-        className={cn('h-5', on ? 'bg-caution/15' : 'hover:bg-anvil-50 dark:hover:bg-anvil-900/60')}
+        className={cn('h-5', on ? 'bg-line-highlight/15' : 'hover:bg-anvil-50 dark:hover:bg-anvil-900/60')}
       >
         <td className="select-none whitespace-nowrap border-r border-anvil-100 px-3 py-0 text-right align-top text-anvil-500 dark:text-anvil-400 dark:border-anvil-850">
           <a

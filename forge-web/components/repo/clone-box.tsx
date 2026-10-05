@@ -15,7 +15,6 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { Dialog } from '@/components/ui/dialog'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import type { RepoAddress } from '@/hooks/use-query-param'
-import { ACTIVE_NETWORK } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { saveBytes } from '@/lib/view/release-download'
 import { formatBytes, plural, selectedTip, tipOidOf, type RepoHome, type SelectedRef } from '@/lib/view'
@@ -62,18 +61,11 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
             </button>
           </p>
           <CopyRow text={cmd.dgClone} label="Copy dg repo clone command" />
-          <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="clone-network">
-            The repository is on <span className="font-mono">{ACTIVE_NETWORK.key}</span>; both commands record that in the clone.
-          </p>
         </div>
         <p className="mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="clone-default-branch">
           A clone checks out <span className="font-mono">{home.defaultBranch}</span>, the default branch.
         </p>
         <ZipDownload home={home} addr={addr} selected={selected} />
-        <p className="mt-2 hidden text-[11px] leading-snug text-anvil-500 dark:text-anvil-400 sm:block">
-          No https clone URL: that needs a git server, and Forge runs none. git talks to the chain and your storage
-          directly through the helper.
-        </p>
       </div>
       <InstallSheet open={installing} onClose={() => setInstalling(false)} />
     </section>
@@ -124,7 +116,7 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
       for (const [path, bytes] of Object.entries(entries)) rooted[prefix + path] = bytes
       const zip = await compressInWorker(rooted, setProgress, cancel.current.signal, { modes, mtime: plan.mtime, comment: plan.commit?.oid ?? null })
       saveBytes(zip, name, 'application/zip')
-      setMessage(`Saved ${name} (${formatBytes(zip.length)}, ${plural(files.length, 'file')}, each hash-checked).`)
+      setMessage(`Saved ${name} (${formatBytes(zip.length)}, ${plural(files.length, 'file')}, each verified).`)
     } catch (e) {
       if (e instanceof ZipTooLargeError) setTooLargeRef(tip)
       else setMessage(cancel.current?.signal.aborted ? 'Cancelled.' : `The zip could not be built: ${errorMessage(e)}`)

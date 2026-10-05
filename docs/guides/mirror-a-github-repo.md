@@ -33,7 +33,7 @@ Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New �
 | 1. GitHub repository | Your browser asks GitHub's public REST API, without signing in, whether the repository exists and is public. There is no GitHub OAuth app. | nothing |
 | 2. Forge repository | The name is suggested from GitHub, and the description is `… (mirror of github.com/<owner>/<repo>)`, which the web uses to link back. A repository of yours with that name is reused at no cost. | three documents, about 0.002 DASH |
 | 3. Storage | Pick a saved bucket, or add one with the [storage wizard](bring-your-own-storage.md). R2 or S3 is recommended. The step shows the CORS policy to paste, and also offers Dash Platform, priced for this repository's size. | nothing |
-| 4. Runner key | This registers a limited key on your identity: bound to Forge's contracts, with a budget (default 0.5 DASH) and an expiry (default 365 days). Your identity file or recovery words sign once and are not stored. The key is shown **once**, as the `DASH_FORGE_KEY` value to paste into GitHub. It belongs to the repository's owner, so the Action needs no membership. | one identity update, about 0.0003–0.0005 DASH |
+| 4. Runner key | This registers a limited key on your identity: bound to Forge's contracts, with a budget (default 0.5 DASH) and an expiry (default 365 days). Your identity file or recovery phrase signs once and are not stored. The key is shown **once**, as the `DASH_FORGE_KEY` value to paste into GitHub. It belongs to the repository's owner, so the Action needs no membership. | one identity update, about 0.0003–0.0005 DASH |
 | 5. Workflow file | The wizard lists the secrets to add first (`DASH_FORGE_KEY`, plus `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` for a bucket), with copy buttons and a link to GitHub's *New repository secret* page. It then builds [the workflow below](#the-workflow) with every input filled in: code and releases, as the Action syncs by default. **Mirror issues and pull requests too** adds them and their triggers; leave it off on a busy repository, since anyone who can open an issue or a PR can then make a run spend. The suggested `cost-cap` is above the Action's own default of 0.05 DASH because the first run writes every branch, tag and release: 0.1 DASH with your own storage, more for packs on Platform, sized for the repository. Lower it once the mirror is up. **Create this file on GitHub** opens GitHub's new-file page with it filled in. | nothing |
 | 6. First run | Committing the file starts the first run. The page checks Platform every 10 seconds until the mirror's branches appear, then links to the repository. | the run, under its cost cap, paid through the runner key |
 
@@ -56,7 +56,7 @@ You need:
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.33 DASH/MiB ([Costs](costs.md)).
 
-> **Network.** The importer writes **forge-v2** repositories (about **0.0016 DASH** to create). They exist on devnet sakura, where RC2 is registered (`--network devnet --devnet-name sakura`), come to testnet when Platform protocol 14 reaches it, and to mainnet after protocol 14 activates there and the contracts are registered.
+> **Network.** Forge runs on devnet sakura (`--network devnet --devnet-name sakura`), and comes to testnet and mainnet once Dash Platform v5 reaches them. See [Networks](../networks.md).
 
 > **Cost.** A first import is mostly git data plus one document per issue, PR, comment and review. The Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost about **0.078 DASH**; a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. Re-runs pay only for what is new, and nothing when nothing changed. `--dry-run` prices your repository before you spend anything.
 
@@ -204,7 +204,7 @@ The Action signs with the `DASH_FORGE_KEY` repository secret (Settings → Secre
     --budget 0.5 --expires 365d --format dfk1 --reveal-secrets -o runner.dfk1
   ```
 
-  Without `--master`, `dg` asks for your 12 recovery words instead. `dg` only reads the master key from the file: the key is not stored and CI never sees it.
+  Without `--master`, `dg` asks for your 12-word recovery phrase instead. `dg` only reads the master key from the file: the key is not stored and CI never sees it.
 
   The file's one line is the secret. Paste it, then delete the file. `dg auth keys list` shows the key, and `dg auth keys disable <id>` retires it.
 - **A CI-only identity file**, stripped to the one signing key a push needs, the HIGH authentication key. The fields the tools need are kept, and every other secret is blanked:
@@ -271,7 +271,7 @@ Before you copy it:
 - **Pinned to a release tag,** the Action installs that release's `dg`, `git-remote-dash` and `forge-import` with [`install.sh`](../../install.sh): it checks each archive against the release's `SHA256SUMS` and, with `gh` signed in, its build provenance attestation. The Action's `version` input defaults to the release it was cut with, so `@v0.1.0` installs 0.1.0.
 - **Or build from source.** Pin a commit you have reviewed (all 40 characters) and set `install: 'source'`: the Action compiles the tools from the commit in `uses:` (Rust is preinstalled on `ubuntu-latest`; the Action installs a pinned, checksummed protoc). The first build takes several minutes, and the Action caches the compiled dependencies for later runs (that cache is trusted like any other cache of your repository; `build-cache: 'false'` turns it off). This is what [the setup wizard](#the-setup-wizard) writes, because the site runs `master`, which can be ahead of the latest release. [`.github/workflows/mirror-action.yml`](../../.github/workflows/mirror-action.yml) is this repository's own live test of the Action. To build the tools in your own steps instead, put them on `PATH` and set `install: 'false'`.
 - **Do not use `@master`.** The binaries run with your key, so following whatever `master` holds would hand the key to any future change there, and `master`'s scripts run with the latest release's binaries, which can be older than they expect.
-- **Forge runs on devnet sakura** (RC2 registered on Platform v5.0.0-beta.1). The Action's default network is the one the hosted site uses. Mainnet and testnet have no Forge deployment yet, so `network: mainnet` fails until one is registered.
+- **Forge runs on devnet sakura** ([Networks](../networks.md)). The Action's default network is the one the hosted site uses. Mainnet and testnet have no Forge deployment yet, so `network: mainnet` fails until one is registered.
 - **Anyone who can open an issue or a PR can make a run spend**, up to `cost-cap` per event, until the key's budget or the identity's balance runs out. On a busy public repository, drop the event triggers and let the daily schedule do the work, or remove `issues,prs` from `sync`.
 - **Status.** `ok`, `dry_run` and `partial` succeed (`partial` with a warning, since the next run retries; `fail-on-partial: 'true'` fails it). `cap_exceeded` and `error` fail the step. The job summary shows what was written, the spend against the estimate, and the runner key's remaining budget and expiry.
 - Release assets are not copied. They are recorded by GitHub URL with a sha256: GitHub's digest when it reports one, otherwise one the importer computes by downloading the asset once (nothing is kept, and a re-run reuses the recorded hash). An asset that cannot be hashed is recorded without one, with a warning; `dg release download` and the web refuse to hand out such an asset unverified. GitHub's download links cannot be read by a web page (no CORS), so the web's release page links to them directly and offers to check the downloaded file against the hash.
@@ -317,6 +317,8 @@ dg storage status <owner>/<repo>              # does every recorded copy of ever
 
 On the web: `https://forge.dashhq.org/<owner>/<repo>`. Each imported issue and PR opens with a line naming its GitHub original and author.
 
+Visitors can also put the GitHub address after the site's: `https://forge.dashhq.org/github.com/<github owner>/<github repo>` (or `/gh/…`) opens the mirror, and the rest of a GitHub path opens the same page of it (`…/issues/12`, `…/tree/main/src`). So does `https://forge.dashhq.org/<github owner>/<github repo>` when no Forge repo has that address. The web app finds the mirror by its description (`… (mirror of github.com/<owner>/<repo>)`, which the import writes). When several repos claim to mirror the same GitHub repo, it lists them and lets the visitor choose, unless exactly one of them is featured on the site; with none, it offers to set one up.
+
 If the page says **Not indexed for browsing yet**, the import stored the code but not its browse index; the import's summary says so as a warning. The repository still clones. To publish the index without storing the code again, run:
 
 ```sh
@@ -334,3 +336,15 @@ git ls-remote https://github.com/alice/project refs/heads/main
 ```
 
 The two ids must match. A commit id is a hash over the commit and everything it reaches, so equal ids mean identical history for that branch. Repeat for other branches and tags, or compare the full `git ls-remote` output of both. [Verify Forge](verify-forge.md) goes further.
+
+### Confirm the mirror is yours
+
+Anyone can create a repository whose description says it mirrors your project, so Forge shows that claim as "Says it mirrors github.com/alice/project" until your project confirms it. To confirm it, add a file named `.dash-forge.json` to the root of your default branch on GitHub, listing the mirror's repo id:
+
+```json
+{"mirrors":["<repo id>"]}
+```
+
+forge-import prints the file after it creates a mirror, and on the mirror's page a maintainer sees a link that opens GitHub's new-file page with the file filled in. The repo id is on the repository's Settings page. List several ids to vouch for several mirrors.
+
+Visitors can then press **Check with GitHub** on the mirror's page. Their browser reads the file from GitHub and compares GitHub's default branch with the mirror's, and the page says "Mirror of github.com/alice/project" with both results. The check is optional and asks github.com directly, so nothing is checked until a visitor asks. On the "Repo not found" page, mirrors their source lists come first once checked.

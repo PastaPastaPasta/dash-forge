@@ -5,6 +5,7 @@ import {
   E2E_DEVNET,
   EMPTY,
   expectLanded,
+  firstRecentCard,
   loadSeedPulls,
   MAINTAINER,
   repoUrl as url,
@@ -46,16 +47,15 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible()
     await expect(page.getByLabel(/jump to a repo/i).first()).toBeVisible()
     await expect(page.getByRole('group', { name: /verification status/i })).toBeVisible()
-    const feed = page.locator('section').filter({ hasText: 'Recent repos' }).first()
     // The live write specs keep creating repos, so the fixture may have scrolled off the
     // newest 24: assert on whatever is newest, then on the fixture's counts by name.
-    const card = feed.locator('a[href*="/repo"]').first()
-    await expectLanded(page, card)
+    const card = await firstRecentCard(page)
     // The composite read brought the counts along for every row.
     const row = card.locator('xpath=ancestor::div[contains(@class,"rounded-lg")][1]')
     await expect(row.getByTitle(/Stars/)).toBeVisible()
     await expect(row.getByTitle(/Issues/)).toBeVisible()
-    const demo = feed.locator('a', { hasText: 'forge-v2 demo' }).first()
+    // The fixture is featured on sakura (above the feed, which then leaves it out).
+    const demo = page.locator('main a', { hasText: 'forge-v2 demo' }).first()
     if (await demo.count()) {
       const demoRow = demo.locator('xpath=ancestor::div[contains(@class,"rounded-lg")][1]')
       // Issues #1-#4 (seed-v2-fixture.mjs; #4 came with the review-parity fixture).
@@ -80,9 +80,9 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expect(page.getByText(/code, issues and pull requests in the shared contracts/i).first()).toBeVisible()
     await expect(page.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
     await expect(page.getByText(/\bmain\b/).first()).toBeVisible()
-    // The Verification card attests the ref by FORGE_RULES_V2.
+    // The Verification card says the ref was built from proof-checked history.
     await page.getByRole('button', { name: /verification/i }).click()
-    await expect(page.getByText(/FORGE_RULES_V2/).first()).toBeVisible()
+    await expect(page.getByText(/checked against Platform proofs/).first()).toBeVisible()
     await shot(page, 'v2-02-repo-home')
     expect(errors, errors.join('\n')).toEqual([])
   })
@@ -92,7 +92,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('link', { name: 'main.rs' }).first())
     await page.getByRole('link', { name: 'main.rs' }).first().click()
-    await expect(page.getByText('reads are proof-checked').first()).toBeVisible({ timeout: 45_000 })
+    await expect(page.getByText('Your browser verifies what it shows').first()).toBeVisible({ timeout: 45_000 })
     await shot(page, 'v2-03-blob')
   })
 
@@ -145,8 +145,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   test('v2-7. settings list members from membership documents', async ({ page }) => {
     await page.goto(url('settings'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    // Settings → Collaborators (#66 renamed the old "Members" section, GitHub-style).
-    const collaborators = page.getByRole('region', { name: 'Collaborators' })
+    // Settings → Members (the glossary's term for people with a role; #66 had called it Collaborators).
+    const collaborators = page.getByRole('region', { name: 'Members' })
     await expectLanded(page, collaborators.getByText('WRITER', { exact: true }))
     await expect(collaborators.getByText('MAINTAINER', { exact: true })).toHaveCount(2)
     await expect(collaborators.getByText('owner', { exact: true })).toBeVisible()
@@ -177,8 +177,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible()
     await expect(page.getByTestId('network-badge')).toBeVisible()
     // Measure once the feed has settled on its terminal state (cards, not the skeleton).
-    const feed = page.locator('section').filter({ hasText: 'Recent repos' }).first()
-    await expectLanded(page, feed.locator('a[href*="/repo"]').first())
+    await firstRecentCard(page)
     const overflow = await page.evaluate(() => {
       const de = document.documentElement
       return { scrollW: de.scrollWidth, clientW: de.clientWidth }

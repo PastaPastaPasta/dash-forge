@@ -8,7 +8,7 @@
  */
 
 import { compareKey, compareStrings } from './oid'
-import type { Approvals, Role, RoleOracle } from './v2'
+import type { Approvals, RoleOracle } from './v2'
 import type { Event, EventKind, Oid } from './types'
 
 // ---------------------------------------------------------------------------
@@ -166,20 +166,33 @@ export interface Policy {
 }
 
 export interface PolicyStatus {
+  /** `have >= need`, and no approver's standing request for changes blocks the merge. */
   readonly met: boolean
   readonly have: number
   readonly need: number
+  /**
+   * Reviewers whose standing request for changes blocks the merge (sorted): when the policy
+   * requires approvals, a request for changes from someone whose approval would count blocks it,
+   * as on GitHub, until they approve or it is dismissed (event kind 15).
+   */
+  readonly blockedBy: readonly string[]
 }
 
 /**
  * Whether `approvals` (from `countApprovals` on the current head, dismissed reviews and the PR
  * author's own reviews excluded) meet `policy`: approvers whose current role satisfies `approverRole`
- * (0: a maintainer or role-1 writer, never triage or reader; 1: maintainers only).
+ * (0: a maintainer or role-1 writer, never triage or reader; 1: maintainers only). When the
+ * policy requires approvals, a standing request for changes from a reviewer whose approval would
+ * count blocks it (`blockedBy`). Parity: forge-core `meets_policy`.
  */
 export function meetsPolicy(approvals: Approvals, oracle: RoleOracle, policy: Policy): PolicyStatus {
-  const counts = (role: Role | null): boolean => role === 'maintainer' || (role === 'writer' && (policy.approverRole ?? 0) === 0)
-  const have = approvals.approvers.filter((a) => counts(oracle.currentRole(a))).length
-  return { met: have >= policy.requiredApprovals, have, need: policy.requiredApprovals }
+  const counts = (id: string): boolean => {
+    const role = oracle.currentRole(id)
+    return role === 'maintainer' || (role === 'writer' && (policy.approverRole ?? 0) === 0)
+  }
+  const have = approvals.approvers.filter(counts).length
+  const blockedBy = policy.requiredApprovals === 0 ? [] : approvals.changesRequested.filter(counts)
+  return { met: have >= policy.requiredApprovals && blockedBy.length === 0, have, need: policy.requiredApprovals, blockedBy }
 }
 
 // ---------------------------------------------------------------------------

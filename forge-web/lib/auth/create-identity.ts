@@ -294,7 +294,7 @@ export interface HeldBrowserKey {
 /** The identity exists, but its browser key could not be checked: "Try again" checks it again. */
 function keyUncheckedError(identityId: string, cause: unknown): Error {
   return new Error(
-    `Identity ${identityId} was created, but its browser key could not be checked (${errorMessage(cause)}). "Try again" checks it again; nothing is paid twice.`,
+    `Identity ${identityId} was created, but this browser's key could not be checked (${errorMessage(cause)}). Choose "Try again". You won't pay twice.`,
   )
 }
 
