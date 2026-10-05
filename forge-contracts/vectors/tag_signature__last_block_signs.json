@@ -1,0 +1,30 @@
+{
+  "name": "last_block_signs",
+  "description": "A signature block quoted inside the message is part of the payload: only the last block is the signature, so the quote breaks the match.",
+  "case": "tag_signature",
+  "rules": "v2",
+  "input": {
+    "tag": "object b0d60cfedec17d709cacf95547e1a27c67b68ce0\ntype commit\ntag v1.0.0\ntagger Tag-Fixture <tag@dash-forge.test> 1791115200 +0000\n\nRelease 1.0.0\n\n-----BEGIN SSH SIGNATURE-----\nnot a signature, quoted in the message\n-----END SSH SIGNATURE-----\n-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgxmRhFk8H+5+FV4iJv92SUt0ymM\n+Bzjxx8fggnFfdYYoAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQCm9aqxtb2Rhg4BOIXk70ZfXVcx94gGP8sNDoK0vk/TBiLrq77aqf+Mc1jlL4ElW7r\nmccXXVE3cjHPXqo37tHgE=\n-----END SSH SIGNATURE-----\n",
+    "signers": [
+      {
+        "identity": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+        "pubkeys": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKlxwBdl5BMou7QztNy8uRfENRcuLEe0EvX22UgM0jQI sig-test-e"
+        ]
+      },
+      {
+        "identity": "7Y8kWyGnrdGEWZBWeW5JRb5XvDwhhgzXJDrgD3eNGnDZ",
+        "pubkeys": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMZkYRZPB/ufhVeIib/dklLdMpjPgc48cfH4IJxX3WGK e5 tag fixture"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "unverified",
+    "reason": "bad_signature",
+    "format": "ssh",
+    "key": "SHA256:LVgRnBSfhpFylNm+hd4TwceUiVTV/qOMTSYbUMxFi2A",
+    "signer": null
+  }
+}

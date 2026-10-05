@@ -145,6 +145,37 @@ pub fn split_signed_commit(bytes: &[u8], sha256_repo: bool) -> Option<(Vec<u8>, 
     saw.then(|| (payload, String::from_utf8_lossy(&signature).into_owned()))
 }
 
+/// The lines that open a signature block, as git's `get_format_by_sig` knows them.
+const SIGNATURE_STARTS: [&[u8]; 4] = [
+    b"-----BEGIN PGP SIGNATURE-----",
+    b"-----BEGIN PGP MESSAGE-----",
+    b"-----BEGIN SIGNED MESSAGE-----",
+    b"-----BEGIN SSH SIGNATURE-----",
+];
+
+/// An annotated tag's signature and the bytes it signs, as git's `parse_signed_buffer` splits
+/// them: the signature starts at the last line that opens a signature block and runs to the end;
+/// the payload is everything before it. `None` for an unsigned tag.
+pub fn split_signed_tag(bytes: &[u8]) -> Option<(Vec<u8>, String)> {
+    let mut found = None;
+    let mut line = 0;
+    while line < bytes.len() {
+        let rest = &bytes[line..];
+        if SIGNATURE_STARTS.iter().any(|p| rest.starts_with(p)) {
+            found = Some(line);
+        }
+        line = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(bytes.len(), |i| line + i + 1);
+    }
+    let at = found?;
+    Some((
+        bytes[..at].to_vec(),
+        String::from_utf8_lossy(&bytes[at..]).into_owned(),
+    ))
+}
+
 // --- bytes, base64, SSH wire strings ---------------------------------------------------------
 
 /// Strict base64 (padding as written).
@@ -559,6 +590,19 @@ pub fn verify_commit_signature(
     sha256_repo: bool,
 ) -> Option<SignatureVerdict> {
     let (payload, signature) = split_signed_commit(bytes, sha256_repo)?;
+    Some(verify_split(&payload, &signature, signers))
+}
+
+/// The verdict on an annotated tag (its raw object bytes) against `signers`, or `None` for an
+/// unsigned tag: the same keys and rules as [`verify_commit_signature`], over the tag object
+/// without its trailing signature, exactly as `git verify-tag` reads it.
+pub fn verify_tag_signature(bytes: &[u8], signers: &[Signer]) -> Option<SignatureVerdict> {
+    let (payload, signature) = split_signed_tag(bytes)?;
+    Some(verify_split(&payload, &signature, signers))
+}
+
+/// The verdict on `signature` over `payload`.
+fn verify_split(payload: &[u8], signature: &str, signers: &[Signer]) -> SignatureVerdict {
     let entries: Vec<(&str, Entry)> = signers
         .iter()
         .flat_map(|s| {
@@ -568,10 +612,10 @@ pub fn verify_commit_signature(
         })
         .collect();
     let first = signature.split('\n').next().unwrap_or("").trim();
-    Some(match first {
-        "-----BEGIN SSH SIGNATURE-----" => verify_ssh(&signature, &payload, &entries),
-        "-----BEGIN PGP SIGNATURE-----" => verify_openpgp(&signature, &payload, &entries),
+    match first {
+        "-----BEGIN SSH SIGNATURE-----" => verify_ssh(signature, payload, &entries),
+        "-----BEGIN PGP SIGNATURE-----" => verify_openpgp(signature, payload, &entries),
         "-----BEGIN SIGNED MESSAGE-----" => verdict("x509", None, Some("unsupported")),
         _ => verdict("unknown", None, Some("malformed")),
-    })
+    }
 }

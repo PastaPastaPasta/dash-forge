@@ -1179,6 +1179,40 @@ impl<'a> RepoService<'a> {
         Ok(out)
     }
 
+    /// One ref's key (`sha256(ref_name)`, hex), its complete update history (both types) and
+    /// the config timeline it is judged by: what [`rules::provenance::release_provenance`]
+    /// folds for a release's tag. A private
+    /// repository's comes from its keys: the updates whose decrypted name is `ref_name`,
+    /// restated with the public key, and the decrypted config timeline.
+    pub async fn ref_history(
+        &self,
+        repo: &RepoRef,
+        ref_name: &str,
+    ) -> Result<(String, Vec<rules::RefUpdate>, Vec<ConfigDoc>)> {
+        let hash = crate::backends::sha256(ref_name.as_bytes());
+        let (scope, contract) = self.readable(repo).await?;
+        let state = crate::refs::read_git_state(
+            self.client,
+            &contract,
+            &scope,
+            crate::history::Freshness::Now,
+        )
+        .await?;
+        if repo.visibility == Visibility::Private {
+            let kr = self.keyring(repo).await?;
+            kr.require_key(repo)?;
+            let updates = crate::refs::private_updates_of(&state, &kr)
+                .remove(ref_name)
+                .unwrap_or_default();
+            return Ok((hex::encode(hash), updates, kr.config().history.clone()));
+        }
+        Ok((
+            hex::encode(hash),
+            state.ref_history(hash),
+            state.config_history(),
+        ))
+    }
+
     /// The protected-ref globs in force now (the newest `config`).
     pub async fn protected_patterns(&self, repo: &RepoRef) -> Result<Vec<String>> {
         if repo.visibility == Visibility::Private {
