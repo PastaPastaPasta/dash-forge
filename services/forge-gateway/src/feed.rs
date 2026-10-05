@@ -168,7 +168,7 @@ mod tests {
                 link: "https://w/a/commit/00".into(),
                 updated_ms: 1000,
                 author: Some("Ann".into()),
-                content: Some("x\u{0}y".into()),
+                content: Some("x\u{0}y\nz".into()),
             }],
         };
         let xml = f.render();
@@ -176,8 +176,8 @@ mod tests {
         assert!(xml.contains("href=\"https://g/feed?a=1&amp;b=2\""));
         assert!(xml.contains("&lt;/title&gt;&lt;script&gt;"));
         assert!(
-            xml.contains("<content type=\"text\">xy</content>"),
-            "control characters dropped"
+            xml.contains("<content type=\"text\">xy\nz</content>"),
+            "forbidden control characters dropped, line breaks kept"
         );
         assert!(xml.contains("<updated>1970-01-01T00:00:01Z</updated>"));
     }

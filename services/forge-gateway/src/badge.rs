@@ -109,7 +109,8 @@ fn text_width(s: &str) -> f64 {
         .sum()
 }
 
-/// `s` safe inside XML text and attributes.
+/// `s` safe inside XML text and attributes. Characters XML 1.0 forbids (C0 controls other
+/// than tab, line feed and carriage return; U+FFFE, U+FFFF) are dropped; line breaks are kept.
 pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -119,7 +120,8 @@ pub fn xml_escape(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            c if c.is_control() => {}
+            '\t' | '\n' | '\r' => out.push(c),
+            '\u{0}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => {}
             c => out.push(c),
         }
     }
@@ -210,6 +212,14 @@ mod tests {
         assert!(s.contains("&lt;v1&amp;&quot;x&quot;&gt;"));
         assert!(!s.contains("<v1"));
         assert!(s.contains("#007ec6"));
+    }
+
+    #[test]
+    fn xml_escape_keeps_line_breaks_and_drops_what_xml_forbids() {
+        assert_eq!(xml_escape("a\nb\tc\r\nd"), "a\nb\tc\r\nd");
+        assert_eq!(xml_escape("x\u{0}\u{1b}\u{1f}y"), "xy");
+        assert_eq!(xml_escape("p\u{fffe}\u{ffff}q"), "pq");
+        assert_eq!(xml_escape("é\u{85}\u{fffd}"), "é\u{85}\u{fffd}");
     }
 
     #[test]
