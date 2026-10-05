@@ -20,6 +20,7 @@ import {
   type ForgeIds,
 } from './deployments'
 import storageDefaults from '../../forge-contracts/config/storage-defaults.json'
+import { userQuorumUrl } from './quorum-url'
 
 // ---------------------------------------------------------------------------
 // Network
@@ -207,10 +208,18 @@ export const NETWORKS: Readonly<Record<Network, NetworkConfig>> = RESOLVED.netwo
  * defaults compiled into evo-sdk's `testnetTrusted()` / `mainnetTrusted()`; a devnet uses its
  * configured `quorumBaseUrl` (`NEXT_PUBLIC_QUORUM_URL`, else the deployment file), else
  * `quorums.<name>.networks.dash.org` — what `service.ts` hands the SDK (parity with forge-core
- * `Network::quorum_base_url`). The trust panel discloses this, so it must name the endpoint
- * the SDK actually uses. `''` for a devnet config with no name (one this build does not target).
+ * `Network::quorum_base_url`). A quorum service the reader set in Settings
+ * (`lib/quorum-url.ts`) replaces it. The trust panel discloses this, so it must name the
+ * endpoint the SDK actually uses. `''` for a devnet config with no name (one this build does
+ * not target).
  */
 export function quorumEndpoint(config: NetworkConfig): string {
+  const fallback = defaultQuorumEndpoint(config)
+  return fallback === '' ? '' : userQuorumUrl(config.key) ?? fallback
+}
+
+/** {@link quorumEndpoint} before the reader's own choice: the network's quorum service. */
+export function defaultQuorumEndpoint(config: NetworkConfig): string {
   switch (config.network) {
     case 'testnet':
     case 'mainnet':
