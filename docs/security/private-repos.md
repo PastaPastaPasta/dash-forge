@@ -120,15 +120,76 @@ doc nonce  = HMAC-SHA256(K_hedge,e, 0x02 ‖ rnd(32) ‖ AD ‖ SHA-256(plaintex
 
 `rnd(32)` is fresh CSPRNG output. Production `seal` APIs (`PackCipher::seal`, `RepoCodec::seal`, and their TypeScript equivalents) take **no** caller-supplied `fileId` or nonce; the deterministic variants used to produce the §11 vectors live behind a test-only constructor (`#[cfg(test)]` / a `vectors` build flag that release builds do not set).
 
+### 3.7 Artifacts sealed to specific people (header version 0x02)
+
+An artifact for a list of people rather than the repository's members (a Maintainers environment, a branch grant) is keyed by a fresh per-artifact `K_obj` wrapped to each recipient, exactly as a specific-people letter is (§4.1, version 0x04). Its header carries the letter's slot block where version 0x01 carries its epoch; every other field keeps its meaning:
+
+```
+offset      size      field
+0           4         magic         "DFPK"
+4           1         version       0x02
+5           1         segLog2       L, as §3.2 (writers 14, readers 10..20)
+6           2         reserved      0x0000
+8           1         n             1..16 recipients, the sender first
+9           4         senderKeyId   u32, the manifest owner's ENCRYPTION key
+13          32        COMMIT_obj
+45          64·n      slots         IV ‖ AES-256-CBC-PKCS7(S, IV, 0x02 ‖ KCV_obj ‖ K_obj), as §4.1
+45+64n      8         plaintextLen  u64
+53+64n      16        fileId        fresh CSPRNG output (K_obj is fresh, so no hedge key exists)
+69+64n      …         segments      as §3.2, AD = the whole header
+K_pack,obj,fileId = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-pack" ‖ 0x00 ‖ 0x02 ‖ fileId, 32)
+```
+
+The sealed length is `69 + 64·n + plaintextLen + 16·nSeg`. A reader checks the manifest's `sizeBytes`, then the header (magic, version 0x02, `L`, reserved, `1 ≤ n ≤ 16`, the length), then applies the letter reader rule of §4.1 with the `packManifest`'s `$ownerId` as the sender (`malformed` when its key `senderKeyId` is not an `ECDSA_SECP256K1` `ENCRYPTION` key, `notARecipient` when no slot opens to `COMMIT_obj`), then every segment tag (`SealedPackCorrupt`). The header is every segment's AD, so a changed slot fails every reader. An artifact has no TLV, so it carries no recipient list: a format that wants one (an environment snapshot) puts it in its own plaintext. The whole artifact is opened at once; there is no ranged read of a version-0x02 artifact.
+
 ## 4. Encrypted document fields
 
-### 4.1 `enc` layout, version 0x01 (issue, patch, comment, review, event, refUpdate, protectedRefUpdate)
+### 4.1 `enc` layouts of content: version 0x01 (private repositories), 0x03 (members-only), 0x04 (specific people)
+
+**Version 0x01** (issue, patch, comment, review, event, refUpdate, protectedRefUpdate of a private repository):
 
 ```
 enc = 0x01 ‖ nonce(12) ‖ AES-256-GCM(K_doc,e, nonce, plaintext, AD) ‖ tag(16)
 ```
 
 Minimum length 29 bytes (schema `minItems` 28 admits it). Maximum plaintext per type is `maxItems − 29`: **5091 bytes** for collab types, **1507 bytes** for `refUpdate`/`protectedRefUpdate` under the forge-core `enc.maxItems` of 1536 (§13; 995 bytes under the earlier 1024).
+
+**Which version where.** A document's `vis` equals its repository's visibility (consensus checks it), and it decides the content versions a reader admits: **0x01 only when `vis` is private, 0x03 only when `vis` is public**, 0x04 in either; `config` is 0x02 in both (§4.2). Any other pairing is `Malformed` at the framing step, before a key is used: a private repository's v0x01 bytes on a public document, and a v0x03 `enc` on a private one (vectors `mixed_doc_open__v01_relabelled_refused`, `…__v03_in_private_refused`). Writers never produce one (`mixed_doc_seal__v03_private_header_refused`).
+
+**Version 0x03: members-only content of a public repository.** The repository's members hold an epoch chain exactly as a private repository's (§5; its anchors are `config` documents with `vis: "public"`, no settings and an empty TLV). Each document is sealed under a per-object key bound to its nonce and its AD, and carries a key commitment:
+
+```
+enc        = 0x03 ‖ nonce(12) ‖ COMMIT_obj(32) ‖ AES-256-GCM(K_doc,obj, nonce, TLV, AD') ‖ tag(16)
+K_obj      = HKDF-Expand(PRK_e, "dash-forge/v2/obj" ‖ 0x00 ‖ u32(e) ‖ nonce ‖ SHA-256(AD), 32)
+PRK_obj    = HKDF-Extract(salt = repoId, IKM = K_obj)
+K_doc,obj  = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-doc" ‖ 0x00, 32)
+COMMIT_obj = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-commit" ‖ 0x00, 32)
+AD'        = AD (§4.4, enc[0] = 0x03) ‖ COMMIT_obj
+```
+
+The nonce is hedged as §3.6 (`K_hedge,e`, over the AD with `enc[0] = 0x03` and the padded TLV). Overhead is 61 bytes, so a collab type's TLV holds 5,059 bytes and a ref update's 1,475. A reader derives `K_obj` from `PRK_e`, the nonce and the AD, and **compares `COMMIT_obj` before GCM runs**: a mismatch is `Unreadable(CommitMismatch)`, never `BadTag` and never dropped silently (`mixed_doc_open__commit_mismatch`). Then GCM under `K_doc,obj` with `AD'`, the TLV, the ref-name hash check (§4.5; a members PR may instead name a public branch by its public `sha256`), and the late-content rule (§8.2) as for v0x01. Why each part:
+
+- **The AD is in `K_obj`.** A revealed `K_obj` (making one document public) opens that revision and nothing else, and cannot be used to mint content members accept: re-encrypting other text under it as another document gives another AD, so members derive another key and refuse it as `CommitMismatch` (`…__forged_after_reveal_refused`, `…__moved_to_other_target`).
+- **The commitment.** AES-GCM does not commit to its key. `COMMIT_obj` lets a member check that a revealed key is the one they derive, and anyone holding a revealed key check that it is the key the ciphertext was made under.
+- **GCM runs under `K_doc,obj`**, never under `K_obj`, so one key never feeds both the commitment and AES.
+
+**Version 0x04: specific-people letters**, in public and private repositories, always with `epoch = 0`. A fresh `K_obj` (CSPRNG output, per seal and per revision) is wrapped by ECDH to each recipient's ENCRYPTION key:
+
+```
+enc  = 0x04 ‖ n(u8, 1..16) ‖ senderKeyId(u32) ‖ COMMIT_obj(32) ‖ n × slot(64)
+       ‖ nonce(12) ‖ AES-256-GCM(K_doc,obj, nonce, TLV, AD') ‖ tag(16)                        (66 + 64·n)
+slot = IV(16) ‖ AES-256-CBC-PKCS7(S, IV, 0x02 ‖ KCV_obj(14) ‖ K_obj(32))
+S    = SHA-256((y & 1 | 2) ‖ x) of senderEncPriv · recipientEncPub          (derive_shared_key_ecdh)
+PRK_obj, K_doc,obj, COMMIT_obj as for 0x03;   KCV_obj = COMMIT_obj[0..14]
+H    = enc[1 .. 38 + 64·n];   AD' = AD (§4.4, enc[0] = 0x04, epoch = 0) ‖ SHA-256(H)
+TLV  = content records ‖ tag 25 (recipient identity id) × n, in slot order ‖ padding
+```
+
+A slot is exactly the `encryptedFor` byte string (`ecdh-secp256k1-aes256-cbc`, §5.1's scheme) with a fresh random IV; `S` hashes the whole 33-byte compressed point, parity byte included. Its version byte `0x02` keeps a letter slot and a `repoKey` wrap (`0x01 ‖ KCV_e ‖ K_e`) from ever parsing as each other (`named_envelope_open__slot_version_1_refused`). The nonce is random (there is no hedge key; `K_obj` is used once). The sender always takes slot 0, so it can read its letter back, and counts toward the 16; no identity appears twice. Framing is 258 bytes for 3 recipients and 1,090 for 16, plus 35 bytes per recipient id in the TLV.
+
+*Writer rule.* Each recipient key is that identity's highest-id usable ENCRYPTION key (enabled, `ECDSA_SECP256K1`, unbound or bound to forge-core), never a DECRYPTION key. *Reader rule.* Consensus checks none of this. The sender key is the document owner's key `senderKeyId` and nothing else; it must be an `ECDSA_SECP256K1` key of purpose `ENCRYPTION` (disabled is allowed for reading), else `Malformed` (`…__wrong_sender_key_type`, `…__wrong_sender_key_purpose`, `…__sender_key_missing`). One ECDH per key the reader holds, then every slot is tried; a slot counts only when its PKCS#7 padding, the version byte `0x02`, the `KCV_obj` prefix of the header's `COMMIT_obj` and the full `COMMIT_obj` re-derived from the unwrapped `K_obj` all match; none is `notARecipient`. Then GCM (`badTag`: a header, slot or body that changed, `…__swapped_slots`, `…__other_slot_flipped`), then `count(tag 25) = n` and the reader's own identity at its slot index, else `Malformed`. The recipient list is shown as "listed by the sender". The commitment is what stops a sender showing two recipients two letters (`…__equivocating_slot`: a slot wrapping another key fails the KCV of the header's commitment). A PKCS#7 or KCV oracle does not exist: a reader decrypts only under ECDH with the document's own `$ownerId`, whose signature covers every `enc` byte. A client caches `S` per (sender key, reader key) for the session. `open_content` (§8.1) holds no ECDH keys: a well-framed v0x04 document is `Unreadable(NoKey)` there and opens through the letter reader.
+
+**Padding** (versions 0x03 and 0x04). GCM lengths are exact, so a short reply is recognisable by its size. Issue, PR, comment and review TLVs end with one tag-64 record of zero bytes that brings the TLV to the next multiple of 64 bytes (§4.3); a TLV already on a multiple gains a whole 64, as a sealed release's does (§16.2). The record never takes the TLV past the room the envelope leaves and is left out when its 3-byte header does not fit (`mixed_doc_seal__v03_long_body`). Ref updates, events and configs are not padded. Readers skip the record like any extension record (`mixed_doc_open__pad_roundtrip`).
 
 ### 4.2 `enc` layout, version 0x02 (config, always)
 
@@ -163,16 +224,20 @@ The plaintext is a sequence of records `tag(u8) ‖ len(u16) ‖ value`. No JSON
 | 14 | `importedUrl` | UTF-8 | issue, patch, comment, review, release (`imported.url`) | 1–300 B |
 | 15 | `eventValue` | UTF-8 | event (`value`: a label or milestone name, a dismiss reason, an assignee, a retarget base) | 1–120 chars, ≤ 480 B |
 | 16–21 | a release's `tag`, `name`, `targetOid`, flags, `importedCreatedAt`, `assetManifest` | see §16.2 | release only | §16.2 (a release also carries tags 2, 13 and 14) |
+| 22–24 | a members-only ref update's real `newOid` (22) and `prevOid` (23), a head update's real head (24) | bytes | **reserved**: defined for later clients, refused by every reader today | exactly 20 or 32 B |
+| 25 | a letter's recipient identity id, **repeatable**, consecutive, in slot order | bytes | `enc` v0x04 only (§4.1) | exactly 32 B each |
+| 27 | the salt of an OID blind | bytes | **reserved**: defined for later clients, refused by every reader today | exactly 32 B |
+| 64 | padding | zero bytes | members-only and specific-people documents (§4.1) | skipped |
 
 **Strictness** (any violation is `Malformed`):
 
-- Records are in strictly ascending tag order, except that consecutive tag-7 records repeat; any other repeated tag is malformed.
-- A record whose declared `len` runs past the end of the plaintext, or fewer than 3 trailing bytes after the last complete record, is malformed. There are no padding bytes.
-- Tags 22–63 are **reserved**: a record with one is malformed. Tags 64–255 are **extension** tags: a reader skips them (forward compatibility) and never interprets them. (Tags 16–21 were reserved before §16; they are release-only, so in every other kind they are still malformed, as "not listed for the kind" below.)
+- Records are in strictly ascending tag order, except that consecutive tag-7 records repeat, and so do consecutive tag-25 records in a letter; any other repeated tag is malformed (two padding records included, `mixed_doc_open__pad_twice_refused`).
+- A record whose declared `len` runs past the end of the plaintext, or fewer than 3 trailing bytes after the last complete record, is malformed. There are no padding bytes outside records: padding is the tag-64 record of §4.1, which, as an extension record, comes after every other record.
+- Tags 22–63 are **reserved**: a record with one is malformed. Two exceptions are defined: **tag 25** is a field of `enc` v0x04 only (in v0x01 and v0x03 it is still reserved, `mixed_doc_open__recipient_tag_refused`), and tags **22–24 and 27** are defined above for members-only branches but stay reserved, so that a client that does not fold them refuses such a document instead of reading it without them (`mixed_doc_open__blind_tags_reserved`). Tags 64–255 are **extension** tags: a reader skips them (forward compatibility) and never interprets them; tag 64 is the padding record. (Tags 16–21 were reserved before §16; they are release-only, so in every other kind they are still malformed, as "not listed for the kind" below.)
 - A tag not listed for the document's kind (tag 3 in an issue, say) is malformed. Tags 11 and 12 are allowed only in a config with `e ≥ 1` (never epoch 0); tag 11's only value is the one byte `0x01`. A **burned** config (tag 11) carries `prevEpoch` but neither `prevEpochKey` nor `skipEpochKey`: its key may sit with someone who never held the key below it.
 - Every UTF-8 value must be valid UTF-8, within the cap above, and non-empty unless the cap says otherwise; a zero-length record for a field with `minLength 1` counts as absent. Fixed-size tags must be exactly their size.
 - Required fields by kind: issue/patch `title`; comment `body`; event `eventValue` (an event without a value is not sealed, see §7); refUpdate/protectedRefUpdate `refName`; every config with `e ≥ 1`, anchor or not, `prevEpoch`, and unless burned `prevEpochKey` (neither is allowed when `e = 0`): any config of an epoch can become its anchor when an earlier one's author stops being a maintainer (§5.3), and it must then still chain to the previous epoch, so a writer copies the anchor's whole chain link (`prevEpoch`, `prevEpochKey`, `skipEpochKey`, the burned flag) into every later config of the epoch; review and epoch-0 config have none. An empty plaintext is therefore valid only for a review or an epoch-0 non-anchor config.
-- Combined size: the `enc` cap (5120) minus the v0x01 framing (29) minus 3 bytes per TLV record the type carries: issue title + body ≤ 5085 bytes; PR title + body + `baseRefName` + `sourceRefName` ≤ 5079; comment `body` + `path` ≤ 5085; review body ≤ 5088. An imported document's `imported.author` / `imported.url` (tags 13, 14) share the same `enc`, so they reduce what is left for the text. The web app and `dg` enforce them before encrypting and say so in the composer (vectors `private_collab_seal__*_at_cap` / `*_over_cap`).
+- Combined size: the `enc` cap (5120) minus the v0x01 framing (29) minus 3 bytes per TLV record the type carries: issue title + body ≤ 5085 bytes; PR title + body + `baseRefName` + `sourceRefName` ≤ 5079; comment `body` + `path` ≤ 5085; review body ≤ 5088. Under v0x03 the framing is 61 bytes, so 32 fewer bytes in each (a comment body alone ≤ 5,056, `mixed_doc_seal__v03_body_over_cap`); under v0x04 it is `66 + 64·n` plus `35·n` for the recipient records (a comment body at n = 16 ≤ 3,467). The padding record is added only where it fits and never counts against the text. An imported document's `imported.author` / `imported.url` (tags 13, 14) share the same `enc`, so they reduce what is left for the text. The web app and `dg` enforce them before encrypting and say so in the composer (vectors `private_collab_seal__*_at_cap` / `*_over_cap`).
 
 ### 4.4 Associated data
 
@@ -180,7 +245,7 @@ The plaintext is a sequence of records `tag(u8) ‖ len(u16) ‖ value`. No JSON
 AD = "dash-forge/v2/doc" ‖ 0x00 ‖ enc[0] ‖ repoId(32) ‖ $ownerId(32) ‖ u32(epoch) ‖ docType(ASCII) ‖ 0x00 ‖ bind
 ```
 
-`enc[0]` is the version byte (`0x01` or `0x02`), so a ciphertext cannot be re-framed under another version. `docType` is the contract's type name (`issue`, `patch`, `comment`, `review`, `event`, `refUpdate`, `protectedRefUpdate`, `config`, `release`). `bind` is the type's immutable plaintext identity:
+`enc[0]` is the version byte (`0x01` to `0x04`), so a ciphertext cannot be re-framed under another version. A specific-people letter (v0x04) has no epoch keys: its AD is built from `repoId` alone with the literal `epoch = 0`, and is then extended to `AD'` by `SHA-256(H)` (§4.1); a config, whose bind is `COMMIT_e`, has no such AD. `docType` is the contract's type name (`issue`, `patch`, `comment`, `review`, `event`, `refUpdate`, `protectedRefUpdate`, `config`, `release`). `bind` is the type's immutable plaintext identity:
 
 | type | bind |
 |---|---|
@@ -395,6 +460,8 @@ Writers re-read anchors before every write (§5.3), so an honest client rarely w
 
 **TypeScript** (`forge-web`): `crypto.subtle` for AES-GCM, HKDF, HMAC and SHA-256 (the app is served over HTTPS/localhost, so a secure context is guaranteed). `K_e` is imported once as a **non-extractable** HKDF base key; `K_doc,e`, `K_pack,e,f`, `K_ref,e`, `K_tag,e` and `K_hedge,e` are derived with `deriveKey` as non-extractable `AES-GCM`/`HMAC` keys, and only `KCV_e`, `COMMIT_e` (which must be compared as bytes) and `prevEpochKey` (which must be re-imported) go through `deriveBits`/raw bytes. `@noble/hashes` (present) for HMAC/HKDF in tests and for parity checks; it must produce identical bytes. Wrapping through `@dashevo/evo-sdk` pinned to the exact version `4.2.0-beta.7` (no range specifier) via `sdk.encryptedFor.encrypt/decrypt/envelope`. No `@noble/ciphers`, no `@noble/curves` in the app path.
 
+Specific-people letters and version-0x02 artifacts (§3.7, §4.1) do not go through the SDK's `encryptedFor` helpers, which need a declared property and draw their own IV: Rust uses `platform_encryption` through `forge_core::envelope` (one ECDH per key pair, `envelope::SharedKey`), TypeScript `@noble/secp256k1` `getSharedSecret` (already in the app path; the SHA-256 is over the whole compressed point) and WebCrypto AES-CBC. Both harnesses open every vector slot through the SDK's own decrypt (rs-sdk `decrypt_property`, the evo-sdk facade) with the `repoKey.wrapped` declaration as a carrier, so any drift of the scheme fails a test.
+
 Both stacks are validated against §11 before either ships; a byte difference between them is a release blocker.
 
 ## 11. Conformance vectors
@@ -439,6 +506,12 @@ New vector cases in `forge-contracts/vectors/` with `"rules": "v2"`, one file pe
 `accept_wrap_from_current_maintainer`, `reject_wrap_from_non_maintainer`, **`revoked_maintainer_wrap_not_current`** (a wrap whose author has no current `maintainer` document is ignored even though it predates the revocation), **`removed_maintainer_preposted_anchor_ignored`** (a config for `n+1` by a since-removed maintainer, earlier by block height than the real one, is not the anchor; the current maintainer's later config is), `anchor_first_by_block_height_then_id_among_current_maintainers`, `anchor_created_at_ms_not_used_for_order`, **`anchor_does_not_open_alert_no_skip`** (the first current-maintainer config for `e` has a commitment the reader's key does not match → `KeyMismatch`, and a later config for `e` that does match is *not* used), `unanchored_epoch_not_writable_and_unreadable`, `current_epoch_is_highest_anchored`, **`epoch_gap_ignored`** (a config above a missing epoch number is not an anchor: `EpochGap`), **`preposted_future_config_ignored`**, **`preposted_config_ignored_after_regrant`** (a config posted before the epoch below it had its key never counts), `preposted_after_other_key_ignored`, `reanchor_of_middle_epoch_keeps_epochs_above`, `anchor_tie_at_same_height_after_prev_by_id`, `huge_epoch_from_removed_maintainer_ignored`, `huge_epoch_from_current_maintainer_is_a_gap`, `chain_walk_reaches_epoch_0_from_one_wrap`, `chain_with_skipped_epoch_number` (now a gap), **`chain_prev_epoch_must_be_e_minus_1`**, **`burned_anchor_has_no_prev_key`**, **`skip_key_walks_past_burned`**, `consecutive_burned_skip`, **`missing_skip_key_chain_broken`**, `chain_prev_epoch_must_be_smaller` (`prevEpoch ≥ e` → `ChainBroken`), `chain_prev_epoch_without_anchor` (no epoch 0: a gap), **`burned_epoch_not_writable`**, `burned_epoch_chain_walks`, **`burned_current_requires_rotation`**, `burned_flag_only_on_the_anchor_counts`, **`chain_key_must_open_first_anchor_of_prev`** (`prevEpochKey` commits to a config for `prevEpoch` that is not its anchor → `ChainBroken`), **`rotation_required_when_wrapped_non_member`** (H2: `wrapped(n)` contains a removed member → the repair check returns `Rotate`, and no write epoch until it lands), `missing_wrap_repaired_without_rotation`, `wrap_to_disabled_key_requires_repair`, **`late_content_hidden_after_next_anchor_plus_grace`** (document under `n` at height `H + 241` by a removed member → `Unreadable(Late)`), `late_content_within_grace_shown`, `late_content_from_current_member_shown`, **`reanchored_next_epoch_keeps_first_height`** (`H` is `stated(n+1)`: a re-anchor of `n+1` after its author's removal does not move the cut-off later, for content or for the suspect flag), `burned_next_epoch_reanchored_keeps_first_height` (the same for a burned `n+1`), `late_cutoff_ignores_other_key_config` (a config for `n+1` under another key does not move it either), `config_without_enc_not_a_candidate`, `manifest_under_old_epoch_flagged_suspect`.
 
 **`private_release_seal__*` / `private_release_open__*`**: sealed releases, listed in §16.7.
+
+**`mixed_doc_seal__*` / `mixed_doc_open__*`** (members-only, `enc` v0x03; the fixed inputs above, `vis: "public"`): a comment on `targetId = 0x33×32` with body `members-only: the fix is in sec/cve-1` under `K_0` and the fixed nonce gives `K_obj = 4faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb6958`, `COMMIT_obj = f9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f`, the padded TLV `0200256d656d626572732d6f6e6c793a207468652066697820697320696e207365632f6376652d31400015` followed by 21 zero bytes (64 B), and `enc` (125 B) `03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c84f9892eab0fdb7a611874cf68f179a64d1f255e203d2fcd039a43f1e5e4427ffea6920a5296635807834ce89db33640789703539675c630fe4e0e9e440fa0941eba61eeb6f2957e4f93ebbccfe`. The seal cases cover an issue, a review, an inline comment, a body at the v0x03 room (no padding record fits), an empty review (one bucket), an unpadded event, and the writer's refusals (a private header, a config, a body one byte over, a field not of the kind). The open cases: `member`, `outsider_placeholder` (no key: `NoKey`), `no_lane` (`NoEpoch`), `commit_mismatch`, `body_tampered` (`BadTag`), `forged_after_reveal_refused`, `moved_to_other_target`, `v01_relabelled_refused`, `v01_byte_relabelled_as_v03` (`CommitMismatch`), `v03_in_private_refused`, `v03_too_short`, `pad_roundtrip`, `pad_mid_bucket`, `pad_twice_refused`, `pad_before_content_refused`, `recipient_tag_refused`, `blind_tags_reserved`, `late`, `config_anchor_public`.
+
+**`named_envelope__n1|n3|n16` / `named_envelope_open__*`** (specific-people letters, `enc` v0x04; parties derived from `SHA-256("dash-forge vectors: named <name>")`, identities from the `id` rule of the epoch vectors): the sender alice (`priv 2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3`, pub `021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082`) writing to herself gives `S = c7524c877dacb46526e61feb3284a734dce449c07bfb0aae69308c5062f8c7f5`, `COMMIT_obj = 2dc65817226a703692c4718be4d43ac458a7ef18f38f925fe833b0c134e6ccd1` and a 258-byte `enc`. Every vector lists each recipient's open (fields, recipient list, slot). The negatives: `swapped_slots`, `not_a_recipient`, `other_slot_flipped`, `equivocating_slot`, `wrong_sender_key_type`, `wrong_sender_key_purpose`, `sender_key_missing`, `other_owner`, `second_key_opens`, `recipient_list_short`, `reader_not_at_its_slot`, `epoch_not_zero`, `slot_version_1_refused`.
+
+**`named_artifact__n3` / `named_artifact_open__*`** (§3.7): a 512-byte environment snapshot sealed to three people; the negatives `slot_flipped` (`notARecipient` for the owner of the slot, `SealedPackCorrupt` for the others), `size_mismatch`, `wrong_sender_key_type`, `truncated`, `version_1_refused`.
 
 ## 12. Changes this design asks of other documents and code
 

@@ -318,6 +318,14 @@ def summary():
     out["release"] = dict(K_tag_e0=H(k_tag(K0, 0)), tagName_e0=tn, tagName_e1=tag_name(K1, 1, "v1.0.0"),
                           tagName_branch_e0=tag_name(K0, 0, "refs/heads/main"), pt=H(release_tlv(REL_V1)), enc=H(e),
                           manifest_packHash=MANIFEST_HASH)
+    _, ko, C, pt, e = seal_members(MDOC, K0, tlv((2, MBODY.encode())))
+    out["members_comment"] = dict(kObj=H(ko), commit=H(C), tlv=H(pt), enc=H(e), enc_len=len(e))
+    k_obj, nonce, ivs = named_inputs(1)
+    body = "A letter to 1 people (the sender included): the embargo ends on Friday."
+    letter_shared, C, _, _, _, e = seal_named(named_doc(), NAMED_SENDER, 4, [NAMED_SENDER], tlv((2, body.encode())),
+                                              k_obj, nonce, ivs)
+    out["letter_n1"] = dict(sender_priv=NAMED_SENDER["priv"].to_bytes(32, "big").hex(), sender_pub=H(NAMED_SENDER["pub"]),
+                            shared=H(letter_shared[0]), commit=H(C), enc_len=len(e))
     return out
 
 
@@ -391,6 +399,18 @@ DOC = {
     ("release", "pt"): "020015466972737420737461626c652072656c656173652e10000676312e302e3011000d56657273696f6e20312e302e30120014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa130001004000110000000000000000000000000000000000",
     ("release", "enc"): "01000102030405060708090a0b1c703ab4aa409f0d7f0f60d2a247982ecb7813a304816aa94996842aa8b3f5df2171308684245164672e34ca3044f13df6aed239822c11b72160aaf5710b729c53b3aa03727feefeb272ab1c48a938ea8a155bc02d513d87c976c4447d35583d1ece6f0259a4661d29a4f7bba9d2ab92",
     ("release", "manifest_packHash"): "4a3f5093cd8d639b3f998ec93e3ebb5628c53b819f12895a4a54c62f6e8746fa",
+    # §4.1 members-only (v0x03) and specific-people (v0x04) envelopes
+    ("members_comment", "kObj"): "4faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb6958",
+    ("members_comment", "commit"): "f9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f",
+    ("members_comment", "tlv"): "0200256d656d626572732d6f6e6c793a207468652066697820697320696e207365632f6376652d3140001500"
+                                "0000000000000000000000000000000000000000",
+    ("members_comment", "enc"): "03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f"
+                                "68c2c84f9892eab0fdb7a611874cf68f179a64d1f255e203d2fcd039a43f1e5e4427ffea6920a529663580783"
+                                "4ce89db33640789703539675c630fe4e0e9e440fa0941eba61eeb6f2957e4f93ebbccfe",
+    ("members_comment", "enc_len"): 125,
+    ("letter_n1", "shared"): "c7524c877dacb46526e61feb3284a734dce449c07bfb0aae69308c5062f8c7f5",
+    ("letter_n1", "commit"): "2dc65817226a703692c4718be4d43ac458a7ef18f38f925fe833b0c134e6ccd1",
+    ("letter_n1", "enc_len"): 258,
 }
 
 
