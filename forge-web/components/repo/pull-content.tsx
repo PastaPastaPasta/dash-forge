@@ -58,6 +58,7 @@ import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
+import { RulesAtMerge } from './rules-at-merge'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
@@ -65,6 +66,7 @@ import { isHidden } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
 import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine } from '@/lib/view/pull-actions'
 import {
+  baseRefReaders,
   createComment,
   recordPolicyBypass,
   requestRerun,
@@ -1460,6 +1462,10 @@ function PullPage({
                     </Button>
                   )}
                 </section>
+              ) : null}
+
+              {merged ? (
+                <RulesAtMerge sdk={sdk} repo={repo} thread={thread} configHistory={() => baseRefReaders(sdk!, repo).configHistory()} pageChecks={checks.data} />
               ) : null}
 
               {/* Merge box */}
