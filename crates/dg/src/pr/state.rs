@@ -153,12 +153,26 @@ pub async fn edit(ctx: &Ctx, a: &crate::PrEditArgs) -> Result<()> {
     };
     let long = body
         .as_deref()
-        .map(|b| crate::long_body::Planned::new(&pr.s.repo, field, patch.imported.as_ref(), b))
+        .map(|b| {
+            crate::long_body::Planned::new(
+                &pr.s.repo,
+                field,
+                patch.imported.as_ref(),
+                b,
+                patch.audience,
+            )
+        })
         .transpose()?;
     // a longer title leaves a private long body less room: its prefix is cut again
     let refit = (a.title.is_some() && body.is_none())
         .then(|| {
-            crate::long_body::refit_kept(&pr.s.repo, field, patch.imported.as_ref(), &patch.body)
+            crate::long_body::refit_kept(
+                &pr.s.repo,
+                field,
+                patch.imported.as_ref(),
+                &patch.body,
+                patch.audience,
+            )
         })
         .flatten();
     let edit = crate::meta::Edit {

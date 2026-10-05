@@ -209,6 +209,24 @@ Fix: ask the maintainer named in the cause to re-wrap the older epoch to you; `d
 
 Fix: a maintainer runs `dg repo keys repair <owner>/<repo>`; then try again. Nothing was written.
 
+## E311
+
+**No key has been shared with you yet.** You're a member of this public repository and it has members-only content, but no maintainer has shared its key with your encryption key. This happens when you were added by an older Forge build that did not share the key. You can still read everything public, and the members-only items show as placeholders.
+
+Fix: a maintainer's client shares it the next time they open the repo; from the command line a maintainer runs `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, add one first: `dg auth keys add --encryption`.
+
+## E312
+
+**Members-only content is not turned on.** You asked for members-only content (an issue, comment or review only members can read) in a public repository where no maintainer has turned it on.
+
+Fix: a maintainer runs `dg repo members enable <owner>/<repo>`, which sets up a key for the current members (the command shows the cost first). Until then, post it publicly or ask a maintainer.
+
+## E313
+
+**Members-only.** This issue or pull request is members-only: only members of the repository can read it. Everyone can see that it exists, its number, who opened it and when; nothing else.
+
+Fix: ask the repository's owner to add you as a member (`dg collab accept <owner>/<repo>` first, your consent). If you are a member already, see [E311](#e311).
+
 ## E401
 
 **Not enough credits.** The identity's balance cannot pay for the write. The `cause:` line starts with `insufficient credits:` and shows the amount needed and the current balance in DASH.

@@ -1,0 +1,39 @@
+{
+  "name": "sealed_verdict_stale_head",
+  "description": "A members-only approval on an older head does not count, opened or not (the head rule applies to the plaintext commitOid).",
+  "case": "approval_count",
+  "rules": "v2",
+  "input": {
+    "visibility": "public",
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "bob",
+        "verdict": 1,
+        "commitOid": "old00000",
+        "createdAt": 100,
+        "sealed": true,
+        "opened": false,
+        "asMember": true
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 50
+      },
+      {
+        "identity": "bob",
+        "role": "writer",
+        "createdAt": 60
+      }
+    ],
+    "headOid": "head0000",
+    "prAuthor": "alice"
+  },
+  "expected": {
+    "approvers": [],
+    "changesRequested": []
+  }
+}
