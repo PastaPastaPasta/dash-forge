@@ -1,6 +1,6 @@
 {
   "name": "other_slot_flipped",
-  "description": "one byte flipped inside alice's slot (slot 0): r2 still opens its own slot, then GCM fails under the changed H (BadTag); alice's slot no longer opens.",
+  "description": "one byte flipped inside alice's slot (slot 0): alice's slot no longer opens (NotARecipient); r2 still opens its own slot, then GCM fails under the changed H (BadTag).",
   "case": "named_envelope_open",
   "rules": "v2",
   "input": {
@@ -23,9 +23,9 @@
     ],
     "readers": [
       {
-        "identityId": "57ac62e92e47a65079dd33aa33abbbe3434824ff864261f7c56531e92cb21bef",
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
         "keys": [
-          "4960c41071d54b6daf47871e2349e514b5b66717abe00281a2ca8ae4efcbf91e"
+          "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
         ]
       },
       {

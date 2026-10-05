@@ -60,13 +60,19 @@ describe('specific-people letters (enc v0x04)', () => {
       status: 'unreadable',
       reason: 'notARecipient',
     })
-    // a letter is noKey for the epoch-key reader, never misread
+    // a letter is 'letter' for the epoch-key reader, never misread
     const ctx: OpenContext = { keys: new Map(), anchors: new Map(), members: new IdSet([]) }
-    expect(await openContent({ ...doc, enc }, ctx)).toEqual({ status: 'unreadable', reason: 'noKey' })
+    expect(await openContent({ ...doc, enc }, ctx)).toEqual({ status: 'unreadable', reason: 'letter' })
   })
 
   it('the sender is slot 0, ids are unique, at most 16, under epoch 0', async () => {
     const f = { body: 'x' }
+    await expect(sealLetter(REPO_ID, secret(1), 4, doc, f, [alice, { identityId: id(2).subarray(0, 31), publicKey: party(2).publicKey }])).rejects.toBeInstanceOf(
+      MalformedError,
+    )
+    await expect(sealLetter(REPO_ID, secret(1), 4, doc, f, [alice, { identityId: id(2), publicKey: new Uint8Array(65).fill(4) }])).rejects.toBeInstanceOf(
+      MalformedError,
+    )
     await expect(sealLetter(REPO_ID, secret(1), 4, doc, f, [party(2), alice])).rejects.toBeInstanceOf(MalformedError)
     await expect(sealLetter(REPO_ID, secret(1), 4, doc, f, [alice, alice])).rejects.toBeInstanceOf(MalformedError)
     await expect(sealLetter(REPO_ID, secret(1), 4, doc, f, [])).rejects.toBeInstanceOf(MalformedError)

@@ -1,0 +1,40 @@
+{
+  "name": "sender_key_uncompressed",
+  "description": "the owner's key 4 is the same point in 65-byte uncompressed form: a Platform ECDSA_SECP256K1 key is 33 bytes, so malformed.",
+  "case": "named_envelope_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "040300000004d621f7a2533441093911492768c8b0dedf060a6ccff511d499fc8c8743fd02eea903f59800dc53b0c37ef30bb7eade1630a8cca3daf2e5d2ad6788c23ee41899cef9431df40365b0aa20c16570888c36ffd4bc7b7148b7d509f1ef8721fd978100557b9d66a8a6e3d64be8c820ed06b68155bb1be4f944d68940aa4020737531cf417e0c78acdc9aa774c3779ef92709eacd16e51655033ec1edbe3ee8b28a3818e5bdb5a4a95b3b84c7ffea4e0082af5ee3856c92bd2b93b0cdc5ff01da3f8165b16c1e8fe7074041b1d7035f2c77bfea3f7aa23c5f1e7a7055a5f72bd94ce71dfc5ec0c8c829dd5f390066f5cb1ed947ca05a054bc8cac3ddc16d2e20eabc5d76e41f6d5ebe6b3ed04b0086a7447757c7bc38c36541df0bf5b80a6bb57249f9548f215f12dbf92e6314fc12c0611f3b302eea4cc939148953b5e7f63a42e1ef4e96fb94aa1262744c986fdc41fb1beee62a308880938cc0c0d8627229c4483ffe33a6a3803f556397a937f37e369e70f9ef4d54a4a4fe57b04301742f37c9c288dab332e82b3b76388d8a4d5eb99ce1ea8ebe0e77992bc5663512702a12805604ccb0c3bdc9112738088d98c3596d42fea319e35f99cd318502ac8"
+    },
+    "ownerKeys": [
+      {
+        "id": 4,
+        "purpose": 1,
+        "keyType": 0,
+        "data": "041d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff00823aa14682090a01450d64e99a627a69382b04ae3b57180a115a3bf64f9622f9c8"
+      }
+    ],
+    "readers": [
+      {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "keys": [
+          "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "status": "malformed"
+      }
+    ]
+  }
+}

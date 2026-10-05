@@ -903,7 +903,7 @@ fn run(v: &Vector) -> Value {
                 .iter()
                 .map(|x| hex::decode(x).unwrap().try_into().unwrap())
                 .collect();
-            let enc = named::seal_with(
+            let enc = match named::seal_with(
                 &repo_id,
                 &sender,
                 i.sender.key_id.unwrap(),
@@ -913,8 +913,10 @@ fn run(v: &Vector) -> Value {
                 &k_obj,
                 nonce12(&i.nonce),
                 &ivs,
-            )
-            .unwrap();
+            ) {
+                Ok(enc) => enc,
+                Err(e) => return error_json(&e),
+            };
             let n = recipients.len();
             let obj = ObjKeys::derive(&repo_id, &k_obj);
             let head = &enc[1..named::framing(n) - 28];
