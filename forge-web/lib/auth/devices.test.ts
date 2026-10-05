@@ -55,7 +55,7 @@ describe('Devices & keys', () => {
     expect(disableRefusal(other!)).toBeNull()
     expect(disableRefusal(wallet!)).toMatch(/--force/)
     expect(disableRefusal(master!)).toMatch(/master/)
-    expect(disableRefusal(enc!)).toMatch(/private repos open with it/)
+    expect(disableRefusal(enc!)).toMatch(/Lost a device/)
     expect(disableRefusal(gone!)).toMatch(/Already/)
   })
 

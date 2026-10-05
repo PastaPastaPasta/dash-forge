@@ -83,7 +83,7 @@ export function disableRefusal(row: KeyRow): string | null {
   if (row.disabledAt !== null) return 'Already disabled.'
   if (row.role === 'master') return "The master key can't be disabled."
   if (row.thisBrowser) return 'This browser holds it: use Revoke on Platform in Settings.'
-  if (row.role === 'encryption') return 'Your private repos open with it, so it is not disabled here.'
+  if (row.role === 'encryption') return 'Your private repos open with it. To replace it, see Lost a device? below.'
   if (!DISABLEABLE.has(row.role)) return `Not a Forge key: other apps may rely on it. Use dg auth keys disable ${row.keyId} --force.`
   return null
 }

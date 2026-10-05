@@ -14,6 +14,7 @@
 pub mod group;
 mod keys;
 mod new;
+mod rekey;
 pub mod store;
 
 use std::path::PathBuf;
