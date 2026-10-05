@@ -25,6 +25,8 @@ import {
   removeWebhook,
   webhookCost,
   webhookUrlProblem,
+  webhookUrlSecret,
+  CHAT_WEBHOOK_GUIDE,
   writeWebhook,
   type WebhookView,
 } from '@/lib/repo/webhooks'
@@ -83,6 +85,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
 
   const chosen = allEvents ? [] : events
   const urlProblem = url.trim() === '' ? null : webhookUrlProblem(url.trim(), allowQuery)
+  const urlSecret = webhookUrlSecret(url.trim())
   const relayProblem = relay.trim() === '' ? null : identityProblem(relay.trim())
   const eventsProblem = !allEvents && events.length === 0 ? 'Pick at least one event, or all of them.' : null
   const cost = webhookCost(repo, { url: url.trim(), events: chosen })
@@ -216,11 +219,23 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
               <Field label="Payload URL" htmlFor="webhook-url" hint="https:// to a DNS name. Public on Platform: no tokens in it.">
                 <Input id="webhook-url" className="font-mono" spellCheck={false} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://ci.example.com/forge-hook" />
               </Field>
-              {urlProblem ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{urlProblem}</p> : null}
-              {url.includes('?') ? (
+              {urlProblem ? (
+                <p className="text-[12px] text-danger-700 dark:text-danger-400" data-testid="webhook-url-problem">
+                  {urlProblem}
+                  {urlSecret.secret === 'chatService' ? (
+                    <>
+                      {' '}
+                      <a href={CHAT_WEBHOOK_GUIDE} target="_blank" rel="noreferrer" className="hit-area text-forge-700 underline dark:text-forge-400">
+                        How to connect {urlSecret.service}
+                      </a>
+                    </>
+                  ) : null}
+                </p>
+              ) : null}
+              {urlSecret.secret !== 'chatService' && (url.includes('?') || urlSecret.secret === 'pathToken') ? (
                 <label className="flex items-center gap-2 text-dense coarse:min-h-11">
                   <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={allowQuery} onChange={(e) => setAllowQuery(e.target.checked)} />
-                  The query string holds nothing secret
+                  The URL holds nothing secret
                 </label>
               ) : null}
               <Field label="Relay identity" htmlFor="webhook-relay" hint="The forge-relay identity that delivers; the secret is encrypted to its encryption key.">

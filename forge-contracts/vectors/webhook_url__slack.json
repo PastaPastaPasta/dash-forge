@@ -1,0 +1,13 @@
+{
+  "name": "slack",
+  "description": "Any URL on hooks.slack.com is an incoming webhook with its token in the path.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://hooks.slack.com/services/T0000/B0000/XXXXXXXXXXXX"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Slack"
+  }
+}

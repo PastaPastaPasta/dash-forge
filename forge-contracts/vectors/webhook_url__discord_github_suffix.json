@@ -1,0 +1,13 @@
+{
+  "name": "discord_github_suffix",
+  "description": "Discord's GitHub-compatible endpoint (/github) and the old discordapp.com host carry the same token.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://discordapp.com/api/webhooks/1/abc/github"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Discord"
+  }
+}
