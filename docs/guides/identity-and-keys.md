@@ -314,11 +314,13 @@ dg profile delete              # removes the document (part of its deposit comes
 
 Both check the same rules before anything is signed: a name, company or location of at most 60 characters on one line, a bio of at most 500 characters (line breaks are fine), and links that start with `https://` and hold no spaces. Writing a profile costs about 0.0004 DASH the first time and a fraction of that to edit (see [Costs](costs.md#what-each-action-costs)).
 
-**Avatars.** Forge hosts no images. The avatar is one of:
+**Avatars.** Forge hosts no images. Your profile page shows one of:
 
-- **Initial** (the default): the first letter of your username on a colour derived from your identity id;
-- **Pattern** (`--avatar identicon`, or `identicon:<seed>` for another pattern): a 5×5 pattern every browser draws from the seed, so nothing is fetched;
-- **Image link** (`--avatar https://…`): a picture you host. Visitors see your initial until they choose to load images from its host, as with images in issues and comments, because loading it tells that host their IP address.
+- **Your pattern** (the default, or `--avatar identicon`): a 5×5 pattern every browser draws from your identity id, so nothing is fetched;
+- **Another pattern** (`--avatar identicon:<seed>`): the pattern of a seed you choose (a seed that is another identity's id draws your own pattern, so no one can borrow someone else's);
+- **Image link** (`--avatar https://…`): a picture you host. Visitors see your pattern until they choose to load images from its host, as with images in issues and comments, because loading it tells that host their IP address.
+
+Everywhere else (beside your comments, repositories and reviews) Forge draws the pattern of your identity id with its first 7 and last 5 characters, whatever your profile says. Anyone can copy a picture or register a similar name, but not that pattern: it changes with every character of the id.
 
 ### Signed commits and Verified badges
 

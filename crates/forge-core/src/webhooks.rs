@@ -252,11 +252,100 @@ pub fn is_webhook_url(url: &str) -> bool {
     head.split('.').all(label_ok) && tld_ok && port_ok && crate::ci::is_url_tail(tail)
 }
 
+/// Where a chat service's token-in-path webhook URLs are kept off chain instead: a relay's
+/// private `[[webhook]]` config.
+pub const CHAT_WEBHOOK_GUIDE: &str =
+    "https://github.com/PastaPastaPasta/dash-forge/blob/master/crates/forge-relay/README.md#chat-services";
+
+/// A secret that a webhook URL carries in its path, recognised by the URL's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UrlSecret {
+    /// A chat service's incoming-webhook URL (`"Discord"`, `"Slack"`, `"Microsoft Teams"`,
+    /// `"Google Chat"`, `"Power Automate"`): the URL is the credential, so it is never accepted
+    /// on chain.
+    ChatService(&'static str),
+    /// A token-like segment after `/webhook/`, `/webhooks/` or `/hooks/` (Matrix hookshot,
+    /// Mattermost, Rocket.Chat): accepted only when the writer confirms it holds nothing secret.
+    PathToken,
+}
+
+/// The secret `url` carries in its path, by its shape (vectors `webhook_url__*`). `None` for a
+/// URL that is not `https://`.
+#[must_use]
+pub fn url_secret(url: &str) -> Option<UrlSecret> {
+    let (authority, tail) = crate::ci::split_https(url)?;
+    let host = authority
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let path = tail.split(['?', '#']).next().unwrap_or_default();
+    let segs: Vec<String> = path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let seg = |i: usize| segs.get(i).map_or("", String::as_str);
+    let under = |root: &str| host == root || host.ends_with(&format!(".{root}"));
+    // Discord: /api/webhooks/{id}/{token}[/github|/slack], or with an API version
+    // (/api/v10/webhooks/…).
+    let discord_hook = seg(0) == "api"
+        && (seg(1) == "webhooks" || (seg(1).starts_with('v') && seg(2) == "webhooks"));
+    let service = if under("hooks.slack.com") {
+        Some("Slack")
+    } else if (under("discord.com") || under("discordapp.com")) && discord_hook {
+        Some("Discord")
+    } else if under("webhook.office.com")
+        || (host == "outlook.office.com" && seg(0).starts_with("webhook"))
+    {
+        Some("Microsoft Teams")
+    } else if host == "chat.googleapis.com" {
+        Some("Google Chat")
+    } else if under("logic.azure.com") && segs.iter().any(|s| s == "workflows") {
+        // Teams Workflows and other Power Automate triggers: the `sig` query is the credential.
+        Some("Power Automate")
+    } else {
+        None
+    };
+    if let Some(name) = service {
+        return Some(UrlSecret::ChatService(name));
+    }
+    let token_like = |s: &str| {
+        s.len() >= 24
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            && s.bytes().any(|b| b.is_ascii_digit())
+            && s.bytes().any(|b| b.is_ascii_alphabetic())
+    };
+    // Any segment after `/webhook/`, `/webhooks/` or `/hooks/` (Mattermost, Rocket.Chat), case
+    // preserved: a token's letters may be any case.
+    let raw: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let hook_word = segs
+        .iter()
+        .position(|s| s == "webhook" || s == "webhooks" || s == "hooks")?;
+    raw[hook_word + 1..]
+        .iter()
+        .any(|s| token_like(s))
+        .then_some(UrlSecret::PathToken)
+}
+
 /// Check a hook's `url` and `events` against the schema, so a write fails here with a message
 /// instead of at consensus: the URL is `https://` to a DNS name ([`is_webhook_url`]; never
-/// user:password@). With `allow_credentials` false, a URL with a query string is refused too:
-/// the URL is public on chain, and a query is where tokens usually hide.
+/// user:password@), and never a chat service's webhook URL ([`url_secret`]): the URL is public
+/// on chain and that URL is the token. With `allow_credentials` false, a query string or a
+/// token-like path segment is refused too: that is where tokens usually hide.
 pub fn check_url_and_events(url: &str, events: &[String], allow_credentials: bool) -> Result<()> {
+    check_hook(url, events, allow_credentials, true)
+}
+
+/// [`check_url_and_events`]; a disabled revision (`refuse_chat` false) may repeat a chat
+/// service's URL, so a hook another maintainer pointed at one can still be stopped.
+fn check_hook(
+    url: &str,
+    events: &[String],
+    allow_credentials: bool,
+    refuse_chat: bool,
+) -> Result<()> {
     if url.is_empty() || url.len() > URL_MAX_LEN {
         return Err(Error::Config(format!(
             "a webhook url must be 1..={URL_MAX_LEN} bytes"
@@ -277,6 +366,24 @@ pub fn check_url_and_events(url: &str, events: &[String], allow_credentials: boo
             "the webhook url {url:?} must name a DNS host (not an IP address, localhost or a \
              name ending in a dot), with an optional port and no spaces"
         )));
+    }
+    match url_secret(url) {
+        Some(UrlSecret::ChatService(name)) if refuse_chat => {
+            return Err(Error::Config(format!(
+                "this is a {name} webhook URL, and its token is part of the URL: a hook's URL \
+                 is public on chain, so anyone could post to your channel. Keep it off chain \
+                 in your own relay's config instead: {CHAT_WEBHOOK_GUIDE}"
+            )));
+        }
+        Some(UrlSecret::PathToken) if !allow_credentials => {
+            return Err(Error::Config(
+                "the webhook url has what looks like a token after /webhook/: it is stored \
+                 publicly on chain, so it must not carry credentials (authenticate deliveries \
+                 with the secret; pass --force if the path holds nothing secret)"
+                    .into(),
+            ));
+        }
+        _ => {}
     }
     if !allow_credentials && url.contains('?') {
         return Err(Error::Config(
@@ -578,7 +685,12 @@ impl<'a> WebhookService<'a> {
         // deliver; forge-relay refuses private repositories.
         repo.require_public("webhooks")?;
         let forge = repo.forge();
-        check_url_and_events(&input.url, &input.events, input.allow_credentials_in_url)?;
+        check_hook(
+            &input.url,
+            &input.events,
+            input.allow_credentials_in_url,
+            !input.disabled,
+        )?;
         check_secret(input.secret.expose())?;
 
         let relay = self
@@ -824,6 +936,22 @@ mod tests {
         for url in ["https://x/h", "https://127.0.0.1/h", "https://[::1]/h"] {
             assert!(check_url_and_events(url, &[], true).is_err(), "{url}");
         }
+        // A chat service's webhook URL is its token: refused even with --force, with a pointer
+        // to keeping it in a relay's config. A token after /webhook/: refused unless forced.
+        for url in [
+            "https://discord.com/api/webhooks/1/tok/github",
+            "https://hooks.slack.com/services/T/B/X",
+        ] {
+            let e = check_url_and_events(url, &[], true)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(CHAT_WEBHOOK_GUIDE), "{e}");
+        }
+        // A disabled revision may repeat it: removing another maintainer's chat hook writes one.
+        assert!(check_hook("https://hooks.slack.com/services/T/B/X", &[], true, false).is_ok());
+        let hookshot = "https://h.example/webhook/8e3c1b7a-3c2d-4f5e-9a1b-2c3d4e5f6a7b";
+        assert!(check(hookshot, &[]).is_err());
+        assert!(check_url_and_events(hookshot, &[], true).is_ok());
 
         assert!(check_secret(&[b'a'; 31]).is_err());
         assert!(check_secret(&[b'a'; 32]).is_ok());
@@ -889,6 +1017,7 @@ mod tests {
             public_key: private.public_key().to_vec(),
             disabled,
             bound_to: None,
+            bounds: None,
         }
     }
 

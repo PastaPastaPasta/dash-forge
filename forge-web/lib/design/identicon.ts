@@ -16,7 +16,14 @@ export const IDENTICON_SIZE = 5
 
 /** The pattern `seed` draws: rows of cells, `true` filled. Never all empty. */
 export function identiconCells(seed: string): boolean[][] {
-  const h = sha256(new TextEncoder().encode(seed))
+  return cellsOf(digest(seed))
+}
+
+function digest(seed: string): Uint8Array {
+  return sha256(new TextEncoder().encode(seed))
+}
+
+function cellsOf(h: Uint8Array): boolean[][] {
   const bit = (i: number): boolean => (((h[2 + (i >> 3)] as number) >> (i & 7)) & 1) === 1
   const half = Math.ceil(IDENTICON_SIZE / 2)
   const rows: boolean[][] = []
@@ -30,6 +37,30 @@ export function identiconCells(seed: string): boolean[][] {
 
 /** The pattern's colour: a hue from the hash, at the initial avatars' AA lightness. */
 export function identiconFill(seed: string): string {
-  const h = sha256(new TextEncoder().encode(seed))
+  return fillOf(digest(seed))
+}
+
+function fillOf(h: Uint8Array): string {
   return avatarFill((((h[0] as number) << 8) | (h[1] as number)) % 360)
+}
+
+/** A seed's pattern and colour. */
+export interface IdenticonPicture {
+  readonly cells: readonly (readonly boolean[])[]
+  readonly fill: string
+}
+
+/** Pictures drawn this session: a thread shows the same few authors many times. */
+const drawn = new Map<string, IdenticonPicture>()
+const DRAWN_MAX = 500
+
+/** {@link identiconCells} and {@link identiconFill} of `seed`, kept for the session. */
+export function identicon(seed: string): IdenticonPicture {
+  const hit = drawn.get(seed)
+  if (hit !== undefined) return hit
+  const h = digest(seed)
+  const picture = { cells: cellsOf(h), fill: fillOf(h) }
+  if (drawn.size >= DRAWN_MAX) drawn.delete(drawn.keys().next().value as string)
+  drawn.set(seed, picture)
+  return picture
 }

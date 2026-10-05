@@ -18,11 +18,12 @@
 //! query reaches it:
 //!
 //! * **[`GLOBAL_TYPES`]** (`repo`, `issue`, `patch`, `comment`, `star`, `follow`, `starBeat`,
-//!   `watch`, and `profile` handled alongside them) carry `$ownerId` as an index's leading
+//!   `watch`, `packMirror`, and `profile` handled alongside them) carry `$ownerId` as an index's leading
 //!   field, so a single query across the whole network finds every one the target created.
 //!   `starBeat` is one of [`crate::layout::OPTIONAL_TYPES`]: RC2's fused star (C1) drops it and
 //!   the star itself carries the trending week, so a contract without it is audited without it
-//!   and its stars are priced at the fused figure ([`FUSED_STAR_CREDITS`]). An optional type
+//!   and its stars are priced at the fused figure ([`FUSED_STAR_CREDITS`]). `packMirror` (and
+//!   `ban`, below) are optional too: UPDATE-1 added them in place. An optional type
 //!   the loaded contract leaves out is skipped, never queried (QW4-001: querying `starBeat` on
 //!   RC2 aborted the whole audit with E101); any other missing type is still an error, since
 //!   skipping it would understate the total without a word.
@@ -32,7 +33,7 @@
 //!   here (see below).
 //! * **[`REPO_SCANNED_TYPES`]** (`maintainer`, `writer`, `config`, `release`, `label`,
 //!   `repoKey`, `runner`, `topic`, `event`, `authorEvent`, `checkRun`, `policy`, `webhook`,
-//!   `milestone`, `transition`) index `repoId` alone, so each such repository's complete set is
+//!   `milestone`, `transition`, `ban`) index `repoId` alone, so each such repository's complete set is
 //!   read and filtered to the target's own by [`FetchedDocument::owner_id`] (present on every
 //!   document regardless of its index).
 //! * **`chunk`** is counted, not queried: it has no `$createdAt` of its own and is by far the
@@ -164,10 +165,13 @@ fn base_credits(doc_type: &str) -> u64 {
         "review" => 50_000_000,
         "event" | "authorEvent" => 58_000_000,
         "label" | "milestone" | "follow" => 45_000_000,
-        "policy" => 40_000_000,
+        "policy" | "ban" => 40_000_000,
         "star" | "starBeat" => 20_000_000,
         "watch" => 35_000_000,
         "consent" => 31_000_000,
+        // UPDATE-1's packMirror, from the sakura fee probe (update1-probe.mjs, without its
+        // reference): 55.0M, rounded up. Its `ban` probed at 39.3M and is priced with `policy`.
+        "packMirror" => 56_000_000,
         // A chunk priced alone (its manifest's size, when it has one, prices it exactly:
         // [`chunk_credits`]).
         "chunk" => push_fees::CHUNK_FLAT,
@@ -269,6 +273,12 @@ const GLOBAL_TYPES: &[TypeQuery] = &[
         contract: ForgeContract::Community,
         order: &["$ownerId"],
     },
+    // UPDATE-1: `byOwner [$ownerId, $createdAt]` (a contract without the type skips it).
+    TypeQuery {
+        doc_type: "packMirror",
+        contract: ForgeContract::Core,
+        order: &["$createdAt"],
+    },
 ];
 
 /// The membership types whose `byMember [memberId]` index says which repositories the target
@@ -367,6 +377,13 @@ const REPO_SCANNED_TYPES: &[TypeQuery] = &[
         doc_type: "transition",
         contract: ForgeContract::Collab,
         order: &["$createdAt"],
+    },
+    // UPDATE-1's ban list: `byRepo [repoId, identityId, $ownerId]` (skipped on a contract
+    // without it).
+    TypeQuery {
+        doc_type: "ban",
+        contract: ForgeContract::Collab,
+        order: &["identityId", "$ownerId"],
     },
     // RC1 moved these six into forge-community.
     TypeQuery {

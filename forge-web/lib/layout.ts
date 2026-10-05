@@ -25,6 +25,8 @@ const CONTRACT_OF_TYPE: Readonly<Record<string, ForgeContractKind>> = {
   release: 'core',
   label: 'core',
   topic: 'core',
+  // UPDATE-1 (roadmap D4): a copy of a listed pack that anyone records
+  packMirror: 'core',
   // forge-collab: issues, PRs and their threads; repo keys (O-03)
   issue: 'collab',
   patch: 'collab',
@@ -32,6 +34,8 @@ const CONTRACT_OF_TYPE: Readonly<Record<string, ForgeContractKind>> = {
   comment: 'collab',
   review: 'collab',
   repoKey: 'collab',
+  // UPDATE-1: a maintainer's per-repo ban list (readers apply it)
+  ban: 'collab',
   // forge-community: member and author events, milestones (O-01), runners (O-02), social, CI
   event: 'community',
   authorEvent: 'community',

@@ -1,0 +1,12 @@
+{
+  "name": "mattermost_hooks",
+  "description": "A token after /hooks/ (Mattermost) is a secret unless the writer confirms otherwise.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://mm.example.com/hooks/abcd1234efgh5678ijkl9012mn"
+  },
+  "expected": {
+    "secret": "pathToken"
+  }
+}

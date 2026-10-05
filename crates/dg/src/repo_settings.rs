@@ -432,7 +432,7 @@ pub(crate) fn policy_json(p: &Policy) -> Value {
 }
 
 /// The policy line every surface prints next to it.
-const POLICY_NOTE: &str = "a client rule: Forge clients apply it to their merge controls and a maintainer can override it; nothing at consensus requires approvals";
+const POLICY_NOTE: &str = "Forge apps enforce the branch policy, not Platform. Maintainers can override it, and the override is recorded on the PR";
 
 /// Whose approvals a policy counts, as `policy show` says it: `approver_role` 1 counts
 /// maintainers only, 0 maintainers and writers. A triage member's or reader's approval never
@@ -712,8 +712,8 @@ pub async fn archive(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
             ctx.network_label()
         );
         if on {
-            println!("  Forge clients will refuse pushes, issues and PRs; reads keep working.");
-            println!("  A client rule: consensus still admits a member's writes.");
+            println!("  Forge apps will refuse pushes, issues and PRs. Reads keep working.");
+            println!("  Forge apps enforce archiving, not Platform.");
         }
         println!("  estimate: {}", cost_line(estimate, price));
     }

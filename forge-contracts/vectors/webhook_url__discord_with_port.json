@@ -1,0 +1,13 @@
+{
+  "name": "discord_with_port",
+  "description": "An explicit port does not change the host.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://discord.com:443/api/webhooks/1/t"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Discord"
+  }
+}

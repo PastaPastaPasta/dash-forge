@@ -1,0 +1,2097 @@
+{
+  "$formatVersion": "1",
+  "id": "11111111111111111111111111111111",
+  "ownerId": "11111111111111111111111111111111",
+  "version": 1,
+  "description": "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys",
+  "schemaDefs": {
+    "id": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 32,
+      "maxItems": 32,
+      "contentMediaType": "application/x.dash.dpp.identifier"
+    },
+    "oid": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 20,
+      "maxItems": 32
+    },
+    "h32": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 32,
+      "maxItems": 32
+    },
+    "num": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "u32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "maxBytes": 1024,
+      "pattern": "^[^\\x00-\\x1f\\x7f]*[^\\s\\x00-\\x1f\\x7f][^\\x00-\\x1f\\x7f]*$"
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 5120,
+      "maxBytes": 5120,
+      "pattern": "\\S"
+    },
+    "enc": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 29,
+      "maxItems": 5120
+    },
+    "refName": {
+      "type": "string",
+      "minLength": 6,
+      "maxLength": 255,
+      "maxBytes": 255,
+      "pattern": "^refs/(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+)(?:(?:\\.?/|\\.)(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+))*$"
+    },
+    "imported": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "type": "string",
+          "maxLength": 120,
+          "maxBytes": 480,
+          "position": 0
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0,
+          "position": 1
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 300,
+          "maxBytes": 300,
+          "position": 2
+        }
+      },
+      "additionalProperties": false
+    },
+    "vis": {
+      "type": "string",
+      "enum": [
+        "public",
+        "private"
+      ]
+    },
+    "member": {
+      "type": "array",
+      "byteArray": true,
+      "minItems": 32,
+      "maxItems": 32,
+      "contentMediaType": "application/x.dash.dpp.identifier",
+      "refersTo": {
+        "anyOf": [
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "maintainer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          },
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "writer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          }
+        ]
+      }
+    }
+  },
+  "documentSchemas": {
+    "issue": {
+      "type": "object",
+      "canBeDeleted": false,
+      "documentsKeepHistory": true,
+      "immutable": [
+        "repoId",
+        "number",
+        "tk",
+        "upstreamNumber",
+        "vis",
+        "imported"
+      ],
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "repo",
+            "where": {
+              "visibility": "vis"
+            }
+          },
+          "position": 0
+        },
+        "number": {
+          "$ref": "#/$defs/num",
+          "position": 1
+        },
+        "title": {
+          "$ref": "#/$defs/title",
+          "position": 2
+        },
+        "body": {
+          "$ref": "#/$defs/body",
+          "position": 3
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 4
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 5
+        },
+        "imported": {
+          "$ref": "#/$defs/imported",
+          "position": 6
+        },
+        "tk": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "enum": [
+            0
+          ],
+          "position": 7
+        },
+        "upstreamNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "position": 8
+        },
+        "vis": {
+          "$ref": "#/$defs/vis",
+          "position": 9
+        },
+        "asMember": {
+          "$ref": "#/$defs/member",
+          "position": 10
+        }
+      },
+      "indices": [
+        {
+          "name": "number",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "number": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "created",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "author",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "repoId": "asc"
+            },
+            {
+              "number": "asc"
+            }
+          ],
+          "unique": true,
+          "rangeCountable": true
+        },
+        {
+          "name": "perRepo",
+          "properties": [
+            {
+              "repoId": "asc"
+            }
+          ],
+          "countable": true
+        },
+        {
+          "name": "upstream",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "upstreamNumber": "asc"
+            }
+          ],
+          "skipIfAbsent": [
+            "upstreamNumber"
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "$updatedAt",
+        "$updatedAtBlockHeight",
+        "$createdAtBlockHeight",
+        "repoId",
+        "number",
+        "tk",
+        "vis"
+      ],
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "title"
+                },
+                {
+                  "absent": "body"
+                },
+                {
+                  "absent": "imported.author"
+                },
+                {
+                  "absent": "imported.url"
+                }
+              ]
+            }
+          ]
+        },
+        "hasTitle": {
+          "anyOf": [
+            {
+              "present": "enc"
+            },
+            {
+              "present": "title"
+            }
+          ]
+        },
+        "dense": {
+          "ifThen": [
+            {
+              "equal": [
+                "$createdAtBlockHeight",
+                "$updatedAtBlockHeight"
+              ]
+            },
+            {
+              "equal": [
+                "number",
+                {
+                  "add": [
+                    {
+                      "countOf": [
+                        "issue",
+                        {
+                          "repoId": "repoId"
+                        }
+                      ]
+                    },
+                    {
+                      "countOf": [
+                        "patch",
+                        {
+                          "repoId": "repoId"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "p_sealedIfPrivate": {
+          "anyOf": [
+            {
+              "notEqual": [
+                "vis",
+                {
+                  "const": "private"
+                }
+              ]
+            },
+            {
+              "present": "enc"
+            }
+          ]
+        },
+        "m_self": {
+          "anyOf": [
+            {
+              "absent": "asMember"
+            },
+            {
+              "equal": [
+                "asMember",
+                "$ownerId"
+              ]
+            }
+          ]
+        },
+        "i_provenance": {
+          "anyOf": [
+            {
+              "allOf": [
+                {
+                  "absent": "imported"
+                },
+                {
+                  "absent": "upstreamNumber"
+                }
+              ]
+            },
+            {
+              "present": "asMember"
+            }
+          ]
+        }
+      }
+    },
+    "patch": {
+      "type": "object",
+      "canBeDeleted": false,
+      "documentsKeepHistory": true,
+      "immutable": [
+        "repoId",
+        "number",
+        "sourceRepoId",
+        "baseRefNameHash",
+        "baseRefName",
+        "sourceRefNameHash",
+        "sourceRefName",
+        "headOid",
+        "tk",
+        "upstreamNumber",
+        "vis",
+        "imported"
+      ],
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "repo",
+            "where": {
+              "visibility": "vis"
+            }
+          },
+          "position": 0
+        },
+        "number": {
+          "$ref": "#/$defs/num",
+          "position": 1
+        },
+        "title": {
+          "$ref": "#/$defs/title",
+          "position": 2
+        },
+        "body": {
+          "$ref": "#/$defs/body",
+          "position": 3
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 4
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 5
+        },
+        "baseRefNameHash": {
+          "$ref": "#/$defs/h32",
+          "position": 6
+        },
+        "baseRefName": {
+          "$ref": "#/$defs/refName",
+          "position": 7
+        },
+        "sourceRepoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "repo"
+          },
+          "position": 8
+        },
+        "sourceRefNameHash": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 9
+        },
+        "sourceRefName": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 255,
+          "maxBytes": 255,
+          "position": 10,
+          "pattern": "^refs/(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+)(?:(?:\\.?/|\\.)(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+))*$"
+        },
+        "headOid": {
+          "$ref": "#/$defs/oid",
+          "position": 11
+        },
+        "patchManifestHash": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 12
+        },
+        "imported": {
+          "$ref": "#/$defs/imported",
+          "position": 13
+        },
+        "tk": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "enum": [
+            1
+          ],
+          "position": 14
+        },
+        "upstreamNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "position": 15
+        },
+        "vis": {
+          "$ref": "#/$defs/vis",
+          "position": 16
+        },
+        "asMember": {
+          "$ref": "#/$defs/member",
+          "position": 17
+        }
+      },
+      "indices": [
+        {
+          "name": "number",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "number": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "created",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "author",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "repoId": "asc"
+            },
+            {
+              "number": "asc"
+            }
+          ],
+          "unique": true,
+          "rangeCountable": true
+        },
+        {
+          "name": "sourceRef",
+          "properties": [
+            {
+              "sourceRepoId": "asc"
+            },
+            {
+              "sourceRefNameHash": "asc"
+            }
+          ]
+        },
+        {
+          "name": "perRepo",
+          "properties": [
+            {
+              "repoId": "asc"
+            }
+          ],
+          "countable": true
+        },
+        {
+          "name": "upstream",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "upstreamNumber": "asc"
+            }
+          ],
+          "skipIfAbsent": [
+            "upstreamNumber"
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "$updatedAt",
+        "$updatedAtBlockHeight",
+        "$createdAtBlockHeight",
+        "repoId",
+        "number",
+        "baseRefNameHash",
+        "sourceRepoId",
+        "headOid",
+        "tk",
+        "vis"
+      ],
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "title"
+                },
+                {
+                  "absent": "body"
+                },
+                {
+                  "absent": "baseRefName"
+                },
+                {
+                  "absent": "sourceRefName"
+                },
+                {
+                  "absent": "imported.author"
+                },
+                {
+                  "absent": "imported.url"
+                }
+              ]
+            }
+          ]
+        },
+        "hasTitle": {
+          "anyOf": [
+            {
+              "present": "enc"
+            },
+            {
+              "present": "title"
+            }
+          ]
+        },
+        "dense": {
+          "ifThen": [
+            {
+              "equal": [
+                "$createdAtBlockHeight",
+                "$updatedAtBlockHeight"
+              ]
+            },
+            {
+              "equal": [
+                "number",
+                {
+                  "add": [
+                    {
+                      "countOf": [
+                        "issue",
+                        {
+                          "repoId": "repoId"
+                        }
+                      ]
+                    },
+                    {
+                      "countOf": [
+                        "patch",
+                        {
+                          "repoId": "repoId"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "p_sealedIfPrivate": {
+          "anyOf": [
+            {
+              "notEqual": [
+                "vis",
+                {
+                  "const": "private"
+                }
+              ]
+            },
+            {
+              "present": "enc"
+            }
+          ]
+        },
+        "m_self": {
+          "anyOf": [
+            {
+              "absent": "asMember"
+            },
+            {
+              "equal": [
+                "asMember",
+                "$ownerId"
+              ]
+            }
+          ]
+        },
+        "i_provenance": {
+          "anyOf": [
+            {
+              "allOf": [
+                {
+                  "absent": "imported"
+                },
+                {
+                  "absent": "upstreamNumber"
+                }
+              ]
+            },
+            {
+              "present": "asMember"
+            }
+          ]
+        },
+        "oidWidth": {
+          "in": [
+            {
+              "count": "headOid"
+            },
+            [
+              20,
+              32
+            ]
+          ]
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "maintainer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          },
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "writer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            },
+            "where": {
+              "role": "r"
+            }
+          },
+          {
+            "type": "permanentDocument",
+            "documentType": "issue",
+            "findBy": {
+              "$ownerId": ".",
+              "repoId": "repoId",
+              "number": "targetNumber"
+            },
+            "where": {
+              "$id": "targetId",
+              "number": "asAuthor"
+            }
+          },
+          {
+            "type": "permanentDocument",
+            "documentType": "patch",
+            "findBy": {
+              "$ownerId": ".",
+              "repoId": "repoId",
+              "number": "targetNumber"
+            },
+            "where": {
+              "$id": "targetId",
+              "number": "asAuthor"
+            }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "targetId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "permanentDocument",
+                "documentType": "issue",
+                "where": {
+                  "repoId": "repoId",
+                  "number": "targetNumber",
+                  "tk": "targetKind"
+                }
+              },
+              {
+                "type": "permanentDocument",
+                "documentType": "patch",
+                "where": {
+                  "repoId": "repoId",
+                  "number": "targetNumber",
+                  "tk": "targetKind"
+                }
+              }
+            ]
+          },
+          "position": 1
+        },
+        "targetNumber": {
+          "$ref": "#/$defs/num",
+          "position": 2
+        },
+        "targetKind": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "position": 3
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "enum": [
+            1,
+            2,
+            3,
+            4,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19
+          ],
+          "position": 4
+        },
+        "delta": {
+          "type": "integer",
+          "minimum": -16,
+          "maximum": 16,
+          "position": 5
+        },
+        "asAuthor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 6
+        },
+        "oid": {
+          "$ref": "#/$defs/oid",
+          "position": 7
+        },
+        "reason": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "position": 8
+        },
+        "dupNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "position": 9
+        },
+        "r": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "position": 10
+        }
+      },
+      "indices": [
+        {
+          "name": "perTarget",
+          "properties": [
+            {
+              "targetId": "asc"
+            }
+          ],
+          "countable": true,
+          "summable": "delta"
+        },
+        {
+          "name": "perRepoKind",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "kind": "asc"
+            }
+          ],
+          "countable": true
+        },
+        {
+          "name": "feed",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "targetId",
+        "targetNumber",
+        "targetKind",
+        "kind",
+        "delta",
+        "asAuthor",
+        "r"
+      ],
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "a_kindOfTarget": {
+          "equal": [
+            "targetKind",
+            {
+              "divide": [
+                "kind",
+                10
+              ]
+            }
+          ]
+        },
+        "b1_closeDelta": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  1,
+                  11,
+                  16
+                ]
+              ]
+            },
+            {
+              "equal": [
+                "delta",
+                1
+              ]
+            }
+          ]
+        },
+        "b2_reopenDelta": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  2,
+                  12,
+                  17
+                ]
+              ]
+            },
+            {
+              "equal": [
+                "delta",
+                -1
+              ]
+            }
+          ]
+        },
+        "b3_otherDelta": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  13,
+                  14,
+                  15
+                ]
+              ]
+            },
+            {
+              "ifThenElse": [
+                {
+                  "equal": [
+                    "kind",
+                    13
+                  ]
+                },
+                {
+                  "equal": [
+                    "delta",
+                    2
+                  ]
+                },
+                {
+                  "ifThenElse": [
+                    {
+                      "equal": [
+                        "kind",
+                        14
+                      ]
+                    },
+                    {
+                      "equal": [
+                        "delta",
+                        8
+                      ]
+                    },
+                    {
+                      "equal": [
+                        "delta",
+                        -8
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "c1_closedAfter": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  1,
+                  11
+                ]
+              ]
+            },
+            {
+              "equal": [
+                {
+                  "modulo": [
+                    {
+                      "sumOf": [
+                        "transition",
+                        "delta",
+                        {
+                          "targetId": "targetId"
+                        }
+                      ]
+                    },
+                    16
+                  ]
+                },
+                1
+              ]
+            }
+          ]
+        },
+        "c2_openAfter": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  2,
+                  12,
+                  15
+                ]
+              ]
+            },
+            {
+              "equal": [
+                {
+                  "modulo": [
+                    {
+                      "sumOf": [
+                        "transition",
+                        "delta",
+                        {
+                          "targetId": "targetId"
+                        }
+                      ]
+                    },
+                    16
+                  ]
+                },
+                0
+              ]
+            }
+          ]
+        },
+        "c3_mergedAfter": {
+          "ifThen": [
+            {
+              "equal": [
+                "kind",
+                13
+              ]
+            },
+            {
+              "equal": [
+                {
+                  "modulo": [
+                    {
+                      "sumOf": [
+                        "transition",
+                        "delta",
+                        {
+                          "targetId": "targetId"
+                        }
+                      ]
+                    },
+                    16
+                  ]
+                },
+                2
+              ]
+            }
+          ]
+        },
+        "c4_draftAfter": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  14,
+                  17
+                ]
+              ]
+            },
+            {
+              "equal": [
+                {
+                  "modulo": [
+                    {
+                      "sumOf": [
+                        "transition",
+                        "delta",
+                        {
+                          "targetId": "targetId"
+                        }
+                      ]
+                    },
+                    16
+                  ]
+                },
+                8
+              ]
+            }
+          ]
+        },
+        "c5_draftClosedAfter": {
+          "ifThen": [
+            {
+              "equal": [
+                "kind",
+                16
+              ]
+            },
+            {
+              "equal": [
+                {
+                  "modulo": [
+                    {
+                      "sumOf": [
+                        "transition",
+                        "delta",
+                        {
+                          "targetId": "targetId"
+                        }
+                      ]
+                    },
+                    16
+                  ]
+                },
+                9
+              ]
+            }
+          ]
+        },
+        "e_mergeOid": {
+          "allOf": [
+            {
+              "anyOf": [
+                {
+                  "notEqual": [
+                    "kind",
+                    13
+                  ]
+                },
+                {
+                  "present": "oid"
+                }
+              ]
+            },
+            {
+              "ifThen": [
+                {
+                  "in": [
+                    "kind",
+                    [
+                      13,
+                      14,
+                      15
+                    ]
+                  ]
+                },
+                {
+                  "equal": [
+                    "r",
+                    1
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "f_authorNoMerge": {
+          "anyOf": [
+            {
+              "equal": [
+                "asAuthor",
+                0
+              ]
+            },
+            {
+              "notEqual": [
+                "kind",
+                13
+              ]
+            }
+          ]
+        },
+        "oidWidth": {
+          "in": [
+            {
+              "count": "oid"
+            },
+            [
+              0,
+              20,
+              32
+            ]
+          ]
+        },
+        "b4_lockDelta": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  3,
+                  4,
+                  18,
+                  19
+                ]
+              ]
+            },
+            {
+              "ifThenElse": [
+                {
+                  "in": [
+                    "kind",
+                    [
+                      3,
+                      18
+                    ]
+                  ]
+                },
+                {
+                  "equal": [
+                    "delta",
+                    16
+                  ]
+                },
+                {
+                  "equal": [
+                    "delta",
+                    -16
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "c6_lockedAfter": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  3,
+                  4,
+                  18,
+                  19
+                ]
+              ]
+            },
+            {
+              "equal": [
+                {
+                  "divide": [
+                    {
+                      "sumOf": [
+                        "transition",
+                        "delta",
+                        {
+                          "targetId": "targetId"
+                        }
+                      ]
+                    },
+                    16
+                  ]
+                },
+                {
+                  "divide": [
+                    {
+                      "add": [
+                        "delta",
+                        16
+                      ]
+                    },
+                    32
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "g_memberLock": {
+          "anyOf": [
+            {
+              "equal": [
+                "asAuthor",
+                0
+              ]
+            },
+            {
+              "notIn": [
+                "kind",
+                [
+                  3,
+                  4,
+                  18,
+                  19
+                ]
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "comment": {
+      "type": "object",
+      "immutable": [
+        "repoId",
+        "targetId",
+        "replyTo",
+        "commitOid",
+        "path",
+        "line",
+        "side",
+        "startLine",
+        "reviewId",
+        "vis",
+        "imported",
+        "diffHunk"
+      ],
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "targetId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "permanentDocument",
+                "documentType": "issue",
+                "where": {
+                  "repoId": "repoId",
+                  "vis": "vis"
+                }
+              },
+              {
+                "type": "permanentDocument",
+                "documentType": "patch",
+                "where": {
+                  "repoId": "repoId",
+                  "vis": "vis"
+                }
+              }
+            ]
+          },
+          "position": 1
+        },
+        "body": {
+          "$ref": "#/$defs/body",
+          "position": 2
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 3
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 4
+        },
+        "replyTo": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 5,
+          "refersTo": {
+            "type": "deletableDocument",
+            "documentType": "comment",
+            "where": {
+              "targetId": "targetId",
+              "replyTo": "noParent"
+            }
+          }
+        },
+        "commitOid": {
+          "$ref": "#/$defs/oid",
+          "position": 6
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 500,
+          "maxBytes": 1000,
+          "minLength": 1,
+          "position": 7
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 8
+        },
+        "side": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1,
+          "position": 9
+        },
+        "imported": {
+          "$ref": "#/$defs/imported",
+          "position": 10
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 11
+        },
+        "reviewId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 12,
+          "refersTo": {
+            "type": "deletableDocument",
+            "documentType": "review",
+            "where": {
+              "repoId": "repoId",
+              "patchId": "targetId",
+              "$ownerId": "$ownerId"
+            }
+          }
+        },
+        "vis": {
+          "$ref": "#/$defs/vis",
+          "position": 13
+        },
+        "asMember": {
+          "$ref": "#/$defs/member",
+          "position": 14
+        },
+        "noParent": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 15
+        },
+        "diffHunk": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "maxBytes": 1024,
+          "position": 16
+        }
+      },
+      "indices": [
+        {
+          "name": "target",
+          "properties": [
+            {
+              "targetId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ],
+          "rangeCountable": true
+        },
+        {
+          "name": "author",
+          "properties": [
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "reply",
+          "properties": [
+            {
+              "replyTo": "asc"
+            }
+          ],
+          "skipIfAbsent": [
+            "replyTo"
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "$updatedAt",
+        "$updatedAtBlockHeight",
+        "$createdAtBlockHeight",
+        "repoId",
+        "targetId",
+        "vis"
+      ],
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "body"
+                },
+                {
+                  "absent": "path"
+                },
+                {
+                  "absent": "imported.author"
+                },
+                {
+                  "absent": "imported.url"
+                },
+                {
+                  "absent": "diffHunk"
+                }
+              ]
+            }
+          ]
+        },
+        "hasBody": {
+          "anyOf": [
+            {
+              "present": "enc"
+            },
+            {
+              "present": "body"
+            }
+          ]
+        },
+        "p_sealedIfPrivate": {
+          "anyOf": [
+            {
+              "notEqual": [
+                "vis",
+                {
+                  "const": "private"
+                }
+              ]
+            },
+            {
+              "present": "enc"
+            }
+          ]
+        },
+        "m_self": {
+          "anyOf": [
+            {
+              "absent": "asMember"
+            },
+            {
+              "equal": [
+                "asMember",
+                "$ownerId"
+              ]
+            }
+          ]
+        },
+        "i_provenance": {
+          "anyOf": [
+            {
+              "absent": "imported"
+            },
+            {
+              "present": "asMember"
+            }
+          ]
+        },
+        "oidWidth": {
+          "in": [
+            {
+              "count": "commitOid"
+            },
+            [
+              0,
+              20,
+              32
+            ]
+          ]
+        },
+        "noParentSet": {
+          "absent": "noParent"
+        },
+        "rangeOrder": {
+          "anyOf": [
+            {
+              "absent": "startLine"
+            },
+            {
+              "allOf": [
+                {
+                  "present": "line"
+                },
+                {
+                  "lessThanOrEqual": [
+                    "startLine",
+                    "line"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "lockGate": {
+          "anyOf": [
+            {
+              "present": "asMember"
+            },
+            {
+              "notEqual": [
+                "$createdAtBlockHeight",
+                "$updatedAtBlockHeight"
+              ]
+            },
+            {
+              "lessThan": [
+                {
+                  "sumOf": [
+                    "transition",
+                    "delta",
+                    {
+                      "targetId": "targetId"
+                    }
+                  ]
+                },
+                16
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "documentsMutable": false,
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "patchId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "documentType": "patch",
+            "where": {
+              "repoId": "repoId",
+              "vis": "vis"
+            }
+          },
+          "position": 1
+        },
+        "verdict": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "position": 2
+        },
+        "commitOid": {
+          "$ref": "#/$defs/oid",
+          "position": 3
+        },
+        "body": {
+          "$ref": "#/$defs/body",
+          "position": 4
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 5
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 6
+        },
+        "imported": {
+          "$ref": "#/$defs/imported",
+          "position": 7
+        },
+        "commentCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "position": 8
+        },
+        "vis": {
+          "$ref": "#/$defs/vis",
+          "position": 9
+        },
+        "asMember": {
+          "$ref": "#/$defs/member",
+          "position": 10
+        }
+      },
+      "indices": [
+        {
+          "name": "patch",
+          "properties": [
+            {
+              "patchId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ],
+          "rangeCountable": true
+        },
+        {
+          "name": "verdicts",
+          "properties": [
+            {
+              "patchId": "asc"
+            },
+            {
+              "commitOid": "asc"
+            },
+            {
+              "verdict": "asc"
+            }
+          ],
+          "countable": true
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "$createdAtBlockHeight",
+        "repoId",
+        "patchId",
+        "verdict",
+        "commitOid",
+        "vis"
+      ],
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "body"
+                },
+                {
+                  "absent": "imported.author"
+                },
+                {
+                  "absent": "imported.url"
+                }
+              ]
+            }
+          ]
+        },
+        "p_sealedIfPrivate": {
+          "anyOf": [
+            {
+              "notEqual": [
+                "vis",
+                {
+                  "const": "private"
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "body"
+                },
+                {
+                  "absent": "imported.author"
+                },
+                {
+                  "absent": "imported.url"
+                }
+              ]
+            }
+          ]
+        },
+        "oidWidth": {
+          "in": [
+            {
+              "count": "commitOid"
+            },
+            [
+              20,
+              32
+            ]
+          ]
+        },
+        "m_self": {
+          "anyOf": [
+            {
+              "absent": "asMember"
+            },
+            {
+              "equal": [
+                "asMember",
+                "$ownerId"
+              ]
+            }
+          ]
+        },
+        "lockGate": {
+          "anyOf": [
+            {
+              "present": "asMember"
+            },
+            {
+              "lessThan": [
+                {
+                  "sumOf": [
+                    "transition",
+                    "delta",
+                    {
+                      "targetId": "patchId"
+                    }
+                  ]
+                },
+                16
+              ]
+            }
+          ]
+        },
+        "memberVerdict": {
+          "ifThenElse": [
+            {
+              "in": [
+                "verdict",
+                [
+                  1,
+                  2
+                ]
+              ]
+            },
+            {
+              "present": "asMember"
+            },
+            {
+              "ifThen": [
+                {
+                  "in": [
+                    "verdict",
+                    [
+                      4,
+                      5
+                    ]
+                  ]
+                },
+                {
+                  "absent": "asMember"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "repoKey": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "type": "deletableDocument",
+        "documentType": "maintainer",
+        "findBy": {
+          "repoId": "repoId",
+          "memberId": "."
+        },
+        "contractId": "FORGE_CORE_CONTRACT_ID"
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "memberId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "deletableDocument",
+                "contractId": "FORGE_CORE_CONTRACT_ID",
+                "documentType": "maintainer",
+                "findBy": {
+                  "repoId": "repoId",
+                  "memberId": "."
+                }
+              },
+              {
+                "type": "deletableDocument",
+                "contractId": "FORGE_CORE_CONTRACT_ID",
+                "documentType": "writer",
+                "findBy": {
+                  "repoId": "repoId",
+                  "memberId": "."
+                }
+              }
+            ]
+          },
+          "position": 1
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 2
+        },
+        "recipientKeyId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 3,
+          "refersTo": {
+            "type": "identityPublicKey",
+            "identityProperty": "memberId",
+            "keyRequirements": {
+              "purpose": "encryption"
+            }
+          }
+        },
+        "senderKeyId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "refersTo": {
+            "type": "identityPublicKey",
+            "identityProperty": "$ownerId",
+            "keyRequirements": {
+              "purpose": "encryption"
+            }
+          },
+          "position": 4
+        },
+        "wrapped": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 96,
+          "encryptedFor": {
+            "recipient": "memberId",
+            "recipientKey": "recipientKeyId",
+            "senderKey": "senderKeyId",
+            "scheme": "ecdh-secp256k1-aes256-cbc"
+          },
+          "position": 5
+        }
+      },
+      "indices": [
+        {
+          "name": "memberEpoch",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "memberId": "asc"
+            },
+            {
+              "epoch": "asc"
+            },
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "byMember",
+          "properties": [
+            {
+              "memberId": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "$createdAtBlockHeight",
+        "repoId",
+        "memberId",
+        "epoch",
+        "recipientKeyId",
+        "senderKeyId",
+        "wrapped"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

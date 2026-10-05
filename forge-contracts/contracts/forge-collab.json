@@ -906,6 +906,12 @@
           "minimum": 1,
           "maximum": 2,
           "position": 10
+        },
+        "closedByPr": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "position": 11
         }
       },
       "indices": [
@@ -2090,6 +2096,67 @@
         "recipientKeyId",
         "senderKeyId",
         "wrapped"
+      ],
+      "additionalProperties": false
+    },
+    "ban": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": true,
+      "ownerRefersTo": {
+        "type": "deletableDocument",
+        "contractId": "FORGE_CORE_CONTRACT_ID",
+        "documentType": "maintainer",
+        "findBy": {
+          "repoId": "repoId",
+          "memberId": "."
+        }
+      },
+      "properties": {
+        "repoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 0
+        },
+        "identityId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 1
+        },
+        "reason": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "position": 2
+        }
+      },
+      "indices": [
+        {
+          "name": "byRepo",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "identityId": "asc"
+            },
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "unique": true
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "identityId"
       ],
       "additionalProperties": false
     }

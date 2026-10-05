@@ -1,0 +1,57 @@
+[package]
+name = "forge-notify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "forge-notify — optional multi-tenant email and Web Push notifications for Dash Forge identities."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "forge-notify"
+path = "src/main.rs"
+
+[dependencies]
+forge-core = { path = "../../crates/forge-core" }
+# The relay's ingest (repo streams → typed events), its notice renderer and its SMTP transport.
+forge-relay = { path = "../../crates/forge-relay" }
+anyhow.workspace = true
+thiserror.workspace = true
+clap = { workspace = true, features = ["env"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json", "form"] }
+tower-http = { version = "0.6", features = ["cors"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "pool", "hostname", "builder", "tokio1-rustls", "ring", "webpki-roots"] }
+url = "2"
+# The subscriber store: one SQLite file (bundled: no system library).
+rusqlite = { version = "0.37", features = ["bundled"] }
+# Addresses and push endpoints are encrypted at rest (AES-256-GCM, keys from HKDF of the data
+# key); a keyed blind index finds an address without decrypting.
+aes-gcm = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+hex = "0.4"
+subtle = "2"
+zeroize = "1"
+# Signed requests: an identity's ECDSA_SECP256K1 AUTHENTICATION key, read with proofs.
+secp256k1.workspace = true
+# Web Push (RFC 8030/8291) with VAPID (RFC 8292).
+web-push-native = { version = "0.5", features = ["vapid"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

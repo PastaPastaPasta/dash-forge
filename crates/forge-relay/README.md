@@ -19,8 +19,9 @@ dg webhook add <owner>/<repo> --url https://ci.example/hook \
 
 This writes a forge-community `webhook` document. **The URL and event list are public on
 chain**; the contract accepts only `https://` to a DNS name (no IP address, `localhost` or
-`user:password@`), and `dg` refuses a query string unless `--force`, so do not put tokens in
-it (the signature authenticates deliveries). Private repositories cannot have webhooks. For
+`user:password@`), and `dg` refuses a query string or a token after `/webhook/` unless
+`--force`, so do not put tokens in it (the signature authenticates deliveries). `dg` and the
+web app refuse a chat service's webhook URL outright: see [Chat services](#chat-services). Private repositories cannot have webhooks. For
 local tests against `http://127.0.0.1`, use a static `[[webhook]]` block in `--config`
 (below): it never goes on chain. The `secret` (32–96 printable
 ASCII characters) is encrypted (`encryptedFor`, `ecdh-secp256k1-aes256-cbc`) from the
@@ -95,7 +96,7 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--identity <file>` | none | Relay key file. Without it only static `[[webhook]]` blocks from `--config` are served. |
+| `--identity <file>` | none | Relay key file. Without it only the config's static `[[webhook]]` blocks, `[wake]`, `[[sink]]`s and `[watch]` are served. |
 | `--repos a/b,<repoId>` | all | Serve only these repos. |
 | `--poll-interval <s>` | 15 | Seconds between polls. |
 | `--refresh-cycles <n>` | 4 | Re-read the webhook documents every n polls. |
@@ -104,7 +105,35 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 | `--allow-private` | off | Deliver to private and loopback addresses. **Local testing only**: without it, any maintainer of any repo could make a public relay probe its network. |
 | `--state-dir <dir>` | `$FORGE_RELAY_STATE_DIR` (`/state` in the images), else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay` | Where the retry queue lives (`<dir>/deliveries`: a real directory owned by the relay user, created or tightened to mode 0700). Setting it explicitly makes an unusable dir fatal instead of a fallback to memory. One relay per state dir: a second relay on the same dir refuses to start. |
 | `--web-base-url <url>` | `https://forge.dashhq.org` | The forge-web origin that the payloads' `html_url`, `compare` and profile links point at. Include the base path of a sub-path deploy (`https://<owner>.github.io/dash-forge`). File key: `web-base-url`. See [Payloads](#payloads). |
-| `--config <toml>` | none | The same settings as a file, plus `[wake]` ([Wake a runner](#wake-a-runner)), static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing, and `retry-schedule-secs = [60, 300, ...]`. |
+| `--config <toml>` | none | The same settings as a file, plus `[wake]` ([Wake a runner](#wake-a-runner)), `[[sink]]` and `[watch]` ([Sinks and watch mode](#sinks-and-watch-mode)), static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing or a URL that must stay private ([Chat services](#chat-services)), and `retry-schedule-secs = [60, 300, ...]`. |
+
+## Chat services
+
+Discord, Slack, Microsoft Teams, Google Chat and Power Automate webhook URLs contain their token. A hook's URL
+is public on chain and stays in its history, so anyone who read it could post to your channel,
+even after you remove the hook. `dg webhook add` and the web app refuse these URLs, even with
+`--force`.
+
+Keep the URL in your own relay's config instead. A `[[sink]]` posts to Discord, Slack, Matrix or
+ntfy in that service's own format ([Sinks and watch mode](#sinks-and-watch-mode)). A static
+`[[webhook]]` block, for GitHub-shaped deliveries, is read from the file and never written on chain:
+
+```toml
+# relay.toml (forge-relay run --config relay.toml); keep this file private (chmod 600)
+[[webhook]]
+repo = "alice/project"
+url = "https://discord.com/api/webhooks/<id>/<token>/github"
+events = ["push", "pull_request", "issues", "release"]
+secret = "<openssl rand -hex 32>"   # required, though Discord ignores the signature
+```
+
+- **Discord** accepts the relay's GitHub-shaped deliveries at its GitHub-compatible endpoint:
+  add `/github` to the webhook URL, as above.
+- **Slack** (and Discord, Matrix, ntfy or email) works with a `[[sink]]`, which needs no forwarder.
+- **Teams and Google Chat** expect their own message format, not GitHub's. Point the block at a
+  small forwarder you run that reformats each delivery and holds the chat URL.
+
+Run the relay without `--identity` to serve only these blocks. It then needs no keys at all.
 
 ## Wake a runner
 
@@ -153,6 +182,101 @@ secret_file = "/etc/forge-runner/relay.secret"   # the same secret
 - **Limits.** 256 connections at once; 64 requests held open, more get `503` and the runner
   retries. A request head is capped at 8 KiB and 10 s. Wakes arriving within 300 ms are
   answered together.
+
+## Sinks and watch mode
+
+A `webhook` document is public and needs a maintainer to write it. **Sinks** are the other way
+round: you list them in your relay's own config file, so their URLs, tokens and passwords stay
+on your machine and nothing goes on chain. With **watch mode** the relay polls the public
+repositories you name (or the ones an identity watches) with no `webhook` document at all, so a
+contributor or a watcher can get Discord, Slack, Matrix, ntfy or email notices for any public
+repository.
+
+```toml
+# relay.toml: forge-relay run --config relay.toml   (no --identity needed for watch mode)
+[watch]
+repos = ["alice/project"]               # owner/name or repo ids
+identity = "bob"                        # and every repo bob's public `watch` documents name
+events = ["pull_request", "issues", "issue_comment", "pull_request_review", "release"]
+
+[[sink]]
+name = "team-chat"
+kind = "discord"                        # discord | slack | matrix | ntfy | smtp
+url = "env:DISCORD_WEBHOOK_URL"         # a secret reference, never the URL itself
+events = ["pull_request", "release"]    # default: every event
+repos = ["alice/project"]               # default: the repos chosen here (see below)
+
+[[sink]]
+name = "phone"
+kind = "ntfy"
+server = "https://ntfy.sh"              # or your own ntfy server
+topic = "env:NTFY_TOPIC"                # on a public server, the topic is the password
+priority = 3                            # 1..5 (optional)
+# token = "env:NTFY_TOKEN"              # for a server with access control
+
+[[sink]]
+name = "room"
+kind = "matrix"
+homeserver = "https://matrix.org"
+room = "!AbCdEf:matrix.org"             # the room id (Settings → Advanced), not an alias
+access-token = "env:MATRIX_BOT_TOKEN"   # a bot account that has joined the room
+
+[[sink]]
+name = "slack"
+kind = "slack"
+url = "env:SLACK_WEBHOOK_URL"           # an incoming-webhook URL
+
+[[sink]]
+name = "mail"
+kind = "smtp"
+host = "smtp.example.org"
+port = 587                              # default: 587 (starttls), 465 (tls), 25 (none)
+tls = "starttls"                        # starttls | tls | none (none: localhost or a test server only)
+username = "relay@example.org"
+password = "env:SMTP_PASSWORD"
+from = "Forge relay <relay@example.org>"
+to = ["me@example.org"]                 # 1 to 50 addresses
+```
+
+- **Secrets are references**: `env:VAR` or `keychain:<service>/<account>` (the scheme of
+  storage profiles). A literal URL, token or password is refused, and so is a Discord or Slack
+  webhook URL, because the URL *is* the credential. An ntfy topic may be written plainly, but on
+  a public server anyone who knows it can read it.
+- **What a sink gets**: a sink with `repos` gets those repositories, and the relay polls them
+  for its `events`. A sink without `repos` gets the repositories chosen in this file: `[watch]`
+  (its repos and the identity's), `[wake]`, the `[[webhook]]` blocks and every sink's `repos`
+  (and an embedder's watch feed); the relay polls them for its `events` too. It never gets a
+  repository the relay serves only because a `webhook` document points a hook at the relay
+  identity: anyone can create a repository and write one, and a sink is your own channel. A
+  sink without `repos` on a relay that chooses no repository gets nothing (a warning at start
+  says so). Either way the sink's `events` filter applies. Each event becomes a short notice: who did what, an excerpt of the comment, review or description,
+  and the forge-web link (`--web-base-url`). Names show as DPNS names where the identity has one.
+- **Untrusted text is defused**: titles and bodies are written by strangers, so a notice is
+  plain text with control and bidi characters removed and lengths capped. Discord gets
+  `allowed_mentions: []` and escaped markdown, Slack gets `&lt;`/`&gt;`/`&amp;` escaping (no
+  `<!channel>`), Matrix gets an `m.notice` with empty `m.mentions`, and email is plain text with
+  `Auto-Submitted: auto-generated`.
+- **Delivery**: each sink has its own worker and a queue of 256 notices (more are dropped with
+  a `SINK-DROP` warning), sends at most `max-per-minute` (default 20; Discord allows 30 a minute
+  per webhook), and retries a failure 3 times (2 s, 10 s, 30 s, or the receiver's `Retry-After`
+  up to 2 min). A 4xx other than 408 and 429 is not retried. Sinks are not durable: notices
+  still queued when the relay stops are lost (webhooks keep their retry queue).
+- **Email** goes as one plain-text message to every address in `to`, so the recipients see
+  each other's addresses: list only people who may, or use a list address.
+- **`--lookback` replays to sinks too**: with `lookback = n`, every start posts the last `n`
+  documents of each stream again. Leave it at 0 when sinks are configured.
+- **Watch mode** needs no relay identity and no state dir (a watch-only relay keeps nothing to
+  retry, so it does not lock the default state dir). `[watch] identity` is re-read at every
+  discovery (`--refresh-cycles`; up to 1,000 watched repos), so a repo the identity starts
+  watching is picked up within a minute and read from that moment on, not from its start.
+- **Private repositories are never served**: their content is encrypted to members, and the
+  relay is not one. A private repo is logged once and skipped from then on.
+- **Logs** name the sink, its kind, the repo id and the event, never a URL, token, address or
+  body.
+
+To try it locally, run [Mailpit](https://mailpit.axllent.org/) and ntfy in Docker and point
+`smtp` (`host = "127.0.0.1"`, `port = 1025`, `tls = "none"`) and `ntfy`
+(`server = "http://127.0.0.1:8090"`) at them; `http://` is accepted only for loopback hosts.
 
 ## Payloads
 

@@ -291,7 +291,7 @@ pub async fn run_edit(ctx: &crate::context::Ctx, s: &Session, e: Edit<'_>) -> Re
             codes::NOT_A_WRITER,
             format!("{noun} #{number} not edited: only its author can change its title or description"),
         )
-        .cause("consensus admits a replace of an issue or PR from its author only")
+        .cause("only its author can edit an issue or PR's title and body")
         .fix("ask the author to edit it; members can still label, assign, set a milestone (and retarget a PR) without --title/--body")
         .note("checked before anything was signed; nothing was written or paid")
         .into());

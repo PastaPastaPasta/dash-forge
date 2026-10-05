@@ -156,7 +156,7 @@ pub enum RunnerCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
-    /// Revoke a runner (its next report is refused at consensus).
+    /// Revoke a runner (Platform refuses its next report).
     Revoke {
         /// The repository (`owner/name`).
         repo: String,
@@ -178,7 +178,7 @@ pub struct RunnerNewArgs {
     #[arg(long, value_name = "FILE")]
     pub runner: Option<PathBuf>,
     /// Without --runner: your identity file with the master key (else you are asked for the
-    /// recovery words).
+    /// recovery phrase).
     #[arg(long, value_name = "FILE", conflicts_with = "runner")]
     pub master: Option<PathBuf>,
     /// Where to write the `dfk1:` key (created 0600; refuses an existing file).
@@ -238,7 +238,7 @@ pub struct ReportArgs {
     /// a private repository.
     #[arg(long = "artifact", value_name = "FILE")]
     pub artifacts: Vec<PathBuf>,
-    /// The storage profile(s) for --log and --artifact (default: the repository's
+    /// The storage profiles for --log and --artifact (default: the repository's
     /// dash.storage).
     #[arg(long)]
     pub storage: Option<String>,
@@ -617,8 +617,9 @@ fn explain_runner_key(
         ctx.network_label()
     );
     eprintln!(
-        "  it can only write checkRun documents, spend at most {} DASH, and expires in {days} day(s)",
-        dash_amount(credits_to_dash(spec.budget_credits))
+        "  it can only write check runs, spend at most {} DASH, and expires in {}",
+        dash_amount(credits_to_dash(spec.budget_credits)),
+        crate::fmt::plural(days, "day")
     );
     eprintln!(
         "  the key: one identity update, {} (paid by {holder})",

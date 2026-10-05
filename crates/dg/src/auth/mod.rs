@@ -42,11 +42,15 @@ const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 /// `dg auth` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
-    /// Create an identity: recovery words, a deposit address to fund from any Dash wallet, then
-    /// the identity with a limited key for this computer (stored in the OS keychain).
+    /// Create an identity, funded from any Dash wallet.
+    ///
+    /// You get a recovery phrase and a deposit address. Once it is funded, dg creates the
+    /// identity with a limited key for this computer, stored in the OS keychain.
     New(new::NewArgs),
-    /// Sign in with an identity file or the recovery words: registers a limited key (the master
-    /// key is used once and not stored, unless --full-key).
+    /// Sign in with an identity file or recovery phrase.
+    ///
+    /// Registers a limited key for this computer. The master key is used once and not stored,
+    /// unless --full-key.
     Login(LoginArgs),
     /// Show the identity, its key, budget left, expiry, balance and where the key is stored.
     Status,
@@ -62,12 +66,12 @@ pub enum AuthCommand {
     /// bridge-format file (0600) or a `dfk1:` value for CI (`--format dfk1`). Sign in elsewhere
     /// with `dg auth login <file>`, or use the file as DASH_FORGE_KEY.
     Export(ExportArgs),
-    /// Forget the stored key on this computer (the key stays valid on chain until disabled).
+    /// Forget the stored key on this computer (it stays valid on Platform until disabled).
     Logout {
-        /// Also disable the key on chain (needs the master key once).
+        /// Also disable the key on Platform (needs the master key once).
         #[arg(long)]
         disable: bool,
-        /// The identity file or recovery words for --disable (see `dg auth login`).
+        /// The identity file or recovery phrase for --disable (see `dg auth login`).
         #[arg(long, value_name = "FILE", requires = "disable")]
         master: Option<PathBuf>,
     },
@@ -130,7 +134,7 @@ pub struct LoginArgs {
     /// The identity file (bridge export, `dg auth export`, or mint-identity output). Also
     /// accepted via --identity.
     pub file: Option<PathBuf>,
-    /// Type the 12 recovery words instead of giving a file (read without echo).
+    /// Type the 12-word recovery phrase instead of giving a file (read without echo).
     #[arg(long, conflicts_with = "file")]
     pub mnemonic: bool,
     /// Keep the full identity (master key included) instead of registering a limited key.
@@ -148,8 +152,10 @@ pub struct LoginArgs {
 /// `dg auth name` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum NameCommand {
-    /// Register a DPNS username (`alice` → alice.dash). Needs an unbound CRITICAL/HIGH key:
-    /// the identity file or recovery words (used once), not the limited key.
+    /// Register a DPNS username (`alice` → alice.dash).
+    ///
+    /// Needs an unbound CRITICAL or HIGH key: the identity file or recovery phrase (used once),
+    /// not the limited key.
     Register {
         /// The label (3–63 letters, digits, `-`).
         label: String,
@@ -180,7 +186,7 @@ pub struct ExportArgs {
     #[arg(long)]
     pub new_key: bool,
     /// With --new-key: the identity file holding the master key (without it you are asked for
-    /// the 12 recovery words).
+    /// the 12-word recovery phrase).
     #[arg(long, value_name = "FILE", requires = "new_key")]
     pub master: Option<PathBuf>,
     #[command(flatten)]
@@ -285,7 +291,7 @@ pub use group::check_group;
 pub fn read_mnemonic() -> Result<Secret> {
     if !forge_core::sealed::prompts_allowed() {
         return Err(
-            UserError::new(codes::USAGE, "the recovery words could not be read")
+            UserError::new(codes::USAGE, "the recovery phrase could not be read")
                 .cause("this command does not prompt (--json)")
                 .fix("pass the identity file with --master <file> (or as the login file) instead")
                 .into(),
@@ -299,7 +305,7 @@ pub fn read_mnemonic() -> Result<Secret> {
             if crate::prompt::left_the_prompt(&e) {
                 return crate::prompt::input_closed();
             }
-            UserError::new(codes::USAGE, "the recovery words could not be read")
+            UserError::new(codes::USAGE, "the recovery phrase could not be read")
                 .cause(format!("no terminal to ask on ({e})"))
                 .fix("run it in a terminal, or pass the identity file instead")
                 .into()
@@ -313,7 +319,7 @@ pub fn read_mnemonic() -> Result<Secret> {
 /// (L-34).
 pub(crate) const MASTER_PROMPT: &str =
     "This needs your master key once. It is used for this one signature and not stored.\n\
-     Type your 12 recovery words below, or press Ctrl-C and run the command again with \
+     Type your 12-word recovery phrase below, or press Ctrl-C and run the command again with \
      --master <identity file> (the file from the bridge, or a `dg auth new --backup-file`).";
 
 /// The master identity for a ceremony: `--master <file>` (or the file given to login), else the
@@ -348,7 +354,7 @@ pub fn master_identity(
     if bridge.master_key().is_none() {
         return Err(UserError::new(codes::KEY_CANNOT_SIGN, "no master key given")
             .cause("this needs the identity's MASTER key; the source given has none (a limited key cannot register or disable keys)")
-            .fix("pass the identity file with --master <file>, or type the recovery words when asked")
+            .fix("pass the identity file with --master <file>, or type the recovery phrase when asked")
             .into());
     }
     Ok(bridge)
@@ -627,7 +633,7 @@ pub(crate) fn private_line(
     if !access.on_identity {
         return Some(
             "your identity has no encryption key; `dg auth keys add --encryption` adds one \
-             (from the recovery words)"
+             (from the recovery phrase)"
                 .into(),
         );
     }
@@ -784,7 +790,7 @@ fn expiry_text(ms: u64) -> String {
         return "expired".into();
     }
     let days = (ms - now + DAY_MS / 2) / DAY_MS;
-    format!("in {days} day(s)")
+    format!("in {}", crate::fmt::plural(days, "day"))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1072,6 +1078,33 @@ impl KeyReport {
     }
 }
 
+#[cfg(test)]
+impl KeyReport {
+    /// A live key `#key_id`: a Forge limited key (0.25 DASH, 0.2 left, no expiry), or an
+    /// unlimited one.
+    pub(crate) fn for_test(key_id: u32, limited: bool) -> Self {
+        Self {
+            key_id: Some(key_id),
+            disabled_id: None,
+            limited,
+            doc_type: None,
+            total: limited.then_some(25_000_000_000),
+            remaining: limited.then_some(20_000_000_000),
+            expires_at: None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl PrivateAccess {
+    pub(crate) fn for_test(held: &[u32], on_identity: bool) -> Self {
+        Self {
+            held: held.to_vec(),
+            on_identity,
+        }
+    }
+}
+
 pub(crate) async fn key_report(
     client: &PlatformClient,
     identity: &LoadedIdentity,
@@ -1199,6 +1232,9 @@ async fn status(ctx: &Ctx) -> Result<()> {
                 println!("Balance:  {} DASH", dash_amount(credits_to_dash(b)));
             }
             println!("Stored:   {where_}");
+            if report.as_ref().is_some_and(|r| r.key_id.is_some() && !r.is_capped()) {
+                println!("          warning: this key has no budget or expiry, so it can spend the whole balance; `dg auth login <identity file>` registers a capped key");
+            }
             if master == Some(true) {
                 println!("          (holds the master key: `dg auth login <file>` would store only a limited key and the encryption key)");
                 if kind == "keychain" {
@@ -1647,7 +1683,7 @@ mod tests {
     #[test]
     fn the_master_key_prompt_offers_master_file() {
         assert!(MASTER_PROMPT.contains("--master <identity file>"));
-        assert!(MASTER_PROMPT.contains("recovery words"));
+        assert!(MASTER_PROMPT.contains("recovery phrase"));
     }
 
     fn moutai(dapi: Option<&str>) -> forge_core::platform::Network {

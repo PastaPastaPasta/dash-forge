@@ -1,0 +1,13 @@
+{
+  "name": "power_automate",
+  "description": "Teams Workflows and other Power Automate triggers carry their credential in the sig query.",
+  "case": "webhook_url",
+  "rules": "v2",
+  "input": {
+    "url": "https://prod-12.westus.logic.azure.com:443/workflows/abc/triggers/manual/paths/invoke?sig=x"
+  },
+  "expected": {
+    "secret": "chatService",
+    "service": "Power Automate"
+  }
+}
