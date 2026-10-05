@@ -108,6 +108,8 @@ export interface TargetRow {
   readonly author: string
   readonly createdAt: number
   readonly repo: RepoLite | null
+  /** Its title and body are sealed (`enc`): a private repo's, or a members-only one in a public repo. */
+  readonly sealed?: boolean
 }
 
 /** A row's title; a private repo's ciphertext says so rather than showing nothing. */
@@ -171,6 +173,7 @@ export async function listMyTargets(
       author: d.$ownerId,
       createdAt: d.$createdAt,
       repo: repos.get(d.repoId) ?? null,
+      sealed: d.enc != null,
     }))
     .sort((a, b) => b.createdAt - a.createdAt)
   return { rows, more }
@@ -270,6 +273,7 @@ export async function readTargetsByIds(
           author: d.$ownerId,
           createdAt: d.$createdAt,
           repo: null,
+          sealed: d.enc != null,
         })
       }
     }

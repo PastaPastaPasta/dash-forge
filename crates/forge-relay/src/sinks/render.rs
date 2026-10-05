@@ -5,11 +5,16 @@
 //! Everything here comes from public chain data (the relay serves public repositories only),
 //! but titles and bodies are written by strangers, so a notice is plain text with control
 //! characters removed and lengths capped. Each channel escapes it for its own markup.
+//!
+//! Members-only content ([`crate::ingest::MEMBERS_ONLY_KEY`]) has no text in the event; a
+//! notice says what happened instead ("alice posted a members-only comment on issue #12",
+//! "alice opened members-only issue #3") and never quotes the empty text.
 
 use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+use crate::ingest::MEMBERS_ONLY_KEY;
 use crate::payload::WebhookEvent;
 
 /// The longest title line, in characters.
@@ -148,6 +153,21 @@ fn str_at<'a>(v: &'a Value, path: &[&str]) -> &'a str {
         .unwrap_or("")
 }
 
+/// Whether `v` (the payload, or its `issue` / `pull_request`) is marked members-only.
+fn members_only(v: &Value) -> bool {
+    v.get(MEMBERS_ONLY_KEY).and_then(Value::as_bool) == Some(true)
+}
+
+/// "issue #12: Title", or "members-only issue #12" for a members-only thread (it has no title).
+fn thread_ref(obj: &Value, what: &str, number: u64) -> String {
+    if members_only(obj) {
+        format!("members-only {what} #{number}")
+    } else {
+        let title = clean_line(str_at(obj, &["title"]), MAX_TITLE_CHARS);
+        format!("{what} #{number}: {title}")
+    }
+}
+
 fn u64_at(v: &Value, path: &[&str]) -> u64 {
     path.iter()
         .try_fold(v, |v, k| v.get(k))
@@ -200,12 +220,11 @@ pub fn render(event: &WebhookEvent, names: &BTreeMap<String, String>) -> Option<
             thread = Some((is_pr, number));
             let verb = thread_verb(p, action, is_pr, &name)?;
             let what = if is_pr { "pull request" } else { "issue" };
-            let title = clean_line(str_at(p, &[obj, "title"]), MAX_TITLE_CHARS);
-            if action == "opened" {
+            if action == "opened" && !members_only(&p[obj]) {
                 excerpt = clean_text(str_at(p, &[obj, "body"]), MAX_EXCERPT_CHARS);
             }
             (
-                format!("{actor} {verb} {what} #{number}: {title}"),
+                format!("{actor} {verb} {}", thread_ref(&p[obj], what, number)),
                 str_at(p, &[obj, "html_url"]).to_string(),
             )
         }
@@ -213,28 +232,50 @@ pub fn render(event: &WebhookEvent, names: &BTreeMap<String, String>) -> Option<
             let is_pr = p["issue"].get("pull_request").is_some();
             let number = u64_at(p, &["issue", "number"]);
             thread = Some((is_pr, number));
-            excerpt = clean_text(str_at(p, &["comment", "body"]), MAX_EXCERPT_CHARS);
             let what = if is_pr { "pull request" } else { "issue" };
-            let title = clean_line(str_at(p, &["issue", "title"]), MAX_TITLE_CHARS);
+            let verb = if members_only(p) {
+                "posted a members-only comment on"
+            } else {
+                excerpt = clean_text(str_at(p, &["comment", "body"]), MAX_EXCERPT_CHARS);
+                "commented on"
+            };
             (
-                format!("{actor} commented on {what} #{number}: {title}"),
+                format!("{actor} {verb} {}", thread_ref(&p["issue"], what, number)),
                 str_at(p, &["comment", "html_url"]).to_string(),
             )
         }
         "pull_request_review" => {
             let number = u64_at(p, &["pull_request", "number"]);
             thread = Some((true, number));
-            excerpt = clean_text(str_at(p, &["review", "body"]), MAX_EXCERPT_CHARS);
-            let verb = match str_at(p, &["review", "state"]) {
-                "approved" => "approved",
-                "changes_requested" => "requested changes on",
-                _ => "reviewed",
+            let state = str_at(p, &["review", "state"]);
+            let pr = thread_ref(&p["pull_request"], "pull request", number);
+            let line = if members_only(p) {
+                // The verdict is public; the review's text is not. The PR's title goes last.
+                let (head, title) = pr.split_once(": ").unwrap_or((&pr, ""));
+                let title = if title.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {title}")
+                };
+                match state {
+                    "approved" => {
+                        format!("{actor} approved {head} in a members-only review{title}")
+                    }
+                    "changes_requested" => format!(
+                        "{actor} requested changes on {head} in a members-only review{title}"
+                    ),
+                    _ => format!("{actor} posted a members-only review on {head}{title}"),
+                }
+            } else {
+                excerpt = clean_text(str_at(p, &["review", "body"]), MAX_EXCERPT_CHARS);
+                let verb = match state {
+                    "approved" => "approved",
+                    "changes_requested" => "requested changes on",
+                    _ => "reviewed",
+                };
+                format!("{actor} {verb} {pr}")
             };
-            let title = clean_line(str_at(p, &["pull_request", "title"]), MAX_TITLE_CHARS);
-            (
-                format!("{actor} {verb} pull request #{number}: {title}"),
-                str_at(p, &["review", "html_url"]).to_string(),
-            )
+            (line, str_at(p, &["review", "html_url"]).to_string())
         }
         "release" => {
             let (title, url, body) = release_title(p, action, &actor);
@@ -336,8 +377,12 @@ fn thread_verb(
 ) -> Option<String> {
     let label = || clean_line(str_at(p, &["label", "name"]), 60);
     let merged = is_pr && p["pull_request"]["merged"].as_bool().unwrap_or(false);
+    // A members-only label event carries no name.
+    let sealed = members_only(p);
     Some(match action {
         "opened" => "opened".into(),
+        "labeled" if sealed => "added a members-only label to".into(),
+        "unlabeled" if sealed => "removed a members-only label from".into(),
         "closed" if merged => "merged".into(),
         "closed" => "closed".into(),
         "reopened" => "reopened".into(),
@@ -418,6 +463,83 @@ mod tests {
             .unwrap()
             .title
             .starts_with("alice merged pull request"));
+    }
+
+    /// Members-only content (DESIGN D14): the notice says what happened, never quotes the empty
+    /// text, and names a members-only thread by number only.
+    #[test]
+    fn members_only_activity_is_worded_without_text() {
+        let mark = |mut e: WebhookEvent, top: bool, obj: &str| {
+            if top {
+                e.payload[MEMBERS_ONLY_KEY] = Value::Bool(true);
+            }
+            if !obj.is_empty() {
+                e.payload[obj][MEMBERS_ONLY_KEY] = Value::Bool(true);
+            }
+            e
+        };
+        let issue = |title: &str| IssueObj {
+            number: 12,
+            document_id: "I12".into(),
+            author: "OWNER1234567".into(),
+            title: title.into(),
+            body: String::new(),
+            open: true,
+            is_pr: false,
+        };
+        // A member's members-only comment on a public issue.
+        let e = issue_comment_event(&meta(), "C", &issue("Crash on start"), "C", "ALICEID", "");
+        let n = render(&mark(e, true, ""), &names()).unwrap();
+        assert_eq!(
+            n.title,
+            "alice posted a members-only comment on issue #12: Crash on start"
+        );
+        assert_eq!(n.excerpt, "");
+        // On a members-only issue: no title at all.
+        let e = issue_comment_event(&meta(), "C", &issue(""), "C", "ALICEID", "");
+        let n = render(&mark(e, true, "issue"), &names()).unwrap();
+        assert_eq!(
+            n.title,
+            "alice posted a members-only comment on members-only issue #12"
+        );
+        // A public comment on a members-only issue keeps its public text.
+        let e = issue_comment_event(&meta(), "C", &issue(""), "C", "ALICEID", "hello");
+        let n = render(&mark(e, false, "issue"), &names()).unwrap();
+        assert_eq!(n.title, "alice commented on members-only issue #12");
+        assert_eq!(n.excerpt, "hello");
+        // A members-only PR opened, then closed.
+        let mut sealed = pr("", false);
+        sealed.body = String::new();
+        let e = pull_request_event(&meta(), "P", "opened", &sealed);
+        let n = render(&mark(e, true, "pull_request"), &names()).unwrap();
+        assert_eq!(n.title, "alice opened members-only pull request #12");
+        assert_eq!(n.excerpt, "");
+        let e = pull_request_event(&meta(), "T", "closed", &sealed);
+        let n = render(&mark(e, false, "pull_request"), &names()).unwrap();
+        assert_eq!(n.title, "alice closed members-only pull request #12");
+        // A members-only review keeps its verdict.
+        let e = crate::payload::pull_request_review_event(
+            &meta(),
+            "R",
+            &pr("Fix the parser", false),
+            "ALICEID",
+            1,
+            "",
+            "",
+        );
+        let n = render(&mark(e, true, ""), &names()).unwrap();
+        assert_eq!(
+            n.title,
+            "alice approved pull request #12 in a members-only review: Fix the parser"
+        );
+        // A members-only label value.
+        let mut e = pull_request_event(&meta(), "L", "labeled", &pr("Fix", false));
+        e.payload["label"] = serde_json::json!({ "name": "" });
+        let n = render(&mark(e, true, ""), &names()).unwrap();
+        assert_eq!(
+            n.title,
+            "alice added a members-only label to pull request #12: Fix"
+        );
     }
 
     #[test]
