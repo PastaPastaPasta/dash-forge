@@ -128,7 +128,10 @@ pub fn ref_history(
     let mut protection = Vec::new();
     let (mut now, mut ever) = (false, false);
     for (i, c) in sorted.iter().enumerate() {
-        if sorted.get(i + 1).is_some_and(|n| n.created_at == c.created_at) {
+        if sorted
+            .get(i + 1)
+            .is_some_and(|n| n.created_at == c.created_at)
+        {
             continue;
         }
         let protects = matches_protected(ref_name, &c.protected_patterns);
@@ -154,7 +157,10 @@ pub fn ref_history(
 
     // Merge by time; a config change goes before the updates of its block.
     let mut out = Vec::with_capacity(moves.len() + protection.len());
-    let (mut m, mut p) = (moves.into_iter().peekable(), protection.into_iter().peekable());
+    let (mut m, mut p) = (
+        moves.into_iter().peekable(),
+        protection.into_iter().peekable(),
+    );
     loop {
         let take_protection = match (m.peek(), p.peek()) {
             (Some(u), Some(c)) => c.at <= u.at,
@@ -202,7 +208,10 @@ mod tests {
     #[test]
     fn force_push_is_judged_from_the_walked_tip_not_the_writers_prev_oid() {
         // u2 claims to build on X, an ancestor of C, to pass as a fast-forward.
-        let updates = [upd("u1", "0", "A", 10, false), upd("u2", "X", "C", 20, false)];
+        let updates = [
+            upd("u1", "0", "A", 10, false),
+            upd("u2", "X", "C", 20, false),
+        ];
         let contains = |old: &str, new: &str| Some(old == "X" && new == "C");
         let got = ref_history("refs/heads/main", "H", &updates, &[], contains);
         assert_eq!(
@@ -214,7 +223,10 @@ mod tests {
 
     #[test]
     fn unknown_ancestry_reads_updated() {
-        let updates = [upd("u1", "0", "A", 10, false), upd("u2", "A", "B", 20, false)];
+        let updates = [
+            upd("u1", "0", "A", 10, false),
+            upd("u2", "A", "B", 20, false),
+        ];
         let got = ref_history("refs/heads/main", "H", &updates, &[], |_, _| None);
         assert_eq!(kinds(&got), [RefEventKind::Created, RefEventKind::Updated]);
     }
@@ -227,7 +239,10 @@ mod tests {
             cfg("c3", 30, &["refs/heads/*"]),
         ];
         // u2 is plain: valid only because c2 lifted protection before it.
-        let updates = [upd("u1", "0", "A", 10, true), upd("u2", "A", "B", 20, false)];
+        let updates = [
+            upd("u1", "0", "A", 10, true),
+            upd("u2", "A", "B", 20, false),
+        ];
         let got = ref_history("refs/heads/main", "H", &updates, &configs, |_, _| {
             Some(false)
         });
