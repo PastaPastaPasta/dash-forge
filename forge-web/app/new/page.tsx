@@ -219,8 +219,8 @@ export default function NewRepoPage(): JSX.Element {
     <AppShell>
       <div className="mx-auto max-w-xl">
         <div className="mb-6 flex items-center gap-3">
-          <span className="flex h-9 w-9 items-center justify-center rounded-md bg-forge-500/15">
-            <Hammer className="h-5 w-5 text-forge-500" aria-hidden />
+          <span className="flex h-9 w-9 items-center justify-center rounded-md bg-surface-raised ring-1 ring-inset ring-anvil-200 dark:ring-anvil-700">
+            <Hammer className="h-5 w-5 text-fg-muted" aria-hidden />
           </span>
           <div>
             <h1 className="text-xl">Forge a new repo</h1>

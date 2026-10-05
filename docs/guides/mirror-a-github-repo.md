@@ -334,3 +334,15 @@ git ls-remote https://github.com/alice/project refs/heads/main
 ```
 
 The two ids must match. A commit id is a hash over the commit and everything it reaches, so equal ids mean identical history for that branch. Repeat for other branches and tags, or compare the full `git ls-remote` output of both. [Verify Forge](verify-forge.md) goes further.
+
+### Confirm the mirror is yours
+
+Anyone can create a repository whose description says it mirrors your project, so Forge shows that claim as "Says it mirrors github.com/alice/project" until your project confirms it. To confirm it, add a file named `.dash-forge.json` to the root of your default branch on GitHub, listing the mirror's repo id:
+
+```json
+{"mirrors":["<repo id>"]}
+```
+
+forge-import prints the file after it creates a mirror, and on the mirror's page a maintainer sees a link that opens GitHub's new-file page with the file filled in. The repo id is on the repository's Settings page. List several ids to vouch for several mirrors.
+
+Visitors can then press **Check with GitHub** on the mirror's page. Their browser reads the file from GitHub and compares GitHub's default branch with the mirror's, and the page says "Mirror of github.com/alice/project" with both results. The check is optional and asks github.com directly, so nothing is checked until a visitor asks. On the "Repo not found" page, mirrors their source lists come first once checked.

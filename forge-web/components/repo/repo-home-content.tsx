@@ -249,7 +249,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
       className="rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900"
     >
       <div className="mb-4 flex items-center gap-2">
-        <Rocket className="h-5 w-5 text-forge-500" aria-hidden />
+        <Rocket className="h-5 w-5 text-fg-muted" aria-hidden />
         <h2 className="text-prose">
           <span className="font-mono">
             {addr.owner.length > 20 ? `${addr.owner.slice(0, 8)}…` : addr.owner}/{home.repo.name || addr.name}
@@ -268,7 +268,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         repository&apos;s git config, so a later <span className="font-mono">git push</span> goes there.
       </p>
       <p className="mt-4 text-[12px] text-anvil-600 dark:text-anvil-300">
-        Storage: packs go to <span className="font-mono">{configured ? home.backend.label : 'Platform'}</span>
+        Storage: packs go to <span className="font-mono">{configured ? home.backend.kind : 'Platform'}</span>
         {configured
           ? ` (set by the owner) · Platform: manifest + refs only, ~${dashRange(PUSH_COST_DASH.byo)} DASH per push`
           : ` · a small push ≈ ${dashRange(PUSH_COST_DASH.platform)} DASH with packs on Platform (${dashRange(PUSH_COST_DASH.byo)} with your own storage)`}

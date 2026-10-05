@@ -42,6 +42,7 @@ mod signing;
 mod status;
 mod storage;
 mod storage_wizard;
+mod verify_app;
 mod webhook;
 
 use std::path::PathBuf;
@@ -110,6 +111,11 @@ pub struct Cli {
     /// to the list in `forge-contracts/deployments/devnet-<name>.json`.
     #[arg(long, global = true, value_name = "ADDRS")]
     pub dapi_addresses: Option<String>,
+
+    /// Check proofs against quorum keys from this service instead of the network's, for when
+    /// that one is down or blocked. Also DASH_FORGE_QUORUM_URL or git config dash.quorumUrl.
+    #[arg(long, global = true, value_name = "URL")]
+    pub quorum_url: Option<String>,
 
     /// Override the identity file for this invocation.
     #[arg(long, global = true, value_name = "FILE")]
@@ -246,6 +252,9 @@ pub enum Command {
     Api(ApiCommand),
     /// Import (or re-sync) a GitHub repository or GitLab project into forge-v2: code, issues, PRs/MRs, releases.
     Import(Box<import::ImportArgs>),
+    /// Check a deployed copy of the web app file by file against its published build
+    /// manifest (a release's, or the one this repository's CI attested).
+    VerifyApp(verify_app::VerifyAppArgs),
     /// Diagnose the identity, network, contracts, storage, git config and toolchain.
     Doctor {
         /// Apply the safe automatic fixes (create config directories with 0700, tighten an
@@ -2180,6 +2189,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
             repo, to, profile, ..
         } => maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await,
         Command::Import(args) => import::import(ctx, args).await,
+        Command::VerifyApp(args) => verify_app::run(ctx, args).await,
         Command::Doctor { fix } => doctor::run(ctx, *fix).await,
         Command::Init(args) => repo::init(ctx, args).await,
         Command::Completions { .. } => unreachable!("handled in main before Ctx::resolve"),

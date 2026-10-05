@@ -518,14 +518,15 @@ impl PlatformClient {
         let dashcore_network = to_dashcore(network);
         let cache_size = NonZeroUsize::new(100).expect("cache size is non-zero");
 
-        let context_provider = match network {
-            Network::Devnet { .. } => TrustedHttpContextProvider::new_with_url(
-                dashcore_network,
-                network.quorum_base_url(),
-                cache_size,
-            ),
-            _ => TrustedHttpContextProvider::new(dashcore_network, None, cache_size),
-        }
+        // Proofs are checked against quorum keys from a quorum service: the network's, or one
+        // the user chose (`target.quorum_url`). The SDK takes quorum keys from nowhere else
+        // (rs-sdk-trusted-context-provider `TrustedHttpContextProvider::new_with_url`, which
+        // also refuses a plain-http URL on testnet and mainnet).
+        let context_provider = TrustedHttpContextProvider::new_with_url(
+            dashcore_network,
+            target.checked_quorum_base_url()?,
+            cache_size,
+        )
         .map_err(|e| Error::Platform(format!("building context provider for {network}: {e}")))?;
 
         let builder = match network {
@@ -541,7 +542,7 @@ impl PlatformClient {
                                 "devnet {network} has no DAPI addresses configured and \
                                  discovery from {} failed ({e}); pass --dapi-addresses \
                                  (or set dash.dapiAddresses / DASH_FORGE_DAPI_ADDRESSES)",
-                                network.quorum_base_url()
+                                target.quorum_base_url()
                             ))
                         })?
                         .iter()

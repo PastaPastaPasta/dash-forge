@@ -242,8 +242,10 @@ when the default changes. Two more rules apply to every tool:
   `--network mainnet`.
 
 A devnet's quorum keys come from `https://quorums.<name>.networks.dash.org`. Override the
-URL with `DASH_FORGE_QUORUM_URL` or git config `dash.quorumUrl` (forge-web:
-`NEXT_PUBLIC_QUORUM_URL` at build time), or with `quorumBaseUrl` in the deployment file. The
+URL with `--quorum-url`, `DASH_FORGE_QUORUM_URL` or git config `dash.quorumUrl` (forge-web:
+`NEXT_PUBLIC_QUORUM_URL` at build time, or Settings → Quorum service), or with
+`quorumBaseUrl` in the deployment file. The same settings choose another quorum service on
+testnet and mainnet, where it must be `https://`. The
 devnet's DAPI addresses are taken from the first of these that is set:
 
 1. the flag, config or env setting;

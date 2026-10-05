@@ -780,17 +780,17 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
         )];
     }
     let source = ctx.network_source;
+    let quorums = ctx.target.quorum_base_url();
     let target = match network {
         Network::Devnet { dapi_addresses, .. } => format!(
-            "{network}, {source} (DAPI: {}; quorums: {})",
+            "{network}, {source} (DAPI: {}; quorums: {quorums})",
             if dapi_addresses.is_empty() {
                 "discovered from the quorum service at connect".to_string()
             } else {
                 format!("{} address(es)", dapi_addresses.len())
             },
-            network.quorum_base_url()
         ),
-        _ => format!("{network}, {source} (built-in seed list)"),
+        _ => format!("{network}, {source} (DAPI: built-in seed list; quorums: {quorums})"),
     };
     let mut out = vec![Check::ok("target", target)];
 

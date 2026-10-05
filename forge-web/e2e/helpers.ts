@@ -281,6 +281,21 @@ export async function expectLanded(page: Page, success: Locator, timeout = 45_00
 }
 
 /**
+ * The landing page's first recent-repo card. The feed shows only repos with a description and a
+ * push this week; when none of the newest qualify, it offers "Show all recent repos", which this
+ * clicks so a spec that needs a card always gets one.
+ */
+export async function firstRecentCard(page: Page, timeout = 45_000): Promise<Locator> {
+  const feed = page.locator('section').filter({ hasText: 'Recent repos' }).first()
+  const card = feed.locator('a[href*="/repo"]').first()
+  const showAll = feed.getByTestId('show-all-recent')
+  await expectLanded(page, card.or(showAll).first(), timeout)
+  if (!(await card.isVisible())) await showAll.click()
+  await expect(card).toBeVisible({ timeout })
+  return card
+}
+
+/**
  * Answer the run's inline storage question ("Waiting for your choice: store the pack … on Dash
  * Platform?") if the upload step asks before `done` shows. It asks only after the pack is built
  * (seconds in), so this waits for either; `isVisible` alone would not wait.

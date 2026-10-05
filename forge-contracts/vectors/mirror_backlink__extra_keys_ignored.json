@@ -1,0 +1,14 @@
+{
+  "name": "extra_keys_ignored",
+  "description": "Other keys are ignored, so later versions can add some.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "{\"version\": 2, \"note\": \"x\", \"mirrors\": [\"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"]}",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": true,
+    "listed": true
+  }
+}

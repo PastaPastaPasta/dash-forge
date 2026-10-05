@@ -1,0 +1,14 @@
+{
+  "name": "whitespace_around_json",
+  "description": "Whitespace around the JSON is fine.",
+  "case": "mirror_backlink",
+  "rules": "v2",
+  "input": {
+    "file": "\n  {\"mirrors\": [\"BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq\"]}  \n",
+    "repoId": "BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq"
+  },
+  "expected": {
+    "valid": true,
+    "listed": true
+  }
+}
