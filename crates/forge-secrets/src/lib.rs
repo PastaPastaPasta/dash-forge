@@ -39,7 +39,8 @@
 //!
 //! A finding's fingerprint is the first [`FINGERPRINT_HEX`] hex digits of
 //! `SHA-256("forge-secrets/v1" 0x00 rule-id 0x00 path 0x00 material)`, where the material is
-//! the file's bytes for `env_file` and `envrc` (empty when they were not read), the base64 body for `private_key`,
+//! the file's bytes for `env_file` and `envrc` (empty when they were not read or are not
+//! [`is_scannable`]), the base64 body for `private_key`,
 //! `<id>:<secret>` for `aws_key_pair`, the token, the WIF, or `<name>=<value>` for
 //! `secret_assignment`. It names one secret in one file, never reveals it, and stays the same
 //! across commits while the secret and the path do.
@@ -298,9 +299,8 @@ pub fn verdict(finding: &Finding, history: bool) -> Verdict {
 
 /// Whether any folder of `path` is one of [`TEST_DIRS`].
 pub fn is_test_path(path: &str) -> bool {
-    let mut parts: Vec<&str> = path.split('/').collect();
-    parts.pop();
-    parts.iter().any(|p| TEST_DIRS.contains(p))
+    path.rsplit_once('/')
+        .is_some_and(|(dirs, _)| dirs.split('/').any(|d| TEST_DIRS.contains(&d)))
 }
 
 /// The file name of `path` (its last `/`-separated part).
@@ -326,8 +326,8 @@ pub fn is_scannable(content: &[u8]) -> bool {
 /// is not [`is_scannable`] is matched by name only. Findings come in a fixed order: whole-file
 /// rules first, then by line, then by rule, then by fingerprint.
 pub fn scan_file(path: &str, content: Option<&[u8]>) -> Vec<Finding> {
-    let bytes = content.unwrap_or_default();
     let content = content.filter(|c| is_scannable(c));
+    let bytes = content.unwrap_or_default();
     let mut out = Vec::new();
     let name = base_name(path);
     let text = content.map(String::from_utf8_lossy);
@@ -339,17 +339,18 @@ pub fn scan_file(path: &str, content: Option<&[u8]>) -> Vec<Finding> {
     }
     if let Some(text) = text.as_deref() {
         let matches = content::scan_text(text);
+        let starts = util::line_starts(text);
         let mut lines_with_findings = std::collections::BTreeSet::new();
         for m in &matches {
             if m.rule != Rule::SecretAssignment {
-                lines_with_findings.insert(util::line_of(text, m.offset));
+                lines_with_findings.insert(util::line_at(&starts, m.offset));
                 if let Some(also) = m.also {
-                    lines_with_findings.insert(util::line_of(text, also));
+                    lines_with_findings.insert(util::line_at(&starts, also));
                 }
             }
         }
         for m in matches {
-            let line = util::line_of(text, m.offset);
+            let line = util::line_at(&starts, m.offset);
             if m.rule == Rule::SecretAssignment && lines_with_findings.contains(&line) {
                 continue;
             }

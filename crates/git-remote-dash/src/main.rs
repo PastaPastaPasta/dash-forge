@@ -265,9 +265,9 @@ fn protocol_loop<R: BufRead, W: Write>(
                 let for_push = line.split_whitespace().nth(1) == Some("for-push");
                 // git sends `option cloning` only before a fetch, and a clone of an empty
                 // repository never fetches: a repo with no refs yet gets its ledger here.
-                if !for_push {
+                if !for_push && !git::LocalRepo::has_refs() {
                     if let Ok(dir) = git::LocalRepo::git_dir() {
-                        ledger::ensure_on_list(&dir, !git::LocalRepo::has_refs());
+                        ledger::ensure_on_fetch(&dir, false);
                     }
                 }
                 let out = step(rt.block_on(helper.list(for_push)), "list refs")?;

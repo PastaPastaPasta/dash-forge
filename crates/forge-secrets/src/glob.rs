@@ -34,21 +34,42 @@ pub fn path_matches(pattern: &str, path: &str) -> bool {
     }
 }
 
-fn glob(p: &[char], s: &[char]) -> bool {
-    match p {
-        [] => s.is_empty(),
-        ['*', '*', rest @ ..] => match rest {
-            ['/', after @ ..] => {
-                (0..=s.len()).any(|i| (i == 0 || s[i - 1] == '/') && glob(after, &s[i..]))
-            }
-            _ => (0..=s.len()).any(|i| glob(rest, &s[i..])),
-        },
-        ['*', rest @ ..] => (0..=s.len())
-            .take_while(|&i| i == 0 || s[i - 1] != '/')
-            .any(|i| glob(rest, &s[i..])),
-        ['?', rest @ ..] => s.first().is_some_and(|&c| c != '/') && glob(rest, &s[1..]),
-        [c, rest @ ..] => s.first() == Some(c) && glob(rest, &s[1..]),
+/// Whether all of `s` matches all of `p`. Memoized on (pattern position, text position), so
+/// patterns with several `*` or `**` stay linear in their size times the path's.
+fn glob(pat: &[char], text: &[char]) -> bool {
+    let mut memo = vec![None; (pat.len() + 1) * (text.len() + 1)];
+    glob_at(pat, text, 0, 0, &mut memo)
+}
+
+/// Whether `text[at..]` matches `pat[pi..]`.
+fn glob_at(
+    pat: &[char],
+    text: &[char],
+    pi: usize,
+    at: usize,
+    memo: &mut Vec<Option<bool>>,
+) -> bool {
+    let key = pi * (text.len() + 1) + at;
+    if let Some(known) = memo[key] {
+        return known;
     }
+    let end = text.len();
+    let matched = match &pat[pi..] {
+        [] => at == end,
+        // `**/` also matches nothing: at `at`, or after any later `/`.
+        ['*', '*', '/', ..] => (at..=end)
+            .any(|t| (t == at || text[t - 1] == '/') && glob_at(pat, text, pi + 3, t, memo)),
+        ['*', '*', ..] => (at..=end).any(|t| glob_at(pat, text, pi + 2, t, memo)),
+        ['*', ..] => (at..=end)
+            .take_while(|&t| t == at || text[t - 1] != '/')
+            .any(|t| glob_at(pat, text, pi + 1, t, memo)),
+        ['?', ..] => {
+            text.get(at).is_some_and(|&ch| ch != '/') && glob_at(pat, text, pi + 1, at + 1, memo)
+        }
+        [ch, ..] => text.get(at) == Some(ch) && glob_at(pat, text, pi + 1, at + 1, memo),
+    };
+    memo[key] = Some(matched);
+    matched
 }
 
 #[cfg(test)]
@@ -79,5 +100,12 @@ mod tests {
         assert!(!path_matches("", "a"));
         assert!(path_matches("a?c", "abc"));
         assert!(!path_matches("a?c", "a/c"));
+    }
+
+    #[test]
+    fn many_stars_stay_fast() {
+        let pattern = "**/".repeat(30) + &"*a".repeat(30) + "b";
+        let path = "x/".repeat(60) + &"a".repeat(200);
+        assert!(!path_matches(&pattern, &path));
     }
 }

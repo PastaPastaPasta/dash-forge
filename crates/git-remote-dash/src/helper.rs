@@ -47,6 +47,7 @@ use crate::git::{names_missing_object, LocalRepo, ScratchRepo};
 use crate::options::OptionState;
 use crate::policy::{self, PushPolicy};
 use crate::progress::{self, Charge, PlanFacts, PlatformWrites, Progress};
+use crate::secret_scan;
 use crate::url::DashUrl;
 
 /// Packs downloaded concurrently by a fetch — the same window the platform backend
@@ -454,6 +455,7 @@ impl Helper {
         } else {
             None
         };
+        let remote = self.remote.clone();
         let conn = self.ensure_signer().await?;
         // How the repo is named in fixes the user may paste into `dg`: `owner/name`.
         let repo_label = conn.repo.display();
@@ -486,7 +488,7 @@ impl Helper {
         let mut planned = plan_pushes(specs, &remote_refs);
         // Before anything is built, signed or stored: a public push publishes for good.
         if conn.repo.visibility == forge_core::rules::v2::Visibility::Public {
-            check_secrets(conn, &mut planned, &remote_refs, options).await;
+            check_secrets(conn, remote.as_deref(), &mut planned, &remote_refs, options).await;
         }
         let progress = Progress::new(options.verbosity);
         let balance_before = conn.identity().balance();
@@ -1441,12 +1443,13 @@ fn plan_pushes(specs: &[PushSpec], remote_refs: &[(String, RefState)]) -> Vec<Pl
     planned
 }
 
-/// The secret scan of a public push ([`crate::secret_scan`]): prints its warnings, and refuses
-/// (E807) each ref whose new commits add a likely secret nothing allows. When the scan itself
-/// cannot run (git failed), it says so and the push goes ahead: the scan is a safety net, and a
-/// broken one must not block every push.
+/// The secret scan of a public push ([`secret_scan`]): prints its warnings, and refuses (E807)
+/// each ref whose new commits add a likely secret nothing allows. When the scan itself cannot
+/// run (git failed), it says so and the push goes ahead: the scan is a safety net, and a broken
+/// one must not block every push.
 async fn check_secrets(
     conn: &Conn,
+    remote: Option<&str>,
     planned: &mut [Planned],
     remote_refs: &[(String, RefState)],
     options: &OptionState,
@@ -1460,26 +1463,27 @@ async fn check_secrets(
     if tips.is_empty() {
         return;
     }
-    let known = remote_refs
-        .iter()
-        .filter_map(|(_, s)| tip_oid(s))
-        .filter(|oid| LocalRepo::object_exists(oid))
-        .collect();
+    // Already public: the remote's tips now, and what this clone last fetched from it (a tip
+    // someone else moved since is not held here, but its history mostly is).
+    let mut known: Vec<String> = remote_refs.iter().filter_map(|(_, s)| tip_oid(s)).collect();
+    if let Some(r) = remote {
+        known.extend(crate::git::remote_tracking_tips(None, r));
+    }
     let created_at_ms = forge_core::resolve::repo_created_at(&conn.client, &conn.repo)
         .await
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "could not read when the repo was created; every new commit counts as new");
             None
         });
-    let request = crate::secret_scan::Request {
+    let request = secret_scan::Request {
         repo: None,
         tips,
         known,
         created_at_ms,
-        mirror: crate::secret_scan::spawned_by_import(),
-        allow: crate::secret_scan::Request::allow_from_options(options),
+        mirror: secret_scan::spawned_by_import(),
+        allow: secret_scan::allow_from_options(options),
     };
-    let scan = match crate::secret_scan::scan(&request) {
+    let scan = match secret_scan::scan(&request) {
         Ok(scan) => scan,
         Err(e) => {
             eprintln!("dash: warning: couldn't check this push for secrets, pushing anyway: {e:#}");
@@ -1491,7 +1495,7 @@ async fn check_secrets(
     let refs: Vec<String> = scan
         .refused
         .iter()
-        .map(|(i, _)| planned[*i].spec.dst.clone())
+        .map(|&i| planned[i].spec.dst.clone())
         .collect();
     let Some(error) = scan.refusal(&refs) else {
         return;
@@ -1503,8 +1507,8 @@ async fn check_secrets(
     let mut event = error.to_json();
     event["event"] = serde_json::json!("error");
     progress::report(&event);
-    for (i, _) in &scan.refused {
-        planned[*i].reject = Some(crate::secret_scan::WIRE.to_string());
+    for &i in &scan.refused {
+        planned[i].reject = Some(secret_scan::WIRE.to_string());
     }
 }
 
@@ -2604,7 +2608,7 @@ fn history_skipped(ctx: &PushContext<'_>, why: &str) {
 /// (`DASH_FORGE_SPAWNED_BY=forge-import`): a stray variable in a user's shell never picks the
 /// branch an index describes.
 fn default_branch_hint() -> Option<String> {
-    let spawned = std::env::var("DASH_FORGE_SPAWNED_BY").is_ok_and(|v| v == "forge-import");
+    let spawned = secret_scan::spawned_by_import();
     spawned
         .then(|| std::env::var("DASH_FORGE_DEFAULT_BRANCH").ok())
         .flatten()

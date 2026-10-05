@@ -1,4 +1,6 @@
-//! The clone's sealed-object ledger, `$GIT_DIR/dash/sealed` (mixed-visibility design D21, §4.3).
+//! The clone's sealed-object ledger, `$GIT_DIR/dash/sealed-ledger` (mixed-visibility design
+//! D21, §4.3). D21 names `dash/sealed`, but that path is already the folder where a private
+//! push keeps its sealed pack for a retry, so the ledger takes its own name.
 //!
 //! The ledger will list every members-only commit this clone has fetched or pushed, so that a
 //! later publication guard can refuse to push one to a public branch even without the
@@ -32,9 +34,9 @@ use std::path::{Path, PathBuf};
 /// The first line of a version-1 ledger.
 pub const HEADER: &str = "# dash sealed-object ledger v1";
 
-/// `$GIT_DIR/dash/sealed`.
+/// `$GIT_DIR/dash/sealed-ledger`.
 pub fn path(git_dir: &Path) -> PathBuf {
-    git_dir.join("dash").join("sealed")
+    git_dir.join("dash").join("sealed-ledger")
 }
 
 /// Create the empty ledger in `git_dir` unless one exists. `Ok(true)` when it was created.
@@ -56,16 +58,6 @@ pub fn create_empty(git_dir: &Path) -> std::io::Result<bool> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(e),
-    }
-}
-
-/// Create the ledger when a `list` starts a clone or a first fetch: the repo has no refs yet
-/// (`fresh`) and no `dash/` folder. git announces a clone only before `fetch`, and a clone of an
-/// empty repository never fetches, so this is where such a clone gets its ledger. An
-/// `ls-remote` run inside an existing repository creates nothing.
-pub fn ensure_on_list(git_dir: &Path, fresh: bool) {
-    if fresh {
-        ensure_on_fetch(git_dir, false);
     }
 }
 
@@ -112,16 +104,10 @@ mod tests {
         ensure_on_fetch(fresh.path(), false);
         assert!(path(fresh.path()).exists(), "a first fetch gets one");
 
-        let listed = tempfile::TempDir::new().unwrap();
-        ensure_on_list(listed.path(), false);
-        assert!(
-            !path(listed.path()).exists(),
-            "ls-remote in a repo with refs"
-        );
-        ensure_on_list(listed.path(), true);
-        assert!(
-            path(listed.path()).exists(),
-            "a clone of an empty repository"
-        );
+        // A private push keeps its sealed pack in `dash/sealed/`: both fit side by side.
+        let both = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(both.path().join("dash").join("sealed")).unwrap();
+        assert!(create_empty(both.path()).unwrap());
+        assert!(both.path().join("dash").join("sealed").is_dir());
     }
 }

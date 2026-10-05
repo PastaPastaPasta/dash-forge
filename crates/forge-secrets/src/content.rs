@@ -17,6 +17,17 @@ pub(crate) struct Match {
     pub also: Option<usize>,
 }
 
+impl Match {
+    fn new(rule: Rule, offset: usize, material: String) -> Self {
+        Self {
+            rule,
+            offset,
+            material,
+            also: None,
+        }
+    }
+}
+
 /// Every content match in `text`, in no particular order (the caller sorts).
 pub(crate) fn scan_text(text: &str) -> Vec<Match> {
     let mut out = Vec::new();
@@ -34,9 +45,7 @@ pub(crate) fn scan_text(text: &str) -> Vec<Match> {
 /// `_`, `.` or `-`, and the value is not empty, `""` or `''`.
 pub(crate) fn sets_a_value(text: &str) -> bool {
     text.lines().any(|line| {
-        let l = line.trim_start();
-        let l = l.strip_prefix("export ").map_or(l, str::trim_start);
-        let Some((name, value)) = l.split_once('=') else {
+        let Some((name, value)) = strip_export(line).split_once('=') else {
             return false;
         };
         let name = name.trim_end();
@@ -44,9 +53,7 @@ pub(crate) fn sets_a_value(text: &str) -> bool {
             .chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+            && name.chars().all(is_name_char);
         let value = value.trim();
         ok_name && !value.is_empty() && value != "\"\"" && value != "''"
     })
@@ -88,6 +95,9 @@ fn pem_body(body: &str) -> Option<String> {
 }
 
 fn private_keys(text: &str, out: &mut Vec<Match>) {
+    // A label whose END marker is missing after some point is missing after every later one:
+    // remembered, so many unmatched BEGIN markers cost one search each, not one per pair.
+    let mut unmatched: Vec<&str> = Vec::new();
     let mut from = 0;
     while let Some(i) = text[from..].find(BEGIN) {
         let start = from + i;
@@ -97,20 +107,16 @@ fn private_keys(text: &str, out: &mut Vec<Match>) {
         };
         let label = &text[label_start..label_start + label_len];
         from = label_start + label_len + DASHES.len();
-        if !is_private_key_label(label) {
+        if !is_private_key_label(label) || unmatched.contains(&label) {
             continue;
         }
         let end = format!("-----END {label}-----");
         let Some(body_len) = text[from..].find(&end) else {
+            unmatched.push(label);
             continue;
         };
         if let Some(material) = pem_body(&text[from..from + body_len]) {
-            out.push(Match {
-                rule: Rule::PrivateKey,
-                offset: start,
-                material,
-                also: None,
-            });
+            out.push(Match::new(Rule::PrivateKey, start, material));
         }
         from += body_len + end.len();
     }
@@ -176,7 +182,7 @@ fn aws_pairs(text: &str, out: &mut Vec<Match>) {
         return;
     }
     let Some((secret_at, secret)) = words(text, |b| {
-        b.is_ascii_alphanumeric() || matches!(b, b'/' | b'+' | b'=')
+        b.is_ascii_alphanumeric() || matches!(b, b'/' | b'+')
     })
     .into_iter()
     .find(|(_, w)| is_aws_secret(w)) else {
@@ -272,12 +278,7 @@ fn github_tokens(text: &str, out: &mut Vec<Match>) {
             } else {
                 Rule::UnverifiedToken
             };
-            out.push(Match {
-                rule,
-                offset,
-                material: token.to_string(),
-                also: None,
-            });
+            out.push(Match::new(rule, offset, token.to_string()));
         }
     }
     let p = GITHUB_FINE_GRAINED_PREFIX;
@@ -290,12 +291,7 @@ fn github_tokens(text: &str, out: &mut Vec<Match>) {
                 .enumerate()
                 .all(|(i, b)| i == 22 || b.is_ascii_alphanumeric());
         if shaped {
-            out.push(Match {
-                rule: Rule::UnverifiedToken,
-                offset,
-                material: token.to_string(),
-                also: None,
-            });
+            out.push(Match::new(Rule::UnverifiedToken, offset, token.to_string()));
         }
     }
 }
@@ -375,12 +371,7 @@ fn gitlab_tokens(text: &str, out: &mut Vec<Match>) {
                 }
                 None => continue,
             };
-            out.push(Match {
-                rule,
-                offset,
-                material: token.to_string(),
-                also: None,
-            });
+            out.push(Match::new(rule, offset, token.to_string()));
         }
     }
 }
@@ -411,17 +402,18 @@ fn is_wif(w: &str) -> bool {
 fn wifs(text: &str, out: &mut Vec<Match>) {
     for (offset, w) in words(text, |b| b.is_ascii_alphanumeric()) {
         if is_wif(w) {
-            out.push(Match {
-                rule: Rule::Wif,
-                offset,
-                material: w.to_string(),
-                also: None,
-            });
+            out.push(Match::new(Rule::Wif, offset, w.to_string()));
         }
     }
 }
 
 // --- assignments --------------------------------------------------------------------------
+
+/// `line` without leading whitespace and an `export ` prefix.
+fn strip_export(line: &str) -> &str {
+    let l = line.trim_start();
+    l.strip_prefix("export ").map_or(l, str::trim_start)
+}
 
 fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')
@@ -435,8 +427,7 @@ fn is_value_char(c: char) -> bool {
 /// quoted), `=`, `:`, `:=` or `=>`, then a value (optionally quoted) that ends the line or is
 /// followed by a space, `,`, `;` or its closing quote.
 fn assignment(line: &str) -> Option<(&str, &str)> {
-    let l = line.trim_start();
-    let l = l.strip_prefix("export ").map_or(l, str::trim_start);
+    let l = strip_export(line);
     let first = l.chars().next()?;
     let (l, name) = if matches!(first, '"' | '\'') {
         let close = l[1..].find(first)? + 1;
@@ -482,12 +473,11 @@ fn assignments(text: &str, out: &mut Vec<Match>) {
         if let Some((name, value)) = assignment(line.trim_end_matches(['\n', '\r'])) {
             let lower = name.to_ascii_lowercase();
             if SECRET_NAME_WORDS.iter().any(|w| lower.contains(w)) && is_secret_value(value) {
-                out.push(Match {
-                    rule: Rule::SecretAssignment,
+                out.push(Match::new(
+                    Rule::SecretAssignment,
                     offset,
-                    material: format!("{name}={value}"),
-                    also: None,
-                });
+                    format!("{name}={value}"),
+                ));
             }
         }
         offset += line.len();

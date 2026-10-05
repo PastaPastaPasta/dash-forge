@@ -123,6 +123,14 @@ fn aws_needs_the_secret() {
         rules("a.ini", &format!("id = {id}\nsecret = {secret}\n")),
         [Rule::AwsKeyPair]
     );
+    // Written NAME=value, as shells, Dockerfiles and compose files do.
+    assert_eq!(
+        rules(
+            "deploy.sh",
+            &format!("export AWS_ACCESS_KEY_ID={id}\nexport AWS_SECRET_ACCESS_KEY={secret}\n")
+        ),
+        [Rule::AwsKeyPair]
+    );
     // A git object id is not an AWS secret.
     assert!(rules(
         "a.ini",

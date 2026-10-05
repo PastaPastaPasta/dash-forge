@@ -2,10 +2,16 @@
 
 use sha2::{Digest, Sha256};
 
-/// The 1-based line of byte `offset` in `text` (`\n` ends a line).
-pub(crate) fn line_of(text: &str, offset: usize) -> u32 {
-    let newlines = text[..offset.min(text.len())].matches('\n').count();
-    u32::try_from(newlines + 1).unwrap_or(u32::MAX)
+/// The byte offsets where each line of `text` starts (`\n` ends a line), for [`line_at`].
+pub(crate) fn line_starts(text: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+        .collect()
+}
+
+/// The 1-based line of byte `offset`, given the text's [`line_starts`].
+pub(crate) fn line_at(starts: &[usize], offset: usize) -> u32 {
+    u32::try_from(starts.partition_point(|&s| s <= offset)).unwrap_or(u32::MAX)
 }
 
 /// CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320), as zlib's `crc32`.
@@ -125,8 +131,10 @@ mod tests {
 
     #[test]
     fn lines_count_from_one() {
-        assert_eq!(line_of("a\nb\nc", 0), 1);
-        assert_eq!(line_of("a\nb\nc", 2), 2);
-        assert_eq!(line_of("a\nb\nc", 4), 3);
+        let starts = line_starts("a\nb\nc");
+        assert_eq!(line_at(&starts, 0), 1);
+        assert_eq!(line_at(&starts, 1), 1);
+        assert_eq!(line_at(&starts, 2), 2);
+        assert_eq!(line_at(&starts, 4), 3);
     }
 }
