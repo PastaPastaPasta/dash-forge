@@ -13,6 +13,7 @@
 //! - [`read`] — [`PackReader`]: races a manifest's recorded URIs and a configurable IPFS
 //!   gateway list, hash-verifying every candidate; Platform chunks are the caller's last
 //!   resort.
+//! - [`egress`] — keeps those reads off private networks (redirects and DNS answers).
 //! - [`cors`] — browser-readability checks and the exact provider CORS config to paste.
 //! - [`publish`] — which read URLs may be recorded on chain (public https only).
 //! - [`copies`] — how many copies each live pack has, against a policy's N.
@@ -22,6 +23,7 @@
 
 pub mod copies;
 pub mod cors;
+pub mod egress;
 pub mod local;
 pub mod policy;
 pub mod profiles;
@@ -75,11 +77,14 @@ pub fn human_bytes(n: u64) -> String {
 /// The HTTP client storage I/O uses: bounded connect and idle-read timeouts so a dead
 /// endpoint costs one timeout and a failover, not a hung push or clone.
 pub fn http_client() -> reqwest::Client {
+    http_client_builder().build().unwrap_or_default()
+}
+
+/// [`http_client`]'s builder, for clients that add to it ([`egress::public_read_client`]).
+fn http_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
         .read_timeout(std::time::Duration::from_secs(120))
-        .build()
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

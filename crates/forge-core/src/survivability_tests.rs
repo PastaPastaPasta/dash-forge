@@ -22,9 +22,10 @@
 //! and with candidates tried one at a time, so the [`Fallback`] warning git-remote-dash prints
 //! ([`fallback_lines`]) is exact — it must name the dead source and why.
 //!
-//! The web host and the relay are not on the clone path at all: every candidate a clone tries
-//! is a recorded storage copy or a configured gateway (checked for every pack), and no crate on
-//! the read path depends on the relay ([`no_read_path_crate_depends_on_the_relay`], which runs
+//! The web host, the relay and the optional git gateway (`services/forge-gateway`) are not on the
+//! clone path at all: every candidate a clone tries is a recorded storage copy or a configured
+//! IPFS gateway (checked for every pack), and no crate on the read path depends on the relay or
+//! the git gateway ([`no_read_path_crate_depends_on_a_service`], which runs
 //! everywhere). The browser side of the drill is `forge-web/lib/view/survivability.drill.test.ts`
 //! and the static-host / IPFS-build spec `forge-web/e2e-drill/web-host.spec.ts`.
 //!
@@ -721,16 +722,18 @@ async fn a_stopped_ipfs_gateway_is_survived_by_the_s3_and_platform_copies() {
     bucket.delete(&env, &[&ipfs_s3.rec, &ipfs_chain.rec]).await;
 }
 
-/// The relay delivers webhooks; nothing a clone or a browse reads goes through it, so a dead
-/// relay cannot take either down. Held by the dependency graph: nothing on the read path — the
-/// helper, `dg`, forge-core — links the relay, directly or through another crate (the resolved
-/// graph from `cargo metadata`, normal and build dependencies). The web app has no relay client.
+/// The relay delivers webhooks and the git gateway serves plain-git mirrors; nothing a `dash://`
+/// clone or a browse reads goes through either, so a dead relay or gateway cannot take either
+/// down ("gateway down" in the drill). Held by the dependency graph: nothing on the read path —
+/// the helper, `dg`, forge-core — links the relay or the gateway, directly or through another
+/// crate (the resolved graph from `cargo metadata`, normal and build dependencies). The web app
+/// has no relay client, and its gateway row is optional (`clone-box-gateway.test.tsx`).
 ///
 /// The graph is this host's (`--filter-platform`), and cargo may fetch what it lacks: a runner
 /// that built only forge-core has neither another platform's crates nor `dg`'s, and cargo needs
 /// every package's manifest to resolve the graph.
 #[test]
-fn no_read_path_crate_depends_on_the_relay() {
+fn no_read_path_crate_depends_on_a_service() {
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
     let version = std::process::Command::new(rustc)
         .arg("-vV")
@@ -765,7 +768,7 @@ fn no_read_path_crate_depends_on_the_relay() {
             .unwrap()
             .to_string()
     };
-    let relay = member("forge-relay");
+    let services = [member("forge-relay"), member("forge-gateway")];
     let nodes: std::collections::BTreeMap<&str, &serde_json::Value> = meta["resolve"]["nodes"]
         .as_array()
         .unwrap()
@@ -776,9 +779,9 @@ fn no_read_path_crate_depends_on_the_relay() {
         let mut todo = vec![member(root)];
         let mut seen = std::collections::BTreeSet::new();
         while let Some(id) = todo.pop() {
-            assert_ne!(
-                id, relay,
-                "{root} links forge-relay: a dead relay would be on the read path"
+            assert!(
+                !services.contains(&id),
+                "{root} links {id}: a dead service would be on the read path"
             );
             if !seen.insert(id.clone()) {
                 continue;

@@ -46,6 +46,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import {
   displayRefName,
   isNullOid,
+  mergeBaseTips,
   resolveRef,
   type ConfigDoc,
   type IsAncestor,
@@ -90,6 +91,11 @@ export interface ResolvedRef {
   readonly refNameHash: string
   /** Resolved state (resolved / diverged / unborn). */
   readonly state: RefState
+  /**
+   * Every tip a valid update of the ref ever set, oldest first (`mergeBaseTips(…).historical`):
+   * what a mirror's older snapshot can legitimately serve (`lib/gateway.ts`).
+   */
+  readonly tipsEver?: readonly string[]
 }
 
 /** The row's `refNameHash` as lowercase hex — hex order is byte order; base64 order is not. */
@@ -497,6 +503,7 @@ function toResolvedRef(
     refName,
     refNameHash: refNameHashHex,
     state: resolveRef(updates, configHistory, refNameHashHex, isAncestor),
+    tipsEver: mergeBaseTips(updates, configHistory, refNameHashHex).historical,
   }
 }
 

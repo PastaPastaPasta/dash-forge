@@ -144,7 +144,7 @@ survivability: infra-up
 		sleep 2; \
 	done
 	FORGE_DRILL=1 cargo test --locked -p forge-core --lib survivability -- --test-threads=1
-	cd forge-web && FORGE_DRILL=1 pnpm exec vitest run lib/view/survivability.drill.test.ts && \
+	cd forge-web && FORGE_DRILL=1 pnpm exec vitest run lib/view/survivability.drill.test.ts components/repo/clone-box-gateway.test.tsx && \
 		pnpm build:ipfs && FORGE_DRILL=1 pnpm exec playwright test -c e2e-drill/playwright.config.ts
 
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored

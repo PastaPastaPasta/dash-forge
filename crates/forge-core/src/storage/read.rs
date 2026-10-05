@@ -23,8 +23,8 @@ use crate::backends::s3::key_has_bad_segment;
 use crate::backends::{sha256, ByteRange, S3Backend, Uri};
 use crate::error::{Error, Result};
 
+use super::egress::{may_fetch, Trusted};
 use super::profiles::{Profile, S3Profile, StorageProfiles};
-use super::publish::is_public_https_url;
 
 /// Candidates raced concurrently (PRD 04: "≤2 parallel attempts").
 const RACE_WIDTH: usize = 2;
@@ -297,9 +297,10 @@ pub struct PackReader {
     /// How long the copies of one artifact get while none has sent a byte
     /// ([`FIRST_BYTE_BUDGET`]; shorter in tests).
     first_byte_budget: Duration,
-    /// Origins the user configured (read gateways, profiles' public URLs and gateways): a
-    /// recorded URL on one of these is followed even when it is http or private.
-    trusted_origins: Vec<String>,
+    /// What the user configured (read gateways, profiles' public URLs and gateways): a
+    /// recorded URL on one of these origins is followed even when it is http or private, and
+    /// these hosts may resolve to private addresses ([`super::egress`]).
+    trusted: Trusted,
     /// Candidates raced at once ([`RACE_WIDTH`]; 1 in tests that need a fixed order).
     race_width: usize,
     /// Reads a fallback copy served, since the last [`Self::take_fallbacks`].
@@ -341,14 +342,14 @@ impl PackReader {
                 Profile::Platform(_) => {}
             }
         }
-        let trusted_origins = configured.into_iter().filter_map(origin_of).collect();
+        let trusted = Trusted::of(configured);
         Self {
-            client: super::http_client(),
+            client: super::egress::public_read_client(&trusted),
             gateways,
             s3_profiles,
             candidate_timeout: None,
             first_byte_budget: FIRST_BYTE_BUDGET,
-            trusted_origins,
+            trusted,
             race_width: RACE_WIDTH,
             fallbacks: std::sync::Mutex::default(),
         }
@@ -380,11 +381,6 @@ impl PackReader {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(f);
-    }
-
-    /// Whether `url` is on an origin this user configured.
-    fn is_trusted_origin(&self, url: &str) -> bool {
-        origin_of(url).is_some_and(|o| self.trusted_origins.contains(&o))
     }
 
     /// A reader configured from the user's `storage.toml` (defaults when it is absent or
@@ -453,7 +449,8 @@ impl PackReader {
                     // http, this machine or a private network (parity with forge-web
                     // `externalFetchUrls`), unless it is on an origin this user configured
                     // (a profile's public URL or gateway, a read gateway: their own NAS).
-                    if is_public_https_url(raw) || self.is_trusted_origin(raw) {
+                    // Redirects and DNS answers are held to the same rule (`egress`).
+                    if may_fetch(raw, &self.trusted) {
                         http.push(Candidate::Http(raw.clone()));
                     }
                 }
@@ -919,7 +916,7 @@ pub fn repo_gateways<'a>(uris: impl IntoIterator<Item = &'a String>) -> Vec<Stri
             continue;
         };
         let base = base.trim_end_matches('/');
-        if is_public_https_url(base) && !out.iter().any(|g| g == base) {
+        if may_fetch(base, &Trusted::default()) && !out.iter().any(|g| g == base) {
             out.push(base.to_string());
             if out.len() == MAX_REPO_GATEWAYS {
                 break;
@@ -932,12 +929,6 @@ pub fn repo_gateways<'a>(uris: impl IntoIterator<Item = &'a String>) -> Vec<Stri
 /// At most this many of a repo's own gateways go ahead of the shared list: each is raced
 /// before any default, so a long list (even of honest gateways) would delay every read.
 pub const MAX_REPO_GATEWAYS: usize = 3;
-
-/// `scheme://host[:port]` of `url`, or `None`.
-fn origin_of(url: &str) -> Option<String> {
-    let u = reqwest::Url::parse(url).ok()?;
-    Some(u.origin().ascii_serialization()).filter(|o| o != "null")
-}
 
 /// The CID in a path-style gateway URL (`https://gw/ipfs/<cid>[/…]`), if any.
 fn gateway_cid(url: &str) -> Option<String> {
@@ -1046,6 +1037,7 @@ mod tests {
             "http://127.0.0.1:8080/ipfs/bafyz".to_string(),
             "https://192.168.1.5/ipfs/bafyz".to_string(),
             "https://nas.local/ipfs/bafyz".to_string(),
+            "https://[64:ff9b::a00:1]/ipfs/bafyz".to_string(),
             "https://user:pw@gw.example/ipfs/bafyz".to_string(),
             "ipfs://bafyx".to_string(),
         ];

@@ -1179,6 +1179,35 @@ impl<'a> RepoService<'a> {
         Ok(out)
     }
 
+    /// Every ref of a **public** repository with its live tip (if any), the Platform document
+    /// that set the tip, and every tip it validly pointed at before: what a mirror publishes
+    /// (`forge-gateway`'s `forge-manifest.json`) and what `dg verify-mirror` checks a mirror
+    /// against. The same fold as [`Self::read_refs`] (a diverged ref's tip is its provisional
+    /// `heads[0]`, as `git-remote-dash` lists it). A private repository is refused (E207): its
+    /// ref names are sealed, and a mirror of one would need a member's key.
+    pub async fn read_ref_records(&self, repo: &RepoRef) -> Result<Vec<RefRecord>> {
+        repo.require_public("serving a mirror")?;
+        let (scope, contract) = self.readable(repo).await?;
+        let state = crate::refs::read_git_state(
+            self.client,
+            &contract,
+            &scope,
+            crate::history::Freshness::Now,
+        )
+        .await?;
+        Ok(ref_records(&state.ref_histories(), &state.config_history()))
+    }
+
+    /// The live refs of [`Self::read_ref_records`], by name.
+    pub async fn read_ref_tips(&self, repo: &RepoRef) -> Result<Vec<RefTip>> {
+        Ok(self
+            .read_ref_records(repo)
+            .await?
+            .into_iter()
+            .filter_map(|r| r.tip)
+            .collect())
+    }
+
     /// One ref's key (`sha256(ref_name)`, hex), its complete update history (both types) and
     /// the config timeline it is judged by: what [`rules::provenance::release_provenance`]
     /// folds for a release's tag. A private
@@ -3177,6 +3206,81 @@ fn prepared<'e>(
         columns_first: plan.columns_first,
         fallback: None,
     }
+}
+
+/// A ref's live tip and the Platform document that set it: one row of a mirror's manifest.
+/// Anyone can re-read `update_id` (a `document_type` of the repo's forge-core) with proofs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefTip {
+    /// The ref name (`refs/heads/main`).
+    pub name: String,
+    /// The tip commit (hex).
+    pub oid: String,
+    /// The `$id` of the update that set the tip.
+    pub ref_update_id: String,
+    /// `refUpdate` or `protectedRefUpdate`.
+    pub document_type: String,
+    /// That update's `$createdAt` (ms).
+    pub created_at: u64,
+    /// The ref is diverged (a lost same-`prevOid` race): `oid` is its provisional tip.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub diverged: bool,
+}
+
+/// One ref of a public repository as [`RepoService::read_ref_records`] folds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefRecord {
+    /// The ref name.
+    pub name: String,
+    /// Its live tip; `None` when it was deleted.
+    pub tip: Option<RefTip>,
+    /// Every tip a valid update ever set (the live one included).
+    pub tips_ever: BTreeSet<String>,
+    /// `$createdAt` (ms) of the newest valid update, a deletion included: when the ref last
+    /// changed.
+    pub changed_at: u64,
+}
+
+/// Fold every ref's history into [`RefRecord`]s, by name. A ref with no valid update (only
+/// inert or malformed ones) is left out, as [`RepoService::read_refs`] leaves it out.
+pub fn ref_records(by_hash: &crate::refs::RefHistories, configs: &[ConfigDoc]) -> Vec<RefRecord> {
+    let mut out = Vec::with_capacity(by_hash.len());
+    for (hash, updates) in by_hash {
+        let hash_hex = hex::encode(hash);
+        let Some(name) = rules::display_ref_name(updates, &hash_hex).map(str::to_owned) else {
+            continue;
+        };
+        let (tips_ever, changed_at) = rules::valid_tips(updates, configs, &hash_hex);
+        let Some(changed_at) = changed_at else {
+            continue;
+        };
+        let heads = rules::live_heads(updates, configs, &hash_hex, |a, b| a == b);
+        let tip = heads.first().map(|h| {
+            let protected = updates.iter().any(|u| u.id == h.id && u.protected);
+            RefTip {
+                name: name.clone(),
+                oid: h.oid.clone(),
+                ref_update_id: h.id.clone(),
+                document_type: if protected {
+                    DOC_PROTECTED_REF_UPDATE
+                } else {
+                    DOC_REF_UPDATE
+                }
+                .to_string(),
+                created_at: h.created_at,
+                diverged: heads.len() > 1,
+            }
+        });
+        out.push(RefRecord {
+            name,
+            tip,
+            tips_ever,
+            changed_at,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 /// Every tip (hex `newOid`) that a **valid** update of `ref_name` in `repo` ever set: updates
