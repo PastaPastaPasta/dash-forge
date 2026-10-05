@@ -302,14 +302,14 @@ It **warns** and pushes anyway for:
 
 ```
 $ git push origin main
-dash: warning: .envrc is a direnv file that sets variables [29c1916f3f54]
+dash: warning: .envrc is a direnv file that sets variables [46511bb6536b]
 dash: warning: test/key.pem line 1 holds a private key (test folder) [b43e53f5c2b3]
 dash: these are warnings only. To silence one, add its fingerprint to .forge/secret-scan-allow.
-dash: possible secret: .env looks like a secret file (added in 7ecba60) [b93e02318f67]
+dash: possible secret: .env looks like a secret file (added in 7ecba60) [fd503e94fe13]
 dash: error: refs/heads/main adds .env, which looks like a secret file        [E807]
 dash:   cause: nothing pushed to a public branch can be taken back
 dash:   fix:   keep .env out of git: `git rm --cached .env`, add it to .gitignore, then amend or rebase the commits that added it
-dash:   or:    push with -o allow-secret=b93e02318f67 if you're sure
+dash:   or:    push with -o allow-secret=fd503e94fe13 if you're sure
 dash:   or:    add the fingerprint to .forge/secret-scan-allow and commit it
 dash:   note:  checked before anything was signed or stored: these refs were not pushed
  ! [remote rejected] main -> main (possible secret in new files)
@@ -320,13 +320,13 @@ Only the refused branch or tag is held back. The rest of the push goes ahead.
 The code in brackets is the finding's **fingerprint**. It names that secret in that file. It is a short hash, so treat it as public, but for a tiny file or a short value someone could guess the content from it. To push a finding you've checked, pass its fingerprint for this push:
 
 ```sh
-git push -o allow-secret=b93e02318f67 origin main
+git push -o allow-secret=fd503e94fe13 origin main
 ```
 
 To allow it for good, commit a `.forge/secret-scan-allow` file. Each line is a fingerprint or a path, and `#` starts a comment:
 
 ```
-b93e02318f67      # the demo .env, holds no real keys
+fd503e94fe13      # the demo .env, holds no real keys
 # revoked example keys: still shown, never refused
 docs/examples/**/*.pem
 ```
