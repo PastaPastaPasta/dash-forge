@@ -6,8 +6,9 @@
  *   ECDSA_SECP256K1, and unbound or bound to forge-core. Writers wrap to the recipient's
  *   highest-id usable key and record its id ({@link usableEncryptionKey}).
  * - Getting it into the vault: from an identity file (its ENCRYPTION key, or derived from its
- *   mnemonic), a recovery phrase, or a pasted WIF/hex key. Every route checks that the public
- *   key matches an enabled ENCRYPTION key on the identity before anything is stored.
+ *   mnemonic), a recovery phrase, a pasted WIF/hex key, or a wallet login (the key its login
+ *   key stands for, {@link adoptWalletEncryptionKey}). Every route checks that the public key
+ *   matches an enabled ENCRYPTION key on the identity before anything is stored.
  * - Registering one (Settings → Private repos): an `IdentityUpdate` signed once by
  *   the master key, adding the next key id, derived from the recovery phrase at
  *   `m/9'/<coin>'/5'/0'/0'/<identityIndex>'/<keyId>'` (the CLI's path, so either client can
@@ -17,6 +18,7 @@
  *   reaches React, storage outside the vault, a URL or a log.
  */
 
+import * as secp from '@noble/secp256k1'
 import type { DataContract, Document, EvoSDK, IdentityPublicKey, PrivateKey as WasmPrivateKey } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
@@ -112,6 +114,76 @@ export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identity
   } finally {
     secret.fill(0)
   }
+}
+
+/**
+ * A wallet login's encryption key is not the one the identity uses (it registered another from
+ * `dg`, say), so it was not kept. Shown at sign-in.
+ */
+export const ENCRYPTION_KEY_ELSEWHERE = 'Your encryption key is held elsewhere. Import it under Settings → Private repos.'
+
+/** What became of the encryption key a wallet login stands for ({@link adoptWalletEncryptionKey}). */
+export type WalletEncryptionOutcome =
+  /** It is the identity's usable encryption key, now sealed in the vault. */
+  | { readonly kind: 'stored'; readonly keyId: number }
+  /** It is not, and the vault already holds the one the identity uses. */
+  | { readonly kind: 'held'; readonly keyId: number }
+  /** It is not, and this browser does not hold the one the identity uses ({@link ENCRYPTION_KEY_ELSEWHERE}). */
+  | { readonly kind: 'elsewhere'; readonly keyId: number }
+  /** The identity has no usable encryption key. */
+  | { readonly kind: 'none' }
+
+/**
+ * Keep the encryption key a wallet login stands for (DESIGN D27): the wallet derives
+ * `HKDF(loginKey, identityId, "encryption")` for each login key and registers it beside the auth
+ * key at the first login, and a returning login derives the same one. `candidates` are those
+ * private keys. One is sealed into the vault (beside the wallet key, under the same protection)
+ * only when its public key is the identity's usable encryption key, the one writers wrap to
+ * ({@link usableEncryptionKey}). Anything else would be a key no wrap is sealed to, so nothing is
+ * stored. `attempts` re-reads the identity while none of the candidates is on it yet (a node a
+ * block behind the wallet's registration). Copies are taken: the caller still wipes `candidates`.
+ */
+export async function adoptWalletEncryptionKey(
+  sdk: EvoSDK,
+  network: Network,
+  identityId: string,
+  coreId: string,
+  candidates: readonly Uint8Array[],
+  options: { readonly attempts?: number; readonly intervalMs?: number } = {},
+): Promise<WalletEncryptionOutcome> {
+  const secrets = candidates.filter((c) => c.length === 32).map((c) => new Uint8Array(c))
+  try {
+    const pubs = secrets.map((s) => bytesToHex(secp.getPublicKey(s, true)))
+    for (let attempt = 1; ; attempt++) {
+      const keys = await timed(PRIVATE_REPOS_FLOW, 'read identity keys (wallet)', () => requireIdentityKeys(sdk, identityId))
+      const usable = usableEncryptionKey(keys, coreId)
+      const at = usable === null ? -1 : pubs.indexOf(usable.data.toLowerCase())
+      if (usable !== null && at >= 0) {
+        await timed(PRIVATE_REPOS_FLOW, 'seal into the vault', () => storeEncryptionKey(network, identityId, usable.keyId, secrets[at] as Uint8Array))
+        return { kind: 'stored', keyId: usable.keyId }
+      }
+      const onChain = keys.some((k) => k.purposeNumber === PURPOSE_ENCRYPTION && pubs.includes(k.data.toLowerCase()))
+      if (!onChain && attempt < (options.attempts ?? 1)) {
+        await sleep(options.intervalMs ?? 1500)
+        continue
+      }
+      if (usable === null) return { kind: 'none' }
+      if ((await storedEncryptionKeyId(network, identityId)) === usable.keyId) return { kind: 'held', keyId: usable.keyId }
+      return { kind: 'elsewhere', keyId: usable.keyId }
+    }
+  } finally {
+    for (const s of secrets) s.fill(0)
+  }
+}
+
+/**
+ * Whether this tab can use the encryption key of (network, identity) now: `open` (unlocked),
+ * `locked` (stored, but this tab must unlock first: one passkey or passphrase gesture opens it
+ * for every repo in the tab), or `none` (this browser holds none). Readable while locked.
+ */
+export async function encryptionKeyState(network: Network, identityId: string): Promise<'open' | 'locked' | 'none'> {
+  if ((await storedEncryptionKeyId(network, identityId)) === null) return 'none'
+  return unlockScope(network, identityId) === 'full' ? 'open' : 'locked'
 }
 
 /** A pasted WIF or 64-hex private key → the 32 bytes (the caller wipes them). */

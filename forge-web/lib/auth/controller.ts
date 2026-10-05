@@ -46,6 +46,7 @@ import { PLATFORM_READ_MS, withPlatformRead } from './connect'
 import { withTimeout } from '../timeout'
 import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
+import { ENCRYPTION_KEY_ELSEWHERE, adoptWalletEncryptionKey } from './encryption-key'
 import { clearDrafts } from '../view/draft-text'
 import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
@@ -898,8 +899,8 @@ export class AuthController {
   }
 
   /** Tell the user what a renewal could not carry over (one notice, both parts). */
-  private noteDropped(outcome: StoreOutcome, storageText: string): void {
-    const parts = [...(outcome.storageSettingsDropped ? [storageText] : []), ...(outcome.encryptionKeyDropped ? [ENCRYPTION_KEY_DROPPED] : [])]
+  private noteDropped(outcome: StoreOutcome, storageText: string, extra: string | null = null): void {
+    const parts = [...(outcome.storageSettingsDropped ? [storageText] : []), ...(outcome.encryptionKeyDropped ? [ENCRYPTION_KEY_DROPPED] : []), ...(extra !== null ? [extra] : [])]
     if (parts.length > 0) this.setState({ notice: parts.join(' ') })
   }
 
@@ -962,6 +963,14 @@ export class AuthController {
       readonly renewalUnlock?: { passphrase: string } | 'passkey'
       /** Give it up even though it cannot be opened (its key then stays live until it expires). */
       readonly dropUnopened?: boolean
+      /**
+       * The encryption private keys the wallet's login keys stand for (`WalletAnswer`): the one
+       * the identity uses is sealed beside the wallet key (DESIGN D27). Copied, not wiped: the
+       * caller wipes them.
+       */
+      readonly encryptionKeys?: readonly Uint8Array[]
+      /** The wallet registered its keys just now (QR #2): a node may not show them yet. */
+      readonly justRegistered?: boolean
     } = {},
   ): Promise<AuthSession> {
     return this.run(async () => {
@@ -1014,14 +1023,40 @@ export class AuthController {
     const kept = [...held, ...(given ? [given] : [])].filter((h, i, all) => !fresh.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
     const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
     const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
+    const stored = await storeInVault(this.network, secret, protection, pending !== null ? { dropStagedKeyId: pending.keyId } : {})
+    const encryption = await this.keepWalletEncryptionKey(identityId, forge, options)
     this.noteDropped(
-      await storeInVault(this.network, secret, protection, pending !== null ? { dropStagedKeyId: pending.keyId } : {}),
+      // An encryption key the vault could not carry over is replaced by the wallet's own.
+      encryption.stored ? { ...stored, encryptionKeyDropped: false } : stored,
       'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
+      encryption.notice,
     )
     try {
       return await this.open(secret, 'vault', main.limits ?? undefined)
     } catch (e) {
       throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
+    }
+  }
+
+  /**
+   * Seal the encryption key a wallet login stands for beside the wallet key just stored, when it
+   * is the identity's (DESIGN D27, {@link adoptWalletEncryptionKey}). Signing in never fails on
+   * it: `notice` says why private repos were not enabled (another key is the identity's, or a read
+   * failed), and nothing is stored then.
+   */
+  private async keepWalletEncryptionKey(
+    identityId: string,
+    forge: ForgeIds,
+    options: { readonly encryptionKeys?: readonly Uint8Array[]; readonly justRegistered?: boolean },
+  ): Promise<{ readonly stored: boolean; readonly notice: string | null }> {
+    if (!options.encryptionKeys?.length) return { stored: false, notice: null }
+    this.step('Enabling private repos')
+    try {
+      const sdk = await this.getSdk()
+      const outcome = await adoptWalletEncryptionKey(sdk, this.network, identityId, forge.core, options.encryptionKeys, options.justRegistered === true ? { attempts: 5 } : {})
+      return { stored: outcome.kind === 'stored', notice: outcome.kind === 'elsewhere' ? ENCRYPTION_KEY_ELSEWHERE : null }
+    } catch (e) {
+      return { stored: false, notice: `Signed in, but private repos could not be enabled: ${errorMessage(e)}.` }
     }
   }
 

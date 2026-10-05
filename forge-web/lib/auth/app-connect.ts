@@ -38,7 +38,7 @@ import { hash160 } from './asset-lock'
 import { base58Decode } from './base58'
 import { findWalletKey, loginKeys, scopeCovers, UnusableWalletKey, type LoginKeys, type WalletKey } from './key-registration'
 import { encodeWif } from './wif'
-import { authKeyFromLogin, encodeKeyRequest, openEnvelope, protocolUri } from './wallet-protocol'
+import { authKeyFromLogin, encodeKeyRequest, encryptionKeyFromLogin, openEnvelope, protocolUri } from './wallet-protocol'
 
 /** The App Connect system contract (the same id on every network, protocol 14). */
 export const APP_CONNECT_CONTRACT_ID = 'H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ'
@@ -216,12 +216,37 @@ async function appConnectRows(sdk: EvoSDK, hash: string): Promise<ResponseJson[]
   return null
 }
 
-/** What a response amounts to once decrypted and checked against the chain. */
+/**
+ * What a response amounts to once decrypted and checked against the chain. `encryptionKeys`: the
+ * encryption private key each answering login key stands for (`HKDF(loginKey, identityId,
+ * "encryption")`, what the wallet registers beside the auth key), for the vault to keep when it
+ * is the identity's (DESIGN D27). Not checked against the chain here. Whoever holds the answer
+ * wipes them ({@link wipeAnswer}).
+ */
 export type WalletAnswer =
   /** Keys Forge verified on chain (first: the one for the requested contract, when there is one). */
-  | { readonly kind: 'keys'; readonly identityId: string; readonly keys: readonly WalletKey[]; readonly source: ResponseSource['kind'] }
+  | {
+      readonly kind: 'keys'
+      readonly identityId: string
+      readonly keys: readonly WalletKey[]
+      readonly encryptionKeys: readonly Uint8Array[]
+      readonly source: ResponseSource['kind']
+    }
   /** A legacy wallet's first login here: its keys must be registered (QR #2) before use. */
-  | { readonly kind: 'register'; readonly identityId: string; readonly keys: LoginKeys; readonly wif: string; readonly source: 'legacy' }
+  | {
+      readonly kind: 'register'
+      readonly identityId: string
+      readonly keys: LoginKeys
+      readonly wif: string
+      readonly encryptionKeys: readonly Uint8Array[]
+      readonly source: 'legacy'
+    }
+
+/** Wipe the private key bytes an answer holds (a registration's login keys, the encryption keys). */
+export function wipeAnswer(a: WalletAnswer): void {
+  if (a.kind === 'register') zeroLoginKeys(a.keys)
+  for (const k of a.encryptionKeys) k.fill(0)
+}
 
 /** More than one identity answered the request: refuse (someone else saw the QR). */
 export class AmbiguousWalletLogin extends Error {
@@ -263,6 +288,8 @@ async function decrypt(req: LoginRequest, r: WalletResponse): Promise<Uint8Array
  */
 async function answerFor(sdk: EvoSDK, r: WalletResponse, loginKeysRaw: Uint8Array[], p: { network: Network; forge: ForgeIds; contractId: string }): Promise<WalletAnswer | null> {
   const found: WalletKey[] = []
+  /** The encryption key of each login key whose auth key was found. */
+  const encryption: Uint8Array[] = []
   let unregistered: { keys: LoginKeys; wif: string } | null = null
   /** A key of this answer Forge must not use; thrown only if the answer has no usable key. */
   let refused: UnusableWalletKey | null = null
@@ -279,11 +306,14 @@ async function answerFor(sdk: EvoSDK, r: WalletResponse, loginKeysRaw: Uint8Arra
         refused = e
         continue
       }
-      if (key) found.push(key)
-      else if (r.source === 'legacy') unregistered = { keys: loginKeys(login, r.ownerId), wif }
+      if (key) {
+        found.push(key)
+        encryption.push(encryptionKeyFromLogin(login, r.ownerId))
+      } else if (r.source === 'legacy') unregistered = { keys: loginKeys(login, r.ownerId), wif }
     }
   } catch (e) {
     zeroLoginKeys(unregistered?.keys)
+    for (const k of encryption) k.fill(0)
     throw e
   } finally {
     for (const k of loginKeysRaw) k.fill(0)
@@ -292,13 +322,16 @@ async function answerFor(sdk: EvoSDK, r: WalletResponse, loginKeysRaw: Uint8Arra
     zeroLoginKeys(unregistered?.keys)
     // The key for the contract asked for first.
     found.sort((a, b) => Number(scopeCovers(b.scope, p.forge, p.contractId)) - Number(scopeCovers(a.scope, p.forge, p.contractId)))
-    return { kind: 'keys', identityId: r.ownerId, keys: found, source: r.source }
+    return { kind: 'keys', identityId: r.ownerId, keys: found, encryptionKeys: encryption, source: r.source }
   }
   if (refused) {
     zeroLoginKeys(unregistered?.keys)
     throw refused
   }
-  if (unregistered) return { kind: 'register', identityId: r.ownerId, ...unregistered, source: 'legacy' }
+  if (unregistered) {
+    // A copy: QR #2 wipes the login keys once its transition is built.
+    return { kind: 'register', identityId: r.ownerId, ...unregistered, encryptionKeys: [new Uint8Array(unregistered.keys.encPriv)], source: 'legacy' }
+  }
   return null
 }
 
@@ -395,8 +428,8 @@ export async function awaitWalletAnswer(
     }
   } finally {
     disposeRequest(req)
-    // Registration keys of answers not handed back.
-    for (const a of answered.values()) if (a && !(a instanceof Error) && a !== result && a.kind === 'register') zeroLoginKeys(a.keys)
+    // The private keys of answers not handed back.
+    for (const a of answered.values()) if (a && !(a instanceof Error) && a !== result) wipeAnswer(a)
   }
 }
 
