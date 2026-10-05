@@ -1,0 +1,64 @@
+{
+  "name": "walked_tip_not_writer_prev_oid",
+  "description": "A pusher names an ancestor of its new tip as prevOid to pass a force-push as a fast-forward: the move is judged from the tip the walk holds, so it reads force-pushed from A.",
+  "case": "ref_history",
+  "input": {
+    "refName": "refs/heads/main",
+    "refNameHash": "H",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "X",
+        "newOid": "C",
+        "force": false,
+        "protected": false,
+        "author": "mallory",
+        "createdAt": 200
+      }
+    ],
+    "configs": [],
+    "contains": [
+      [
+        "X",
+        "C",
+        true
+      ],
+      [
+        "A",
+        "C",
+        false
+      ]
+    ]
+  },
+  "expected": [
+    {
+      "kind": "created",
+      "id": "u1",
+      "at": 100,
+      "by": "alice",
+      "from": null,
+      "to": "A"
+    },
+    {
+      "kind": "forcePushed",
+      "id": "u2",
+      "at": 200,
+      "by": "mallory",
+      "from": "A",
+      "to": "C"
+    }
+  ]
+}
