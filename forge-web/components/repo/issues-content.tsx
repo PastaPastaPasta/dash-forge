@@ -95,7 +95,7 @@ import { IssueFormFields } from '@/components/repo/issue-form'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
 import { TriageNav } from '@/components/repo/triage-nav'
-import { BulkBar, BulkRowCheckbox, useBulkAllowed, useBulkSelection } from '@/components/repo/bulk-actions'
+import { BulkBar, BulkRowCheckbox, useBulkAllowed, useBulkHold, useBulkSelection } from '@/components/repo/bulk-actions'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { useLongCompose } from '@/components/repo/long-body'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -152,7 +152,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const [pinsAsked, setPinsAsked] = useState(false)
   // Read by the list's read itself: asking re-reads with the list kept on screen, not reset.
   const pinsAskedRef = useRef(false)
-  const { data, loading, error, reload } = useAsync<IssueListPage>(
+  // While a bulk batch runs, the list keeps its rows (each close re-reads it).
+  const bulkHold = useBulkHold<IssueListPage>()
+  const { data: freshData, loading, error, reload } = useAsync<IssueListPage>(
     async (signal) => {
       const me = identity ?? ''
       const who = (v: string | null): string | null => (v === 'me' ? me : v)
@@ -176,6 +178,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 
+  const data = bulkHold.keep(freshData)
   // A sparse tab finding its older rows through the state scan reads on by itself (QW3-002).
   useAutoReadOn(data?.searchedOf, loading, reload)
 
@@ -274,7 +277,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
-          {bulkAllowed && bulkRows.length > 0 ? <BulkBar kind="issue" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} /> : null}
+          {bulkAllowed ? <BulkBar kind="issue" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} onBusy={bulkHold.setBusy} /> : null}
           <StateTabs label="Issue state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
               <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open

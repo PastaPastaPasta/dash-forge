@@ -22,7 +22,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { repoContractIds, setLabel, setTargetState, type LabelDef } from '@/lib/repo'
+import { IllegalTransitionError, repoContractIds, setLabel, setTargetState, type LabelDef } from '@/lib/repo'
 import { capabilitiesOf } from '@/lib/rules/roles'
 import { SupersededWriteError, UnconfirmedWriteError, newIntent, previewCreate, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import type { RepoHome } from '@/lib/view'
@@ -31,6 +31,7 @@ import {
   actionTitle,
   allReopenable,
   doneWord,
+  unchangedWord,
   labelCoverage,
   nounFor,
   planBulk,
@@ -52,6 +53,21 @@ export function useBulkAllowed(home: RepoHome): boolean {
   const role = useViewerRole(home.repo)
   const caps = capabilitiesOf(role.role)
   return identity !== null && role.known && caps.canCloseReopen && caps.canLabel
+}
+
+/**
+ * Keep showing the list while a batch runs: each close or reopen re-reads the list, which drops
+ * its rows while the read is under way. `keep(data)` is the newest rows, or while `busy` the last
+ * ones shown. The batch's own dialog works from the rows it was opened with.
+ */
+export function useBulkHold<T>(): { readonly busy: boolean; readonly setBusy: (on: boolean) => void; readonly keep: (data: T | null) => T | null } {
+  const [busy, setBusy] = useState(false)
+  const last = useRef<T | null>(null)
+  const keep = (data: T | null): T | null => {
+    if (data !== null) last.current = data
+    return data ?? (busy ? last.current : null)
+  }
+  return { busy, setBusy, keep }
 }
 
 /** The rows selected on this page; cleared when the page's rows change (a filter, a page). */
@@ -109,6 +125,7 @@ export function BulkBar({
   selection,
   labels,
   onWritten,
+  onBusy,
 }: {
   kind: BulkKind
   home: RepoHome
@@ -117,19 +134,28 @@ export function BulkBar({
   labels: readonly LabelDef[]
   /** The batch is done and something was written: re-read the list. */
   onWritten: () => void
-}): JSX.Element {
+  /** A batch's dialog opened (true) or closed (false): the page keeps its rows meanwhile. */
+  onBusy?: (busy: boolean) => void
+}): JSX.Element | null {
   const { selectedRows, setAll, clear } = selection
   const n = selectedRows.length
   const all = rows.length > 0 && n === rows.length
   const archived = home.config?.archived === true
   const guard = useWriteGuard()
   const disabled = archived ? ARCHIVED_REASON : guard.disabledReason
-  const [action, setAction] = useState<BulkAction | null>(null)
+  // The batch and the rows it acts on, fixed when its dialog opens: the list re-reads as it
+  // writes, and its rows must not change the batch under way.
+  const [batch, setBatch] = useState<{ readonly action: BulkAction; readonly rows: readonly BulkRow[] } | null>(null)
+  const setAction = (action: BulkAction): void => {
+    setBatch({ action, rows: selectedRows })
+    onBusy?.(true)
+  }
   const reopen = allReopenable(selectedRows)
   const allBox = useRef<HTMLInputElement>(null)
   useEffect(() => {
     if (allBox.current) allBox.current.indeterminate = n > 0 && !all
   }, [n, all])
+  if (rows.length === 0 && batch === null) return null
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2" data-testid="bulk-bar">
       <label className="inline-flex items-center gap-2 text-dense text-anvil-600 dark:text-anvil-300 coarse:min-h-11">
@@ -197,14 +223,15 @@ export function BulkBar({
           </Button>
         </>
       ) : null}
-      {action !== null ? (
+      {batch !== null ? (
         <BulkDialog
           kind={kind}
           home={home}
-          action={action}
-          rows={selectedRows}
+          action={batch.action}
+          rows={batch.rows}
           onClose={(wrote) => {
-            setAction(null)
+            setBatch(null)
+            onBusy?.(false)
             if (wrote) {
               clear()
               onWritten()
@@ -236,12 +263,18 @@ function Menu({ label, icon, testId, disabled, children }: { label: string; icon
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onBlur={(e) => {
+        // Focus leaving the button and its panel closes the panel.
+        if (open && !e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false)
+      }}
+    >
       <Button
         ref={button}
         size="sm"
         variant="outline"
-        aria-haspopup="true"
+        aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={id}
         disabled={disabled !== null}
@@ -257,7 +290,7 @@ function Menu({ label, icon, testId, disabled, children }: { label: string; icon
         <div
           ref={panel}
           id={id}
-          role="group"
+          role="dialog"
           aria-label={label}
           className="absolute left-0 z-20 mt-1 max-h-72 w-60 overflow-auto rounded-md border border-anvil-200 bg-white py-1 shadow-lg dark:border-anvil-700 dark:bg-anvil-900"
           onKeyDown={(e) => {
@@ -333,6 +366,8 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
         } catch (e) {
           // An earlier attempt of this same item landed: it is written.
           if (e instanceof SupersededWriteError) return { changed: true }
+          // Someone else closed (or reopened) it since the list was read: nothing to write.
+          if (e instanceof IllegalTransitionError) return { changed: false }
           throw e
         }
       },
@@ -348,6 +383,9 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
   const started = outcomes !== null
   const t = outcomes === null ? null : tally(outcomes)
   const failed = plan.apply.filter((r) => retryable(outcomes?.get(r.id)))
+  // Sent but not yet shown: they may still land, so they are not counted as failed.
+  const arriving = t?.unconfirmed ?? 0
+  const notThrough = failed.length - arriving
   const wrote = t !== null && t.done + t.unconfirmed > 0
   const finished = started && !running
 
@@ -397,7 +435,7 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
                 }}
                 data-testid="bulk-retry"
               >
-                {`Retry ${failed.length} failed`}
+                {arriving > 0 ? `Retry ${failed.length}` : `Retry ${failed.length} failed`}
               </Button>
             ) : null}
             <Button variant="primary" onClick={() => onClose(wrote)} data-testid="bulk-done">
@@ -427,12 +465,18 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
       ) : (
         <div className="space-y-3 text-dense">
           {t !== null ? (
-            <p aria-live="polite" className={cn('font-medium', finished && failed.length > 0 && 'text-danger-700 dark:text-danger-400')} data-testid="bulk-summary">
+            <p aria-live="polite" className={cn('font-medium', finished && notThrough > 0 && 'text-danger-700 dark:text-danger-400')} data-testid="bulk-summary">
               {running
                 ? `${t.done + t.unchanged} of ${plan.apply.length} done…`
                 : failed.length === 0
-                  ? `${doneWord(action)}: ${plan.apply.length} ${noun}.${t.unconfirmed > 0 ? ' Some are still arriving on Platform.' : ''}`
-                  : `${t.done + t.unchanged} of ${plan.apply.length} done. ${failed.length} didn't go through.`}
+                  ? `${doneWord(action)}: ${plan.apply.length} ${noun}.`
+                  : [
+                      `${t.done + t.unchanged} of ${plan.apply.length} done.`,
+                      notThrough > 0 ? `${notThrough} didn't go through.` : '',
+                      arriving > 0 ? `${arriving} still arriving.` : '',
+                    ]
+                      .filter((x) => x !== '')
+                      .join(' ')}
             </p>
           ) : null}
           <ul className="max-h-72 space-y-1 overflow-auto" aria-label="Progress" data-testid="bulk-progress">
@@ -447,6 +491,7 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
                     </p>
                     {o?.message ? <p className={cn('text-[12px]', o.status === 'failed' ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')}>{o.message}</p> : null}
                     {o?.status === 'stopped' ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Not tried.</p> : null}
+                    {o?.status === 'unchanged' ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{unchangedWord(action)}</p> : null}
                   </div>
                 </li>
               )

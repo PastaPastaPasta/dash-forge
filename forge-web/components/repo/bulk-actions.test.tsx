@@ -17,7 +17,8 @@ vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: 'me', si
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, failed: (e: unknown) => String(e), disabledReason: null }) }))
 vi.mock('@/hooks/use-repo-chrome', () => ({ useViewerRole: () => ({ role, known: true, failed: false, retry: () => undefined }) }))
 
-import { BulkBar, BulkRowCheckbox, useBulkAllowed, useBulkSelection } from './bulk-actions'
+import { useState } from 'react'
+import { BulkBar, BulkRowCheckbox, useBulkAllowed, useBulkHold, useBulkSelection } from './bulk-actions'
 import type { BulkRow } from '@/lib/view/bulk'
 import type { RepoHome } from '@/lib/view'
 
@@ -111,5 +112,75 @@ describe('bulk actions', () => {
     expect(q('[data-testid="bulk-summary"]').textContent).toBe('Closed: 3 issues.')
     await click(q('[data-testid="bulk-done"]'))
     expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the dialog and the whole batch while each write re-reads the list', async () => {
+    // A page: each close re-reads the list (its data is null while the read runs), and the
+    // closed issues come back closed.
+    let reread: (() => void) | null = null
+    function Page(): JSX.Element {
+      const hold = useBulkHold<BulkRow[]>()
+      const [fresh, setFresh] = useState<BulkRow[] | null>(ROWS)
+      const [closed, setClosed] = useState<string[]>([])
+      reread = () => {
+        setFresh(null)
+        setTimeout(() => setFresh(ROWS.map((r) => ({ ...r, open: !closed.includes(r.id) }))), 0)
+      }
+      const data = hold.keep(fresh)
+      const rows = data ?? []
+      const sel = useBulkSelection(rows)
+      setTargetState.mockImplementation(async (_s: unknown, _a: unknown, _r: unknown, input: { target: { id: string } }) => {
+        setClosed((c) => [...c, input.target.id])
+        reread?.()
+        return { documentId: 'd' }
+      })
+      return (
+        <div>
+          <BulkBar kind="issue" home={home} rows={rows} selection={sel} labels={[]} onWritten={() => undefined} onBusy={hold.setBusy} />
+          <span data-testid="rows">{rows.length}</span>
+        </div>
+      )
+    }
+    await act(async () => root.render(<Page />))
+    await click(q('[data-testid="bulk-select-all"]'))
+    await click(q('[data-testid="bulk-close"]'))
+    await click(button('Close as completed'))
+    await click(q('[data-testid="bulk-confirm"]'))
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 5))
+    })
+    expect(setTargetState).toHaveBeenCalledTimes(3)
+    expect(q('[data-testid="bulk-summary"]').textContent).toBe('Closed: 3 issues.')
+    expect(q('[data-testid="rows"]').textContent).toBe('3')
+  })
+
+  it('says an item someone else closed meanwhile was already closed', async () => {
+    const { IllegalTransitionError } = await import('@/lib/repo')
+    setTargetState.mockImplementation(async (_s: unknown, _a: unknown, _r: unknown, input: { target: { number: number } }) => {
+      if (input.target.number === 2) throw new IllegalTransitionError('close', 2)
+      return { documentId: 'd' }
+    })
+    await act(async () => root.render(<List />))
+    await click(q('[data-testid="bulk-select-all"]'))
+    await click(q('[data-testid="bulk-close"]'))
+    await click(button('Close as completed'))
+    await click(q('[data-testid="bulk-confirm"]'))
+    expect(q('[data-testid="bulk-summary"]').textContent).toBe('Closed: 3 issues.')
+    expect(document.querySelector('[data-status="unchanged"]')?.textContent).toContain('Already closed.')
+  })
+
+  it('counts a write still arriving apart from one that failed', async () => {
+    const { UnconfirmedWriteError } = await import('@/lib/sdk')
+    setTargetState.mockImplementation(async (_s: unknown, _a: unknown, _r: unknown, input: { target: { number: number } }) => {
+      if (input.target.number === 1) throw new UnconfirmedWriteError('d1')
+      if (input.target.number === 2) throw new Error('Platform refused it')
+      return { documentId: 'd' }
+    })
+    await act(async () => root.render(<List />))
+    await click(q('[data-testid="bulk-select-all"]'))
+    await click(q('[data-testid="bulk-close"]'))
+    await click(button('Close as completed'))
+    await click(q('[data-testid="bulk-confirm"]'))
+    expect(q('[data-testid="bulk-summary"]').textContent).toBe("1 of 3 done. 1 didn't go through. 1 still arriving.")
   })
 })

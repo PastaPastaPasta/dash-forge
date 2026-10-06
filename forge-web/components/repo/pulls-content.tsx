@@ -50,7 +50,7 @@ import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
 import { TriageNav } from '@/components/repo/triage-nav'
-import { BulkBar, BulkRowCheckbox, useBulkAllowed, useBulkSelection } from '@/components/repo/bulk-actions'
+import { BulkBar, BulkRowCheckbox, useBulkAllowed, useBulkHold, useBulkSelection } from '@/components/repo/bulk-actions'
 import {
   AuthorLoginNote,
   CommentCount,
@@ -120,7 +120,9 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const awaitingTrust = query.authorLogin !== null && trust === null
   // How many PRs a walk (a search, or "look through older") has read so far, while it reads.
   const { progress, track } = useReadProgress()
-  const { data, loading, error, reload } = useAsync<PullListPage>(
+  // While a bulk batch runs, the list keeps its rows (each close re-reads it).
+  const bulkHold = useBulkHold<PullListPage>()
+  const { data: freshData, loading, error, reload } = useAsync<PullListPage>(
     (signal) => {
       const who = (v: string | null): string | null => (v === 'me' ? identity ?? '' : v)
       const selection: PullSelection = {
@@ -144,6 +146,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 
+  const data = bulkHold.keep(freshData)
   // A sparse tab finding its older rows through the state scan reads on by itself (QW3-002).
   useAutoReadOn(data?.searchedOf, loading, reload)
 
@@ -203,7 +206,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
-          {bulkAllowed && bulkRows.length > 0 ? <BulkBar kind="pull" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} /> : null}
+          {bulkAllowed ? <BulkBar kind="pull" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} onBusy={bulkHold.setBusy} /> : null}
           <StateTabs label="Pull request state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
               <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.open)}Open

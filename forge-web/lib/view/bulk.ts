@@ -179,3 +179,15 @@ export function doneWord(action: BulkAction): string {
       return action.add ? 'Label added' : 'Label removed'
   }
 }
+
+/** What an item that needed no write says: someone else made the change first. */
+export function unchangedWord(action: BulkAction): string {
+  switch (action.kind) {
+    case 'close':
+      return 'Already closed.'
+    case 'reopen':
+      return 'Already open.'
+    case 'label':
+      return action.add ? 'Already has the label.' : 'Already without the label.'
+  }
+}
