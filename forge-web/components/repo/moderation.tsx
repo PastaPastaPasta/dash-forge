@@ -12,6 +12,7 @@ import { ChevronDown, Eye, EyeOff } from 'lucide-react'
 import { Author } from '@/components/author'
 import { useDismiss } from '@/components/repo/target-rail'
 import { HIDE_REASONS, type Hidden, type HideBlock, type HideReason } from '@/lib/rules/moderation'
+import { banReasonLabel } from '@/lib/rules/bans'
 import { timeAgo } from '@/lib/view'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -44,6 +45,12 @@ const BLOCKED_NOTE: Readonly<Record<HideBlock, string | null>> = {
 /** "as spam", or '' for a hide with no reason. */
 export function reasonWords(reason: HideReason | null): string {
   return reason === null ? '' : ` as ${HIDE_REASON_LABEL[reason].toLowerCase()}`
+}
+
+/** A ban's reason, " (spam)", or '' for none. */
+export function banWords(hidden: Hidden): string {
+  const r = banReasonLabel(hidden.banReason)
+  return r === null ? '' : ` (${r})`
 }
 
 /**
@@ -149,12 +156,20 @@ export function HiddenRow({
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-dashed border-anvil-300 px-4 py-2 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="hidden-item" data-via={hidden.via}>
       <EyeOff className="h-3.5 w-3.5 shrink-0 text-anvil-500" aria-hidden />
-      <span>
-        {hidden.via === 'review' ? `A ${what} in a hidden review` : `A ${what}`} by <Author identityId={author} link={false} className="align-middle" /> was hidden by{' '}
-        <Author identityId={hidden.by} link={false} className="align-middle" />
-        {reasonWords(hidden.reason)}
-        <span className="whitespace-nowrap"> · {timeAgo(hidden.at)}</span>
-      </span>
+      {hidden.via === 'ban' ? (
+        <span>
+          Hidden: <Author identityId={author} link={false} className="align-middle" /> was banned by a maintainer,{' '}
+          <Author identityId={hidden.by} link={false} className="align-middle" />
+          {banWords(hidden)}
+        </span>
+      ) : (
+        <span>
+          {hidden.via === 'review' ? `A ${what} in a hidden review` : `A ${what}`} by <Author identityId={author} link={false} className="align-middle" /> was hidden by{' '}
+          <Author identityId={hidden.by} link={false} className="align-middle" />
+          {reasonWords(hidden.reason)}
+          <span className="whitespace-nowrap"> · {timeAgo(hidden.at)}</span>
+        </span>
+      )}
       {note}
       <span className="ml-auto flex items-center gap-3">
         {actions}
@@ -172,8 +187,9 @@ export function RevealedNote({ hidden, onCollapse }: { hidden: Hidden; onCollaps
     <div className="flex items-center gap-2 px-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="revealed-hidden">
       <EyeOff className="h-3 w-3" aria-hidden />
       <span>
-        Hidden by <Author identityId={hidden.by} link={false} className="align-middle" />
-        {reasonWords(hidden.reason)}
+        {hidden.via === 'ban' ? 'Hidden: banned by a maintainer, ' : 'Hidden by '}
+        <Author identityId={hidden.by} link={false} className="align-middle" />
+        {hidden.via === 'ban' ? banWords(hidden) : reasonWords(hidden.reason)}
       </span>
       <button type="button" onClick={onCollapse} className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400">
         Collapse
@@ -187,10 +203,17 @@ export function HiddenBanner({ hidden, noun, revealed, onReveal }: { hidden: Hid
   return (
     <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-caution/40 bg-caution/5 px-4 py-3 text-dense text-anvil-700 dark:text-anvil-200" data-testid="hidden-thread">
       <EyeOff className="h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
-      <span>
-        This {noun} was hidden by a maintainer, <Author identityId={hidden.by} link={false} className="align-middle" />
-        {reasonWords(hidden.reason)} · {timeAgo(hidden.at)}. It stays on Platform and keeps its number; lists leave it out.
-      </span>
+      {hidden.via === 'ban' ? (
+        <span>
+          This {noun} is hidden: its author was banned by a maintainer, <Author identityId={hidden.by} link={false} className="align-middle" />
+          {banWords(hidden)}. It stays on Platform and keeps its number; lists leave it out.
+        </span>
+      ) : (
+        <span>
+          This {noun} was hidden by a maintainer, <Author identityId={hidden.by} link={false} className="align-middle" />
+          {reasonWords(hidden.reason)} · {timeAgo(hidden.at)}. It stays on Platform and keeps its number; lists leave it out.
+        </span>
+      )}
       {!revealed ? (
         <button type="button" onClick={onReveal} className="hit-area ml-auto font-medium text-forge-700 hover:underline dark:text-forge-400" data-testid="reveal-thread">
           Show it anyway
@@ -333,8 +356,9 @@ export function HiddenRowMark({ hidden }: { hidden: Hidden | undefined }): JSX.E
     <span className="inline-flex items-center gap-1 rounded-full border border-anvil-300 px-2 py-0.5 text-[11px] text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="row-hidden">
       <EyeOff className="h-3 w-3 shrink-0" aria-hidden />
       <span>
-        Hidden by <Author identityId={hidden.by} link={false} className="align-middle" />
-        {reasonWords(hidden.reason)}
+        {hidden.via === 'ban' ? 'Author banned by ' : 'Hidden by '}
+        <Author identityId={hidden.by} link={false} className="align-middle" />
+        {hidden.via === 'ban' ? banWords(hidden) : reasonWords(hidden.reason)}
       </span>
     </span>
   )

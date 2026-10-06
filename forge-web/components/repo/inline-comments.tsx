@@ -25,7 +25,7 @@ import { DiffHunkLines } from '@/components/repo/diff-hunk-view'
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CheckCircle2, EyeOff, FileDiff, MessageSquare, Pencil, Trash2 } from 'lucide-react'
 import { Author } from '@/components/author'
-import { reasonWords } from '@/components/repo/moderation'
+import { banWords, reasonWords } from '@/components/repo/moderation'
 import type { HiddenItems } from '@/lib/rules/moderation'
 
 import { commentFirsts, postComment, type AnchorInput, type PostContext, type RepoRef } from '@/lib/repo'
@@ -459,8 +459,9 @@ function CommentBlock({
       <div className="flex flex-wrap items-center gap-2 border-b border-anvil-100 px-3 py-1.5 text-[12px] text-anvil-500 last:border-b-0 dark:border-anvil-850 dark:text-anvil-400" data-testid="thread-comment-hidden" data-id={c.id}>
         <EyeOff className="h-3 w-3" aria-hidden />
         <span>
-          {hidden.via === 'review' ? 'In a hidden review: hidden' : 'Hidden'} by <Author identityId={hidden.by} link={false} className="align-middle" />
-          {reasonWords(hidden.reason)}
+          {hidden.via === 'ban' ? 'Hidden: banned by a maintainer,' : hidden.via === 'review' ? 'In a hidden review: hidden by' : 'Hidden by'}{' '}
+          <Author identityId={hidden.by} link={false} className="align-middle" />
+          {hidden.via === 'ban' ? banWords(hidden) : reasonWords(hidden.reason)}
         </span>
         <button type="button" onClick={() => setShown(true)} className="ml-auto font-medium text-forge-700 hover:underline dark:text-forge-400">
           Show

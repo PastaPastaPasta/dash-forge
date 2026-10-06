@@ -63,6 +63,7 @@ import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
 import type { HiddenItems } from '../rules/moderation'
 import { hidesProved } from '../repo/moderation'
 import { foldModeration, hasHides, moderationInput, type ModerationInput } from '../repo/moderation-fold'
+import { readBans, standingOf } from '../repo/bans'
 import { anchorOf, countApprovals, foldPrReviewV2, groupReviewComments, meetsPolicy, RoleOracle, type Anchor, type Approvals, type Policy, type PolicyStatus, type PrReviewState, type Review, type Role } from '../rules/v2'
 import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, type ReviewSummary, type SinceYourReview } from './review-fold'
 
@@ -411,11 +412,12 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   )
   // RC2 MOD: the contract's proof is read only when the issue has a hide, beside the members (a
   // failed read counts the owner's and current maintainers' hides alone, the stricter rule).
-  const [members, proved] = await Promise.all([
+  const [members, proved, bans] = await Promise.all([
     memberships ?? readMembershipsCached(sdk, repo, network),
     hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false),
+    readBans(sdk, repo),
   ])
-  const modInput = moderationInput({ events: log.events, thread: { id, author: str(doc, '$ownerId') }, owner: repo.ownerId, members, proved, comments })
+  const modInput = moderationInput({ events: log.events, thread: { id, author: str(doc, '$ownerId') }, owner: repo.ownerId, members, proved, comments, bans: standingOf(repo, bans, members) })
   return {
     closedAs: currentCloseReason(transitions, issueNumber),
     duplicates,
@@ -675,8 +677,8 @@ export async function loadPullThread(
   const policy: Promise<Policy | null> = policyDocs === null ? readPolicy(sdk, repo) : Promise.resolve(policyFromDocs(policyDocs))
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
   const proved = hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false)
-  const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead, proved])
-  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews })
+  const [approvals, verdicts, hidesAreProved, bans] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead, proved, readBans(sdk, repo)])
+  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews, bans: standingOf(repo, bans, members ?? []) })
   return {
     moderation: foldModeration(modInput),
     moderationInput: modInput,

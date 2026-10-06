@@ -6,6 +6,7 @@
  */
 
 import type { Event } from '../rules'
+import { applyBans, type Ban } from '../rules/bans'
 import { hiddenItems, hideBlocked, isModerationKind, NOTHING_HIDDEN, type HiddenItems, type HideBlock, type HideScope, type Membership, type ThreadItem } from '../rules/v2'
 
 /** forge-community `event.asMaintainer` (RC2 MOD): the writer's maintainer document, proved. */
@@ -22,6 +23,8 @@ export interface ModerationInput {
   readonly scope: HideScope
   readonly comments: readonly ThreadItem[]
   readonly reviews: readonly ThreadItem[]
+  /** The repo's standing bans (UPDATE-1): a banned identity's thread, comments and reviews collapse too. */
+  readonly bans?: ReadonlyMap<string, Ban>
 }
 
 /**
@@ -36,8 +39,10 @@ export function moderationInput(input: {
   readonly proved: boolean
   readonly comments: readonly { readonly id: string; readonly author: string; readonly reviewId?: string | null }[]
   readonly reviews?: readonly { readonly id: string; readonly reviewer: string }[]
+  readonly bans?: ReadonlyMap<string, Ban>
 }): ModerationInput {
   return {
+    ...(input.bans !== undefined && input.bans.size > 0 ? { bans: input.bans } : {}),
     events: input.events,
     scope: {
       threadId: input.thread.id,
@@ -53,7 +58,8 @@ export function moderationInput(input: {
 
 /** What readers collapse in one thread ({@link hiddenItems}); nothing to fold without a hide. */
 export function foldModeration(m: ModerationInput): HiddenItems {
-  return hasHides(m.events) ? hiddenItems(m.events, m.scope, m.comments, m.reviews) : NOTHING_HIDDEN
+  const hidden = hasHides(m.events) ? hiddenItems(m.events, m.scope, m.comments, m.reviews) : NOTHING_HIDDEN
+  return m.bans === undefined ? hidden : applyBans(hidden, m.bans, m.scope.threadAuthor, m.comments, m.reviews)
 }
 
 /** {@link moderationInput} folded: what readers collapse in one thread. */
