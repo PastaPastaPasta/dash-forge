@@ -49,7 +49,7 @@ pub struct Notice {
 }
 
 /// A display name for an identity: its DPNS label when `names` has one (`alice.dash` shows as
-/// `alice`), else the id shortened to its first 6 characters.
+/// `alice`), else the id shortened to its first 7 and last 5 characters ([`short_id`]).
 pub fn display_name(id: &str, names: &BTreeMap<String, String>) -> String {
     if id.is_empty() {
         return "someone".to_string();
@@ -60,14 +60,18 @@ pub fn display_name(id: &str, names: &BTreeMap<String, String>) -> String {
     }
 }
 
-/// The first 6 characters of an id, then an ellipsis.
+/// An id shortened to its first 7 and last 5 characters (`Fi8bQ2x…9XwYz`), as the web app and
+/// `dg` show it. Never the prefix alone: an identity id is a hash of the asset lock that funded
+/// it, so an attacker can grind one whose first characters match a maintainer's; matching both
+/// ends too costs far more. Ids of 13 characters or fewer come back unchanged.
 pub fn short_id(id: &str) -> String {
-    let head: String = id.chars().take(6).collect();
-    if head.len() < id.len() {
-        format!("{head}…")
-    } else {
-        head
+    let chars: Vec<char> = id.chars().collect();
+    if chars.len() <= 13 {
+        return id.to_string();
     }
+    let head: String = chars[..7].iter().collect();
+    let tail: String = chars[chars.len() - 5..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 /// One line: invisible format characters are dropped, control characters (newlines included)
@@ -453,7 +457,12 @@ mod tests {
         let e = pull_request_event(&meta(), "PRDOC", "opened", &pr("Fix the parser", false));
         let n = render(&e, &names()).unwrap();
         assert_eq!(n.title, "alice opened pull request #12: Fix the parser");
-        assert_eq!(n.repo, "OWNER1…/project");
+        // An unnamed owner: 13 characters or fewer show whole, longer ones as 7…5.
+        assert_eq!(n.repo, "OWNER1234567/project");
+        assert_eq!(
+            short_id("Fi8bQ2xkPqR7sT9uVwXyZ1a2b3c4d5e6f7g8h9i0jKL"),
+            "Fi8bQ2x…i0jKL"
+        );
         assert_eq!(n.excerpt, "Body\n\nmore", "blank lines collapse");
         assert_eq!(n.thread, Some((true, 12)));
         assert!(n.url.starts_with("https://forge.example/repo/pull/?"));
@@ -598,7 +607,7 @@ mod tests {
         );
         assert_eq!(
             render(&e, &names()).unwrap().title,
-            "BOBID1… deleted branch x"
+            "BOBID12345 deleted branch x"
         );
         let e = push_event(
             &meta(),
@@ -653,7 +662,7 @@ mod tests {
         let n = render(&e, &names()).unwrap();
         assert_eq!(
             n.title,
-            "alice requested a review from BOBID1… on pull request #12: T"
+            "alice requested a review from BOBID12345 on pull request #12: T"
         );
     }
 }
