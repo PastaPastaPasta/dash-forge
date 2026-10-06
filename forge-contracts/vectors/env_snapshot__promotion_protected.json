@@ -1,0 +1,71 @@
+{
+  "name": "promotion_protected",
+  "description": "before granting the role, alice saved production's current values again (p1) naming both a0 and the writer's dormant w0: after the promotion p1 is the only head and the values are unchanged.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG"
+    ],
+    "manifests": [
+      {
+        "id": "n5wAoLDksMJKTVDCFr3fFtghhb2Fmc1S7dzEWYRh7uc",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "b2a6d564b1ea0bb4f4e024581acfc03655b7a1cf7b282dd922d00f34e1bd19e3",
+        "supersedes": [],
+        "height": 1000
+      },
+      {
+        "id": "FVvGYN98pFESDiDSaxS48NebEuAYYm1CdaVH7E5V8uTh",
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "packHash": "9c9604ab171b0c2262177ddbc9c7b22af6ed0d887b3765c4d487f8f8da429943",
+        "supersedes": [
+          "b2a6d564b1ea0bb4f4e024581acfc03655b7a1cf7b282dd922d00f34e1bd19e3"
+        ],
+        "height": 2000
+      },
+      {
+        "id": "9J1V2muYrtGZdT83e4B9wE6npNY4WNnZn43tB58MVTVv",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "6d99f7105b33f5118e44d12429e43d618671931040d55e182dfaf5f3f100907a",
+        "supersedes": [
+          "b2a6d564b1ea0bb4f4e024581acfc03655b7a1cf7b282dd922d00f34e1bd19e3",
+          "9c9604ab171b0c2262177ddbc9c7b22af6ed0d887b3765c4d487f8f8da429943"
+        ],
+        "height": 3000
+      }
+    ],
+    "opened": {
+      "b2a6d564b1ea0bb4f4e024581acfc03655b7a1cf7b282dd922d00f34e1bd19e3": {
+        "env": "production"
+      },
+      "9c9604ab171b0c2262177ddbc9c7b22af6ed0d887b3765c4d487f8f8da429943": {
+        "env": "production"
+      },
+      "6d99f7105b33f5118e44d12429e43d618671931040d55e182dfaf5f3f100907a": {
+        "env": "production"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [],
+    "environments": [
+      {
+        "env": "production",
+        "state": "current",
+        "heads": [
+          "9J1V2muYrtGZdT83e4B9wE6npNY4WNnZn43tB58MVTVv"
+        ],
+        "snapshots": [
+          "n5wAoLDksMJKTVDCFr3fFtghhb2Fmc1S7dzEWYRh7uc",
+          "FVvGYN98pFESDiDSaxS48NebEuAYYm1CdaVH7E5V8uTh",
+          "9J1V2muYrtGZdT83e4B9wE6npNY4WNnZn43tB58MVTVv"
+        ],
+        "ignoredNewer": []
+      }
+    ],
+    "hidden": []
+  }
+}

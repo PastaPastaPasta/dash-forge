@@ -10,8 +10,8 @@ import type { RefState } from '../rules'
 
 const writes: { refName: string; newOid: string; prevOid?: string; intent?: string }[] = []
 let stateNow: RefState | null = null
-/** The protected patterns the fresh config read answers. */
-let patternsNow: string[] = []
+/** The protected patterns the fresh config read answers (null: no config readable). */
+let patternsNow: string[] | null = []
 
 vi.mock('./push', async (orig) => ({
   ...(await orig<typeof import('./push')>()),
@@ -23,7 +23,7 @@ vi.mock('./push', async (orig) => ({
 }))
 vi.mock('./config', async (orig) => ({
   ...(await orig<typeof import('./config')>()),
-  readConfigBundle: vi.fn(async () => ({ config: { protectedPatterns: patternsNow }, history: [] })),
+  readConfigBundle: vi.fn(async () => ({ config: patternsNow === null ? null : { protectedPatterns: patternsNow }, history: [] })),
 }))
 vi.mock('./refs', async (orig) => ({
   ...(await orig<typeof import('./refs')>()),
@@ -62,6 +62,14 @@ describe('branch names', () => {
     expect(newTagNameProblem('v1.2.0')).toBeNull()
     expect(newTagNameProblem('-v1')).toMatch(/not a valid/)
     expect(newTagNameProblem('v 1')).toMatch(/not a valid/)
+  })
+})
+
+describe('routing before the first config', () => {
+  it('passes "no config" on, so the owner\'s write is routed as protected rather than as no patterns', async () => {
+    patternsNow = null
+    await createBranch(SDK, AUTH, REPO, { name: 'feature/x', target: A, ...M })
+    expect(writes).toHaveLength(1)
   })
 })
 

@@ -1,0 +1,118 @@
+{
+  "name": "chain_cycle",
+  "description": "links count only strictly back in block height: s1 naming the later s2 is no link, so s2 is production's head; a snapshot naming itself supersedes nothing; two snapshots in one block naming each other supersede nothing either (a conflict).",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
+    ],
+    "manifests": [
+      {
+        "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "supersedes": [
+          "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02"
+        ],
+        "height": 1000
+      },
+      {
+        "id": "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+        "supersedes": [
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "height": 1001
+      },
+      {
+        "id": "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19",
+        "supersedes": [
+          "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19"
+        ],
+        "height": 1100
+      },
+      {
+        "id": "Er6uxNJgJMF8qSCvVQRZvU5dX6WzPgpkwa4TgLkhrr6X",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "8bf4749b2aef75d0658aa2d606d6c4ff74fa1886c61362e079d9e556df9ce4ad",
+        "supersedes": [
+          "1e2617354e1788273f902412012d424d1128a7f32e2624f9a8da1a0ff5eafdc0"
+        ],
+        "height": 1200
+      },
+      {
+        "id": "7xU1hvYL913Tgr1ihwL5fhfemZyYGmm8PewVdpLVNkzp",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "1e2617354e1788273f902412012d424d1128a7f32e2624f9a8da1a0ff5eafdc0",
+        "supersedes": [
+          "8bf4749b2aef75d0658aa2d606d6c4ff74fa1886c61362e079d9e556df9ce4ad"
+        ],
+        "height": 1200
+      }
+    ],
+    "opened": {
+      "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c": {
+        "env": "production"
+      },
+      "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02": {
+        "env": "production"
+      },
+      "e8990db57eb70a712674c75954993f572885b9c0baed12fc2cc27bb29f192e19": {
+        "env": "dev"
+      },
+      "8bf4749b2aef75d0658aa2d606d6c4ff74fa1886c61362e079d9e556df9ce4ad": {
+        "env": "staging"
+      },
+      "1e2617354e1788273f902412012d424d1128a7f32e2624f9a8da1a0ff5eafdc0": {
+        "env": "staging"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [],
+    "environments": [
+      {
+        "env": "dev",
+        "state": "current",
+        "heads": [
+          "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
+        ],
+        "snapshots": [
+          "4mtM8obn7VifiR37ti6QZ2u4KpG4iDJHvzTjZSgrHZVF"
+        ],
+        "ignoredNewer": []
+      },
+      {
+        "env": "production",
+        "state": "current",
+        "heads": [
+          "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc"
+        ],
+        "snapshots": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+          "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc"
+        ],
+        "ignoredNewer": []
+      },
+      {
+        "env": "staging",
+        "state": "conflict",
+        "heads": [
+          "7xU1hvYL913Tgr1ihwL5fhfemZyYGmm8PewVdpLVNkzp",
+          "Er6uxNJgJMF8qSCvVQRZvU5dX6WzPgpkwa4TgLkhrr6X"
+        ],
+        "snapshots": [
+          "7xU1hvYL913Tgr1ihwL5fhfemZyYGmm8PewVdpLVNkzp",
+          "Er6uxNJgJMF8qSCvVQRZvU5dX6WzPgpkwa4TgLkhrr6X"
+        ],
+        "ignoredNewer": []
+      }
+    ],
+    "hidden": []
+  }
+}
