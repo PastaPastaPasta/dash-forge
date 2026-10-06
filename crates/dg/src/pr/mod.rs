@@ -4598,7 +4598,10 @@ pub(crate) mod tests {
         assert_eq!(members_squash_message(4, &[], "Me <m>"), "#4");
         let mut members = view_with("refs/heads/main", &"2".repeat(40));
         members.patch.audience = forge_core::rules::v2::Audience::Members;
-        assert_eq!(merge_commit_message(&members, None), "Merge pull request #1 from f");
+        assert_eq!(
+            merge_commit_message(&members, None),
+            "Merge pull request #1 from f"
+        );
         assert_eq!(
             merge_commit_message(&view_with("refs/heads/main", &"2".repeat(40)), None),
             "Merge pull request #1 from f\n\nt"
