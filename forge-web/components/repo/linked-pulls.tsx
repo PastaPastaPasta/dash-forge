@@ -10,7 +10,6 @@
 import Link from 'next/link'
 import { pullStateView } from '@/components/repo/pull-state'
 import { pullsLinking, readTransitions, repoContractIds, repoKey, type LinkingPulls, type PullRow } from '@/lib/repo'
-import { PR_MERGE } from '@/lib/rules/transition'
 import type { ClosingMerge } from '@/lib/view/cross-refs'
 import type { RepoHome } from '@/lib/view'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
@@ -19,8 +18,8 @@ import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { mirrorRepo, pullHref } from '@/components/repo/target-href'
 import { importedHost } from '@/lib/view/ref-targets'
-import { closedByPr, type ClosingPr } from '@/lib/rules/transition'
-import { readClosingPr } from '@/lib/repo/closing-pull'
+import { closedByPr, mergeTransition } from '@/lib/rules/transition'
+import { readClosingPr, type NamedPull } from '@/lib/repo/closing-pull'
 
 function stateOf(p: PullRow): { label: string; icon: JSX.Element } {
   const { label, Icon, klass } = pullStateView(p.state)
@@ -32,6 +31,8 @@ export interface IssueBacklinks {
   readonly linking: AsyncState<LinkingPulls>
   /** Read after `linking`, so the Development box never waits for them; empty until then. */
   readonly merges: readonly ClosingMerge<PullRow>[]
+  /** Both reads are done (or failed): `merges` is all the backlinks will hold. */
+  readonly mergesSettled: boolean
 }
 
 const NO_MERGES: readonly ClosingMerge<PullRow>[] = []
@@ -63,8 +64,9 @@ export function useIssueBacklinks(home: RepoHome, number: number, upstream: numb
       // A failed read loses only the "in #3" (the close still shows).
       const found = await Promise.all(
         merged.map(async (pull) => {
-          const merge = (await readTransitions(sdk!, home.repo, pull.id).catch(() => [])).filter((t) => t.kind === PR_MERGE).pop()
-          return merge === undefined ? [] : [{ pull, merge }]
+          // The first merge transition, as `mergeTransition` (and forge-core) take it.
+          const merge = mergeTransition(await readTransitions(sdk!, home.repo, pull.id).catch(() => []))
+          return merge === null ? [] : [{ pull, merge }]
         }),
       )
       return found.flat()
@@ -72,7 +74,9 @@ export function useIssueBacklinks(home: RepoHome, number: number, upstream: numb
     [ready, repoKey(home.repo), merged.map((p) => p.id).join(','), network, generation],
     { enabled: enabled && ready && sdk !== null && merged.length > 0 },
   )
-  return { linking, merges: merges.data ?? NO_MERGES }
+  const linkingSettled = linking.data !== null || linking.error !== null
+  const mergesSettled = linkingSettled && (merged.length === 0 || merges.data !== null || merges.error !== null)
+  return { linking, merges: merges.data ?? NO_MERGES, mergesSettled }
 }
 
 /** An issue's "Development" box: the PRs that close it (`backlinks`: {@link useIssueBacklinks}). */
@@ -124,29 +128,28 @@ export function LinkedPulls({ addr, number, backlinks }: { addr: RepoAddress | u
  */
 export function namedClosingPull(
   backlinks: IssueBacklinks,
-  read: ReadonlyMap<number, ClosingPr | null>,
+  read: ReadonlyMap<number, NamedPull | null>,
   issue: number,
   close: { readonly closedByPr?: number; readonly createdAt: number },
 ): { readonly number: number; readonly title: string } | null {
   const n = close.closedByPr
   if (n === undefined) return null
   const m = backlinks.merges.find((x) => x.pull.number === n)
-  const pr: ClosingPr | null | undefined = m
-    ? { number: n, merged: m.pull.state.merged, mergedAt: m.merge.createdAt, body: m.pull.body, imported: m.pull.imported }
+  const pr: NamedPull | null | undefined = m
+    ? { number: n, merged: m.pull.state.merged, mergedAt: m.merge.createdAt, body: m.pull.body, imported: m.pull.imported, title: m.pull.title }
     : read.get(n)
-  if (pr === undefined || closedByPr(issue, n, close.createdAt, pr) === null) return null
-  const title = m?.pull.title ?? backlinks.linking.data?.pulls.find((p) => p.number === n)?.title ?? ''
-  return { number: n, title }
+  if (pr === undefined || pr === null || closedByPr(issue, n, close.createdAt, pr) === null) return null
+  return { number: n, title: pr.title }
 }
 
 /**
- * The PRs `closes` name that the backlinks' merges do not hold, read by number once the backlinks
- * settled (`enabled`): usually none, so nothing is read. Public repos only.
+ * The PRs `closes` name that the backlinks' merges do not hold, read by number once both backlink
+ * reads settled (`enabled`): usually none, so nothing is read. Public repos only.
  */
-export function useNamedClosingPulls(home: RepoHome, backlinks: IssueBacklinks, closes: readonly number[], enabled: boolean): ReadonlyMap<number, ClosingPr | null> {
+export function useNamedClosingPulls(home: RepoHome, backlinks: IssueBacklinks, closes: readonly number[], enabled: boolean): ReadonlyMap<number, NamedPull | null> {
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const missing = [...new Set(closes)].filter((n) => !backlinks.merges.some((m) => m.pull.number === n)).sort((a, b) => a - b)
-  const settled = backlinks.linking.data !== null || backlinks.linking.error !== null
+  const settled = backlinks.mergesSettled
   const { data } = useAsync(
     async () => new Map(await Promise.all(missing.map(async (n) => [n, await readClosingPr(sdk!, home.repo, n).catch(() => null)] as const))),
     [ready, repoKey(home.repo), missing.join(',')],
@@ -155,4 +158,4 @@ export function useNamedClosingPulls(home: RepoHome, backlinks: IssueBacklinks, 
   return data ?? NO_READ
 }
 
-const NO_READ: ReadonlyMap<number, ClosingPr | null> = new Map()
+const NO_READ: ReadonlyMap<number, NamedPull | null> = new Map()

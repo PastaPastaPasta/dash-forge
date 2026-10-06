@@ -24,7 +24,7 @@ import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 import { threadAuthorIds } from '@/lib/repo/bots'
 import { LinkedPulls, namedClosingPull, useIssueBacklinks, useNamedClosingPulls, type IssueBacklinks } from '@/components/repo/linked-pulls'
-import type { ClosingPr } from '@/lib/rules/transition'
+import type { NamedPull } from '@/lib/repo/closing-pull'
 import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
@@ -796,7 +796,7 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
 function closedInRef(
   t: TransitionView,
   backlinks: IssueBacklinks,
-  named: ReadonlyMap<number, ClosingPr | null>,
+  named: ReadonlyMap<number, NamedPull | null>,
   addr: RepoAddress | undefined,
   issue: number | null,
 ): TimelineRef | null {

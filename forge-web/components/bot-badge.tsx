@@ -8,7 +8,7 @@
  * nothing is read and no badge shows.
  */
 
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useRef } from 'react'
 import { useAsync } from '@/hooks/use-async'
 import { Bot } from 'lucide-react'
 import { useDpnsName } from '@/hooks/use-dpns-name'
@@ -31,7 +31,10 @@ export function BotBadgeScope({ ids, children }: { ids: readonly string[]; child
   const { data } = useAsync(() => readBotOperators(sdk!, forge!.community, ids), [ready, network, key], {
     enabled: ready && sdk !== null && forge !== null && ids.length > 0,
   })
-  return <BotScope.Provider value={data ?? NONE}>{children}</BotScope.Provider>
+  // A participant joining re-reads the set: the badges already shown stay until it answers.
+  const last = useRef<ReadonlyMap<string, string>>(NONE)
+  if (data !== null) last.current = data
+  return <BotScope.Provider value={data ?? last.current}>{children}</BotScope.Provider>
 }
 
 const NONE: ReadonlyMap<string, string> = new Map()

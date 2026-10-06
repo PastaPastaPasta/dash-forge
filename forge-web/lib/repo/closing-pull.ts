@@ -13,8 +13,13 @@ import { DOC, str, type RepoRef } from './contract'
 import { repoSource } from './source'
 import { readTransitions } from './transitions'
 
+/** A PR a close names: what the shared `closedByPr` rule reads, and its title for the link. */
+export interface NamedPull extends ClosingPr {
+  readonly title: string
+}
+
 /** PR `number` as the shared `closedByPr` rule reads it, or null when there is no such PR. */
-export async function readClosingPr(sdk: EvoSDK, repo: RepoRef, number: number): Promise<ClosingPr | null> {
+export async function readClosingPr(sdk: EvoSDK, repo: RepoRef, number: number): Promise<NamedPull | null> {
   const docs = await queryDocuments(sdk, repoSource(repo).repoQuery(DOC.patch, { where: [['number', '==', number]], limit: 1 }))
   const doc = docs[0]
   if (doc === undefined) return null
@@ -25,5 +30,6 @@ export async function readClosingPr(sdk: EvoSDK, repo: RepoRef, number: number):
     mergedAt: merge?.createdAt ?? null,
     body: str(doc, 'body'),
     imported: doc['imported'] != null,
+    title: str(doc, 'title'),
   }
 }
