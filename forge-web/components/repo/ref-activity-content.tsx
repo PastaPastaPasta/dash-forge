@@ -218,7 +218,9 @@ export function RefActivityContent({ home, addr, refName }: { home: RepoHome; ad
         ))}
       </ol>
       {events.length > shown.length ? (
-        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Showing the newest {ACTIVITY_SHOWN}. `dg repo activity` lists them all.</p>
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+          Showing the newest {ACTIVITY_SHOWN}. <code className="font-mono">dg repo activity</code> lists them all.
+        </p>
       ) : null}
     </div>
   )
