@@ -259,6 +259,16 @@ Reasons are GitHub's: `spam`, `abuse`, `off-topic`, `outdated`, `resolved`, `dup
 
 **A hidden review still counts.** Hiding is display only: an approval or a request for changes still counts toward the merge until a member dismisses it (`dg pr dismiss-review`, or **Dismiss** on the Reviewers card). Hiding an issue or PR does not close it either; the web's **Hide issue…** offers "Also close and lock it", which writes the close and the lock after the hide.
 
+**Banning someone.** When one identity keeps posting spam or abuse, a maintainer can ban it from the repository instead of hiding each post. Forge apps then collapse everything it wrote there (its issues, pull requests, comments and reviews) behind "Hidden: … was banned by a maintainer · Show", leave its issues and pull requests out of the lists and notifications, and refuse its new issues, pull requests, comments and reviews before signing ([`E610`](../errors.md#e610)). Platform still accepts its writes, as with hides.
+
+```sh
+dg repo ban   <owner>/<repo> @spammer --reason spam   # spam, abuse or off-topic; or no reason
+dg repo bans  <owner>/<repo>                          # who is banned, by whom, and why
+dg repo unban <owner>/<repo> @spammer                 # lift your own ban
+```
+
+The web has the same under **Settings → Bans**. A ban counts while the maintainer who wrote it is still a maintainer (or the repository's owner); only that maintainer can lift it, and removing them as a maintainer drops it. The owner and current maintainers cannot be banned: a ban of one is ignored. A banned identity's review still counts toward the merge until a member dismisses it, as with a hidden review.
+
 **Limits.** A hidden post is still on Platform: anyone can read it with **Show**, `--show-hidden`, `--include-hidden`, or any client that predates hiding. In a private repository the reason is encrypted like other event values; which item was hidden is not. Each hide is one event: a whole thread costs about as much as a label, and hiding one comment or review costs about 0.0002 DASH more, because the event also names it. To stop a flood, lock the thread first, then hide what was already posted.
 
 ---
@@ -476,7 +486,7 @@ The web form lists them under **Reviewers from code owners**, each with a box to
 
 **The Files tab** marks each owned file with a shield (filled when you own it). Select it for the owners and the `CODEOWNERS` line that decided them.
 
-**Not supported:** "require review from code owners" as a branch rule. The `policy` document has no field for it, and adding one is a contract update (an optional `policy` property), so it is left for that update. A code owner's approval counts like any other member's.
+**Requiring a code owner's approval.** Turn on **Require approval from code owners** in **Settings → Branches → Branch policy**, or run `dg repo policy set <owner>/<repo> --require-code-owners true`. Then every changed file that `CODEOWNERS` on the base branch assigns needs an approval from one of its owners before the PR can merge. The merge box names each file still waiting ("code owner approval: src/a.rs (@alice)"), and `dg pr merge` refuses with [`E804`](../errors.md#e804) naming the same files. An owner's approval counts as for the required approvals: on the PR's current head, not dismissed, not the PR's author, and from someone whose role counts toward the policy (a maintainer, or a writer unless only maintainers' approvals count). A file nobody owns needs nothing. The rule fails closed: a `CODEOWNERS` file that cannot be read blocks the merge, and a file owned only by teams, e-mail addresses, unregistered names or non-members cannot be approved until `CODEOWNERS` is fixed. A maintainer can bypass it like the rest of the policy, and the bypass is recorded on the PR.
 
 ---
 
