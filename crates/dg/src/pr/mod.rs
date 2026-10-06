@@ -332,6 +332,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     };
     s.refuse_if_archived(ctx, "pull request not created")
         .await?;
+    s.refuse_if_banned("pull request not created").await?;
     let handle = &s.repo;
     let forge = handle.forge();
     let cwd = std::env::current_dir().context("reading the current directory")?;
@@ -1872,8 +1873,19 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         Method::Rebase => Some(METHOD_REBASE),
         Method::Merge => None,
     };
-    let MergeRights { policy, bypassed } =
-        require_merge_rights(&s, handle, &view, method_bit, a.override_policy).await?;
+    let MergeRights {
+        policy,
+        mut bypassed,
+    } = require_merge_rights(&s, handle, &view, method_bit, a.override_policy).await?;
+    // `requireCodeOwners` (UPDATE-1): its own git read, after the policy's other rules.
+    if let Some(p) = policy.as_ref().filter(|p| p.require_code_owners) {
+        let rules =
+            owners::code_owner_rules(&owners::code_owner_status(ctx, &s, handle, &view, p).await);
+        if !rules.is_empty() && !a.override_policy {
+            return Err(code_owners_refusal(&rules, &handle.display(), number).into());
+        }
+        bypassed.extend(rules);
+    }
     // A recorded merge is permanent: `--event-only` names a commit that must contain the PR.
     if let Some(oid) = &merge_oid {
         require_merge_contains_pr(ctx, handle, &view, oid)?;
@@ -2816,6 +2828,19 @@ fn name_every_unmet_rule(
         .fix(format!(
             "`dg pr checks {repo} {number}` shows the required checks"
         ))
+}
+
+/// E804: the policy requires a code owner's approval of files that have none (`rules`: one line
+/// each, [`owners::code_owner_rules`]).
+fn code_owners_refusal(rules: &[String], repo: &str, number: u64) -> UserError {
+    UserError::new(
+        codes::POLICY_NOT_MET,
+        format!("merge refused: pull request #{number} of {repo} needs a code owner's approval"),
+    )
+    .cause(rules.join("; "))
+    .fix("ask an owner of each file (named in CODEOWNERS on the base branch) to approve")
+    .fix("a maintainer can merge with `--override-policy` (recorded on the PR)")
+    .note("checked before anything was pushed or paid; no merge event was posted")
 }
 
 /// The confirmation's clause for a merge that bypasses the branch policy (QW4-048): the bypass

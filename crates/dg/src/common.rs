@@ -208,6 +208,12 @@ impl Session {
         }
     }
 
+    /// E610 before anything is signed when a maintainer banned the signer from the repository
+    /// (`action`: what was not done). Advisory, like the archived check.
+    pub async fn refuse_if_banned(&self, action: &str) -> Result<()> {
+        Ok(self.collab().refuse_if_banned(&self.repo, action).await?)
+    }
+
     /// The forge-v2 collaboration service, signing as this session's identity.
     pub fn collab(&self) -> forge_core::collab::v2::Collab<'_> {
         forge_core::collab::v2::Collab::new(&self.client, &self.identity, &self.bridge)

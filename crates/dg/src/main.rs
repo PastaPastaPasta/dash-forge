@@ -8,6 +8,7 @@
 mod api;
 mod audience;
 mod auth;
+mod bans;
 mod ci;
 mod collab;
 mod common;
@@ -523,6 +524,31 @@ pub enum RepoCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
+    /// Ban an identity from a repo (maintainers): Forge apps hide its issues, pull requests,
+    /// comments and reviews there and refuse its new ones. Platform does not stop it writing.
+    Ban {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Who (an identity id, a DPNS name or `@name`).
+        #[arg(value_name = "IDENTITY")]
+        who: String,
+        /// Why: `spam`, `abuse` or `off-topic` (shown to readers and to the banned identity).
+        #[arg(long, value_name = "REASON")]
+        reason: Option<String>,
+    },
+    /// Lift your ban of an identity (only the maintainer who wrote a ban can lift it).
+    Unban {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Who (an identity id, a DPNS name or `@name`).
+        #[arg(value_name = "IDENTITY")]
+        who: String,
+    },
+    /// List the bans that count: those of the owner and current maintainers.
+    Bans {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -611,6 +637,10 @@ pub struct RepoPolicySetArgs {
     /// are kept).
     #[arg(long = "clear-required-checks")]
     pub clear_required_checks: bool,
+    /// Require a code owner's approval for every changed file that has code owners (`true`),
+    /// read from the CODEOWNERS file on the base branch.
+    #[arg(long = "require-code-owners")]
+    pub require_code_owners: Option<bool>,
 }
 
 #[derive(Debug, Subcommand)]

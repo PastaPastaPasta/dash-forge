@@ -148,6 +148,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::ARCHIVED, "repository archived"),
     (codes::EDIT_CONFLICT, "edited by someone else meanwhile"),
     (codes::ENV_CONFLICT, "environment changed at the same time"),
+    (codes::BANNED, "banned from this repository"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
         codes::NOT_DEPLOYED,
@@ -268,6 +269,9 @@ pub mod codes {
     /// An environment two people changed at once: its values are not used until a maintainer
     /// keeps one version.
     pub const ENV_CONFLICT: &str = "E608";
+    /// A maintainer banned the signer from the repository (a client rule: the tools refuse the
+    /// banned identity's writes there).
+    pub const BANNED: &str = "E610";
     /// DAPI / the quorum service could not be reached.
     pub const UNREACHABLE: &str = "E701";
     /// The selected network has no Dash Forge deployment.

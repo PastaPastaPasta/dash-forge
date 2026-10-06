@@ -14,11 +14,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_json::json;
 
+use forge_core::collab::v2::PatchView;
 use forge_core::collab::v2::{kind_route, StateRoute, Target, TargetKind};
 use forge_core::rules::codeowners::{
-    code_owner_requests, owner_kind, parse_code_owners, CodeOwners, OwnerKind, OwnerRequests,
-    SkipReason, CODEOWNERS_PATHS, MAX_CODEOWNERS_BYTES,
+    code_owner_requests, code_owner_review, owner_kind, parse_code_owners, CodeOwnerStatus,
+    CodeOwners, OwnerKind, OwnerRequests, OwnersFile, SkipReason, CODEOWNERS_PATHS,
+    MAX_CODEOWNERS_BYTES,
 };
+use forge_core::rules::review::Policy;
 use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 
@@ -312,6 +315,127 @@ pub async fn request(
         }
     }
     out
+}
+
+/// Where a PR stands against its policy's `requireCodeOwners` (UPDATE-1): the shared rule
+/// [`code_owner_review`] over the code owners file at the base tip and the paths the PR changes.
+/// Both commits come from the clone `dg` runs in when it has them, else a scratch fetch. A read
+/// that fails is an unreadable file, which the rule fails closed on.
+pub async fn code_owner_status(
+    ctx: &Ctx,
+    s: &Session,
+    handle: &Repo,
+    view: &PatchView,
+    policy: &Policy,
+) -> CodeOwnerStatus {
+    if !policy.require_code_owners {
+        return CodeOwnerStatus {
+            met: true,
+            ..CodeOwnerStatus::default()
+        };
+    }
+    match status_inner(ctx, s, handle, view, policy).await {
+        Ok(st) => st,
+        Err(e) => {
+            if !ctx.json {
+                eprintln!("note: the code owners could not be read: {e:#}");
+            }
+            CodeOwnerStatus {
+                met: false,
+                unreadable: true,
+                pending: Vec::new(),
+            }
+        }
+    }
+}
+
+async fn status_inner(
+    ctx: &Ctx,
+    s: &Session,
+    handle: &Repo,
+    view: &PatchView,
+    policy: &Policy,
+) -> Result<CodeOwnerStatus> {
+    let Some(base_tip) = view.base_tip.clone() else {
+        anyhow::bail!("the base branch {} has no tip", view.merge_base.ref_name);
+    };
+    let cwd = std::env::current_dir().context("reading the current directory")?;
+    let scratch;
+    let dir: &Path = if git::has_object(&cwd, &base_tip) && git::has_object(&cwd, &view.head) {
+        &cwd
+    } else {
+        if !ctx.json {
+            eprintln!("Fetching the base and head to read CODEOWNERS…");
+        }
+        scratch = super::scratch_repo()?;
+        let private = handle.visibility == forge_core::rules::v2::Visibility::Private;
+        let env = super::read_env(ctx, private)?;
+        super::fetch_base_and_head(scratch.path(), handle, view, &env)?;
+        scratch.path()
+    };
+    let parsed = read_code_owners(dir, &base_tip)?;
+    let paths = changed_paths(dir, &base_tip, &view.head)?;
+    let collab = s.collab();
+    let oracle = collab.member_oracle(handle).await?;
+    let (approvals, _) = collab.approvals_with(handle, view, &oracle).await?;
+    let mut resolved: BTreeMap<String, Option<String>> = BTreeMap::new();
+    if let Some((_, owners)) = &parsed {
+        for t in owners.owners_of_paths(&paths) {
+            if owner_kind(&t) != OwnerKind::Name || resolved.contains_key(&t) {
+                continue;
+            }
+            let id = match forge_core::resolve::dpns_label(t.trim_start_matches('@')) {
+                Some(label) => s
+                    .client
+                    .resolve_dpns_name(label)
+                    .await
+                    .with_context(|| format!("looking up the DPNS name {t}"))?,
+                None => None,
+            };
+            resolved.insert(t, id);
+        }
+    }
+    let file = match &parsed {
+        Some((_, owners)) => OwnersFile::Parsed(owners),
+        None => OwnersFile::Absent,
+    };
+    Ok(code_owner_review(
+        file,
+        &paths,
+        &approvals,
+        &oracle,
+        policy,
+        &resolved,
+        &view.patch.author,
+    ))
+}
+
+/// The branch-rule lines a code owner status leaves unmet ("code owner approval: src/a.rs
+/// (@alice)"), for a refusal and a bypass record; empty when met.
+#[must_use]
+pub fn code_owner_rules(status: &CodeOwnerStatus) -> Vec<String> {
+    if status.met {
+        return Vec::new();
+    }
+    if status.unreadable {
+        return vec!["code owner approval: the code owners file could not be read".to_string()];
+    }
+    status
+        .pending
+        .iter()
+        .map(|p| {
+            format!(
+                "code owner approval: {} ({}{})",
+                crate::fmt::safe(&p.path),
+                crate::fmt::safe(&p.owners.join(" ")),
+                if p.approvable {
+                    ""
+                } else {
+                    "; none of them can approve"
+                }
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

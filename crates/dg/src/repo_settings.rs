@@ -478,6 +478,7 @@ pub(crate) fn policy_json(p: &Policy) -> Value {
         "mergeMethods": method_names(p.merge_methods),
         "requiredChecks": p.required_checks,
         "requiredCheckSources": p.required_check_sources,
+        "requireCodeOwners": p.require_code_owners,
     })
 }
 
@@ -516,6 +517,14 @@ pub async fn policy(ctx: &Ctx, cmd: &RepoPolicyCommand) -> Result<()> {
                             approvers(p.approver_role)
                         );
                         println!("require checks:     {}", p.require_checks);
+                        println!(
+                            "code owners:        {}",
+                            if p.require_code_owners {
+                                "an owner approves each owned file"
+                            } else {
+                                "not required"
+                            }
+                        );
                         println!(
                             "merge methods:      {}",
                             method_names(p.merge_methods).join(", ")
@@ -674,6 +683,7 @@ async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
         // Naming the checks a merge requires turns the requirement on (unless said otherwise).
         require_checks: args.require_checks.unwrap_or(base.require_checks || naming),
         merge_methods: methods.unwrap_or(base.merge_methods),
+        require_code_owners: args.require_code_owners.unwrap_or(base.require_code_owners),
         ..base
     };
     refuse_stale_sources(&s, &collab, &next).await?;
