@@ -24,9 +24,22 @@ pub fn full_ref_name(name: &str, tag: bool) -> String {
     }
 }
 
+/// How many of the newest ancestry questions are asked of local git (one `git` run or two each).
+const CONTAINS_CHECKED: usize = 20;
+
+/// Whether this directory's git is a shallow clone: its history stops early, so an ancestor
+/// it cannot find may still be one.
+fn shallow() -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--is-shallow-repository"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|o| o.status.success() && o.stdout.trim_ascii() == b"true")
+}
+
 /// Whether commit `new` contains commit `old`, as this directory's git sees it; `None` when it
-/// cannot tell (not a clone, or a commit it does not have).
-fn local_contains(old: &str, new: &str) -> Option<bool> {
+/// cannot tell (not a clone, a commit it does not have, or a shallow clone that did not find it).
+fn local_contains(old: &str, new: &str, shallow: bool) -> Option<bool> {
     let has = |oid: &str| {
         std::process::Command::new("git")
             .args(["cat-file", "-e", &format!("{oid}^{{commit}}")])
@@ -44,7 +57,7 @@ fn local_contains(old: &str, new: &str) -> Option<bool> {
         .ok()?;
     match status.code() {
         Some(0) => Some(true),
-        Some(1) => Some(false),
+        Some(1) if !shallow => Some(false),
         _ => None,
     }
 }
@@ -63,6 +76,7 @@ fn describe(e: &RefEvent) -> String {
         RefEventKind::Updated => format!("updated {}", moved()),
         RefEventKind::Moved => format!("moved {}", moved()),
         RefEventKind::Deleted => format!("deleted (was {})", tip(&e.from)),
+        RefEventKind::Diverged => format!("diverged {}", moved()),
         RefEventKind::ProtectionAdded => "protected".into(),
         RefEventKind::ProtectionLifted => "protection lifted".into(),
         RefEventKind::ProtectionRestored => "protection restored".into(),
@@ -74,7 +88,30 @@ pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()
     let s = Reader::open(ctx, repo).await?;
     let ref_name = full_ref_name(name, tag);
     let (hash, updates, configs) = s.service().ref_history(&s.repo, &ref_name).await?;
-    let mut events = ref_history(&ref_name, &hash, &updates, &configs, local_contains);
+    // The questions the walk asks, then the newest of them answered by local git.
+    let asked = std::cell::RefCell::new(Vec::<(String, String)>::new());
+    let _ = ref_history(&ref_name, &hash, &updates, &configs, |old, new| {
+        let mut a = asked.borrow_mut();
+        if !a.iter().any(|(o, n)| o == old && n == new) {
+            a.push((old.to_string(), new.to_string()));
+        }
+        None
+    });
+    let asked = asked.into_inner();
+    let shallow = shallow();
+    let answers: Vec<((String, String), Option<bool>)> = asked
+        .iter()
+        .rev()
+        .take(CONTAINS_CHECKED)
+        .map(|(o, n)| ((o.clone(), n.clone()), local_contains(o, n, shallow)))
+        .collect();
+    let contains = |old: &str, new: &str| {
+        answers
+            .iter()
+            .find(|((o, n), _)| o == old && n == new)
+            .and_then(|(_, a)| *a)
+    };
+    let mut events = ref_history(&ref_name, &hash, &updates, &configs, contains);
     events.reverse();
     let display = s.repo.display();
     ctx.emit(
@@ -90,7 +127,7 @@ pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()
                 let who = e.by.as_deref().unwrap_or("a maintainer (config)");
                 let mark = match e.kind {
                     RefEventKind::ForcePushed | RefEventKind::Moved => "!",
-                    RefEventKind::ProtectionLifted => "~",
+                    RefEventKind::ProtectionLifted | RefEventKind::Diverged => "~",
                     _ => " ",
                 };
                 println!("{mark} {when} UTC  {:<22} {who}", describe(e));

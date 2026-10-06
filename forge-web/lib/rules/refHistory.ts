@@ -4,14 +4,16 @@
  * `dg repo activity` does.
  *
  * Only valid updates appear ({@link validRefUpdates}: a plain update on a ref protected as of
- * its `createdAt` moved nothing), in the causal order {@link resolveRef} folds them in. An
- * update's `from` is the tip the walk holds before it, never the writer's own `prevOid`, so a
- * pusher cannot make a force-push read as a fast-forward by naming another parent. An update
- * that leaves the tip where it was is no change and is left out.
+ * its `createdAt` moved nothing), in the causal order {@link resolveRef} folds them in, tracking
+ * the live heads as the fold does: a later update supersedes a head when it is forced, builds on
+ * it (its `prevOid` names it) or contains it. An update's `from` is the head it supersedes.
  *
  * `contains(old, new)` answers whether commit `new` contains commit `old` (`null`: unknown within
- * the caller's budget). A branch move reads `pushed`, `forcePushed` or `updated` (unknown); a tag
- * that names another object reads `moved` whatever the graph says.
+ * the caller's budget). A branch move reads `pushed` when every head it supersedes is contained,
+ * `forcePushed` when it supersedes (forced, or building on it) a head it does not contain, and
+ * `updated` when that is unknown. One that supersedes no head reads `diverged` (two tips race, as
+ * the fold reads it). A tag that names another object reads `moved` whatever the graph says. An
+ * update that sets the tip the ref already holds alone is left out.
  *
  * Protection follows the config in force: configs sharing a `createdAt` take effect together (the
  * greatest `id` wins), and a config change comes before the updates of its block, which it judged.
@@ -21,7 +23,7 @@
 
 import { matchesProtected } from './matchesProtected'
 import { compareKey, isNullOid } from './oid'
-import { validRefUpdates } from './resolveRef'
+import { buildsOn, validRefUpdates } from './resolveRef'
 import type { ConfigDoc, RefUpdate } from './types'
 
 /** What one entry of a ref's activity did. */
@@ -32,6 +34,7 @@ export type RefEventKind =
   | 'updated'
   | 'moved'
   | 'deleted'
+  | 'diverged'
   | 'protectionAdded'
   | 'protectionLifted'
   | 'protectionRestored'
@@ -54,11 +57,6 @@ export interface RefEvent {
 /** Whether `new` contains `old`; null when unknown. */
 export type Contains = (old: string, next: string) => boolean | null
 
-/** A config change rather than an update. */
-export function isProtectionEvent(e: RefEvent): boolean {
-  return e.kind === 'protectionAdded' || e.kind === 'protectionLifted' || e.kind === 'protectionRestored'
-}
-
 /** The activity of the ref `refName` (keyed `refNameHash`, hex), oldest first. */
 export function refHistory(
   refName: string,
@@ -69,20 +67,46 @@ export function refHistory(
 ): RefEvent[] {
   const isTag = refName.startsWith('refs/tags/')
   const moves: RefEvent[] = []
-  let tip: string | null = null
-  for (const u of validRefUpdates(updates, configs, refNameHash)) {
-    const to = isNullOid(u.newOid) ? null : u.newOid
-    if (to === tip) continue
-    let kind: RefEventKind
-    if (tip === null) kind = 'created'
-    else if (to === null) kind = 'deleted'
-    else if (isTag) kind = 'moved'
-    else {
-      const c = contains(tip, to)
-      kind = c === true ? 'pushed' : c === false ? 'forcePushed' : 'updated'
+  // The live heads, oldest first.
+  let heads: RefUpdate[] = []
+  for (const v of validRefUpdates(updates, configs, refNameHash)) {
+    const event = (kind: RefEventKind, from: string | null, to: string | null): RefEvent => ({ kind, id: v.id, at: v.createdAt, by: v.author, from, to })
+    if (isNullOid(v.newOid)) {
+      const last = heads[heads.length - 1]
+      if (last !== undefined) moves.push(event('deleted', last.newOid, null))
+      heads = []
+      continue
     }
-    moves.push({ kind, id: u.id, at: u.createdAt, by: u.author, from: tip, to })
-    tip = to
+    const newest = heads[heads.length - 1]
+    if (newest === undefined) {
+      moves.push(event('created', null, v.newOid))
+      heads = [v]
+      continue
+    }
+    // The same tip again: that head is v's now; any other head it also supersedes goes.
+    const same = heads.some((h) => h.newOid === v.newOid)
+    const superseded: { readonly h: RefUpdate; readonly has: boolean | null }[] = []
+    const kept: RefUpdate[] = []
+    for (const h of heads) {
+      if (h.newOid === v.newOid) continue
+      const has = contains(h.newOid, v.newOid)
+      if (v.force || buildsOn(v, h) || has === true) superseded.push({ h, has })
+      else kept.push(h)
+    }
+    heads = [...kept, v]
+    if (superseded.length === 0) {
+      if (!same) moves.push(event('diverged', newest.newOid, v.newOid))
+      continue
+    }
+    const from = (superseded[superseded.length - 1] as { readonly h: RefUpdate }).h.newOid
+    const kind: RefEventKind = isTag
+      ? 'moved'
+      : superseded.some((x) => x.has === false)
+        ? 'forcePushed'
+        : superseded.every((x) => x.has === true)
+          ? 'pushed'
+          : 'updated'
+    moves.push(event(kind, from, v.newOid))
   }
 
   const sorted = [...configs].sort(compareKey)
@@ -114,9 +138,4 @@ export function refHistory(
     }
   }
   return out
-}
-
-/** The `[old, new]` pairs of `events` whose ancestry decides their kind (branch moves). */
-export function ancestryQuestions(events: readonly RefEvent[]): [string, string][] {
-  return events.filter((e) => e.kind === 'pushed' || e.kind === 'forcePushed' || e.kind === 'updated').map((e) => [e.from as string, e.to as string])
 }

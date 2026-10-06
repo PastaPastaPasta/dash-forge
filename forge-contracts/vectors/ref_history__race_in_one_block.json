@@ -1,6 +1,6 @@
 {
-  "name": "walked_tip_not_writer_prev_oid",
-  "description": "A pusher names an ancestor of its new tip as prevOid (not the ref's tip) without forcing: it supersedes no live head (it neither builds on nor contains A), so it reads diverged, as the fold reads the ref, never as a fast-forward.",
+  "name": "race_in_one_block",
+  "description": "Two pushes from the same tip land in one block: the first (by id) moves the branch, the second supersedes nothing and reads diverged, not force-pushed.",
   "case": "ref_history",
   "input": {
     "refName": "refs/heads/main",
@@ -21,23 +21,39 @@
         "id": "u2",
         "refNameHash": "H",
         "refName": "refs/heads/main",
-        "prevOid": "X",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
         "newOid": "C",
         "force": false,
         "protected": false,
-        "author": "mallory",
+        "author": "bob",
         "createdAt": 200
       }
     ],
     "configs": [],
     "contains": [
       [
-        "X",
-        "C",
+        "A",
+        "B",
         true
       ],
       [
         "A",
+        "C",
+        true
+      ],
+      [
+        "B",
         "C",
         false
       ]
@@ -53,11 +69,19 @@
       "to": "A"
     },
     {
-      "kind": "diverged",
+      "kind": "pushed",
       "id": "u2",
       "at": 200,
-      "by": "mallory",
+      "by": "alice",
       "from": "A",
+      "to": "B"
+    },
+    {
+      "kind": "diverged",
+      "id": "u3",
+      "at": 200,
+      "by": "bob",
+      "from": "B",
       "to": "C"
     }
   ]

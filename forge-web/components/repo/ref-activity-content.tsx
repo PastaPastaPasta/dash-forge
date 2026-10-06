@@ -31,6 +31,8 @@ import { cn } from '@/lib/utils'
 
 /** How many of the newest branch moves are checked for a force-push. */
 export const CONTAINS_CHECKED = 20
+/** Commits read in all, across those checks: the worst case a page makes (each check stops at 500). */
+export const CONTAINS_COMMITS = 1000
 /** How many entries the page lists, newest first. */
 export const ACTIVITY_SHOWN = 100
 
@@ -69,6 +71,8 @@ function EventRow({ e, addr, configAuthor }: { e: RefEvent; addr: RepoAddress; c
       <Trash2 className="h-3.5 w-3.5" aria-hidden />
     ) : e.kind === 'forcePushed' || e.kind === 'moved' ? (
       <TriangleAlert className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden />
+    ) : e.kind === 'diverged' ? (
+      <TriangleAlert className="h-3.5 w-3.5 text-caution-700 dark:text-caution-400" aria-hidden />
     ) : e.kind === 'protectionLifted' ? (
       <LockOpen className="h-3.5 w-3.5 text-caution-700 dark:text-caution-400" aria-hidden />
     ) : e.kind === 'protectionAdded' || e.kind === 'protectionRestored' ? (
@@ -76,30 +80,30 @@ function EventRow({ e, addr, configAuthor }: { e: RefEvent; addr: RepoAddress; c
     ) : (
       <GitCommitHorizontal className="h-3.5 w-3.5" aria-hidden />
     )
+  // The badge carries the meaning where there is one; the verb stays neutral beside it.
   const verb: Record<RefEvent['kind'], string> = {
     created: 'created it at',
     pushed: 'pushed',
-    forcePushed: 'force-pushed',
-    updated: 'updated it',
-    moved: 'moved it',
+    forcePushed: 'pushed',
+    updated: 'pushed',
+    moved: 'pushed',
+    diverged: 'pushed',
     deleted: 'deleted it',
     protectionAdded: 'protected it',
-    protectionLifted: 'lifted its protection',
-    protectionRestored: 'protected it again',
+    protectionLifted: 'changed the settings',
+    protectionRestored: 'changed the settings',
   }
   const badge =
     e.kind === 'forcePushed' ? (
       <Badge tone="danger">force-pushed</Badge>
     ) : e.kind === 'moved' ? (
       <Badge tone="danger">moved</Badge>
+    ) : e.kind === 'diverged' ? (
+      <Badge tone="caution">diverged</Badge>
     ) : e.kind === 'protectionLifted' ? (
       <Badge tone="caution">protection lifted</Badge>
     ) : e.kind === 'protectionRestored' ? (
       <Badge tone="verify">protection restored</Badge>
-    ) : e.kind === 'created' ? (
-      <Badge tone="plain">created</Badge>
-    ) : e.kind === 'deleted' ? (
-      <Badge tone="plain">deleted</Badge>
     ) : null
   return (
     <li className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-anvil-100 px-4 py-2.5 text-dense last:border-b-0 dark:border-anvil-850" data-kind={e.kind}>
@@ -110,7 +114,8 @@ function EventRow({ e, addr, configAuthor }: { e: RefEvent; addr: RepoAddress; c
       {e.from !== null && e.to !== null ? (
         <span className="inline-flex items-center gap-1">
           <CommitLink addr={addr} oid={e.from} />
-          <span aria-label="to">→</span>
+          <span aria-hidden>→</span>
+          <span className="sr-only">to</span>
           <CommitLink addr={addr} oid={e.to} />
         </span>
       ) : null}
@@ -131,20 +136,22 @@ export function RefActivityContent({ home, addr, refName }: { home: RepoHome; ad
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const isTag = refName.startsWith('refs/tags/')
   const shortName = refName.replace(/^refs\/(heads|tags)\//, '')
+  // A private repo's branch and tag names are sealed: not listed here (they would sit in the URL).
+  const readable = home.repo.visibility === 'public' && shortName !== ''
   const history = useAsync(() => readRefHistory(sdk!, home.repo, refName), [ready, repoKey(home.repo), network, refName], {
-    enabled: ready && sdk !== null && shortName !== '',
+    enabled: ready && sdk !== null && readable,
   })
   const h = history.data
-  // First without git: which branch moves need checking.
-  const unchecked = useMemo(() => (h === null ? [] : refHistory(refName, h.refNameHash, h.updates, h.configs, () => null)), [h, refName])
-  const pairs = useMemo(
-    () =>
-      unchecked
-        .filter((e) => e.kind === 'updated' && e.from !== null && e.to !== null)
-        .slice(-CONTAINS_CHECKED)
-        .map((e) => [e.from as string, e.to as string] as const),
-    [unchecked],
-  )
+  // First without git: the ancestry questions the walk asks (a branch's only).
+  const pairs = useMemo(() => {
+    if (h === null || isTag) return []
+    const asked: (readonly [string, string])[] = []
+    refHistory(refName, h.refNameHash, h.updates, h.configs, (from, to) => {
+      if (!asked.some(([f, t]) => f === from && t === to)) asked.push([from, to])
+      return null
+    })
+    return asked.slice(-CONTAINS_CHECKED)
+  }, [h, refName, isTag])
   const browse = useBrowse(pairs.length > 0 ? home.repo : null)
   const view = useTrustView()
   const shared = browse.data?.kind === 'ready' ? browse.data.context.reader : null
@@ -152,10 +159,12 @@ export function RefActivityContent({ home, addr, refName }: { home: RepoHome; ad
   const checked = useAsync(
     async () => {
       const out = new Map<string, boolean | null>()
-      for (const [from, to] of pairs) out.set(pairKey(from, to), await tipContains(reader!, from, to))
+      const budget = { left: CONTAINS_COMMITS }
+      // Newest first: the budget goes to the moves a reader sees first.
+      for (const [from, to] of [...pairs].reverse()) out.set(pairKey(from, to), await tipContains(reader!, from, to, undefined, budget))
       return out
     },
-    [reader === null, pairs.map(([f, t]) => pairKey(f, t)).join(',')],
+    [reader, pairs.map(([f, t]) => pairKey(f, t)).join(',')],
     { enabled: reader !== null && pairs.length > 0 },
   )
   const events = useMemo(() => {
@@ -180,6 +189,18 @@ export function RefActivityContent({ home, addr, refName }: { home: RepoHome; ad
       </h1>
     </div>
   )
+  if (!readable) {
+    return (
+      <div className="space-y-4">
+        {shortName !== '' ? header : null}
+        <EmptyState
+          icon={Icon}
+          title={shortName === '' ? 'Choose a branch or tag' : 'Not available for private repositories yet'}
+          body={shortName === '' ? 'Open a branch or tag from the Branches or Tags page to see its activity.' : 'Activity is shown for public repositories only for now.'}
+        />
+      </div>
+    )
+  }
   if (history.error !== null) {
     return (
       <div className="space-y-4">
@@ -196,7 +217,8 @@ export function RefActivityContent({ home, addr, refName }: { home: RepoHome; ad
       </div>
     )
   }
-  if (events.length === 0) {
+  // A ref that never existed has no pushes, whatever its protection did.
+  if (!events.some((e) => e.by !== null)) {
     return (
       <div className="space-y-4">
         {header}

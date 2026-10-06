@@ -47,7 +47,8 @@ const REPO_TITLES: Readonly<Record<string, (q: Query, repo: string) => string>> 
   '/repo/release': (q, repo) => `${q.get('tag') ?? 'Release'} · ${repo}`,
   '/repo/branches': (_q, repo) => `Branches · ${repo}`,
   '/repo/tags': (_q, repo) => `Tags · ${repo}`,
-  '/repo/activity': (q, repo) => `Activity of ${q.get('tag') ?? q.get('branch') ?? ''} · ${repo}`,
+  // Never the ref's name: a private repo's would be sealed.
+  '/repo/activity': (_q, repo) => `Activity · ${repo}`,
   '/repo/stargazers': (_q, repo) => `Stargazers · ${repo}`,
   '/repo/labels': (_q, repo) => `Labels · ${repo}`,
   '/repo/milestones': (_q, repo) => `Milestones · ${repo}`,

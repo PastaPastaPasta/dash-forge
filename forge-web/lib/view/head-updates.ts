@@ -11,6 +11,7 @@
  */
 
 import { newCommits } from '../merge/objects'
+import { parseCommit } from './git-objects'
 import type { HeadUpdate } from '../rules/review'
 import type { ObjectReader } from './tree-nav'
 import { plural } from './format'
@@ -20,13 +21,34 @@ const WALK_CAP = 500
 
 /**
  * Whether commit `next` contains commit `old` (`old` is `next` or one of its ancestors): a push,
- * not a force-push. Walks back from `old` until everything it reaches is in `next`'s history,
- * reading at most `cap` commits; null when that is not enough, or a commit cannot be read.
- * The PR timeline and a branch's Activity page both decide "force-pushed" with it.
+ * not a force-push. Exact, whatever the commit dates say: a breadth-first search of `next`'s
+ * ancestry for `old`. True when found; false when `next`'s whole history was read without it;
+ * null when `cap` commits were read first (or `budget.left`, a total shared by several checks, ran
+ * out), or a commit cannot be read. The PR timeline and a branch's Activity page both decide
+ * "force-pushed" with it.
  */
-export async function tipContains(reader: ObjectReader, old: string, next: string, cap = WALK_CAP): Promise<boolean | null> {
+export async function tipContains(reader: ObjectReader, old: string, next: string, cap = WALK_CAP, budget?: { left: number }): Promise<boolean | null> {
+  if (old === next) return true
+  const seen = new Set<string>([next])
+  const queue = [next]
   try {
-    return (await newCommits(reader, old, [next], cap)).length === 0
+    for (let i = 0; i < queue.length; i++) {
+      if (i >= cap) return null
+      if (budget !== undefined) {
+        if (budget.left <= 0) return null
+        budget.left--
+      }
+      const obj = await reader.readObject(queue[i] as string)
+      if (obj.type !== 'commit') return null
+      for (const p of parseCommit(obj.bytes).parents) {
+        if (p === old) return true
+        if (!seen.has(p)) {
+          seen.add(p)
+          queue.push(p)
+        }
+      }
+    }
+    return false
   } catch {
     return null
   }

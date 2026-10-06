@@ -47,7 +47,7 @@ function validUpdates(updates: readonly RefUpdate[], configHistory: readonly Con
 }
 
 /** Whether `v` recorded `u`'s tip as its `prevOid` and moved the ref somewhere else. */
-function buildsOn(v: RefUpdate, u: RefUpdate): boolean {
+export function buildsOn(v: RefUpdate, u: RefUpdate): boolean {
   return !isNullOid(v.prevOid) && v.prevOid === u.newOid && v.newOid !== u.newOid
 }
 

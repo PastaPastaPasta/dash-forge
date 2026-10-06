@@ -5,17 +5,19 @@
 //!
 //! Only valid updates appear ([`super::valid_updates`]: a plain `refUpdate` on a ref protected
 //! as of its `$createdAt` moved nothing), walked in the causal order [`super::resolve_ref`]
-//! folds them in. An update's `from` is the tip the walk holds before it, never the writer's
-//! own `prevOid`: a pusher cannot make a force-push read as a fast-forward by naming another
-//! parent. Two pushes racing in one block therefore read as one built on the other; when they
-//! do not share history the second reads as force-pushed, which errs on the side of saying so.
-//! An update that leaves the tip where it was is no change and is left out.
+//! folds them in, tracking the live heads as [`super::live_heads`] does: a later update
+//! supersedes a head when it is a deletion, is forced, builds on it (`prevOid` names it) or
+//! contains it. An update's `from` is the head it supersedes (the newest, when several), never
+//! the writer's own `prevOid` unchecked.
 //!
-//! Whether the new tip contains the old one is commit-graph knowledge the rule does not have:
-//! the caller answers it per pair (`contains(old, new)`), `None` when it cannot tell within
-//! its budget. A branch move then reads `pushed` (contained), `forcePushed` (not) or `updated`
-//! (unknown). A tag that names another object reads `moved` whatever the graph says: moving a
-//! tag is always a rewrite.
+//! Whether a tip contains another is commit-graph knowledge the rule does not have: the caller
+//! answers it per pair (`contains(old, new)`), `None` when it cannot tell within its budget. A
+//! branch move then reads `pushed` when every head it supersedes is contained, `forcePushed`
+//! when it supersedes (forced, or building on it) a head it does not contain, and `updated`
+//! when that is unknown. An update that supersedes no head (a race the fold leaves as two tips)
+//! reads `diverged`, as `resolve_ref` reads the ref then. A tag that names another object reads
+//! `moved` whatever the graph says: moving a tag is always a rewrite. An update that sets a
+//! tip the ref already holds alone is no change and is left out.
 //!
 //! Protection follows the config in force (`config_as_of`): configs sharing a `$createdAt`
 //! take effect together, the greatest `$id` winning, so a change that one of them made and
@@ -46,23 +48,15 @@ pub enum RefEventKind {
     Moved,
     /// The ref was deleted.
     Deleted,
+    /// A push superseded no live head: the ref now has two tips racing (`resolve_ref` reads it
+    /// diverged until a later push settles it).
+    Diverged,
     /// The ref became protected for the first time.
     ProtectionAdded,
     /// The ref stopped being protected.
     ProtectionLifted,
     /// The ref became protected again after its protection was lifted.
     ProtectionRestored,
-}
-
-impl RefEventKind {
-    /// A config change rather than an update.
-    #[must_use]
-    pub fn is_protection(self) -> bool {
-        matches!(
-            self,
-            Self::ProtectionAdded | Self::ProtectionLifted | Self::ProtectionRestored
-        )
-    }
 }
 
 /// One entry of a ref's activity.
@@ -82,6 +76,82 @@ pub struct RefEvent {
     pub to: Option<String>,
 }
 
+/// The updates of [`ref_history`], each judged against the live heads it supersedes.
+fn ref_moves(
+    ref_name: &str,
+    ref_name_hash: &str,
+    updates: &[RefUpdate],
+    configs: &[ConfigDoc],
+    contains: impl Fn(&str, &str) -> Option<bool>,
+) -> Vec<RefEvent> {
+    let is_tag = ref_name.starts_with("refs/tags/");
+    let mut moves = Vec::new();
+    // The live heads, oldest first: (tip, the update that set it).
+    let mut heads: Vec<&RefUpdate> = Vec::new();
+    for v in valid_updates(updates, configs, ref_name_hash) {
+        let event = |kind, from: Option<&str>, to: Option<&str>| RefEvent {
+            kind,
+            id: v.id.clone(),
+            at: v.created_at,
+            by: Some(v.author.clone()),
+            from: from.map(str::to_string),
+            to: to.map(str::to_string),
+        };
+        if is_null_oid(&v.new_oid) {
+            if let Some(last) = heads.last() {
+                moves.push(event(RefEventKind::Deleted, Some(&last.new_oid), None));
+            }
+            heads.clear();
+            continue;
+        }
+        let Some(newest) = heads.last().map(|h| h.new_oid.clone()) else {
+            moves.push(event(RefEventKind::Created, None, Some(&v.new_oid)));
+            heads.push(v);
+            continue;
+        };
+        // The same tip again: that head is v's now; any other head it also supersedes goes.
+        let same = heads.iter().any(|h| h.new_oid == v.new_oid);
+        let mut superseded = Vec::new();
+        let mut kept = Vec::new();
+        for h in heads.drain(..) {
+            if h.new_oid == v.new_oid {
+                continue;
+            }
+            let has = contains(&h.new_oid, &v.new_oid);
+            let rewrite = v.force || super::builds_on(v, h);
+            if rewrite || has == Some(true) {
+                superseded.push((h, has));
+            } else {
+                kept.push(h);
+            }
+        }
+        heads = kept;
+        heads.push(v);
+        if superseded.is_empty() {
+            if !same {
+                moves.push(event(
+                    RefEventKind::Diverged,
+                    Some(&newest),
+                    Some(&v.new_oid),
+                ));
+            }
+            continue;
+        }
+        let from = superseded.last().map(|(h, _)| h.new_oid.clone());
+        let kind = if is_tag {
+            RefEventKind::Moved
+        } else if superseded.iter().any(|(_, has)| *has == Some(false)) {
+            RefEventKind::ForcePushed
+        } else if superseded.iter().all(|(_, has)| *has == Some(true)) {
+            RefEventKind::Pushed
+        } else {
+            RefEventKind::Updated
+        };
+        moves.push(event(kind, from.as_deref(), Some(&v.new_oid)));
+    }
+    moves
+}
+
 /// The activity of the ref `ref_name` (whose key is `ref_name_hash`, hex), oldest first, from
 /// its updates of both types and the repository's config timeline. `contains(old, new)`: whether
 /// commit `new` contains commit `old`, `None` when unknown.
@@ -93,34 +163,7 @@ pub fn ref_history(
     configs: &[ConfigDoc],
     contains: impl Fn(&str, &str) -> Option<bool>,
 ) -> Vec<RefEvent> {
-    let is_tag = ref_name.starts_with("refs/tags/");
-    let mut moves = Vec::new();
-    let mut tip: Option<String> = None;
-    for u in valid_updates(updates, configs, ref_name_hash) {
-        let to = (!is_null_oid(&u.new_oid)).then(|| u.new_oid.clone());
-        if to == tip {
-            continue;
-        }
-        let kind = match (&tip, &to) {
-            (None, _) => RefEventKind::Created,
-            (Some(_), None) => RefEventKind::Deleted,
-            (Some(_), Some(_)) if is_tag => RefEventKind::Moved,
-            (Some(old), Some(new)) => match contains(old, new) {
-                Some(true) => RefEventKind::Pushed,
-                Some(false) => RefEventKind::ForcePushed,
-                None => RefEventKind::Updated,
-            },
-        };
-        moves.push(RefEvent {
-            kind,
-            id: u.id.clone(),
-            at: u.created_at,
-            by: Some(u.author.clone()),
-            from: tip.clone(),
-            to: to.clone(),
-        });
-        tip = to;
-    }
+    let moves = ref_moves(ref_name, ref_name_hash, updates, configs, contains);
 
     // The config in force after each block of configs: the block's greatest `$id`.
     let mut sorted: Vec<&ConfigDoc> = configs.iter().collect();
@@ -206,19 +249,30 @@ mod tests {
     }
 
     #[test]
-    fn force_push_is_judged_from_the_walked_tip_not_the_writers_prev_oid() {
-        // u2 claims to build on X, an ancestor of C, to pass as a fast-forward.
+    fn a_push_naming_another_parent_supersedes_nothing() {
+        // u2 claims to build on X, an ancestor of C, to pass as a fast-forward: it neither
+        // builds on nor contains A, so it races with A, as the fold reads it.
         let updates = [
             upd("u1", "0", "A", 10, false),
             upd("u2", "X", "C", 20, false),
         ];
         let contains = |old: &str, new: &str| Some(old == "X" && new == "C");
         let got = ref_history("refs/heads/main", "H", &updates, &[], contains);
+        assert_eq!(kinds(&got), [RefEventKind::Created, RefEventKind::Diverged]);
+        assert_eq!(got[1].from.as_deref(), Some("A"));
+        // Forced, it supersedes A, which it does not contain: a force-push.
+        let forced = [
+            upd("u1", "0", "A", 10, false),
+            RefUpdate {
+                force: true,
+                ..upd("u2", "X", "C", 20, false)
+            },
+        ];
+        let got = ref_history("refs/heads/main", "H", &forced, &[], contains);
         assert_eq!(
             kinds(&got),
             [RefEventKind::Created, RefEventKind::ForcePushed]
         );
-        assert_eq!(got[1].from.as_deref(), Some("A"));
     }
 
     #[test]

@@ -39,7 +39,10 @@ export function refUpdatedAt(ref: ResolvedRef): number {
   return 0
 }
 
-/** A ref's Activity page: its pushes, force-pushes, deletions and protection changes. */
+/**
+ * A ref's Activity page: its pushes, force-pushes, deletions and protection changes. Public repos
+ * only: a private repo's ref names are sealed, and the page's address would carry them.
+ */
 function ActivityLink({ addr, kind, name }: { addr: RepoAddress; kind: keyof typeof KIND; name: string }): JSX.Element {
   return (
     <Link
@@ -193,7 +196,7 @@ export function RefListContent({
                   </Link>
                 ) : null}
                 {tip ? tipChip(tip) : null}
-                <ActivityLink addr={addr} kind={kind} name={shortName} />
+                {home.repo.visibility === 'public' ? <ActivityLink addr={addr} kind={kind} name={shortName} /> : null}
                 {branchAdmin ? (
                   <DeleteBranchButton
                     home={home}
@@ -243,7 +246,7 @@ export function RefListContent({
                 <span className="rounded-full border border-anvil-200 px-2 py-0.5 text-[11px] text-anvil-500 dark:text-anvil-400 dark:border-anvil-700">
                   deleted
                 </span>
-                <ActivityLink addr={addr} kind={kind} name={short(ref)} />
+                {home.repo.visibility === 'public' ? <ActivityLink addr={addr} kind={kind} name={short(ref)} /> : null}
                 {branchAdmin && deletedHere.has(ref.refName) ? (
                   <RestoreBranchButton
                     home={home}
