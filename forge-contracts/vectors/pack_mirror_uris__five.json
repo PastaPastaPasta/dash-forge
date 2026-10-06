@@ -1,0 +1,18 @@
+{
+  "name": "five",
+  "description": "Five addresses is one too many.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://m0.example.com/p",
+      "https://m1.example.com/p",
+      "https://m2.example.com/p",
+      "https://m3.example.com/p",
+      "https://m4.example.com/p"
+    ]
+  },
+  "expected": {
+    "problem": "tooMany"
+  }
+}

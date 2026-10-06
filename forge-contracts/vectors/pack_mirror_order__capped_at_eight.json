@@ -1,0 +1,66 @@
+{
+  "name": "capped_at_eight",
+  "description": "At most eight addresses are tried, over every record.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "s0",
+        "ownerRole": null,
+        "createdAt": 0,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://h00.example/p",
+          "https://h01.example/p",
+          "https://h02.example/p",
+          "https://h03.example/p"
+        ]
+      },
+      {
+        "id": "s1",
+        "ownerRole": null,
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://h10.example/p",
+          "https://h11.example/p",
+          "https://h12.example/p",
+          "https://h13.example/p"
+        ]
+      },
+      {
+        "id": "s2",
+        "ownerRole": null,
+        "createdAt": 2,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://h20.example/p",
+          "https://h21.example/p",
+          "https://h22.example/p",
+          "https://h23.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://h00.example/p",
+      "https://h01.example/p",
+      "https://h02.example/p",
+      "https://h03.example/p",
+      "https://h10.example/p",
+      "https://h11.example/p",
+      "https://h12.example/p",
+      "https://h13.example/p"
+    ]
+  }
+}
