@@ -2,8 +2,9 @@
  * Which identities are bots, by mutual claim (`profile.bot`, UPDATE-1): a bot's profile names its
  * operator and the operator's profile lists the bot ({@link botOperator}). Read for a set of
  * identities at once: one `$ownerId in` query for their profiles (100 at a time), then one for the
- * operators they name that were not in the set. Answers are kept per network and contract for
- * the session; a failed read keeps nothing and badges nobody.
+ * operators they name that were not in the set. Answers are kept per contract for
+ * {@link CLAIM_TTL_MS}, so a claim changed or withdrawn elsewhere shows within minutes; a failed
+ * read keeps nothing and badges nobody.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -17,11 +18,19 @@ import { botClaimOf } from './profile'
 /** An `in` query names at most this many values. */
 const IN_MAX = 100
 
-/** Each identity's claim (null: no profile or no claim), by `community:id`. */
-const claims = new Map<string, BotClaim | null>()
+/** How long a claim read is reused before it is read again. */
+export const CLAIM_TTL_MS = 10 * 60_000
+
+/** Each identity's claim (null: no profile or no claim) and when it was read, by `community:id`. */
+const claims = new Map<string, { readonly claim: BotClaim | null; readonly at: number }>()
+
+const held = (key: string): boolean => {
+  const c = claims.get(key)
+  return c !== undefined && Date.now() - c.at < CLAIM_TTL_MS
+}
 
 async function readClaims(sdk: EvoSDK, community: string, ids: readonly string[]): Promise<void> {
-  const missing = [...new Set(ids)].filter((id) => !claims.has(`${community}:${id}`))
+  const missing = [...new Set(ids)].filter((id) => !held(`${community}:${id}`))
   for (let i = 0; i < missing.length; i += IN_MAX) {
     const chunk = missing.slice(i, i + IN_MAX)
     const docs = await queryDocuments(sdk, {
@@ -32,18 +41,19 @@ async function readClaims(sdk: EvoSDK, community: string, ids: readonly string[]
       limit: chunk.length,
     })
     const found = new Map(docs.map((d) => [String(d['$ownerId']), botClaimOf(d) ?? null]))
-    for (const id of chunk) claims.set(`${community}:${id}`, found.get(id) ?? null)
+    const at = Date.now()
+    for (const id of chunk) claims.set(`${community}:${id}`, { claim: found.get(id) ?? null, at })
   }
 }
 
 /** Record a claim already read with its profile (a profile page), so it is not read again. */
 export function noteBotClaim(community: string, id: string, claim: BotClaim | null): void {
-  claims.set(`${community}:${id}`, claim)
+  claims.set(`${community}:${id}`, { claim, at: Date.now() })
 }
 
 /** The verified operator of each of `ids` that is a bot (others are absent). */
 export async function readBotOperators(sdk: EvoSDK, community: string, ids: readonly string[]): Promise<ReadonlyMap<string, string>> {
-  const claimOf = (id: string): BotClaim | null => claims.get(`${community}:${id}`) ?? null
+  const claimOf = (id: string): BotClaim | null => claims.get(`${community}:${id}`)?.claim ?? null
   await readClaims(sdk, community, ids)
   const operators = ids.map((id) => claimOf(id)?.operator).filter((o): o is string => typeof o === 'string' && o !== '')
   if (operators.length > 0) await readClaims(sdk, community, operators)
