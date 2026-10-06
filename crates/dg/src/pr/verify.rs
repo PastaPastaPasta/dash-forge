@@ -281,7 +281,7 @@ pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<Strin
         "  merged by {}{}",
         short_identity(merger),
         a.merger_role.map_or_else(
-            || ", not a member now".to_string(),
+            || ", no membership at the time".to_string(),
             |r| format!(", {} at the time", r.noun())
         )
     ));

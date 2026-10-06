@@ -75,7 +75,6 @@ export function RulesAtMerge({
 function AuditBody({ audit, thread }: { audit: MergeAudit; thread: PullThread }): JSX.Element {
   const rows = auditRows(audit, thread.pull.mergeBaseRefName)
   const tone = audit.verdict === 'unmet' ? 'bad' : audit.verdict === 'met' ? 'good' : 'neutral'
-  const membersUnread = thread.approvals === null
   return (
     <div className="space-y-3" data-testid="rules-at-merge-body" data-verdict={audit.verdict}>
       <p className={cn('flex items-start gap-2 font-medium', tone === 'bad' && 'text-danger-700 dark:text-danger-400')}>
@@ -112,7 +111,6 @@ function AuditBody({ audit, thread }: { audit: MergeAudit; thread: PullThread })
         </p>
       ) : null}
       {audit.verdict === 'unmet' ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{UNMET_CAVEAT}</p> : null}
-      {membersUnread ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">The members couldn&apos;t be read, so no approval was counted.</p> : null}
       <EnforcedBy by="apps" />
     </div>
   )
@@ -123,7 +121,7 @@ function MergerLine({ thread, audit }: { thread: PullThread; audit: MergeAudit }
   return (
     <>
       {actor !== '' ? <Author identityId={actor} /> : 'Unknown'}
-      {audit.mergerRole !== null ? `, ${ROLE_NOUN[audit.mergerRole]} at the time` : ', not a member now'}
+      {audit.mergerRole !== null ? `, ${ROLE_NOUN[audit.mergerRole]} at the time` : ', no membership at the time'}
       {thread.pull.mergedAt !== undefined ? (
         <>
           {' · '}

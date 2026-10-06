@@ -15,6 +15,7 @@ import type { ConfigDoc } from '../rules/types'
 import type { Review } from '../rules/v2'
 import type { RepoRef } from '../repo'
 import { readCheckRuns, type HeadChecks } from '../repo/checks'
+import { readMemberships } from '../repo/members'
 import { readPolicyHistory } from '../repo/settings'
 import type { TransitionView } from '../repo/transitions'
 import type { PullThread } from './issues-view'
@@ -76,12 +77,15 @@ export function mergeAuditInput(thread: Pick<PullThread, 'pull' | 'timeline' | '
 export async function readMergeAudit(
   sdk: EvoSDK,
   repo: RepoRef,
-  thread: PullThread,
+  page: PullThread,
   configHistory: () => Promise<readonly ConfigDoc[]>,
   pageChecks: HeadChecks | null,
 ): Promise<MergeAudit | null> {
-  const merge = auditedMerge(thread)
+  const merge = auditedMerge(page)
   if (merge === null) return null
+  // The page's member read failed (no approvals were counted): read them again rather than judge
+  // with nobody a member, which would call every merge unmet.
+  const thread = page.approvals === null ? { ...page, members: await readMemberships(sdk, repo) } : page
   const [policies, configs] = await Promise.all([readPolicyHistory(sdk, repo), configHistory()])
   const noRuns = mergeAuditInput(thread, { policies, configs, checks: null })
   if (noRuns === null) return null
@@ -101,7 +105,7 @@ export interface AuditRow {
   readonly met: boolean | null
 }
 
-const CHECK_WORDS = { passed: 'passed', failing: 'failed', pending: 'still running', missing: 'not reported' } as const
+const CHECK_WORDS = { passed: 'passed', failing: 'failed', pending: 'still running at the merge', missing: 'not reported' } as const
 
 /** The audit's rows, in the merge box's words. */
 export function auditRows(a: MergeAudit, baseRefName: string): AuditRow[] {

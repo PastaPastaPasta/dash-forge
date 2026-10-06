@@ -1,10 +1,14 @@
 /** "Branch rules at merge": the thread and the reads become the shared rule's input, and its result reads as rows. */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+const readMemberships = vi.fn()
+vi.mock('../repo/members', async (orig) => ({ ...(await orig<typeof import('../repo/members')>()), readMemberships: (...a: unknown[]) => readMemberships(...a) }))
+vi.mock('../repo/settings', async (orig) => ({ ...(await orig<typeof import('../repo/settings')>()), readPolicyHistory: async () => [{ id: 'p1', createdAt: 1, policy: { requiredApprovals: 1, approverRole: 0, requireChecks: false, mergeMethods: 0 } }] }))
 
 import { auditMerge } from '../rules/merge-audit'
 import type { PullThread } from './issues-view'
-import { auditHeadline, auditRows, auditedMerge, mergeAuditInput } from './merge-audit'
+import { auditHeadline, auditRows, auditedMerge, mergeAuditInput, readMergeAudit } from './merge-audit'
 
 const HEAD = 'a'.repeat(40)
 const MERGE = 'b'.repeat(40)
@@ -85,5 +89,17 @@ describe('mergeAuditInput', () => {
       { key: 'approvals', label: 'Required approvals', text: 'None', met: null },
       { key: 'check:build', label: 'Check build', text: 'failed', met: false },
     ])
+  })
+
+  it('reads the members again when the page could not, rather than counting nobody', async () => {
+    const t = { ...thread(), members: [], approvals: null } as unknown as PullThread
+    readMemberships.mockResolvedValue([
+      { identity: 'maint', role: 'maintainer', createdAt: 1 },
+      { identity: 'maint2', role: 'maintainer', createdAt: 1 },
+    ])
+    const audit = await readMergeAudit({} as never, {} as never, t, async () => [], null)
+    expect(readMemberships).toHaveBeenCalledTimes(1)
+    expect(audit?.verdict).toBe('met')
+    expect(audit?.mergerRole).toBe('maintainer')
   })
 })
