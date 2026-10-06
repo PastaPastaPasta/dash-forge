@@ -255,6 +255,11 @@ pub struct Policy {
     /// reporter's run decides). See [`super::parity::checks_state`].
     #[serde(default)]
     pub required_check_sources: Vec<String>,
+    /// `requireCodeOwners` (UPDATE-1; absent on a version-1 policy: off): every changed file
+    /// with code owners needs one of its owners' approval
+    /// ([`super::codeowners::code_owner_review`]).
+    #[serde(default)]
+    pub require_code_owners: bool,
 }
 
 impl Policy {
@@ -313,12 +318,7 @@ impl PolicyStatus {
 /// consensus.
 #[must_use]
 pub fn meets_policy(approvals: &Approvals, oracle: &RoleOracle, policy: &Policy) -> PolicyStatus {
-    let counts = |a: &String| match oracle.current_role(a) {
-        Some(Role::Maintainer) => true,
-        Some(Role::Writer) => policy.approver_role == 0,
-        // Never approvers: their verdicts are shown, not counted.
-        Some(Role::Triage | Role::Reader) | None => false,
-    };
+    let counts = |a: &String| counts_for(oracle, policy, a);
     let have = approvals.approvers.iter().filter(|a| counts(a)).count();
     let have = u32::try_from(have).unwrap_or(u32::MAX);
     let blocked_by: Vec<String> = if policy.required_approvals == 0 {
@@ -336,6 +336,19 @@ pub fn meets_policy(approvals: &Approvals, oracle: &RoleOracle, policy: &Policy)
         have,
         need: policy.required_approvals,
         blocked_by,
+    }
+}
+
+/// Whether `identity`'s verdict counts toward `policy` now: a current maintainer, or with
+/// `approver_role` 0 a current role-1 writer (never triage or a reader). [`meets_policy`] and
+/// [`super::codeowners::code_owner_review`] judge approvers alike.
+#[must_use]
+pub fn counts_for(oracle: &RoleOracle, policy: &Policy, identity: &str) -> bool {
+    match oracle.current_role(identity) {
+        Some(Role::Maintainer) => true,
+        Some(Role::Writer) => policy.approver_role == 0,
+        // Never approvers: their verdicts are shown, not counted.
+        Some(Role::Triage | Role::Reader) | None => false,
     }
 }
 

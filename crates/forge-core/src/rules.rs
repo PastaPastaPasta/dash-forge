@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod bans;
 pub mod ci_rerun;
 pub mod codeowners;
 pub mod long_body;
@@ -1340,7 +1341,7 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        ci_rerun, codeowners, default_protected_patterns, display_ref_name, is_legal_ref_name,
+        bans, ci_rerun, codeowners, default_protected_patterns, display_ref_name, is_legal_ref_name,
         long_body, matches_protected, merge_base_tips, missing_default_protection, overlay_tree,
         pr_base_tips, resolve_ref, routes_protected, v2, Ancestry, ConfigDoc, Event, EventKind,
         FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
@@ -1941,6 +1942,43 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CodeOwnerReviewInput {
+        /// The code owners file at the base tip; `null`: none there.
+        file: Option<String>,
+        /// The file could not be read.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unreadable: bool,
+        paths: Vec<String>,
+        reviews: Vec<v2::Review>,
+        memberships: Vec<v2::Membership>,
+        head_oid: String,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+        dismissed: std::collections::BTreeSet<String>,
+        pr_author: String,
+        policy: v2::Policy,
+        #[serde(default)]
+        resolved: std::collections::BTreeMap<String, Option<String>>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct BansInput {
+        owner: String,
+        #[serde(default)]
+        maintainers: std::collections::BTreeSet<String>,
+        bans: Vec<bans::Ban>,
+        thread_author: String,
+        #[serde(default)]
+        comments: Vec<v2::ThreadItem>,
+        #[serde(default)]
+        reviews: Vec<v2::ThreadItem>,
+        /// The thread's maintainer hides, as `hidden_items` folded them.
+        #[serde(default)]
+        hidden: v2::HiddenItems,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct RoleOracleInput {
         memberships: Vec<v2::Membership>,
@@ -2427,6 +2465,37 @@ mod tests {
                     "vector `{ctx}`"
                 );
             }
+            "code_owner_review" => {
+                let inp: CodeOwnerReviewInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let approvals = v2::count_approvals(
+                    &inp.reviews,
+                    &oracle,
+                    &inp.head_oid,
+                    &inp.dismissed,
+                    &inp.pr_author,
+                );
+                let parsed = inp.file.as_deref().map(codeowners::parse_code_owners);
+                let file = match (&parsed, inp.unreadable) {
+                    (_, true) => codeowners::OwnersFile::Unreadable,
+                    (Some(p), false) => codeowners::OwnersFile::Parsed(p),
+                    (None, false) => codeowners::OwnersFile::Absent,
+                };
+                let got = codeowners::code_owner_review(
+                    file,
+                    &inp.paths,
+                    &approvals,
+                    &oracle,
+                    &inp.policy,
+                    &inp.resolved,
+                    &inp.pr_author,
+                );
+                assert_eq!(
+                    got,
+                    expected::<codeowners::CodeOwnerStatus>(v),
+                    "vector `{ctx}`"
+                );
+            }
             other => panic!("vector `{ctx}`: not a code owners case `{other}`"),
         }
     }
@@ -2740,7 +2809,35 @@ mod tests {
             "repo_name" => run_repo_name_case(v),
             "webhook_url" => run_webhook_url_case(v),
             "role_oracle" => run_role_oracle(v),
-            "code_owners" | "code_owner_requests" => run_code_owners_case(v),
+            "code_owners" | "code_owner_requests" | "code_owner_review" => {
+                run_code_owners_case(v);
+            }
+            "bans" => {
+                let inp: BansInput = input(v);
+                let scope = bans::BanScope {
+                    owner: inp.owner,
+                    maintainers: inp.maintainers,
+                };
+                let standing = bans::standing_bans(&inp.bans, &scope);
+                let got = serde_json::json!({
+                    "banned": standing
+                        .iter()
+                        .map(|(who, b)| (who.clone(), serde_json::json!(b.id)))
+                        .collect::<serde_json::Map<_, _>>(),
+                    "reasons": standing
+                        .iter()
+                        .map(|(who, b)| (who.clone(), serde_json::json!(bans::ban_reason_label(b.reason))))
+                        .collect::<serde_json::Map<_, _>>(),
+                    "hidden": bans::apply_bans(
+                        inp.hidden,
+                        &standing,
+                        &inp.thread_author,
+                        &inp.comments,
+                        &inp.reviews,
+                    ),
+                });
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
             | "linked_issues" => run_review_case(v),
             "checks" | "thread_meta" | "pinned" | "milestones" | "trending" | "hidden_items" => {

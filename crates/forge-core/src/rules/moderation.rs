@@ -83,6 +83,8 @@ pub enum HiddenVia {
     Item,
     /// An inline comment of a hidden review.
     Review,
+    /// Its writer is banned from the repo ([`super::bans`]): `event_id` is the ban's `$id`.
+    Ban,
 }
 
 /// A standing hide.
@@ -97,8 +99,12 @@ pub struct Hidden {
     pub at: u64,
     /// The deciding event's `$id`.
     pub event_id: String,
-    /// The item's own hide, or its review's.
+    /// The item's own hide, its review's, or its writer's ban.
     pub via: HiddenVia,
+    /// A ban's `reason` code ([`super::bans::ban_reason_label`]; 0 none); only with
+    /// [`HiddenVia::Ban`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ban_reason: Option<u8>,
 }
 
 /// What a reader collapses in one issue or PR.
@@ -180,6 +186,7 @@ pub fn hidden_items(
             at: e.created_at,
             event_id: e.id.clone(),
             via: HiddenVia::Item,
+            ban_reason: None,
         };
         match key {
             None => out.thread = Some(hidden),
