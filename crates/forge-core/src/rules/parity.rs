@@ -44,6 +44,10 @@ pub struct CheckRunRow {
     pub reporter: String,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
+    /// Consensus `$updatedAt` (ms): when the run was last replaced (its status moving on).
+    /// Absent: never replaced, or not read (the merge audit then takes `created_at`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<u64>,
 }
 
 /// What a branch `policy` says about checks.
@@ -729,6 +733,7 @@ mod tests {
 
     fn run(id: &str, name: &str, reporter: &str, at: u64, conclusion: &str) -> CheckRunRow {
         CheckRunRow {
+            updated_at: None,
             id: id.into(),
             head_oid: HEAD.into(),
             name: name.into(),

@@ -33,6 +33,8 @@ export interface CheckRunRow {
   /** `$ownerId`. */
   readonly reporter: string
   readonly createdAt: number
+  /** `$updatedAt`: when the run was last replaced. Absent: never replaced, or not read. */
+  readonly updatedAt?: number
 }
 
 /** What a branch `policy` says about checks. */

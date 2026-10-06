@@ -275,6 +275,7 @@ export async function readCheckRuns(sdk: EvoSDK, repo: RepoRef, headOid: string,
       conclusion: str(d, 'conclusion') || null,
       reporter: str(d, '$ownerId'),
       createdAt: num(d, '$createdAt'),
+      ...(num(d, '$updatedAt') > 0 ? { updatedAt: num(d, '$updatedAt') } : {}),
     })),
     runners,
   }

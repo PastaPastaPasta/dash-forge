@@ -4414,6 +4414,7 @@ pub(crate) mod tests {
                 conclusion: conclusion.map(Into::into),
                 reporter: by.into(),
                 created_at: at,
+                updated_at: None,
             };
         let oracle = RoleOracle::new(vec![Membership {
             identity: "m".into(),

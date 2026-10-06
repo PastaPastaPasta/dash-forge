@@ -107,7 +107,7 @@ pub struct MergeAuditInput {
     /// The PR's review dismissals.
     #[serde(default)]
     pub dismissals: Vec<DismissalAt>,
-    /// The check runs on `merge_head`; `None` when they were not read.
+    /// The check runs on `merge_head` (with `updated_at`); `None` when they were not read.
     #[serde(default)]
     pub runs: Option<Vec<CheckRunRow>>,
     /// The repository's current runners.
@@ -217,6 +217,24 @@ fn approvals_at(input: &MergeAuditInput, then: &RoleOracle, policy: &Policy) -> 
     meets_policy(&counted, then, policy)
 }
 
+/// The check runs as they stood at the merge `at`: those created no later, each completed run
+/// keeping its conclusion only when it completed no later (by `updated_at`, else `created_at`);
+/// one that completed after the merge was still running then. A run is replaced as its status
+/// moves on, so its current conclusion alone says nothing about the merge.
+fn runs_at(runs: &[CheckRunRow], at: u64) -> Vec<CheckRunRow> {
+    runs.iter()
+        .filter(|r| r.created_at <= at)
+        .map(|r| {
+            let mut r = r.clone();
+            if r.status == "completed" && r.updated_at.unwrap_or(r.created_at) > at {
+                r.status = "in_progress".into();
+                r.conclusion = None;
+            }
+            r
+        })
+        .collect()
+}
+
 /// The first bypass recorded for this merge: only a maintainer's record naming the merge's
 /// commit counts (the merge box and `dg` write it right after the merge).
 fn recorded_bypass(input: &MergeAuditInput, oracle: &RoleOracle) -> Option<BypassEvent> {
@@ -261,11 +279,7 @@ pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
         .is_some_and(|p| p.require_checks || p.required_checks.iter().any(|n| !n.is_empty()));
     let checks = match (&policy, &input.runs) {
         (Some(policy), Some(runs)) if checks_required => {
-            let runs: Vec<CheckRunRow> = runs
-                .iter()
-                .filter(|r| r.created_at <= at)
-                .cloned()
-                .collect();
+            let runs = runs_at(runs, at);
             Some(checks_state(
                 &runs,
                 &input.merge_head,
