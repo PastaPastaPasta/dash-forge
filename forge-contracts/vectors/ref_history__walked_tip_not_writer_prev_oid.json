@@ -1,6 +1,6 @@
 {
   "name": "walked_tip_not_writer_prev_oid",
-  "description": "A pusher names an ancestor of its new tip as prevOid (not the ref's tip) without forcing: it supersedes no live head (it neither builds on nor contains A), so it reads diverged, as the fold reads the ref, never as a fast-forward.",
+  "description": "A pusher names an ancestor of its new tip as prevOid (not the ref's tip) without forcing: it supersedes no live head (it does not build on A and is not forced), so it reads diverged, as the fold reads the ref, never as a fast-forward.",
   "case": "ref_history",
   "input": {
     "refName": "refs/heads/main",
