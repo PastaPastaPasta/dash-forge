@@ -1341,10 +1341,11 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        bans, ci_rerun, codeowners, default_protected_patterns, display_ref_name, is_legal_ref_name,
-        long_body, matches_protected, merge_base_tips, missing_default_protection, overlay_tree,
-        pr_base_tips, resolve_ref, routes_protected, v2, Ancestry, ConfigDoc, Event, EventKind,
-        FlatIndex, IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
+        bans, ci_rerun, codeowners, default_protected_patterns, display_ref_name,
+        is_legal_ref_name, long_body, matches_protected, merge_base_tips,
+        missing_default_protection, overlay_tree, pr_base_tips, resolve_ref, routes_protected, v2,
+        Ancestry, ConfigDoc, Event, EventKind, FlatIndex, IssueState, MergeBaseTips, PrState,
+        RefState, RefUpdate, TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
