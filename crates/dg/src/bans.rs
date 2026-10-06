@@ -147,8 +147,13 @@ pub async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             } else {
                 "  (not counted: its writer is no longer a maintainer, or it bans one)"
             };
+            let decides = if standing.get(&b.identity).is_some_and(|d| d.id == b.id) {
+                "  (decides)"
+            } else {
+                ""
+            };
             println!(
-                "{}  banned by {} on {}{}{note}",
+                "{}  banned by {} on {}{}{decides}{note}",
                 b.identity,
                 b.by,
                 crate::cost::format_utc(b.created_at),

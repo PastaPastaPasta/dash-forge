@@ -317,6 +317,16 @@ pub async fn request(
     out
 }
 
+/// The paths the PR changes, for the merge rule: from the real merge base only. Without one
+/// (a first-parent fallback could miss owned files) it is an error, which the rule reads as
+/// unreadable (fail closed).
+fn owned_changes(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
+    git::git(dir, &["merge-base", base, head], &[]).context(
+        "the head and the base branch share no history, so the changed files cannot be listed",
+    )?;
+    changed_paths(dir, base, head)
+}
+
 /// Where a PR stands against its policy's `requireCodeOwners` (UPDATE-1): the shared rule
 /// [`code_owner_review`] over the code owners file at the base tip and the paths the PR changes.
 /// Both commits come from the clone `dg` runs in when it has them, else a scratch fetch. A read
@@ -374,12 +384,7 @@ async fn status_inner(
         scratch.path()
     };
     let parsed = read_code_owners(dir, &base_tip)?;
-    // The merge rule needs the real merge base: a first-parent fallback could miss owned files,
-    // so without one the file counts as unreadable (fail closed).
-    git::git(dir, &["merge-base", &base_tip, &view.head], &[]).context(
-        "the head and the base branch share no history, so the changed files cannot be listed",
-    )?;
-    let paths = changed_paths(dir, &base_tip, &view.head)?;
+    let paths = owned_changes(dir, &base_tip, &view.head)?;
     let collab = s.collab();
     let oracle = collab.member_oracle(handle).await?;
     let (approvals, _) = collab.approvals_with(handle, view, &oracle).await?;
@@ -423,7 +428,10 @@ pub fn code_owner_rules(status: &CodeOwnerStatus) -> Vec<String> {
         return Vec::new();
     }
     if status.unreadable {
-        return vec!["code owner approval: the code owners file could not be read".to_string()];
+        return vec![
+            "code owner approval: the code owners or the changed files could not be read"
+                .to_string(),
+        ];
     }
     status
         .pending
@@ -463,6 +471,35 @@ mod tests {
         g(&["commit", "-q", "-m", "c"]);
         let tip = g(&["rev-parse", "HEAD"]);
         (dir, tip)
+    }
+
+    #[test]
+    fn the_merge_rule_needs_a_merge_base() {
+        let (dir, base) = repo_with(&[("a.txt", "1")]);
+        let p = dir.path();
+        let g = |args: &[&str]| git::git(p, args, &[]).unwrap();
+        // A head on a history of its own: no merge base with `base`.
+        g(&["checkout", "-q", "--orphan", "other"]);
+        std::fs::write(p.join("b.txt"), "2").unwrap();
+        g(&["add", "b.txt"]);
+        g(&["commit", "-q", "-m", "other root"]);
+        let head = g(&["rev-parse", "HEAD"]);
+        assert!(owned_changes(p, &base, &head).is_err());
+        // The same history: the changed files from the merge base.
+        g(&["checkout", "-q", "-b", "next", &base]);
+        std::fs::write(p.join("c.txt"), "3").unwrap();
+        g(&["add", "c.txt"]);
+        g(&["commit", "-q", "-m", "next"]);
+        let next = g(&["rev-parse", "HEAD"]);
+        assert_eq!(owned_changes(p, &base, &next).unwrap(), ["c.txt"]);
+        assert_eq!(
+            code_owner_rules(&CodeOwnerStatus {
+                met: false,
+                unreadable: true,
+                pending: Vec::new()
+            }),
+            ["code owner approval: the code owners or the changed files could not be read"]
+        );
     }
 
     #[test]

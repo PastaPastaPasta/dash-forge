@@ -12,7 +12,7 @@ import { useState } from 'react'
 import { Ban as BanIcon } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
-import { repoContractIds, repoKey, resolveOwner } from '@/lib/repo'
+import { readMembershipsCached, repoContractIds, repoKey, resolveOwner } from '@/lib/repo'
 import { banIdentity, countingBansOf, DOC_BAN, invalidateBans, liftBan, readBanState } from '@/lib/repo/bans'
 import { contractHasType } from '@/lib/repo/contract-shape'
 import { shortId } from '@/lib/utils'
@@ -64,7 +64,10 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
       const id = await resolveOwner(sdk, who.trim().replace(/^@/, ''))
       if (id === null) return setProblem(`No identity or DPNS name ${who.trim()}.`)
       if (id === repo.ownerId) return setProblem("The repository's owner can't be banned.")
-      if ((bans.data?.members ?? []).some((m) => m.identity === id && m.role === 'maintainer')) return setProblem("A maintainer can't be banned. Remove them as a maintainer first.")
+      // Read now, not from the list's state (which holds no members until there is a ban).
+      const members = await readMembershipsCached(sdk, repo, network).catch(() => null)
+      if (members === null) return setProblem("Couldn't read the repository's members to check who this is. Try again.")
+      if (members.some((m) => m.identity === id && m.role === 'maintainer')) return setProblem("A maintainer can't be banned. Remove them as a maintainer first.")
       if (mine(bans.data?.raw ?? [], id) !== undefined) return setProblem('You have already banned this identity.')
       setBanning({ id, label: who.trim() })
     } finally {
@@ -101,6 +104,8 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
         </p>
         {bans.error ? (
           <ErrorState message={bans.error} onRetry={bans.reload} />
+        ) : state?.membersUnread === true ? (
+          <ErrorState message="The repository's members could not be read, so the bans could not be checked." onRetry={bans.reload} />
         ) : state === null ? (
           <LoadingBlock label="Reading bans" />
         ) : rows.length === 0 ? (
@@ -149,7 +154,9 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
             })}
           </ul>
         )}
-        {maintainer && supported.data === false ? (
+        {maintainer && supported.error !== null ? (
+          <ErrorState message={supported.error} onRetry={supported.reload} />
+        ) : maintainer && supported.data === false ? (
           <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="bans-unsupported">
             This network&apos;s Forge doesn&apos;t support bans yet.
           </p>

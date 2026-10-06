@@ -678,7 +678,7 @@ export async function loadPullThread(
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
   const proved = hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false)
   const [approvals, verdicts, hidesAreProved, bans] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead, proved, readBans(sdk, repo)])
-  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews, bans: standingOf(repo, bans, members ?? []) })
+  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews, ...(members !== null ? { bans: standingOf(repo, bans, members) } : {}) })
   return {
     moderation: foldModeration(modInput),
     moderationInput: modInput,

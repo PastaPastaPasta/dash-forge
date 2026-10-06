@@ -567,7 +567,7 @@ describe('code owner rules (requireCodeOwners)', () => {
     expect(codeOwnerRules(null)).toEqual([])
     expect(codeOwnerRules({ met: true, unreadable: false, pending: [] })).toEqual([])
     expect(codeOwnerRules('unknown')).toEqual(['code owner approval: not read yet'])
-    expect(codeOwnerRules({ met: false, unreadable: true, pending: [] })).toEqual(['code owner approval: the code owners file could not be read'])
+    expect(codeOwnerRules({ met: false, unreadable: true, pending: [] })).toEqual(['code owner approval: the code owners or the changed files could not be read'])
     const pending = { met: false, unreadable: false, pending: [{ path: 'src/a.rs', owners: ['@alice'], approvable: true }, { path: 'ops/x', owners: ['@org/t'], approvable: false }] }
     expect(unmetRules(null, null, false, pending)).toEqual(['code owner approval: src/a.rs (@alice)', 'code owner approval: ops/x (@org/t; none of them can approve)'])
   })

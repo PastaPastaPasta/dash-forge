@@ -75,6 +75,8 @@ export interface BanState {
   readonly raw: readonly Ban[]
   readonly members: readonly Membership[]
   readonly standing: ReadonlyMap<string, Ban>
+  /** There are bans, but the members could not be read: none is applied (`standing` empty). */
+  readonly membersUnread?: true
 }
 
 /** {@link readStandingBans} with what it was judged from (Settings → Bans shows every writer). */
@@ -82,7 +84,7 @@ export async function readBanState(sdk: EvoSDK, repo: RepoRef, network: Network,
   const raw = await readBans(sdk, repo)
   if (raw.length === 0) return { raw, members: members ?? [], standing: new Map() }
   const known = members ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
-  if (known === null) return { raw, members: [], standing: new Map() }
+  if (known === null) return { raw, members: [], standing: new Map(), membersUnread: true }
   return { raw, members: known, standing: standingOf(repo, raw, known) }
 }
 

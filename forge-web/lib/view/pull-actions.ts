@@ -141,7 +141,7 @@ export function unmetRules(
 export function codeOwnerRules(status: CodeOwnerStatus | null | 'unknown'): string[] {
   if (status === null || (status !== 'unknown' && status.met)) return []
   if (status === 'unknown') return ['code owner approval: not read yet']
-  if (status.unreadable) return ['code owner approval: the code owners file could not be read']
+  if (status.unreadable) return ['code owner approval: the code owners or the changed files could not be read']
   return status.pending.map((p) => `code owner approval: ${p.path} (${p.owners.join(' ')}${p.approvable ? '' : '; none of them can approve'})`)
 }
 

@@ -267,17 +267,45 @@ export function useCodeOwnerStatus({
   const names = useMemo(() => (file.data == null || paths === null ? [] : ownersOfPaths(file.data.owners, paths).filter((t) => ownerKind(t) === 'name')), [file.data, paths])
   const resolved = useAsync(() => resolveDpnsIds(sdk!, names, network), [names.join('\n'), network], { enabled: on && ready && sdk !== null && names.length > 0 })
   if (!on || policy === null) return null
-  if (file.error !== null || changesFailed || resolved.error !== null) return { met: false, unreadable: true, pending: [] }
-  if (!file.settled || paths === null || approvals === null || (names.length > 0 && resolved.data === null)) return 'unknown'
-  const owners = file.data
-  return codeOwnerReview(
-    owners == null ? { kind: 'absent' } : { kind: 'parsed', owners: owners.owners },
-    paths,
-    approvals,
-    new RoleOracle(members),
+  return codeOwnerVerdict({
     policy,
-    resolved.data ?? new Map(),
+    file: file.error !== null ? 'failed' : !file.settled ? 'reading' : (file.data ?? null),
+    paths,
+    changesFailed,
+    approvals,
+    members,
     author,
+    names,
+    resolved: resolved.error !== null ? 'failed' : resolved.data,
+  })
+}
+
+/**
+ * {@link useCodeOwnerStatus}'s decision from what it read (pure, for tests): unreadable when the
+ * file, the changed files or the owners' names could not be read; `'unknown'` while any is still
+ * being read; else the shared rule.
+ */
+export function codeOwnerVerdict(i: {
+  readonly policy: Policy
+  readonly file: CodeOwnersFile | null | 'reading' | 'failed'
+  readonly paths: readonly string[] | null
+  readonly changesFailed: boolean
+  readonly approvals: Approvals | null
+  readonly members: readonly Membership[]
+  readonly author: string
+  readonly names: readonly string[]
+  readonly resolved: ReadonlyMap<string, string | null> | null | 'failed'
+}): CodeOwnerStatus | 'unknown' {
+  if (i.file === 'failed' || i.changesFailed || i.resolved === 'failed') return { met: false, unreadable: true, pending: [] }
+  if (i.file === 'reading' || i.paths === null || i.approvals === null || (i.names.length > 0 && i.resolved === null)) return 'unknown'
+  return codeOwnerReview(
+    i.file === null ? { kind: 'absent' } : { kind: 'parsed', owners: i.file.owners },
+    i.paths,
+    i.approvals,
+    new RoleOracle(i.members),
+    i.policy,
+    i.resolved ?? new Map(),
+    i.author,
   )
 }
 
