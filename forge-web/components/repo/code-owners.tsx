@@ -22,7 +22,21 @@ import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useSdk } from '@/hooks/use-sdk'
 import { readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
-import { codeOwnerRequests, decidingRules, ownerKind, ownersOfPaths, RoleOracle, tokenIdentity, type OwnerRequests, type SkipReason } from '@/lib/rules/v2'
+import {
+  codeOwnerRequests,
+  codeOwnerReview,
+  decidingRules,
+  ownerKind,
+  ownersOfPaths,
+  RoleOracle,
+  tokenIdentity,
+  type Approvals,
+  type CodeOwnerStatus,
+  type Membership,
+  type OwnerRequests,
+  type Policy,
+  type SkipReason,
+} from '@/lib/rules/v2'
 import { changedPaths, readCodeOwners, type CodeOwnersFile } from '@/lib/view/codeowners'
 import type { FileChange } from '@/lib/view/commit-log'
 import { resolveDpnsIds, sameDpnsName } from '@/lib/view/dpns'
@@ -199,6 +213,57 @@ export function useOwnerRequests({
     loading: file.loading || (waitingForChanges && changesFailed === null) || (tokens.length > 0 && requests.data === null && requests.error === null),
     error: file.error ?? (waitingForChanges && changesFailed !== null ? `the changed files could not be listed: ${changesFailed}` : null) ?? requests.error,
   }
+}
+
+/**
+ * Where an open PR stands against its policy's `requireCodeOwners` (the shared `codeOwnerReview`):
+ * null when the policy does not require it; `'unknown'` until the base's code owners file and the
+ * changed files are read (the merge box then stays closed, as for unread checks). It reads only
+ * what the PR page holds already (the base through the diff's reader, the changed files), plus one
+ * DPNS read for the owners' names. A file that cannot be read is unreadable: the rule fails closed.
+ */
+export function useCodeOwnerStatus({
+  repo,
+  policy,
+  reader,
+  readerKey,
+  baseOid,
+  changes,
+  changesFailed,
+  approvals,
+  members,
+  author,
+}: {
+  repo: RepoRef
+  policy: Policy | null
+  reader: ObjectReader | null
+  readerKey: string
+  baseOid: string
+  changes: readonly FileChange[] | null
+  changesFailed: boolean
+  approvals: Approvals | null
+  members: readonly Membership[]
+  author: string
+}): CodeOwnerStatus | 'unknown' | null {
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const on = policy?.requireCodeOwners === true
+  const file = useCodeOwners(on ? reader : null, baseOid, readerKey)
+  const paths = useMemo(() => (changes === null ? null : changedPaths(changes)), [changes])
+  const names = useMemo(() => (file.data == null || paths === null ? [] : ownersOfPaths(file.data.owners, paths).filter((t) => ownerKind(t) === 'name')), [file.data, paths])
+  const resolved = useAsync(() => resolveDpnsIds(sdk!, names, network), [names.join('\n'), network], { enabled: on && ready && sdk !== null && names.length > 0 })
+  if (!on || policy === null) return null
+  if (file.error !== null || changesFailed) return { met: false, unreadable: true, pending: [] }
+  if (!file.settled || paths === null || approvals === null || (names.length > 0 && resolved.data === null)) return 'unknown'
+  const owners = file.data
+  return codeOwnerReview(
+    owners == null ? { kind: 'absent' } : { kind: 'parsed', owners: owners.owners },
+    paths,
+    approvals,
+    new RoleOracle(members),
+    policy,
+    resolved.data ?? new Map(),
+    author,
+  )
 }
 
 const SKIP_WHY: Readonly<Record<SkipReason, string>> = {

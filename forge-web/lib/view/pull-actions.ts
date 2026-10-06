@@ -30,7 +30,7 @@
 
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
 import { capabilitiesOf, roleLimit } from '../rules/roles'
-import { linkedIssues, type Approvals, type ChecksState, type Policy, type PolicyStatus } from '../rules/v2'
+import { linkedIssues, type Approvals, type ChecksState, type CodeOwnerStatus, type Policy, type PolicyStatus } from '../rules/v2'
 import type { PullView } from '../repo'
 import type { ProvedVerdicts } from '../repo/verdicts'
 import { branchName, plural } from './format'
@@ -94,6 +94,11 @@ export interface PullActionInputs {
    * client rule like the approvals.
    */
   readonly checks?: ChecksState | null | 'unknown'
+  /**
+   * Where the PR stands against `requireCodeOwners` (`codeOwnerReview`); null or absent: not
+   * required; `'unknown'`: not read yet (the merge waits, as for unread checks).
+   */
+  readonly codeOwners?: CodeOwnerStatus | null | 'unknown'
 }
 
 /** The branch-rule line for standing requests for changes that block a merge. Parity: `dg`'s `changes_requested_rule`. */
@@ -109,7 +114,12 @@ export const POLICY_UNREAD = 'the branch policy could not be read'
  * `unmet_rules`): "required approvals: 0 of 1 (maintainers only)", "required check `build`:
  * missing". Empty when every rule is met or there is no policy. Unreadable counts as unmet.
  */
-export function unmetRules(policy: PolicyStatus | null | 'unknown', checks: ChecksState | null | 'unknown' = null, maintainersOnly = false): string[] {
+export function unmetRules(
+  policy: PolicyStatus | null | 'unknown',
+  checks: ChecksState | null | 'unknown' = null,
+  maintainersOnly = false,
+  codeOwners: CodeOwnerStatus | null | 'unknown' = null,
+): string[] {
   if (policy === 'unknown') return [POLICY_UNREAD]
   const out: string[] = []
   if (policy !== null && policy.have < policy.need) out.push(`required approvals: ${policy.have} of ${policy.need}${maintainersOnly ? ' (maintainers only)' : ''}`)
@@ -120,7 +130,19 @@ export function unmetRules(policy: PolicyStatus | null | 'unknown', checks: Chec
     if (checks.required.length === 0) out.push('required checks: none reported on the head')
     for (const c of checks.required) if (c.state !== 'passed') out.push(`required check \`${c.name}\`: ${c.state}`)
   }
+  out.push(...codeOwnerRules(codeOwners))
   return out
+}
+
+/**
+ * The branch-rule lines `requireCodeOwners` leaves unmet, one per file ("code owner approval:
+ * src/a.rs (@alice)"), as `dg pr merge` names them; empty when met or not required.
+ */
+export function codeOwnerRules(status: CodeOwnerStatus | null | 'unknown'): string[] {
+  if (status === null || (status !== 'unknown' && status.met)) return []
+  if (status === 'unknown') return ['code owner approval: not read yet']
+  if (status.unreadable) return ['code owner approval: the code owners file could not be read']
+  return status.pending.map((p) => `code owner approval: ${p.path} (${p.owners.join(' ')}${p.approvable ? '' : '; none of them can approve'})`)
 }
 
 /**
@@ -394,7 +416,7 @@ export function verdictSummary(
 }
 
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */
-export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null, maintainersOnly = false, checks = null }: PullActionInputs): PullActions {
+export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null, maintainersOnly = false, checks = null, codeOwners = null }: PullActionInputs): PullActions {
   const known = holdings !== null && holdings !== 'loading'
   const maintainer = known && holdings.maintain
   // Merge is role 1's (a maintainer or writer); close and reopen also a triage member's.
@@ -407,7 +429,7 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
   const base = pull.mergeBaseRefName ?? ''
   const baseProtected = base !== '' && matchesProtected(base, protectedPatterns)
   const policyUnknown = policy === 'unknown'
-  const unmet = unmetRules(policy, checks, maintainersOnly)
+  const unmet = unmetRules(policy, checks, maintainersOnly, codeOwners)
   const policyUnmet = unmet.length > 0
 
   const eligible = actionable && open && viewer !== null && holder && pull.headOid !== ''

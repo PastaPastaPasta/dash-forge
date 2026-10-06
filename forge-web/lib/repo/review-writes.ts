@@ -42,6 +42,7 @@ import { bodyRoom, longBodyField } from './long-body'
 import { refitLongBodyField } from '../rules/long-body'
 import { bypassValue } from '../view/pull-actions'
 import { repoSource } from './source'
+import { contractHasProperty } from './contract-shape'
 import { admitAll, gateFor } from './private-content'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
 import type { PrivateSession } from './private-session'
@@ -613,6 +614,8 @@ export function policyData(policy: Policy): Record<string, unknown> {
     mergeMethods: methods,
     ...(checks.length > 0 ? { requiredChecks: [...checks] } : {}),
     ...(sources.length > 0 ? { requiredCheckSources: sources.map((id) => decodeIdentifier(id)) } : {}),
+    // Written only when on: off is the same as absent, and a contract without the field takes it.
+    ...(policy.requireCodeOwners === true ? { requireCodeOwners: true } : {}),
   }
 }
 
@@ -629,6 +632,9 @@ export async function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, pol
     if (gone.length > 0) {
       throw new Error(`a required check's pinned source (${gone.join(', ')}) is no longer a runner or maintainer of this repo; pick another source for that check, or stop pinning sources, before saving`)
     }
+  }
+  if (policy.requireCodeOwners === true && !(await contractHasProperty(sdk, repo.forge.community, DOC.policy, 'requireCodeOwners'))) {
+    throw new Error("This network's Forge doesn't support requiring code owner approval yet.")
   }
   return write(sdk, auth, repo, DOC.policy, data, intent)
 }

@@ -136,7 +136,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
-import { CodeOwnersProvider } from '@/components/repo/code-owners'
+import { CodeOwnersProvider, useCodeOwnerStatus } from '@/components/repo/code-owners'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
 import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/view/upstream'
@@ -563,6 +563,18 @@ function PullPage({
       : checks.data === null || !membersKnown
         ? ('unknown' as const)
         : checksState(checks.data.rows, pull.headOid, roleOracle, checks.data.runners, policyNow)
+  const codeOwners = useCodeOwnerStatus({
+    repo,
+    policy: open ? policyNow : null,
+    reader: cmp?.sides.base ?? null,
+    readerKey: comparison.sidesKey,
+    baseOid: comparison.spec.baseTipOid || cmp?.comparedBaseOid || '',
+    changes: cmp?.changes ?? null,
+    changesFailed: comparison.error !== null,
+    approvals: thread.approvals,
+    members: thread.members,
+    author: pull.author,
+  })
   const actions = pullActions({
     pull,
     viewer,
@@ -571,6 +583,7 @@ function PullPage({
     policy: rules.status,
     maintainersOnly: policyNow?.approverRole === 1,
     checks: requiredChecks,
+    codeOwners,
   })
   // "Mark as merged (done elsewhere)" is offered on a ready PR whose head is on the base already.
   const showMarkMerged = actions.canMarkMerged && !pull.state.draft

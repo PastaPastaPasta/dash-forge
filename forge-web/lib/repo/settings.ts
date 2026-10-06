@@ -313,6 +313,8 @@ export function toPolicy(doc: PlainDocument): Policy {
     ...(checks.length > 0 ? { requiredChecks: checks } : {}),
     // Kept only when paired with the names one for one (the contract's rule), else ignored.
     ...(sources.length > 0 && sources.length === checks.length ? { requiredCheckSources: sources } : {}),
+    // UPDATE-1; a version-1 policy has none (off).
+    ...(doc['requireCodeOwners'] === true ? { requireCodeOwners: true } : {}),
   }
 }
 

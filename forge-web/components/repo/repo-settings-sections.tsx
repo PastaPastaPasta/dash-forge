@@ -749,6 +749,20 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
             <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={shown.requireChecks === true} onChange={(e) => set({ requireChecks: e.target.checked })} />
             Require passing checks (every check reported on the head)
           </label>
+          <label className="flex items-start gap-2 text-dense coarse:min-h-11">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-forge-700"
+              checked={shown.requireCodeOwners === true}
+              onChange={(e) => set({ requireCodeOwners: e.target.checked })}
+            />
+            <span>
+              Require approval from code owners
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
+                Each changed file that CODEOWNERS on the base branch assigns needs an approval from one of its owners.
+              </span>
+            </span>
+          </label>
           <RequiredChecksEditor draft={shownChecks} onChange={setChecksDraft} problems={problems} sources={pinning ? sources : null} maintainer={maintainer} />
           {maintainer ? (
             <div className="flex flex-wrap items-center gap-2">
@@ -771,7 +785,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
         open={confirming}
         onClose={() => setConfirming(false)}
         title="Save the branch policy"
-        description={`New policy: ${plural(wanted.requiredApprovals, 'required approval')}${(wanted.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}${checksClause}. It replaces the current one. Maintainers can override it when merging.`}
+        description={`New policy: ${plural(wanted.requiredApprovals, 'required approval')}${(wanted.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}${checksClause}${wanted.requireCodeOwners === true ? ', code owner approval' : ''}. It replaces the current one. Maintainers can override it when merging.`}
         cost={cost}
         confirmLabel="Sign & save"
         onConfirm={run}
