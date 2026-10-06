@@ -299,6 +299,11 @@ export const PACK_KIND = {
    * notes longer than its field, named by the field's trailer (`lib/rules/long-body.ts`).
    */
   LONG_BODY: 6,
+  /**
+   * An environment snapshot (`lib/env`): one environment's configuration and secrets, encrypted
+   * for Maintainers or Members, naming the snapshots it replaces in `supersedes`.
+   */
+  ENV_SNAPSHOT: 8,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 

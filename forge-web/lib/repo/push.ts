@@ -386,7 +386,7 @@ export async function writeRefUpdate(
   auth: WriteAuth,
   repo: RepoRef,
   input: RefUpdateInput,
-  options: { readonly intent?: string; readonly protectedPatterns?: readonly string[] } = {},
+  options: { readonly intent?: string; readonly protectedPatterns?: readonly string[] | null } = {},
 ): Promise<WriteResult & { readonly documentType: 'refUpdate' | 'protectedRefUpdate' }> {
   let data = refUpdateData(input)
   let documentType: 'refUpdate' | 'protectedRefUpdate'
@@ -399,8 +399,9 @@ export async function writeRefUpdate(
     options = { ...options, ...(options.intent !== undefined ? { intent: sealedIntent(options.intent, writer.keys) } : {}) }
   } else {
     // The complete config timeline's newest well-formed config: the one the rules apply (null:
-    // none readable yet).
-    const patterns = options.protectedPatterns ?? (await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? null
+    // none readable yet). A caller that just read it passes it on, `null` included.
+    const patterns =
+      options.protectedPatterns !== undefined ? options.protectedPatterns : ((await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? null)
     documentType = refUpdateType(input.refName, patterns, auth.identityId === repo.ownerId)
   }
   assertNoPlaintext(repo, documentType, data)

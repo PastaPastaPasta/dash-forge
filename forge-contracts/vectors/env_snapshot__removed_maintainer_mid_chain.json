@@ -1,0 +1,121 @@
+{
+  "name": "removed_maintainer_mid_chain",
+  "description": "carol, no longer a maintainer, saved s2; alice's later s3 names s2 and s1, so production has one head without following carol's link (links are read only from counted snapshots). staging's t3 named only carol's t2, so t1 and t3 are both heads: a conflict a maintainer resolves; it never falls back to t1 silently.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
+    ],
+    "manifests": [
+      {
+        "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "supersedes": [],
+        "height": 1000
+      },
+      {
+        "id": "Er6uxNJgJMF8qSCvVQRZvU5dX6WzPgpkwa4TgLkhrr6X",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "8bf4749b2aef75d0658aa2d606d6c4ff74fa1886c61362e079d9e556df9ce4ad",
+        "supersedes": [],
+        "height": 1001
+      },
+      {
+        "id": "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
+        "ownerId": "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+        "packHash": "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+        "supersedes": [
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "height": 2000
+      },
+      {
+        "id": "7xU1hvYL913Tgr1ihwL5fhfemZyYGmm8PewVdpLVNkzp",
+        "ownerId": "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+        "packHash": "1e2617354e1788273f902412012d424d1128a7f32e2624f9a8da1a0ff5eafdc0",
+        "supersedes": [
+          "8bf4749b2aef75d0658aa2d606d6c4ff74fa1886c61362e079d9e556df9ce4ad"
+        ],
+        "height": 2001
+      },
+      {
+        "id": "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde",
+        "supersedes": [
+          "938fc6b0528b2a5ec4d6ccd68ae17389eb4680e2aec21f729def78ca166d8d02",
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "height": 3000
+      },
+      {
+        "id": "9aMindf2rKUZzmpK8G3vXT18tE7auLEgGxTiNXu7W74b",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "91a7e269d661ff6bbc881b5df2b7d81ed5da3a999e6440120f391fa1089768f6",
+        "supersedes": [
+          "1e2617354e1788273f902412012d424d1128a7f32e2624f9a8da1a0ff5eafdc0"
+        ],
+        "height": 3001
+      }
+    ],
+    "opened": {
+      "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c": {
+        "env": "production"
+      },
+      "4adae6ce513173eb0e21f9b489aadbbe1edbd1084422a2bf5502c6cf0368dfde": {
+        "env": "production"
+      },
+      "8bf4749b2aef75d0658aa2d606d6c4ff74fa1886c61362e079d9e556df9ce4ad": {
+        "env": "staging"
+      },
+      "91a7e269d661ff6bbc881b5df2b7d81ed5da3a999e6440120f391fa1089768f6": {
+        "env": "staging"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [
+      {
+        "id": "69nwQcRyb76k5GnVoVKx1Nybrp3DGmxZhdstFuDd4rrc",
+        "reason": "notAMaintainer"
+      },
+      {
+        "id": "7xU1hvYL913Tgr1ihwL5fhfemZyYGmm8PewVdpLVNkzp",
+        "reason": "notAMaintainer"
+      }
+    ],
+    "environments": [
+      {
+        "env": "production",
+        "state": "current",
+        "heads": [
+          "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB"
+        ],
+        "snapshots": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+          "DacPxk532Epeh1Vv5BotLF46Zxtje5K6vJRjeZAx46iB"
+        ],
+        "ignoredNewer": []
+      },
+      {
+        "env": "staging",
+        "state": "conflict",
+        "heads": [
+          "Er6uxNJgJMF8qSCvVQRZvU5dX6WzPgpkwa4TgLkhrr6X",
+          "9aMindf2rKUZzmpK8G3vXT18tE7auLEgGxTiNXu7W74b"
+        ],
+        "snapshots": [
+          "Er6uxNJgJMF8qSCvVQRZvU5dX6WzPgpkwa4TgLkhrr6X",
+          "9aMindf2rKUZzmpK8G3vXT18tE7auLEgGxTiNXu7W74b"
+        ],
+        "ignoredNewer": [
+          "7xU1hvYL913Tgr1ihwL5fhfemZyYGmm8PewVdpLVNkzp"
+        ]
+      }
+    ],
+    "hidden": []
+  }
+}

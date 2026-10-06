@@ -1,0 +1,76 @@
+{
+  "name": "unauthorized_writer_ignored",
+  "description": "a role-1 writer (consensus admits their packManifest) posts a snapshot superseding production's head and a new staging: neither counts, whatever they would open to, because their owner is not a current maintainer; production stays at s1 and there is no fork. Readers are told a newer change was ignored (`ignoredNewer`), and never use it.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
+    ],
+    "manifests": [
+      {
+        "id": "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c",
+        "supersedes": [],
+        "height": 1000
+      },
+      {
+        "id": "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "packHash": "054525cf10e2e0e17d3c8cc2f6a8364019f25cf5d93049c7305a95bd3f2c99b6",
+        "supersedes": [
+          "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c"
+        ],
+        "height": 2000
+      },
+      {
+        "id": "BhZrYuaTJPDQcNGzfVmZZW1sDuWB843KA59w2mUrvZwH",
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "packHash": "9fe88e568c1a45875e2d72d8147d02b873c24fe58a33230799ec029d8f3f7a3f",
+        "supersedes": [],
+        "height": 2100
+      }
+    ],
+    "opened": {
+      "e7dc85899dfd6204b83e7df29013a28acc5a357a1449a4ecaa2f760c2d04957c": {
+        "env": "production"
+      },
+      "054525cf10e2e0e17d3c8cc2f6a8364019f25cf5d93049c7305a95bd3f2c99b6": {
+        "env": "production"
+      },
+      "9fe88e568c1a45875e2d72d8147d02b873c24fe58a33230799ec029d8f3f7a3f": {
+        "env": "staging"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [
+      {
+        "id": "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9",
+        "reason": "notAMaintainer"
+      },
+      {
+        "id": "BhZrYuaTJPDQcNGzfVmZZW1sDuWB843KA59w2mUrvZwH",
+        "reason": "notAMaintainer"
+      }
+    ],
+    "environments": [
+      {
+        "env": "production",
+        "state": "current",
+        "heads": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th"
+        ],
+        "snapshots": [
+          "4bpT4m73BCSS19kfJuVEfHTw3vmVbhj4wGDckeRoN6Th"
+        ],
+        "ignoredNewer": [
+          "6Fi5N8KeDZ1DsC4M8XKP4esmoDW3RKd1snUQ6dwNXuq9"
+        ]
+      }
+    ],
+    "hidden": []
+  }
+}

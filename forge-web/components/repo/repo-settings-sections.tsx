@@ -16,12 +16,14 @@
  *   as is; the description and topics are public by design (`private-repos.md` §7).
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Archive, Globe, GitBranch, Info, Lock, Plus, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isLive, plural } from '@/lib/view'
 import {
+  CONFIG_LAG_MS,
   DEFAULT_CONFIG,
+  MAX_PATTERN_CHARS,
   MAX_PROTECTED_PATTERNS,
   MERGE_METHODS,
   applyConfigChange,
@@ -37,6 +39,7 @@ import {
   previewConfig,
   previewRepoEdit,
   readTopicDocNames,
+  suggestionConfig,
   readConfig,
   readMembershipsCached,
   readPolicy,
@@ -536,29 +539,66 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
 /** Where a maintainer's "not now" on the protection suggestion is kept, per repo and browser. */
 const PROTECTION_DISMISSED = (repoId: string): string => `forge:protection-suggestion-dismissed:${repoId}`
 
+function readDismissed(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) !== null
+  } catch {
+    return false
+  }
+}
+
 /**
  * The one-click offer to complete the new-repository default (the default branch and every tag)
  * on a repo created before it, or one whose maintainers dropped it. Not offered on a fork or a
- * mirror (they follow their source, so they start unprotected), before the repo's config is
- * readable (its patterns are unknown), or once a maintainer dismissed it in this browser.
+ * mirror (they follow their source, so they start unprotected), while the repo's patterns are
+ * unknown (`suggestionConfig`), or once a maintainer dismissed it in this browser.
  */
 function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: ReturnType<typeof useConfigWrite> }): JSX.Element | null {
   const key = PROTECTION_DISMISSED(home.repo.repoId)
-  const [dismissed, setDismissed] = useState(() => typeof window !== 'undefined' && window.localStorage.getItem(key) !== null)
-  const missing = home.config === null ? [] : missingDefaultProtection(cfg.current.defaultBranch, cfg.current.protectedPatterns)
+  const [dismissed, setDismissed] = useState(() => typeof window !== 'undefined' && readDismissed(key))
+  const [now, setNow] = useState(() => Date.now())
+  // A page opened while a missing config may still be on its way looks again once it can't be.
+  const waitUntil = home.config === null ? home.v2.createdAt + CONFIG_LAG_MS + 1 : null
+  useEffect(() => {
+    if (waitUntil === null || waitUntil <= now) return
+    const t = window.setTimeout(() => setNow(Date.now()), waitUntil - now)
+    return () => window.clearTimeout(t)
+  }, [waitUntil, now])
+  const known = suggestionConfig({
+    config: home.config,
+    sealed: home.repo.visibility === 'private',
+    unlocked: home.private?.access === 'member',
+    repoDefaultBranch: home.defaultBranch,
+    repoCreatedAt: home.v2.createdAt,
+    now,
+  })
+  const missing = known === null ? [] : missingDefaultProtection(known.defaultBranch, known.protectedPatterns)
   if (missing.length === 0 || dismissed || home.v2.forkOf !== null || mirrorSourceOfRepo(home.v2, 'issue') !== null) return null
   const branch = missing.find((p) => p.startsWith('refs/heads/'))?.slice('refs/heads/'.length) ?? null
-  const tags = missing.some((p) => p.startsWith('refs/tags/'))
-  const what = branch !== null && tags ? `${branch} and tags` : (branch ?? 'tags')
   const exposure =
-    branch !== null && tags
+    branch !== null && missing.length > 1
       ? `Any writer can push to ${branch} and create or move tags that no pattern protects yet.`
       : branch !== null
         ? `Any writer can push to ${branch}.`
         : 'Any writer can create or move tags that no pattern protects yet.'
-  const tooMany = patternsProblem([...cfg.current.protectedPatterns, ...missing])
+  // What the button adds: a branch whose pattern would pass the limit is left out, its tags not.
+  const tooLong = missing.some((p) => [...p].length > MAX_PATTERN_CHARS)
+  const offer = missing.filter((p) => [...p].length <= MAX_PATTERN_CHARS)
+  const offerBranch = offer.some((p) => p.startsWith('refs/heads/')) ? branch : null
+  const offerTags = offer.some((p) => p.startsWith('refs/tags/'))
+  const what = offerBranch !== null && offerTags ? `${offerBranch} and tags` : (offerBranch ?? 'tags')
+  const full = offer.length === 0 ? null : patternsProblem([...(known?.protectedPatterns ?? []), ...offer])
+  const note = [tooLong ? `${branch} is too long to protect by name.` : null, full !== null ? `${full} Remove one to make room.` : null]
+    .filter((x) => x !== null)
+    .join(' ')
+  // With no config yet, the first one keeps the branch readers already take as the default.
+  const change = { addPatterns: offer, ...(home.config === null && known !== null ? { defaultBranch: known.defaultBranch } : {}) }
   const dismiss = (): void => {
-    window.localStorage.setItem(key, '1')
+    try {
+      window.localStorage.setItem(key, '1')
+    } catch {
+      // Storage blocked: the dismissal lasts until the page reloads.
+    }
     setDismissed(true)
   }
   return (
@@ -569,14 +609,14 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
     >
       <p className="flex-1 text-dense text-anvil-700 dark:text-anvil-200">
         {exposure} New repositories protect the default branch and every tag.
-        {tooMany !== null ? ` ${tooMany} Remove one to make room.` : null}
+        {note !== '' ? ` ${note}` : null}
       </p>
       <div className="flex shrink-0 items-center gap-1.5">
         {cfg.sealed ? (
           <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
             Run <span className="break-all font-mono">dg repo protect defaults {home.repo.ownerId}/{home.repo.name}</span>
           </p>
-        ) : tooMany === null ? (
+        ) : offer.length > 0 && full === null ? (
           <Button
             size="sm"
             variant="primary"
@@ -584,10 +624,10 @@ function DefaultProtectionSuggestion({ home, cfg }: { home: RepoHome; cfg: Retur
             onClick={() =>
               cfg.ask({
                 title: `Protect ${what}`,
-                description: `Appends a config adding ${missing.join(' and ')}. From then on only maintainers can ${
-                  branch !== null && tags ? `push to ${branch} or create and move tags` : branch !== null ? `push to ${branch}` : 'create and move tags'
+                description: `Appends a config adding ${offer.join(' and ')}. From then on only maintainers can ${
+                  offerBranch !== null && offerTags ? `push to ${offerBranch} or create and move tags` : offerBranch !== null ? `push to ${offerBranch}` : 'create and move tags'
                 }; a writer's push there is refused.`,
-                change: { addPatterns: missing },
+                change,
                 confirmLabel: 'Sign & protect',
               })
             }

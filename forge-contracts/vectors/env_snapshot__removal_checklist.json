@@ -1,0 +1,121 @@
+{
+  "name": "removal_checklist",
+  "description": "removing someone lists the current value names they could read: every name of a Members environment when they held the members key (past values included), and a Maintainers value whose current value was in a snapshot sent to them. carol saw the old production snapshot: DB_URL is unchanged since, STRIPE_KEY is not.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "exposure",
+    "environments": [
+      {
+        "env": "production",
+        "heads": [
+          {
+            "audience": "maintainers",
+            "to": [
+              "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+              "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+            ],
+            "vars": {
+              "STRIPE_KEY": "sk_test_new",
+              "DB_URL": "postgres://fake/1",
+              "NEW_ONLY": "x"
+            }
+          }
+        ],
+        "snapshots": [
+          {
+            "audience": "maintainers",
+            "to": [
+              "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+              "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX"
+            ],
+            "vars": {
+              "STRIPE_KEY": "sk_test_old",
+              "DB_URL": "postgres://fake/1"
+            }
+          },
+          {
+            "audience": "maintainers",
+            "to": [
+              "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+              "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+            ],
+            "vars": {
+              "STRIPE_KEY": "sk_test_new",
+              "DB_URL": "postgres://fake/1",
+              "NEW_ONLY": "x"
+            }
+          }
+        ]
+      },
+      {
+        "env": "dev",
+        "heads": [
+          {
+            "audience": "members",
+            "vars": {
+              "API_TOKEN": "fake-dev",
+              "LOG_LEVEL": "debug"
+            }
+          }
+        ],
+        "snapshots": [
+          {
+            "audience": "members",
+            "vars": {
+              "API_TOKEN": "fake-dev",
+              "LOG_LEVEL": "debug"
+            }
+          }
+        ]
+      }
+    ],
+    "cases": [
+      {
+        "removed": "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+        "heldMembersKey": true
+      },
+      {
+        "removed": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+        "heldMembersKey": false
+      },
+      {
+        "removed": "6uEvtSgQjdQsaPw3qBRpr21Acb7WfAshhVKRzDNKCjRY",
+        "heldMembersKey": false
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      [
+        {
+          "env": "dev",
+          "audience": "members",
+          "names": [
+            "API_TOKEN",
+            "LOG_LEVEL"
+          ]
+        },
+        {
+          "env": "production",
+          "audience": "maintainers",
+          "names": [
+            "DB_URL"
+          ]
+        }
+      ],
+      [
+        {
+          "env": "production",
+          "audience": "maintainers",
+          "names": [
+            "DB_URL",
+            "NEW_ONLY",
+            "STRIPE_KEY"
+          ]
+        }
+      ],
+      []
+    ]
+  }
+}
