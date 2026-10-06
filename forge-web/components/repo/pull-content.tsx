@@ -169,6 +169,7 @@ import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
 import { cn, shortId } from '@/lib/utils'
 import { useDpnsName } from '@/hooks/use-dpns-name'
+import { threadAuthorIds } from '@/lib/repo/bots'
 
 /** No pending review comments (a stable empty list). */
 const NO_DRAFTS: readonly DraftComment[] = []
@@ -1152,7 +1153,7 @@ function PullPage({
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
   return (
-    <AuthorRolesProvider owner={repo.ownerId} members={thread.members}>
+    <AuthorRolesProvider owner={repo.ownerId} members={thread.members} authors={tab === 'conversation' ? threadAuthorIds(pull.author, thread.timeline) : []}>
     <div className="space-y-4" data-testid="pull-page">
       {/* Header */}
       <div>

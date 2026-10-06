@@ -13,12 +13,23 @@ import { BotBadgeScope } from '@/components/bot-badge'
 
 const Roles = createContext<ReturnType<typeof authorRoles> | null>(null)
 
-export function AuthorRolesProvider({ owner, members, children }: { owner: string; members: readonly Membership[]; children: ReactNode }): JSX.Element {
+export function AuthorRolesProvider({
+  owner,
+  members,
+  authors = [],
+  children,
+}: {
+  owner: string
+  members: readonly Membership[]
+  /** The thread's participants, for their bot badges (none: no badge, nothing read). */
+  authors?: readonly string[]
+  children: ReactNode
+}): JSX.Element {
   const roles = useMemo(() => authorRoles(owner, members), [owner, members])
   // A thread names its authors' roles, and their bot badges (read once for the thread).
   return (
     <Roles.Provider value={roles}>
-      <BotBadgeScope>{children}</BotBadgeScope>
+      <BotBadgeScope ids={authors}>{children}</BotBadgeScope>
     </Roles.Provider>
   )
 }

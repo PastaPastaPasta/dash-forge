@@ -9,6 +9,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { queryDocuments } from '../sdk'
+import type { TimelineItem } from '../view/issues-view'
 import { botOperator, type BotClaim } from '../rules/profile'
 import { DOC } from './contract'
 import { botClaimOf } from './profile'
@@ -48,6 +49,24 @@ export async function readBotOperators(sdk: EvoSDK, community: string, ids: read
     if (op !== null) out.set(id, op)
   }
   return out
+}
+
+/**
+ * Everyone a thread shows: its author, then each comment's and review's author and each state
+ * change's and event's actor, once each. What a thread's bot badges are read for, in one go.
+ */
+export function threadAuthorIds(author: string, timeline: readonly TimelineItem[]): string[] {
+  const ids = new Set<string>([author])
+  for (const it of timeline) {
+    if (it.kind === 'comment') ids.add(it.comment.author)
+    else if (it.kind === 'review') {
+      ids.add(it.review.reviewer)
+      for (const c of it.comments) ids.add(c.author)
+    } else if (it.kind === 'transition') ids.add(it.transition.actor)
+    else if (it.kind === 'event') ids.add(it.event.actor)
+  }
+  ids.delete('')
+  return [...ids].sort()
 }
 
 /** Forget every claim read (tests; a profile edit of one's own). */

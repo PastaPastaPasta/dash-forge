@@ -22,6 +22,7 @@ import { trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
+import { threadAuthorIds } from '@/lib/repo/bots'
 import { LinkedPulls, namedClosingPull, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
 import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
@@ -447,7 +448,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const canModerate = isMaintainer && !archived && guard.disabledReason === null
 
   return (
-    <AuthorRolesProvider owner={home.repo.ownerId} members={members}>
+    <AuthorRolesProvider owner={home.repo.ownerId} members={members} authors={threadAuthorIds(issue.author, timeline)}>
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]">
       <div className="min-w-0 space-y-5">
         {/* Header */}
