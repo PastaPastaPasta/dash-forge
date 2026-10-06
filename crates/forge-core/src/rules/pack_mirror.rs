@@ -239,9 +239,18 @@ mod tests {
     #[test]
     fn addresses_follow_the_contract_pattern_and_the_writer_conventions() {
         let ok = |v: &[&str]| check_mirror_uris(&s(v));
-        assert_eq!(ok(&["https://m.example.com/p.pack"]), UriCheck::Ok { kind: 1 });
-        assert_eq!(ok(&["https://m.example.com:8443"]), UriCheck::Ok { kind: 1 });
-        assert_eq!(ok(&["ipfs://bafyabc", "ipfs://Qm1"]), UriCheck::Ok { kind: 2 });
+        assert_eq!(
+            ok(&["https://m.example.com/p.pack"]),
+            UriCheck::Ok { kind: 1 }
+        );
+        assert_eq!(
+            ok(&["https://m.example.com:8443"]),
+            UriCheck::Ok { kind: 1 }
+        );
+        assert_eq!(
+            ok(&["ipfs://bafyabc", "ipfs://Qm1"]),
+            UriCheck::Ok { kind: 2 }
+        );
         let no = |v: &[&str], problem, index| {
             assert_eq!(ok(v), UriCheck::Refused { problem, index }, "{v:?}");
         };
@@ -258,8 +267,16 @@ mod tests {
         no(&["ipfs://"], UriProblem::Address, Some(0));
         no(&["ipfs://bafy-x"], UriProblem::Address, Some(0));
         no(&["ipfs://bafy/x"], UriProblem::IpfsPath, Some(0));
-        no(&["https://a.b", "https://a.b"], UriProblem::Duplicate, Some(1));
-        no(&["https://a.b", "ipfs://bafy"], UriProblem::MixedKinds, None);
+        no(
+            &["https://a.b", "https://a.b"],
+            UriProblem::Duplicate,
+            Some(1),
+        );
+        no(
+            &["https://a.b", "ipfs://bafy"],
+            UriProblem::MixedKinds,
+            None,
+        );
         // 300 characters is the limit, counted as characters, not bytes.
         let at = format!("https://m.example.com/{}", "é".repeat(278));
         assert_eq!(ok(&[&at]), UriCheck::Ok { kind: 1 });
@@ -292,8 +309,20 @@ mod tests {
             &["ab"],
             vec![
                 rec("s", None, 1, 1, &["https://stranger/p"]),
-                rec("w", Some(Role::Writer), 5, 2, &["ipfs://cidw", "https://wrong-kind/p"]),
-                rec("m", Some(Role::Maintainer), 9, 1, &["https://maint/p", "ipfs://wrong"]),
+                rec(
+                    "w",
+                    Some(Role::Writer),
+                    5,
+                    2,
+                    &["ipfs://cidw", "https://wrong-kind/p"],
+                ),
+                rec(
+                    "m",
+                    Some(Role::Maintainer),
+                    9,
+                    1,
+                    &["https://maint/p", "ipfs://wrong"],
+                ),
                 rec("x", Some(Role::Writer), 5, 9, &["https://unknown-kind/p"]),
             ],
         );
@@ -308,7 +337,10 @@ mod tests {
                 rec(&format!("r{n}"), None, n, 1, &uris)
             })
             .collect();
-        assert_eq!(order(Visibility::Public, &["AB"], many).len(), MIRROR_URIS_TRIED);
+        assert_eq!(
+            order(Visibility::Public, &["AB"], many).len(),
+            MIRROR_URIS_TRIED
+        );
     }
 
     #[test]
