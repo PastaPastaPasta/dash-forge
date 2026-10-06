@@ -5,8 +5,9 @@
  *
  * Only valid updates appear ({@link validRefUpdates}: a plain update on a ref protected as of
  * its `createdAt` moved nothing), in the causal order {@link resolveRef} folds them in, tracking
- * the live heads as the fold does: a later update supersedes a head when it is forced, builds on
- * it (its `prevOid` names it) or contains it. An update's `from` is the head it supersedes.
+ * the live heads as the readers' fold does (identity ancestry): a later update supersedes a head
+ * when it is forced, builds on it (its `prevOid` names it) or sets the same tip; containment never
+ * does, so this page and the branch list agree. An update's `from` is the head it supersedes.
  *
  * `contains(old, new)` answers whether commit `new` contains commit `old` (`null`: unknown within
  * the caller's budget). A branch move reads `pushed` when every head it supersedes is contained,
@@ -89,8 +90,9 @@ export function refHistory(
     const kept: RefUpdate[] = []
     for (const h of heads) {
       if (h.newOid === v.newOid) continue
-      const has = contains(h.newOid, v.newOid)
-      if (v.force || buildsOn(v, h) || has === true) superseded.push({ h, has })
+      // Supersession exactly as the readers' fold decides it (identity ancestry: the same tip);
+      // the commit graph only words the move.
+      if (v.force || buildsOn(v, h)) superseded.push({ h, has: contains(h.newOid, v.newOid) })
       else kept.push(h)
     }
     heads = [...kept, v]

@@ -5,10 +5,11 @@
 //!
 //! Only valid updates appear ([`super::valid_updates`]: a plain `refUpdate` on a ref protected
 //! as of its `$createdAt` moved nothing), walked in the causal order [`super::resolve_ref`]
-//! folds them in, tracking the live heads as [`super::live_heads`] does: a later update
-//! supersedes a head when it is a deletion, is forced, builds on it (`prevOid` names it) or
-//! contains it. An update's `from` is the head it supersedes (the newest, when several), never
-//! the writer's own `prevOid` unchecked.
+//! folds them in, tracking the live heads as the readers' fold does (`resolve_ref` with identity
+//! ancestry): a later update supersedes a head when it is a deletion, is forced, builds on it
+//! (`prevOid` names it) or sets the same tip. Containment never supersedes here, so the page
+//! and the branch list agree. An update's `from` is the head it supersedes (the newest, when
+//! several).
 //!
 //! Whether a tip contains another is commit-graph knowledge the rule does not have: the caller
 //! answers it per pair (`contains(old, new)`), `None` when it cannot tell within its budget. A
@@ -117,10 +118,10 @@ fn ref_moves(
             if h.new_oid == v.new_oid {
                 continue;
             }
-            let has = contains(&h.new_oid, &v.new_oid);
-            let rewrite = v.force || super::builds_on(v, h);
-            if rewrite || has == Some(true) {
-                superseded.push((h, has));
+            // Supersession exactly as the readers' fold decides it (their ancestry is identity:
+            // the same tip); the commit graph only words the move.
+            if v.force || super::builds_on(v, h) {
+                superseded.push((h, contains(&h.new_oid, &v.new_oid)));
             } else {
                 kept.push(h);
             }
