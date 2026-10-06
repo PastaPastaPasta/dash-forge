@@ -1349,6 +1349,7 @@ async fn view(
             "body": v.patch.body,
             "bodyIncomplete": body_incomplete,
             "author": v.patch.author,
+            "createdAt": v.patch.created_at,
             "state": state_field(&v),
             "draft": v.state.draft,
             "labels": v.state.labels,

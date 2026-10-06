@@ -898,7 +898,7 @@ async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
         })
         .collect();
     ctx.emit(
-        json!({ "owner": owner_id, "count": rows.len(), "repos": rows }),
+        json!({ "ownerId": owner_id, "count": rows.len(), "repos": rows }),
         || {
             println!(
                 "{} for {owner_id}:",
