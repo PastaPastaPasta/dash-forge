@@ -17,7 +17,7 @@ Reading a public repository needs no identity: `dg repo view`, `dg repo list --o
 
 ## Collaborators
 
-There are four roles. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's clients refuse it before you pay for it. Counting approvals and offering readers only on private repositories are client rules, which every Forge client applies alike.
+There are four roles. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's apps refuse it before you pay for it. Counting approvals and offering readers only on private repositories are rules Forge apps enforce: every app applies them alike ([Who enforces what](#who-enforces-what)).
 
 | Role | `--role` | Can | Closest GitHub role |
 |---|---|---|---|
@@ -70,9 +70,9 @@ What each one enforces:
 
 - **Protected branches** are enforced by Platform. A ref matching a pattern moves only through a maintainer-only document; a writer's push is refused ([`E601`](../errors.md#e601)), and a plain update of a protected ref is ignored by every reader. A bare name means `refs/heads/<name>`; `*` stays within one path segment and `**` crosses segments. `refs/tags/**` covers every tag. Up to 8 patterns. A new repository protects its default branch and every tag (`refs/tags/**`) unless its creator opts out (`dg repo create --no-protect`, or the checkbox on the web's **New repository** form), so a release tag cannot be moved by a writer. Forks and mirrors start unprotected. For an older repository, **Settings → Branches** offers the same protection in one click, and `dg repo protect defaults` adds it from the CLI.
 - **The default branch** is what a clone checks out and what the web opens on.
-- **The branch policy** is a client rule. Every Forge client applies it: the web disables the merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). The PR author's own approval never counts. When the policy requires approvals, a request for changes from a maintainer or writer whose approval would count blocks the merge, as on GitHub, until they approve or the review is dismissed. A maintainer can bypass it, as on GitHub: tick "bypass rules" in the merge box and confirm, or pass `dg pr merge --override-policy`. The code is really merged, and an event on the PR records which rules were bypassed. Unlike a comment, the event cannot be edited or deleted, by the maintainer who bypassed or anyone else. Nothing on Platform requires approvals.
+- **The branch policy** is enforced by Forge apps. The web disables the merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). The PR author's own approval never counts. When the policy requires approvals, a request for changes from a maintainer or writer whose approval would count blocks the merge, as on GitHub, until they approve or the review is dismissed. A maintainer can bypass it, as on GitHub: tick "bypass rules" in the merge box and confirm, or pass `dg pr merge --override-policy`. The code is really merged, and an event on the PR records which rules were bypassed. Unlike a comment, the event cannot be edited or deleted, by the maintainer who bypassed or anyone else. Nothing on Platform requires approvals.
 - **Mark as merged (done elsewhere)** records a merge that already happened some other way (a push). It moves no code, so the web offers it only once the PR's head is on the base branch (`dg pr merge --event-only`).
-- **Archiving** is a client rule too. Forge clients refuse writes to an archived repository: the web disables issues, PRs, merges and releases; `dg` refuses issue, PR, comment, review, merge and release writes; and the push helper refuses pushes. All of these use [`E606`](../errors.md#e606). Override with `dg --allow-archived …` or `git push -o allow-archived`. Platform still accepts a member's writes.
+- **Archiving** is enforced by Forge apps too. They refuse writes to an archived repository: the web disables issues, PRs, merges and releases; `dg` refuses issue, PR, comment, review, merge and release writes; and the push helper refuses pushes. All of these use [`E606`](../errors.md#e606). Override with `dg --allow-archived …` or `git push -o allow-archived`. Platform still accepts a member's writes.
 
 ### Who enforces what
 
@@ -240,7 +240,7 @@ A repository's maintainers moderate its conversations with two tools. Neither de
 |---|---|---|
 | Who | maintainers, writers and triage members | **maintainers** only |
 | What it does | from then on only members can comment or review | readers see a comment, a review or a whole issue or PR collapsed, and can expand it |
-| Enforced by | the network (consensus refuses a non-member's post) | every Forge client; the network checks that the hider is a maintainer |
+| Enforced by | Dash Platform (it refuses a non-member's post) | Forge apps; Dash Platform checks that the hider is a maintainer |
 | Use it for | a thread under attack, or a finished discussion | spam, abuse, off-topic or outdated posts that are already there |
 
 ```sh
