@@ -25,13 +25,13 @@ Codes never change meaning once shipped, so scripts can match on them. A code th
 | `E3xx` | 3 | auth or key |
 | `E4xx` | 4 | funds or budget |
 | `E5xx` | 5 | storage |
-| `E6xx` | 6 | rejected by Dash Platform |
+| `E6xx` | 6 | write refused: permissions, conflicts or Platform rules |
 | `E7xx` | 7 | network |
 | `E8xx` | 8 | policy: the cost guard or a confirmation |
 
 `dg` exits 0 on success. The helper always exits non-zero on failure, so `git push`, `git fetch` and `git clone` report the failure. A push whose individual refs were rejected (for example non-fast-forward) still ends with git's own `! [rejected]` lines and a non-zero exit from git.
 
-Each entry below starts with what happened, in a sentence or two, then **What to do**. Further paragraphs cover other commands that report the same code. A *Protocol detail* line, where there is one, gives the Platform error and rule behind it, for anyone checking the code or filing an issue.
+Each entry below starts with what happened, then **What to do**. Other paragraphs add cases and other commands that report the same code. A *Protocol detail* line, where there is one, gives the Platform error or Forge rule behind it, for anyone checking the code or filing an issue.
 
 Messages never include secrets. Storage credentials are referenced by `env:` or `keychain:` name only, and a final redaction pass removes URL userinfo, credential query parameters, bearer tokens and private keys from any text before it is printed.
 
@@ -53,7 +53,7 @@ Messages never include secrets. Storage credentials are referenced by `env:` or 
 
 ## E103
 
-**Not implemented yet.** The command exists but does not work yet.
+**Not implemented yet.** The command isn't available in this release yet.
 
 **What to do:** follow the manual workaround the output describes.
 
@@ -111,7 +111,7 @@ The message lists the conflicting files.
 
 **What to do:** correct the value (`git config --show-origin --get-regexp '^dash\.'` shows where each git setting comes from). `dg doctor` checks the rest.
 
-A `config.toml` that does not parse is E204 too, from every `dg` command and from `git push` when it needs the default identity recorded there. The cause names the file, the line and the column, never the text there. `dg` does not fall back to the defaults, which would mean testnet and no identity. `dg doctor` still runs: it shows the error as a failing `config.toml` row and runs its other checks on the defaults. Fix the line, or move the file aside and sign in again with `dg auth login`, which writes a new one.
+A `config.toml` that does not parse is E204 too, from every `dg` command and from `git push` when it needs the default identity recorded there. The cause names the file, the line and the column, never the text there. `dg` does not fall back to the defaults, which would mean testnet and no identity. `dg doctor` still runs: it shows the error as a failing `config.toml` row and runs its other checks on the defaults. What to do: fix the line, or move the file aside and sign in again with `dg auth login`, which writes a new one.
 
 `refusing to bind a key to the forge contract group` is also E204: the contract group on chain failed the trust check made before a limited key is bound to it ([forge-v2 § Contract group trust](contracts/forge-v2.md#contract-group-trust)). Its owner differs from the one `dg` pins, or it has admins. Or a member contract has another owner (proof-verified), or the group lacks forge-core and forge-collab. Do not bind a key to it. With `--strict-group` (or `DASH_FORGE_STRICT_GROUP=1`), any member `dg` does not know causes it too: update `dg`, or drop strict mode to accept members the Forge deployer owns.
 
@@ -145,9 +145,11 @@ A private repository needs more than a signing key: its content is encrypted to 
 
 ## E302
 
-**This key can't sign that.** The key in use cannot sign this kind of operation. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key. Registering or disabling keys needs the MASTER key, and a DPNS name needs an unbound CRITICAL or HIGH key: a Forge limited key is bound to the forge contracts and cannot sign either. A CI runner key (`dg ci runner new`) is bound to the `checkRun` document type alone. Any other write it signs is refused with "Batch member is outside the contract bounds of key N" (consensus error 20014), before anything is broadcast.
+**This key can't sign that.** Forge writes (every `dg` and `git push` write) need a HIGH or CRITICAL authentication key. Adding or disabling keys, or registering a username, needs your master key, which a Forge limited key can't stand in for. A CI runner key (`dg ci runner new`) can only report check runs: anything else it signs is refused before it is sent.
 
 **What to do:** pass the identity file with `--master <file>`, or type the recovery phrase when asked. The master key is used for that one signature and not stored.
+
+*Protocol detail:* a limited key is bound to the forge contracts, and a runner key to the `checkRun` document type; a DPNS name needs an unbound CRITICAL or HIGH key. A write outside a key's bounds is refused with "Batch member is outside the contract bounds of key N" (consensus error 20014).
 
 ## E303
 
@@ -176,7 +178,7 @@ Two cases have their own message:
 
 ## E305
 
-**This key expired or was disabled.** The limited key signing for you is past its expiry or has been disabled on chain. Limited keys are disposable: nothing is lost.
+**This key expired or was disabled.** The limited key signing for you is past its expiry or has been disabled. Limited keys are disposable: nothing is lost.
 
 **What to do:** register a fresh one with your master key (used once): `dg auth login <identity file>` or `dg auth login --mnemonic`. `dg auth keys list` shows which keys are live.
 
@@ -193,23 +195,23 @@ Two cases have their own message:
 
 **No key for this private repository.** No current maintainer has shared this repository's key with you: you are not a member, you were removed, or a maintainer added you and has not shared the key yet.
 
-**What to do:** not a member yet? Run `dg collab accept <owner>/<repo>` first (your consent, as the web app's **Accept**; the add is refused without it), then ask the owner to add you: `dg collab add <owner>/<repo> <your identity id> --role <role>`. `dg` prints both commands with the repository and your identity id filled in. If you are a member already, ask a maintainer to run `dg repo keys repair <owner>/<repo>`, which wraps the key to every member that has none. Removed? What was written after your removal is sealed to keys you are not given.
+**What to do:** not a member yet? Run `dg collab accept <owner>/<repo>` first (your consent, as the web app's **Accept**; the add is refused without it), then ask the owner to add you: `dg collab add <owner>/<repo> <your identity id> --role <role>`. `dg` prints both commands with the repository and your identity id filled in. If you are a member already, ask a maintainer to run `dg repo keys repair <owner>/<repo>`, which shares the key with every member who lacks it. Removed? What was written after your removal is sealed to keys you are not given.
 
-`git fetch`, `git pull`, `git ls-remote` (and any push or `dg` command that reads the refs) also stop with E307 when the repository's newest ref updates are sealed under a key epoch you hold no key for, typically after you were removed and the key was rotated. The refs you can still read are from before the rotation, so they are not reported as current ("Already up to date" would be wrong). As on GitHub, a removed collaborator's clone stops getting updates; what it already has stays.
+`git fetch`, `git pull`, `git ls-remote` (and any push or `dg` command that reads the refs) also stop with E307 when the repository's newest ref updates are encrypted with a newer key you don't hold, typically after you were removed and the key was rotated. The refs you can still read are from before the rotation, so they are not reported as current ("Already up to date" would be wrong). As on GitHub, a removed collaborator's clone stops getting updates; what it already has stays.
 
 *Protocol detail:* no `repoKey` wrap from a current maintainer opens the repository for your identity.
 
 ## E308
 
-**A maintainer gave you the wrong key.** The key a maintainer shared with you is not the one the repository recorded for this key rotation. Forge never falls back to another key; the message names the maintainer who shared it.
+**A maintainer gave you the wrong key.** The key a maintainer shared with you is not the one the repository recorded for this key rotation. Forge never falls back to another key.
 
-**What to do:** ask a maintainer to run `dg repo keys status <owner>/<repo>` and `dg repo keys repair`; the cause names who shared the key.
+**What to do:** ask a maintainer to run `dg repo keys status <owner>/<repo>`, then `dg repo keys repair`. The cause names the maintainer who shared the key.
 
 *Protocol detail:* the `repoKey` wrap holds a key other than the one the epoch's anchor commits to: a split view, or the leftover wrap of a maintainer who lost a concurrent rotation.
 
 ## E309
 
-**The repository's key chain is broken.** Each key rotation records the key before it, so a member with the newest key can read older content. One of those records is missing or doesn't open the key before it, so content from before that rotation can't be read with the keys you hold.
+**The repository's key chain is broken.** You can't read content from before one of this repository's key changes. Each change records the previous key, and one of those records is missing or doesn't open it. The message calls each key period an *epoch*.
 
 **What to do:** ask the maintainer named in the cause to re-wrap the older epoch to you; `dg repo keys status` lists the epochs you can read.
 
@@ -217,9 +219,11 @@ Two cases have their own message:
 
 ## E310
 
-**Key rotation or repair pending.** The repository's current key epoch is one your identity cannot write under yet (a rotation landed and no current maintainer has wrapped its key to you), or a repair is needed before new content is written.
+**Key rotation or repair pending.** The repository's key changed and no maintainer has shared the new one with you yet, or its keys need a repair before anything new is written.
 
-**What to do:** a maintainer runs `dg repo keys repair <owner>/<repo>`; then try again. Nothing was written.
+**What to do:** a maintainer runs `dg repo keys repair <owner>/<repo>`, then you try again. Nothing was written.
+
+*Protocol detail:* the current key epoch is one your identity can't write under yet: a rotation landed and no current maintainer has wrapped its key to you.
 
 ## E311
 
@@ -261,11 +265,11 @@ It is also what `git push`, `dg init`, `dg repo create`, `dg storage advertise`,
 
 **What to do:** `dg storage list` shows your profiles and `dg storage use <profiles>` sets `dash.storage`. For an address problem, re-add the profile with a public https `--public-url` / `--public-gateway` (a bucket domain, a CDN, a named tunnel or a reverse proxy on your own domain), or record it anyway with `git push -o allow-private-uri`, `git config dash.allowPrivateUri true`, `dg storage add … --allow-private-uri`, or `--allow-private-uri` on `dg init` / `dg repo create`. See [bring your own storage](guides/bring-your-own-storage.md#public-addresses).
 
-A secret given as its literal value is E501 too (`dg storage add … --secret-access-key <the secret>`): `cause: a secret must be a reference — env:VAR_NAME or keychain:<service>/<account> — never the literal value`. Nothing was saved, and the value is never echoed. Its fix is different from the above: export the secret in an environment variable and pass `env:VAR_NAME`, or store it in the OS keychain and pass `keychain:dash-forge/<profile>`. `dg storage add` with no arguments asks instead: it offers to paste the secret into the keychain where there is one, and says so when there is none (`DASH_FORGE_NO_KEYCHAIN` is set, or the system has no keychain), leaving an environment variable or an existing keychain entry.
+A secret given as its literal value is E501 too (`dg storage add … --secret-access-key <the secret>`): `cause: a secret must be a reference — env:VAR_NAME or keychain:<service>/<account> — never the literal value`. Nothing was saved, and the value is never echoed. What to do here is different: export the secret in an environment variable and pass `env:VAR_NAME`, or store it in the OS keychain and pass `keychain:dash-forge/<profile>`. `dg storage add` with no arguments asks instead: it offers to paste the secret into the keychain where there is one, and says so when there is none (`DASH_FORGE_NO_KEYCHAIN` is set, or the system has no keychain), leaving an environment variable or an existing keychain entry.
 
 ## E502
 
-**Storage policy not met.** Fewer targets confirmed the pack than `dash.replicas` requires, so the push stopped **before** it recorded the pack or moved any branch. No branch points at history that is not stored where you asked.
+**Storage policy not met.** Fewer targets confirmed the pack than `dash.replicas` requires, so the push stopped **before** it recorded the pack or moved any branch or tag. No branch or tag points at history that is not stored where you asked.
 
 Copies that did confirm are content-addressed. The next push finds them and does not upload them again. The `note:` line says whether anything was written to Platform. If `dash.platformFallback` was armed and Platform chunks were stored, they are journaled and the next push reuses them.
 
@@ -288,7 +292,7 @@ A fork records its parent's packs where the parent's pusher stored them. When th
 
 ## E504
 
-**Integrity check failed.** Downloaded bytes did not hash to the SHA-256 that the on-chain manifest records. A storage host, or a cache in front of it, served different content. The bytes were discarded, and a tampered copy is never handed to git.
+**Integrity check failed.** Downloaded bytes did not hash to the SHA-256 recorded on Platform. A storage host, or a cache in front of it, served different content. The bytes were discarded, and a tampered copy is never handed to git.
 
 **What to do:** run the command again; other copies are tried. `dg storage status <owner>/<repo>` shows which copies verify.
 
@@ -328,13 +332,15 @@ A fork records its parent's packs where the parent's pusher stored them. When th
 
 ## E509
 
-**Sealed pack corrupt.** A private repository's sealed artifact hash-verified against its manifest but failed decryption: a segment tag, the header, or the length does not check out. The uploader stored bytes no honest client writes, so every copy of that pack is the same bad bytes.
+**Encrypted pack corrupt.** A private repository's pack downloaded intact but doesn't decrypt. Whoever pushed it stored bytes no Forge app writes, so every copy is the same.
 
 **What to do:** ask the member who pushed it to push again (`git push` re-stores it under a new hash). `dg repo keys status` shows which epochs you can read.
 
+*Protocol detail:* the sealed artifact hash-verified against its manifest, but a segment tag, the header or the length does not check out.
+
 ## E510
 
-**Written after the key was rotated.** Someone who is no longer a member wrote this with the repository's old key, well after the key was replaced, so every reader hides it. It is hidden, not deleted.
+**Written after the key was rotated.** Someone who is no longer a member wrote this with the repository's old key, after the short grace period that follows a key change. Forge apps hide it from every reader, but it isn't deleted.
 
 **What to do:** none needed; if the writer is still meant to be a member, re-add them and have them write it again.
 
@@ -344,7 +350,7 @@ A clone or fetch reports E510 as `clone incomplete: N packs hidden by the late-c
 
 In either case, a maintainer can instead move the ref back to history every member can read.
 
-*Protocol detail:* the late-content rule. The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's key was first announced on chain (re-announcing the same key later does not move this), by someone who is no longer a member.
+*Protocol detail:* the late-content rule. The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's key was first announced on chain (re-announcing the same key later does not move this), or at any time under an epoch that was given up, by someone who is no longer a member.
 
 ## E511
 
@@ -367,17 +373,15 @@ The author and committer line checks (`badTimezone`, `missingSpaceBeforeDate`, `
 
 ## E601
 
-**Not a writer of this repository.** You aren't a member with write access, so Dash Platform refused the write.
-
-Outside a push (collaborator admin, releases, repo config) the headline says your identity "is not authorized for this action", because those need a different role.
-
-The helper checks this before building or paying for anything and refuses early with the same advice.
+**Not a writer of this repository.** Your identity doesn't have the role this write needs: you aren't a member with write access, or your role can't make this kind of change. Dash Platform refuses the write, and `dg` and the push helper usually refuse it before signing, so you aren't charged.
 
 **What to do:** give your consent first, once: `dg collab accept <owner>/<repo>` (or **Accept** in the web app). Then ask the owner to add you: `dg collab add <owner>/<repo> <your identity id> --role writer`. A membership names the member's own consent, so an add before the accept is refused ([E604](#e604): "has not accepted membership"). Or push to a repository of your own.
 
-Already a member, but your role can't make this write (a writer hiding a comment, a triage member pinning, a reader labelling)? `dg` refuses before signing and says so: *"you are a writer of `<repo>`; this needs a maintainer"*. You have already accepted, so the fix is only to ask the owner for the role the write needs: `dg collab add <owner>/<repo> <your identity id> --role maintainer` (or `writer`, `triage`).
+Already a member, but your role can't make this write (a writer hiding a comment, a triage member pinning, a reader labelling)? `dg` refuses before signing and says so: *"you are a writer of `<repo>`; this needs a maintainer"*. You have already accepted, so all you need is the role the write needs: ask the owner to run `dg collab add <owner>/<repo> <your identity id> --role maintainer` (or `writer`, `triage`).
 
-*Protocol detail:* consensus error 40120 on path `$ownerId` (the `ownerRefersTo` gate): no current `writer` or `maintainer` document names your identity.
+Outside a push (collaborator admin, releases, repo settings) the headline says your identity "is not authorized for this action", because those need a different role. Editing or deleting someone else's comment is E601 too: only its author can, maintainers included.
+
+*Protocol detail:* consensus error 40120 on `$ownerId` (the `ownerRefersTo` gate) or on the `asMember` / `asMaintainer` membership proofs: no current `writer` or `maintainer` document names your identity. 40127, or the schema maximum on `r`: the role the write claims doesn't match your `writer` document's role.
 
 ## E602 (retired)
 
@@ -385,7 +389,7 @@ Already a member, but your role can't make this write (a writer hiding a comment
 
 ## E603
 
-**Already exists.** Platform refused a document that collides with a unique index, for example a repository name you already use.
+**Already exists.** That name is already taken, for example a repository name you already use.
 
 **What to do:** pick another name. Issue and PR numbers are retried automatically, so Platform raises this only for names.
 
@@ -393,7 +397,7 @@ Already a member, but your role can't make this write (a writer hiding a comment
 
 ## E604
 
-**Rejected by Platform.** Dash Platform refused the write, or would have, for a reason not listed above. `dg` and the push helper check the rules they can before signing, and stop a write that is certain to be refused with this code and the note "checked before anything was signed; nothing was written or paid". It covers a write that refers to a document, repository or identity that does not exist (the headline names it), and an edit of something that can't change once set (the headline names the field). `dg ci report` refuses before signing a report that names a run by `--external-id` but would change it once it completed ("a completed run can't change") or re-queue it once it started ("a started run can't go back to queued"): report a re-run with a new `--external-id`.
+**Rejected by Platform.** Dash Platform refused the write, or would have, for a reason not listed above. `dg` and the push helper check the rules they can before signing, and stop a write that is certain to be refused with this code and the note "checked before anything was signed; nothing was written or paid". It covers a write that refers to an issue, repository or identity that does not exist (the headline names the field that points to it, and the cause names what is missing), and an edit of something that can't change (the headline names the field and says "can't change once set").
 
 Two common ones:
 
@@ -402,7 +406,9 @@ Two common ones:
 
 **What to do:** if the message does not explain it, [open an issue](https://github.com/PastaPastaPasta/dash-forge/issues) with it.
 
-*Protocol detail:* any consensus refusal without its own code, including 40120 on a path other than `$ownerId` (a referenced document, contract or identity is missing) and 40128 (an immutable field changed). The `cause:` line carries Platform's message, or the rule, when it has one.
+`dg ci report` refuses before signing a report that names a run by `--external-id` but would change it once it completed ("a completed run can't change") or re-queue it once it started ("a started run can't go back to queued"). What to do: report a re-run with a new `--external-id`.
+
+*Protocol detail:* any consensus refusal without its own code, including 40120 on a path other than `$ownerId`, `asMember` and `asMaintainer` (a referenced document, contract or identity is missing), 40128 (an immutable field changed) and 10422 (a contract rule, which the headline names: "consensus refused it by the rule …"). The `cause:` line carries Platform's message, or the rule, when it has one.
 
 ## E605 (retired)
 
@@ -436,25 +442,25 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 ## E702
 
-**Dash Forge not deployed on this network.** This build knows of no Forge deployment on the network you chose, so there is nothing to read or write. The tools never fall back to another network's. Forge runs on devnet sakura; testnet and mainnet follow once they run Dash Platform v5 ([Networks](networks.md)).
+**Dash Forge not deployed on this network.** This build knows of no Forge deployment on the network you chose, so there is nothing to read or write. The tools never fall back to another network's deployment. Forge runs on devnet sakura; testnet and mainnet follow once they run Dash Platform v5 ([Networks](networks.md)).
 
 **What to do:** use a network with a deployment. For `dg`, pass `--network devnet --devnet-name sakura` (`dg auth new` and `dg auth login` record it as the default). For `git clone` / `git push`, the helper takes the network from `DASH_FORGE_NETWORK`, then git config `dash.network` / `dash.devnetName`, then the network `dg` recorded, so set one of those: `git config --global dash.network devnet && git config --global dash.devnetName sakura`, or `git clone -c dash.network=devnet -c dash.devnetName=sakura dash://…` for one clone. See [the mainnet runbook](mainnet-runbook.md).
 
-`forge contracts not found on <network>` is also E702. This build knows a Forge deployment on the network, but the network does not have it. On a devnet this means it was reset, which removes every contract on it, and Forge has not been deployed on it again yet. On testnet or mainnet it means the build's deployment record is wrong. Running the command again cannot help.
+`forge contracts not found on <network>` is also E702. This build knows of a Forge deployment on the network, but the network does not have it. On a devnet this means it was reset, which removes every contract on it, and Forge has not been deployed on it again yet. On testnet or mainnet it means the build's deployment record is wrong. Running the command again cannot help.
 
 **What to do:** update `dg` and `git-remote-dash` to a release made after Forge was deployed on the network again. `dg doctor` shows the network and the contract ids in use. Check that the network is the one you meant: `--network` for `dg`; git config `dash.network` / `dash.devnetName` or `DASH_FORGE_NETWORK` for the helper.
 
-*Protocol detail:* the first case is a build whose embedded `forge-contracts/deployments/<network>.json` records no registered forge-core, forge-collab and forge-community contracts and their contract group. The second is Platform proving one of those contracts absent, or refusing a read with `contract not found`.
+*Protocol detail:* in the first case the build's embedded `forge-contracts/deployments/<network>.json` records no forge-v2 contracts (forge-core, forge-collab, forge-community and their contract group); the CLI says "forge-v2 isn't deployed". The second is Platform proving one of those contracts absent, or refusing a read with `contract not found`.
 
 ## E703
 
-**Incomplete read.** A read that has to be complete (every ref update, every event) could not be proven complete. The data was refused rather than used in part, because a partial history can show a branch at the wrong commit.
+**Incomplete read.** A read that has to be complete (every ref update, every event) could not be proven complete. The data was refused rather than used in part, because a partial history can show a branch, or an issue or PR's state, wrongly.
 
 **What to do:** run it again. A different node is asked.
 
 ## E704
 
-**Timed out; may still land.** A signed state transition was broadcast but not confirmed in time. It may still be included.
+**Timed out; may still land.** Your signed write was sent to Dash Platform but not confirmed in time. It may still land.
 
 **What to do:** for `git push`, run the push again. Chunks are journaled and ref updates are idempotent, so nothing is paid for twice. For other writes (an issue, a comment), check whether it landed before running the command again.
 
@@ -476,7 +482,7 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 **Cancelled.** You answered no at a confirmation prompt, or the input ended (Ctrl-D, a closed terminal) before an answer at one of `dg`'s own prompts, including the hidden ones: the recovery phrase, a word of `dg auth new`'s backup check, a secret pasted into `dg storage add`. Nothing was written. (A passphrase prompt that cannot be asked is [E303](#e303).)
 
-**What to do:** nothing, if you meant to stop. Otherwise run the command again and answer yes.
+**What to do:** nothing, if you meant to stop. Otherwise run the command again in a terminal and finish the prompt or the editor.
 
 ## E804
 
