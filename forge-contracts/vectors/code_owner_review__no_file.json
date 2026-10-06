@@ -1,0 +1,50 @@
+{
+  "name": "no_file",
+  "description": "No code owners file at the base tip: nothing is owned.",
+  "case": "code_owner_review",
+  "rules": "v2",
+  "input": {
+    "file": null,
+    "paths": [
+      "src/a.rs"
+    ],
+    "reviews": [],
+    "memberships": [
+      {
+        "identity": "A",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "W",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "T",
+        "role": "triage",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "prAuthor": "P",
+    "policy": {
+      "requiredApprovals": 0,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0,
+      "requireCodeOwners": true
+    },
+    "resolved": {
+      "@alice": "A",
+      "@wri": "W",
+      "@tri": "T",
+      "@bob": null
+    }
+  },
+  "expected": {
+    "met": true,
+    "unreadable": false,
+    "pending": []
+  }
+}

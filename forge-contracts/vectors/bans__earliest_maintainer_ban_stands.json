@@ -1,0 +1,43 @@
+{
+  "name": "earliest_maintainer_ban_stands",
+  "description": "Of two maintainers' bans, the earliest by ($createdAt, $id) stands; an unknown reason code reads as other.",
+  "case": "bans",
+  "rules": "v2",
+  "input": {
+    "owner": "own",
+    "maintainers": [
+      "m1",
+      "m2"
+    ],
+    "bans": [
+      {
+        "id": "b9",
+        "identity": "s",
+        "by": "m2",
+        "reason": 200,
+        "createdAt": 10
+      },
+      {
+        "id": "b0",
+        "identity": "s",
+        "by": "m1",
+        "reason": 3,
+        "createdAt": 10
+      }
+    ],
+    "threadAuthor": "x"
+  },
+  "expected": {
+    "banned": {
+      "s": "b0"
+    },
+    "reasons": {
+      "s": "off-topic"
+    },
+    "hidden": {
+      "thread": null,
+      "items": {},
+      "counted": []
+    }
+  }
+}

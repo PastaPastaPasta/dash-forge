@@ -37,6 +37,7 @@ import {
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import { refUpdateType } from '../repo/push'
 import { releaseProvenance, type ProvenanceInput } from './releaseProvenance'
+import { applyBans, banReasonLabel, standingBans, type Ban } from './bans'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
@@ -640,6 +641,52 @@ function runCaseV2(v: Vector): void {
         all,
         kinds: Object.fromEntries(all.map((t) => [t, v2.ownerKind(t)])),
         errors: parsed.errors,
+      }).toEqual(v.expected)
+      break
+    }
+    case 'code_owner_review': {
+      onlyKeys(v, ['file', 'unreadable', 'paths', 'reviews', 'memberships', 'headOid', 'dismissed', 'prAuthor', 'policy', 'resolved'], {
+        ...NESTED_KEYS,
+        policy: [...(NESTED_KEYS['policy'] ?? []), 'requireCodeOwners'],
+      })
+      const inp = v.input as {
+        readonly file: string | null
+        readonly unreadable?: boolean
+        readonly paths: readonly string[]
+        readonly reviews: readonly v2.Review[]
+        readonly memberships: readonly v2.Membership[]
+        readonly headOid: string
+        readonly dismissed?: readonly string[]
+        readonly prAuthor: string
+        readonly policy: v2.Policy
+        readonly resolved?: Readonly<Record<string, string | null>>
+      }
+      const oracle = new v2.RoleOracle(inp.memberships)
+      const approvals = v2.countApprovals(inp.reviews, oracle, inp.headOid, new Set(inp.dismissed ?? []), inp.prAuthor)
+      const file: v2.OwnersFile = inp.unreadable === true ? { kind: 'unreadable' } : inp.file === null ? { kind: 'absent' } : { kind: 'parsed', owners: v2.parseCodeOwners(inp.file) }
+      expect(v2.codeOwnerReview(file, inp.paths, approvals, oracle, inp.policy, new Map(Object.entries(inp.resolved ?? {})), inp.prAuthor)).toEqual(v.expected)
+      break
+    }
+    case 'bans': {
+      onlyKeys(v, ['owner', 'maintainers', 'bans', 'threadAuthor', 'comments', 'reviews', 'hidden'], {
+        bans: ['id', 'identity', 'by', 'reason', 'createdAt'],
+        comments: ['id', 'author', 'reviewId'],
+        reviews: ['id', 'author'],
+      })
+      const inp = v.input as {
+        readonly owner: string
+        readonly maintainers?: readonly string[]
+        readonly bans: readonly Ban[]
+        readonly threadAuthor: string
+        readonly comments?: readonly v2.ThreadItem[]
+        readonly reviews?: readonly v2.ThreadItem[]
+        readonly hidden?: v2.HiddenItems
+      }
+      const standing = standingBans(inp.bans, { owner: inp.owner, maintainers: inp.maintainers ?? [] })
+      expect({
+        banned: Object.fromEntries([...standing].map(([who, b]) => [who, b.id])),
+        reasons: Object.fromEntries([...standing].map(([who, b]) => [who, banReasonLabel(b.reason)])),
+        hidden: applyBans(inp.hidden ?? v2.NOTHING_HIDDEN, standing, inp.threadAuthor, inp.comments ?? [], inp.reviews ?? []),
       }).toEqual(v.expected)
       break
     }

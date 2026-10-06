@@ -1,0 +1,45 @@
+{
+  "name": "moderators_cannot_be_banned",
+  "description": "A ban of the owner or of a current maintainer is ignored.",
+  "case": "bans",
+  "rules": "v2",
+  "input": {
+    "owner": "own",
+    "maintainers": [
+      "m1",
+      "m2"
+    ],
+    "bans": [
+      {
+        "id": "b1",
+        "identity": "m2",
+        "by": "m1",
+        "reason": 1,
+        "createdAt": 10
+      },
+      {
+        "id": "b2",
+        "identity": "own",
+        "by": "m1",
+        "reason": 1,
+        "createdAt": 11
+      }
+    ],
+    "threadAuthor": "m2",
+    "comments": [
+      {
+        "id": "c1",
+        "author": "own"
+      }
+    ]
+  },
+  "expected": {
+    "banned": {},
+    "reasons": {},
+    "hidden": {
+      "thread": null,
+      "items": {},
+      "counted": []
+    }
+  }
+}

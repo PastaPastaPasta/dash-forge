@@ -1,0 +1,75 @@
+{
+  "name": "current_maintainer_ban_hides",
+  "description": "A current maintainer's ban collapses the banned identity's issue, comments and reviews, not others'.",
+  "case": "bans",
+  "rules": "v2",
+  "input": {
+    "owner": "own",
+    "maintainers": [
+      "m1"
+    ],
+    "bans": [
+      {
+        "id": "b1",
+        "identity": "s",
+        "by": "m1",
+        "reason": 1,
+        "createdAt": 10
+      }
+    ],
+    "threadAuthor": "s",
+    "comments": [
+      {
+        "id": "c1",
+        "author": "s"
+      },
+      {
+        "id": "c2",
+        "author": "ok"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "author": "s"
+      }
+    ]
+  },
+  "expected": {
+    "banned": {
+      "s": "b1"
+    },
+    "reasons": {
+      "s": "spam"
+    },
+    "hidden": {
+      "thread": {
+        "by": "m1",
+        "reason": null,
+        "at": 10,
+        "eventId": "b1",
+        "via": "ban",
+        "banReason": 1
+      },
+      "items": {
+        "c1": {
+          "by": "m1",
+          "reason": null,
+          "at": 10,
+          "eventId": "b1",
+          "via": "ban",
+          "banReason": 1
+        },
+        "r1": {
+          "by": "m1",
+          "reason": null,
+          "at": 10,
+          "eventId": "b1",
+          "via": "ban",
+          "banReason": 1
+        }
+      },
+      "counted": []
+    }
+  }
+}

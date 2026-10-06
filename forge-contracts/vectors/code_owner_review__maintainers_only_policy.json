@@ -1,0 +1,66 @@
+{
+  "name": "maintainers_only_policy",
+  "description": "With maintainers-only approvals, a writer owner's approval does not count and cannot.",
+  "case": "code_owner_review",
+  "rules": "v2",
+  "input": {
+    "file": "/docs/ @wri\n",
+    "paths": [
+      "docs/x.md"
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "W",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "A",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "W",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "T",
+        "role": "triage",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "prAuthor": "P",
+    "policy": {
+      "requiredApprovals": 0,
+      "approverRole": 1,
+      "requireChecks": false,
+      "mergeMethods": 0,
+      "requireCodeOwners": true
+    },
+    "resolved": {
+      "@alice": "A",
+      "@wri": "W",
+      "@tri": "T",
+      "@bob": null
+    }
+  },
+  "expected": {
+    "met": false,
+    "unreadable": false,
+    "pending": [
+      {
+        "path": "docs/x.md",
+        "owners": [
+          "@wri"
+        ],
+        "approvable": false
+      }
+    ]
+  }
+}

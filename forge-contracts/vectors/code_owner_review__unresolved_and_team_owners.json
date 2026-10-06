@@ -1,0 +1,60 @@
+{
+  "name": "unresolved_and_team_owners",
+  "description": "Owners that resolve to nobody (an unknown name, a team, an e-mail) cannot approve: fail closed.",
+  "case": "code_owner_review",
+  "rules": "v2",
+  "input": {
+    "file": "/src/ @bob @org/team dev@example.com\n",
+    "paths": [
+      "src/a.rs"
+    ],
+    "reviews": [],
+    "memberships": [
+      {
+        "identity": "A",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "W",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "T",
+        "role": "triage",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "prAuthor": "P",
+    "policy": {
+      "requiredApprovals": 0,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0,
+      "requireCodeOwners": true
+    },
+    "resolved": {
+      "@alice": "A",
+      "@wri": "W",
+      "@tri": "T",
+      "@bob": null
+    }
+  },
+  "expected": {
+    "met": false,
+    "unreadable": false,
+    "pending": [
+      {
+        "path": "src/a.rs",
+        "owners": [
+          "@bob",
+          "@org/team",
+          "dev@example.com"
+        ],
+        "approvable": false
+      }
+    ]
+  }
+}

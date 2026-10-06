@@ -1,0 +1,78 @@
+{
+  "name": "hide_kept_over_ban",
+  "description": "An item a maintainer already hid keeps its hide; the ban covers the rest.",
+  "case": "bans",
+  "rules": "v2",
+  "input": {
+    "owner": "own",
+    "maintainers": [
+      "m1"
+    ],
+    "bans": [
+      {
+        "id": "b1",
+        "identity": "s",
+        "by": "m1",
+        "reason": 200,
+        "createdAt": 10
+      }
+    ],
+    "threadAuthor": "x",
+    "comments": [
+      {
+        "id": "c1",
+        "author": "s"
+      },
+      {
+        "id": "c2",
+        "author": "s"
+      }
+    ],
+    "hidden": {
+      "thread": null,
+      "items": {
+        "c2": {
+          "by": "m1",
+          "reason": "spam",
+          "at": 3,
+          "eventId": "e1",
+          "via": "item"
+        }
+      },
+      "counted": [
+        "e1"
+      ]
+    }
+  },
+  "expected": {
+    "banned": {
+      "s": "b1"
+    },
+    "reasons": {
+      "s": "other"
+    },
+    "hidden": {
+      "thread": null,
+      "items": {
+        "c1": {
+          "by": "m1",
+          "reason": null,
+          "at": 10,
+          "eventId": "b1",
+          "via": "ban",
+          "banReason": 200
+        },
+        "c2": {
+          "by": "m1",
+          "reason": "spam",
+          "at": 3,
+          "eventId": "e1",
+          "via": "item"
+        }
+      },
+      "counted": [
+        "e1"
+      ]
+    }
+  }
+}

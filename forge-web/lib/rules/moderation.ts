@@ -48,13 +48,17 @@ export interface HideScope {
   readonly proved: boolean
 }
 
-/** A standing hide. `via`: the item's own hide, or (an inline comment) its review's. */
+/**
+ * A standing hide. `via`: the item's own hide, (an inline comment) its review's, or its writer's
+ * ban (`lib/rules/bans.ts`: `eventId` is then the ban's `$id`, `banReason` its reason code).
+ */
 export interface Hidden {
   readonly by: string
   readonly reason: HideReason | null
   readonly at: number
   readonly eventId: string
-  readonly via: 'item' | 'review'
+  readonly via: 'item' | 'review' | 'ban'
+  readonly banReason?: number
 }
 
 /** What a reader collapses in one issue or PR. */

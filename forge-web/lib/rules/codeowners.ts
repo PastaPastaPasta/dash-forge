@@ -14,7 +14,8 @@
 
 import { base58Decode } from '../auth/base58'
 import { compareStrings } from './oid'
-import type { RoleOracle } from './v2'
+import type { Approvals, RoleOracle } from './v2'
+import { countsFor, type Policy } from './review'
 
 /** Where a code owners file is looked for, in order: the first that exists wins. */
 export const CODEOWNERS_PATHS = ['.forge/CODEOWNERS', '.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS', '.gitlab/CODEOWNERS'] as const
@@ -332,4 +333,73 @@ export function codeOwnerRequests(
     }
   }
   return { request, skipped }
+}
+
+/** The code owners file a merge is judged against ({@link codeOwnerReview}). */
+export type OwnersFile =
+  /** No code owners file at the base tip (or one too large or binary to read): nothing is owned. */
+  | { readonly kind: 'absent' }
+  /** The file could not be read: the rule fails closed. */
+  | { readonly kind: 'unreadable' }
+  | { readonly kind: 'parsed'; readonly owners: CodeOwners }
+
+/** A changed path still waiting for one of its code owners' approval. */
+export interface PendingFile {
+  readonly path: string
+  /** Its owner tokens as written ({@link ownersOf}). */
+  readonly owners: readonly string[]
+  /**
+   * Some owner could approve it: a resolved identity, not the PR's author, whose current role counts
+   * toward the policy. False: only fixing the code owners file or a maintainer's bypass lets it merge.
+   */
+  readonly approvable: boolean
+}
+
+/** Where a PR stands against `requireCodeOwners`. */
+export interface CodeOwnerStatus {
+  /** Every owned path has an owner's approval (or the rule is off, or nothing is owned). */
+  readonly met: boolean
+  /** The code owners file could not be read (`met` is then false). */
+  readonly unreadable: boolean
+  /** The owned paths without an owner's approval, in code-point order. */
+  readonly pending: readonly PendingFile[]
+}
+
+/**
+ * Judge a PR against its branch policy's `requireCodeOwners`: with it on, every changed path that
+ * has owners needs an approval (counted by `countApprovals`, and from someone whose role counts
+ * toward the policy, {@link countsFor}) from one of its owners. A path with no owners is
+ * unconstrained. Fails closed: an unreadable file blocks, and a path only unresolvable or
+ * non-member owners own stays pending, not approvable. No file at the base tip: met. `resolved`
+ * maps each name token to its identity (absent or null: unresolved). Parity: forge-core
+ * `code_owner_review` (vectors `code_owner_review__*`).
+ */
+export function codeOwnerReview(
+  file: OwnersFile,
+  paths: readonly string[],
+  approvals: Approvals,
+  oracle: RoleOracle,
+  policy: Policy,
+  resolved: ReadonlyMap<string, string | null>,
+  author: string,
+): CodeOwnerStatus {
+  const met: CodeOwnerStatus = { met: true, unreadable: false, pending: [] }
+  if (policy.requireCodeOwners !== true || file.kind === 'absent') return met
+  if (file.kind === 'unreadable') return { met: false, unreadable: true, pending: [] }
+  const identityOf = (token: string): string | null => {
+    const kind = ownerKind(token)
+    if (kind === 'identity') return tokenIdentity(token)
+    if (kind === 'name') return resolved.get(token) ?? null
+    return null
+  }
+  const approvers = new Set(approvals.approvers)
+  const pending: PendingFile[] = []
+  for (const path of [...new Set(paths)].sort(compareStrings)) {
+    const tokens = ownersOf(file.owners, path)
+    if (tokens.length === 0) continue
+    const ids = tokens.map(identityOf).filter((id): id is string => id !== null)
+    if (ids.some((id) => approvers.has(id) && countsFor(oracle, policy, id))) continue
+    pending.push({ path, owners: tokens, approvable: ids.some((id) => id !== author && countsFor(oracle, policy, id)) })
+  }
+  return { met: pending.length === 0, unreadable: false, pending }
 }
