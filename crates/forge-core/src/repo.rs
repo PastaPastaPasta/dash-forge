@@ -1756,7 +1756,58 @@ impl<'a> RepoService<'a> {
                 }
             }
         }
+        // Every copy failed: the recorded mirrors of a public repository's pack (UPDATE-1
+        // `packMirror`), members' first, at most 8 addresses, each verified against the hash.
+        if let Some(first) = copies.first() {
+            if let Some(bytes) = self
+                .fetch_from_mirrors(repo, contract, first, roles, reader)
+                .await
+            {
+                return Ok((bytes, first));
+            }
+        }
         Err(last)
+    }
+
+    /// `manifest`'s pack from its recorded mirrors ([`crate::pack_mirror`]), when every copy
+    /// failed: a public repository's only, read in the shared order and verified against the
+    /// pack hash. `None` when there is none, or none serves (one read of the records).
+    async fn fetch_from_mirrors(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        manifest: &PackManifestInfo,
+        roles: &RoleMap,
+        reader: &PackReader,
+    ) -> Option<Vec<u8>> {
+        if repo.visibility != Visibility::Public {
+            return None;
+        }
+        let hash = hex::encode(manifest.pack_hash);
+        let mirrors = crate::pack_mirror::mirrors_of(self.client, contract, repo, &hash)
+            .await
+            .ok()?;
+        let uris = crate::pack_mirror::read_order(
+            repo,
+            &hash,
+            std::slice::from_ref(&hash),
+            &mirrors,
+            roles,
+        );
+        if uris.is_empty() {
+            return None;
+        }
+        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
+        match reader.fetch_verified(&uris, &hash, size, None).await {
+            Ok(bytes) => {
+                tracing::info!(pack = %hash, "pack served by a recorded mirror");
+                Some(bytes)
+            }
+            Err(e) => {
+                tracing::info!(pack = %hash, error = %e, "no recorded mirror served the pack");
+                None
+            }
+        }
     }
 
     /// Every git pack of `git` (best copy, opened), with its hash, for a repack. A pack this
