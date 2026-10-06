@@ -1506,7 +1506,8 @@ function PullPage({
                 </section>
               ) : null}
 
-              {merged ? (
+              {/* Public repositories only for now: a private repo's config is sealed. */}
+              {merged && repo.visibility === 'public' ? (
                 <RulesAtMerge sdk={sdk} repo={repo} thread={thread} configHistory={() => baseRefReaders(sdk!, repo).configHistory()} pageChecks={checks.data} />
               ) : null}
 
