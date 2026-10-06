@@ -51,8 +51,36 @@ async function signedInAs(browser: Browser, name: string, encryption: boolean): 
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   if (existsSync(saved)) {
     await unlock(page)
-    return page
+  } else {
+    await importWith(page, name, encryption)
+    mkdirSync(join(__dirname, '.playwright', 'auth'), { recursive: true, mode: 0o700 })
+    await context.storageState({ path: saved, indexedDB: true })
   }
+  if (encryption) await ensureEncryptionKey(page, name)
+  return page
+}
+
+/** Settings → Private repos: this browser holds the identity's encryption key (added from its file once). */
+async function ensureEncryptionKey(page: Page, name: string): Promise<void> {
+  await page.goto('/settings/', { waitUntil: 'domcontentloaded' })
+  await unlock(page)
+  await expect(page.getByTestId('encryption-key-panel')).toBeVisible({ timeout: 60_000 })
+  const stored = page.getByTestId('encryption-key-stored')
+  const file = page.locator('#enc-file')
+  const prompt = page.getByTestId('encryption-unlock')
+  await expect(stored.or(file).or(prompt).first()).toBeVisible({ timeout: 60_000 })
+  if (await prompt.isVisible()) {
+    await prompt.getByLabel('Passphrase').fill(PASSPHRASE)
+    await prompt.getByRole('button', { name: /^unlock$/i }).click()
+    await expect(stored.or(file).first()).toBeVisible({ timeout: 60_000 })
+  }
+  if (!(await stored.isVisible())) {
+    await file.setInputFiles(idFile(name))
+    await expect(stored).toBeVisible({ timeout: 60_000 })
+  }
+}
+
+async function importWith(page: Page, name: string, encryption: boolean): Promise<void> {
   await page.getByRole('banner').getByRole('button', { name: /^sign in$/i }).first().click()
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', idFile(name))
@@ -61,9 +89,6 @@ async function signedInAs(browser: Browser, name: string, encryption: boolean): 
   if (encryption) await page.getByTestId('enable-private-repos').check()
   await page.getByRole('button', { name: /create this browser's key/i }).click()
   await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 120_000 })
-  mkdirSync(join(__dirname, '.playwright', 'auth'), { recursive: true, mode: 0o700 })
-  await context.storageState({ path: saved, indexedDB: true })
-  return page
 }
 
 /**
