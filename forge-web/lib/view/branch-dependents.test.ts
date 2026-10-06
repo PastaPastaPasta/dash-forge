@@ -19,7 +19,7 @@ describe('dependentsWarning', () => {
 
   it('never blocks the delete when the check fails, but says so', () => {
     const d = { error: 'timeout' }
-    expect(dependentsWarning('x', d)).toBe("Couldn't check whether open pull requests use x: timeout.")
+    expect(dependentsWarning('x', d)).toBe("Couldn't check whether open pull requests use x.")
     expect(deleteNeedsForce(d)).toBe(false)
   })
 })

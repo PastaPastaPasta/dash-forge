@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownEditor } from '@/components/repo/issue-bits'
-import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, commentEditDraftKey, editDraftKey, newIssueDraftKey, readDraft, useDraftState, useDraftText, writeDraft } from './draft-text'
+import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, commentEditDraftKey, editDraftKey, newIssueDraftKey, readDraft, useDraftState, useDraftText, useEditDraft, writeDraft } from './draft-text'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -154,6 +154,34 @@ describe('useDraftState (edits and new issues)', () => {
     expect(JSON.parse(readDraft('A:R:T:edit'))).toEqual({ title: 't', body: 'b', rev: 1 })
     act(() => api!.set(null))
     expect(readDraft('A:R:T:edit')).toBe('')
+  })
+})
+
+describe('useEditDraft', () => {
+  type Edit = { title: string; body: string; rev: number }
+  let api: ReturnType<typeof useEditDraft<Edit>> | null = null
+  function Editor({ rev }: { rev: number }): JSX.Element {
+    api = useEditDraft<Edit>('A:R:T:edit', (d) => d.rev === rev, (d) => d.title !== 'Saved' || d.body !== 'saved body')
+    return <span />
+  }
+
+  it('stores an edit only while it differs from the saved document', () => {
+    act(() => root.render(<Editor rev={1} />))
+    act(() => api!.set({ title: 'Saved', body: 'saved body', rev: 1 }))
+    expect(api!.value).toEqual({ title: 'Saved', body: 'saved body', rev: 1 })
+    expect(readDraft('A:R:T:edit')).toBe('')
+    act(() => api!.set({ title: 'Saved', body: 'changed', rev: 1 }))
+    expect(JSON.parse(readDraft('A:R:T:edit'))).toMatchObject({ body: 'changed' })
+    act(() => api!.set(null))
+    expect(api!.value).toBeNull()
+    expect(readDraft('A:R:T:edit')).toBe('')
+  })
+
+  it('says when a stored edit was discarded because the document changed', () => {
+    writeDraft('A:R:T:edit', JSON.stringify({ title: 't', body: 'old', rev: 1 }))
+    act(() => root.render(<Editor rev={2} />))
+    expect(api!.value).toBeNull()
+    expect(api!.dropped).toBe(true)
   })
 })
 

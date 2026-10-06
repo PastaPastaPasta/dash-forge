@@ -165,8 +165,10 @@ export function useDraftText(key: string | null): [string, (text: string) => voi
  * since the edit started, the comment is gone) reads as none and is dropped, so an old edit never
  * resurrects over a newer saved version. `null` removes it.
  */
-export function useDraftState<T>(key: string | null, valid: (value: T) => boolean): [T | null, (value: T | null) => void, (held: boolean, value: T | null) => void] {
+export function useDraftState<T>(key: string | null, valid: (value: T) => boolean): [T | null, (value: T | null) => void, (held: boolean, value: T | null) => void, boolean] {
   const [text, setText, holdText] = useDraftText(key)
+  // A stored value dropped as stale in this mount (the page says so).
+  const [dropped, setDropped] = useState(false)
   const validRef = useRef(valid)
   validRef.current = valid
   let value: T | null = null
@@ -179,9 +181,32 @@ export function useDraftState<T>(key: string | null, valid: (value: T) => boolea
   }
   const stale = value !== null && !valid(value)
   useEffect(() => {
-    if (stale) setText('')
+    if (stale) {
+      setText('')
+      setDropped(true)
+    }
   }, [stale, setText])
   const set = useCallback((v: T | null) => setText(v === null ? '' : JSON.stringify(v)), [setText])
   const hold = useCallback((on: boolean, v: T | null) => holdText(on, v === null ? '' : JSON.stringify(v)), [holdText])
-  return [stale ? null : value, set, hold]
+  return [stale ? null : value, set, hold, dropped]
+}
+
+/**
+ * An edit box's draft ({@link useDraftState}): the edit in progress, stored only while it differs
+ * from the saved document (`changed`), so opening Edit and leaving stores nothing. `dropped`: a
+ * stored edit was discarded because the document changed since it started.
+ */
+export function useEditDraft<T>(
+  key: string | null,
+  valid: (value: T) => boolean,
+  changed: (value: T) => boolean,
+): { readonly value: T | null; readonly set: (value: T | null) => void; readonly dropped: boolean } {
+  const [stored, store, , dropped] = useDraftState<T>(key, valid)
+  const [local, setLocal] = useState<{ readonly key: string | null; readonly value: T | null } | null>(null)
+  const value = local !== null && local.key === key ? local.value : stored
+  const set = (v: T | null): void => {
+    setLocal({ key, value: v })
+    store(v !== null && changed(v) ? v : null)
+  }
+  return { value, set, dropped }
 }

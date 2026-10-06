@@ -17,7 +17,7 @@ const MAX_NAMED = 5
  * name.
  */
 export function dependentsWarning(name: string, d: Dependents): string | null {
-  if ('error' in d) return `Couldn't check whether open pull requests use ${name}: ${d.error}.`
+  if ('error' in d) return `Couldn't check whether open pull requests use ${name}.`
   const partial = d.searched !== null ? ` (of the newest ${d.searched} pull requests)` : ''
   if (d.pulls.length === 0) return d.searched !== null ? `No open pull request among the newest ${d.searched} uses ${name}.` : null
   const named = d.pulls

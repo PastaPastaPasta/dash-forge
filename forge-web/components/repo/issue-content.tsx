@@ -27,7 +27,7 @@ import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
-import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftState, useDraftText } from '@/lib/view/draft-text'
+import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
@@ -199,15 +199,23 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // once the issue or the comment changes, the old edit is dropped, never restored over it.
   const editIssueId = data?.issue.id ?? ''
   const issueRev = data?.issue.revision ?? -1
-  const [editDraft, setEditDraft] = useDraftState<{ title: string; body: string; rev: number }>(editDraftKey(home.repo, editIssueId, identity), (d) => d.rev === issueRev)
-  const editing = editDraft
-  const setEditing = (e: { title: string; body: string } | null): void => setEditDraft(e === null ? null : { title: e.title, body: e.body, rev: issueRev })
-  const comments = useMemo(() => (data?.timeline ?? []).flatMap((t) => (t.kind === 'comment' ? [t.comment] : [])), [data])
-  const [editingComment, setCommentEdit] = useDraftState<{ id: string; body: string; rev: number | null }>(commentEditDraftKey(home.repo, editIssueId, identity), (d) =>
-    comments.some((c) => c.id === d.id && (c.revision ?? null) === d.rev),
+  const editDraft = useEditDraft<{ title: string; body: string; rev: number }>(
+    editDraftKey(home.repo, editIssueId, identity),
+    (d) => d.rev === issueRev,
+    (d) => d.title !== (data?.issue.title ?? '') || d.body !== (data?.issue.body ?? ''),
   )
+  const editing = editDraft.value
+  const setEditing = (e: { title: string; body: string } | null): void => editDraft.set(e === null ? null : { title: e.title, body: e.body, rev: issueRev })
+  const comments = useMemo(() => (data?.timeline ?? []).flatMap((t) => (t.kind === 'comment' ? [t.comment] : [])), [data])
+  const commentDraft = useEditDraft<{ id: string; body: string; rev: number | null }>(
+    commentEditDraftKey(home.repo, editIssueId, identity),
+    (d) => comments.some((c) => c.id === d.id && (c.revision ?? null) === d.rev),
+    (d) => d.body !== comments.find((c) => c.id === d.id)?.body,
+  )
+  const editingComment = commentDraft.value
   const setEditingComment = (e: { id: string; body: string } | null): void =>
-    setCommentEdit(e === null ? null : { id: e.id, body: e.body, rev: comments.find((c) => c.id === e.id)?.revision ?? null })
+    commentDraft.set(e === null ? null : { id: e.id, body: e.body, rev: comments.find((c) => c.id === e.id)?.revision ?? null })
+  const editsDropped = editDraft.dropped || commentDraft.dropped
   // A hidden issue's body and timeline show only after "Show it anyway" (RC2 MOD).
   const [threadRevealed, setThreadRevealed] = useState(false)
 
@@ -525,7 +533,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
           </div>
           <div className="px-4 py-3">
-            {editing ? (
+            {editsDropped && editing === null && editingComment === null ? (
+                    <p role="status" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="edit-draft-dropped">
+                      Your unsaved edit was discarded: it changed on Platform since you started.
+                    </p>
+                  ) : null}
+                  {editing ? (
               <>
                 <MarkdownEditor id="edit-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
                 <BodyCounter repo={home.repo} text={editing.body} field="description" long={editLong} />
