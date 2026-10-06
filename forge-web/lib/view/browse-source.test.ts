@@ -13,6 +13,14 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Pack mirrors (UPDATE-1) are read only after every copy failed: these tests count the copies'
+// own reads, so the mirror read is stubbed (none recorded) unless a test sets addresses.
+const mirrorUris: { value: string[] } = { value: [] }
+vi.mock('../repo/pack-mirrors', async (orig) => ({
+  ...(await orig<typeof import('../repo/pack-mirrors')>()),
+  mirrorUrisOf: async () => mirrorUris.value,
+}))
+
 import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
 import { bytesToBase64 } from '../sdk'
@@ -942,6 +950,33 @@ describe('fork pack via a platform:// locator', () => {
       const got = await loadArtifactBytesProgress(sdk, FORK, manifest)
       expect(bytesToHex(sha256(got))).toBe(hash)
     } finally {
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+    }
+  })
+
+  it('reads a recorded pack mirror when every copy failed, and only bytes that hash to the pack', async () => {
+    const tampered = bytes.slice()
+    tampered[0]! ^= 0xff
+    const { sdk } = parentSdk(tampered)
+    const served: string[] = []
+    let good = true
+    vi.stubGlobal('fetch', (url: string) => {
+      served.push(String(url))
+      return Promise.resolve(new Response(good ? bytes.slice() : tampered.slice()))
+    })
+    mirrorUris.value = ['https://mirror.example/recorded']
+    try {
+      const manifest = forkManifest(`platform://CORE/PARENT/uploader/${hash}`)
+      const got = await loadArtifactBytesProgress(sdk, FORK, manifest)
+      expect(bytesToHex(sha256(got))).toBe(hash)
+      expect(served).toEqual(['https://mirror.example/recorded'])
+      // A mirror serving other bytes is no copy: the copies' own failure stands.
+      resetExternalFetchState()
+      good = false
+      await expect(loadArtifactBytesProgress(sdk, FORK, manifest)).rejects.toBeDefined()
+    } finally {
+      mirrorUris.value = []
       vi.unstubAllGlobals()
       resetExternalFetchState()
     }
