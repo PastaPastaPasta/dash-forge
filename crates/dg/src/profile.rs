@@ -62,7 +62,10 @@ async fn show(ctx: &Ctx, who: Option<&str>) -> Result<()> {
     let id = identity_of(ctx, &client, who).await?;
     let profile = core_profile::read_profile(&client, forge, &id).await?;
     // The badge needs both sides: the operator's profile is read only when this one names one.
-    let operator = core_profile::verified_operator(&client, forge, &id, profile.as_ref()).await?;
+    // Best effort: an operator's profile that cannot be read leaves the badge unconfirmed.
+    let operator = core_profile::verified_operator(&client, forge, &id, profile.as_ref())
+        .await
+        .unwrap_or_default();
     let claimed = profile
         .as_ref()
         .and_then(|p| p.bot.as_ref())

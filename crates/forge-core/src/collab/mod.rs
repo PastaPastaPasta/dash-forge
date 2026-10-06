@@ -457,7 +457,11 @@ pub(crate) fn release_from_doc(d: &platform::FetchedDocument) -> Release {
             .and_then(FieldValue::as_i64)
             .unwrap_or(0),
         sealed: None,
-        target_oid: d.field_hex("targetOid"),
+        // An oid is 20 or 32 bytes (`$defs.oid`); anything else is no record, as on the web.
+        target_oid: d
+            .field_bytes("targetOid")
+            .filter(|b| b.len() == 20 || b.len() == 32)
+            .map(hex::encode),
     }
 }
 

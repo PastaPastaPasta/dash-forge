@@ -19,7 +19,8 @@ import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { mirrorRepo, pullHref } from '@/components/repo/target-href'
 import { importedHost } from '@/lib/view/ref-targets'
-import { closedByPr } from '@/lib/rules/transition'
+import { closedByPr, type ClosingPr } from '@/lib/rules/transition'
+import { readClosingPr } from '@/lib/repo/closing-pull'
 
 function stateOf(p: PullRow): { label: string; icon: JSX.Element } {
   const { label, Icon, klass } = pullStateView(p.state)
@@ -116,13 +117,42 @@ export function LinkedPulls({ addr, number, backlinks }: { addr: RepoAddress | u
 }
 
 /**
- * The PR a close names as its cause (`closedByPr`), when it holds (the shared `closedByPr` rule):
- * among the PRs whose description closes issue `issue`, merged and not imported. Null otherwise
- * (not read yet, not merged, or naming another PR): the close shows as a plain one.
+ * The PR `close` names as its cause (`closedByPr`), when it holds (the shared `closedByPr` rule:
+ * merged no later than the close, not imported, its description closing issue `issue`), as a
+ * timeline link. From the backlinks' merges when they hold it, else from `read` (the PR read by
+ * number, {@link useNamedClosingPulls}). Null otherwise, or not read yet: a plain close.
  */
-export function namedClosingPull(backlinks: IssueBacklinks, issue: number, pr: number): PullRow | null {
-  const p = backlinks.linking.data?.pulls.find((x) => x.number === pr)
-  if (p === undefined) return null
-  const ok = closedByPr(issue, pr, { number: p.number, merged: p.state.merged, body: p.body, imported: p.imported })
-  return ok === null ? null : p
+export function namedClosingPull(
+  backlinks: IssueBacklinks,
+  read: ReadonlyMap<number, ClosingPr | null>,
+  issue: number,
+  close: { readonly closedByPr?: number; readonly createdAt: number },
+): { readonly number: number; readonly title: string } | null {
+  const n = close.closedByPr
+  if (n === undefined) return null
+  const m = backlinks.merges.find((x) => x.pull.number === n)
+  const pr: ClosingPr | null | undefined = m
+    ? { number: n, merged: m.pull.state.merged, mergedAt: m.merge.createdAt, body: m.pull.body, imported: m.pull.imported }
+    : read.get(n)
+  if (pr === undefined || closedByPr(issue, n, close.createdAt, pr) === null) return null
+  const title = m?.pull.title ?? backlinks.linking.data?.pulls.find((p) => p.number === n)?.title ?? ''
+  return { number: n, title }
 }
+
+/**
+ * The PRs `closes` name that the backlinks' merges do not hold, read by number once the backlinks
+ * settled (`enabled`): usually none, so nothing is read. Public repos only.
+ */
+export function useNamedClosingPulls(home: RepoHome, backlinks: IssueBacklinks, closes: readonly number[], enabled: boolean): ReadonlyMap<number, ClosingPr | null> {
+  const { sdk, ready } = useSdk(repoContractIds(home.repo))
+  const missing = [...new Set(closes)].filter((n) => !backlinks.merges.some((m) => m.pull.number === n)).sort((a, b) => a - b)
+  const settled = backlinks.linking.data !== null || backlinks.linking.error !== null
+  const { data } = useAsync(
+    async () => new Map(await Promise.all(missing.map(async (n) => [n, await readClosingPr(sdk!, home.repo, n).catch(() => null)] as const))),
+    [ready, repoKey(home.repo), missing.join(',')],
+    { enabled: enabled && settled && ready && sdk !== null && missing.length > 0 && home.repo.visibility === 'public' },
+  )
+  return data ?? NO_READ
+}
+
+const NO_READ: ReadonlyMap<number, ClosingPr | null> = new Map()

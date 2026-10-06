@@ -2892,11 +2892,17 @@ mod tests {
                 struct ClosedByInput {
                     issue: u32,
                     closed_by_pr: Option<u32>,
+                    closed_at: u64,
                     pr: Option<super::transition::ClosingPr>,
                 }
                 let inp: ClosedByInput = input(v);
                 let got =
-                    super::transition::closed_by_pr(inp.issue, inp.closed_by_pr, inp.pr.as_ref());
+                    super::transition::closed_by_pr(
+                    inp.issue,
+                    inp.closed_by_pr,
+                    inp.closed_at,
+                    inp.pr.as_ref(),
+                );
                 assert_eq!(got, expected::<Option<u32>>(v), "vector `{}`", v.name);
             }
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),

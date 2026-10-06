@@ -1,17 +1,17 @@
 {
-  "name": "names_itself",
-  "description": "A close naming the issue's own number reads as a plain close.",
+  "name": "early_close_names_open_pr",
+  "description": "A close naming a PR that was still open then (merged later) reads as a plain close.",
   "rules": "v2",
   "case": "closed_by_pr",
   "input": {
-    "issue": 7,
+    "issue": 3,
     "closedByPr": 7,
     "closedAt": 1000,
     "pr": {
       "number": 7,
       "merged": true,
-      "mergedAt": 900,
-      "body": "Fixes #7",
+      "mergedAt": 1500,
+      "body": "Fixes #3",
       "imported": false
     }
   },

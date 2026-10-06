@@ -318,7 +318,10 @@ pub fn bot_operator(
     bot: Option<&BotClaim>,
     operator: Option<&BotClaim>,
 ) -> Option<String> {
-    let claimed = bot?.operator.as_deref().filter(|o| *o != bot_id)?;
+    let claimed = bot?
+        .operator
+        .as_deref()
+        .filter(|o| !o.is_empty() && *o != bot_id)?;
     operator?
         .operates
         .iter()

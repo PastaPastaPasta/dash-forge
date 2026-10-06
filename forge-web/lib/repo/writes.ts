@@ -804,7 +804,7 @@ export async function createRelease(
   if (input.notes && input.notes.length > 0) fields['notes'] = input.notes
   if (input.assets && input.assets.length > 0) fields['assets'] = releaseAssetsJson(input.assets)
   if (input.targetOid !== undefined) {
-    if (!isRc1OidHex(input.targetOid)) throw new Error(`a release's target must be a 20- or 32-byte oid, not ${JSON.stringify(input.targetOid)}`)
+    if (!isRc1OidHex(input.targetOid)) throw new Error(`${JSON.stringify(input.targetOid)} is not a commit id, so the release cannot record it`)
     if (await contractHasProperty(sdk, repo.forge.core, DOC.release, 'targetOid')) fields['targetOid'] = hexToBytes(input.targetOid)
   }
   const attempt = async (): Promise<WriteResult> =>

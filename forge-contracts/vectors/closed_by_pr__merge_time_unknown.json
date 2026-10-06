@@ -1,6 +1,6 @@
 {
-  "name": "imported_pr",
-  "description": "An imported PR's closing references are the source forge's numbers: a plain close.",
+  "name": "merge_time_unknown",
+  "description": "A merged PR whose merge time is not known cannot be checked against the close: a plain close.",
   "rules": "v2",
   "case": "closed_by_pr",
   "input": {
@@ -10,9 +10,9 @@
     "pr": {
       "number": 7,
       "merged": true,
-      "mergedAt": 900,
+      "mergedAt": null,
       "body": "Fixes #3",
-      "imported": true
+      "imported": false
     }
   },
   "expected": null

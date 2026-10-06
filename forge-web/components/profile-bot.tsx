@@ -11,7 +11,7 @@ import { Author } from '@/components/author'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { NETWORKS } from '@/lib/constants'
-import { readBotOperators } from '@/lib/repo/bots'
+import { noteBotClaim, readBotOperators } from '@/lib/repo/bots'
 import type { Profile } from '@/lib/repo/profile'
 
 export function ProfileBot({ identityId, profile }: { identityId: string; profile: Profile }): JSX.Element | null {
@@ -19,9 +19,17 @@ export function ProfileBot({ identityId, profile }: { identityId: string; profil
   const forge = NETWORKS[network].v2
   const claim = profile.bot
   const ids = claim === undefined ? [] : [...(claim.operator ? [identityId] : []), ...(claim.operates ?? [])]
-  const { data } = useAsync(() => readBotOperators(sdk!, forge!.community, ids), [ready, network, identityId, ids.join(',')], {
-    enabled: ready && sdk !== null && forge !== null && ids.length > 0,
-  })
+  const { data } = useAsync(
+    () => {
+      // This profile is read already: only the others it names are.
+      noteBotClaim(forge!.community, identityId, claim ?? null)
+      return readBotOperators(sdk!, forge!.community, ids)
+    },
+    [ready, network, identityId, ids.join(',')],
+    {
+      enabled: ready && sdk !== null && forge !== null && ids.length > 0,
+    },
+  )
   if (data === null) return null
   const operator = data.get(identityId)
   const operated = (claim?.operates ?? []).filter((b) => data.get(b) === identityId)

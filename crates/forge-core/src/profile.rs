@@ -133,7 +133,7 @@ pub async fn write_bot(
     let community = client.fetch_contract(&forge.community).await?;
     if !community.has_property(DOC_PROFILE, PROFILE_BOT) {
         return Err(crate::error::Error::Config(
-            "this network's Forge contract has no profile.bot field yet".into(),
+            "this network's Forge doesn't support bot accounts yet".into(),
         ));
     }
     let value = bot_value(claim)?;

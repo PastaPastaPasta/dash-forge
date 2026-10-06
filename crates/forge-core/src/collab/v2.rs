@@ -4133,10 +4133,13 @@ impl<'a> Collab<'a> {
         if let (Some(n), Visibility::Public) = (close.closed_by_pr, repo.visibility) {
             let pr = match self.patch(repo, n).await? {
                 Some(p) => {
-                    let sum = self.state_sum(repo, &p.document_id).await?;
+                    let collab = self.collab_contract(repo).await?;
+                    let transitions = self.transitions_of(&collab, &p.document_id).await?;
+                    let merge = crate::rules::transition::merge_transition(&transitions);
                     Some(crate::rules::transition::ClosingPr {
                         number: n,
-                        merged: crate::rules::transition::status_of_code(sum).merged,
+                        merged: merge.is_some(),
+                        merged_at: merge.map(|t| t.created_at),
                         body: p.body.clone(),
                         imported: p.imported.is_some(),
                     })
@@ -4146,6 +4149,7 @@ impl<'a> Collab<'a> {
             return Ok(crate::rules::transition::closed_by_pr(
                 issue,
                 Some(n),
+                close.created_at,
                 pr.as_ref(),
             ));
         }
@@ -6466,7 +6470,7 @@ impl<'a> Collab<'a> {
                     .filter(|b| b.len() == 20 || b.len() == 32)
                     .ok_or_else(|| {
                         Error::Config(format!(
-                            "release target {oid:?} is not a 20- or 32-byte oid"
+                            "{oid:?} is not a commit id, so the release cannot record it"
                         ))
                     })?;
                 p.insert(RELEASE_TARGET_OID.to_string(), FieldValue::bytes(bytes));

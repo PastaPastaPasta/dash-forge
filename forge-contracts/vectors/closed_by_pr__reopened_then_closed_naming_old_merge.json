@@ -1,12 +1,12 @@
 {
-  "name": "verified",
-  "description": "A close naming merged PR #7, whose description closes the issue, reads \"closed in #7\".",
+  "name": "reopened_then_closed_naming_old_merge",
+  "description": "After a reopen, a later close naming the PR merged before it still reads closed in #7 (merged no later than this close).",
   "rules": "v2",
   "case": "closed_by_pr",
   "input": {
     "issue": 3,
     "closedByPr": 7,
-    "closedAt": 1000,
+    "closedAt": 5000,
     "pr": {
       "number": 7,
       "merged": true,

@@ -582,9 +582,9 @@ function runCaseV2(v: Vector): void {
       break
     }
     case 'closed_by_pr': {
-      onlyKeys(v, ['issue', 'closedByPr', 'pr'])
-      const inp = v.input as { readonly issue: number; readonly closedByPr: number | null; readonly pr: v2.ClosingPr | null }
-      expect(v2.closedByPr(inp.issue, inp.closedByPr, inp.pr)).toEqual(v.expected)
+      onlyKeys(v, ['issue', 'closedByPr', 'closedAt', 'pr'])
+      const inp = v.input as { readonly issue: number; readonly closedByPr: number | null; readonly closedAt: number; readonly pr: v2.ClosingPr | null }
+      expect(v2.closedByPr(inp.issue, inp.closedByPr, inp.closedAt, inp.pr)).toEqual(v.expected)
       break
     }
     case 'profile_bot': {

@@ -1431,7 +1431,7 @@ impl<'a> RepoService<'a> {
         if let Some(id) = &next.moved_to {
             if !contract.has_property(DOC_CONFIG, CONFIG_MOVED_TO) {
                 return Err(Error::Config(
-                    "this network's Forge contract has no config.movedTo field yet".into(),
+                    "this network's Forge doesn't support marking a repository as moved yet".into(),
                 ));
             }
             props.insert(

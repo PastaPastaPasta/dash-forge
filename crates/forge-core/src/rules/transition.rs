@@ -482,6 +482,9 @@ pub struct ClosingPr {
     pub number: u32,
     /// It is merged (state code 2).
     pub merged: bool,
+    /// When its merge was recorded (`$createdAt` of its merge transition, ms), when known.
+    #[serde(default)]
+    pub merged_at: Option<u64>,
     /// Its description.
     pub body: String,
     /// It was imported from another forge (its `Fixes #n` are the source's numbers).
@@ -489,17 +492,23 @@ pub struct ClosingPr {
     pub imported: bool,
 }
 
-/// The pull request an issue close of `issue` was made by, when the close says so and it holds:
-/// `closed_by_pr` names a pull request (`pr`, as read) that is merged, not imported, is not the
-/// issue itself, and whose description closes the issue ("Fixes #N",
-/// [`super::review::linked_issues`]). `None` otherwise: the close reads as a plain close. A
+/// The pull request an issue close of `issue` (recorded at `closed_at`) was made by, when the
+/// close says so and it holds: `closed_by_pr` names a pull request (`pr`, as read) that was
+/// merged no later than the close, is not imported, is not the issue itself, and whose
+/// description closes the issue ("Fixes #N", [`super::review::linked_issues`]). `None` otherwise: the close reads as a plain close. A
 /// close that names nothing (`closed_by_pr` `None`, every close written before the field) is
 /// left to the timing match readers used before (`closing_merge`, `closedIn`).
 #[must_use]
-pub fn closed_by_pr(issue: u32, closed_by_pr: Option<u32>, pr: Option<&ClosingPr>) -> Option<u32> {
+pub fn closed_by_pr(
+    issue: u32,
+    closed_by_pr: Option<u32>,
+    closed_at: u64,
+    pr: Option<&ClosingPr>,
+) -> Option<u32> {
     let n = closed_by_pr?;
     let pr = pr.filter(|p| p.number == n && n != issue)?;
-    (pr.merged && !pr.imported && super::review::linked_issues(&pr.body).contains(&issue))
+    let merged_before = pr.merged && pr.merged_at.is_some_and(|at| at <= closed_at);
+    (merged_before && !pr.imported && super::review::linked_issues(&pr.body).contains(&issue))
         .then_some(n)
 }
 

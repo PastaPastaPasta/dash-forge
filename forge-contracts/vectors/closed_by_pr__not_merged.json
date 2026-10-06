@@ -6,9 +6,11 @@
   "input": {
     "issue": 3,
     "closedByPr": 7,
+    "closedAt": 1000,
     "pr": {
       "number": 7,
       "merged": false,
+      "mergedAt": null,
       "body": "Fixes #3",
       "imported": false
     }

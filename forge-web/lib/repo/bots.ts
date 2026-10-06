@@ -36,6 +36,11 @@ async function readClaims(sdk: EvoSDK, community: string, ids: readonly string[]
   }
 }
 
+/** Record a claim already read with its profile (a profile page), so it is not read again. */
+export function noteBotClaim(community: string, id: string, claim: BotClaim | null): void {
+  claims.set(`${community}:${id}`, claim)
+}
+
 /** The verified operator of each of `ids` that is a bot (others are absent). */
 export async function readBotOperators(sdk: EvoSDK, community: string, ids: readonly string[]): Promise<ReadonlyMap<string, string>> {
   const claimOf = (id: string): BotClaim | null => claims.get(`${community}:${id}`) ?? null
