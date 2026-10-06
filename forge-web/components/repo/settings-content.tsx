@@ -40,6 +40,7 @@ import { PrivateMembers } from '@/components/repo/private-members'
 import { SettingsReadOnly } from '@/components/repo/settings-read-only'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { WebhookSettings } from '@/components/repo/webhook-settings'
+import { BanSettings } from '@/components/repo/ban-settings'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
@@ -326,6 +327,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       </Section>
 
       <WebhookSettings home={home} maintainer={viewerRole === 'maintainer'} />
+
+      <BanSettings home={home} maintainer={viewerRole === 'maintainer'} />
 
       <DangerZone home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
 

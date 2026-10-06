@@ -106,6 +106,8 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   // Bonsia (QA wave 3): 49.6M–49.9M; a PR's first review 69.7M–78.0M (35.9M on moutai).
   review: 47_500_000,
   policy: 34_000_000,
+  // UPDATE-1: a maintainer's ban, with its maintainer reference (47.97M measured on sakura, 2026-10-05).
+  ban: 48_000_000,
   // C-1: the ranked star, steady (the starrer holds stars, the repo has some): 17.8M on moutai,
   // 19.4M on bonsia (QA wave 2, N-17)
   star: 18_500_000,

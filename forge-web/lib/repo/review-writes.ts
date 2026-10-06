@@ -43,6 +43,7 @@ import { refitLongBodyField } from '../rules/long-body'
 import { bypassValue } from '../view/pull-actions'
 import { repoSource } from './source'
 import { contractHasProperty } from './contract-shape'
+import { refuseIfBanned } from './bans'
 import { admitAll, gateFor } from './private-content'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
 import type { PrivateSession } from './private-session'
@@ -506,6 +507,8 @@ export async function submitReviewDraft(
   reads?: SubmitReads,
 ): Promise<SubmittedReview> {
   if (draft.identity !== auth.identityId) throw new Error('this pending review belongs to another identity')
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A private repo: the reconcile reads the draft's landed comments decrypted, which needs the
   // reader's session (without it none would match and each would be posted again).
   if (repo.visibility === 'private' && repo.session === undefined) throw new Error("a private repo's review is submitted by a member reading it with their key")

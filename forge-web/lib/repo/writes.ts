@@ -57,6 +57,7 @@ import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
+import { refuseIfBanned } from './bans'
 import { readNewestManifestOfKind } from './packs'
 import { PACK_KIND } from '../constants'
 import { longBodyField } from './long-body'
@@ -393,6 +394,8 @@ export async function createIssue(
   input: { title: string; body: string; intent?: string },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   const data: Record<string, unknown> = { title: input.title }
   // A body longer than its field: its full text stored first (forge-v2.md §6.3), once for
   // every renumbered attempt.
@@ -454,6 +457,8 @@ export async function createPatch(
   input: PatchInput & { intent?: string },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A body longer than its field: its full text stored first (forge-v2.md §6.3).
   const others = { title: input.title, baseRefName: input.baseRefName, sourceRefName: input.sourceRefName }
   const body = await longBodyField(sdk, auth, repo, 'patch', input.body, others, input.intent)
@@ -606,6 +611,8 @@ export async function createComment(
   repo: RepoRef,
   input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext },
 ): Promise<WriteResult> {
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   // A body longer than its field: its full text stored first (forge-v2.md §6.3).
   const body = await longBodyField(sdk, auth, repo, 'comment', input.body, {}, input.intent)
@@ -703,6 +710,8 @@ export async function createReview(
   repo: RepoRef,
   input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext },
 ): Promise<WriteResult> {
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
   if (lockedOut(post)) throw new Error(LOCKED_REASON)

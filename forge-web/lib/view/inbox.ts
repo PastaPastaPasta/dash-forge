@@ -917,6 +917,15 @@ export function visibleItems(items: readonly InboxItem[], hides: InboxHides, sub
   return items.filter((i) => !hiddenThreads.has(threadKey(i)) && !hiddenIds.has(i.id))
 }
 
+/**
+ * `items` without what a banned identity wrote in the repo that banned it (UPDATE-1 `ban`), as the
+ * repo's lists and threads collapse it: `banned` holds each repo's banned identities, by repo id.
+ */
+export function withoutBanned(items: readonly InboxItem[], banned: ReadonlyMap<string, ReadonlySet<string>>): InboxItem[] {
+  if (banned.size === 0) return [...items]
+  return items.filter((i) => banned.get(i.repo.id)?.has(i.actor) !== true)
+}
+
 /** `hides` of the {@link MAX_HIDE_THREADS} threads with the newest hide or unhide. */
 export function pruneHides(hides: InboxHides, max = MAX_HIDE_THREADS): InboxHides {
   const entries = Object.entries(hides.threads)

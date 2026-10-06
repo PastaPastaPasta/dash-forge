@@ -98,6 +98,7 @@ const SECTIONS = [
   ['collaborators', 'Members'],
   ['storage', 'Storage'],
   ['webhooks', 'Webhooks'],
+  ['bans', 'Bans'],
   ['danger', 'Danger zone'],
 ] as const
 

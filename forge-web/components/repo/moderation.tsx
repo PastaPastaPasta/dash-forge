@@ -12,7 +12,8 @@ import { ChevronDown, Eye, EyeOff } from 'lucide-react'
 import { Author } from '@/components/author'
 import { useDismiss } from '@/components/repo/target-rail'
 import { HIDE_REASONS, type Hidden, type HideBlock, type HideReason } from '@/lib/rules/moderation'
-import { banReasonLabel } from '@/lib/rules/bans'
+import { banHidden, banReasonLabel } from '@/lib/rules/bans'
+import { readStandingBans } from '@/lib/repo/bans'
 import { timeAgo } from '@/lib/view'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -341,9 +342,18 @@ export function useHiddenThreads(sdk: EvoSDK | null, ready: boolean, repo: RepoR
   const withHides = (rows ?? []).filter((r) => (r.threadHides?.length ?? 0) > 0)
   const key = withHides.map((r) => `${r.id}:${r.threadHides?.length ?? 0}`).join(',')
   const read = useAsync(() => hiddenThreadIds(sdk!, repo, network, withHides), [ready, repoKey(repo), key], { enabled: ready && sdk !== null && key !== '' })
-  if (key === '') return NO_IDS
+  // The repo's bans (UPDATE-1): one read per repo, shared with its other pages for a while.
+  const bans = useAsync(() => readStandingBans(sdk!, repo, network), [ready, repoKey(repo), network], { enabled: ready && sdk !== null && rows !== undefined })
   // Until the read lands: every hide counts (the registration's default), so no hidden row flashes in.
-  return read.data ?? hiddenRowIds(withHides, repo.ownerId, [], true)
+  const hides = key === '' ? NO_IDS : (read.data ?? hiddenRowIds(withHides, repo.ownerId, [], true))
+  const banned = bans.data
+  if (banned === null || banned.size === 0) return hides
+  const out = new Map(hides)
+  for (const r of rows ?? []) {
+    const b = banned.get(r.author)
+    if (b !== undefined && !out.has(r.id)) out.set(r.id, banHidden(b))
+  }
+  return out
 }
 
 /**

@@ -16,6 +16,9 @@ import { ensureSdk } from '@/lib/sdk'
 import { onSpendRecorded } from '@/lib/spend'
 import { errorMessage } from '@/lib/utils'
 import { resolveDpnsName } from '@/lib/view/dpns'
+import type { EvoSDK } from '@dashevo/evo-sdk'
+import { readStandingBans } from '@/lib/repo/bans'
+import type { RepoRef } from '@/lib/repo'
 import {
   refreshesSubscriptions,
   threadKey,
@@ -28,6 +31,7 @@ import {
   pollOnce,
   savePrefs,
   visibleItems,
+  withoutBanned,
   type InboxItem,
   type InboxPrefs,
   type Subscriptions,
@@ -76,10 +80,29 @@ export function useUnreadCount(): number {
   return useInboxStore((s) => new Set(s.items.filter((i) => !i.read).map(threadKey)).size)
 }
 
+/** Each repo's banned identities, by repo id, as the last poll read them (UPDATE-1 `ban`). */
+let banned: ReadonlyMap<string, ReadonlySet<string>> = new Map()
+
+/** Read the bans of the public repos `items` come from (one read per repo, kept a while). */
+async function readInboxBans(sdk: EvoSDK, network: Network, items: readonly InboxItem[]): Promise<void> {
+  const forge = NETWORKS[network].v2
+  if (forge === null) return
+  const repos = new Map(items.filter((i) => !i.repo.private).map((i) => [i.repo.id, i.repo]))
+  const out = new Map<string, ReadonlySet<string>>()
+  await Promise.all(
+    [...repos.values()].map(async (r) => {
+      const ref: RepoRef = { forge, repoId: r.id, ownerId: r.ownerId, name: r.name, visibility: 'public' }
+      const standing = await readStandingBans(sdk, ref, network).catch(() => new Map())
+      if (standing.size > 0) out.set(r.id, new Set(standing.keys()))
+    }),
+  )
+  banned = out
+}
+
 async function reloadLocal(owner: string, network: Network, me: string): Promise<void> {
   const [stored, subs, prefs, hides] = await Promise.all([loadItems(network, me), loadSubs(network, me), loadPrefs(network, me), loadHides(network, me)])
-  // What a maintainer hid stays out, as in the issue and PR lists.
-  const items = visibleItems(stored, hides, subs ?? null)
+  // What a maintainer hid, or a banned identity wrote, stays out, as in the issue and PR lists.
+  const items = withoutBanned(visibleItems(stored, hides, subs ?? null), banned)
   const state = useInboxStore.getState()
   // Prefs are the store's once loaded: a poll finishing mid-toggle must not revert them.
   if (state.owner === owner) set({ items, subs: subs ?? null, prefs: state.prefs ?? prefs })
@@ -136,6 +159,7 @@ export function useInboxPoller(): void {
         const r = await pollOnce(sdk, network, forge, identity, { refreshSubs, stop: () => cancelled, name: name ?? null })
         if (cancelled || useInboxStore.getState().owner !== owner) return
         set({ lastPoll: Date.now(), lastFeeds: { read: r.feedsRead, total: r.feedsTotal, failed: r.failed }, error: null })
+        await readInboxBans(sdk, network, await loadItems(network, identity)).catch(() => undefined)
         await reloadLocal(owner, network, identity)
       } catch (e) {
         if (!cancelled) set({ error: errorMessage(e) })
