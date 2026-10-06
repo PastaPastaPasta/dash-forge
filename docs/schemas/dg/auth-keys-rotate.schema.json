@@ -9,7 +9,11 @@
       "const": 1
     },
     "status": {
-      "type": "string"
+      "type": "string",
+      "enum": [
+        "added",
+        "replaced"
+      ]
     },
     "identityId": {
       "type": "string"
@@ -26,14 +30,46 @@
     "repos": {
       "type": "array",
       "items": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "repoId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "rotated",
+              "not_maintainer",
+              "failed"
+            ]
+          },
+          "detail": {}
+        }
       }
     },
     "askMaintainer": {
       "type": "array",
       "items": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "repoId": {
+            "type": "string"
+          }
+        }
       }
+    },
+    "disabledKeyIds": {},
+    "storedAt": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
@@ -41,7 +77,9 @@
   },
   "required": [
     "schemaVersion",
-    "status"
+    "status",
+    "identityId",
+    "repos"
   ],
   "additionalProperties": true
 }

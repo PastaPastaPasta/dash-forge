@@ -53,6 +53,9 @@
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     },
+    "totalCost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
     "push": {}
   },
   "required": [

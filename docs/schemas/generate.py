@@ -160,8 +160,10 @@ cmd('auth keys disable', 'A key disabled on the identity.', {
     'status': E('disabled', 'already_disabled'), 'keyId': I, 'cost': COST,
 }, ['status', 'keyId'])
 cmd('auth keys rotate', 'The encryption key rotated, and the repositories it was re-shared to.', {
-    'status': S, 'identityId': S, 'oldKeyIds': A(I), 'newKeyId': I, 'repos': A(OBJ), 'askMaintainer': A(OBJ), 'cost': COST,
-}, ['status'])
+    'status': E('added', 'replaced'), 'identityId': S, 'oldKeyIds': A(I), 'newKeyId': I,
+    'repos': A(O({'repo': S, 'repoId': S, 'status': E('rotated', 'not_maintainer', 'failed'), 'detail': ANY})),
+    'askMaintainer': A(O({'repo': S, 'repoId': S})), 'disabledKeyIds': ANY, 'storedAt': nl(S), 'cost': COST,
+}, ['status', 'identityId', 'repos'])
 cmd('auth name register', 'A DPNS name registered for the identity.', {
     'status': E('registered'), 'name': S, 'identityId': S, 'cost': COST,
 }, ['status', 'name', 'identityId'])
@@ -176,7 +178,7 @@ cmd('auth logout', 'Signed out on this computer.', {
 PUBLISH = {
     'status': S, 'generation': ANY, 'repoId': S, 'ownerId': S, 'name': S, 'remoteUrl': S, 'webUrl': nl(S),
     'storage': ANY, 'network': S, 'visibility': E('public', 'private'), 'protectedPatterns': SA, 'steps': STEPS,
-    'cost': COST, 'push': ANY,
+    'cost': COST, 'totalCost': COST, 'push': ANY,
 }
 cmd('repo create', 'A new repository.', PUBLISH, ['status', 'repoId', 'ownerId', 'name'])
 cmd('init', 'The current git repository published as a new repository.', PUBLISH, ['status', 'repoId', 'ownerId', 'name'])
