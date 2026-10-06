@@ -45,7 +45,7 @@ pub struct CheckRunRow {
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
     /// Consensus `$updatedAt` (ms): when the run was last replaced (its status moving on).
-    /// Absent: never replaced, or not read (the merge audit then takes `created_at`).
+    /// Absent: not read (the merge audit then reads the run as still running at the merge).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<u64>,
 }

@@ -225,6 +225,8 @@ export function useEditDraft<T>(
     store(keep(v))
   }
   const saving = async <R,>(write: () => Promise<R>): Promise<R> => {
+    // The text being saved is the user's own, whatever happens to the write.
+    setSeen(true)
     const v = value
     hold(true, null)
     try {
