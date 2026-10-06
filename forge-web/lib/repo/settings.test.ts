@@ -18,7 +18,9 @@ import type { RepoConfig } from './config'
 import type { RepoRef } from './contract'
 import { onRepoContentWritten } from './push'
 import {
+  CONFIG_LAG_MS,
   DEFAULT_CONFIG,
+  suggestionConfig,
   SealedConfigError,
   applyConfigChange,
   changeHolds,
@@ -305,5 +307,31 @@ describe('the policy in force', () => {
         { createdAt: 5, id: 'c', policy: p(3) },
       ]),
     ).toEqual(p(3))
+  })
+})
+
+describe('the config the protection suggestion judges', () => {
+  const AT = 1_000_000_000
+  const base = {
+    config: { ...DEFAULT_CONFIG, protectedPatterns: ['refs/tags/**'] },
+    sealed: false,
+    unlocked: false,
+    repoDefaultBranch: 'trunk',
+    repoCreatedAt: AT - 60_000,
+    now: AT,
+  }
+  it('is the repo\'s config when one is readable', () => {
+    expect(suggestionConfig(base)).toEqual(base.config)
+  })
+  it('is unknown on a private repo this viewer hasn\'t unlocked, and known once unlocked', () => {
+    expect(suggestionConfig({ ...base, sealed: true })).toBeNull()
+    expect(suggestionConfig({ ...base, sealed: true, unlocked: true })).toEqual(base.config)
+  })
+  it('is unknown for a new repo with no config yet, and protects nothing on an old one, on its own default branch', () => {
+    const old = { ...base, config: null, repoCreatedAt: AT - CONFIG_LAG_MS - 1 }
+    expect(suggestionConfig({ ...base, config: null })).toBeNull()
+    expect(suggestionConfig(old)).toEqual({ ...DEFAULT_CONFIG, defaultBranch: 'trunk' })
+    // A private repo's config is sealed: with none, only finishing its create can write one.
+    expect(suggestionConfig({ ...old, sealed: true, unlocked: true })).toBeNull()
   })
 })

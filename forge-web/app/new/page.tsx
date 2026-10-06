@@ -154,6 +154,17 @@ export default function NewRepoPage(): JSX.Element {
       return errorMessage(e, 'invalid name')
     }
   }, [name, repoName, description])
+  // The branch and protection rules, checked as the user types, before anything is signed.
+  const branchError = useMemo(() => {
+    const branch = defaultBranch.trim()
+    if (branch === '' || branch === 'main') return null
+    try {
+      checkRepoInput({ name: 'x', defaultBranch: branch, ...(protect ? { protect: true } : {}) })
+      return null
+    } catch (e) {
+      return errorMessage(e, 'invalid branch name')
+    }
+  }, [defaultBranch, protect])
   // An unfinished creation of this name resumes with the values it started with.
   const resuming = useMemo(() => {
     if (nameError !== null || repoName === null) return null
@@ -173,7 +184,7 @@ export default function NewRepoPage(): JSX.Element {
     ...(protect ? { protect: true } : {}),
   })
   const costOf = (i: CreateRepoInput) => previewRepoCreate(i, firsts)
-  const cost = costOf(name.trim() && nameError === null ? input() : { name: 'x' })
+  const cost = costOf(name.trim() && nameError === null && branchError === null ? input() : { name: 'x' })
 
   const create = async (i: CreateRepoInput): Promise<void> => {
     if (!signer || !forge) throw new Error('sign in first')
@@ -341,8 +352,20 @@ export default function NewRepoPage(): JSX.Element {
           <Field label="Default branch" htmlFor="repo-branch">
             <div className="relative">
               <GitBranch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
-              <Input id="repo-branch" value={defaultBranch} onChange={(e) => setDefaultBranch(e.target.value)} className="pl-8 font-mono" />
+              <Input
+                id="repo-branch"
+                value={defaultBranch}
+                onChange={(e) => setDefaultBranch(e.target.value)}
+                className="pl-8 font-mono"
+                aria-invalid={branchError !== null}
+                aria-describedby={branchError !== null ? 'repo-branch-error' : undefined}
+              />
             </div>
+            {branchError !== null ? (
+              <p id="repo-branch-error" className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">
+                {branchError}
+              </p>
+            ) : null}
           </Field>
 
           <div className="flex items-start gap-2.5 rounded-md border border-anvil-200 p-3 dark:border-anvil-750">
@@ -399,7 +422,7 @@ export default function NewRepoPage(): JSX.Element {
             variant="primary"
             size="lg"
             className="w-full"
-            disabled={name.trim() === '' || nameError !== null || guard.disabledReason !== null || privateBlocked !== null}
+            disabled={name.trim() === '' || nameError !== null || branchError !== null || guard.disabledReason !== null || privateBlocked !== null}
             title={guard.disabledReason ?? privateBlocked ?? undefined}
             onClick={() => {
               if (guard.check(cost, 'core', 'create a repository')) setConfirm(input())

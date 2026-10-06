@@ -2,24 +2,27 @@
 //!
 //! On forge-v2 a member is a `writer` or `maintainer` document the repo owner creates
 //! (add) or deletes (remove); consensus refuses the removed member's next write at once. A
-//! `writer` document's role is writer, triage or reader (RC2 member roles; reader on private
-//! repositories only); adding a member with another of those roles replaces the document.
+//! `writer` document's role is writer, triage or reader (RC2 member roles); adding a member
+//! with another of those roles replaces the document.
 //! There is no suspend: remove and re-add instead. Adding is a two-party invite: the member
 //! first accepts (`dg collab accept`, their own `consent` document), and the owner's add names
 //! that consent (RC1 `member_consent`); `dg collab add --wait` waits for it.
 //!
-//! On a **private** repository (`docs/security/private-repos.md` §5.5) add also wraps the
-//! current key epoch to the new member, and is refused before anything is written when the
-//! member has no encryption key; remove rotates the key after the delete (a new epoch wrapped
-//! to every remaining member, you first, then its anchor). Past content stays readable to
-//! the removed member: encryption can't take back what was shared.
+//! On a repository with a **members key** — every private repository, and a public one with
+//! members-only content turned on (`dg repo members enable`, DESIGN §4.1) — add also wraps the
+//! current key epoch to the new member, and remove rotates the key after the delete (a new
+//! epoch wrapped to every remaining member, you first, then its anchor). Past content stays
+//! readable to the removed member: encryption can't take back what was shared. This keys on
+//! the members key existing, never on visibility alone (`keyring::has_members_key`). A private
+//! repository refuses an add before anything is written when the member has no encryption key;
+//! a public one adds them and says the key will be shared once they have one.
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::keyring::PrivateSigner;
 use forge_core::members::{
-    awaiting_consent, check_grant, check_role_for, doc_type, ConsentService, MemberReader,
+    awaiting_consent, check_grant, doc_type, holds_members_key, ConsentService, MemberReader,
     MemberService,
 };
 use forge_core::rules::v2::{Role, Visibility};
@@ -41,7 +44,12 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
             wait,
         } => add(ctx, repo, member, *role, *wait).await,
         CollabCommand::Accept { repo, withdraw } => accept(ctx, repo, *withdraw).await,
-        CollabCommand::Remove { repo, member, role } => remove(ctx, repo, member, *role).await,
+        CollabCommand::Remove {
+            repo,
+            member,
+            role,
+            no_resave,
+        } => remove(ctx, repo, member, *role, *no_resave).await,
         CollabCommand::List { repo } => list(ctx, repo).await,
     }
 }
@@ -163,8 +171,6 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
-    // A reader on a public repository is refused before anything else (a client rule).
-    check_role_for(handle, role)?;
     // `member` is an identity id or a DPNS name; resolve it once so every check and write
     // below sees a plain identity id.
     let member: &str = &resolve_identity(client, member, "member").await?;
@@ -184,10 +190,22 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         require_consent(ctx, client, handle, member, wait).await?;
     }
     let private = handle.visibility == Visibility::Private;
-    if private {
-        // Checked before anything is written: a member with no encryption key could be
-        // granted a role but never read the repository (§5.5, ux-dx-spec §9).
-        if !crate::keys::member_can_receive(client, handle, member).await? {
+    // The key goes to the new member whenever the repository has one and the role holds it:
+    // a private repository, or a public one with members-only content (never by visibility
+    // alone: an add that skipped the wrap would leave a member who cannot read).
+    let plan = add_plan(
+        forge_core::keyring::has_members_key(client, handle).await?,
+        handle.visibility,
+        role,
+        change_from,
+    );
+    let (keyed, loses_key) = (plan.wrap, plan.rotate);
+    let can_receive = !keyed || crate::keys::member_can_receive(client, handle, member).await?;
+    if keyed {
+        // Checked before anything is written: in a private repository a member with no
+        // encryption key could be granted a role but never read it (§5.5, ux-dx-spec §9). In a
+        // public one they can still do everything public; the key is shared once they add one.
+        if private && !can_receive {
             return Err(UserError::new(
                 codes::NO_ENCRYPTION_KEY,
                 format!("{member} has no encryption key yet"),
@@ -226,7 +244,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     }
     // QW4-049: the public add said "(one small document)" with no estimate; both were quoted
     // at 20M, under the 48.1M sakura charged.
-    let what = if private {
+    let what = if keyed && can_receive {
         format!(
             "a membership document + a key wrap, {}",
             cost_line(
@@ -247,25 +265,53 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         ),
         None => format!("Add {member} as a {role} of {repo}? ({what})"),
     };
+    // A new maintainer's earlier environment snapshots (ignored until now) start counting with
+    // the role: the environments they would change are saved first, unchanged (DESIGN §4.5).
+    let promotion = if role == Role::Maintainer && !held {
+        Some(crate::env::prepare_promotion(&s, member).await?)
+    } else {
+        None
+    };
+    let question = match &promotion {
+        Some(p) => format!("{}{question}", p.explain(member, ctx.usd_price())),
+        None => question,
+    };
     if !ctx.confirm(&question)? {
         return Err(crate::errors::cancelled());
     }
     let before = s.balance().await;
+    let (protected, protected_text) = match &promotion {
+        Some(p) => p.save(&s).await,
+        None => (serde_json::Value::Null, String::new()),
+    };
+    if !protected_text.is_empty() {
+        eprintln!("{}", protected_text.trim_start());
+    }
     let granted = MemberService::new(client, &s.identity, &s.bridge)
         .grant(handle, member, role)
         .await
         .context("adding the member")?;
-    if private {
+    if keyed && can_receive {
         forge_core::keyring::add_member_wrap(&signer, handle, member)
             .await
             .context("wrapping the repository key to the new member (re-run `dg collab add` to finish: the membership stands)")?;
     }
-    // A role already held writes nothing (a private repository's wrap may still).
-    let spent = if held && !private {
+    let rotation = if loses_key {
+        Some(
+            rotate_after_removal(&signer, handle, member, None)
+                .await
+                .map_err(|e| not_rotated(&e, repo, member))?,
+        )
+    } else {
+        None
+    };
+    // A role already held writes nothing (a keyed repository's wrap may still).
+    let spent = if held && !keyed {
         0
     } else {
         s.spent_since(before).await
     };
+    let key_pending = keyed && !can_receive;
     let price = ctx.usd_price();
     ctx.emit(
         json!({
@@ -273,10 +319,14 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "member": member,
             "role": granted.role.as_str(),
             "previousRole": change_from.map(Role::as_str),
+            "environmentsSavedFirst": protected,
             "documentId": granted.document_id,
             "id": granted.document_id,
             "repo": handle.display(),
             "cost": cost_json(spent, price),
+            "keyShared": keyed && can_receive,
+            "keyPending": key_pending,
+            "rotation": rotation.as_ref().map(crate::keys::rotation_json),
         }),
         || {
             println!(
@@ -286,19 +336,35 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
                 granted.document_id,
                 cost_line(spent, price)
             );
+            if key_pending {
+                println!(
+                    "  {member} has no encryption key yet, so they can't read members-only content; once they add one (`dg auth keys add --encryption`), run `dg repo keys repair {}`",
+                    handle.display()
+                );
+            }
+            if let Some(r) = &rotation {
+                crate::keys::print_rotation(handle, r);
+            }
         },
     );
     Ok(())
 }
 
-async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
+#[allow(clippy::too_many_lines)] // one removal: prompt, re-anchor, revoke, rotate, environments
+async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: bool) -> Result<()> {
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
     // `member` is an identity id or a DPNS name; resolve it once so every check and write
     // below sees a plain identity id.
     let member: &str = &resolve_identity(client, member, "member").await?;
-    let private = handle.visibility == Visibility::Private;
+    // A repository with a members key (private, or public with members-only content) rotates
+    // it away from a removed member whose role held it: keyed on the key, never on visibility.
+    let keyed = remove_rotates(
+        forge_core::keyring::has_members_key(client, handle).await?,
+        handle.visibility,
+        role,
+    );
     if handle.owner_id() != s.identity.id() {
         return Err(forge_core::Error::NotPermitted {
             action: format!("remove a member of {repo}"),
@@ -312,20 +378,35 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
         .role_doc(handle, member, role)
         .await?
         .map_or(role, |m| m.role);
-    let prompt = if private {
+    let prompt = if keyed {
         let members = MemberReader::new(client).list(handle).await?;
         let kr = crate::keys::signer(&s).keyring(handle).await?;
-        private_remove_prompt(&kr, &members, repo, member, shown, ctx.usd_price())
+        keyed_remove_prompt(&kr, &members, handle, repo, member, shown, ctx.usd_price())
     } else {
         format!("Remove {member} as a {shown} of {repo}? Their next write is refused at once")
     };
+    // Environments (DESIGN §4.5), read before they go: what they could read (keyed = held the
+    // key), and those whose counted head a removed maintainer wrote, pinned and saved again
+    // after the rotation (their snapshots stop counting when they go).
+    let mut removal =
+        crate::env::prepare_removal(&s, member, keyed, role == Role::Maintainer).await;
+    let explained = if no_resave {
+        removal.explain_skipped(member)
+    } else {
+        removal.explain(ctx.usd_price())
+    };
+    let prompt = format!("{prompt}{explained}");
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
+    }
+    // the saves are a separate decision (`--yes` answers both)
+    if removal.saves() && !ctx.confirm("Save those environments again as you after the removal?")? {
+        removal.skip_saves(member);
     }
     let signer = crate::keys::signer(&s);
     // Removing a maintainer withdraws their anchors (§5.3): re-anchor their epochs under the
     // same keys first, or the repo would fall back to an older key.
-    let (dropped, losing) = if private && role == forge_core::rules::v2::Role::Maintainer {
+    let (dropped, losing) = if keyed && role == forge_core::rules::v2::Role::Maintainer {
         reanchor(&signer, handle, member).await?
     } else {
         (Vec::new(), Vec::new())
@@ -348,7 +429,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
             .role_doc(handle, member, forge_core::rules::v2::Role::Maintainer)
             .await?
             .is_some();
-    let needs_rotation = private
+    let needs_rotation = keyed
         && !stays_maintainer
         && (removed
             || rotation_still_pending(&signer, handle, member)
@@ -356,12 +437,18 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
                 .unwrap_or(false));
     let rotation = if needs_rotation {
         Some(
-            rotate_after_removal(&signer, handle, member, role)
+            rotate_after_removal(&signer, handle, member, Some(role))
                 .await
                 .map_err(|e| not_rotated(&e, repo, member))?,
         )
     } else {
         None
+    };
+    // after the rotation: the pinned environments saved again, unless changed meanwhile
+    let (resaved, exposed_lines) = if removed {
+        crate::env::finish_removal(&s, &removal).await
+    } else {
+        (serde_json::Value::Null, String::new())
     };
     ctx.emit(
         json!({
@@ -372,6 +459,8 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
             "rotation": rotation.as_ref().map(crate::keys::rotation_json),
             "droppedEpochs": dropped,
             "losingMembers": losing,
+            "environments": removal.exposed,
+            "resavedEnvironments": resaved,
         }),
         || {
             if !dropped.is_empty() {
@@ -386,7 +475,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
                 crate::keys::print_rotation(handle, r);
             }
             if removed {
-                println!("Removed {member} ({shown}) from {}.", handle.display());
+                println!("Removed {member} ({shown}) from {}.{exposed_lines}", handle.display());
             } else {
                 println!(
                     "{member} is not a {shown} of {}; nothing to remove.",
@@ -398,11 +487,45 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     Ok(())
 }
 
-/// The verbatim §9 warning and the cost of a private removal: after it, everyone else (the
-/// rotator included) gets a wrap, plus an anchor.
-fn private_remove_prompt(
+/// What a grant does with the repository's members key (DESIGN §4.1, stream 1F): it keys on the
+/// key existing (`has_key`: a private repository, or a public one with members-only content),
+/// never on visibility alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct KeyPlan {
+    /// Wrap the current key to the member (their new role holds it).
+    wrap: bool,
+    /// Rotate it away from them (a role change to a role that does not hold it).
+    rotate: bool,
+}
+
+/// The [`KeyPlan`] of granting `role` (changing from `change_from`) in a repository of
+/// `visibility` that has a members key or not.
+fn add_plan(
+    has_key: bool,
+    visibility: Visibility,
+    role: Role,
+    change_from: Option<Role>,
+) -> KeyPlan {
+    let holds = |r: Role| holds_members_key(r, visibility);
+    KeyPlan {
+        wrap: has_key && holds(role),
+        rotate: has_key && change_from.is_some_and(holds) && !holds(role),
+    }
+}
+
+/// Whether removing `role` from a member must rotate the members key (when they keep no other
+/// role that holds it, which the caller checks): the repository has one and the role held it.
+fn remove_rotates(has_key: bool, visibility: Visibility, role: Role) -> bool {
+    has_key && holds_members_key(role, visibility)
+}
+
+/// The verbatim §9 warning and the cost of a removal from a repository with a members key:
+/// after it, everyone else (the rotator included) gets a wrap, plus an anchor. A public
+/// repository's warning names only its members-only content.
+fn keyed_remove_prompt(
     kr: &forge_core::keyring::Keyring,
     members: &[forge_core::members::Member],
+    handle: &forge_core::scope::RepoRef,
     repo: &str,
     member: &str,
     role: forge_core::rules::v2::Role,
@@ -426,10 +549,15 @@ fn private_remove_prompt(
             )
         })
         .unwrap_or_default();
+    let unreadable = if handle.visibility == Visibility::Private {
+        "New pushes, issues and comments"
+    } else {
+        "New members-only issues, comments and reviews"
+    };
     format!(
-        "Removing {member} rotates the repo key. New pushes, issues and comments will be \
-         unreadable to {member}. Everything {member} could already read stays readable to \
-         {member} — encryption can't take back what was shared.{burned}\n\
+        "Removing {member} rotates the repo key. {unreadable} will be unreadable to {member}. \
+         Everything {member} could already read stays readable to {member} — encryption can't \
+         take back what was shared.{burned}\n\
          Remove {member} as a {role} of {repo}? (1 delete + {what}, {})",
         cost_line(est + MEMBER_DOC_ESTIMATE_CREDITS, price)
     )
@@ -505,33 +633,43 @@ async fn still_holds_current_key(
         .is_some_and(|r| r.rotate && r.non_members.contains(&member)))
 }
 
-/// The rotation a removal from a private repository runs (§5.5). The member's deletion must
-/// be visible first: a wrap for the new epoch to them would hand back what the removal took
-/// (they are excluded explicitly too, whatever a lagging read says). A member still holding
-/// another role keeps it, so they stay a member and are wrapped like the rest.
+/// The rotation a removal from a repository with a members key runs (§5.5). The member's
+/// deletion must be visible first: a wrap for the new epoch to them would hand back what the
+/// removal took (they are excluded explicitly too, whatever a lagging read says). A member
+/// still holding another role that holds the key keeps it, so they stay a member and are
+/// wrapped like the rest. `removed_role` `None`: a role change to a role that does not hold the
+/// key (their document was replaced, not deleted), so they are excluded outright.
 async fn rotate_after_removal(
     signer: &PrivateSigner<'_>,
     repo: &forge_core::scope::RepoRef,
     member: &str,
-    removed_role: forge_core::rules::v2::Role,
+    removed_role: Option<forge_core::rules::v2::Role>,
 ) -> Result<forge_core::keyring::Rotation> {
-    // Wait until the deleted role document is gone from a proved read (a lagging node would
-    // otherwise list them, and the rotation must not wrap to them). `rotate` excludes them
-    // explicitly as well, unless they still hold the other role.
-    let reader = MemberReader::new(signer.client);
-    let removed_type = doc_type(removed_role);
-    let mut roles = reader.roles_of(repo, member).await?;
-    for _ in 0..DELETE_VISIBLE_ATTEMPTS {
-        if !roles.iter().any(|m| doc_type(m.role) == removed_type) {
-            break;
+    let exclude: Vec<String> = match removed_role {
+        None => vec![member.to_string()],
+        Some(removed_role) => {
+            // Wait until the deleted role document is gone from a proved read (a lagging node
+            // would otherwise list them, and the rotation must not wrap to them). `rotate`
+            // excludes them explicitly as well, unless they still hold another keyed role.
+            let reader = MemberReader::new(signer.client);
+            let removed_type = doc_type(removed_role);
+            let mut roles = reader.roles_of(repo, member).await?;
+            for _ in 0..DELETE_VISIBLE_ATTEMPTS {
+                if !roles.iter().any(|m| doc_type(m.role) == removed_type) {
+                    break;
+                }
+                tokio::time::sleep(DELETE_VISIBLE_DELAY).await;
+                roles = reader.roles_of(repo, member).await?;
+            }
+            let keeps_key = roles.iter().any(|m| {
+                doc_type(m.role) != removed_type && holds_members_key(m.role, repo.visibility)
+            });
+            if keeps_key {
+                Vec::new()
+            } else {
+                vec![member.to_string()]
+            }
         }
-        tokio::time::sleep(DELETE_VISIBLE_DELAY).await;
-        roles = reader.roles_of(repo, member).await?;
-    }
-    let exclude: Vec<String> = if roles.iter().all(|m| doc_type(m.role) == removed_type) {
-        vec![member.to_string()]
-    } else {
-        Vec::new()
     };
     let first = forge_core::keyring::rotate(signer, repo, &exclude)
         .await
@@ -606,4 +744,68 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ROLES: [Role; 4] = [Role::Maintainer, Role::Writer, Role::Triage, Role::Reader];
+
+    #[test]
+    fn a_public_repo_with_members_content_wraps_and_rotates_like_a_private_one() {
+        for vis in [Visibility::Private, Visibility::Public] {
+            for role in ROLES {
+                let holds = holds_members_key(role, vis);
+                assert_eq!(
+                    add_plan(true, vis, role, None),
+                    KeyPlan {
+                        wrap: holds,
+                        rotate: false
+                    },
+                    "{vis:?} {role:?}"
+                );
+                assert_eq!(remove_rotates(true, vis, role), holds, "{vis:?} {role:?}");
+            }
+        }
+        // readers are in the members key (the one named constant)
+        assert_eq!(
+            add_plan(true, Visibility::Public, Role::Reader, None).wrap,
+            forge_core::members::READERS_IN_MEMBERS_KEY
+        );
+    }
+
+    #[test]
+    fn a_public_repo_without_members_content_touches_no_key() {
+        for role in ROLES {
+            for from in [None, Some(Role::Writer), Some(Role::Reader)] {
+                assert_eq!(
+                    add_plan(false, Visibility::Public, role, from),
+                    KeyPlan {
+                        wrap: false,
+                        rotate: false
+                    }
+                );
+            }
+            assert!(!remove_rotates(false, Visibility::Public, role));
+        }
+    }
+
+    #[test]
+    fn a_role_change_between_key_holding_roles_never_rotates() {
+        for vis in [Visibility::Private, Visibility::Public] {
+            for (from, to) in [
+                (Role::Writer, Role::Reader),
+                (Role::Reader, Role::Triage),
+                (Role::Triage, Role::Writer),
+            ] {
+                let plan = add_plan(true, vis, to, Some(from));
+                assert_eq!(
+                    plan.rotate,
+                    holds_members_key(from, vis) && !holds_members_key(to, vis),
+                    "{vis:?} {from:?} -> {to:?}"
+                );
+            }
+        }
+    }
 }

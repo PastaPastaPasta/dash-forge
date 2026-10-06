@@ -62,7 +62,8 @@ fn parse_day(s: &str) -> Result<u64> {
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let r = Reader::open(ctx, repo).await?;
+    // a member counts the members-only issues they can read
+    let r = Reader::open_discussion(ctx, repo).await?;
     let collab = r.collab();
     // Each issue's open state and milestone, for the progress counts: one walk of the issues
     // and one read of the repo feed, folded per issue.

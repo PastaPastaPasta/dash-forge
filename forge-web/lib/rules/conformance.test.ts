@@ -764,6 +764,15 @@ async function runSignatureVector(v: Vector): Promise<void> {
   expect(await verifyCommitSignature(new TextEncoder().encode(inp.commit), inp.signers)).toEqual(v.expected)
 }
 
+/** The mixed-repository cases the Rust rules run and this port does not yet (stream 1B). */
+const MIXED_PENDING_CASES: ReadonlySet<string> = new Set([
+  'content_well_formed',
+  'git_plane_well_formed',
+  'approval_count',
+  'mixed_edit',
+  'mixed_anchor',
+])
+
 /** The key handoff cases (`../auth/key-handoff`): asynchronous, since WebCrypto is. */
 const HANDOFF_CASES: ReadonlySet<string> = new Set(['key_handoff', 'key_handoff_open', 'copy'])
 
@@ -811,16 +820,22 @@ describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
   const base = vectors.filter((v) => v.rules === undefined)
   // `private_*` cases (private-repos.md §11) and the mixed-visibility envelope cases
-  // (`mixed_doc_*`, `named_envelope*`, `named_artifact*`) run in `lib/private/conformance.test.ts`.
-  const isPrivate = (v: Vector) => ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact'].some((p) => v.case.startsWith(p))
-  const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
+  // (`mixed_doc_*`, `named_envelope*`, `named_artifact*`) run in `lib/private/conformance.test.ts`;
+  // the environment snapshots (`env_snapshot*`) in `lib/env/conformance.test.ts`.
+  const isPrivate = (v: Vector) =>
+    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'env_snapshot'].some((p) => v.case.startsWith(p))
+  // Members-only content in public repositories (private-repos.md §17): the Rust rules landed
+  // first; the TypeScript port (phase-1 stream 1B) runs these cases and removes this list.
+  const isMixedPending = (v: Vector) => MIXED_PENDING_CASES.has(v.case)
+  const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v) && !isMixedPending(v))
   const privateVectors = vectors.filter(isPrivate)
+  const mixedPending = vectors.filter(isMixedPending)
 
   it('loads the full vector corpus', () => {
     expect(base.length).toBeGreaterThanOrEqual(45)
     expect(v2Vectors.length).toBeGreaterThanOrEqual(110)
     expect(privateVectors.length).toBeGreaterThanOrEqual(138)
-    expect(base.length + v2Vectors.length + privateVectors.length).toBe(vectors.length)
+    expect(base.length + v2Vectors.length + privateVectors.length + mixedPending.length).toBe(vectors.length)
   })
 
   it('knows every vector rule set', () => {

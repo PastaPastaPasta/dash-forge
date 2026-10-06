@@ -1,0 +1,57 @@
+{
+  "name": "promotion_unprotected",
+  "description": "the writer's old snapshot w0 (ignored while they were a writer) starts counting the moment they become a maintainer, and silently replaces production's values: why the promoting client first saves a snapshot naming it (next vector).",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "resolve",
+    "maintainers": [
+      "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG"
+    ],
+    "manifests": [
+      {
+        "id": "n5wAoLDksMJKTVDCFr3fFtghhb2Fmc1S7dzEWYRh7uc",
+        "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "packHash": "b2a6d564b1ea0bb4f4e024581acfc03655b7a1cf7b282dd922d00f34e1bd19e3",
+        "supersedes": [],
+        "height": 1000
+      },
+      {
+        "id": "FVvGYN98pFESDiDSaxS48NebEuAYYm1CdaVH7E5V8uTh",
+        "ownerId": "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "packHash": "9c9604ab171b0c2262177ddbc9c7b22af6ed0d887b3765c4d487f8f8da429943",
+        "supersedes": [
+          "b2a6d564b1ea0bb4f4e024581acfc03655b7a1cf7b282dd922d00f34e1bd19e3"
+        ],
+        "height": 2000
+      }
+    ],
+    "opened": {
+      "b2a6d564b1ea0bb4f4e024581acfc03655b7a1cf7b282dd922d00f34e1bd19e3": {
+        "env": "production"
+      },
+      "9c9604ab171b0c2262177ddbc9c7b22af6ed0d887b3765c4d487f8f8da429943": {
+        "env": "production"
+      }
+    }
+  },
+  "expected": {
+    "ignored": [],
+    "environments": [
+      {
+        "env": "production",
+        "state": "current",
+        "heads": [
+          "FVvGYN98pFESDiDSaxS48NebEuAYYm1CdaVH7E5V8uTh"
+        ],
+        "snapshots": [
+          "n5wAoLDksMJKTVDCFr3fFtghhb2Fmc1S7dzEWYRh7uc",
+          "FVvGYN98pFESDiDSaxS48NebEuAYYm1CdaVH7E5V8uTh"
+        ],
+        "ignoredNewer": []
+      }
+    ],
+    "hidden": []
+  }
+}

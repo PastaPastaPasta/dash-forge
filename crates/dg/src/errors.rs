@@ -129,6 +129,12 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Repo(Rp::Keys(crate::RepoKeysCommand::Rotate { repo })) => {
             ("key not rotated", Some(repo))
         }
+        Command::Repo(Rp::Members(crate::RepoMembersCommand::Enable { repo })) => {
+            ("members-only content not turned on", Some(repo))
+        }
+        Command::Repo(Rp::Members(crate::RepoMembersCommand::Status { repo })) => {
+            ("could not read the members key", Some(repo))
+        }
         Command::Repo(Rp::Backend(RepoBackendCommand::Set { repo, .. })) => {
             ("backend not changed", Some(repo))
         }
@@ -232,6 +238,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Storage(S::Add(_)) => ("storage profile not added", None),
         Command::Storage(_) => ("storage command failed", None),
         Command::Webhook(w) => w.context(),
+        Command::Env(e) => e.context(),
         Command::Search(crate::SearchCommand::Issues(a) | crate::SearchCommand::Prs(a)) => {
             ("search failed", Some(&a.repo))
         }
