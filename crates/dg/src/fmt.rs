@@ -35,7 +35,7 @@ pub fn safe(text: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// An identity for display: its DPNS name with a shortened id when `names` has one
-/// (`alice.dash (Fi8bQ2xk…)`), as [`forge_core::platform::PlatformClient::dpns_first_names`]
+/// (`alice.dash (Fi8bQ2x…9XwYz)`), as [`forge_core::platform::PlatformClient::dpns_first_names`]
 /// reads them, and the full id otherwise. `--json` output keeps full ids.
 pub fn with_name(id: &str, names: &std::collections::BTreeMap<String, String>) -> String {
     match names.get(id) {
@@ -505,6 +505,7 @@ mod tests {
         assert_eq!(with_name("B2", &names), "B2");
         // Both ends, by character: a short or non-ASCII value never splits inside a character.
         assert_eq!(short_identity("abcdefghijklm"), "abcdefghijklm");
+        assert_eq!(short_identity("abcdefghijklmn"), "abcdefg\u{2026}jklmn");
         assert_eq!(short_identity("ééééééé-x-ééééé"), "ééééééé\u{2026}ééééé");
     }
 

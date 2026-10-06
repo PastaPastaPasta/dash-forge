@@ -458,7 +458,7 @@ Fix: pass `--yes` once you have checked what the command will do. The `cause:` l
 
 ## E804
 
-**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, or the policy could not be read. The cause names every unmet rule (`required approvals: 0 of 1; required check `build`: missing`). The policy is a client rule every Forge client applies, not a consensus rule. Nothing was pushed and no merge event was posted.
+**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, or the policy could not be read. The cause names every unmet rule (`required approvals: 0 of 1; required check `build`: missing`). Forge apps enforce the policy; Dash Platform doesn't check it. Nothing was pushed and no merge event was posted.
 
 `dg pr checks` reports E804 (exit 8, as `gh pr checks` does for a pending check) while a check the branch policy requires is missing or still running. A run from a source the policy does not pin for that check is listed but not counted.
 
