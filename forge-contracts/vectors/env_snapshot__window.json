@@ -1,0 +1,362 @@
+{
+  "name": "window",
+  "description": "what a new snapshot names in supersedes: the heads, then the newest snapshot of each other author, then the rest newest first, at most 32; so carol's single old snapshot and bob's newest are named even behind a long run by alice.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "window",
+    "cases": [
+      {
+        "snapshots": [
+          {
+            "id": "x00",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "ef1519fa343f7a48152400c4814c71fad5dea5b2bc0db011873448fbce7be26c",
+            "height": 1000
+          },
+          {
+            "id": "x01",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "ce8ededa134ec0c2fe2a02ecf4eecc7127481c5707a03b0653a8ea4a7ddfac37",
+            "height": 1001
+          },
+          {
+            "id": "x02",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "06e9a514a8b6271cbaa5cf8f446794f6f1083ebb96468342907ab354876030c4",
+            "height": 1002
+          },
+          {
+            "id": "x03",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "dfbc3cebea7f23bc64674110b91feaae67724cf2da9c643d2a90cc10aa7a5aca",
+            "height": 1003
+          },
+          {
+            "id": "x04",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "870ef437cbe93c3f608583308df408950a754112d9f53fa9a2d914bebb59b52f",
+            "height": 1004
+          },
+          {
+            "id": "x05",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "154fc27f04cef05d99e0921694154cc3fca06cf60d2786c996e38d3889000b87",
+            "height": 1005
+          },
+          {
+            "id": "x06",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "0aae5777f1420ec92e469f43fab316c1d64793f342d8612af41b51f61aae8526",
+            "height": 1006
+          },
+          {
+            "id": "x07",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "1c613840abd9e0f1a769842bfd4d96fc84d023827f0a3b7b085008f4251a1e31",
+            "height": 1007
+          },
+          {
+            "id": "x08",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "59dd72e52f807bc2e86d7464ac7615fa19b48af919a495c17ec3df8cb4027fba",
+            "height": 1008
+          },
+          {
+            "id": "x09",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "7745cf6d8787e1c02f820fae618a99e3e4a9a373f02502d8e2e6fd652c6e1cbd",
+            "height": 1009
+          },
+          {
+            "id": "x10",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "46a1631da46add20a4ee805ab84d2498764c0d570b2170c1b4ce2819b5acc974",
+            "height": 1010
+          },
+          {
+            "id": "x11",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "14c47b174d6f75bc89efd80bbfa4d9b7eae7b190115d7f4d7a7817bae18acade",
+            "height": 1011
+          },
+          {
+            "id": "x12",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "4dbc4cb18dc35a733fc148c196a3d2b3f83d70f68118013eab4fc8ddfe387a11",
+            "height": 1012
+          },
+          {
+            "id": "x13",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "8b47febb7a157c33d1a57e89beef716cd72f4ec6161e29da57f09b606c465fd2",
+            "height": 1013
+          },
+          {
+            "id": "x14",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "c6cc055fdaea2b7d35e13afbc0a1e86df8b77578cfb44e5bae693bd056b87ea3",
+            "height": 1014
+          },
+          {
+            "id": "x15",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "1c4afdc0dc36a3deebeefde7fdcb3230fa481711b7dd204aa1b7f6982ef5bc85",
+            "height": 1015
+          },
+          {
+            "id": "x16",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "950d34f2ce304eb3a48c87951a8f14e7e8842d7774c03cec993df7f9f8252881",
+            "height": 1016
+          },
+          {
+            "id": "x17",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "83631dc4d449bfa3e7b97874e1f5763a4fc9bbeb27296711c5d19507b2f5b6ec",
+            "height": 1017
+          },
+          {
+            "id": "x18",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "fb015a99a49f1eddd59183e7834bb05cc1a4c4910003ff6c9948a436326f5a97",
+            "height": 1018
+          },
+          {
+            "id": "x19",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "6dbf5a352e63b1c4db9548c37ded8a952c9fab6c8c5769a5dc175ccdf417cb0d",
+            "height": 1019
+          },
+          {
+            "id": "x20",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "58a1dba73a0e1d4b8317b2e925da90c48b7860ef1f14a9049c0b9cf11d16bd2c",
+            "height": 1020
+          },
+          {
+            "id": "x21",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "b14bc270d6ea226a9aec17d12282e33f59dd142f25581f4192b997b42c1d695a",
+            "height": 1021
+          },
+          {
+            "id": "x22",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "ecd0b21f6898dd38b149cbfd64c518ca99f6acc0536c85a2eb4f31561ccc1b46",
+            "height": 1022
+          },
+          {
+            "id": "x23",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "f01fbaa82afc2691d2be76ad610afd3a151137d3f5ea0fe667c7d84ea4bdcc80",
+            "height": 1023
+          },
+          {
+            "id": "x24",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "0c1e38a6a5a5c0fd0de712bce50aa18af7c3552ee03bd3ebc91cee5a6ef65043",
+            "height": 1024
+          },
+          {
+            "id": "x25",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "98695f67537f8ded4b0e6d2d3e06789e90bb48488605ad8f052c34eb04f8e105",
+            "height": 1025
+          },
+          {
+            "id": "x26",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "f29c644fb9e1abec5b73bfe0e3a26c31ba3bd38482fd1a7e175419078d13a27a",
+            "height": 1026
+          },
+          {
+            "id": "x27",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "86c7847c13504ffebfccb2d3dbe31b70ea0df9be82f5c0223ebd9b416c36f12a",
+            "height": 1027
+          },
+          {
+            "id": "x28",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "3aadfc55524732e53a7fac77c15c23152a4bcda018b596656545d76cbdd0f8be",
+            "height": 1028
+          },
+          {
+            "id": "x29",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "7a67b1133facc371ff36c42ca161696ce048f3fd9f66553d7e5ea8f56d737bdc",
+            "height": 1029
+          },
+          {
+            "id": "x30",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "5b4ca2cafb80a11e52547086eeafdc4c62943750a4766d66f9919825068a5375",
+            "height": 1030
+          },
+          {
+            "id": "x31",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "b06099ffd65c18b9c8f8b12fde3e6fbb229b1843cb86a1d2e478f485642c997a",
+            "height": 1031
+          },
+          {
+            "id": "x32",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "428646867212a5187f5ea7338e83f1a3f61eb6a096b6d3264926c46bc301efd9",
+            "height": 1032
+          },
+          {
+            "id": "x33",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "ce49b0316736d19ec0ff9b376131e3c700de0b2dc6abdb50860582f1c11d5afe",
+            "height": 1033
+          },
+          {
+            "id": "x34",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "04f1cd6747ccf1f6a099841725cb996307956399f065aa669613d05b484743f4",
+            "height": 1034
+          },
+          {
+            "id": "x35",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "45265084a36539c937cb61050555221e3cf4a8eaa3354b312447620f2c7e0300",
+            "height": 1035
+          },
+          {
+            "id": "x36",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "49208dc2498f7421464f3708c8ed2aa552ae80290e0daff3f6162f59fe53581c",
+            "height": 1036
+          },
+          {
+            "id": "x37",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "339c0247ab039bd2237e61d62495b6ce82b3f36f5b399eba4c1262060272cc86",
+            "height": 1037
+          },
+          {
+            "id": "x38",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "c56071ca74dcb50409c008292cc4df2042a6023198c313528becd3ddda04574b",
+            "height": 1038
+          },
+          {
+            "id": "x39",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "567673e5eb2564a079fd934992615e4664956dd868ba16bdf038b6927468823f",
+            "height": 1039
+          },
+          {
+            "id": "x40",
+            "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "packHash": "267b7c8d6c3f8f6fc3cbebab8913d570352e33cf3245d9fd71e2eb3a52e1e18e",
+            "height": 1040
+          },
+          {
+            "id": "x41",
+            "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "packHash": "490b6b99eca95973d2863d1fdb6264fb2390f2ed33c04260b0d58b2ef1a205e8",
+            "height": 1041
+          },
+          {
+            "id": "x42",
+            "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "packHash": "ac49f66eedae922d6b1dc8c961af14577376861a4b9c6adb6f9650e95e61f924",
+            "height": 1042
+          },
+          {
+            "id": "x43",
+            "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "packHash": "2ec42f937d7b877a4ab51e86bc0fe1f1b4fea3a671f4169b88a4df1ae7f0fd6c",
+            "height": 1043
+          },
+          {
+            "id": "x44",
+            "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "packHash": "a3776af9e278d4f9a524164dd830858b35d11b1245bc0da7587e0e8b5f217db2",
+            "height": 1044
+          },
+          {
+            "id": "c0",
+            "ownerId": "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+            "packHash": "7171bbf8748c032e66de57aa418bb8b9c14f65cbebf23269318a7fa1cd50656b",
+            "height": 999
+          }
+        ],
+        "heads": [
+          "x44"
+        ]
+      },
+      {
+        "snapshots": [
+          {
+            "id": "x00",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "ef1519fa343f7a48152400c4814c71fad5dea5b2bc0db011873448fbce7be26c",
+            "height": 1000
+          },
+          {
+            "id": "x01",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "ce8ededa134ec0c2fe2a02ecf4eecc7127481c5707a03b0653a8ea4a7ddfac37",
+            "height": 1001
+          },
+          {
+            "id": "x02",
+            "ownerId": "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "packHash": "06e9a514a8b6271cbaa5cf8f446794f6f1083ebb96468342907ab354876030c4",
+            "height": 1002
+          }
+        ],
+        "heads": [
+          "x02"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      [
+        "a3776af9e278d4f9a524164dd830858b35d11b1245bc0da7587e0e8b5f217db2",
+        "567673e5eb2564a079fd934992615e4664956dd868ba16bdf038b6927468823f",
+        "7171bbf8748c032e66de57aa418bb8b9c14f65cbebf23269318a7fa1cd50656b",
+        "2ec42f937d7b877a4ab51e86bc0fe1f1b4fea3a671f4169b88a4df1ae7f0fd6c",
+        "ac49f66eedae922d6b1dc8c961af14577376861a4b9c6adb6f9650e95e61f924",
+        "490b6b99eca95973d2863d1fdb6264fb2390f2ed33c04260b0d58b2ef1a205e8",
+        "267b7c8d6c3f8f6fc3cbebab8913d570352e33cf3245d9fd71e2eb3a52e1e18e",
+        "c56071ca74dcb50409c008292cc4df2042a6023198c313528becd3ddda04574b",
+        "339c0247ab039bd2237e61d62495b6ce82b3f36f5b399eba4c1262060272cc86",
+        "49208dc2498f7421464f3708c8ed2aa552ae80290e0daff3f6162f59fe53581c",
+        "45265084a36539c937cb61050555221e3cf4a8eaa3354b312447620f2c7e0300",
+        "04f1cd6747ccf1f6a099841725cb996307956399f065aa669613d05b484743f4",
+        "ce49b0316736d19ec0ff9b376131e3c700de0b2dc6abdb50860582f1c11d5afe",
+        "428646867212a5187f5ea7338e83f1a3f61eb6a096b6d3264926c46bc301efd9",
+        "b06099ffd65c18b9c8f8b12fde3e6fbb229b1843cb86a1d2e478f485642c997a",
+        "5b4ca2cafb80a11e52547086eeafdc4c62943750a4766d66f9919825068a5375",
+        "7a67b1133facc371ff36c42ca161696ce048f3fd9f66553d7e5ea8f56d737bdc",
+        "3aadfc55524732e53a7fac77c15c23152a4bcda018b596656545d76cbdd0f8be",
+        "86c7847c13504ffebfccb2d3dbe31b70ea0df9be82f5c0223ebd9b416c36f12a",
+        "f29c644fb9e1abec5b73bfe0e3a26c31ba3bd38482fd1a7e175419078d13a27a",
+        "98695f67537f8ded4b0e6d2d3e06789e90bb48488605ad8f052c34eb04f8e105",
+        "0c1e38a6a5a5c0fd0de712bce50aa18af7c3552ee03bd3ebc91cee5a6ef65043",
+        "f01fbaa82afc2691d2be76ad610afd3a151137d3f5ea0fe667c7d84ea4bdcc80",
+        "ecd0b21f6898dd38b149cbfd64c518ca99f6acc0536c85a2eb4f31561ccc1b46",
+        "b14bc270d6ea226a9aec17d12282e33f59dd142f25581f4192b997b42c1d695a",
+        "58a1dba73a0e1d4b8317b2e925da90c48b7860ef1f14a9049c0b9cf11d16bd2c",
+        "6dbf5a352e63b1c4db9548c37ded8a952c9fab6c8c5769a5dc175ccdf417cb0d",
+        "fb015a99a49f1eddd59183e7834bb05cc1a4c4910003ff6c9948a436326f5a97",
+        "83631dc4d449bfa3e7b97874e1f5763a4fc9bbeb27296711c5d19507b2f5b6ec",
+        "950d34f2ce304eb3a48c87951a8f14e7e8842d7774c03cec993df7f9f8252881",
+        "1c4afdc0dc36a3deebeefde7fdcb3230fa481711b7dd204aa1b7f6982ef5bc85",
+        "c6cc055fdaea2b7d35e13afbc0a1e86df8b77578cfb44e5bae693bd056b87ea3"
+      ],
+      [
+        "06e9a514a8b6271cbaa5cf8f446794f6f1083ebb96468342907ab354876030c4",
+        "ce8ededa134ec0c2fe2a02ecf4eecc7127481c5707a03b0653a8ea4a7ddfac37",
+        "ef1519fa343f7a48152400c4814c71fad5dea5b2bc0db011873448fbce7be26c"
+      ]
+    ]
+  }
+}

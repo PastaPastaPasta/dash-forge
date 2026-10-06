@@ -332,7 +332,9 @@ export {
 } from './fork'
 export { noteForkOf, readForkParent, resetForkParents } from './fork-parent'
 export {
+  CONFIG_LAG_MS,
   DEFAULT_CONFIG,
+  MAX_PATTERN_CHARS,
   MAX_PROTECTED_PATTERNS,
   MERGE_METHODS,
   SealedConfigError,
@@ -354,6 +356,7 @@ export {
   readPolicy,
   sameConfig,
   shortBranch,
+  suggestionConfig,
   toPolicy,
   topicsProblem,
   updateConfig,

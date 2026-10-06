@@ -369,6 +369,13 @@ pub async fn create_repo(
     require_encryption_key(&opts, identity, bridge, &forge.core, client.network())?;
     let owner_bytes = platform::decode_identifier(&owner)?;
     let core = client.fetch_contract(&forge.core).await?;
+    // Refused before anything is written, unless an earlier run already wrote the config: the
+    // patterns matter only to a create that still has its config to write.
+    if let Some(problem) = protect_problem(&opts) {
+        if !config_written(client, &forge, &core, owner_bytes, &opts.name).await? {
+            return Err(problem);
+        }
+    }
     let engine = WriteEngine::new(client, identity, bridge.doc_op_key()?)?;
     let mut journal = Journal::open(
         journal_path(journal_dir, &target.network.key(), &owner, &opts.name),
@@ -510,19 +517,43 @@ async fn private_epoch_zero(
     Ok(("repoKey + anchor config", outcome))
 }
 
+/// Whether the public repository `name` exists with a config. A private repo counts as not
+/// written: its sealed anchor is judged by the key ring, not by a `config` document existing,
+/// and a sealed pattern is beyond the contract's length check.
+async fn config_written(
+    client: &PlatformClient,
+    forge: &ForgeIds,
+    core: &LoadedContract,
+    owner: [u8; 32],
+    name: &str,
+) -> Result<bool> {
+    let Some(repo) = find_named(client, forge, owner, name).await? else {
+        return Ok(false);
+    };
+    if repo.visibility == Visibility::Private {
+        return Ok(false);
+    }
+    Ok(!client
+        .query_documents(core, DOC_CONFIG, &repo.scope()?.filters([]), &[], 1, None)
+        .await?
+        .is_empty())
+}
+
+/// Why the first config's patterns can't be written: `refs/heads/<branch>` can outgrow a
+/// pattern's 100 characters. `None` when there is nothing to protect or they fit.
+fn protect_problem(opts: &CreateRepoOpts) -> Option<Error> {
+    if !opts.protect || crate::repo::check_patterns(&opts.protected_patterns()).is_ok() {
+        return None;
+    }
+    Some(Error::Config(format!(
+        "the default branch name is too long to protect (a protected pattern is at most {} characters); choose a shorter one, or create the repository unprotected",
+        crate::repo::MAX_PATTERN_CHARS
+    )))
+}
+
 /// `opts` with the name normalized to its slug, or why it cannot be created.
 fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
     crate::repo::check_default_branch(&opts.default_branch)?;
-    // The first config's patterns: `refs/heads/<branch>` can outgrow a pattern's 100
-    // characters, and the config is written after the repo and its maintainer.
-    if opts.protect {
-        crate::repo::check_patterns(&opts.protected_patterns()).map_err(|_| {
-            Error::Config(format!(
-                "the default branch name is too long to protect (a protected pattern is at most {} characters); choose a shorter one, or create the repository unprotected",
-                crate::repo::MAX_PATTERN_CHARS
-            ))
-        })?;
-    }
     // RC1 `repo_shape`: a fork is public (`forkIsPublic`).
     if opts.fork_of.is_some() && opts.visibility != Visibility::Public {
         return Err(Error::Config(
@@ -776,19 +807,24 @@ mod tests {
     }
 
     /// CodeRabbit (PR #372): a default branch whose protected pattern would outgrow 100
-    /// characters is refused before anything is written, unless protection is off.
+    /// characters is refused before anything is written, unless protection is off. The check
+    /// is not part of `validated`: a re-run of a create whose config is written passes it.
     #[test]
     fn a_branch_too_long_to_protect_is_refused_before_writing() {
         let mut opts = CreateRepoOpts::public("demo");
         opts.default_branch = "b".repeat(90);
         opts.protect = true;
-        let err = validated(&opts).unwrap_err().to_string();
+        assert!(validated(&opts).is_ok(), "the name and branch are valid");
+        let err = protect_problem(&opts).expect("too long").to_string();
         assert!(err.contains("too long to protect"), "{err}");
         opts.protect = false;
-        assert!(validated(&opts).is_ok());
+        assert!(protect_problem(&opts).is_none());
         opts.default_branch = "b".repeat(89);
         opts.protect = true;
-        assert!(validated(&opts).is_ok(), "refs/heads/ + 89 is exactly 100");
+        assert!(
+            protect_problem(&opts).is_none(),
+            "refs/heads/ + 89 is exactly 100"
+        );
     }
 
     #[test]

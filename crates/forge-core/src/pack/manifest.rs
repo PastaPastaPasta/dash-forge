@@ -15,6 +15,9 @@
 //!   reader rule: the contract checks tips on kind 3 only).
 //! - `6` — a long body: the full text of an issue, PR, comment, review or release notes that
 //!   its field cannot hold (`docs/contracts/forge-v2.md` §6.3, [`crate::rules::long_body`]).
+//! - `8` — an environment snapshot: one whole environment, sealed for its audience, whose
+//!   `supersedes` names the snapshot(s) it replaces ([`crate::env`]). Readers count one only
+//!   when its `$ownerId` is a current maintainer.
 //!
 //! `kind` is a plain `0..=255` integer in forge-core. RC1 removed the per-pack offset index
 //! (`manifestPart` documents and `packManifest.offsetIndexParts`): every artifact locates
@@ -44,6 +47,19 @@ pub const KIND_HISTORY_VERSIONS: u8 = 5;
 /// (sealed in a private repository; forge-v2.md §6.3). `objectCount` 0, no `tips`, no
 /// `supersedes`.
 pub const KIND_LONG_BODY: u8 = 6;
+/// `packManifest.kind == 8`: an environment snapshot ([`crate::env`]): `objectCount` 0, no
+/// `tips`; `supersedes` names the `packHash` of the snapshot(s) it replaces (one, every head of
+/// a fork it resolves, or none for an environment's first). Unlike kinds 1-6, a newer snapshot
+/// never supersedes every older one of its kind: [`plan_supersedes`] is not for it.
+pub const KIND_ENV_SNAPSHOT: u8 = 8;
+/// `packManifest.kind == 64 + k`: the members-only (sealed) form of plain kind `k` in a public
+/// repository (mixed-visibility DESIGN D6). Shipped readers skip a kind they do not know.
+pub const KIND_SEALED_BASE: u8 = 64;
+/// `packManifest.kind == 70`: a members-only long body in a public repository, the UTF-8 text a
+/// members-only field's trailer names, sealed under the repository's members key (DFPK version
+/// 0x01, `docs/security/private-repos.md` §3). Never a public artifact: a members-only text is
+/// stored only in this form. `objectCount` 0, no `tips`, no `supersedes`.
+pub const KIND_MEMBERS_LONG_BODY: u8 = KIND_SEALED_BASE + KIND_LONG_BODY;
 
 /// The `packManifest` document fields (data-contracts §2.3). List fields serialize as
 /// JSON-in-string / packed byteArray at the platform layer, not native arrays.
@@ -121,6 +137,22 @@ impl PackManifest {
             supersedes: Vec::new(),
         }
     }
+
+    /// Manifest for a kind-8 environment snapshot of `sealed` bytes replacing the snapshots
+    /// whose `packHash`es are `supersedes` (lowercase hex).
+    pub fn for_env_snapshot(sealed: &[u8], chunk_count: u64, supersedes: Vec<String>) -> Self {
+        Self {
+            pack_hash: hex::encode(sha256(sealed)),
+            kind: KIND_ENV_SNAPSHOT,
+            size_bytes: sealed.len() as u64,
+            object_count: 0,
+            chunk_count,
+            storage: 0,
+            uris: Vec::new(),
+            tips: Vec::new(),
+            supersedes,
+        }
+    }
 }
 
 /// Plan which prior manifests a freshly published artifact makes redundant.
@@ -141,8 +173,9 @@ pub fn plan_supersedes(
     new: &PackManifest,
     is_full_repack: bool,
 ) -> Vec<String> {
-    // An incremental (non-repack) git pack makes nothing redundant.
-    if new.kind == KIND_GIT_PACK && !is_full_repack {
+    // An incremental (non-repack) git pack makes nothing redundant; an environment snapshot
+    // names what it replaces itself (an older snapshot of another environment stays live).
+    if (new.kind == KIND_GIT_PACK && !is_full_repack) || new.kind == KIND_ENV_SNAPSHOT {
         return Vec::new();
     }
     existing
@@ -208,6 +241,15 @@ mod tests {
             plan_supersedes(&existing, &new, false),
             vec!["aa".to_string()]
         );
+    }
+
+    #[test]
+    fn an_env_snapshot_plans_nothing() {
+        let existing = vec![manifest(KIND_ENV_SNAPSHOT, "aa")];
+        let new = PackManifest::for_env_snapshot(b"x", 1, vec!["aa".into()]);
+        assert!(plan_supersedes(&existing, &new, true).is_empty());
+        assert_eq!(new.supersedes, vec!["aa".to_string()]);
+        assert_eq!((new.kind, new.object_count), (KIND_ENV_SNAPSHOT, 0));
     }
 
     #[test]

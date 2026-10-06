@@ -1,0 +1,18 @@
+{
+  "name": "plaintext_refused",
+  "description": "A plaintext edit of a members-only comment is refused (DESIGN §2.4: the audience is fixed at creation; consensus noPlain admits enc -> body on a comment, so this is the clients' rule).",
+  "case": "mixed_edit",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "kind": "comment",
+      "enc": "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "comment",
+      "body": "now public"
+    }
+  },
+  "expected": false
+}

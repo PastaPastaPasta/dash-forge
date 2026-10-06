@@ -21,8 +21,11 @@
 //! * The review-parity rules in [`super::review`]: the review fold (head, requested reviewers,
 //!   resolved threads, dismissals), branch policy, anchors, review comment groups, suggestions
 //!   and linked issues.
-//! * [`is_well_formed`] — plaintext xor `enc`, no plaintext in a private repo, and ref names
-//!   that hash to their indexed keys (§5).
+//! * [`content_well_formed`] / [`git_plane_well_formed`] — plaintext xor `enc` (members-only
+//!   `enc` v0x03/v0x04 admitted in a public repo's content, never in its git plane), no
+//!   plaintext in a private repo, and ref names that hash to their indexed keys (§5).
+//! * [`counted_reviews`] — which reviews the approval fold counts for a reader who may not open
+//!   them (D15).
 //! * [`ref_name_hashes_agree`] — the ref-name / hash binding, public (`sha256`) or private
 //!   (`HMAC-SHA256(K_ref,e, name)`, applied after decryption).
 //! * [`is_valid_repo_name`] / [`normalize_repo_name`] — the `repo.name` slug (§2).
@@ -712,8 +715,9 @@ pub struct Approvals {
 
 /// Count a PR's approvals, `forge-v2.md` §6.
 ///
-/// `reviews` must already be filtered by [`is_well_formed`] (kind [`ContentKind::Review`]): a
-/// malformed review is skipped by readers, so it does not count here either.
+/// `reviews` must already be filtered by [`content_well_formed`] (kind [`ContentKind::Review`])
+/// and by [`counted_reviews`]: a malformed review is skipped by readers, so it does not count
+/// here either.
 ///
 /// A review counts only if it is on `head_oid` (the PR's folded head, so a head update after
 /// it resets it) and its reviewer was an approver (a maintainer or role-1 writer) at the
@@ -927,31 +931,176 @@ impl ContentDoc {
     }
 }
 
-/// Whether a document is well-formed for its repository, `forge-v2.md` §5. Readers skip a
-/// malformed document.
+/// `enc[0]` of a members-only document in a public repository: sealed under the repository's
+/// key chain ("lane 0") with a per-object key (`docs/security/private-repos.md` §17).
+pub const ENC_MEMBERS: u8 = 0x03;
+/// `enc[0]` of a specific-people document: a per-object key wrapped to each recipient
+/// (`private-repos.md` §17). Its writers come in a later phase; readers admit the form now.
+pub const ENC_SPECIFIC_PEOPLE: u8 = 0x04;
+
+/// The `enc` version byte of `doc` (`enc[0]`), when it carries a non-empty `enc`.
+fn enc_version(doc: &ContentDoc) -> Option<u8> {
+    let hex = doc.enc.as_deref().filter(|e| !e.is_empty())?;
+    u8::from_str_radix(hex.get(..2)?, 16).ok()
+}
+
+/// Who a document is for, read from the document itself (`private-repos.md` §17): no `enc` is
+/// public, `enc` v0x04 names specific people, and any other `enc` (v0x01/v0x02 in a private
+/// repository, v0x03 in a public one) is the repository's members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Audience {
+    /// Everyone: plaintext.
+    Public,
+    /// The repository's current members (and whoever held the key when it was written).
+    Members,
+    /// The recipients the writer listed.
+    SpecificPeople,
+}
+
+impl Audience {
+    /// The audience `doc` was written for (its `enc`, not the repository's visibility).
+    #[must_use]
+    pub fn of(doc: &ContentDoc) -> Self {
+        match enc_version(doc) {
+            None if !present(doc.enc.as_ref()) => Audience::Public,
+            Some(ENC_SPECIFIC_PEOPLE) => Audience::SpecificPeople,
+            _ => Audience::Members,
+        }
+    }
+
+    /// Whether content for `self` may sit under a parent for `parent` (DESIGN §3.3: a child's
+    /// audience is a subset of its parent's). A members-only comment on a public thread is
+    /// allowed; a public reply to a members-only comment is not. Specific people are compared
+    /// by their lists, which this cannot see: only "the same kind" is admitted here.
+    #[must_use]
+    pub fn fits_under(self, parent: Audience) -> bool {
+        match (self, parent) {
+            (_, Audience::Public) => true,
+            (Audience::Public, _) => false,
+            (child, parent) => child == parent,
+        }
+    }
+
+    /// The narrower of two audiences a document sits under (a reply's target and its thread
+    /// root): the one the other fits under.
+    #[must_use]
+    pub fn narrower(self, other: Audience) -> Audience {
+        if self.fits_under(other) {
+            self
+        } else {
+            other
+        }
+    }
+}
+
+/// Whether a document's **content** is well-formed for its repository, `forge-v2.md` §5 and
+/// `docs/security/private-repos.md` §8.1, §17. Readers skip a malformed document. This is the
+/// predicate of issues, patches, comments, reviews and event values; the git plane (the
+/// settings fold, the ref fold) uses [`git_plane_well_formed`], which admits no `enc` at all.
 ///
-/// Plaintext xor `enc`, and the repository's visibility says which:
+/// Plaintext xor `enc`:
 ///
-/// * **public**: no `enc`, the kind's required plaintext field, if it has one
-///   ([`ContentKind`]), and ref names that hash to their keys ([`ref_name_hashes_agree`]
-///   with `sha256`);
+/// * **public**: either the plaintext form (no `enc`, the kind's required plaintext field, if it
+///   has one ([`ContentKind`]), and ref names that hash to their keys
+///   ([`ref_name_hashes_agree`] with `sha256`)), or, for an issue, patch, comment or review
+///   only, the members-only / specific-people form: `enc` version [`ENC_MEMBERS`] or
+///   [`ENC_SPECIFIC_PEOPLE`] with an `epoch`, and none of the kind's plaintext fields. A v0x01 or
+///   v0x02 `enc` stays private-only, so it is malformed here, as is a sealed ref update, config
+///   or release;
 /// * **private**: a non-empty `enc` with an `epoch`, and none of the kind's plaintext fields.
 ///   The names are inside `enc`, so their binding is checked after decryption
 ///   ([`ref_name_hashes_agree`] with the epoch's `K_ref`).
 ///
-/// So plaintext in a private repo (including a private ref update's `refName`) and ciphertext
-/// in a public one are malformed, as is an issue, patch, comment or ref update with neither,
-/// and a patch or ref update filed under one ref's hash while naming another.
+/// So plaintext in a private repo (including a private ref update's `refName`), a private-repo
+/// `enc` in a public one, and plaintext beside `enc` are malformed, as is an issue, patch,
+/// comment or ref update with neither, and a patch or ref update filed under one ref's hash
+/// while naming another.
 #[must_use]
-pub fn is_well_formed(doc: &ContentDoc, visibility: Visibility) -> bool {
+pub fn content_well_formed(doc: &ContentDoc, visibility: Visibility) -> bool {
     let plaintext = doc.plaintext();
     let encrypted = present(doc.enc.as_ref());
     match visibility {
+        Visibility::Public if !encrypted => git_plane_well_formed(doc),
+        // members-only content is discussion: issues, patches, comments and reviews (an event's
+        // value is judged by its own reader); a sealed ref update, config or release is never
+        // public content here
         Visibility::Public => {
-            !encrypted && !plaintext.required_missing && ref_name_hashes_agree(doc, None)
+            matches!(
+                doc.kind,
+                ContentKind::Issue
+                    | ContentKind::Patch
+                    | ContentKind::Comment
+                    | ContentKind::Review
+            ) && matches!(enc_version(doc), Some(ENC_MEMBERS | ENC_SPECIFIC_PEOPLE))
+                && doc.epoch.is_some()
+                && !plaintext.any
         }
         Visibility::Private => encrypted && doc.epoch.is_some() && !plaintext.any,
     }
+}
+
+/// Whether a public repository's **git-plane** document (a `config` of the settings fold, a
+/// `refUpdate` of the ref fold) is well-formed (`forge-v2.md` §5): the plaintext form only. A
+/// `config` or ref update carrying any `enc` is never read as settings or refs here: the
+/// members-key anchor of a public repository is a sealed `config` with no settings, and it must
+/// never become the newest settings row (DESIGN D1). Also the form every public fold that reads
+/// plaintext fields takes (the public release fold, PR lookups by plaintext branch name).
+#[must_use]
+pub fn git_plane_well_formed(doc: &ContentDoc) -> bool {
+    !present(doc.enc.as_ref())
+        && !doc.plaintext().required_missing
+        && ref_name_hashes_agree(doc, None)
+}
+
+/// Whether an edit keeps the document's audience (DESIGN §2.4: a document's audience is fixed at
+/// creation). `stored` is the document as it stands, `edited` the content the replace writes:
+/// a plaintext edit of a sealed document and a sealed edit of a plaintext one are refused (the
+/// contract's `noPlain` admits an `enc` → `body` replace of a `comment`, so this is a client
+/// rule).
+#[must_use]
+pub fn edit_keeps_audience(stored: &ContentDoc, edited: &ContentDoc) -> bool {
+    let (a, b) = (Audience::of(stored), Audience::of(edited));
+    // the replace must also carry content of one form only
+    a == b && (b == Audience::Public || !edited.plaintext().any)
+}
+
+/// One review as the approval fold takes it from a reader who may not be able to open it
+/// (DESIGN D15).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadReview {
+    /// The review's plaintext fields.
+    #[serde(flatten)]
+    pub review: Review,
+    /// It carries `enc`.
+    #[serde(default)]
+    pub sealed: bool,
+    /// The reader opened it (always true for a plaintext review).
+    #[serde(default)]
+    pub opened: bool,
+    /// It carries `asMember` (consensus proved its writer a member when it was written).
+    #[serde(default)]
+    pub as_member: bool,
+}
+
+/// The reviews whose verdict the approval fold counts ([`count_approvals`]), DESIGN D15 and
+/// `docs/security/private-repos.md` §8.1, §17. `reviews` must already be well-formed
+/// ([`content_well_formed`]).
+///
+/// * A plaintext review, and a sealed one the reader opened, count.
+/// * In a **public** repository, a sealed review the reader cannot open still counts when it
+///   carries `asMember`: its `verdict` and `commitOid` are plaintext, and `memberVerdict`
+///   admits a member verdict only with the proof, so members and outsiders count it alike. The
+///   late-content rule is not applied to the verdict.
+/// * In a **private** repository, a review the reader cannot open never counts (§8.1).
+#[must_use]
+pub fn counted_reviews(reviews: &[ReadReview], visibility: Visibility) -> Vec<Review> {
+    reviews
+        .iter()
+        .filter(|r| !r.sealed || r.opened || (visibility == Visibility::Public && r.as_member))
+        .map(|r| r.review.clone())
+        .collect()
 }
 
 /// Whether every ref name a document carries hashes to the key it is indexed under
@@ -1027,4 +1176,110 @@ pub fn is_valid_repo_name(name: &str) -> bool {
 pub fn normalize_repo_name(input: &str) -> Option<String> {
     let lowered = input.to_ascii_lowercase();
     is_valid_repo_name(&lowered).then_some(lowered)
+}
+
+#[cfg(test)]
+mod mixed_tests {
+    use super::*;
+
+    const KINDS: [ContentKind; 7] = [
+        ContentKind::Issue,
+        ContentKind::Patch,
+        ContentKind::Comment,
+        ContentKind::Review,
+        ContentKind::RefUpdate,
+        ContentKind::Config,
+        ContentKind::Release,
+    ];
+
+    fn sealed(kind: ContentKind, version: u8) -> ContentDoc {
+        ContentDoc {
+            kind,
+            title: None,
+            body: None,
+            ref_name: None,
+            base_ref_name: None,
+            source_ref_name: None,
+            ref_name_hash: None,
+            base_ref_name_hash: None,
+            source_ref_name_hash: None,
+            path: None,
+            default_branch: None,
+            protected_patterns: None,
+            enc: Some(format!("{version:02x}{}", "00".repeat(60))),
+            epoch: Some(0),
+            release_fields: Vec::new(),
+        }
+    }
+
+    /// DESIGN D1: whatever the content predicate admits, the git plane (the settings fold and
+    /// the ref fold) refuses every `enc`, of every version, on every kind.
+    #[test]
+    fn the_git_plane_refuses_every_enc() {
+        for kind in KINDS {
+            for version in 0..=u8::MAX {
+                let mut d = sealed(kind, version);
+                assert!(!git_plane_well_formed(&d), "{kind:?} v{version:#04x}");
+                // even beside the plaintext a settings row would carry
+                d.default_branch = Some("main".into());
+                d.ref_name = Some("refs/heads/main".into());
+                assert!(
+                    !git_plane_well_formed(&d),
+                    "{kind:?} v{version:#04x} + plaintext"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn public_content_admits_only_the_members_and_specific_people_envelopes() {
+        for kind in KINDS {
+            let discussion = matches!(
+                kind,
+                ContentKind::Issue
+                    | ContentKind::Patch
+                    | ContentKind::Comment
+                    | ContentKind::Review
+            );
+            for version in 0..=u8::MAX {
+                let want = discussion && matches!(version, ENC_MEMBERS | ENC_SPECIFIC_PEOPLE);
+                assert_eq!(
+                    content_well_formed(&sealed(kind, version), Visibility::Public),
+                    want,
+                    "{kind:?} v{version:#04x}"
+                );
+                // a private repository's rule is unchanged: any version, with an epoch
+                assert!(content_well_formed(
+                    &sealed(kind, version),
+                    Visibility::Private
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn audiences_nest_child_under_parent() {
+        use Audience::{Members, Public, SpecificPeople};
+        assert!(
+            Members.fits_under(Public),
+            "a members comment on a public thread"
+        );
+        assert!(
+            !Public.fits_under(Members),
+            "a public reply to a members comment"
+        );
+        assert!(Members.fits_under(Members) && Public.fits_under(Public));
+        assert!(!SpecificPeople.fits_under(Members) && !Members.fits_under(SpecificPeople));
+        assert_eq!(Public.narrower(Members), Members);
+        assert_eq!(Members.narrower(Public), Members);
+        assert_eq!(Audience::of(&sealed(ContentKind::Comment, 3)), Members);
+        assert_eq!(
+            Audience::of(&sealed(ContentKind::Comment, 4)),
+            SpecificPeople
+        );
+        assert_eq!(Audience::of(&sealed(ContentKind::Comment, 1)), Members);
+        let mut plain = sealed(ContentKind::Comment, 3);
+        plain.enc = None;
+        assert_eq!(Audience::of(&plain), Public);
+    }
 }

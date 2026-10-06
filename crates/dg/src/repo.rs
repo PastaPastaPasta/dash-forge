@@ -65,6 +65,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
         }
         RepoCommand::Keys(cmd) => crate::keys::run(ctx, cmd).await,
+        RepoCommand::Members(cmd) => crate::keys::run_members(ctx, cmd).await,
         RepoCommand::Edit(args) => crate::repo_settings::edit(ctx, args).await,
         RepoCommand::Protect(cmd) => crate::repo_settings::protect(ctx, cmd).await,
         RepoCommand::Policy(cmd) => crate::repo_settings::policy(ctx, cmd).await,
@@ -688,6 +689,12 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         .map(|(name, state)| {
             json!({ "name": name, "state": serde_json::to_value(state).unwrap_or_default() })
         })
+        .collect();
+    // Git packs only (kind 0): browse indexes, long bodies (a members-only one is kind 70),
+    // release assets and history indexes are artifacts of their own, not packs.
+    let manifests: Vec<_> = manifests
+        .into_iter()
+        .filter(|m| m.kind == u64::from(forge_core::pack::KIND_GIT_PACK))
         .collect();
     let total_bytes: u64 = manifests.iter().map(|m| m.size_bytes).sum();
 

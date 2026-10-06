@@ -209,6 +209,24 @@ Fix: ask the maintainer named in the cause to re-wrap the older epoch to you; `d
 
 Fix: a maintainer runs `dg repo keys repair <owner>/<repo>`; then try again. Nothing was written.
 
+## E311
+
+**No key has been shared with you yet.** You're a member of this public repository and it has members-only content, but no maintainer has shared its key with your encryption key. This happens when you were added by an older Forge build that did not share the key. You can still read everything public, and the members-only items show as placeholders.
+
+Fix: a maintainer's client shares it the next time they open the repo; from the command line a maintainer runs `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, add one first: `dg auth keys add --encryption`.
+
+## E312
+
+**Members-only content is not turned on.** You asked for members-only content (an issue, comment or review only members can read) in a public repository where no maintainer has turned it on.
+
+Fix: a maintainer runs `dg repo members enable <owner>/<repo>`, which sets up a key for the current members (the command shows the cost first). Until then, post it publicly or ask a maintainer.
+
+## E313
+
+**Members-only.** This issue or pull request is members-only: only members of the repository can read it. Everyone can see that it exists, its number, who opened it and when; nothing else.
+
+Fix: ask the repository's owner to add you as a member (`dg collab accept <owner>/<repo>` first, your consent). If you are a member already, see [E311](#e311).
+
 ## E401
 
 **Not enough credits.** The identity's balance cannot pay for the write. The `cause:` line starts with `insufficient credits:` and shows the amount needed and the current balance in DASH.
@@ -384,6 +402,12 @@ Fix: ask a maintainer to unarchive it (`dg repo unarchive <owner>/<repo>`). If y
 
 Fix: read it again (`dg issue view`, `dg pr view --comments`) and redo the edit on the current text.
 
+## E608
+
+**Environment changed at the same time.** Two changes to one environment were saved at once (two maintainers, or one maintainer from two places), so it has two or more latest versions. Versions that share no earlier version are reported as separate histories. Forge never merges them: `dg env run`, `get` and `export` refuse until a maintainer keeps one. The `cause:` line names every version, with its author and time.
+
+Fix: `dg env history --env <name>` shows what each changed; a maintainer keeps one with `dg env edit --env <name> --keep <id>` (or `set`, `unset`, `import` with `--keep`). See [Environments](guides/environments.md#when-two-people-change-it-at-once).
+
 ## E701
 
 **Dash Platform unreachable.** No DAPI node answered, or the quorum service could not be reached. Nodes that fail are skipped for about a minute, so an immediate retry often reaches the same dead nodes.
@@ -434,7 +458,7 @@ Fix: pass `--yes` once you have checked what the command will do. The `cause:` l
 
 ## E804
 
-**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, or the policy could not be read. The cause names every unmet rule (`required approvals: 0 of 1; required check `build`: missing`). The policy is a client rule every Forge client applies, not a consensus rule. Nothing was pushed and no merge event was posted.
+**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, or the policy could not be read. The cause names every unmet rule (`required approvals: 0 of 1; required check `build`: missing`). Forge apps enforce the policy; Dash Platform doesn't check it. Nothing was pushed and no merge event was posted.
 
 `dg pr checks` reports E804 (exit 8, as `gh pr checks` does for a pending check) while a check the branch policy requires is missing or still running. A run from a source the policy does not pin for that check is listed but not counted.
 

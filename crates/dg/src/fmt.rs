@@ -35,7 +35,7 @@ pub fn safe(text: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// An identity for display: its DPNS name with a shortened id when `names` has one
-/// (`alice.dash (Fi8bQ2xk…)`), as [`forge_core::platform::PlatformClient::dpns_first_names`]
+/// (`alice.dash (Fi8bQ2x…9XwYz)`), as [`forge_core::platform::PlatformClient::dpns_first_names`]
 /// reads them, and the full id otherwise. `--json` output keeps full ids.
 pub fn with_name(id: &str, names: &std::collections::BTreeMap<String, String>) -> String {
     match names.get(id) {
@@ -44,13 +44,19 @@ pub fn with_name(id: &str, names: &std::collections::BTreeMap<String, String>) -
     }
 }
 
-/// An identity id shortened for display next to its name (8 characters and an ellipsis).
+/// An identity id shortened for display next to its name: its first 7 and last 5 characters
+/// (`Fi8bQ2x…9XwYz`), as the web shows it. Never the prefix alone: an id is a hash of the asset
+/// lock that funded it, so an attacker can grind funding transactions until the first characters
+/// match someone else's; matching both ends too costs far more. Short values come back unchanged.
 pub fn short_identity(id: &str) -> String {
     // By character: the value may be untrusted document text, not base58.
-    match id.char_indices().nth(8) {
-        Some((i, _)) => format!("{}\u{2026}", &id[..i]),
-        None => id.to_string(),
+    let chars: Vec<char> = id.chars().collect();
+    if chars.len() <= 13 {
+        return id.to_string();
     }
+    let head: String = chars[..7].iter().collect();
+    let tail: String = chars[chars.len() - 5..].iter().collect();
+    format!("{head}\u{2026}{tail}")
 }
 
 /// A commit id shortened for display (12 hex digits).
@@ -451,14 +457,14 @@ mod tests {
     fn triage_lines_show_what_is_set() {
         let lines = triage_lines(
             &["bug", "docs"],
-            &["alice.dash (A1b2c3d4…)".into(), "B".into()],
+            &["alice.dash (A1b2c3d…Xw9Yz)".into(), "B".into()],
             Some("v1.0"),
         );
         assert_eq!(
             lines,
             vec![
                 "labels: bug, docs",
-                "assignees: alice.dash (A1b2c3d4…), B",
+                "assignees: alice.dash (A1b2c3d…Xw9Yz), B",
                 "milestone: v1.0"
             ]
         );
@@ -495,8 +501,12 @@ mod tests {
         ]
         .into();
         assert_eq!(with_name("A1", &names), "alice.dash[2J (A1)");
-        assert_eq!(with_name(id, &names), "bob.dash (Fi8bQ2xk\u{2026})");
+        assert_eq!(with_name(id, &names), "bob.dash (Fi8bQ2x\u{2026}i0jKL)");
         assert_eq!(with_name("B2", &names), "B2");
+        // Both ends, by character: a short or non-ASCII value never splits inside a character.
+        assert_eq!(short_identity("abcdefghijklm"), "abcdefghijklm");
+        assert_eq!(short_identity("abcdefghijklmn"), "abcdefg\u{2026}jklmn");
+        assert_eq!(short_identity("ééééééé-x-ééééé"), "ééééééé\u{2026}ééééé");
     }
 
     /// The timeline's words for each transition kind (the web's), and how a state change was
