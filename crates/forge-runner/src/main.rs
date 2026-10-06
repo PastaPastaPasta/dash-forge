@@ -384,7 +384,13 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
                 &push.oid[..12]
             );
             let trig = run::Trigger::Push(push.clone());
-            if let Err(e) = run_locked(cfg, repo, &trig, &run::RunOpts::default()) {
+            let result = run_locked(cfg, repo, &trig, &run::RunOpts::default());
+            if let Ok(ran) = &result {
+                if ran.checks.iter().any(|(_, c)| *c == "skipped") {
+                    state.saw_push_skip(&push.oid);
+                }
+            }
+            if let Err(e) = result {
                 let tries = state.failed.entry(key.clone()).or_insert(0);
                 *tries += 1;
                 eprintln!(
@@ -572,6 +578,8 @@ fn poll_pulls(
     let mut members: Option<run::Members> = None;
     let pull_key = |n: u64, head: &str| format!("pull/{n} {}", head.to_ascii_lowercase());
     let mut pending = Vec::new();
+    // Retargeted since the last poll: a path-filter skip on the head was judged on the old base.
+    let mut rejudge: Vec<watch::PullRow> = state.retargeted(&rows).into_iter().cloned().collect();
     for ev in pull_events(&state.pulls, &rows) {
         let n = ev.pr.number;
         let key = pull_key(n, &ev.pr.head_oid);
@@ -580,6 +588,9 @@ fn poll_pulls(
             None => members.insert(run::list_members(cfg, repo)?),
         };
         let author = run::author_of(members, &ev.pr.author);
+        if matches!(ev.action, "opened" | "reopened") {
+            rejudge.push(ev.pr.clone());
+        }
         let mut done = true;
         if let Some(why) = skip_reason(repo.pull_requests, &ev.pr, author) {
             eprintln!(
@@ -615,6 +626,11 @@ fn poll_pulls(
         }
         state.save(path)?;
     }
+    rejudge.sort_by_key(|p| p.number);
+    rejudge.dedup_by_key(|p| p.number);
+    for pr in &rejudge {
+        rejudge_push_skips(cfg, repo, state, pr);
+    }
     // Everything else read is as seen (closed, merged, unchanged). A PR not read this time is
     // forgotten, unless it is a member's open one: those are followed in turn, and a failed
     // read does not drop them. Retries of heads that moved on go too.
@@ -631,6 +647,69 @@ fn poll_pulls(
                 .any(|r| r.state == "open" && pull_key(r.number, &r.head_oid) == *k)
     });
     state.save(path)
+}
+
+/// Judge again the path-filter skips a push run reported on `pr`'s head, now that `pr` reads
+/// them (it was opened, reopened or retargeted on that commit since). A skip is judged for the
+/// pull requests open on the commit when it was posted; a new one may change files the filter
+/// selects. Each such skip is replaced by a real run of its workflow on the commit, as the push
+/// of a watched branch at it (as a re-run request runs a push check): the newest run of a name
+/// is the one readers count. Only commits this runner skipped a check on are read
+/// ([`RepoState::push_skips`]). When no watched branch is at the commit any more, the skip stands
+/// and the log says so.
+fn rejudge_push_skips(
+    cfg: &Config,
+    repo: &config::RepoConfig,
+    state: &RepoState,
+    pr: &watch::PullRow,
+) {
+    let sha = pr.head_oid.to_ascii_lowercase();
+    if !state.push_skips.contains(&sha) {
+        return;
+    }
+    let runs = match run::check_runs_on(cfg, repo, &sha) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "forge-runner: {} PR #{}: the check runs on {} not read, so its path-filter skips are not judged again: {e:#}",
+                repo.repo,
+                pr.number,
+                &sha[..12.min(sha.len())]
+            );
+            return;
+        }
+    };
+    for run in runs
+        .iter()
+        .filter(|r| r.is_path_skip() && !is_pull_check(&r.name) && !is_schedule_check(&r.name))
+    {
+        let what = format!(
+            "{} PR #{}: the skipped push check {:?} on {}",
+            repo.repo,
+            pr.number,
+            run.name,
+            &sha[..12.min(sha.len())]
+        );
+        match branch_at(repo, state, pr, &sha) {
+            Ok(refname) => {
+                eprintln!("forge-runner: {what} runs for real ({refname})");
+                let trig = run::Trigger::Push(watch::Push {
+                    refname,
+                    oid: sha.clone(),
+                    before: None,
+                });
+                let opts = run::RunOpts {
+                    only: Some(run.name.clone()),
+                    requested_by: None,
+                    rerun: true,
+                };
+                if let Err(e) = run_locked(cfg, repo, &trig, &opts) {
+                    eprintln!("forge-runner: {what}: {e:#}");
+                }
+            }
+            Err(why) => eprintln!("forge-runner: {what} stands: {why}"),
+        }
+    }
 }
 
 /// The CI re-run half of a poll (`reruns = true`): read the requests written since the last

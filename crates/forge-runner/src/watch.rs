@@ -133,6 +133,10 @@ pub struct PullSeen {
     /// followed beyond the listing window and never forgotten while it is open.
     #[serde(default)]
     pub member: bool,
+    /// The base it merges into ([`PullRow::base`]): a change is a retarget, which re-judges a
+    /// path-filter skip on its head. Empty when an older runner recorded it.
+    #[serde(default)]
+    pub base: String,
 }
 
 /// A pull request's activity that may run workflows: GitHub's `pull_request` action and the PR.
@@ -212,7 +216,15 @@ pub struct RepoState {
     /// When each expression last ran (ms): one runs at most every five minutes, as on GitHub.
     #[serde(default)]
     pub schedule_ran: BTreeMap<String, u64>,
+    /// The commits a push run here reported a check `skipped` on (newest last, at most
+    /// [`PUSH_SKIPS_KEPT`]): a pull request opened, reopened or retargeted on one of them has
+    /// those skips judged again (`poll_pulls`).
+    #[serde(default)]
+    pub push_skips: Vec<String>,
 }
+
+/// How many commits [`RepoState::push_skips`] remembers.
+pub const PUSH_SKIPS_KEPT: usize = 500;
 
 impl RepoState {
     /// Record what `row` is now; `member` says whether its author is a member, when the poll
@@ -226,8 +238,31 @@ impl RepoState {
                 open: row.state == "open",
                 draft: row.draft,
                 member: member.unwrap_or(known),
+                base: row.base().to_string(),
             },
         );
+    }
+
+    /// Remember that a push run reported a check `skipped` on `oid`.
+    pub fn saw_push_skip(&mut self, oid: &str) {
+        let oid = oid.to_ascii_lowercase();
+        self.push_skips.retain(|o| *o != oid);
+        self.push_skips.push(oid);
+        let over = self.push_skips.len().saturating_sub(PUSH_SKIPS_KEPT);
+        self.push_skips.drain(..over);
+    }
+
+    /// The open pull requests listed `now` whose base changed since the last poll (a retarget).
+    pub fn retargeted<'a>(&self, now: &'a [PullRow]) -> Vec<&'a PullRow> {
+        now.iter()
+            .filter(|r| {
+                r.state == "open"
+                    && self
+                        .pulls
+                        .get(&r.number)
+                        .is_some_and(|s| s.open && !s.base.is_empty() && s.base != r.base())
+            })
+            .collect()
     }
 
     /// Record re-run request `id` (written at `created_at`) as handled: the cursor moves to the
@@ -387,12 +422,49 @@ mod tests {
     }
 
     #[test]
+    fn a_base_change_since_the_last_poll_is_a_retarget() {
+        let mut state = RepoState::default();
+        let mut a = row(1, "open", A, false);
+        state.saw_pull(&a, Some(true));
+        assert!(state.retargeted(std::slice::from_ref(&a)).is_empty());
+        a.retargeted_to = Some("refs/heads/dev".into());
+        assert_eq!(state.retargeted(std::slice::from_ref(&a)).len(), 1);
+        state.saw_pull(&a, None);
+        assert!(
+            state.retargeted(std::slice::from_ref(&a)).is_empty(),
+            "seen at its new base"
+        );
+        // A record from an older runner has no base: never taken for a retarget.
+        state.pulls.get_mut(&1).unwrap().base.clear();
+        a.retargeted_to = Some("refs/heads/other".into());
+        assert!(state.retargeted(std::slice::from_ref(&a)).is_empty());
+    }
+
+    #[test]
+    fn push_skips_are_remembered_newest_last_and_bounded() {
+        let mut state = RepoState::default();
+        state.saw_push_skip(&A.to_uppercase());
+        state.saw_push_skip(B);
+        state.saw_push_skip(A);
+        assert_eq!(state.push_skips, vec![B.to_string(), A.to_string()]);
+        for i in 0..PUSH_SKIPS_KEPT + 5 {
+            state.saw_push_skip(&format!("{i:040}"));
+        }
+        assert_eq!(state.push_skips.len(), PUSH_SKIPS_KEPT);
+        assert!(
+            !state.push_skips.contains(&A.to_string()),
+            "the oldest went first"
+        );
+    }
+
+    #[test]
     fn pull_activity_is_opened_synchronize_reopened_or_ready() {
         let at_a = |open, draft| PullSeen {
             head: A.into(),
             open,
             draft,
             member: false,
+            base: String::new(),
         };
         let seen = BTreeMap::from([
             (1, at_a(true, false)),

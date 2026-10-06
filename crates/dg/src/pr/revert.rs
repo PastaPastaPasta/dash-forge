@@ -26,7 +26,7 @@ use serde_json::json;
 use forge_core::collab::v2::{PatchInput, PatchView};
 use forge_core::create::default_journal_dir;
 use forge_core::rules::merge_check::{head_at, merge_content, MergeFacts, MergeVerdict};
-use forge_core::rules::v2::Role;
+use forge_core::rules::v2::{Audience, Role, Visibility};
 use forge_core::user_error::{codes, UserError};
 
 use super::{patch, push_argv, push_to, verify, Steps};
@@ -171,6 +171,22 @@ pub(crate) fn revert_tree(
     }
 }
 
+/// How to make the revert by hand in a clone, for `inv` (`None`: what the merge brought in is
+/// not known, so both forms are given): each kind undoes everything it landed.
+pub(crate) fn manual_revert(inv: Option<&Inverse>, merge_oid: &str) -> String {
+    match inv {
+        Some(i) if i.landed == Landed::MergeCommit => format!("`git revert -m 1 {merge_oid}`"),
+        Some(i) if i.landed == Landed::Squash => format!("`git revert {merge_oid}`"),
+        Some(i) => format!(
+            "`git revert --no-commit {}..{}` then `git commit`",
+            i.to, i.from
+        ),
+        None => format!(
+            "`git revert -m 1 {merge_oid}` for a merge commit, or `git revert --no-commit <the base's commit before the merge>..{merge_oid}` then `git commit` for a squash, rebase or fast-forward"
+        ),
+    }
+}
+
 /// The revert commit's message: git's `Revert "<subject>"`, then which PR and merge it undoes.
 pub(crate) fn revert_message(title: &str, number: u32, merge_oid: &str) -> String {
     format!("Revert \"{title}\"\n\nThis reverts pull request #{number}, merged as {merge_oid}.")
@@ -227,6 +243,28 @@ fn refusal(
         .note("nothing was pushed or written")
 }
 
+/// Refuse a members-only PR of a public repository: its revert would be a public pull request
+/// whose title, `Revert "<title>"`, and commit message publish the members-only title for good,
+/// and a members-only pull request can't be opened from `dg` yet. In a private repository
+/// everything, the revert included, is for its members.
+pub(crate) fn members_only_refusal(
+    visibility: Visibility,
+    audience: Audience,
+    repo: &str,
+    number: u64,
+) -> Option<UserError> {
+    (visibility == Visibility::Public && audience != Audience::Public).then(|| {
+        refusal(
+            codes::USAGE,
+            format!("PR #{number} is members-only"),
+            "its revert would be a public pull request, and its title would make the members-only title public for good; members-only pull requests can't be opened from dg yet",
+        )
+        .fix(format!(
+            "revert it by hand in a clone: `git revert` its merge, push a branch, and open the pull request in the web app as members-only (`dg pr view {repo} {number}` shows the merge commit)"
+        ))
+    })
+}
+
 /// Refuse a PR that has no merge to revert: not merged, or merged naming no commit the base held.
 fn require_revertable(view: &PatchView, repo: &str, number: u64) -> Result<String> {
     if !view.state.merged {
@@ -265,6 +303,9 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
     let p = patch(&collab, handle, repo, number).await?;
     let view = collab.patch_view(handle, p).await?;
     let merge_oid = require_revertable(&view, repo, number)?;
+    if let Some(u) = members_only_refusal(handle.visibility, view.patch.audience, repo, number) {
+        return Err(u.into());
+    }
     let base_ref = view.merge_base.ref_name.clone();
     let short_base = forge_core::repo::short_branch_name(&base_ref).to_string();
     let Some(base_tip) = view.base_tip.clone() else {
@@ -351,7 +392,8 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
             "the base branch was rewritten after the merge, so its commit could not be fetched",
         )
         .fix(format!(
-            "if a clone of yours still has {merge_oid}, revert it there (`git revert -m 1 {merge_oid}` for a merge commit, `git revert {merge_oid}` otherwise), push a branch and open a PR with `dg pr create`"
+            "if a clone of yours still has {merge_oid}, revert it there ({}), push a branch and open a PR with `dg pr create`",
+            manual_revert(None, &merge_oid)
         ))
         .into());
     }
@@ -381,6 +423,10 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
             MergeVerdict::Unknown => (
                 codes::NOT_FOUND,
                 "the commits needed to check the merge could not be fetched".to_string(),
+            ),
+            _ if facts.tip_before.is_empty() || facts.merge_parents.is_empty() => (
+                codes::NOT_FOUND,
+                "the base's tip before the merge is unknown, so what the merge brought in can't be told".to_string(),
             ),
             _ => (
                 codes::REJECTED,
@@ -412,9 +458,9 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
             )
             .cause(cause)
             .fix(format!(
-                "revert it by hand in a clone: fetch {}, run `git revert{} {merge_oid}`, resolve the conflicts, push a branch and open a PR with `dg pr create`",
+                "revert it by hand in a clone: fetch {}, run {}, resolve the conflicts, push a branch and open a PR with `dg pr create`",
                 safe(&short_base),
-                if inv.landed == Landed::MergeCommit { " -m 1" } else { "" }
+                manual_revert(Some(&inv), &merge_oid)
             ))
             .note("nothing was pushed or written")
             .into());
@@ -660,6 +706,42 @@ mod tests {
         // A recorded merge that does not contain the PR has nothing to revert.
         let facts = verify::merge_facts(dir, &head, &base1, &root);
         assert_eq!(inverse(dir, &facts, merge_content(&facts).verdict), None);
+    }
+
+    #[test]
+    fn manual_hints_undo_everything_each_kind_landed() {
+        let m = "m".repeat(40);
+        let inv = |landed, from: &str, to: &str| Inverse {
+            landed,
+            from: from.into(),
+            to: to.into(),
+        };
+        assert_eq!(
+            manual_revert(Some(&inv(Landed::MergeCommit, &m, "p")), &m),
+            format!("`git revert -m 1 {m}`")
+        );
+        assert_eq!(
+            manual_revert(Some(&inv(Landed::Squash, &m, "p")), &m),
+            format!("`git revert {m}`")
+        );
+        assert_eq!(
+            manual_revert(Some(&inv(Landed::Rebase, &m, "before")), &m),
+            format!("`git revert --no-commit before..{m}` then `git commit`")
+        );
+        assert_eq!(
+            manual_revert(Some(&inv(Landed::FastForward, "head", "fork")), &m),
+            "`git revert --no-commit fork..head` then `git commit`"
+        );
+        let both = manual_revert(None, &m);
+        assert!(both.contains("-m 1") && both.contains("--no-commit"));
+    }
+
+    #[test]
+    fn a_members_only_pr_of_a_public_repo_is_not_reverted() {
+        let refused = members_only_refusal(Visibility::Public, Audience::Members, "o/r", 3);
+        assert!(refused.is_some_and(|u| u.message.contains("members-only")));
+        assert!(members_only_refusal(Visibility::Public, Audience::Public, "o/r", 3).is_none());
+        assert!(members_only_refusal(Visibility::Private, Audience::Members, "o/r", 3).is_none());
     }
 
     #[test]

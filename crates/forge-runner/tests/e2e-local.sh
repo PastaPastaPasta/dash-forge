@@ -36,7 +36,9 @@
 #      read, every one of its checks is reported.
 #  13. A push to an open PR's branch, changing no file a push workflow's `paths` selects: its
 #      required check is reported `skipped` only when the whole PR (merge-base..head) changes no
-#      such file either; a PR whose earlier commit did gets nothing.
+#      such file either; a PR whose earlier commit did gets nothing; a commit that already has a
+#      run of that name gets no skip over it; a full page of pull requests skips nothing; a PR
+#      opened later on a skipped commit runs the check for real.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -69,6 +71,7 @@ case " $* " in
   *" pr view "*) [[ -e "$FAKE_VIEW_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
                 python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
   *" ci reruns "*) cat "$FAKE_RERUNS" 2>/dev/null || echo '{"requests":[]}'; exit 0 ;;
+  *" ci status "*) python3 -c "import json,sys; p=sys.argv[1]; sha=sys.argv[2]; d=json.load(open(p)) if __import__('os').path.exists(p) else {}; print(json.dumps({'headOid': sha, 'checks': d.get(sha, [])}))" "$FAKE_RUNS" "${@: -1}"; exit 0 ;;
   *" repo view "*) cat "$FAKE_REPO" 2>/dev/null || echo '{"defaultBranch":"main"}'; exit 0 ;;
   *" repo policy show "*) [[ -e "$FAKE_POLICY_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
                          cat "$FAKE_POLICY" 2>/dev/null || echo '{"policy":null}'; exit 0 ;;
@@ -102,6 +105,7 @@ export FAKE_VIEW_FAILS="$W/view-fails"
 export FAKE_REPO="$W/repo.json"
 export FAKE_POLICY="$W/policy.json"
 export FAKE_POLICY_FAILS="$W/policy-fails"
+export FAKE_RUNS="$W/runs.json"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
@@ -479,8 +483,48 @@ HSRC=$(git -C "$R" rev-parse psrc); HDOC=$(git -C "$R" rev-parse pdoc)
 prs "5,MEMBER,app,refs/heads/psrc,$HSRC,open" "6,MEMBER,app,refs/heads/pdoc,$HDOC,open"
 : >"$FAKE_DG_LOG"; poll
 check "the PR that changes no src/ file gets its required push check skipped" test "$(q "[(r['name'], r['status'], r['conclusion']) for r in rs if r['sha']=='$HDOC']")" = "[('pp / req', 'completed', 'skipped')]"
-check "…naming the PR judged" test "$(q "'PR #6, whose head is pdoc, changes no file' in [r for r in rs if r['sha']=='$HDOC'][0]['summary']")" = True
+check "…naming the PR judged" test "$(q "'PR #6, whose head is ${HDOC:0:12}, changes no file' in [r for r in rs if r['sha']=='$HDOC'][0]['summary']")" = True
 check "the PR whose earlier commit changed src/ gets nothing" test "$(q "[r['name'] for r in rs if r['sha']=='$HSRC']")" = "[]"
+# Another docs-only push to pdoc, whose commit already has a (failed) run of the check.
+git -C "$R" switch -q pdoc; echo again >>"$R/docs/pdoc.md"; git -C "$R" add -A; git -C "$R" commit -qm "pdoc: docs again"
+HDOC2=$(git -C "$R" rev-parse pdoc)
+echo "{\"$HDOC2\": [{\"name\": \"pp / req\", \"status\": \"completed\", \"conclusion\": \"failure\", \"summary\": \"a real run\"}]}" >"$FAKE_RUNS"
+prs "5,MEMBER,app,refs/heads/psrc,$HSRC,open" "6,MEMBER,app,refs/heads/pdoc,$HDOC2,open"
+: >"$FAKE_DG_LOG"; poll
+check "a commit that already has a run of the check gets no skip over it" test "$(q "[r['name'] for r in rs if r['sha']=='$HDOC2']")" = "[]"
+check "…and the log says so" grep -q '"pp / req" already has a run on this commit' "$W/runner.log"
+rm -f "$FAKE_RUNS"
+# A full page of pull requests: an older one may use the commit, so nothing is skipped.
+git -C "$R" switch -q pdoc; echo full >>"$R/docs/pdoc.md"; git -C "$R" add -A; git -C "$R" commit -qm "pdoc: full page"
+HDOC3=$(git -C "$R" rev-parse pdoc)
+specs=("6,MEMBER,app,refs/heads/pdoc,$HDOC3,open"); for i in $(seq 100 198); do specs+=("$i,MEMBER,app,refs/heads/x$i,$HSRC,closed"); done
+prs "${specs[@]}"
+: >"$FAKE_DG_LOG"; poll
+check "a full page of pull requests skips nothing" test "$(q "[r['name'] for r in rs if r['sha']=='$HDOC3']")" = "[]"
+check "…and the log says why" grep -q "fill the page, and an older one may use this commit" "$W/runner.log"
+# Back to two PRs; PR 6's newest commit gets its skip.
+git -C "$R" switch -q pdoc; echo last >>"$R/docs/pdoc.md"; git -C "$R" add -A; git -C "$R" commit -qm "pdoc: last"
+HDOC4=$(git -C "$R" rev-parse pdoc)
+prs "5,MEMBER,app,refs/heads/psrc,$HSRC,open" "6,MEMBER,app,refs/heads/pdoc,$HDOC4,open"
+: >"$FAKE_DG_LOG"; poll
+check "the newest commit of PR 6 gets its skip" test "$(q "[r['conclusion'] for r in rs if r['sha']=='$HDOC4' and r['status']=='completed']")" = "['skipped']"
+SKIP_SUMMARY=$(q "[r['summary'] for r in rs if r['sha']=='$HDOC4' and r['status']=='completed'][0]")
+# PR 7 opens on that same commit against base2: the skip was judged for PRs 5 and 6 only, so it is judged again.
+git -C "$R" switch -q -c base2 "$(git -C "$R" rev-parse pdoc~4)"; mkdir -p "$R/src"; echo 'pub fn b2() {}' >"$R/src/b2.rs"; git -C "$R" add -A; git -C "$R" commit -qm "base2"
+git -C "$R" switch -q pdoc
+echo "{\"$HDOC4\": [{\"name\": \"pp / req\", \"status\": \"completed\", \"conclusion\": \"skipped\", \"summary\": $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$SKIP_SUMMARY")}]}" >"$FAKE_RUNS"
+python3 - "$FAKE_PRS" "$HDOC4" <<'PY'
+import json, sys
+p, head = sys.argv[1], sys.argv[2]
+d = json.load(open(p))
+d["prs"].append({"number": 7, "title": "pr 7", "author": "MEMBER", "state": "open", "baseRef": "refs/heads/base2",
+                 "baseTip": None, "headOid": head, "repoId": "app", "sourceRepoId": "app",
+                 "sourceRefName": "refs/heads/pdoc", "draft": False})
+d["count"] = len(d["prs"]); json.dump(d, open(p, "w"))
+PY
+: >"$FAKE_DG_LOG"; poll
+check "a PR opened later on a skipped commit runs the check for real" test "$(q "[r['conclusion'] for r in rs if r['sha']=='$HDOC4' and r['name']=='pp / req' and r['status']=='completed']")" = "['success']"
+rm -f "$FAKE_RUNS"
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 

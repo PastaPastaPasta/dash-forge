@@ -1888,10 +1888,14 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     }
     // `--delete-branch` needs write access to the source repo, and must not pull the branch
     // from under another open PR: refuse before merging rather than after.
+    let mut branch_check_note = None;
     let delete = if a.delete_branch || a.force_delete_branch {
         let src = branch::deletable_source(&s, &view, number).await?;
         if !a.force_delete_branch {
-            branch::refuse_dependents(&collab, handle, &view, &src).await?;
+            branch_check_note = branch::refuse_dependents(&collab, handle, &view, &src).await?;
+            if let (Some(n), false) = (&branch_check_note, ctx.json) {
+                eprintln!("note: --delete-branch {n}");
+            }
         }
         Some(src)
     } else {
@@ -2134,6 +2138,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             "merged": merged,
             "mergeOnBase": on_base,
             "branchDeleted": branch_deleted,
+            "branchCheckNote": branch_check_note,
             "bypassedRules": bypassed,
             "checksNotPassing": not_passing,
             "closedIssues": closed_issues,

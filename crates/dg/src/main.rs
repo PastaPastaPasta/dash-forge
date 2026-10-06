@@ -1515,7 +1515,8 @@ pub struct PrMergeArgs {
     #[arg(long, conflicts_with_all = ["squash", "no_ff", "message", "event_only"])]
     pub rebase: bool,
     /// Delete the source branch after merging (needs write access to the source repo). Refused
-    /// before merging when another open PR uses the branch as its head or its base.
+    /// before merging when another open PR uses the branch as its head or its base. Only the
+    /// newest 100 pull requests are checked; the output says when there are older ones.
     #[arg(long = "delete-branch", conflicts_with = "event_only")]
     pub delete_branch: bool,
     /// Delete the source branch after merging even when other open PRs use it as their head
