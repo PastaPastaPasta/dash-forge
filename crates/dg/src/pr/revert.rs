@@ -562,9 +562,11 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
         Err(e) => {
             let u = super::step_failure(&e, number, repo, "pull request not opened", "")
                 .note(format!(
-                    "the branch {short_branch} was pushed; `dg pr create {repo} --head {short_branch} --base {} --title {:?}` opens the PR",
+                    "the branch {short_branch} was pushed; `dg pr create {repo} --head {short_branch} --base {} --title {:?} --body {:?}` opens the PR",
                     forge_core::repo::short_branch_name(&base_ref),
-                    title
+                    title,
+                    // One line, so the command pastes into any shell.
+                    input.body.split_whitespace().collect::<Vec<_>>().join(" ")
                 ));
             return Err(crate::errors::reported(
                 u,
