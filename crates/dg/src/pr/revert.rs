@@ -178,11 +178,11 @@ pub(crate) fn manual_revert(inv: Option<&Inverse>, merge_oid: &str) -> String {
         Some(i) if i.landed == Landed::MergeCommit => format!("`git revert -m 1 {merge_oid}`"),
         Some(i) if i.landed == Landed::Squash => format!("`git revert {merge_oid}`"),
         Some(i) => format!(
-            "`git revert --no-commit {}..{}` then `git commit`",
+            "`git revert --no-commit {}..{}` then `git commit`; a merge commit in that range is reverted on its own, with `git revert --no-commit -m 1 <commit>`",
             i.to, i.from
         ),
         None => format!(
-            "`git revert -m 1 {merge_oid}` for a merge commit, or `git revert --no-commit <the base's commit before the merge>..{merge_oid}` then `git commit` for a squash, rebase or fast-forward"
+            "`git revert -m 1 {merge_oid}` for a merge commit, or `git revert --no-commit <the base's commit before the merge>..{merge_oid}` then `git commit` for a squash, rebase or fast-forward (a merge commit in that range is reverted on its own, with `git revert --no-commit -m 1 <commit>`)"
         ),
     }
 }
@@ -243,26 +243,33 @@ fn refusal(
         .note("nothing was pushed or written")
 }
 
-/// Refuse a members-only PR of a public repository: its revert would be a public pull request
-/// whose title, `Revert "<title>"`, and commit message publish the members-only title for good,
-/// and a members-only pull request can't be opened from `dg` yet. In a private repository
-/// everything, the revert included, is for its members.
-pub(crate) fn members_only_refusal(
+/// Refuse a pull request whose revert would reach more people than the pull request did: the
+/// revert's title, `Revert "<title>"`, and its commit message repeat the title. A members-only
+/// PR of a public repository (`dg` opens public PRs there; members-only ones can't be opened from
+/// `dg` yet), and a PR for specific people in any repository (`dg` can't write for specific
+/// people). In a private repository everything, the revert included, is for its members.
+pub(crate) fn audience_refusal(
     visibility: Visibility,
     audience: Audience,
     repo: &str,
     number: u64,
 ) -> Option<UserError> {
-    (visibility == Visibility::Public && audience != Audience::Public).then(|| {
-        refusal(
-            codes::USAGE,
-            format!("PR #{number} is members-only"),
-            "its revert would be a public pull request, and its title would make the members-only title public for good; members-only pull requests can't be opened from dg yet",
-        )
-        .fix(format!(
-            "revert it by hand in a clone: `git revert` its merge, push a branch, and open the pull request in the web app as members-only (`dg pr view {repo} {number}` shows the merge commit)"
-        ))
-    })
+    let (who, cause) = match audience {
+        Audience::SpecificPeople => (
+            "is for specific people",
+            "dg can't open a pull request for specific people, so its revert would reach more people than it did, and its title would go with it",
+        ),
+        Audience::Members if visibility == Visibility::Public => (
+            "is members-only",
+            "dg can't open a members-only pull request yet, so its revert would be public, and its title would become public for good",
+        ),
+        _ => return None,
+    };
+    Some(
+        refusal(codes::USAGE, format!("PR #{number} {who}"), cause).fix(format!(
+            "revert it by hand in a clone (`dg pr view {repo} {number}` shows the merge commit) and open its pull request for the same people"
+        )),
+    )
 }
 
 /// Refuse a PR that has no merge to revert: not merged, or merged naming no commit the base held.
@@ -303,7 +310,7 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
     let p = patch(&collab, handle, repo, number).await?;
     let view = collab.patch_view(handle, p).await?;
     let merge_oid = require_revertable(&view, repo, number)?;
-    if let Some(u) = members_only_refusal(handle.visibility, view.patch.audience, repo, number) {
+    if let Some(u) = audience_refusal(handle.visibility, view.patch.audience, repo, number) {
         return Err(u.into());
     }
     let base_ref = view.merge_base.ref_name.clone();
@@ -726,22 +733,33 @@ mod tests {
         );
         assert_eq!(
             manual_revert(Some(&inv(Landed::Rebase, &m, "before")), &m),
-            format!("`git revert --no-commit before..{m}` then `git commit`")
+            format!("`git revert --no-commit before..{m}` then `git commit`; a merge commit in that range is reverted on its own, with `git revert --no-commit -m 1 <commit>`")
         );
         assert_eq!(
             manual_revert(Some(&inv(Landed::FastForward, "head", "fork")), &m),
-            "`git revert --no-commit fork..head` then `git commit`"
+            "`git revert --no-commit fork..head` then `git commit`; a merge commit in that range is reverted on its own, with `git revert --no-commit -m 1 <commit>`"
         );
         let both = manual_revert(None, &m);
         assert!(both.contains("-m 1") && both.contains("--no-commit"));
     }
 
     #[test]
-    fn a_members_only_pr_of_a_public_repo_is_not_reverted() {
-        let refused = members_only_refusal(Visibility::Public, Audience::Members, "o/r", 3);
-        assert!(refused.is_some_and(|u| u.message.contains("members-only")));
-        assert!(members_only_refusal(Visibility::Public, Audience::Public, "o/r", 3).is_none());
-        assert!(members_only_refusal(Visibility::Private, Audience::Members, "o/r", 3).is_none());
+    fn a_pr_whose_revert_would_reach_more_people_is_not_reverted() {
+        use Visibility::{Private, Public};
+        let refused = |v, a| audience_refusal(v, a, "o/r", 3).map(|u| u.message);
+        assert!(refused(Public, Audience::Members).is_some_and(|m| m.contains("members-only")));
+        assert!(refused(Public, Audience::SpecificPeople)
+            .is_some_and(|m| m.contains("specific people")));
+        assert!(refused(Private, Audience::SpecificPeople)
+            .is_some_and(|m| m.contains("specific people")));
+        assert!(refused(Public, Audience::Public).is_none());
+        assert!(refused(Private, Audience::Members).is_none());
+        // The advice never widens the audience.
+        let fix = audience_refusal(Public, Audience::Members, "o/r", 3)
+            .unwrap()
+            .fix
+            .join(" ");
+        assert!(fix.contains("for the same people") && !fix.contains("public"));
     }
 
     #[test]

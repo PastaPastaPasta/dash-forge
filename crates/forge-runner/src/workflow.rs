@@ -12,6 +12,7 @@
 //! paths-ignore), and act is given one workflow file at a time (`-W <file>`), so a workflow that
 //! does not run on this push never reaches act.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -45,8 +46,10 @@ pub struct Workflow {
     pub name: String,
     /// Its jobs, in file order.
     pub jobs: Vec<Job>,
-    /// The parsed file (for [`Workflow::without_refused`]).
+    /// The parsed file (for [`Workflow::for_act`]).
     pub doc: Value,
+    /// Some jobs were left out ([`Workflow::only_jobs`]): act gets [`Self::doc`], not the file.
+    pub trimmed: bool,
 }
 
 impl Workflow {
@@ -60,10 +63,55 @@ impl Workflow {
             .unwrap_or(Value::Null)
     }
 
+    /// Only the jobs `keep` (by id) and every job they `needs`, directly or not: the jobs of a
+    /// push workflow the branch policy requires, run although its path filter left the push
+    /// out. The file's other jobs are not run.
+    #[must_use]
+    pub fn only_jobs(&self, keep: &BTreeSet<String>) -> Workflow {
+        let needs_of = |id: &str| -> Vec<String> {
+            match self
+                .doc
+                .get("jobs")
+                .and_then(|j| j.get(id))
+                .and_then(|j| j.get("needs"))
+            {
+                Some(Value::String(n)) => vec![n.clone()],
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .filter_map(|n| n.as_str().map(str::to_string))
+                    .collect(),
+                _ => Vec::new(),
+            }
+        };
+        let mut kept: BTreeSet<String> = BTreeSet::new();
+        let mut todo: Vec<String> = keep.iter().cloned().collect();
+        while let Some(id) = todo.pop() {
+            if kept.insert(id.clone()) {
+                todo.extend(needs_of(&id));
+            }
+        }
+        let mut doc = self.doc.clone();
+        if let Some(jobs) = doc.get_mut("jobs").and_then(Value::as_object_mut) {
+            jobs.retain(|id, _| kept.contains(id));
+        }
+        Workflow {
+            file: self.file.clone(),
+            name: self.name.clone(),
+            jobs: self
+                .jobs
+                .iter()
+                .filter(|j| kept.contains(&j.id))
+                .cloned()
+                .collect(),
+            trimmed: self.trimmed || kept.len() < self.jobs.len(),
+            doc,
+        }
+    }
+
     /// The workflow as act should see it: the refused jobs removed, and every remaining job's
-    /// `needs` cut to the jobs that remain. `None` when nothing was refused (act reads the
-    /// file itself).
-    pub fn without_refused(&self) -> Option<Value> {
+    /// `needs` cut to the jobs that remain. `None` when nothing was refused or left out (act
+    /// reads the file itself).
+    pub fn for_act(&self) -> Option<Value> {
         let refused: Vec<&str> = self
             .jobs
             .iter()
@@ -71,7 +119,7 @@ impl Workflow {
             .map(|j| j.id.as_str())
             .collect();
         if refused.is_empty() {
-            return None;
+            return self.trimmed.then(|| self.doc.clone());
         }
         let mut doc = self.doc.clone();
         let jobs = doc.get_mut("jobs")?.as_object_mut()?;
@@ -110,10 +158,9 @@ pub struct Plan {
     /// The files that could not be read (each reported as one failed check).
     pub broken: Vec<Broken>,
     /// The files that would run on this pull request or push but for their `paths` /
-    /// `paths-ignore` filter ([`Facts::runs_without_paths`]). A required check
-    /// among their jobs is reported `skipped`, so it does not wait forever for a run that will
-    /// never come (a push's only when the whole pull request it is the head of is left out too:
-    /// [`push_filtered_for_all`]).
+    /// `paths-ignore` filter ([`Facts::runs_without_paths`]). On a pull request, a required check
+    /// among their jobs is reported `skipped`; on a push, a required check's job runs anyway.
+    /// Either way it does not wait forever for a run that will never come.
     pub path_filtered: Vec<Workflow>,
 }
 
@@ -159,9 +206,8 @@ impl Facts<'_> {
     /// Whether a workflow whose `on` is `on` would run on this pull request or push whatever
     /// paths it changes: for a workflow that does not run ([`Self::runs`]), that its `paths` /
     /// `paths-ignore` filter alone left it out. A pull request's changes are the whole PR
-    /// (`base...head`); a push's are only that push's own commits, so a push's filtered
-    /// workflow is skipped only when the whole PR it is the head of is left out as well
-    /// ([`push_filtered_for_all`]).
+    /// (`base...head`); a push's are only that push's own commits, so a push's required checks
+    /// are run rather than skipped.
     pub fn runs_without_paths(&self, on: &Value) -> bool {
         match self {
             Facts::PullRequest(p) if p.changed.is_some() => runs_on_pull_request(
@@ -307,6 +353,7 @@ pub fn read_workflow(
         name,
         jobs: out,
         doc: v,
+        trimmed: false,
     };
     let on = wf.on();
     Ok((wf, on))
@@ -488,24 +535,6 @@ pub fn runs_on_push(on: &Value, push: &PushFacts<'_>) -> bool {
     ref_ok && paths_ok(filters, push.changed)
 }
 
-/// Whether a push workflow (`on`) that the paths filter left out of a push of `refname` would
-/// leave out each of `changes` too: the whole change of every open pull request whose head the
-/// pushed branch is (`merge-base(base, head)..head`, one list per PR). `false` when there is no
-/// such PR: then nothing waits on the check. Conservative: one PR that touches a selected path
-/// keeps the check unreported, as before.
-pub fn push_filtered_for_all(on: &Value, refname: &str, changes: &[Vec<String>]) -> bool {
-    !changes.is_empty()
-        && changes.iter().all(|ch| {
-            !runs_on_push(
-                on,
-                &PushFacts {
-                    refname,
-                    changed: Some(ch),
-                },
-            )
-        })
-}
-
 /// `paths` / `paths-ignore` against the changed files (unknown changes run the workflow).
 fn paths_ok(filters: &Value, changed: Option<&[String]>) -> bool {
     let paths = strings(&filters["paths"]);
@@ -579,6 +608,38 @@ mod tests {
     }
 
     #[test]
+    fn only_jobs_keeps_the_required_ones_and_what_they_need() {
+        let doc: Value = yaml_serde::from_str(
+            "on: push\njobs:\n  setup: {runs-on: x, steps: []}\n  req: {runs-on: x, needs: setup, steps: []}\n  other: {runs-on: x, steps: []}\n",
+        )
+        .unwrap();
+        let job = |id: &str| Job {
+            id: id.into(),
+            check_name: format!("w / {id}"),
+            refused: None,
+        };
+        let wf = Workflow {
+            file: "w.yml".into(),
+            name: "w".into(),
+            jobs: vec![job("setup"), job("req"), job("other")],
+            doc,
+            trimmed: false,
+        };
+        assert!(
+            wf.for_act().is_none(),
+            "the whole file: act reads it itself"
+        );
+        let kept = wf.only_jobs(&BTreeSet::from(["req".to_string()]));
+        let ids: Vec<&str> = kept.jobs.iter().map(|j| j.id.as_str()).collect();
+        assert_eq!(ids, ["setup", "req"]);
+        let doc = kept
+            .for_act()
+            .expect("a trimmed file goes to act as a copy");
+        assert!(doc["jobs"].get("other").is_none());
+        assert!(doc["jobs"].get("setup").is_some());
+    }
+
+    #[test]
     fn container_options_volumes_services_and_reusable_workflows_are_refused() {
         let (w, _) = wf(r#"
 name: ci
@@ -635,7 +696,7 @@ jobs:
     #[test]
     fn act_gets_a_copy_without_the_refused_jobs() {
         let (w, _) = wf("on: push\njobs:\n  a:\n    runs-on: x\n  bad:\n    container: { image: x, options: --privileged }\n  b:\n    needs: [a, bad]\n  c:\n    needs: bad\n").unwrap();
-        let doc = w.without_refused().unwrap();
+        let doc = w.for_act().unwrap();
         let jobs = doc["jobs"].as_object().unwrap();
         // Key order depends on serde_json's `preserve_order` (another workspace crate turns it
         // on); act does not care about job order.
@@ -645,7 +706,7 @@ jobs:
         assert_eq!(jobs["b"]["needs"], serde_json::json!(["a"]));
         assert!(jobs["c"].get("needs").is_none());
         let (ok, _) = wf("on: push\njobs:\n  a:\n    runs-on: x\n").unwrap();
-        assert!(ok.without_refused().is_none());
+        assert!(ok.for_act().is_none());
     }
 
     #[test]
@@ -891,23 +952,6 @@ jobs:
         assert!(
             !filtered(&Facts::Push(facts("refs/heads/main", None)), &push_paths),
             "…but not a new branch, whose changes are unknown"
-        );
-        // …and skipped only when every open PR whose head it is changes no watched path either:
-        // a push's changes are only its own commits.
-        let pr_docs = vec!["docs/a.md".to_string()];
-        let pr_src = vec!["docs/a.md".to_string(), "src/a.rs".to_string()];
-        let skip = |changes: &[Vec<String>]| {
-            push_filtered_for_all(&push_paths, "refs/heads/main", changes)
-        };
-        assert!(skip(std::slice::from_ref(&pr_docs)));
-        assert!(
-            !skip(std::slice::from_ref(&pr_src)),
-            "an earlier commit of the PR changed src/"
-        );
-        assert!(!skip(&[pr_docs, pr_src]), "every PR must leave it out");
-        assert!(
-            !skip(&[]),
-            "no PR: nothing waits on the check, nothing is reported"
         );
 
         let d = tempfile::tempdir().unwrap();

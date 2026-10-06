@@ -948,17 +948,21 @@ pub fn run(
         ran.checks.push((name, "failure"));
     }
     if !plan.path_filtered.is_empty() {
-        let skips = judge_filtered(cfg, repo, trig, opts.only.as_deref(), &f.cache, &mut plan);
-        if plan.path_filtered.is_empty() {
+        let policy = match &opts.only {
+            Some(_) => Err(anyhow::anyhow!("not read: a re-run names its check")),
+            None => dg_read(cfg, &["repo", "policy", "show", &repo.repo]),
+        };
+        let skips = judge_filtered(repo, trig, opts.only.as_deref(), policy, &mut plan);
+        if !plan.path_filtered.is_empty() {
+            skip_filtered(&ctx, &plan, &skips, &mut ran)?;
+        } else if plan.run.is_empty() {
             if let Some(only) = &opts.only {
                 eprintln!(
-                    "forge-runner: {} {}: the check {only:?} is left out by its `paths` filter and is not reported skipped here; nothing re-run",
+                    "forge-runner: {} {}: no workflow here reports the check {only:?}; nothing re-run",
                     repo.repo,
                     &key.oid[..12]
                 );
             }
-        } else {
-            skip_filtered(&ctx, &plan, &skips, &mut ran)?;
         }
     }
     for wf in &plan.run {
@@ -967,12 +971,10 @@ pub fn run(
     Ok(ran)
 }
 
-/// What [`skip_filtered`] may report: the check names (`None`: every filtered one), the names
-/// that already have a run on the commit (never reported over), and who changes no selected
-/// file ("PR #4 changes").
+/// What [`skip_filtered`] may report: the check names (`None`: every filtered one), and who
+/// changes no selected file ("PR #4 changes").
 struct Skips {
     wanted: Option<BTreeSet<String>>,
-    taken: BTreeSet<String>,
     subject: String,
 }
 
@@ -985,18 +987,22 @@ fn running_checks(plan: &workflow::Plan, trig: &Trigger) -> BTreeSet<String> {
         .collect()
 }
 
-/// Narrow `plan.path_filtered` to what may be reported skipped ([`Skips`]). The branch policy
-/// is read first: a filtered workflow none of whose checks a merge waits for is dropped before
-/// anything else is read. A pull request's own changes are the whole PR. A push's are only its
-/// own commits, so its filtered workflows are kept only when [`judge_push`] can judge every
-/// open PR whose head is the pushed commit as a whole, and each leaves them out too
-/// ([`workflow::push_filtered_for_all`]); otherwise nothing is reported, as before.
+/// Settle `plan.path_filtered`, the workflows a `paths` filter alone left out, against what a
+/// merge waits for. The branch policy is read first, so a filtered workflow none of whose checks
+/// it requires costs nothing more.
+///
+/// * A pull request's changes are the whole PR, so its filtered workflows stay in
+///   `plan.path_filtered`, narrowed to those with a check to report `skipped` ([`Skips`]).
+/// * A push's changes are only its own commits, not the PR's, so a skip there could pass a
+///   required check on a head whose earlier commits it never ran on. Instead each job whose
+///   check the policy requires (and the jobs it needs) moves to `plan.run` and runs for real,
+///   whatever the filter says; when the policy can't be read, every filtered job runs. Nothing
+///   is skipped on a push.
 fn judge_filtered(
-    cfg: &Config,
     repo: &RepoConfig,
     trig: &Trigger,
     only: Option<&str>,
-    cache: &Path,
+    policy: std::result::Result<serde_json::Value, anyhow::Error>,
     plan: &mut workflow::Plan,
 ) -> Skips {
     let running = running_checks(plan, trig);
@@ -1004,173 +1010,50 @@ fn judge_filtered(
         matches!(trig, Trigger::Pull { .. }) && plan.broken.is_empty() && running.is_empty();
     let wanted = match only {
         Some(o) => Some(BTreeSet::from([o.to_string()])),
-        None => match dg_read(cfg, &["repo", "policy", "show", &repo.repo]) {
+        None => match policy {
             Ok(v) => checks_to_skip(&v, alone),
             Err(e) => {
                 eprintln!(
-                    "forge-runner: {}: branch policy not read, so every path-filtered check is reported: {e:#}",
-                    repo.repo
+                    "forge-runner: {}: branch policy not read, so every path-filtered check is {}: {e:#}",
+                    repo.repo,
+                    if matches!(trig, Trigger::Push(_)) { "run" } else { "reported" }
                 );
                 None
             }
         },
     };
-    let reportable = |wf: &workflow::Workflow| {
-        wf.jobs.iter().any(|j| {
-            let name = trig.check_name(&j.check_name);
-            !running.contains(&name) && wanted.as_ref().is_none_or(|w| w.contains(&name))
-        })
+    let required = |wf: &workflow::Workflow| -> BTreeSet<String> {
+        wf.jobs
+            .iter()
+            .filter(|j| {
+                let name = trig.check_name(&j.check_name);
+                !running.contains(&name) && wanted.as_ref().is_none_or(|w| w.contains(&name))
+            })
+            .map(|j| j.id.clone())
+            .collect()
     };
-    plan.path_filtered.retain(reportable);
-    let mut skips = Skips {
-        wanted,
-        taken: BTreeSet::new(),
-        subject: format!("{} changes", trig.label()),
-    };
-    let Trigger::Push(push) = trig else {
-        return skips;
-    };
-    if plan.path_filtered.is_empty() {
-        return skips;
-    }
-    match judge_push(cfg, repo, cache, push) {
-        Some(judged) => {
-            let whole: Vec<Vec<String>> = judged.prs.iter().map(|(_, p)| p.clone()).collect();
-            plan.path_filtered
-                .retain(|wf| workflow::push_filtered_for_all(&wf.on(), &push.refname, &whole));
-            let numbers: Vec<u64> = judged.prs.iter().map(|(n, _)| *n).collect();
-            skips.subject = push_skip_subject(&push.oid, &numbers);
-            skips.taken = judged.taken;
-        }
-        None => plan.path_filtered.clear(),
-    }
-    skips
-}
-
-/// The most pull requests [`judge_push`] reads: one page, the newest. A full page means older
-/// ones may share the commit, so nothing is skipped.
-const HEAD_PULLS_READ: u32 = 100;
-
-/// The open pull requests whose head is a pushed commit, each with the paths it changes as a
-/// whole, and the check names already reported on that commit ([`judge_push`]).
-struct PushJudged {
-    prs: Vec<(u64, Vec<String>)>,
-    taken: BTreeSet<String>,
-}
-
-/// Judge a push's path-filtered checks on the pull requests that will read them: every open PR
-/// of `repo` whose head is `push.oid` (from a branch here or from a fork), each with
-/// `merge-base(its base tip, push.oid)..push.oid`, the base fetched into `cache`, and the
-/// checks already reported on `push.oid` (a skip never replaces a run). `None`, so nothing is
-/// skipped, when any of it cannot be judged soundly:
-///
-/// * the runner does not watch pull requests (`pull_requests = "off"`), so a PR opened,
-///   reopened or retargeted on this commit later would never be judged again
-///   (`poll_pulls`'s re-judging);
-/// * the newest [`HEAD_PULLS_READ`] PRs fill the page, so an older one may share the commit;
-/// * the list, a base, a diff or the commit's runs cannot be read.
-fn judge_push(cfg: &Config, repo: &RepoConfig, cache: &Path, push: &Push) -> Option<PushJudged> {
-    let no = |what: &str| {
-        eprintln!(
-            "forge-runner: {} {}: {what}, so no path-filtered push check is skipped",
-            repo.repo, push.refname
-        );
-    };
-    if repo.pull_requests == crate::config::PullPolicy::Off {
-        no("pull requests are not watched (pull_requests = \"off\"), so a later one on this commit could not be judged");
-        return None;
-    }
-    let pulls = match list_pulls(cfg, repo, HEAD_PULLS_READ) {
-        Ok(p) => p,
-        Err(e) => {
-            no(&format!("pull requests not read ({e:#})"));
-            return None;
-        }
-    };
-    if pulls.len() >= HEAD_PULLS_READ as usize {
-        no(&format!(
-            "the newest {HEAD_PULLS_READ} pull requests fill the page, and an older one may use this commit"
-        ));
-        return None;
-    }
-    let url = repo.url();
-    let own = Source {
-        url: &url,
-        cache,
-        tags: true,
-    };
-    let mut prs = Vec::new();
-    for pr in pulls
-        .iter()
-        .filter(|r| r.state == "open" && r.head_oid.eq_ignore_ascii_case(&push.oid))
-    {
-        let base = match fetch(cfg, &own, pr.base(), "refs/forge-runner/base") {
-            Ok(b) => b,
-            Err(e) => {
-                no(&format!("PR #{}'s base not fetched ({e:#})", pr.number));
-                return None;
+    if let Trigger::Push(push) = trig {
+        for wf in std::mem::take(&mut plan.path_filtered) {
+            let jobs = required(&wf);
+            if jobs.is_empty() {
+                continue;
             }
-        };
-        let Some(paths) = changed_paths(cfg, cache, &format!("{base}...{}", push.oid)) else {
-            no(&format!("PR #{}'s changes not read", pr.number));
-            return None;
-        };
-        prs.push((pr.number, paths));
-    }
-    if prs.is_empty() {
-        // No pull request reads this commit's checks: nothing waits on them.
-        return Some(PushJudged {
-            prs,
-            taken: BTreeSet::new(),
-        });
-    }
-    let taken = match check_runs_on(cfg, repo, &push.oid) {
-        Ok(runs) => runs.into_iter().map(|r| r.name).collect(),
-        Err(e) => {
-            no(&format!("the commit's check runs not read ({e:#})"));
-            return None;
+            eprintln!(
+                "forge-runner: {} {}: {} runs although its `paths` filter leaves this push out: the branch policy requires {}",
+                repo.repo,
+                push.refname,
+                wf.file.display(),
+                jobs.iter().map(|j| format!("{j:?}")).collect::<Vec<_>>().join(", ")
+            );
+            plan.run.push(wf.only_jobs(&jobs));
         }
-    };
-    Some(PushJudged { prs, taken })
-}
-
-/// One check run as `dg --json ci status` lists it (the newest per name).
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CheckRunSeen {
-    pub name: String,
-    #[serde(default)]
-    pub conclusion: String,
-    #[serde(default)]
-    pub summary: String,
-}
-
-impl CheckRunSeen {
-    /// A skip [`skip_filtered`] posted for a path filter (`skipped`, "Skipped: …").
-    pub fn is_path_skip(&self) -> bool {
-        self.conclusion == "skipped" && self.summary.starts_with("Skipped: ")
+    } else {
+        plan.path_filtered.retain(|wf| !required(wf).is_empty());
     }
-}
-
-/// The newest check run per name on `sha` (`dg ci status`).
-pub fn check_runs_on(cfg: &Config, repo: &RepoConfig, sha: &str) -> Result<Vec<CheckRunSeen>> {
-    let v = dg_read(cfg, &["ci", "status", &repo.repo, sha])?;
-    serde_json::from_value(v["checks"].clone()).context("dg ci status: unexpected rows")
-}
-
-/// Who a skipped push check's summary names: `PR #5, whose head is 1a2b3c4d5e6f, changes`, or
-/// `PRs #5 and #6, whose head is 1a2b3c4d5e6f, change`.
-fn push_skip_subject(oid: &str, numbers: &[u64]) -> String {
-    let tags: Vec<String> = numbers.iter().map(|n| format!("#{n}")).collect();
-    let (prs, verb) = match tags.as_slice() {
-        [one] => (format!("PR {one}"), "changes"),
-        [others @ .., final_one] => (
-            format!("PRs {} and {final_one}", others.join(", ")),
-            "change",
-        ),
-        [] => ("no pull request".to_string(), "changes"),
-    };
-    format!("{prs}, whose head is {}, {verb}", &oid[..12.min(oid.len())])
+    Skips {
+        wanted,
+        subject: format!("{} changes", trig.label()),
+    }
 }
 
 /// Which of a pull request's path-filtered checks get a report, from `dg repo policy show
@@ -1219,14 +1102,6 @@ fn skip_filtered(
             {
                 continue;
             }
-            if skips.taken.contains(&name) {
-                eprintln!(
-                    "forge-runner: {} {}: {name:?} already has a run on this commit; not reported skipped over it",
-                    c.repo.repo,
-                    &c.key.oid[..12]
-                );
-                continue;
-            }
             let (conclusion, summary) = match &j.refused {
                 Some(why) => ("failure", format!("forge-runner did not run this: {why}")),
                 None => (
@@ -1271,7 +1146,7 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
     let action_cache = c.run_dir.join("act");
     // With refused jobs, act gets a copy without them (outside the checkout, where a job cannot
     // rewrite it); else the file itself.
-    let workflow_path = match wf.without_refused() {
+    let workflow_path = match wf.for_act() {
         Some(doc) => {
             let dir = c.run_dir.join("filtered");
             std::fs::create_dir_all(&dir)?;
@@ -1667,6 +1542,7 @@ mod tests {
                 })
                 .collect(),
             doc: serde_json::Value::Null,
+            trimmed: false,
         };
         let plan = || workflow::Plan {
             run: vec![
@@ -1744,18 +1620,6 @@ mod tests {
         assert_eq!(checks_to_skip(&off, true), none);
     }
 
-    #[test]
-    fn a_skipped_push_check_names_the_pull_requests_judged() {
-        let oid = "1a2b3c4d5e6f7a8b9c0d1a2b3c4d5e6f7a8b9c0d";
-        assert_eq!(
-            push_skip_subject(oid, &[5]),
-            "PR #5, whose head is 1a2b3c4d5e6f, changes"
-        );
-        assert_eq!(
-            push_skip_subject(oid, &[5, 6, 9]),
-            "PRs #5, #6 and #9, whose head is 1a2b3c4d5e6f, change"
-        );
-    }
     #[test]
     fn rerun_requests_read_from_dg() {
         let v = serde_json::json!([{

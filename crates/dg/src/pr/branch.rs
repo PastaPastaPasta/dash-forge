@@ -843,7 +843,10 @@ pub async fn refuse_dependents(
     let note = partial_check_note(page.more, page.hidden);
     match dependents_refusal(&using, &handle.display(), view, &src.ref_name) {
         Some(u) => Err(match &note {
-            Some(n) => u.note(n.clone()),
+            Some(n) => {
+                let checked = u.note.clone().unwrap_or_default();
+                u.note(format!("{checked}; {n}"))
+            }
             None => u,
         }
         .into()),
