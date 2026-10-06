@@ -15,6 +15,7 @@ mod config;
 mod context;
 mod cost;
 mod doctor;
+mod env;
 mod errors;
 mod fmt;
 mod git;
@@ -254,6 +255,12 @@ pub enum Command {
     /// Manage webhooks.
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
+    /// Environments: secrets and settings kept out of git
+    ///
+    /// Each environment (dev, staging, production) is encrypted for Maintainers or Members.
+    /// Run code with one through `dg env run`.
+    #[command(subcommand)]
+    Env(env::EnvCommand),
     /// CI: runner keys and memberships, and check runs on commits.
     #[command(subcommand)]
     Ci(ci::CiCommand),
@@ -1740,6 +1747,10 @@ pub enum CollabCommand {
         /// are one document: any of them removes it).
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
+        /// Don't save again the environments whose latest change this maintainer made (they
+        /// then go back to the version before it).
+        #[arg(long)]
+        no_resave: bool,
     },
     /// List members.
     List {
@@ -2285,6 +2296,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
+        Command::Env(cmd) => env::run(ctx, cmd).await,
         Command::Ci(cmd) => ci::run(ctx, cmd).await,
         Command::Search(cmd) => search::run(ctx, cmd).await,
         Command::Api(cmd) => api::run(ctx, cmd).await,

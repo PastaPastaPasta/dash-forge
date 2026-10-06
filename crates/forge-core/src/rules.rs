@@ -3147,10 +3147,11 @@ mod tests {
             let v: Vector = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
             // the private-repository and mixed-visibility envelope vectors run in
-            // `private::conformance`
+            // `private::conformance`, the environment snapshots in `env::conformance`
             if crate::private::conformance::CRYPTO_CASE_PREFIXES
                 .iter()
                 .any(|p| v.case.starts_with(p))
+                || v.case.starts_with(crate::env::conformance::CASE_PREFIX)
             {
                 continue;
             }

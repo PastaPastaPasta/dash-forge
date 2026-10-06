@@ -1,0 +1,92 @@
+{
+  "name": "members",
+  "description": "a Members snapshot is the padded artifact sealed as a DFPK 0x01 file under the lane's epoch key (K_pack,e,fileId): a member holding epoch 0 opens it; a reader without that epoch's key gets noKey.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "snapshot": {
+      "env": "dev",
+      "audience": "members",
+      "generatedAt": 1767225600000,
+      "vars": {
+        "API_URL": {
+          "type": "variable",
+          "value": "https://api.example.test",
+          "note": ""
+        },
+        "API_TOKEN": {
+          "type": "secret",
+          "value": "fake-token-1",
+          "note": ""
+        }
+      }
+    },
+    "seal": {
+      "epoch": 0,
+      "epochKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "fileId": "16b34748c0fb44ab8e5de6f6390824d1"
+    },
+    "manifest": {
+      "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "packHash": "5dd850f24caf27a988bbf34fe2e7c03358f8127e987729953047d4832222431f",
+      "sizeBytes": 564
+    },
+    "sealed": "4446504b010e000000000000000000000000020016b34748c0fb44ab8e5de6f6390824d1b87af0f4d834074f23e88d8a5113979c5188040e3575518a743fcc4b79c1245aa0166c9cdd363d87695b841e11f1e22d6360245f6c6134fd36cf4d4855467b5182218b77d225f1e73d1ef78d0a4a4e83b6b2699b84dc91a9c101181bb4134c6078989252aed9edfc44ea42136c6ca904287fe7aa00a5958fb114ccf26def643300b523e60abffa15f2bd2f5f7f64312568ea05a7988fb904eee4101ac155fe9d301de91a4736d0f062d9695669db6c5c717b9c03c48bc4d96de5fe48aa74dba946330a0c1464847fd1efd599e2481165a1b26229f6bc2b26808e9c324e9fbb7e652da8070bf85ffe89e00066c80d82b5ff0dc3a2e9fd526df1fd5bb1f3f8b36ba23f1a355055fccbb952f53e016ddb3cd35cbcba96cb1b51a4ae263a51a2c5f0e682cb08d914c88da7d0a04d079932c8ec91ab9d7ea550a1c3ff95ff4ccc73ea54852f398182e6525eb92522b063cabd887afe946a659567c7dafec042dc94769aa6da6081028b497392d9137066a111e0cc6f7faca8a65b98ea7298d443c8b41787b5c70c18861d1c1eb0abb658f803fe745bfff00ea7cd3a442e571dcecdd7f6810d12ecfe979cfbaf32f140a5e6c6789fef360366eda927471c95c11afe64c70b31f9bba75b9fb05ab58d081d5ee676f54b73c432530c98cee7e93e282591ad62bad439ba2a824a1564b12a39baf36e49779b4e1f982f0e40fb907d82d748074e777f5334a09ed7bbbdb690b0c4ec",
+    "ownerKeys": [],
+    "readers": [
+      {
+        "reader": {
+          "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "keys": [
+            "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955"
+          ]
+        },
+        "epochKeys": [
+          {
+            "epoch": 0,
+            "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          }
+        ]
+      },
+      {
+        "reader": {
+          "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "keys": [
+            "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955"
+          ]
+        },
+        "epochKeys": []
+      }
+    ]
+  },
+  "expected": {
+    "plaintextHex": "7b2261756469656e6365223a226d656d62657273222c22656e76223a22646576222c2267656e6572617465644174223a313736373232353630303030302c2276223a312c2276617273223a7b224150495f544f4b454e223a7b2274797065223a22736563726574222c2276616c7565223a2266616b652d746f6b656e2d31227d2c224150495f55524c223a7b2274797065223a227661726961626c65222c2276616c7565223a2268747470733a2f2f6170692e6578616d706c652e74657374227d7d7d2020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020",
+    "packHash": "5dd850f24caf27a988bbf34fe2e7c03358f8127e987729953047d4832222431f",
+    "results": [
+      {
+        "snapshot": {
+          "env": "dev",
+          "audience": "members",
+          "generatedAt": 1767225600000,
+          "vars": {
+            "API_TOKEN": {
+              "type": "secret",
+              "value": "fake-token-1",
+              "note": ""
+            },
+            "API_URL": {
+              "type": "variable",
+              "value": "https://api.example.test",
+              "note": ""
+            }
+          }
+        }
+      },
+      {
+        "error": "noKey"
+      }
+    ]
+  }
+}

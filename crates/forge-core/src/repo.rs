@@ -2744,6 +2744,49 @@ impl<'a> RepoService<'a> {
         Ok(pack_hash)
     }
 
+    /// Store `sealed`, an environment snapshot already sealed for its audience
+    /// ([`crate::env::codec`]), as Platform `chunk` documents and record its kind-8
+    /// `packManifest` (`objectCount` 0, no `tips`), naming the snapshots it replaces in
+    /// `supersedes`. Returns the manifest's document id and the snapshot's `packHash`.
+    pub async fn store_env_snapshot(
+        &self,
+        repo: &RepoRef,
+        sealed: &[u8],
+        supersedes: Vec<[u8; 32]>,
+    ) -> Result<(String, [u8; 32])> {
+        let chain = PlatformChunkTarget::new(self, repo, crate::storage::PLATFORM_PROFILE);
+        let targets: Vec<&dyn StorageTarget> = vec![&chain];
+        let meta = PackMeta::for_bytes(sealed);
+        let pack_hash = meta.pack_hash_bytes()?;
+        let rep = crate::storage::replicate(&targets, sealed, &meta, 1)
+            .await
+            .map_err(|e| {
+                Error::from(UserError::storage_policy_not_met(
+                    &e,
+                    "store the environment",
+                    false,
+                ))
+            })?;
+        let stored = StoredArtifact::from_replication(&rep, sealed)?;
+        let id = self
+            .write_pack_manifest(
+                repo,
+                &PackManifestInput {
+                    pack_hash,
+                    kind: u64::from(crate::pack::KIND_ENV_SNAPSHOT),
+                    size_bytes: sealed.len() as u64,
+                    object_count: 0,
+                    chunk_count: stored.chunk_count,
+                    storage: stored.storage,
+                    uris: stored.uris,
+                    supersedes,
+                    tips: Vec::new(),
+                },
+            )
+            .await?;
+        Ok((id, pack_hash))
+    }
+
     /// What the next history index of `tip` should be (see [`plan_history_index`]), from the
     /// manifests and the repository's current members. Reads no artifact.
     pub async fn plan_history_publish(&self, repo: &RepoRef, tip: [u8; 20]) -> Result<HistoryPlan> {
