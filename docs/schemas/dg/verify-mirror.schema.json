@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/verify-mirror.schema.json",
+  "title": "dg verify-mirror --json",
+  "description": "A plain-git mirror checked against Platform.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "url": {
+      "type": "string"
+    },
+    "repo": {
+      "type": "string"
+    },
+    "verdict": {
+      "type": "string"
+    },
+    "refs": {},
+    "manifest": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "manifestError": {},
+    "manifestProblems": {}
+  },
+  "required": [
+    "schemaVersion",
+    "url",
+    "verdict"
+  ],
+  "additionalProperties": true
+}

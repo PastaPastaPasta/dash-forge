@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-checks.schema.json",
+  "title": "dg pr checks --json",
+  "description": "The checks on the pull request's head, and the required ones.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "headOid": {
+      "type": "string"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "passed": {
+      "type": "integer"
+    },
+    "failed": {
+      "type": "integer"
+    },
+    "pending": {
+      "type": "integer"
+    },
+    "required": {},
+    "requiredMet": {}
+  },
+  "required": [
+    "schemaVersion",
+    "pr",
+    "headOid",
+    "checks"
+  ],
+  "additionalProperties": true
+}

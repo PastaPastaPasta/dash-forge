@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/issue-list.schema.json",
+  "title": "dg issue list --json",
+  "description": "A page of issues.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "count": {
+      "type": "integer"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "membersOnly": {
+      "type": "integer"
+    },
+    "page": {
+      "type": "integer"
+    },
+    "pages": {
+      "type": "integer"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/issueRow"
+      }
+    },
+    "hidden": {
+      "type": "integer"
+    },
+    "hiddenOmitted": {
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "count",
+    "total",
+    "page",
+    "pages",
+    "issues",
+    "truncated"
+  ],
+  "additionalProperties": true
+}

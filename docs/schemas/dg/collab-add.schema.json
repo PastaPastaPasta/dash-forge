@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/collab-add.schema.json",
+  "title": "dg collab add --json",
+  "description": "A member added, or their role changed.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "member": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "previousRole": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "environmentsSavedFirst": {},
+    "documentId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "repo": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "keyShared": {
+      "type": "boolean"
+    },
+    "keyPending": {},
+    "rotation": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/rotation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "member",
+    "role"
+  ],
+  "additionalProperties": true
+}

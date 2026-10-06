@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/profile-delete.schema.json",
+  "title": "dg profile delete --json",
+  "description": "Your profile deleted.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "deleted",
+        "absent"
+      ]
+    },
+    "documentId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status"
+  ],
+  "additionalProperties": true
+}

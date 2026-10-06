@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/profile-show.schema.json",
+  "title": "dg profile show --json",
+  "description": "An identity's public profile.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "profile": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "identityId",
+    "profile"
+  ],
+  "additionalProperties": true
+}

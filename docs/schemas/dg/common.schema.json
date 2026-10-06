@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/common.schema.json",
+  "title": "Shapes shared by dg's --json output",
+  "$defs": {
+    "cost": {
+      "type": "object",
+      "properties": {
+        "credits": {
+          "type": "integer"
+        },
+        "dash": {
+          "type": "number"
+        },
+        "usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "usdPrice": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "credits",
+        "dash"
+      ],
+      "description": "Credits spent (or quoted) and the same in DASH; `usd` only when a price was read."
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "ok"
+        ]
+      },
+      "description": "What a multi-step write did, in order."
+    },
+    "audience": {
+      "type": "string",
+      "enum": [
+        "public",
+        "members",
+        "specificPeople"
+      ],
+      "description": "Who can read a document: everyone, the repository's members, or the people listed."
+    },
+    "oid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+      "description": "A git object id, lowercase hex."
+    },
+    "hiddenBy": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "by": {
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "at": {
+              "type": "integer"
+            },
+            "eventId": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "A maintainer's hide of the whole thread, or null."
+    },
+    "issueRow": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "type": "string"
+        },
+        "open": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed"
+          ]
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assignees": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "audience": {
+          "$ref": "common.schema.json#/$defs/audience"
+        },
+        "readable": {
+          "type": "boolean"
+        },
+        "why": {
+          "type": "string"
+        },
+        "hiddenBy": {
+          "$ref": "common.schema.json#/$defs/hiddenBy"
+        }
+      },
+      "required": [
+        "number",
+        "author",
+        "open",
+        "state",
+        "labels",
+        "assignees",
+        "readable"
+      ]
+    },
+    "pullRow": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed",
+            "merged"
+          ]
+        },
+        "baseRef": {
+          "type": "string"
+        },
+        "baseRefName": {
+          "type": "string"
+        },
+        "headOid": {
+          "type": "string"
+        },
+        "draft": {
+          "type": "boolean"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assignees": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "audience": {
+          "$ref": "common.schema.json#/$defs/audience"
+        },
+        "readable": {
+          "type": "boolean"
+        },
+        "why": {
+          "type": "string"
+        },
+        "hiddenBy": {
+          "$ref": "common.schema.json#/$defs/hiddenBy"
+        }
+      },
+      "required": [
+        "number",
+        "author",
+        "state"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "cause": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fix": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "docs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exitCode": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "description": "The error block every failing command prints (docs/errors.md)."
+    },
+    "rotation": {
+      "type": "object",
+      "description": "A key rotation of a private or members-only repository."
+    },
+    "policy": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "requiredApprovals": {
+              "type": "integer"
+            },
+            "maintainersOnly": {
+              "type": "boolean"
+            },
+            "requireChecks": {
+              "type": "boolean"
+            },
+            "requiredChecks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "mergeMethods": {}
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "A branch policy, as `dg repo policy show` prints it."
+    }
+  }
+}

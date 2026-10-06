@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-keys-repair.schema.json",
+  "title": "dg repo keys repair --json",
+  "description": "Keys shared again, or the key rotated, so every member can read.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "repaired",
+        "nothing_to_do"
+      ]
+    },
+    "rotated": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/rotation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nonMembers": {},
+    "wrapped": {},
+    "skipped": {},
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status"
+  ],
+  "additionalProperties": true
+}

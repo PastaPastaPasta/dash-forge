@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/issue-milestone.schema.json",
+  "title": "dg issue milestone --json",
+  "description": "An issue's milestone set or cleared.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "set",
+        "cleared"
+      ]
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "milestone": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "eventId": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "issue"
+  ],
+  "additionalProperties": true
+}

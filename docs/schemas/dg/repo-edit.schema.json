@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-edit.schema.json",
+  "title": "dg repo edit --json",
+  "description": "The repository's description, topics or default branch changed.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "edited",
+        "unchanged"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "defaultBranch": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "topics": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "configDocumentId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "repoEdited": {
+      "type": "boolean"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repo"
+  ],
+  "additionalProperties": true
+}

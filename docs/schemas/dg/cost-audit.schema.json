@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/cost-audit.schema.json",
+  "title": "dg cost audit --json",
+  "description": "What an identity spent, or what a repository's storage holds.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "mode": {
+      "type": "string"
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "sinceMs": {},
+    "documentCount": {
+      "type": "integer"
+    },
+    "totalCredits": {
+      "type": "integer"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "byType": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "byRepo": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "excludedTypes": {},
+    "note": {
+      "type": "string"
+    },
+    "scopeNote": {},
+    "chunkGapNote": {},
+    "repoId": {
+      "type": "string"
+    },
+    "packCount": {
+      "type": "integer"
+    },
+    "packBytes": {
+      "type": "integer"
+    },
+    "platformPacks": {
+      "type": "integer"
+    },
+    "platformBytes": {
+      "type": "integer"
+    },
+    "externalPacks": {
+      "type": "integer"
+    },
+    "externalBytes": {
+      "type": "integer"
+    },
+    "depositLocked": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "mode"
+  ],
+  "additionalProperties": true
+}

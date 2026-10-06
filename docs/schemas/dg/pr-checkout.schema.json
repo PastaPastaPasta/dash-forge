@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-checkout.schema.json",
+  "title": "dg pr checkout --json",
+  "description": "The pull request's head checked out as a local branch.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "headOid": {
+      "type": "string"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "sourceRepoId": {
+      "type": "string"
+    },
+    "fetched": {
+      "type": "boolean"
+    },
+    "branchCreated": {
+      "type": "boolean"
+    },
+    "switched": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "pr",
+    "headOid",
+    "branch"
+  ],
+  "additionalProperties": true
+}

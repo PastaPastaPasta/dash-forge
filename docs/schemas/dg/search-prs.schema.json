@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/search-prs.schema.json",
+  "title": "dg search prs --json",
+  "description": "Pull requests matching a query.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "query": {
+      "type": "string"
+    },
+    "notApplied": {},
+    "total": {
+      "type": "integer"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "searchedNewest": {
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "hiddenOmitted": {
+      "type": "integer"
+    },
+    "prs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed",
+              "merged"
+            ]
+          },
+          "draft": {
+            "type": "boolean"
+          },
+          "author": {
+            "type": "string"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "milestone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "baseRefName": {
+            "type": "string"
+          },
+          "headRefName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "integer"
+          },
+          "hiddenBy": {
+            "$ref": "common.schema.json#/$defs/hiddenBy"
+          }
+        },
+        "required": [
+          "number",
+          "state",
+          "author"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "query",
+    "count",
+    "prs"
+  ],
+  "additionalProperties": true
+}

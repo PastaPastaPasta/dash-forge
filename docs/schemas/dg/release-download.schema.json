@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/release-download.schema.json",
+  "title": "dg release download --json",
+  "description": "A release's assets downloaded and checked.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "downloaded"
+      ]
+    },
+    "tag": {
+      "type": "string"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "tag",
+    "assets"
+  ],
+  "additionalProperties": true
+}

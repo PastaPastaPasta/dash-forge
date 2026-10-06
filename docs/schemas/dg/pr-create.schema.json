@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-create.schema.json",
+  "title": "dg pr create --json",
+  "description": "A new pull request.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created"
+      ]
+    },
+    "number": {
+      "type": "integer"
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "baseRef": {
+      "type": "string"
+    },
+    "headRef": {
+      "type": "string"
+    },
+    "headOid": {
+      "type": "string"
+    },
+    "sourceRepoId": {
+      "type": "string"
+    },
+    "sourceRepo": {
+      "type": "string"
+    },
+    "draft": {
+      "type": "boolean"
+    },
+    "draftTransitionId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resumed": {
+      "type": "boolean"
+    },
+    "codeOwners": {},
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "number",
+    "documentId",
+    "baseRef",
+    "headRef"
+  ],
+  "additionalProperties": true
+}

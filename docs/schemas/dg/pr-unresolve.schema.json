@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-unresolve.schema.json",
+  "title": "dg pr unresolve --json",
+  "description": "A review thread unresolved.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "written": {
+      "type": "boolean"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "resolved": {
+      "type": "boolean"
+    },
+    "via": {},
+    "eventId": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr",
+    "written"
+  ],
+  "additionalProperties": true
+}

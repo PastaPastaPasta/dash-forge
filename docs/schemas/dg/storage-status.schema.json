@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/storage-status.schema.json",
+  "title": "dg storage status --json",
+  "description": "Where the repository's packs are stored.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "packCount": {
+      "type": "integer"
+    },
+    "ipfsGateways": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "packs": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repoId",
+    "packs"
+  ],
+  "additionalProperties": true
+}

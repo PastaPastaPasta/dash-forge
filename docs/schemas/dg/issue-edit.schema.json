@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/issue-edit.schema.json",
+  "title": "dg issue edit --json",
+  "description": "An issue's title, body or metadata edited.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "edited",
+        "unchanged"
+      ]
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "written": {
+      "type": "boolean"
+    },
+    "title": {},
+    "bodyChanged": {
+      "type": "boolean"
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "eventIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unchanged": {},
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "issue"
+  ],
+  "additionalProperties": true
+}

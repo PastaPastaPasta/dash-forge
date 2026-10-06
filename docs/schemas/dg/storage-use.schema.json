@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/storage-use.schema.json",
+  "title": "dg storage use --json",
+  "description": "Which storage profiles pushes use.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "storage": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "replicas": {},
+    "platformFallback": {},
+    "scope": {
+      "type": "string",
+      "enum": [
+        "global",
+        "repo"
+      ]
+    },
+    "warnings": {},
+    "advertisedMode": {},
+    "existingPacks": {}
+  },
+  "required": [
+    "schemaVersion",
+    "storage",
+    "scope"
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-new.schema.json",
+  "title": "dg auth new --json",
+  "description": "A new identity and the key stored for this computer.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created"
+      ]
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "network": {
+      "type": "string"
+    },
+    "keyId": {
+      "type": "integer"
+    },
+    "budgetCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "expiresAt": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "storage": {
+      "type": "string"
+    },
+    "storedAt": {
+      "type": "string"
+    },
+    "encryptionKeyIds": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "assetLockTxid": {
+      "type": "string"
+    },
+    "proof": {
+      "type": "string",
+      "enum": [
+        "instant",
+        "chain"
+      ]
+    },
+    "balanceCredits": {
+      "type": "integer"
+    },
+    "balanceDash": {
+      "type": "number"
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "backupFile": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "contractGroup": {},
+    "groupWarning": {}
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "identityId",
+    "network"
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-keys-rotate.schema.json",
+  "title": "dg repo keys rotate --json",
+  "description": "A new key epoch.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "rotated"
+      ]
+    },
+    "rotation": {
+      "$ref": "common.schema.json#/$defs/rotation"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status"
+  ],
+  "additionalProperties": true
+}

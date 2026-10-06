@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-fork.schema.json",
+  "title": "dg repo fork --json",
+  "description": "A fork of a repository.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "forkOf": {},
+    "parent": {},
+    "remoteUrl": {
+      "type": "string"
+    },
+    "manifestsWritten": {
+      "type": "integer"
+    },
+    "platformPacksReferenced": {
+      "type": "integer"
+    },
+    "manifestsExisting": {
+      "type": "integer"
+    },
+    "unreferenceablePacks": {},
+    "refsWritten": {
+      "type": "integer"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repoId"
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/release-unpublish.schema.json",
+  "title": "dg release unpublish --json",
+  "description": "A release taken down.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "tag": {
+      "type": "string"
+    },
+    "sealed": {
+      "type": "boolean"
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "assets": {
+      "type": "array",
+      "items": {}
+    },
+    "assetListKept": {},
+    "assetListReused": {},
+    "warnings": {},
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "tag"
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-suggestion-apply.schema.json",
+  "title": "dg pr suggestion apply --json",
+  "description": "Suggested changes committed to the pull request's branch.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "applied",
+        "nothing_to_apply"
+      ]
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "written": {
+      "type": "boolean"
+    },
+    "commit": {
+      "type": "string"
+    },
+    "applied": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "headOid": {
+      "type": "string"
+    },
+    "eventId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "steps": {
+      "$ref": "common.schema.json#/$defs/steps"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr",
+    "written",
+    "applied"
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/issue-create.schema.json",
+  "title": "dg issue create --json",
+  "description": "A new issue.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created"
+      ]
+    },
+    "number": {
+      "type": "integer"
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "audience": {
+      "$ref": "common.schema.json#/$defs/audience"
+    },
+    "resumed": {
+      "type": "boolean"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "number",
+    "documentId"
+  ],
+  "additionalProperties": true
+}

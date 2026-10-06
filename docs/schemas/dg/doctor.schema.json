@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/doctor.schema.json",
+  "title": "dg doctor --json",
+  "description": "Each check of the setup, and what fixes it.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "counts": {},
+    "applied": {}
+  },
+  "required": [
+    "schemaVersion"
+  ],
+  "additionalProperties": true
+}

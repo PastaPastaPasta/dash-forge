@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-status.schema.json",
+  "title": "dg auth status --json",
+  "description": "Who is signed in on this computer, and the key's limits.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "network": {
+      "type": "string"
+    },
+    "authenticated": {
+      "type": "boolean"
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "names": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "keyId": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "keyDisabled": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "limited": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "capped": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "boundDocumentType": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "encryptionKeyIds": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "budgetCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "budgetRemainingCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "expiresAt": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "balanceCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "balanceDash": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "storage": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "storedAt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "defaultIdentityId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "masterKeyStored": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "keyUnopened": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "network",
+    "authenticated"
+  ],
+  "additionalProperties": true
+}

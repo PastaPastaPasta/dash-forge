@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-review.schema.json",
+  "title": "dg pr review --json",
+  "description": "A review: submitted, kept pending, or discarded.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "submitted",
+        "pending",
+        "discarded",
+        "no_pending_review"
+      ]
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "verdict": {},
+    "verdictLabel": {},
+    "audience": {
+      "$ref": "common.schema.json#/$defs/audience"
+    },
+    "commitOid": {
+      "type": "string"
+    },
+    "reviewId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "comments": {
+      "type": "array",
+      "items": {}
+    },
+    "documents": {},
+    "landed": {},
+    "failed": {},
+    "resumed": {},
+    "added": {
+      "type": "integer"
+    },
+    "anchoredTo": {
+      "type": "string"
+    },
+    "headMoved": {
+      "type": "boolean"
+    },
+    "encrypted": {
+      "type": "boolean"
+    },
+    "draftFile": {
+      "type": "string"
+    },
+    "discarded": {},
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr"
+  ],
+  "additionalProperties": true
+}

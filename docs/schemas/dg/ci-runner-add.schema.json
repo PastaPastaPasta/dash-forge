@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/ci-runner-add.schema.json",
+  "title": "dg ci runner add --json",
+  "description": "A runner enrolled.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "enrolled",
+        "exists"
+      ]
+    },
+    "runner": {
+      "type": "string"
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "written": {
+      "type": "boolean"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "runner"
+  ],
+  "additionalProperties": true
+}

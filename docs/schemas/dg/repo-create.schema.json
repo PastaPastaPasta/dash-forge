@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-create.schema.json",
+  "title": "dg repo create --json",
+  "description": "A new repository.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "generation": {},
+    "repoId": {
+      "type": "string"
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "remoteUrl": {
+      "type": "string"
+    },
+    "webUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "storage": {},
+    "network": {
+      "type": "string"
+    },
+    "visibility": {
+      "type": "string",
+      "enum": [
+        "public",
+        "private"
+      ]
+    },
+    "protectedPatterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "steps": {
+      "$ref": "common.schema.json#/$defs/steps"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "push": {}
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repoId",
+    "ownerId",
+    "name"
+  ],
+  "additionalProperties": true
+}

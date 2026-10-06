@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/ci-report.schema.json",
+  "title": "dg ci report --json",
+  "description": "A check run reported on a commit.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "checkStatus": {
+      "type": "string"
+    },
+    "conclusion": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "headOid": {
+      "type": "string"
+    },
+    "logUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "logSha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "artifacts": {},
+    "artifactsLeftOut": {},
+    "leftOut": {},
+    "url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "policyNote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "supersedes": {}
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "documentId",
+    "name"
+  ],
+  "additionalProperties": true
+}

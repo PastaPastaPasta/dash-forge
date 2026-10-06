@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/cost-prices.schema.json",
+  "title": "dg cost prices --json",
+  "description": "What each kind of write costs, at most.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "per_operation_estimates"
+      ]
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "mode",
+    "operations"
+  ],
+  "additionalProperties": true
+}

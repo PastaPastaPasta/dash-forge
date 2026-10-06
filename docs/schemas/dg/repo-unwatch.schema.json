@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-unwatch.schema.json",
+  "title": "dg repo unwatch --json",
+  "description": "The watch removed.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "repo": {
+      "type": "string"
+    },
+    "watchers": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "cost": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/cost"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repo"
+  ],
+  "additionalProperties": true
+}

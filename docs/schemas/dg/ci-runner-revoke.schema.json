@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/ci-runner-revoke.schema.json",
+  "title": "dg ci runner revoke --json",
+  "description": "A runner no longer trusted.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "revoked",
+        "not_a_runner"
+      ]
+    },
+    "runner": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "runner"
+  ],
+  "additionalProperties": true
+}

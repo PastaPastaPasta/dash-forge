@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/issue-pin.schema.json",
+  "title": "dg issue pin --json",
+  "description": "An issue pinned or unpinned.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "written": {
+      "type": "boolean"
+    },
+    "eventId": {
+      "type": "string"
+    },
+    "transitionId": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "issue"
+  ],
+  "additionalProperties": true
+}

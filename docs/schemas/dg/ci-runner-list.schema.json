@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/ci-runner-list.schema.json",
+  "title": "dg ci runner list --json",
+  "description": "The repository's runners.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "count": {
+      "type": "integer"
+    },
+    "runners": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "count",
+    "runners"
+  ],
+  "additionalProperties": true
+}

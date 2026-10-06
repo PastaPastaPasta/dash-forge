@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-dismiss-review.schema.json",
+  "title": "dg pr dismiss-review --json",
+  "description": "A review dismissed.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "written": {
+      "type": "boolean"
+    },
+    "reviewId": {
+      "type": "string"
+    },
+    "reviewer": {
+      "type": "string"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "via": {},
+    "eventId": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr",
+    "written"
+  ],
+  "additionalProperties": true
+}

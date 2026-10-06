@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/issue-assign.schema.json",
+  "title": "dg issue assign --json",
+  "description": "People assigned to an issue.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "assignees": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "eventIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unchanged": {},
+    "written": {
+      "type": "boolean"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "issue",
+    "assignees"
+  ],
+  "additionalProperties": true
+}

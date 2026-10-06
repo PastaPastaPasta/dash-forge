@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-unrequest-review.schema.json",
+  "title": "dg pr unrequest-review --json",
+  "description": "Review requests withdrawn.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "reviewers": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "status": {
+      "type": "string"
+    },
+    "written": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "pr"
+  ],
+  "additionalProperties": true
+}

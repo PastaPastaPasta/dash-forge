@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/search-issues.schema.json",
+  "title": "dg search issues --json",
+  "description": "Issues matching a query.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "query": {
+      "type": "string"
+    },
+    "notApplied": {},
+    "total": {
+      "type": "integer"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "hidden": {
+      "type": "integer"
+    },
+    "membersOnly": {
+      "type": "integer"
+    },
+    "hiddenOmitted": {
+      "type": "integer"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed"
+            ]
+          },
+          "author": {
+            "type": "string"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "milestone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "integer"
+          },
+          "hiddenBy": {
+            "$ref": "common.schema.json#/$defs/hiddenBy"
+          }
+        },
+        "required": [
+          "number",
+          "state",
+          "author"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "query",
+    "count",
+    "issues"
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-update-branch.schema.json",
+  "title": "dg pr update-branch --json",
+  "description": "The base merged into the pull request's branch.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "updated",
+        "up_to_date"
+      ]
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "written": {
+      "type": "boolean"
+    },
+    "headOid": {
+      "type": "string"
+    },
+    "baseOid": {
+      "type": "string"
+    },
+    "eventId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "steps": {
+      "$ref": "common.schema.json#/$defs/steps"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr",
+    "written"
+  ],
+  "additionalProperties": true
+}

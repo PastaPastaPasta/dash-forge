@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/issue-label.schema.json",
+  "title": "dg issue label --json",
+  "description": "Labels added to or removed from an issue.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "labeled",
+        "unchanged"
+      ]
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "add",
+        "remove"
+      ]
+    },
+    "eventId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "eventIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unchanged": {},
+    "written": {
+      "type": "boolean"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "issue",
+    "labels",
+    "action"
+  ],
+  "additionalProperties": true
+}

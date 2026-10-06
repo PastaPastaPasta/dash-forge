@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-keys-disable.schema.json",
+  "title": "dg auth keys disable --json",
+  "description": "A key disabled on the identity.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "already_disabled"
+      ]
+    },
+    "keyId": {
+      "type": "integer"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "keyId"
+  ],
+  "additionalProperties": true
+}

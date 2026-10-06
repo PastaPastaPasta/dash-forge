@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-keys-rotate.schema.json",
+  "title": "dg auth keys rotate --json",
+  "description": "The encryption key rotated, and the repositories it was re-shared to.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "oldKeyIds": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "newKeyId": {
+      "type": "integer"
+    },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "askMaintainer": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status"
+  ],
+  "additionalProperties": true
+}

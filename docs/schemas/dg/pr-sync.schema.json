@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-sync.schema.json",
+  "title": "dg pr sync --json",
+  "description": "The pull request's head moved to its branch's tip.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "written": {
+      "type": "boolean"
+    },
+    "previousHead": {
+      "type": "string"
+    },
+    "headOid": {
+      "type": "string"
+    },
+    "via": {},
+    "eventId": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr",
+    "written"
+  ],
+  "additionalProperties": true
+}

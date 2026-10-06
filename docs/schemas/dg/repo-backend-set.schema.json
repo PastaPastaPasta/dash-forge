@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-backend-set.schema.json",
+  "title": "dg repo backend set --json",
+  "description": "The repository's storage backend.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "backend_set",
+        "unchanged"
+      ]
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "backend": {
+      "type": "string"
+    },
+    "mode": {},
+    "configDocumentId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "network": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repoId"
+  ],
+  "additionalProperties": true
+}

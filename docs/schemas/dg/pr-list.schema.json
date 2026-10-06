@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-list.schema.json",
+  "title": "dg pr list --json",
+  "description": "A page of pull requests.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "count": {
+      "type": "integer"
+    },
+    "membersOnly": {
+      "type": "integer"
+    },
+    "prs": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/pullRow"
+      }
+    },
+    "hidden": {
+      "type": "integer"
+    },
+    "hiddenOmitted": {
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "otherStates": {}
+  },
+  "required": [
+    "schemaVersion",
+    "count",
+    "prs",
+    "truncated"
+  ],
+  "additionalProperties": true
+}

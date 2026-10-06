@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/reseed.schema.json",
+  "title": "dg reseed --json",
+  "description": "Packs stored again where the storage policy wants them.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "reseeded",
+        "partial"
+      ]
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "target": {},
+    "targets": {},
+    "packs": {},
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "restored": {},
+    "healthy": {
+      "type": "integer"
+    },
+    "missingLocally": {}
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repoId"
+  ],
+  "additionalProperties": true
+}

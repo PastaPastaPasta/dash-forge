@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-logout.schema.json",
+  "title": "dg auth logout --json",
+  "description": "Signed out on this computer.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "logged_out"
+      ]
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "removed": {},
+    "disabledKeyId": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status"
+  ],
+  "additionalProperties": true
+}

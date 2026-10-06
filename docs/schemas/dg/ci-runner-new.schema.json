@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/ci-runner-new.schema.json",
+  "title": "dg ci runner new --json",
+  "description": "A runner identity and key created, and enrolled.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "runner": {
+      "type": "string"
+    },
+    "keyId": {
+      "type": "integer"
+    },
+    "boundTo": {
+      "type": "object"
+    },
+    "budgetCredits": {
+      "type": "integer"
+    },
+    "expiresAt": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "path": {
+      "type": "string"
+    },
+    "enrolled": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "alreadyEnrolled": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "keyCost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "enrolCost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "runner"
+  ],
+  "additionalProperties": true
+}
