@@ -67,6 +67,7 @@ import {
 import { mapPooled, trimOldest } from './pool'
 import { openPrivateArtifact, readPrivateRange } from './private-packs'
 import { onPrivateSessionEnded } from '../repo/private-session'
+import { mirrorCopy, mirrorUrisOf } from '../repo/pack-mirrors'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -1034,6 +1035,17 @@ export function artifactRangeFetch(
         lastErr = e
       }
     }
+    // Every copy failed: a public repo's recorded mirrors (UPDATE-1), read only now.
+    if (session === undefined) {
+      const uris = await mirrorUrisOf(sdk, repo, manifest)
+      if (uris.length > 0) {
+        try {
+          return await fetchExternalRange(mirrorCopy(manifest, uris), start, end, readGatewaysFor(repoKey(repo)), servedBy(repo, manifest.packHash, undefined, []))
+        } catch {
+          // the copies' own failure is the one to report
+        }
+      }
+    }
     // The rail's "where the bytes came from" row lists the places that did not answer.
     if (lastErr instanceof PackUnavailableError) {
       noteContentCheck(repoKey(repo), {
@@ -1091,7 +1103,29 @@ export async function loadArtifactBytesProgress(
   }
   const verified = (copy: PackManifest, bytes: Uint8Array): boolean =>
     session !== undefined || bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()
-  if (manifest.copies === undefined) return open(manifest)
+  // Every copy failed: a public repo's recorded mirrors (UPDATE-1), whose bytes must hash to the
+  // pack like any copy's. Read only then, never on the happy path.
+  const fromMirrors = async (): Promise<Uint8Array | null> => {
+    if (session !== undefined || cancel?.aborted) return null
+    const uris = await mirrorUrisOf(sdk, repo, manifest)
+    if (uris.length === 0) return null
+    try {
+      const bytes = await fetchExternalWhole(mirrorCopy(manifest, uris), readGatewaysFor(repoKey(repo)), servedBy(repo, manifest.packHash, undefined, []), cancel)
+      return verified(manifest, bytes) ? bytes : null
+    } catch {
+      // the copies' own failure is the one to report
+      return null
+    }
+  }
+  if (manifest.copies === undefined) {
+    try {
+      return await open(manifest)
+    } catch (e) {
+      const mirrored = await fromMirrors()
+      if (mirrored !== null) return mirrored
+      throw e
+    }
+  }
   // Every writer may hold a copy of a pack. Read them in `orderPackCopies` order
   // and keep the first whose bytes hash to `packHash`; a copy that does not, or that cannot
   // be read (a missing chunk, a dead mirror), is skipped (`forge-v2.md` §4 reader rule). A
@@ -1108,6 +1142,8 @@ export async function loadArtifactBytesProgress(
       failures.push(e)
     }
   }
+  const mirrored = await fromMirrors()
+  if (mirrored !== null) return mirrored
   // One copy: its own error. Every copy external and unserved: the fallback clone's
   // "unavailable" case, which it reports rather than failing the clone on.
   if (failures.length === 1) throw failures[0]
