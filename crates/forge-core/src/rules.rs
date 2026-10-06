@@ -2896,8 +2896,7 @@ mod tests {
                     pr: Option<super::transition::ClosingPr>,
                 }
                 let inp: ClosedByInput = input(v);
-                let got =
-                    super::transition::closed_by_pr(
+                let got = super::transition::closed_by_pr(
                     inp.issue,
                     inp.closed_by_pr,
                     inp.closed_at,
