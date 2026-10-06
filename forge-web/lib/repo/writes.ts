@@ -58,6 +58,8 @@ import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, membersWriter, noteAudience, sealMembersContent, targetAudience, type MembersWriter } from './members-writes'
 import { invalidateRepoFeed } from './issues'
+import { readNewestManifestOfKind } from './packs'
+import { PACK_KIND } from '../constants'
 import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
@@ -413,13 +415,15 @@ async function writeAudience(
     }
     return target
   }
-  if (requested !== undefined) return requested
+  // A comment or review is always checked against its parents, even when the caller asked for
+  // an audience: a requested "public" under a members-only parent is refused, never written.
+  const asked = requested !== undefined ? { requested } : {}
   if (documentType === DOC.comment) {
     const replyTo = idOf('replyTo')
-    return childAudience(sdk, repo, { targetId: named('targetId', 'comment'), ...(replyTo !== '' ? { replyTo } : {}) })
+    return childAudience(sdk, repo, { targetId: named('targetId', 'comment'), ...(replyTo !== '' ? { replyTo } : {}), ...asked })
   }
-  if (documentType === DOC.review) return childAudience(sdk, repo, { targetId: named('patchId', 'review') })
-  return 'public'
+  if (documentType === DOC.review) return childAudience(sdk, repo, { targetId: named('patchId', 'review'), ...asked })
+  return requested ?? 'public'
 }
 
 /** A write that found its unique slot already held by the signer: success, nothing spent. */
@@ -1201,6 +1205,27 @@ function keyedResult(keyShared = true): MembershipResult {
  * someone with no encryption key yet, who can't read members-only content until they add one and
  * a maintainer runs the repair check.
  */
+/**
+ * A repo with environment snapshots (kind 8): a maintainer's removal, demotion or promotion
+ * changes whose snapshots count, which `dg` handles (it saves the affected environments again
+ * first) and the web does not yet.
+ */
+export class EnvironmentsMembershipError extends Error {
+  constructor(change: 'remove' | 'promote') {
+    super(
+      change === 'remove'
+        ? 'This repo has environments. Remove or demote maintainers with dg for now.'
+        : 'This repo has environments. Make maintainers with dg for now.',
+    )
+    this.name = 'EnvironmentsMembershipError'
+  }
+}
+
+/** Refuse a maintainer change in a repo that has environments ({@link EnvironmentsMembershipError}). */
+async function refuseMaintainerChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef, change: 'remove' | 'promote'): Promise<void> {
+  if ((await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) !== null) throw new EnvironmentsMembershipError(change)
+}
+
 export interface MembershipResult extends WriteResult {
   readonly keyShared?: boolean
 }
@@ -1294,6 +1319,7 @@ export async function grantMember(
   ops?: EncryptionOps | null,
 ): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('add')
+  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
   const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (keyed === null) return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
   const added = await keyed.flows.addPrivateMember(keyed.c, memberId, role, intent ?? `members:add:${memberId}:${role}`)
@@ -1357,6 +1383,7 @@ export async function revokeMember(
   ops?: EncryptionOps | null,
 ): Promise<DeleteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
+  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
   const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (keyed === null) return revokeMembershipDoc(sdk, auth, repo, memberId, role)
   await keyed.flows.removePrivateMember(keyed.c, memberId, role, intent ?? `members:remove:${memberId}:${role}`)
@@ -1389,6 +1416,8 @@ export async function changeMemberRole(
   ops?: EncryptionOps | null,
 ): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
+  if (from === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
+  else if (to === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
   const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
   if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
@@ -1397,7 +1426,10 @@ export async function changeMemberRole(
   await writerRoleData(sdk, repo, to)
   if (memberDocOf(from) !== memberDocOf(to)) {
     const other = await findMembership(sdk, repo, to, memberId)
-    if (other !== null) throw new MemberRoleTakenError(memberId, other.role)
+    // A maintainer's demotion on a repo with members-only content writes the new role first: one
+    // that stands already is an interrupted change resuming, and goes on to the removal.
+    const resuming = keyed !== null && from === 'maintainer' && other?.role === to
+    if (other !== null && !resuming) throw new MemberRoleTakenError(memberId, other.role)
   }
   if ((await findConsent(sdk, repo, memberId)) === null) throw new ConsentMissingError(memberId)
   // The document being replaced must still hold `from` (another tab may have changed it already).

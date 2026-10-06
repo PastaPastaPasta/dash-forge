@@ -26,6 +26,7 @@ import { openContent, propOf, type DocFields, type OpenContext, type PrivateDocT
 import { ENC_SPECIFIC_PEOPLE, type Audience, type ContentKind } from '../rules/v2'
 import { base64ToBytes, type PlainDocument } from '../sdk'
 import { asIdentifierString, num, wellFormed, type RepoRef } from './contract'
+import { noteMembersKey } from './members-key-cache'
 
 /**
  * Why a document is hidden. `membersOnly`: a members-only document of a public repo this reader
@@ -189,6 +190,8 @@ function publicGate(repo: RepoRef): ContentGate {
     async admit(type, doc) {
       if (!wellFormedAs(repo, type, doc)) return { ok: false, reason: 'notEncrypted' }
       if (!isSealedDoc(doc)) return { ok: true, doc }
+      // Sealed content here: the repo's writes check their parents from now on.
+      noteMembersKey(repo.repoId)
       // an event's sealed value is dropped by its reader (`readableEvents`), the event kept
       return unopened(type, doc, 'noKey', 'membersOnly')
     },

@@ -1,0 +1,12 @@
+{
+  "name": "everything_nested_tag",
+  "description": "** alone covers a nested tag.",
+  "case": "matches_protected",
+  "input": {
+    "refName": "refs/tags/tools/v0.1.0",
+    "patterns": [
+      "**"
+    ]
+  },
+  "expected": true
+}

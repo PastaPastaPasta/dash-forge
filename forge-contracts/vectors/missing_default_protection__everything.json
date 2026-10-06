@@ -1,0 +1,12 @@
+{
+  "name": "everything",
+  "description": "** alone protects every ref: the default branch and every tag.",
+  "case": "missing_default_protection",
+  "input": {
+    "defaultBranch": "main",
+    "patterns": [
+      "**"
+    ]
+  },
+  "expected": []
+}
