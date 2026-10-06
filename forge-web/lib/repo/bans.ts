@@ -62,11 +62,34 @@ export function standingOf(repo: RepoRef, bans: readonly Ban[], members: readonl
   return standingBans(bans, { owner: repo.ownerId, maintainers: members.filter((m) => m.role === 'maintainer').map((m) => m.identity) })
 }
 
-/** The standing bans of `repo` (its bans, and its members only when there is one). */
+/**
+ * The standing bans of `repo` (its bans, and its members only when there is one). When the members
+ * cannot be read, no ban is applied: judging without them would drop every maintainer's ban.
+ */
 export async function readStandingBans(sdk: EvoSDK, repo: RepoRef, network: Network, members?: readonly Membership[]): Promise<ReadonlyMap<string, Ban>> {
-  const bans = await readBans(sdk, repo)
-  if (bans.length === 0) return new Map()
-  return standingOf(repo, bans, members ?? (await readMembershipsCached(sdk, repo, network).catch((): Membership[] => [])))
+  return (await readBanState(sdk, repo, network, members)).standing
+}
+
+/** A repo's bans as stored, the members they are judged with, and the standing ban per identity. */
+export interface BanState {
+  readonly raw: readonly Ban[]
+  readonly members: readonly Membership[]
+  readonly standing: ReadonlyMap<string, Ban>
+}
+
+/** {@link readStandingBans} with what it was judged from (Settings → Bans shows every writer). */
+export async function readBanState(sdk: EvoSDK, repo: RepoRef, network: Network, members?: readonly Membership[]): Promise<BanState> {
+  const raw = await readBans(sdk, repo)
+  if (raw.length === 0) return { raw, members: members ?? [], standing: new Map() }
+  const known = members ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
+  if (known === null) return { raw, members: [], standing: new Map() }
+  return { raw, members: known, standing: standingOf(repo, raw, known) }
+}
+
+/** The bans of `identity` whose writers count now (the owner or a current maintainer), oldest first. */
+export function countingBansOf(state: BanState, repo: RepoRef, identity: string): Ban[] {
+  const mods = new Set([repo.ownerId, ...state.members.filter((m) => m.role === 'maintainer').map((m) => m.identity)])
+  return state.raw.filter((b) => b.identity === identity && mods.has(b.by)).sort((a, b) => a.createdAt - b.createdAt)
 }
 
 /** A banned identity's write, refused before signing. */

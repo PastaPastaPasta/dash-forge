@@ -216,6 +216,17 @@ export function useOwnerRequests({
 }
 
 /**
+ * Whether a PR's changed-file listing cannot be trusted complete for the code owner rule: it failed,
+ * was cut short (`truncated`), fell back to the head's first parent (no merge base), or was stopped.
+ */
+export function codeOwnerChangesIncomplete(
+  error: string | null,
+  cmp: { readonly truncated?: boolean; readonly fellBack?: true; readonly searchStopped?: true } | null,
+): boolean {
+  return error !== null || cmp?.truncated === true || cmp?.fellBack === true || cmp?.searchStopped === true
+}
+
+/**
  * Where an open PR stands against its policy's `requireCodeOwners` (the shared `codeOwnerReview`):
  * null when the policy does not require it; `'unknown'` until the base's code owners file and the
  * changed files are read (the merge box then stays closed, as for unread checks). It reads only
@@ -240,6 +251,10 @@ export function useCodeOwnerStatus({
   readerKey: string
   baseOid: string
   changes: readonly FileChange[] | null
+  /**
+   * The changed files cannot be trusted complete: the listing failed, was cut short (`truncated`),
+   * fell back to the head's first parent (no merge base), or was stopped. The rule then fails closed.
+   */
   changesFailed: boolean
   approvals: Approvals | null
   members: readonly Membership[]
@@ -252,7 +267,7 @@ export function useCodeOwnerStatus({
   const names = useMemo(() => (file.data == null || paths === null ? [] : ownersOfPaths(file.data.owners, paths).filter((t) => ownerKind(t) === 'name')), [file.data, paths])
   const resolved = useAsync(() => resolveDpnsIds(sdk!, names, network), [names.join('\n'), network], { enabled: on && ready && sdk !== null && names.length > 0 })
   if (!on || policy === null) return null
-  if (file.error !== null || changesFailed) return { met: false, unreadable: true, pending: [] }
+  if (file.error !== null || changesFailed || resolved.error !== null) return { met: false, unreadable: true, pending: [] }
   if (!file.settled || paths === null || approvals === null || (names.length > 0 && resolved.data === null)) return 'unknown'
   const owners = file.data
   return codeOwnerReview(

@@ -99,12 +99,31 @@ pub async fn unban(ctx: &Ctx, repo: &str, who: &str) -> Result<()> {
     Ok(())
 }
 
-/// `dg repo bans <repo>`: the standing bans (the owner's and current maintainers').
+/// `dg repo bans <repo>`: every ban, with its writer, and whether it counts (its writer is the
+/// owner or a current maintainer, and it bans neither); the one that decides is marked.
 pub async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     let s = Reader::open_unsealed(ctx, repo).await?;
-    let standing = s.collab().standing_bans(&s.repo).await;
-    let rows: Vec<_> = standing
-        .values()
+    let collab = s.collab();
+    let mut bans = collab.bans(&s.repo, None).await?;
+    bans.sort_by(|a, b| {
+        (&a.identity, a.created_at, &a.id).cmp(&(&b.identity, b.created_at, &b.id))
+    });
+    let scope = if bans.is_empty() {
+        None
+    } else {
+        Some(collab.ban_scope(&s.repo).await?)
+    };
+    let standing = scope
+        .as_ref()
+        .map(|sc| forge_core::rules::bans::standing_bans(&bans, sc))
+        .unwrap_or_default();
+    let counts = |b: &forge_core::rules::bans::Ban| {
+        scope
+            .as_ref()
+            .is_some_and(|sc| sc.moderates(&b.by) && !sc.moderates(&b.identity))
+    };
+    let rows: Vec<_> = bans
+        .iter()
         .map(|b| {
             json!({
                 "identityId": b.identity,
@@ -112,17 +131,24 @@ pub async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 "reason": ban_reason_label(b.reason),
                 "createdAt": b.created_at,
                 "documentId": b.id,
+                "counts": counts(b),
+                "decides": standing.get(&b.identity).is_some_and(|d| d.id == b.id),
             })
         })
         .collect();
     ctx.emit(json!({"repo": s.repo.display(), "bans": rows}), || {
-        if standing.is_empty() {
+        if bans.is_empty() {
             println!("nobody is banned from {}", s.repo.display());
             return;
         }
-        for b in standing.values() {
+        for b in &bans {
+            let note = if counts(b) {
+                ""
+            } else {
+                "  (not counted: its writer is no longer a maintainer, or it bans one)"
+            };
             println!(
-                "{}  banned by {} on {}{}",
+                "{}  banned by {} on {}{}{note}",
                 b.identity,
                 b.by,
                 crate::cost::format_utc(b.created_at),

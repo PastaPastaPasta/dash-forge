@@ -267,7 +267,7 @@ dg repo bans  <owner>/<repo>                          # who is banned, by whom, 
 dg repo unban <owner>/<repo> @spammer                 # lift your own ban
 ```
 
-The web has the same under **Settings → Bans**. A ban counts while the maintainer who wrote it is still a maintainer (or the repository's owner); only that maintainer can lift it, and removing them as a maintainer drops it. The owner and current maintainers cannot be banned: a ban of one is ignored. A banned identity's review still counts toward the merge until a member dismisses it, as with a hidden review.
+The web has the same under **Settings → Bans**. A ban counts while the maintainer who wrote it is still a maintainer (or the repository's owner); only that maintainer can lift it, and removing them as a maintainer drops it. The owner and current maintainers cannot be banned: a ban of one is ignored. A ban, its reason and who wrote it are public, in a private repository too: the ban document is not encrypted. A banned identity's review still counts toward the merge until a member dismisses it, as with a hidden review.
 
 **Limits.** A hidden post is still on Platform: anyone can read it with **Show**, `--show-hidden`, `--include-hidden`, or any client that predates hiding. In a private repository the reason is encrypted like other event values; which item was hidden is not. Each hide is one event: a whole thread costs about as much as a label, and hiding one comment or review costs about 0.0002 DASH more, because the event also names it. To stop a flood, lock the thread first, then hide what was already posted.
 

@@ -13,7 +13,9 @@ import { Ban as BanIcon } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
 import { repoContractIds, repoKey, resolveOwner } from '@/lib/repo'
-import { banIdentity, invalidateBans, liftBan, readStandingBans } from '@/lib/repo/bans'
+import { banIdentity, countingBansOf, DOC_BAN, invalidateBans, liftBan, readBanState } from '@/lib/repo/bans'
+import { contractHasType } from '@/lib/repo/contract-shape'
+import { shortId } from '@/lib/utils'
 import { BAN_REASONS, banReasonLabel, type Ban } from '@/lib/rules/bans'
 import { previewCreate, previewDelete } from '@/lib/sdk'
 import { retryWhileMissing } from '@/lib/view/retry'
@@ -33,22 +35,26 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
-  const bans = useAsync(() => readStandingBans(sdk!, repo, network), [ready, repoKey(repo), network], { enabled: ready && sdk !== null })
+  const bans = useAsync(() => readBanState(sdk!, repo, network), [ready, repoKey(repo), network], { enabled: ready && sdk !== null })
+  // A contract registered before bans has no type for them: the form would only fail.
+  const supported = useAsync(() => contractHasType(sdk!, repo.forge.collab, DOC_BAN), [ready, repo.forge.collab], { enabled: ready && sdk !== null })
   const [who, setWho] = useState('')
   const [reason, setReason] = useState<number>(0)
   const [banning, setBanning] = useState<{ readonly id: string; readonly label: string } | null>(null)
-  const [lifting, setLifting] = useState<Ban | null>(null)
+  const [lifting, setLifting] = useState<{ readonly ban: Ban; readonly others: number } | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   const [looking, setLooking] = useState(false)
 
-  const reloadUntil = async (holds: (m: ReadonlyMap<string, Ban>) => boolean): Promise<void> => {
+  // Until the ban documents read back as written (a ban landed, or this signer's was deleted).
+  const reloadUntil = async (holds: (raw: readonly Ban[]) => boolean): Promise<void> => {
     if (!sdk) return
     await retryWhileMissing(async () => {
       invalidateBans(repo)
-      return holds(await readStandingBans(sdk, repo, network)) ? true : null
+      return holds((await readBanState(sdk, repo, network)).raw) ? true : null
     }, 8)
     bans.reload()
   }
+  const mine = (raw: readonly Ban[], who: string): Ban | undefined => raw.find((b) => b.identity === who && b.by === identity)
 
   const start = async (): Promise<void> => {
     if (!sdk) return
@@ -58,7 +64,8 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
       const id = await resolveOwner(sdk, who.trim().replace(/^@/, ''))
       if (id === null) return setProblem(`No identity or DPNS name ${who.trim()}.`)
       if (id === repo.ownerId) return setProblem("The repository's owner can't be banned.")
-      if (bans.data?.has(id) === true && bans.data.get(id)?.by === identity) return setProblem('You have already banned this identity.')
+      if ((bans.data?.members ?? []).some((m) => m.identity === id && m.role === 'maintainer')) return setProblem("A maintainer can't be banned. Remove them as a maintainer first.")
+      if (mine(bans.data?.raw ?? [], id) !== undefined) return setProblem('You have already banned this identity.')
       setBanning({ id, label: who.trim() })
     } finally {
       setLooking(false)
@@ -72,18 +79,19 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
     setBanning(null)
     setWho('')
     setReason(0)
-    await reloadUntil((m) => m.has(id))
+    await reloadUntil((raw) => mine(raw, id) !== undefined)
   }
 
   const lift = async (): Promise<void> => {
     if (!sdk || !signer || lifting === null) throw new Error('sign in to continue')
-    const id = lifting.identity
-    await liftBan(sdk, signer, repo, lifting.id)
+    const id = lifting.ban.identity
+    await liftBan(sdk, signer, repo, lifting.ban.id)
     setLifting(null)
-    await reloadUntil((m) => !m.has(id))
+    await reloadUntil((raw) => mine(raw, id) === undefined)
   }
 
-  const rows = [...(bans.data?.values() ?? [])].sort((a, b) => b.createdAt - a.createdAt)
+  const state = bans.data
+  const rows = [...(state?.standing.values() ?? [])].sort((a, b) => b.createdAt - a.createdAt)
   return (
     <Section id="bans" title="Bans" icon={<BanIcon className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="bans">
@@ -93,7 +101,7 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
         </p>
         {bans.error ? (
           <ErrorState message={bans.error} onRetry={bans.reload} />
-        ) : bans.data === null ? (
+        ) : state === null ? (
           <LoadingBlock label="Reading bans" />
         ) : rows.length === 0 ? (
           <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="bans-empty">
@@ -103,16 +111,37 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
           <ul className="divide-y divide-anvil-100 rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
             {rows.map((b) => {
               const why = banReasonLabel(b.reason)
+              const counting = countingBansOf(state, repo, b.identity)
+              const others = counting.filter((x) => x.id !== b.id)
+              const own = mine(state.raw, b.identity)
               return (
                 <li key={b.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-dense" data-testid="ban-row">
                   <Author identityId={b.identity} />
                   <span className="text-anvil-600 dark:text-anvil-300">
                     banned by <Author identityId={b.by} link={false} className="align-middle" /> · {timeAgo(b.createdAt)}
                     {why !== null ? ` · ${why}` : ''}
+                    {others.length > 0 ? (
+                      <>
+                        {' '}· also banned by{' '}
+                        {others.map((o, i) => (
+                          <span key={o.id}>
+                            {i > 0 ? ', ' : ''}
+                            <Author identityId={o.by} link={false} className="align-middle" />
+                          </span>
+                        ))}
+                      </>
+                    ) : null}
                   </span>
-                  {maintainer && b.by === identity ? (
-                    <Button variant="outline" size="sm" className="ml-auto" disabled={guard.disabledReason !== null} onClick={() => setLifting(b)}>
-                      Lift ban
+                  {maintainer && own !== undefined ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="ml-auto"
+                      disabled={guard.disabledReason !== null}
+                      aria-label={`Lift your ban of ${shortId(b.identity)}`}
+                      onClick={() => setLifting({ ban: own, others: counting.filter((x) => x.id !== own.id).length })}
+                    >
+                      Lift your ban
                     </Button>
                   ) : null}
                 </li>
@@ -120,7 +149,11 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
             })}
           </ul>
         )}
-        {maintainer ? (
+        {maintainer && supported.data === false ? (
+          <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="bans-unsupported">
+            This network&apos;s Forge doesn&apos;t support bans yet.
+          </p>
+        ) : maintainer && supported.data === true ? (
           <form
             className="flex flex-wrap items-end gap-2"
             onSubmit={(e) => {
@@ -172,7 +205,11 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
         open={lifting !== null}
         onClose={() => setLifting(null)}
         title="Lift this ban"
-        description="What they wrote shows again, and they can post here again. Part of the ban's storage fee is refunded."
+        description={
+          lifting !== null && lifting.others > 0
+            ? `Your ban is deleted, but ${lifting.others === 1 ? 'another maintainer has' : `${lifting.others} other maintainers have`} also banned them, so what they wrote stays hidden. Part of the ban's storage fee is refunded.`
+            : "What they wrote shows again, and they can post here again. Part of the ban's storage fee is refunded."
+        }
         cost={previewDelete('ban')}
         confirmLabel="Sign & lift"
         onConfirm={lift}

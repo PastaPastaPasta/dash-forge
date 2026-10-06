@@ -136,7 +136,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
-import { CodeOwnersProvider, useCodeOwnerStatus } from '@/components/repo/code-owners'
+import { CodeOwnersProvider, codeOwnerChangesIncomplete, useCodeOwnerStatus } from '@/components/repo/code-owners'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
 import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/view/upstream'
@@ -570,7 +570,7 @@ function PullPage({
     readerKey: comparison.sidesKey,
     baseOid: comparison.spec.baseTipOid || cmp?.comparedBaseOid || '',
     changes: cmp?.changes ?? null,
-    changesFailed: comparison.error !== null,
+    changesFailed: codeOwnerChangesIncomplete(comparison.error, cmp),
     approvals: thread.approvals,
     members: thread.members,
     author: pull.author,

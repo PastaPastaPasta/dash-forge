@@ -374,6 +374,11 @@ async fn status_inner(
         scratch.path()
     };
     let parsed = read_code_owners(dir, &base_tip)?;
+    // The merge rule needs the real merge base: a first-parent fallback could miss owned files,
+    // so without one the file counts as unreadable (fail closed).
+    git::git(dir, &["merge-base", &base_tip, &view.head], &[]).context(
+        "the head and the base branch share no history, so the changed files cannot be listed",
+    )?;
     let paths = changed_paths(dir, &base_tip, &view.head)?;
     let collab = s.collab();
     let oracle = collab.member_oracle(handle).await?;
