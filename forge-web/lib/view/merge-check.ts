@@ -74,3 +74,41 @@ export async function mergeFacts(sides: DiffSides, input: MergeCheckInput, searc
 export async function checkMerge(sides: DiffSides, input: MergeCheckInput, search: MergeBaseOptions = {}): Promise<MergeContent> {
   return mergeContent(await mergeFacts(sides, input, search))
 }
+
+/** How far back from the base tip {@link unrecordedMergeLikely} walks to find the tip before it. */
+const RECORD_WALK = 50
+
+/**
+ * A cheap first look before the full merge check of an open PR's base tip ("Record merge of …"):
+ * whether the tip could be this PR's unrecorded merge. True when the tip is a merge commit with
+ * the PR head as a parent, or when the commits from `prev` (the base's tip before) to the tip,
+ * along first parents and at most {@link RECORD_WALK} of them, change only paths the PR changes
+ * (`prPaths`; null when the PR's own list is incomplete: then true). A few object reads and one
+ * tree diff, against the full check's ancestry walk.
+ */
+export async function unrecordedMergeLikely(
+  sides: DiffSides,
+  input: { readonly tip: string; readonly prev: string; readonly head: string; readonly prPaths: ReadonlySet<string> | null },
+): Promise<boolean> {
+  const { tip, prev, head, prPaths } = input
+  try {
+    const top = await readCommit(sides.base, tip)
+    if (top.parents.includes(head)) return true
+    let at = tip
+    let commit = top
+    for (let i = 0; at !== prev; i++) {
+      const parent = commit.parents[0]
+      if (parent === undefined || i >= RECORD_WALK) return false
+      at = parent
+      if (at !== prev) commit = await readCommit(sides.base, at)
+    }
+    if (prPaths === null) return true
+    const before = await readCommit(sides.base, prev)
+    const base: DiffSides = { base: sides.base, head: sides.base }
+    const diff = await diffTrees(base, before.tree, top.tree)
+    if (diff.truncated) return true
+    return diff.changes.length > 0 && diff.changes.every((c) => prPaths.has(c.path))
+  } catch {
+    return false
+  }
+}

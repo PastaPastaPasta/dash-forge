@@ -149,7 +149,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
-import { checkMerge } from '@/lib/view/merge-check'
+import { checkMerge, unrecordedMergeLikely } from '@/lib/view/merge-check'
 import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
@@ -582,8 +582,14 @@ function PullPage({
   // merge was recorded. The merge check (git objects through the comparison's readers, no Platform
   // reads) runs only for a viewer who could record it.
   const recordInputs = { pull, canMerge: actions.canMerge }
+  // A cheap look first (a few object reads), and the full check only when the base tip could be
+  // this PR's merge: an ordinary open PR page does no ancestry walk.
   const unrecordedCheck = useAsync(
-    () => checkMerge(cmp!.sides, { headOid: pull.headOid, mergeOid: pull.baseTipOid, tipBefore: pull.baseTipPrev ?? '' }),
+    async () => {
+      const prPaths = cmp!.truncated ? null : new Set(cmp!.changes.flatMap((c) => (c.oldPath ? [c.path, c.oldPath] : [c.path])))
+      const likely = await unrecordedMergeLikely(cmp!.sides, { tip: pull.baseTipOid, prev: pull.baseTipPrev ?? '', head: pull.headOid, prPaths })
+      return likely ? checkMerge(cmp!.sides, { headOid: pull.headOid, mergeOid: pull.baseTipOid, tipBefore: pull.baseTipPrev ?? '' }) : null
+    },
     [pull.baseTipOid, pull.baseTipPrev ?? '', pull.headOid, comparison.sidesKey],
     { enabled: cmp !== null && unrecordedMergeCandidate(recordInputs) },
   )
