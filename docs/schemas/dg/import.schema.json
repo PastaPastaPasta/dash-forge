@@ -2,17 +2,65 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/import.schema.json",
   "title": "dg import --json",
-  "description": "What an import or re-sync mirrored.",
+  "description": "What an import or re-sync mirrored (the Mirror Action reads this).",
   "type": "object",
   "properties": {
     "schemaVersion": {
       "const": 1
     },
-    "counts": {},
-    "repo": {}
+    "status": {
+      "type": "string"
+    },
+    "network": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "repo": {
+      "type": "object"
+    },
+    "counts": {
+      "type": "object"
+    },
+    "estimateCredits": {
+      "type": "integer"
+    },
+    "spentCredits": {
+      "type": "integer"
+    },
+    "creditsPerDash": {
+      "type": "integer"
+    },
+    "balanceCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "key": {
+      "type": "object"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
   },
   "required": [
-    "schemaVersion"
+    "schemaVersion",
+    "status",
+    "network",
+    "source",
+    "repo",
+    "counts"
   ],
   "additionalProperties": true
 }

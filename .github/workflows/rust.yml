@@ -78,7 +78,7 @@ jobs:
           fi
           echo "Changed files:"
           printf '%s\n' "$files"
-          pattern='^(crates/|services/|build-support/|forge-contracts/|infra/|Cargo\.toml$|Cargo\.lock$|rustfmt\.toml$|Makefile$|\.github/workflows/rust\.yml$)'
+          pattern='^(crates/|services/|build-support/|forge-contracts/|infra/|docs/schemas/|Cargo\.toml$|Cargo\.lock$|rustfmt\.toml$|Makefile$|\.github/workflows/rust\.yml$)'
           if printf '%s\n' "$files" | grep -Eq "$pattern"; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
@@ -164,6 +164,11 @@ jobs:
       # cargo command, with cargo's own precise message.
       - name: fmt
         run: cargo fmt --all -- --check
+
+      # dg's --json schemas: the committed files are what docs/schemas/generate.py writes. The
+      # `json_schemas` unit test (in `cargo test` below) checks them against dg's commands and output.
+      - name: json schemas
+        run: python3 docs/schemas/generate.py --check
 
       - name: clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings

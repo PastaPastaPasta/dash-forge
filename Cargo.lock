@@ -1751,6 +1751,7 @@ dependencies = [
  "forge-import",
  "futures",
  "hex",
+ "jsonschema",
  "qrcode",
  "rand 0.8.8",
  "reqwest",

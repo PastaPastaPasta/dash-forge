@@ -14,17 +14,19 @@
     "network": {
       "type": "string"
     },
-    "credits": {
+    "balanceCredits": {
       "type": "integer"
     },
-    "dash": {
+    "balanceDash": {
       "type": "number"
     }
   },
   "required": [
     "schemaVersion",
     "identityId",
-    "credits"
+    "network",
+    "balanceCredits",
+    "balanceDash"
   ],
   "additionalProperties": true
 }

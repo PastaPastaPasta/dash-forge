@@ -1349,7 +1349,6 @@ async fn view(
             "body": v.patch.body,
             "bodyIncomplete": body_incomplete,
             "author": v.patch.author,
-            "createdAt": v.patch.created_at,
             "state": state_field(&v),
             "draft": v.state.draft,
             "labels": v.state.labels,
@@ -1391,6 +1390,7 @@ async fn view(
     // Who it is for, and the members-only comments this reader cannot open: the ones D14
     // shows, and how many (kept out of the `json!` above: its macro depth is at the limit).
     let audience = json!({
+        "createdAt": v.patch.created_at,
         "audience": crate::audience::json(pr_audience),
         "readable": true,
         "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),

@@ -102,8 +102,9 @@ COMMON = {
                  ['code', 'message'])),
     'rotation': D('A key rotation of a private or members-only repository.', OBJ),
     'policy': D('A branch policy, as `dg repo policy show` prints it.',
-                nl(O({'requiredApprovals': I, 'maintainersOnly': B, 'requireChecks': B,
-                      'requiredChecks': SA, 'mergeMethods': ANY}))),
+                nl(O({'requiredApprovals': I, 'maintainersOnly': B, 'requireChecks': B, 'mergeMethods': SA,
+                      'requiredChecks': SA, 'requiredCheckSources': SA},
+                     ['requiredApprovals', 'maintainersOnly', 'requireChecks', 'mergeMethods']))),
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -147,8 +148,8 @@ cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', 
     'masterKeyStored': nl(B), 'keyUnopened': nl(B),
 }, ['network', 'authenticated'])
 cmd('auth balance', 'An identity\'s proved balance.', {
-    'identityId': S, 'network': S, 'credits': I, 'dash': F,
-}, ['identityId', 'credits'])
+    'identityId': S, 'network': S, 'balanceCredits': I, 'balanceDash': F,
+}, ['identityId', 'network', 'balanceCredits', 'balanceDash'])
 cmd('auth keys list', 'The identity\'s keys.', {'identityId': S, 'keys': A(OBJ)}, ['identityId', 'keys'])
 cmd('auth keys add', 'A key added to the identity (a limited key, a browser key or an encryption key).', {
     'status': E('added', 'exists'), 'identityId': S, 'keyId': I, 'purpose': S, 'derived': B, 'budgetCredits': nl(I),
@@ -550,8 +551,17 @@ cmd('search repos', 'Repositories matching a query.', {
     'count': I, 'repos': A(O({'ownerId': S, 'name': S, 'repoId': S, 'fullName': S, 'description': nl(S),
                               'visibility': E('public', 'private')}, ['ownerId', 'name', 'repoId'])),
 }, ['count', 'repos'])
-cmd('doctor', 'Each check of the setup, and what fixes it.', {'sections': A(OBJ), 'counts': ANY, 'applied': ANY})
-cmd('import', 'What an import or re-sync mirrored.', {'counts': ANY, 'repo': ANY})
+cmd('doctor', 'Each check of the setup, and what fixes it.', {
+    'ok': B, 'network': S, 'forgeV2': nl(O({'core': S, 'collab': S, 'community': S, 'group': ANY})), 'failed': I,
+    'warnings': I,
+    'sections': A(O({'name': S, 'checks': A(O({'name': S, 'status': S, 'ok': B, 'detail': S, 'fix': nl(S),
+                                              'autoFix': nl(S)}, ['name', 'status', 'ok']))}, ['name', 'checks'])),
+    'fixesApplied': A(ANY),
+}, ['ok', 'network', 'failed', 'warnings', 'sections'])
+cmd('import', 'What an import or re-sync mirrored (the Mirror Action reads this).', {
+    'status': S, 'network': S, 'source': S, 'repo': OBJ, 'counts': OBJ, 'estimateCredits': I, 'spentCredits': I,
+    'creditsPerDash': I, 'balanceCredits': nl(I), 'key': OBJ, 'warnings': SA, 'error': nl(S),
+}, ['status', 'network', 'source', 'repo', 'counts'])
 
 # -- environments -----------------------------------------------------------------------------
 ENV_SAVE = {

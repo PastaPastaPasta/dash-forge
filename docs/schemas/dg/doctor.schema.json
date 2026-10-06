@@ -8,17 +8,104 @@
     "schemaVersion": {
       "const": 1
     },
+    "ok": {
+      "type": "boolean"
+    },
+    "network": {
+      "type": "string"
+    },
+    "forgeV2": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "core": {
+              "type": "string"
+            },
+            "collab": {
+              "type": "string"
+            },
+            "community": {
+              "type": "string"
+            },
+            "group": {}
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "failed": {
+      "type": "integer"
+    },
+    "warnings": {
+      "type": "integer"
+    },
     "sections": {
       "type": "array",
       "items": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "fix": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "autoFix": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "status",
+                "ok"
+              ]
+            }
+          }
+        },
+        "required": [
+          "name",
+          "checks"
+        ]
       }
     },
-    "counts": {},
-    "applied": {}
+    "fixesApplied": {
+      "type": "array",
+      "items": {}
+    }
   },
   "required": [
-    "schemaVersion"
+    "schemaVersion",
+    "ok",
+    "network",
+    "failed",
+    "warnings",
+    "sections"
   ],
   "additionalProperties": true
 }

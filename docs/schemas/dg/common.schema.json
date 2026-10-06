@@ -285,14 +285,31 @@
             "requireChecks": {
               "type": "boolean"
             },
+            "mergeMethods": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "requiredChecks": {
               "type": "array",
               "items": {
                 "type": "string"
               }
             },
-            "mergeMethods": {}
-          }
+            "requiredCheckSources": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "requiredApprovals",
+            "maintainersOnly",
+            "requireChecks",
+            "mergeMethods"
+          ]
         },
         {
           "type": "null"
