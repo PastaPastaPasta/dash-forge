@@ -7,7 +7,7 @@ vi.mock('../sdk', async (orig) => ({
   queryDocuments: async (_sdk: unknown, q: { where: [string, string, string[]][] }) => {
     const ids = q.where[0]?.[2] ?? []
     reads.push(ids)
-    return ids.flatMap((id) => (id === base58(2) ? [{ $ownerId: id, bot: { operator: base58(1) } }] : id === base58(1) ? [{ $ownerId: id, bot: { operates } }] : []))
+    return ids.flatMap((id): Record<string, unknown>[] => (id === base58(2) ? [{ $ownerId: id, bot: { operator: base58(1) } }] : id === base58(1) ? [{ $ownerId: id, bot: { operates } }] : []))
   },
 }))
 
