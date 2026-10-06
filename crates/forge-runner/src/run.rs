@@ -1006,13 +1006,17 @@ fn judge_filtered(
     plan: &mut workflow::Plan,
 ) -> Skips {
     let running = running_checks(plan, trig);
-    let alone =
-        matches!(trig, Trigger::Pull { .. }) && plan.broken.is_empty() && running.is_empty();
+    // Nothing else reports here: under a policy requiring every check, the filtered ones are
+    // then the only checks the head can get.
+    let alone = plan.broken.is_empty() && running.is_empty();
+    // Why every filtered check is wanted, when it is (`wanted` is `None`).
+    let mut every = "the branch policy requires every check, and nothing else reports here";
     let wanted = match only {
         Some(o) => Some(BTreeSet::from([o.to_string()])),
         None => match policy {
             Ok(v) => checks_to_skip(&v, alone),
             Err(e) => {
+                every = "the branch policy could not be read";
                 eprintln!(
                     "forge-runner: {}: branch policy not read, so every path-filtered check is {}: {e:#}",
                     repo.repo,
@@ -1038,12 +1042,22 @@ fn judge_filtered(
             if jobs.is_empty() {
                 continue;
             }
+            let why = if wanted.is_none() {
+                every.to_string()
+            } else {
+                let names: Vec<String> = wf
+                    .jobs
+                    .iter()
+                    .filter(|j| jobs.contains(&j.id))
+                    .map(|j| format!("{:?}", trig.check_name(&j.check_name)))
+                    .collect();
+                format!("the branch policy requires {}", names.join(", "))
+            };
             eprintln!(
-                "forge-runner: {} {}: {} runs although its `paths` filter leaves this push out: the branch policy requires {}",
+                "forge-runner: {} {}: {} runs although its `paths` filter leaves this push out: {why}",
                 repo.repo,
                 push.refname,
-                wf.file.display(),
-                jobs.iter().map(|j| format!("{j:?}")).collect::<Vec<_>>().join(", ")
+                wf.file.display()
             );
             plan.run.push(wf.only_jobs(&jobs));
         }
@@ -1076,7 +1090,7 @@ fn checks_to_skip(policy: &serde_json::Value, alone: bool) -> Option<BTreeSet<St
 }
 
 /// Report the checks of the workflows a pull request's paths filtered out (`plan.path_filtered`;
-/// for a push, those the whole of every open PR whose head the branch is leaves out too) that a
+/// pull requests only: a push runs its required filtered jobs instead, [`judge_filtered`]) that a
 /// merge waits for, so they are decided instead of waiting for a run that will never come
 /// (GitHub's "Expected — waiting for status" trap): `skipped`, which counts as passed, or the
 /// refusal a job the runner never runs gets wherever it runs. `subject` says who changes no
@@ -1144,8 +1158,8 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
         }
     }
     let action_cache = c.run_dir.join("act");
-    // With refused jobs, act gets a copy without them (outside the checkout, where a job cannot
-    // rewrite it); else the file itself.
+    // With refused jobs, or jobs left out ([`workflow::Workflow::only_jobs`]), act gets a copy
+    // without them (outside the checkout, where a job cannot rewrite it); else the file itself.
     let workflow_path = match wf.for_act() {
         Some(doc) => {
             let dir = c.run_dir.join("filtered");

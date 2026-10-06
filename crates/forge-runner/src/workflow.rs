@@ -94,16 +94,17 @@ impl Workflow {
         if let Some(jobs) = doc.get_mut("jobs").and_then(Value::as_object_mut) {
             jobs.retain(|id, _| kept.contains(id));
         }
+        let jobs: Vec<Job> = self
+            .jobs
+            .iter()
+            .filter(|j| kept.contains(&j.id))
+            .cloned()
+            .collect();
         Workflow {
             file: self.file.clone(),
             name: self.name.clone(),
-            jobs: self
-                .jobs
-                .iter()
-                .filter(|j| kept.contains(&j.id))
-                .cloned()
-                .collect(),
-            trimmed: self.trimmed || kept.len() < self.jobs.len(),
+            trimmed: self.trimmed || jobs.len() < self.jobs.len(),
+            jobs,
             doc,
         }
     }
