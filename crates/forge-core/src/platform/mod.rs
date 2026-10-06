@@ -1192,60 +1192,6 @@ impl PlatformClient {
             .collect())
     }
 
-    /// Each matching document's consensus `$updatedAt` (ms), by `$id`, for a type that records
-    /// it: every match, paged on the `$id` cursor as [`Self::query_all_documents`] pages (the
-    /// documents themselves are read through that; this is the one system field it leaves out).
-    /// `order` must be ascending and end in a unique traversal. A document without one is absent.
-    pub async fn query_updated_at(
-        &self,
-        contract: &LoadedContract,
-        document_type: &str,
-        filters: &[QueryFilter],
-        order: &[QueryOrder],
-    ) -> Result<BTreeMap<String, u64>> {
-        const PAGE: u32 = 100;
-        let mut out = BTreeMap::new();
-        let mut after: Option<Vec<u8>> = None;
-        loop {
-            let mut query = DocumentQuery::new(self.current(contract), document_type)
-                .map_err(|e| Error::Platform(format!("building document query: {e}")))?;
-            for f in filters {
-                query = query.with_where(f.to_where_clause());
-            }
-            for o in order {
-                query = query.with_order_by(o.to_order_clause());
-            }
-            query = query.with_limit(PAGE);
-            if let Some(id) = &after {
-                query.start = Some(Start::StartAfter(id.clone()));
-            }
-            let documents = retry_transient_read("query documents", || {
-                Document::fetch_many(&self.sdk, query.clone())
-            })
-            .await
-            .map_err(|e| {
-                self.read_error(
-                    &contract.id(),
-                    &e,
-                    &format!("querying {document_type} documents"),
-                )
-            })?;
-            let mut last = None;
-            let mut n = 0u32;
-            for (id, doc) in &documents {
-                n += 1;
-                last = Some(id.to_vec());
-                if let Some(at) = doc.as_ref().and_then(Document::updated_at) {
-                    out.insert(id.to_string(Encoding::Base58), at);
-                }
-            }
-            if n < PAGE {
-                return Ok(out);
-            }
-            after = last;
-        }
-    }
-
     /// Query **every** matching document, paginating past Platform's ≤100-row page cap.
     ///
     /// [`PlatformClient::query_documents`] returns a single page (≤100 rows); an
@@ -2041,6 +1987,10 @@ pub struct FetchedDocument {
     /// `$updatedAtBlockHeight`, when the document type records it (replaceable issue, patch
     /// and comment: the late-content rule judges edits too, §8.2).
     pub updated_at_block_height: Option<u64>,
+    /// Consensus `$updatedAt` in ms, when the document type records it (a mutable document's
+    /// last replace: a check run's status moving on). Absent from rows cached before it was read.
+    #[serde(default)]
+    pub updated_at: Option<u64>,
     /// Property name → value, in the SDK-free field representation.
     pub fields: BTreeMap<String, FieldValue>,
     /// `$revision` of a mutable document (what a guarded replace compares, see
@@ -2066,6 +2016,7 @@ impl FetchedDocument {
             created_at,
             created_at_block_height,
             updated_at_block_height,
+            updated_at: doc.updated_at(),
             fields,
             revision: doc.revision(),
         }
@@ -5060,6 +5011,7 @@ mod tests {
             created_at: Some(i as u64),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             fields: BTreeMap::new(),
             revision: None,
         }

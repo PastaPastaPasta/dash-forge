@@ -496,6 +496,7 @@ mod tests {
             created_at: Some(t),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         }
@@ -542,6 +543,7 @@ mod tests {
                 created_at: Some(1),
                 created_at_block_height: None,
                 updated_at_block_height: None,
+                updated_at: None,
                 revision: None,
                 fields,
             }

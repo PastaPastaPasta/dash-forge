@@ -52,7 +52,8 @@
         "status": "completed",
         "conclusion": "success",
         "reporter": "maint",
-        "createdAt": 10000001
+        "createdAt": 10000001,
+        "updatedAt": 10000001
       }
     ],
     "runners": [],

@@ -55,7 +55,28 @@ describe('unrecordedMergeLikely — the cheap look before the full check', () =>
   })
 
   it('is not likely when the tip is not built on the tip before it', async () => {
-    const { sides, root, head, other } = repo()
-    expect(await unrecordedMergeLikely(sides, { tip: other, prev: head, head: root, prPaths: new Set(['z.txt']) })).toBe(false)
+    const { sides, head, merged, other } = repo()
+    expect(await unrecordedMergeLikely(sides, { tip: other, prev: head, head: merged, prPaths: new Set(['z.txt']) })).toBe(false)
+  })
+})
+
+describe('unrecordedMergeLikely — merges the tip no longer is', () => {
+  it('finds a merge commit followed by another push, and one of several merges in a row', async () => {
+    const { s, base1, head, merged } = repo()
+    const later = s.commit(s.files({ 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c', 'd.txt': 'd' }), [merged])
+    const r = s.reader()
+    const sides = { base: r, head: r }
+    // Two pushes: the merge, then another commit; the tip before the current one is the merge.
+    expect(await unrecordedMergeLikely(sides, { tip: later, prev: merged, head, prPaths: new Set(['c.txt']) })).toBe(true)
+    // Several merges in one push: the PR's merge is behind another merge on the first-parent line.
+    const other = s.commit(s.files({ 'e.txt': 'e' }), [])
+    const second = s.commit(s.files({ 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c', 'e.txt': 'e' }), [merged, other])
+    const r2 = s.reader()
+    expect(await unrecordedMergeLikely({ base: r2, head: r2 }, { tip: second, prev: base1, head, prPaths: new Set(['c.txt']) })).toBe(true)
+  })
+
+  it('takes the comparison\'s own finding that the tip contains the head', async () => {
+    const { sides, base1, head, other } = repo()
+    expect(await unrecordedMergeLikely(sides, { tip: other, prev: base1, head, prPaths: new Set(['zz']), tipContainsHead: true })).toBe(true)
   })
 })

@@ -145,13 +145,15 @@ function samePolicy(a: Policy, b: Policy): boolean {
 
 /**
  * The check runs as they stood at the merge `at`: those created no later, each completed run
- * keeping its conclusion only when it completed no later (by `updatedAt`, else `createdAt`); one
- * that completed after the merge was still running then. Parity: forge-core `runs_at`.
+ * keeping its conclusion only when its last replace (`updatedAt`) came no later; otherwise it was
+ * still running at the merge as far as anyone can tell. Fails safe: a run whose `updatedAt` was
+ * not read, or that was replaced again after the merge, reads as still running then. Parity:
+ * forge-core `runs_at`.
  */
 function runsAt(runs: readonly CheckRunRow[], at: number): CheckRunRow[] {
   return runs
     .filter((r) => r.createdAt <= at)
-    .map((r) => (r.status === 'completed' && (r.updatedAt ?? r.createdAt) > at ? { ...r, status: 'in_progress', conclusion: null } : r))
+    .map((r) => (r.status === 'completed' && (r.updatedAt === undefined || r.updatedAt > at) ? { ...r, status: 'in_progress', conclusion: null } : r))
 }
 
 /** Judge a merge against the branch rules in force when it was recorded (see the module docs). */

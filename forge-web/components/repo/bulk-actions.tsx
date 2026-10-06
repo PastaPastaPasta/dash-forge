@@ -151,6 +151,10 @@ export function BulkBar({
     onBusy?.(true)
   }
   const reopen = allReopenable(selectedRows)
+  // Leaving the page mid-batch releases the page's hold on its rows.
+  const onBusyRef = useRef(onBusy)
+  onBusyRef.current = onBusy
+  useEffect(() => () => onBusyRef.current?.(false), [])
   const allBox = useRef<HTMLInputElement>(null)
   useEffect(() => {
     if (allBox.current) allBox.current.indeterminate = n > 0 && !all

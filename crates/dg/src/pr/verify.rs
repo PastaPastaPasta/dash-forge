@@ -328,7 +328,7 @@ pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<Strin
             let word = match r.state {
                 CheckState::Passed => "passed",
                 CheckState::Failing => "failed",
-                CheckState::Pending => "still running",
+                CheckState::Pending => "still running at the merge",
                 CheckState::Missing => "not reported",
             };
             out.push(format!(

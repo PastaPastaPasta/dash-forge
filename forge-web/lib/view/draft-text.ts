@@ -10,6 +10,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { UnconfirmedWriteError } from '../sdk'
+
 const PREFIX = 'forge:draft:v1:'
 
 /** Drafts older than this are dropped (two weeks). */
@@ -200,13 +202,39 @@ export function useEditDraft<T>(
   key: string | null,
   valid: (value: T) => boolean,
   changed: (value: T) => boolean,
-): { readonly value: T | null; readonly set: (value: T | null) => void; readonly dropped: boolean } {
-  const [stored, store, , dropped] = useDraftState<T>(key, valid)
+): {
+  readonly value: T | null
+  readonly set: (value: T | null) => void
+  readonly dropped: boolean
+  /**
+   * Run the edit's save: the stored copy is held away while it runs (a reload must neither save
+   * it twice nor call the user's own landed save "discarded"), cleared once it lands, and kept
+   * again only when the save is known not to have been sent.
+   */
+  readonly saving: <R>(write: () => Promise<R>) => Promise<R>
+} {
+  const [stored, store, hold, droppedStored] = useDraftState<T>(key, valid)
   const [local, setLocal] = useState<{ readonly key: string | null; readonly value: T | null } | null>(null)
+  // The "discarded" note goes once the user edits again.
+  const [seen, setSeen] = useState(false)
   const value = local !== null && local.key === key ? local.value : stored
+  const keep = (v: T | null): T | null => (v !== null && changed(v) ? v : null)
   const set = (v: T | null): void => {
     setLocal({ key, value: v })
-    store(v !== null && changed(v) ? v : null)
+    setSeen(true)
+    store(keep(v))
   }
-  return { value, set, dropped }
+  const saving = async <R,>(write: () => Promise<R>): Promise<R> => {
+    const v = value
+    hold(true, null)
+    try {
+      const r = await write()
+      hold(false, null)
+      return r
+    } catch (e) {
+      if (!(e instanceof UnconfirmedWriteError)) hold(false, keep(v))
+      throw e
+    }
+  }
+  return { value, set, dropped: droppedStored && !seen, saving }
 }

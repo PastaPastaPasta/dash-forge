@@ -60,6 +60,7 @@ impl Recorded {
                 created_at: Some(1_000 + n),
                 created_at_block_height: Some(100 + n),
                 updated_at_block_height: None,
+                updated_at: None,
                 fields,
                 revision: None,
             },

@@ -965,7 +965,7 @@ fn check_run_rows(docs: &[FetchedDocument], head_oid: &str) -> Vec<CheckRunRow> 
             conclusion: d.field_str("conclusion"),
             reporter: d.owner_id.clone(),
             created_at: d.created_at.unwrap_or_default(),
-            updated_at: None,
+            updated_at: d.updated_at,
         })
         .collect()
 }
@@ -4591,38 +4591,6 @@ impl<'a> Collab<'a> {
             .collect())
     }
 
-    /// The check runs on `head` with when each was last replaced (`$updatedAt`): what the merge
-    /// audit needs to tell a run's status at a past time.
-    async fn check_run_rows_timed(&self, repo: &RepoRef, head: &str) -> Result<Vec<CheckRunRow>> {
-        let docs = self.check_run_docs(repo, head).await?;
-        let mut rows = check_run_rows(&docs, head);
-        if rows.is_empty() {
-            return Ok(rows);
-        }
-        let community = self.community_contract(repo).await?;
-        let oid = hex::decode(head).map_err(|e| Error::Config(format!("head {head}: {e}")))?;
-        let updated = self
-            .client
-            .query_updated_at(
-                &community,
-                DOC_CHECK_RUN,
-                &[
-                    Self::repo_filter(repo)?,
-                    QueryFilter::eq("headOid", FieldValue::bytes(oid)),
-                ],
-                &[
-                    QueryOrder::asc("repoId"),
-                    QueryOrder::asc("headOid"),
-                    QueryOrder::asc("$createdAt"),
-                ],
-            )
-            .await?;
-        for r in &mut rows {
-            r.updated_at = updated.get(&r.id).copied();
-        }
-        Ok(rows)
-    }
-
     /// The branch rules at `view`'s merge ([`rules::merge_audit::audit_merge`]): the policy and
     /// config timelines, the PR's reviews, the members, and (only when the policy then required
     /// checks) the runs on the merged head. `None` when the PR is not merged or its merge names
@@ -4709,7 +4677,8 @@ impl<'a> Collab<'a> {
         if !first.checks_unread {
             return Ok(Some(first));
         }
-        let rows = self.check_run_rows_timed(repo, &merge_head).await?;
+        let docs = self.check_run_docs(repo, &merge_head).await?;
+        let rows = check_run_rows(&docs, &merge_head);
         input.runners = if rows.is_empty() {
             BTreeSet::new()
         } else {
@@ -8366,6 +8335,7 @@ mod mixed_read_tests {
             created_at: Some(7),
             created_at_block_height: Some(9),
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: fields
                 .into_iter()
@@ -8659,6 +8629,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: Some(10),
             updated_at_block_height: None,
+            updated_at: None,
             fields: [(
                 "repoId".to_string(),
                 FieldValue::identifier(platform::decode_identifier(repo_id).unwrap()),
@@ -8816,6 +8787,7 @@ mod tests {
             created_at: Some(u64::from(n)),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         }
@@ -9324,6 +9296,7 @@ mod tests {
             created_at: Some(5),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: Some(1),
             fields,
         };
@@ -9695,6 +9668,7 @@ mod tests {
             created_at: Some(5),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: p,
         };
@@ -9714,6 +9688,7 @@ mod tests {
             created_at: Some(5),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([
                 ("targetId".into(), FieldValue::identifier([3; 32])),
@@ -9827,6 +9802,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         };
@@ -9862,6 +9838,7 @@ mod tests {
             created_at: Some(9),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([
                 ("tagName".into(), FieldValue::text("v1")),
@@ -9894,6 +9871,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([("tagName".into(), FieldValue::text("v2"))]),
         };
@@ -10167,6 +10145,7 @@ mod tests {
                 created_at: Some(at),
                 created_at_block_height: None,
                 updated_at_block_height: None,
+                updated_at: None,
                 revision: None,
                 fields,
             }
@@ -10516,6 +10495,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: fields
                 .iter()
@@ -10672,6 +10652,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         };
@@ -10706,6 +10687,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         };

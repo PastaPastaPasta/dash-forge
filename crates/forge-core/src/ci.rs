@@ -883,6 +883,7 @@ mod tests {
             created_at: Some(at),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             fields: fields
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), FieldValue::text(*v)))
@@ -1089,6 +1090,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             fields: fields
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), v.clone()))
@@ -1615,6 +1617,7 @@ mod tests {
                 created_at: Some(1),
                 created_at_block_height: None,
                 updated_at_block_height: None,
+                updated_at: None,
                 fields: props,
                 revision: Some(1),
             };

@@ -80,7 +80,7 @@ describe('mergeAuditInput', () => {
     const writerThread = thread()
     const t = { ...writerThread, timeline: [{ ...writerThread.timeline[0], transition: { ...(writerThread.timeline[0] as { transition: object }).transition, actor: 'writ' } }], members: [...writerThread.members, { identity: 'writ', role: 'writer', createdAt: 1 }] } as unknown as PullThread
     const checksPolicy = { ...POLICY, requiredApprovals: 0, requiredChecks: ['build'] }
-    const run = { id: 'k1', headOid: HEAD, name: 'build', status: 'completed', conclusion: 'failure', reporter: 'maint', createdAt: 9_000_000 }
+    const run = { id: 'k1', headOid: HEAD, name: 'build', status: 'completed', conclusion: 'failure', reporter: 'maint', createdAt: 9_000_000, updatedAt: 9_000_000 }
     const input = mergeAuditInput(t, { policies: [{ id: 'p1', createdAt: 1, policy: checksPolicy }], configs: [{ id: 'c1', createdAt: 1, protectedPatterns: ['refs/heads/*'] }], checks: { rows: [run], runners: new Set() } })
     const audit = auditMerge(input!)
     expect(audit.verdict).toBe('unmet')

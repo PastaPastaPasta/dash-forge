@@ -863,6 +863,7 @@ mod tests {
             created_at: Some(42),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             fields,
             revision: None,
         }

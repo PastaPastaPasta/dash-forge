@@ -2275,6 +2275,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([
                 ("targetId".into(), FieldValue::identifier([4; 32])),
@@ -2330,6 +2331,7 @@ mod tests {
             created_at: Some(at),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: fields
                 .into_iter()
@@ -2399,6 +2401,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([("kind".into(), FieldValue::integer(kind))]),
         };
@@ -2424,6 +2427,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([
                 ("targetId".into(), FieldValue::identifier([4; 32])),
@@ -2505,6 +2509,7 @@ mod tests {
                     created_at: Some(1),
                     created_at_block_height: None,
                     updated_at_block_height: None,
+                    updated_at: None,
                     revision: None,
                     fields: BTreeMap::new(),
                 },
@@ -2542,6 +2547,7 @@ mod tests {
             created_at: Some(2),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([
                 ("targetId".into(), FieldValue::identifier([target; 32])),
@@ -2576,6 +2582,7 @@ mod tests {
             created_at: Some(seq),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([
                 ("tagName".into(), FieldValue::text("v1")),

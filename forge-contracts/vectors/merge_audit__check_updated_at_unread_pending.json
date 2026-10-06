@@ -1,6 +1,6 @@
 {
-  "name": "check_passed_before_merge_met",
-  "description": "The required check passed on the merged head before the merge: met.",
+  "name": "check_updated_at_unread_pending",
+  "description": "A completed run whose updatedAt was not read counts as still running at the merge (fails safe), never as passed.",
   "case": "merge_audit",
   "rules": "v2",
   "input": {
@@ -52,15 +52,14 @@
         "status": "completed",
         "conclusion": "success",
         "reporter": "maint",
-        "createdAt": 9000000,
-        "updatedAt": 9000000
+        "createdAt": 9000000
       }
     ],
     "runners": [],
     "bypasses": []
   },
   "expected": {
-    "verdict": "met",
+    "verdict": "unmet",
     "policy": {
       "requiredApprovals": 0,
       "approverRole": 0,
@@ -83,11 +82,11 @@
       "required": [
         {
           "name": "build",
-          "state": "passed",
+          "state": "pending",
           "runId": "k1"
         }
       ],
-      "met": true,
+      "met": false,
       "untrusted": 0
     },
     "checksUnread": false,

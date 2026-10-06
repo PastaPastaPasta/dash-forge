@@ -375,26 +375,26 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         const changes: { title?: string; body?: string } = {}
         if (pending.title !== issue.title) changes.title = pending.title
         if (pending.body !== issue.body) changes.body = pending.body
-        await updateTarget(sdk, signer, home.repo, {
+        await editDraft.saving(() => updateTarget(sdk, signer, home.repo, {
           type: 'issue',
           id: issue.id,
           ...changes,
           expectedRevision: BigInt(issue.revision),
           seal: { current: { title: issue.title, body: issue.long?.field ?? issue.body }, bind: { number: issue.number }, imported: issue.importedRaw ?? null },
           intent,
-        })
+        }))
         setEditing(null)
         break
       }
       case 'editComment':
-        await updateComment(sdk, signer, home.repo, {
+        await commentDraft.saving(() => updateComment(sdk, signer, home.repo, {
           id: pending.id,
           body: pending.body,
           ...commentEditDropsOf(timeline, pending.id, { isMember, allReadable: totalHidden(hidden) === 0 }),
           ...(timelineComment(timeline, pending.id)?.revision !== undefined ? { expectedRevision: BigInt(timelineComment(timeline, pending.id)?.revision as number) } : {}),
           seal: { current: { body: timelineComment(timeline, pending.id)?.body ?? '' }, bind: { targetId: issue.id }, imported: timelineComment(timeline, pending.id)?.importedRaw ?? null },
           intent,
-        })
+        }))
         setEditingComment(null)
         break
       case 'deleteComment':

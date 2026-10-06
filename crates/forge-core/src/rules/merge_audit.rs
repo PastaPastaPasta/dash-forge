@@ -218,15 +218,17 @@ fn approvals_at(input: &MergeAuditInput, then: &RoleOracle, policy: &Policy) -> 
 }
 
 /// The check runs as they stood at the merge `at`: those created no later, each completed run
-/// keeping its conclusion only when it completed no later (by `updated_at`, else `created_at`);
-/// one that completed after the merge was still running then. A run is replaced as its status
-/// moves on, so its current conclusion alone says nothing about the merge.
+/// keeping its conclusion only when its last replace (`updated_at`) came no later; otherwise it
+/// was still running at the merge as far as anyone can tell. A run is replaced as its status
+/// moves on, so its current conclusion alone says nothing about the merge. This fails safe: a
+/// run whose `updated_at` was not read, or that was replaced again after the merge (even with
+/// the same result), reads as still running then, never as passed.
 fn runs_at(runs: &[CheckRunRow], at: u64) -> Vec<CheckRunRow> {
     runs.iter()
         .filter(|r| r.created_at <= at)
         .map(|r| {
             let mut r = r.clone();
-            if r.status == "completed" && r.updated_at.unwrap_or(r.created_at) > at {
+            if r.status == "completed" && r.updated_at.is_none_or(|u| u > at) {
                 r.status = "in_progress".into();
                 r.conclusion = None;
             }

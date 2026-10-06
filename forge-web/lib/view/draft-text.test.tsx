@@ -177,11 +177,33 @@ describe('useEditDraft', () => {
     expect(readDraft('A:R:T:edit')).toBe('')
   })
 
-  it('says when a stored edit was discarded because the document changed', () => {
+  it('says when a stored edit was discarded because the document changed, until the next edit', () => {
     writeDraft('A:R:T:edit', JSON.stringify({ title: 't', body: 'old', rev: 1 }))
     act(() => root.render(<Editor rev={2} />))
     expect(api!.value).toBeNull()
     expect(api!.dropped).toBe(true)
+    act(() => api!.set({ title: 'Saved', body: 'new', rev: 2 }))
+    expect(api!.dropped).toBe(false)
+  })
+
+  it('holds the stored edit while it saves, keeps it again only when nothing was sent', async () => {
+    const { UnconfirmedWriteError } = await import('../sdk')
+    act(() => root.render(<Editor rev={1} />))
+    act(() => api!.set({ title: 'Saved', body: 'edited', rev: 1 }))
+    expect(readDraft('A:R:T:edit')).not.toBe('')
+    await act(async () => {
+      await expect(api!.saving(async () => { throw new UnconfirmedWriteError('d') })).rejects.toThrow()
+    })
+    // Sent but not shown yet: held away, so a reload neither saves it twice nor calls it discarded.
+    expect(readDraft('A:R:T:edit')).toBe('')
+    await act(async () => {
+      await expect(api!.saving(async () => { throw new Error('refused') })).rejects.toThrow()
+    })
+    expect(JSON.parse(readDraft('A:R:T:edit'))).toMatchObject({ body: 'edited' })
+    await act(async () => {
+      await api!.saving(async () => 'ok')
+    })
+    expect(readDraft('A:R:T:edit')).toBe('')
   })
 })
 

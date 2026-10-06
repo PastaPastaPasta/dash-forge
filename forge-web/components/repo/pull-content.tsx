@@ -586,8 +586,9 @@ function PullPage({
   // this PR's merge: an ordinary open PR page does no ancestry walk.
   const unrecordedCheck = useAsync(
     async () => {
-      const prPaths = cmp!.truncated ? null : new Set(cmp!.changes.flatMap((c) => (c.oldPath ? [c.path, c.oldPath] : [c.path])))
-      const likely = await unrecordedMergeLikely(cmp!.sides, { tip: pull.baseTipOid, prev: pull.baseTipPrev ?? '', head: pull.headOid, prPaths })
+      const c = cmp!
+      const prPaths = c.truncated || c.upToDate === true || c.fellBack === true ? null : new Set(c.changes.flatMap((x) => (x.oldPath ? [x.path, x.oldPath] : [x.path])))
+      const likely = await unrecordedMergeLikely(c.sides, { tip: pull.baseTipOid, prev: pull.baseTipPrev ?? '', head: pull.headOid, prPaths, tipContainsHead: c.tipContainsHead === true })
       return likely ? checkMerge(cmp!.sides, { headOid: pull.headOid, mergeOid: pull.baseTipOid, tipBefore: pull.baseTipPrev ?? '' }) : null
     },
     [pull.baseTipOid, pull.baseTipPrev ?? '', pull.headOid, comparison.sidesKey],
@@ -957,7 +958,7 @@ function PullPage({
         const changes: { title?: string; body?: string } = {}
         if (p.title !== pull.title) changes.title = p.title
         if (p.body !== pull.body) changes.body = p.body
-        await updateTarget(sdk, signer, repo, {
+        await editDraft.saving(() => updateTarget(sdk, signer, repo, {
           type: 'patch',
           id: pull.id,
           ...changes,
@@ -969,7 +970,7 @@ function PullPage({
             imported: pull.importedRaw ?? null,
           },
           intent,
-        })
+        }))
         setEditing(null)
         refresh((t) => t.pull.title === p.title && t.pull.body === p.body)
         return
@@ -999,14 +1000,14 @@ function PullPage({
         return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
-        await updateComment(sdk, signer, repo, {
+        await commentDraft.saving(() => updateComment(sdk, signer, repo, {
           id: p.id,
           body: p.body,
           ...(c ? commentEditDrops(c, thread.comments, { isMember, allReadable: totalHidden(thread.hidden) === 0 }) : {}),
           ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
           seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id }, imported: c?.importedRaw ?? null },
           intent,
-        })
+        }))
         setEditingComment(null)
         refresh((t) => t.comments.some((x) => x.id === p.id && x.body === p.body))
         return
