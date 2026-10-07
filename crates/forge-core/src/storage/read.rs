@@ -319,6 +319,8 @@ pub struct PackReader {
     first_byte_budget: Duration,
     /// The cap on a body whose size is unknown ([`MAX_UNSIZED_BYTES`]; smaller in tests).
     unsized_cap: u64,
+    /// How long one [`Self::probe`] gets ([`GATEWAY_PROBE_TIMEOUT`]; shorter in tests).
+    probe_timeout: Duration,
     /// What the user configured (read gateways, profiles' public URLs and gateways): a
     /// recorded URL on one of these origins is followed even when it is http or private, and
     /// these hosts may resolve to private addresses ([`super::egress`]).
@@ -372,6 +374,7 @@ impl PackReader {
             candidate_timeout: None,
             first_byte_budget: FIRST_BYTE_BUDGET,
             unsized_cap: MAX_UNSIZED_BYTES,
+            probe_timeout: GATEWAY_PROBE_TIMEOUT,
             trusted,
             race_width: RACE_WIDTH,
             fallbacks: std::sync::Mutex::default(),
@@ -393,6 +396,14 @@ impl PackReader {
     #[must_use]
     pub(crate) fn with_unsized_cap(mut self, n: u64) -> Self {
         self.unsized_cap = n;
+        self
+    }
+
+    /// Give each [`Self::probe`] `t` instead of [`GATEWAY_PROBE_TIMEOUT`].
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_probe_timeout(mut self, t: Duration) -> Self {
+        self.probe_timeout = t;
         self
     }
 
@@ -529,8 +540,14 @@ impl PackReader {
             .unwrap_or_else(|| transfer_deadline(size))
     }
 
-    /// Fetch candidate `c` (a `range` of it, or the whole body capped at `size`, else at
-    /// [`MAX_UNSIZED_BYTES`]), setting `flowing` once its body starts arriving.
+    /// The most a body may be: `size` when known, else [`MAX_UNSIZED_BYTES`]. Deadlines are
+    /// scaled to this too, so a body the cap allows also gets the time to arrive.
+    fn body_cap(&self, size: Option<u64>) -> u64 {
+        size.unwrap_or(self.unsized_cap)
+    }
+
+    /// Fetch candidate `c` (a `range` of it, or the whole body capped at [`Self::body_cap`]),
+    /// setting `flowing` once its body starts arriving.
     async fn fetch(
         &self,
         c: &Candidate,
@@ -538,8 +555,8 @@ impl PackReader {
         size: Option<u64>,
         flowing: Option<&AtomicBool>,
     ) -> Result<Vec<u8>> {
-        let size = range.map(|r| r.len()).or(size);
-        let max_bytes = Some(size.unwrap_or(self.unsized_cap));
+        let cap = self.body_cap(range.map(|r| r.len()).or(size));
+        let max_bytes = Some(cap);
         let attempt = async {
             match c {
                 Candidate::Http(url) => {
@@ -559,7 +576,7 @@ impl PackReader {
                 }
             }
         };
-        let deadline = self.candidate_deadline(size);
+        let deadline = self.candidate_deadline(Some(cap));
         tokio::time::timeout(deadline, attempt)
             .await
             .unwrap_or_else(|_| {
@@ -644,16 +661,19 @@ impl PackReader {
     /// with nothing sent, for an address a manifest may not steer this computer to (plain
     /// http, this machine, a private network, unless the user configured that origin; DNS
     /// answers and redirects are checked too). What `dg storage status` checks every
-    /// uploader's copies with.
+    /// uploader's copies with. A host that has not answered within [`GATEWAY_PROBE_TIMEOUT`]
+    /// is down.
     pub async fn probe(&self, url: &str) -> Option<Health> {
         if !may_fetch(url, &self.trusted) {
             return None;
         }
-        Some(
-            http_probe(&self.client, url)
-                .await
-                .unwrap_or_else(|_| Health::down(Duration::ZERO)),
-        )
+        let health =
+            match tokio::time::timeout(self.probe_timeout, http_probe(&self.client, url)).await {
+                Ok(Ok(h)) => h,
+                Ok(Err(_)) => Health::down(Duration::ZERO),
+                Err(_) => Health::down(self.probe_timeout),
+            };
+        Some(health)
     }
 
     /// Fetch the whole artifact from the first candidate whose bytes hash to
@@ -731,7 +751,7 @@ impl PackReader {
         tokio::pin!(first_byte);
         // The whole read's limit, budget or not: copies that keep trickling bytes hold their
         // slots until their own deadline, and a long candidate list must not add those up.
-        let limit = read_deadline(self.candidate_deadline(size));
+        let limit = read_deadline(self.candidate_deadline(Some(self.body_cap(size))));
         let overall = tokio::time::sleep(limit);
         tokio::pin!(overall);
         // Set when the limit ran out with candidates left untried.
@@ -841,14 +861,15 @@ impl PackReader {
 
     /// Fetch `range` of the artifact (browse / partial reads). NOT hash-verified here — a
     /// slice cannot be checked against a whole-artifact hash; callers verify the objects
-    /// they decode against their git OIDs. The whole read ends by [`read_deadline`], like
-    /// [`Self::fetch_verified`].
+    /// they decode against their git OIDs. Copies are tried in turn, each dropped if it
+    /// sends no data within the first-byte budget ([`FIRST_BYTE_BUDGET`]), and the whole read
+    /// ends by [`read_deadline`], like [`Self::fetch_verified`].
     pub async fn fetch_range(&self, uris: &[String], range: ByteRange) -> Result<Vec<u8>> {
         let mut last = Error::NotFound;
         let limit = read_deadline(self.candidate_deadline(Some(range.len())));
         let tries = async {
             for c in self.candidates(uris) {
-                match self.fetch(&c, Some(range), None, None).await {
+                match self.fetch_range_one(&c, range).await {
                     Ok(b) if b.len() as u64 == range.len() => return Ok(b),
                     Ok(b) => {
                         last = Error::Io(format!(
@@ -870,6 +891,35 @@ impl PackReader {
             Err(_) => Err(Error::Io(format!(
                 "no copy served the range within the read's {limit:?} limit (last: {last})"
             ))),
+        }
+    }
+
+    /// `range` of candidate `c`, given up when no byte of it has arrived within the
+    /// first-byte budget: a gateway that cannot find a CID holds the request for a minute
+    /// before it says so, and the copies after it must still get their turn. Once the body
+    /// flows the candidate keeps its own deadline.
+    async fn fetch_range_one(&self, c: &Candidate, range: ByteRange) -> Result<Vec<u8>> {
+        let flowing = AtomicBool::new(false);
+        let attempt = self.fetch(c, Some(range), None, Some(&flowing));
+        tokio::pin!(attempt);
+        let first_byte = tokio::time::sleep(self.first_byte_budget);
+        tokio::pin!(first_byte);
+        let mut waiting = true;
+        loop {
+            tokio::select! {
+                biased;
+                r = &mut attempt => return r,
+                () = &mut first_byte, if waiting => {
+                    if !flowing.load(Ordering::Relaxed) {
+                        return Err(Error::Io(format!(
+                            "{}: sent no data within {:?}",
+                            c.label(),
+                            self.first_byte_budget
+                        )));
+                    }
+                    waiting = false;
+                }
+            }
         }
     }
 }
@@ -1510,6 +1560,66 @@ mod tests {
         let up = serve(vec![("/p", b"x".to_vec())]);
         let r = PackReader::new(vec![up.clone()], &StorageProfiles::default());
         assert!(r.probe(&format!("{up}/p")).await.is_some_and(|h| h.ok));
+    }
+
+    #[tokio::test]
+    async fn a_probe_of_a_host_that_never_answers_ends_at_its_timeout() {
+        // `dg storage status` probes every copy in turn: one host holding the request open
+        // must not hold up the command.
+        let gw = silent_gateway();
+        let r = PackReader::new(vec![gw.clone()], &StorageProfiles::default())
+            .with_probe_timeout(Duration::from_millis(300));
+        let started = Instant::now();
+        let h = r
+            .probe(&format!("{gw}/p"))
+            .await
+            .expect("a configured origin is probed");
+        assert!(!h.ok);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            PackReader::with_defaults().probe_timeout,
+            GATEWAY_PROBE_TIMEOUT
+        );
+    }
+
+    #[tokio::test]
+    async fn silent_copies_do_not_use_up_a_range_read() {
+        // Range reads try copies one at a time: each copy that sends nothing gets the
+        // first-byte budget, not its whole deadline, so the copies after it are still tried
+        // within the read's limit.
+        let gws: Vec<String> = (0..3).map(|_| silent_gateway()).collect();
+        let uris: Vec<String> = gws.iter().map(|g| format!("{g}/x")).collect();
+        let r = PackReader::new(gws, &StorageProfiles::default())
+            .with_candidate_timeout(Duration::from_secs(30))
+            .with_first_byte_budget(Duration::from_millis(300));
+        let started = Instant::now();
+        let err = r
+            .fetch_range(&uris, ByteRange { start: 0, end: 4 })
+            .await
+            .unwrap_err()
+            .to_string();
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(5), "{took:?}: {err}");
+        assert!(
+            err.contains(&format!("{}: sent no data within 300ms", uris[2])),
+            "the last copy was tried: {err}"
+        );
+    }
+
+    #[test]
+    fn an_unsized_read_gets_the_time_its_cap_needs() {
+        // The 256 MiB an unsized body may be needs 256 s at the minimum rate, not the 120 s
+        // floor.
+        let r = PackReader::with_defaults();
+        assert_eq!(
+            r.candidate_deadline(Some(r.body_cap(None))),
+            Duration::from_secs(256)
+        );
+        assert_eq!(r.body_cap(Some(10)), 10);
     }
 
     #[tokio::test]

@@ -1521,6 +1521,7 @@ async fn probe_rows(
     platform_locator: &str,
     reader: &PackReader,
 ) -> Vec<serde_json::Value> {
+    use futures::StreamExt as _;
     let mut probe_urls: Vec<String> = Vec::new();
     for u in uris {
         let uri = Uri(u.clone());
@@ -1547,8 +1548,14 @@ async fn probe_rows(
             "detail": "on-chain chunk documents",
         }));
     }
-    for url in &probe_urls {
-        let Some(health) = reader.probe(url).await else {
+    // A few at a time, in order: each probe ends by its own timeout.
+    let healths: Vec<_> = futures::stream::iter(&probe_urls)
+        .map(|url| reader.probe(url))
+        .buffered(4)
+        .collect()
+        .await;
+    for (url, health) in probe_urls.iter().zip(healths) {
+        let Some(health) = health else {
             rows.push(json!({
                 "uri": url,
                 "scheme": Uri(url.clone()).scheme(),

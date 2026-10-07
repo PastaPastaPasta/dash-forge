@@ -473,10 +473,10 @@ Every clone, fetch, repack and reseed reads each pack like this:
 4. Only then does it fall back to Platform chunks, if the manifest has any.
 
 A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
-- a body larger than the manifest's `sizeBytes` is refused. A manifest with no size (`sizeBytes` 0) gets 256 MiB;
+- a body larger than the manifest's `sizeBytes` is refused. A manifest with no size (`sizeBytes` 0) allows 256 MiB, and the deadline below is set for that size;
 - each candidate's whole transfer gets `max(120 s, size ÷ 1 MiB/s)`, so a 2 GiB pack gets about 34 minutes. A host that stalls outright is cut off sooner, after 120 s with no bytes;
 - when Platform chunks exist, no new external candidate is started after `max(90 s, half that deadline)`, and the reader falls back to the chunks. A transfer already in progress is not abandoned;
-- the whole read ends after twice the candidate deadline (4 minutes for a small pack), however many copies are left.
+- one pass over the copies in steps 1 to 3 ends after twice the candidate deadline (4 minutes for a small pack), however many copies are left. The Platform fallback in step 4 is not part of it.
 
 The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json), with the date it was last verified. `git-remote-dash`, `dg` and the web app all embed it; in the web app, **Settings → Your IPFS gateways** adds gateways tried before it. It is deliberately short: public gateways come and go (ipfs.io and dweb.link stopped serving on 2026-09-21), and every dead entry costs a timeout. Override it for the CLI in `storage.toml`:
 

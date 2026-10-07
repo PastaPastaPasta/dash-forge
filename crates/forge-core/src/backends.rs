@@ -207,6 +207,9 @@ pub trait PackBackend: Send + Sync {
     ///
     /// A ranged read MUST be served as an HTTP `206 Partial Content` (or equivalent) —
     /// backends error rather than silently returning the whole object for a range.
+    ///
+    /// A whole read (`range` `None`) has no size bound: read a URI taken from a manifest
+    /// through [`crate::storage::PackReader`] or [`Self::get_capped`], never this.
     async fn get(&self, uri: &Uri, range: Option<ByteRange>) -> Result<Vec<u8>>;
 
     /// Probe the health/availability of `uri`.
