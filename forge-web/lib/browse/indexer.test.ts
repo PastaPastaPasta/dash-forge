@@ -11,38 +11,109 @@ import { describe, expect, it } from 'vitest'
 
 import { BrowseReader, ObjectLocator, gitOidHex } from './index'
 import {
+  INDEX_DECODE_MAX_BYTES,
+  IndexTooLargeError,
   indexPacks,
-  inflateWithConsumed,
   memoryPackSource,
   scanPack,
   serializeLocator,
 } from './indexer'
+import { DELTA_DEPTH_MAX, ObjectTooLargeError, zlibStreamLength } from './pack'
 import {
   T_BLOB,
   T_OFS_DELTA,
   T_REF_DELTA,
   concat,
   copyInsertDelta,
+  deltaSize,
   hexToBytes,
   objHeader,
   ofsBase,
   packFrame,
 } from './pack-fixtures'
 
-describe('inflateWithConsumed', () => {
+describe('zlibStreamLength', () => {
   it('reports the exact compressed length with trailing bytes present', () => {
     const payload = new TextEncoder().encode('consumed-bytes probe '.repeat(20))
     const stream = zlibSync(payload)
     const buf = concat(new Uint8Array([0xee]), stream, new Uint8Array([1, 2, 3, 4]))
-    const { data, consumed } = inflateWithConsumed(buf, 1)
-    expect(consumed).toBe(stream.length)
-    expect(Array.from(data)).toEqual(Array.from(payload))
+    expect(zlibStreamLength(buf, 1, payload.length)).toBe(stream.length)
   })
 
   it('throws on a truncated stream', () => {
-    const stream = zlibSync(new TextEncoder().encode('truncate me '.repeat(50)))
-    expect(() => inflateWithConsumed(stream.subarray(0, stream.length - 10), 0)).toThrow(/inflate failed/)
+    const payload = new TextEncoder().encode('truncate me '.repeat(50))
+    const stream = zlibSync(payload)
+    expect(() => zlibStreamLength(stream.subarray(0, stream.length - 10), 0, payload.length)).toThrow(/inflate size mismatch/)
   })
+})
+
+/** A pack holding one blob of `size` zero bytes: a few KiB stored, `size` inflated. */
+function zeroBlobPack(size: number, declared = size): Uint8Array {
+  return packFrame(concat(objHeader(T_BLOB, declared), zlibSync(new Uint8Array(size), { level: 9 })))
+}
+
+describe('fallback clone budgets', () => {
+  it('refuses a deflate bomb over the budget before inflating it', () => {
+    const bomb = zeroBlobPack(8 * 1024 * 1024) // ~8 KiB stored
+    expect(bomb.length).toBeLessThan(64 * 1024)
+    expect(() => scanPack(bomb, { left: 1024 * 1024 })).toThrow(ObjectTooLargeError)
+    // The same pack under a budget it fits is fine: the budget, not the pack, refused it.
+    expect(scanPack(bomb, { left: 16 * 1024 * 1024 })).toHaveLength(1)
+  })
+
+  it('stops a stream that inflates past the size its header declares', () => {
+    const lying = zeroBlobPack(8 * 1024 * 1024, 100)
+    expect(() => scanPack(lying)).toThrow(/inflate failed at \d+: inflate size mismatch/)
+  })
+
+  it('charges every stream of every pack to one scan budget', () => {
+    const a = zeroBlobPack(600 * 1024)
+    const b = zeroBlobPack(600 * 1024)
+    const budget = { left: 1024 * 1024 }
+    expect(scanPack(a, budget)).toHaveLength(1)
+    expect(() => scanPack(b, budget)).toThrow(ObjectTooLargeError)
+  })
+
+  it('refuses a delta that builds more than the budget from a small base', async () => {
+    // 16,385 one-byte "copy 64 KiB of the base" instructions: ~16 KiB of delta (a few hundred
+    // bytes stored) that asks for just over 1 GiB.
+    const base = new Uint8Array(0x10000)
+    const ops = 16_385
+    const delta = new Uint8Array([...deltaSize(base.length), ...deltaSize(ops * 0x10000), ...new Uint8Array(ops).fill(0x80)])
+    expect(ops * 0x10000).toBeGreaterThan(INDEX_DECODE_MAX_BYTES)
+    const baseStored = concat(objHeader(T_BLOB, base.length), zlibSync(base, { level: 9 }))
+    const deltaStored = concat(objHeader(T_OFS_DELTA, delta.length), ofsBase(baseStored.length), zlibSync(delta, { level: 9 }))
+    const pack = packFrame(baseStored, deltaStored)
+    expect(pack.length).toBeLessThan(4096)
+    await expect(indexPacks([pack])).rejects.toBeInstanceOf(IndexTooLargeError)
+  })
+
+  it('holds a caller to the budget it passes, over both passes', async () => {
+    const pack = zeroBlobPack(2 * 1024 * 1024)
+    await expect(indexPacks([pack], undefined, 1024 * 1024)).rejects.toBeInstanceOf(IndexTooLargeError)
+    expect(await indexPacks([pack], undefined, 4 * 1024 * 1024)).toHaveLength(1)
+  })
+
+  it('refuses a chain longer than git allows, and reads one at the limit', async () => {
+    // Each delta copies the whole object before it and adds one byte, so every object differs.
+    const chainPack = (deltas: number): Uint8Array => {
+      const stored: Uint8Array[] = []
+      let prev = new Uint8Array([0x61])
+      stored.push(concat(objHeader(T_BLOB, 1), zlibSync(prev)))
+      for (let k = 0; k < deltas; k++) {
+        const delta = copyInsertDelta(prev.length, prev.length + 1, prev.length, new Uint8Array([0x62]))
+        stored.push(concat(objHeader(T_OFS_DELTA, delta.length), ofsBase((stored[stored.length - 1] as Uint8Array).length), zlibSync(delta)))
+        const next = new Uint8Array(prev.length + 1)
+        next.set(prev)
+        next[prev.length] = 0x62
+        prev = next
+      }
+      return packFrame(...stored)
+    }
+    const atLimit = await indexPacks([chainPack(DELTA_DEPTH_MAX)])
+    expect(Math.max(...atLimit.map((o) => o.deltaDepth))).toBe(DELTA_DEPTH_MAX)
+    await expect(indexPacks([chainPack(DELTA_DEPTH_MAX + 1)])).rejects.toThrow(/over 4095 deep/)
+  }, 30_000)
 })
 
 describe('scanPack', () => {
@@ -197,6 +268,26 @@ describe('index → serialize → BrowseReader round trip', () => {
       const obj = await reader.readObject(gitOidHex('blob', target))
       expect(Array.from(obj.bytes)).toEqual(Array.from(target))
     }
+  })
+
+  it('resolves a REF base stored after the deltas that wait on it', async () => {
+    // Pack 0: a REF_DELTA onto a blob only pack 1 holds, and an OFS_DELTA on top of it; both
+    // wait for the blob and are resolved once it is.
+    const base = new TextEncoder().encode('the quick brown fox jumps over the lazy dog\n')
+    const mid = new TextEncoder().encode('the quick brown fox jumps over the lazy cat\n')
+    const top = new TextEncoder().encode('the quick brown fox jumps over the lazy cow\n')
+    const refDelta = copyInsertDelta(base.length, mid.length, 40, new TextEncoder().encode('cat\n'))
+    const refStored = concat(objHeader(T_REF_DELTA, refDelta.length), hexToBytes(gitOidHex('blob', base)), zlibSync(refDelta))
+    const ofsDelta = copyInsertDelta(mid.length, top.length, 40, new TextEncoder().encode('cow\n'))
+    const ofsStored = concat(objHeader(T_OFS_DELTA, ofsDelta.length), ofsBase(refStored.length), zlibSync(ofsDelta))
+    const pack0 = packFrame(refStored, ofsStored)
+    const pack1 = packFrame(concat(objHeader(T_BLOB, base.length), zlibSync(base)))
+
+    const objects = await indexPacks([pack0, pack1])
+    const depths = new Map(objects.map((o) => [o.oidHex, o.deltaDepth]))
+    expect(depths.get(gitOidHex('blob', base))).toBe(0)
+    expect(depths.get(gitOidHex('blob', mid))).toBe(1)
+    expect(depths.get(gitOidHex('blob', top))).toBe(2)
   })
 
   it('errors when a REF base exists in no pack', async () => {

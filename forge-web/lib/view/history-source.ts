@@ -10,12 +10,13 @@
  *
  * The manifests come from the browse resolve's own pack-list read, so finding an index costs
  * no query. An index counts when its representative copy (members first, `packsOfKind`) is a
- * CURRENT member's and no member's manifest supersedes it: it is the pusher's claim, and a
- * former writer's or a stranger's claims do not stand. Parity: forge-core `plan_history_index`.
+ * CURRENT member's and no current maintainer's or writer's index of the same kind supersedes it
+ * (`plannedSuperseded`): it is the pusher's claim, and a former writer's, a stranger's or another
+ * kind's claims do not stand. Parity: forge-core `plan_history_index`.
  */
 
 import { ACTIVE_NETWORK, PACK_KIND } from '../constants'
-import { packsOfKind, type PackManifest } from '../repo'
+import { packsOfKind, plannedSuperseded, type PackManifest } from '../repo'
 import { overlayHistory, parseHistoryIndexOfKind, type HistoryIndex } from '../browse/history-index'
 import { loadIndexArtifact } from './index-cache'
 
@@ -50,7 +51,7 @@ export interface HistorySource {
 /** The live history indexes of `kind` (the column index by default) among `manifests`. */
 export function liveHistoryIndexes(manifests: readonly PackManifest[], kind: number = PACK_KIND.HISTORY_INDEX): HistoryEntry[] {
   const member = (m: PackManifest): boolean => m.ownerRole !== null && m.ownerRole !== undefined
-  const superseded = new Set(manifests.filter(member).flatMap((m) => m.supersedes.map((h) => h.toLowerCase())))
+  const superseded = plannedSuperseded(manifests, kind)
   return packsOfKind(manifests, kind)
     .filter((p) => member(p) && !superseded.has(p.packHash.toLowerCase()))
     .flatMap((p) => {

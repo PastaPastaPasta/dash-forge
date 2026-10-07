@@ -1,0 +1,29 @@
+{
+  "source": "emitter: crates/dg/src/profile.rs bot() (status, documentId, bot claim, cost)",
+  "command": "profile bot add",
+  "args": [
+    "--json",
+    "profile",
+    "bot",
+    "add",
+    "Fi8bQ2xkPqR7sT9uVwXyZ1a2b3c4d5e6f7g8h9i0jKL"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "schemaVersion": 1,
+    "status": "updated",
+    "documentId": "7xQ2mH9aKcB4tLpR3sVwYz6nE1fJ8gD5uC0oN2iTqX4",
+    "bot": {
+      "operates": [
+        "Fi8bQ2xkPqR7sT9uVwXyZ1a2b3c4d5e6f7g8h9i0jKL"
+      ]
+    },
+    "cost": {
+      "credits": 35045280,
+      "dash": 0.0003504528,
+      "usd": null,
+      "usdPrice": null
+    }
+  }
+}

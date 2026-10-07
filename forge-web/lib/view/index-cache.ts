@@ -223,8 +223,9 @@ export async function storedIndexArtifact(
 /**
  * Where an index range is kept: unlike a whole artifact (checked against its sha256 before it is
  * kept or served), a range is unchecked, so it is keyed by the copy it was read from, `copy` (the
- * network's repo and uploader, whose Platform chunks only that uploader can write), never by the
- * pack hash alone: another repo's manifest naming the same hash must not supply its rows.
+ * network, contract, repo and uploader its chunk query names: Platform chunks only that uploader
+ * can write), never by the pack hash alone: another repo's manifest naming the same hash must not
+ * supply its rows.
  */
 const rangeKey = (copy: string, packHash: string, start: number, end: number): string => `${copy}:${packHash.toLowerCase()}@${start}-${end}`
 
