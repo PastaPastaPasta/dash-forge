@@ -150,9 +150,10 @@ function isLate(members: EnvKeys['members'], m: EnvManifest, bytes: Uint8Array):
 /**
  * Read every environment ({@link EnvBook}). A snapshot by anyone but a current maintainer is
  * never fetched or opened (D24). When this viewer holds nothing that could open a snapshot,
- * nothing is fetched: every environment is then counted, never named.
+ * nothing is fetched: every environment is then counted, never named. `open` is the codec's
+ * {@link openSnapshot}; the vector test replaces it to replay `env_snapshot__*` resolutions.
  */
-export async function readEnvironments(sources: EnvSources, keys: EnvKeys): Promise<EnvBook> {
+export async function readEnvironments(sources: EnvSources, keys: EnvKeys, open: typeof openSnapshot = openSnapshot): Promise<EnvBook> {
   const [manifests, list] = await Promise.all([sources.manifests(), sources.maintainers()])
   const maintainers = new Set(list)
   const counted = authorized(manifests, maintainers)
@@ -184,7 +185,7 @@ export async function readEnvironments(sources: EnvSources, keys: EnvKeys): Prom
           continue
         }
         try {
-          const snapshot = await openSnapshot(m, bytes, { repoId: keys.repoId, ownerKeys: ownerKeys.get(m.ownerId) ?? [], reader, epochKeys })
+          const snapshot = await open(m, bytes, { repoId: keys.repoId, ownerKeys: ownerKeys.get(m.ownerId) ?? [], reader, epochKeys })
           opened.set(m.id, { kind: 'snapshot', snapshot })
         } catch (e) {
           if (!(e instanceof SnapshotOpenError)) throw e
