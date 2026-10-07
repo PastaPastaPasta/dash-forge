@@ -341,11 +341,15 @@ mod tests {
             "http://198.18.0.1/x",
             "http://255.255.255.255/x",
             "http://192.88.99.1/x",
-            // A zone id is not a valid URL host.
-            "http://[fe80::1%25eth0]/x",
         ] {
             assert!(refused(url).await, "{url} should be refused");
         }
+    }
+
+    #[tokio::test]
+    async fn a_zone_id_is_not_a_valid_host_even_with_allow_private() {
+        let url = "http://[fe80::1%25eth0]/x";
+        assert!(resolve_and_validate(url, true, T).await.is_err(), "{url}");
     }
 
     #[tokio::test]

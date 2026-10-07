@@ -13,8 +13,8 @@
 //! [`MAX_CONNECTIONS`] connections are served at once and at most [`MAX_WAITING`] wake
 //! requests are held open.
 //!
-//! Bind it to loopback or a private network: a client that can reach it can hold its
-//! connection slots and make health probes fail.
+//! Don't expose it to the public internet without a proxy that limits connections: a client
+//! that can reach it can hold its connection slots and make health probes fail.
 
 use std::sync::Arc;
 use std::time::Duration;

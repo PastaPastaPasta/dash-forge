@@ -1228,8 +1228,29 @@ mod tests {
                         Ok(n) => raw.extend_from_slice(&chunk[..n]),
                     }
                 }
-                let raw = String::from_utf8_lossy(&raw).into_owned();
-                let head = raw.split("\r\n\r\n").next().unwrap_or_default().to_string();
+                // Drain the body too: closing with unread bytes can reset the connection
+                // before the client reads the reply.
+                let text = String::from_utf8_lossy(&raw).into_owned();
+                let head = text
+                    .split("\r\n\r\n")
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                let want = head
+                    .lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length")
+                            .then(|| v.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                let mut have = raw.len() - (head.len() + 4).min(raw.len());
+                while have < want {
+                    match s.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => have += n,
+                    }
+                }
                 seen.lock().unwrap().push(head + "\r\n");
                 let reply = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 let _ = s.write_all(reply.as_bytes()).await;
