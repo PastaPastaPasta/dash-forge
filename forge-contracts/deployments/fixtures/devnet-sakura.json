@@ -1,12 +1,12 @@
 {
   "network": "devnet-sakura",
-  "forgeCore": "EfLLbzVBngukybqgraA7VXtLZ5PpU54eiaB9Dcxqbkkz",
-  "forgeCollab": "6scu1j9FQkt3EYr9yoAfEL1SUaYX7F7mnaUFYiRLgjgb",
-  "forgeCommunity": "6fVegRiRdQtLitWjSugTjYcV8CWnAMv6QxH5r8ezTRur",
+  "forgeCore": "BKt2Lk6RwUchcdytHT8Sn1ZzYvu8vD4JFEh5G9LHFzRo",
+  "forgeCollab": "BTEsn5BmsSWF8ahQLJjohy392vnpD2NgPnTjAVEUCWKh",
+  "forgeCommunity": "FASrkH8LH77EjvUPH3bRsgmpUdBtsqALEkBRAqefkMu1",
   "demo": {
-    "owner": "G6D3ejKxgcc4yRSRyuLoPg9RGa7XWPwB9kBzU29hgEQH",
+    "owner": "Amc7FjA3CJLae4stwztokTumqCX8KfDCkA3zNwVVYRZB",
     "name": "forge-v2-demo",
-    "repoId": "8KBVQ41HTueY1nuGhpAGNUEy9BQSAgCHV9Z34VUw9ZuP",
+    "repoId": "J7cPnrdgQ2kHwXUeK4VcK5PsYmG4fntfKpFDCHSZxgo1",
     "reviewParityPull": 7
   },
   "pulls": {
@@ -15,14 +15,14 @@
     "reviewParity": 7
   },
   "empty": {
-    "owner": "CpH7XH6Xh19mGX3hKZrU8XARHcGJHWo61L8YHfw1ijuS",
+    "owner": "8E6SKLu7be66ovhuxtTCoV7x8Bbj22otPpTzMLbhEUUG",
     "name": "forge-v2-empty",
-    "repoId": "9PabT2eBoRm1whJunweE61tghv85cw3vpEhqenguHr4D"
+    "repoId": "HKVhvNpE5PN687nxFbm92cqya5uufmxut5sXDk5ChkYU"
   },
   "check": {
     "name": "fixture-ci",
     "sha": "3a1300eb2441ef94fd927dbfc7548d34fbb8edc5",
-    "reporter": "FkxLvDU3eZfUoJdsorAHvcvuJ9RjnaHwaWvuZk7rwWGv"
+    "reporter": "GsKPXe325q5KEy2XYXBVgi8TQGsKpqyUCJjini7kH86e"
   },
   "release": "v0.1.0",
   "commits": {
