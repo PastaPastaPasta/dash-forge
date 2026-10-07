@@ -25,6 +25,8 @@ mod help_lint;
 mod import;
 mod infer;
 mod issue;
+#[cfg(test)]
+mod json_schemas;
 mod keys;
 mod label;
 mod long_body;

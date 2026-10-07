@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-verify.schema.json",
+  "title": "dg pr verify --json",
+  "description": "Whether a merged pull request's recorded merge contains it.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "merged": {
+      "type": "boolean"
+    },
+    "mergeContent": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "oid": {
+              "type": "string"
+            },
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "contains",
+                "squash",
+                "rebase",
+                "missing",
+                "unknown"
+              ]
+            },
+            "combined": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "oid",
+            "verdict"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rulesAtMerge": {}
+  },
+  "required": [
+    "schemaVersion",
+    "pr",
+    "merged",
+    "mergeContent"
+  ],
+  "additionalProperties": true
+}

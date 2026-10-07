@@ -1,0 +1,25 @@
+{
+  "source": "emitter: crates/dg/src/main.rs exit_on_parse_error",
+  "command": "issue view",
+  "args": [
+    "--json",
+    "issue",
+    "view"
+  ],
+  "exit": 2,
+  "expect": "valid",
+  "stdout": {
+    "error": {
+      "code": "E201",
+      "message": "invalid arguments",
+      "cause": "the following required arguments were not provided: <REPO> <NUMBER>",
+      "fix": [
+        "see `dg --help` or `dg <command> --help`"
+      ],
+      "note": null,
+      "docs": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/errors.md#e201",
+      "exitCode": 2
+    },
+    "schemaVersion": 1
+  }
+}

@@ -42,7 +42,8 @@ import type { Event } from '../rules'
 import { hiddenItems } from '../rules/moderation'
 import { EVENT_AS_MAINTAINER } from '../repo/moderation-fold'
 import { contractOf } from '../repo/source'
-import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
+import { isLegalRefName, refNameHashMatches } from '../rules/oid'
+import { base64ToHex, queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
 import { listParticipation, noteParticipation } from './participation'
 import {
@@ -415,7 +416,7 @@ const reviewOnDoc = reviewDoc.extend({ patchId: ident })
 const addressedEventDoc = eventDoc.extend({ refId: ident.optional().catch(undefined) })
 /** A comment, with its body (for a mention). */
 const commentBodyDoc = baseDoc.extend({ body: z.string().optional().catch(undefined), ...sealable })
-const refDoc = baseDoc.extend({ refName: z.string().optional().catch(undefined) })
+const refDoc = baseDoc.extend({ refName: z.string().optional().catch(undefined), refNameHash: z.string().optional().catch(undefined) })
 
 /** What a `transition` kind means to a reader of the inbox. */
 export function transitionWhat(kind: number): string | null {
@@ -515,9 +516,24 @@ function reviewWhat(repo: RepoLite, d: z.infer<typeof reviewDoc>): string | null
   }
 }
 
-function shortRef(name: string | undefined): string {
-  if (!name) return 'a branch'
+function shortRef(name: string): string {
   return name.replace(/^refs\/(heads|tags)\//, '')
+}
+
+/**
+ * The name a public repo's ref update moves, when the inbox may show it: a legal name that hashes
+ * to the key the update is filed under (`refNameHash`), as resolving the ref requires. Otherwise
+ * null: the update moves no ref by that name, and makes no item.
+ */
+function pushedRefName(d: { readonly refName?: string | undefined; readonly refNameHash?: string | undefined }): string | null {
+  if (d.refName === undefined || d.refNameHash === undefined || !isLegalRefName(d.refName)) return null
+  let hash = ''
+  try {
+    hash = base64ToHex(d.refNameHash)
+  } catch {
+    return null
+  }
+  return hash.length === 64 && refNameHashMatches(d.refName, hash) ? d.refName : null
 }
 
 /**
@@ -552,7 +568,13 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
     case 'push':
       return parseDocs(refDoc, docs)
         .filter(notMine)
-        .map((d) => item(d, { kind: 'push', repo: f.repo, what: `pushed to ${shortRef(d.refName)}` }))
+        .flatMap((d) => {
+          // A private repo's name is sealed and its hash keyed (the feed holds no keys): named
+          // without it, as private-repos.md §8.1 says.
+          if (f.repo.private) return [item(d, { kind: 'push', repo: f.repo, what: 'pushed to a branch' })]
+          const name = pushedRefName(d)
+          return name === null ? [] : [item(d, { kind: 'push', repo: f.repo, what: `pushed to ${shortRef(name)}` })]
+        })
     case 'state': {
       const threads = new Map(f.threads.map((t) => [t.id, t]))
       return parseDocs(addressedEventDoc, docs).flatMap((d) => {

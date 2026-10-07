@@ -1,0 +1,87 @@
+{
+  "name": "unverified_claim_supersedes_nothing",
+  "description": "C1's representative is the maintainer's unchecked copy (verified null), which names P1; a writer's lower-ranked copy of C1 that verified names P1 too. Only the representative's claim is read, and it is unchecked: P1 is not superseded.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "a",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer",
+        "verified": true
+      },
+      {
+        "id": "m",
+        "packHash": "C1",
+        "kind": 0,
+        "createdAt": 30,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer",
+        "supersedes": [
+          "P1"
+        ]
+      },
+      {
+        "id": "w",
+        "packHash": "C1",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer",
+        "verified": true,
+        "supersedes": [
+          "P1"
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "a"
+      },
+      "copies": [
+        "a"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 1,
+      "packHash": "C1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [
+        "P1"
+      ],
+      "first": {
+        "createdAt": 20,
+        "id": "w"
+      },
+      "copies": [
+        "m",
+        "w"
+      ],
+      "superseded": false
+    }
+  ]
+}

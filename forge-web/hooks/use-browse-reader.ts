@@ -103,7 +103,7 @@ export function useBrowseReader(repo: RepoRef | null): BrowseReaderState {
       retry: fallback.start,
     }
   }
-  if (fallback.status === 'working' || data.totalSizeBytes <= AUTO_LOAD_MAX_BYTES) {
+  if (fallback.status === 'working' || (data.totalSizeBytes <= AUTO_LOAD_MAX_BYTES && !fallback.needsAsk)) {
     return { kind: 'loading', label: progressLabel(fallback.progress) }
   }
   return { kind: 'offer', behind, sizeBytes: data.totalSizeBytes, start: fallback.start }

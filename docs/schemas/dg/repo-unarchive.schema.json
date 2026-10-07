@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-unarchive.schema.json",
+  "title": "dg repo unarchive --json",
+  "description": "The repository writable again.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "repo": {
+      "type": "string"
+    },
+    "archived": {
+      "type": "boolean"
+    },
+    "configDocumentId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repo",
+    "archived"
+  ],
+  "additionalProperties": true
+}

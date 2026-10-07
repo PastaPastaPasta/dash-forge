@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-name-register.schema.json",
+  "title": "dg auth name register --json",
+  "description": "A DPNS name registered for the identity.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "registered"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "name",
+    "identityId"
+  ],
+  "additionalProperties": true
+}

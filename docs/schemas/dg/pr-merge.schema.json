@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-merge.schema.json",
+  "title": "dg pr merge --json",
+  "description": "A pull request merged (or a merge recorded).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "merged",
+        "merge_recorded",
+        "already_merged"
+      ]
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "method": {
+      "type": "string"
+    },
+    "mergeOid": {
+      "type": "string"
+    },
+    "transitionId": {
+      "type": "string"
+    },
+    "merged": {
+      "type": "boolean"
+    },
+    "mergeOnBase": {},
+    "branchDeleted": {},
+    "branchCheckNote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "bypassedRules": {},
+    "checksNotPassing": {},
+    "closedIssues": {},
+    "linkedIssuesOmitted": {},
+    "linkedIssuesImported": {},
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "steps": {
+      "$ref": "common.schema.json#/$defs/steps"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr",
+    "merged"
+  ],
+  "additionalProperties": true
+}

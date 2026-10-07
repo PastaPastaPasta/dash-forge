@@ -119,7 +119,9 @@ check "helper reported manifest+refs-only Platform cost" assert_file_contains "$
 check "helper reported 2 verified copies" assert_file_contains "$LOG-push.err" "(2 verified)"
 
 step "manifest records the external copies"
-DASH_FORGE_KEY="$ID_DEPLOYER" "$DG" --json storage status "${E2E_OWNER_ID}/${STORAGE_E2E_REPO}" \
+# The pusher's profiles: its public_url makes the loopback RustFS origin a configured one,
+# so status probes it (a recorded URL on this machine is otherwise listed, not contacted).
+DASH_FORGE_STORAGE_CONFIG="$PUSHER_CFG" DASH_FORGE_KEY="$ID_DEPLOYER" "$DG" --json storage status "${E2E_OWNER_ID}/${STORAGE_E2E_REPO}" \
   >"$LOG-status.json" 2>"$LOG-status.err" || { cat "$LOG-status.err" >&2; bad "storage status"; }
 PACK_HASH="$(git -C "$SRC" cat-file -p "$SRC_TIP" >/dev/null && python3 - "$LOG-status.json" "$RUN_ID" <<'PY'
 import json, sys
