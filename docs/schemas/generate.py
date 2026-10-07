@@ -100,8 +100,10 @@ COMMON = {
     'audience': D('Who can read a document: everyone, the repository\'s members, or the people listed.',
                   E('public', 'members', 'specificPeople')),
     'oid': D('A git object id, lowercase hex.', {'type': 'string', 'pattern': '^[0-9a-f]{40}([0-9a-f]{24})?$'}),
-    'hiddenBy': D('A maintainer\'s hide of the whole thread, or null.',
-                  nl(O({'by': S, 'reason': nl(S), 'at': I, 'eventId': S}))),
+    'hiddenBy': D('A maintainer\'s hide of the whole thread, or null. `via` `ban`: its author is banned from the '
+                  'repository (`eventId` is then the ban\'s id, `banReason` its reason).',
+                  nl(O({'by': S, 'reason': nl(S), 'at': I, 'eventId': S, 'via': E('item', 'review', 'ban'),
+                        'banReason': nl(S)}))),
     'issueRow': O({
         'number': I, 'title': nl(S), 'author': S, 'open': B, 'state': E('open', 'closed'),
         'labels': SA, 'assignees': SA, 'pinned': B, 'audience': AUD, 'readable': B,
@@ -118,7 +120,7 @@ COMMON = {
     'rotation': D('A key rotation of a private or members-only repository.', OBJ),
     'policy': D('A branch policy, as `dg repo policy show` prints it.',
                 nl(O({'requiredApprovals': I, 'maintainersOnly': B, 'requireChecks': B, 'mergeMethods': SA,
-                      'requiredChecks': SA, 'requiredCheckSources': SA},
+                      'requiredChecks': SA, 'requiredCheckSources': SA, 'requireCodeOwners': B},
                      ['requiredApprovals', 'maintainersOnly', 'requireChecks', 'mergeMethods']))),
 }
 
@@ -280,6 +282,17 @@ cmd('repo reindex', 'The browse index published again.', {
 ARCHIVE = {'status': S, 'repo': S, 'archived': B, 'configDocumentId': nl(S), 'cost': COST}
 cmd('repo archive', 'The repository archived (read-only).', ARCHIVE, ['status', 'repo', 'archived'])
 cmd('repo unarchive', 'The repository writable again.', ARCHIVE, ['status', 'repo', 'archived'])
+cmd('repo ban', 'An identity banned from the repository.', {
+    'status': E('banned'), 'repo': S, 'identityId': S, 'reason': nl(S), 'documentId': S, 'cost': COST,
+}, ['status', 'repo', 'identityId', 'documentId'])
+cmd('repo unban', 'Your ban of an identity lifted; `none` when you have no ban of it.', {
+    'status': E('lifted', 'none'), 'repo': S, 'identityId': S, 'documentId': S,
+}, ['status', 'repo', 'identityId'])
+cmd('repo bans', 'Every ban of the repository: who wrote it, whether it counts, and the one that decides.', {
+    'repo': S,
+    'bans': A(O({'identityId': S, 'by': S, 'reason': nl(S), 'createdAt': I, 'documentId': S, 'counts': B, 'decides': B},
+                ['identityId', 'by', 'createdAt', 'documentId', 'counts', 'decides'])),
+}, ['repo', 'bans'])
 
 # -- issues -----------------------------------------------------------------------------------
 EVENT = O({'id': S, 'kind': S, 'actor': S, 'value': nl(S), 'createdAt': I})

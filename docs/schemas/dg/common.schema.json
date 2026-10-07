@@ -290,6 +290,20 @@
             },
             "eventId": {
               "type": "string"
+            },
+            "via": {
+              "type": "string",
+              "enum": [
+                "item",
+                "review",
+                "ban"
+              ]
+            },
+            "banReason": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         },
@@ -297,7 +311,7 @@
           "type": "null"
         }
       ],
-      "description": "A maintainer's hide of the whole thread, or null."
+      "description": "A maintainer's hide of the whole thread, or null. `via` `ban`: its author is banned from the repository (`eventId` is then the ban's id, `banReason` its reason)."
     },
     "issueRow": {
       "type": "object",
@@ -506,6 +520,9 @@
               "items": {
                 "type": "string"
               }
+            },
+            "requireCodeOwners": {
+              "type": "boolean"
             }
           },
           "required": [
