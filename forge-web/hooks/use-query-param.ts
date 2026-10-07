@@ -6,7 +6,7 @@
  * under a `<Suspense>` boundary (the pages wrap themselves).
  */
 
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams } from './use-route'
 
 import { SEALED_PARAMS, isExpiredToken, openParam, sealParams } from '@/lib/view/private-nav'
 

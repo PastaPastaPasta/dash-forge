@@ -21,7 +21,8 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { CheckCircle2, GitBranch, Star } from 'lucide-react'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'

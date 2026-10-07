@@ -8,7 +8,19 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { hasShortUrl, RESERVED_SEGMENTS, SHORT_URL_EXPAND_SOURCE, shortRepoPath, shortRepoUrl, shortUrlShimScript, upstreamAliasPath, type ShortTarget } from './short-url'
+import {
+  canonicalOfShort,
+  expandShortPath,
+  hasShortUrl,
+  RESERVED_SEGMENTS,
+  SHORT_URL_EXPAND_SOURCE,
+  shortRepoPath,
+  shortRepoUrl,
+  shortRouteFor,
+  shortUrlShimScript,
+  upstreamAliasPath,
+  type ShortTarget,
+} from './short-url'
 
 type Expand = (pathname: string, base: string, reserved: readonly string[]) => string | null
 // The shim is plain JS in a string; evaluate it as the page does.
@@ -269,5 +281,144 @@ describe('Copy link and DPNS-form short URLs (L-55, L-82)', () => {
     expect(shortRepoUrl({ owner: 'alice', name: '.hidden', repoId: 'R' }, { kind: 'pull', number: 2, tab: 'files' })).toBe(
       '/repo/pull/?owner=alice&name=.hidden&repo=R&number=2&tab=files',
     )
+  })
+})
+
+describe('expandShortPath: the shim in TypeScript (CJ-6)', () => {
+  // Every path the cases above try, the app's short paths for every target, and odd ones.
+  const targets: ShortTarget[] = [
+    { kind: 'home' },
+    { kind: 'tree', ref: 'feature/x', path: 'src/a b/ü.rs' },
+    { kind: 'blob', ref: 'HEAD', path: 'README.md' },
+    { kind: 'blame', ref: 'v1.0', path: 'a/b' },
+    { kind: 'commits' },
+    { kind: 'commits', ref: 'dev' },
+    { kind: 'commits', path: 'docs' },
+    { kind: 'issues' },
+    { kind: 'newIssue' },
+    { kind: 'issue', number: 9 },
+    { kind: 'pulls' },
+    { kind: 'pull', number: 3, tab: 'checks' },
+    { kind: 'releases' },
+    { kind: 'release', tag: 'rel/1' },
+    { kind: 'branches' },
+    { kind: 'commit', oid: 'ABCDEF1' },
+    { kind: 'compare', base: 'main', head: 'feature/x' },
+    { kind: 'compare', head: 'dev' },
+  ]
+  const owners = ['alice', 'alice.dash', 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr', 'repo', 'Explore', '-x']
+  const paths = [
+    ...owners.flatMap((owner) => targets.map((t) => shortRepoPath({ owner, name: 'project' }, t))),
+    '/', '/alice', '/alice/project/', '/alice/project/wiki', '/alice/project/issues/0', '/alice/project/issues/abc', '/alice/project/pull/7/files/x',
+    '/alice/project/releases/tag/v1', '/alice/project/releases/tag', '/alice/project/compare/v1..v2', '/alice/project/compare/...v2', '/alice/project/compare/a...b/c',
+    '/alice/project/commit/xyz', '/al%ZZce/project', '/alice/pro%2Fject', '/alice/project/tree/%E0%A4', '/github.com/dashpay/dash/issues/12', '/gh/a/b.git',
+    '/github.com/dashpay', '/dash-forge/alice/project/pull/7', '/dash-forge/', '/dash-forge/github.com/a/b', '/alice/project/blob/HEAD',
+  ]
+  // A seeded walk over segments that exercise every branch of the shim.
+  const pieces = ['alice', 'project', 'issues', 'pull', 'pulls', 'tree', 'blob', 'blame', 'commits', 'commit', 'compare', 'releases', 'tag', 'new', 'HEAD', '7', '0', 'files', 'x%2Fy', 'a...b', '..', 'abc123', '%E2%9C%93', '%ZZ', '']
+  let seed = 7
+  const next = (n: number): number => (seed = (seed * 1103515245 + 12345) % 2147483648) % n
+  for (let i = 0; i < 2000; i++) paths.push(`/${Array.from({ length: 1 + next(6) }, () => pieces[next(pieces.length)]).join('/')}`)
+
+  it('gives the shim’s answer for every path, with and without a base path', () => {
+    for (const path of paths) {
+      expect(expandShortPath(path, ''), path).toBe(expand(path))
+      expect(expandShortPath(path, '/dash-forge'), path).toBe(expand(path, '/dash-forge'))
+    }
+  })
+
+  it('opens a short path and its query as the shim does, and nothing outside a repo', () => {
+    expect(canonicalOfShort('/alice/project/issues', 'q=is%3Aclosed')).toBe('/repo/issues/?owner=alice&name=project&q=is%3Aclosed')
+    expect(canonicalOfShort('/alice/project/issues/7', '')).toBe('/repo/issue/?owner=alice&name=project&number=7')
+    expect(canonicalOfShort('/repo/issue/', 'owner=alice&name=project')).toBeNull()
+    expect(canonicalOfShort('/github.com/dashpay/dash', '')).toBeNull()
+  })
+})
+
+describe('shortRouteFor: the address bar’s short URL (CJ-6)', () => {
+  /** The canonical route `href` and the short URL the shim opens it from: the round trip. */
+  const roundTrip = (href: string, ownerName?: string): string | null => {
+    const [path, search = ''] = href.split('?') as [string, string?]
+    const short = shortRouteFor(path, search, ownerName)
+    if (short !== null) {
+      const [sp, sq = ''] = short.split('?') as [string, string?]
+      const back = new URL(canonicalOfShort(sp, sq)!, 'http://n')
+      const want = new URL(href, 'http://n')
+      if (ownerName === undefined) {
+        expect(back.pathname).toBe(want.pathname)
+        expect([...back.searchParams].sort()).toEqual([...want.searchParams].sort())
+      }
+    }
+    return short
+  }
+
+  it.each([
+    ['/repo/', 'owner=alice&name=project', '/alice/project'],
+    ['/repo/tree/', 'owner=alice&name=project&ref=feature%2Fx&path=src%2Fa+b', '/alice/project/tree/feature%2Fx/src/a%20b'],
+    ['/repo/tree/', 'owner=alice&name=project', '/alice/project/tree/HEAD'],
+    ['/repo/blob/', 'owner=alice&name=project&ref=main&path=docs%2F%C3%BC%E6%96%87.md', '/alice/project/blob/main/docs/%C3%BC%E6%96%87.md'],
+    ['/repo/blob/', 'owner=alice&name=project&path=README.md', '/alice/project/blob/HEAD/README.md'],
+    ['/repo/blame/', 'owner=alice&name=project&ref=v1&path=a.rs', '/alice/project/blame/v1/a.rs'],
+    ['/repo/commits/', 'owner=alice&name=project', '/alice/project/commits'],
+    ['/repo/commits/', 'owner=alice&name=project&ref=dev&pages=3', '/alice/project/commits/dev?pages=3'],
+    ['/repo/commits/', 'owner=alice&name=project&path=src', '/alice/project/commits/HEAD/src'],
+    ['/repo/issues/', 'owner=alice&name=project&q=is%3Aclosed+label%3Abug&page=2', '/alice/project/issues?q=is%3Aclosed+label%3Abug&page=2'],
+    ['/repo/issues/', 'owner=alice&name=project&new=1', '/alice/project/issues/new'],
+    ['/repo/issue/', 'owner=alice&name=project&number=7', '/alice/project/issues/7'],
+    ['/repo/pulls/', 'owner=alice&name=project&state=closed', '/alice/project/pulls?state=closed'],
+    ['/repo/pull/', 'owner=alice&name=project&number=7&tab=files', '/alice/project/pull/7/files'],
+    // A tab with no short path stays in the query.
+    ['/repo/pull/', 'owner=alice&name=project&number=7&tab=conversation', '/alice/project/pull/7?tab=conversation'],
+    ['/repo/releases/', 'owner=alice&name=project', '/alice/project/releases'],
+    ['/repo/release/', 'owner=alice&name=project&tag=rel%2F1', '/alice/project/releases/rel%2F1'],
+    ['/repo/branches/', 'owner=alice&name=project', '/alice/project/branches'],
+    ['/repo/tags/', 'owner=alice&name=project', '/alice/project/tags'],
+    ['/repo/stargazers/', 'owner=alice&name=project', '/alice/project/stargazers'],
+    ['/repo/labels/', 'owner=alice&name=project', '/alice/project/labels'],
+    ['/repo/milestones/', 'owner=alice&name=project', '/alice/project/milestones'],
+    ['/repo/commit/', 'owner=alice&name=project&oid=abcdef0', '/alice/project/commit/abcdef0'],
+    ['/repo/compare/', 'owner=alice&name=project&base=main&head=feature%2Fx', '/alice/project/compare/main...feature%2Fx'],
+    ['/repo/compare/', 'owner=alice&name=project&head=dev', '/alice/project/compare/dev'],
+    // The repo pin rides in the query, as Copy link writes it.
+    ['/repo/issue/', 'owner=alice&name=project&repo=R1&number=4', '/alice/project/issues/4?repo=R1'],
+  ])('%s?%s → %s', (path, search, short) => {
+    expect(roundTrip(`${path}?${search}`)).toBe(short)
+  })
+
+  it.each([
+    // No short form for the route, or for its owner or name.
+    '/repo/settings/?owner=alice&name=project',
+    '/repo/search/?owner=alice&name=project&query=x',
+    '/repo/pulls/new/?owner=alice&name=project',
+    '/repo/number/?owner=alice&name=project&number=3',
+    '/repo/?owner=repo&name=x',
+    '/repo/?owner=Explore&name=x',
+    '/repo/?owner=alice&name=.hidden',
+    '/repo/?owner=alice',
+    // The shim would open another page, or drop a param.
+    '/repo/commit/?owner=alice&name=project&oid=ABCDEF0',
+    '/repo/commit/?owner=alice&name=project&oid=xyz',
+    '/repo/issue/?owner=alice&name=project&number=007',
+    '/repo/issue/?owner=alice&name=project&number=x',
+    '/repo/tree/?owner=alice&name=project&ref=HEAD',
+    '/repo/tree/?owner=alice&name=project&ref=main&path=a%2F%2Fb',
+    '/repo/blob/?owner=alice&name=project&ref=main&path=..%2Fsecret',
+    '/repo/blob/?owner=alice&name=project&ref=main&path=a%2F.%2Fb',
+    '/repo/compare/?owner=alice&name=project&base=a...b&head=c',
+    '/repo/compare/?owner=alice&name=project',
+    '/repo/release/?owner=alice&name=project&tag=',
+    '/repo/tree/?owner=alice&name=project&ref=',
+  ])('keeps %s', (href) => {
+    expect(roundTrip(href)).toBeNull()
+  })
+
+  it('writes the owner by DPNS name when the page knows it, the bare label for a .dash name', () => {
+    const id = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
+    expect(roundTrip(`/repo/issue/?owner=${id}&name=project&number=7`)).toBe(`/${id}/project/issues/7`)
+    expect(roundTrip(`/repo/issue/?owner=${id}&name=project&number=7`, 'alice.dash')).toBe('/alice/project/issues/7')
+    expect(roundTrip(`/repo/?owner=${id}&name=project&repo=R1`, 'Alice.dash')).toBe('/Alice/project?repo=R1')
+    // A label that is one of the app's routes keeps its full name; a name with no short form, the id.
+    expect(roundTrip(`/repo/?owner=${id}&name=project`, 'explore.dash')).toBe('/explore.dash/project')
+    expect(roundTrip(`/repo/?owner=${id}&name=project`, '-bad.dash')).toBe(`/${id}/project`)
   })
 })
