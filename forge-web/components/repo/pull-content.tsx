@@ -56,8 +56,8 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
-import { QUOTE_CONFIRM, addedText, publicLineQuestion, publicTextOf, quotesMembersText } from '@/lib/view/audience'
-import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, useAudienceWarnings, useComposerAudience, useQuoteGate, warningName } from '@/components/repo/audience'
+import { QUOTE_CONFIRM, publicLineQuestion, publicTextOf, quotesMembersText } from '@/lib/view/audience'
+import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
@@ -595,9 +595,10 @@ function PullPage({
 
   // Who the comment or review text is for (DESIGN §10): the PR's audience, or Members when picked.
   const audience = useComposerAudience(home, { parent: pull.audience ?? 'public', members: thread.members, maintainer: holdings.data?.maintain === true })
-  // Members-only text on this page: a public post that repeats it asks first (product H8), and a
-  // draft that quotes it is never kept on disk.
-  const membersTexts = useMemo(() => membersTextsOf(thread), [thread])
+  // Members-only text on this page, and all this tab has opened in the repo: a public post that
+  // repeats it asks first (product H8), and a draft that quotes it is never kept on disk.
+  const pageTexts = useMemo(() => membersTextsOf(thread), [thread])
+  const membersTexts = useMembersTexts(repo.repoId, pageTexts)
   // The unsent comment survives a reload (never stored for a private repo, nor while members-only),
   // decided for each new text: one that quotes members-only text is removed before it is stored.
   const [comment, setComment, holdDraft] = useDraftText(
@@ -773,7 +774,7 @@ function PullPage({
       },
       viewer: identity,
       // A public comment's edit is public text: it asks first when it repeats members-only text.
-      onEdit: (c, body) => quoteCheck(publicTextOf(addedText(c.body, body), c.audience, pullAudience), membersTexts, () => setPending({ kind: 'edit-comment', id: c.id, body })),
+      onEdit: (c, body) => quoteCheck(publicTextOf(body, c.audience, pullAudience), membersTexts, () => setPending({ kind: 'edit-comment', id: c.id, body }), { before: c.body }),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
       ...(thread.moderation ? { hidden: thread.moderation } : {}),
     }),
@@ -792,8 +793,9 @@ function PullPage({
   // an inline comment's path shares a private comment's room (as `updateComment` reads it)
   const editedPath = thread.comments.find((x) => x.id === editingComment?.id)?.anchor?.path
   const commentEditLong = useLongCompose(repo, 'comment', editingComment?.body ?? '', editedPath === undefined ? {} : { path: editedPath })
-  // "Close with comment" (QW2-008): the composer's text goes with a close or reopen when it could be posted.
-  const withComment = comment.trim() !== '' && !writeBlocked && !commentTooLong && !quoting ? comment.trim() : null
+  // "Close with comment" (QW2-008): the composer's text goes with a close or reopen when it could be
+  // posted. One that repeats members-only text asks first: posted with the close, or neither happens.
+  const withComment = comment.trim() !== '' && !writeBlocked && !commentTooLong ? comment.trim() : null
   // The repo's milestones, for the picker (QW2-050): read for members only (only they can set one).
   const milestones = useAsync(
     () => readMilestones(sdk!, repo),
@@ -1221,7 +1223,7 @@ function PullPage({
                 onClick={() => {
                   const edit = { kind: 'edit-pull' as const, title: editing.title.trim(), body: editing.body }
                   // A public PR's edit is public text: it asks first when it repeats members-only text.
-                  quoteCheck(publicTextOf(addedText(`${pull.title}\n${pull.body}`, `${edit.title}\n${edit.body}`), pull.audience), membersTexts, () => setPending(edit))
+                  quoteCheck(publicTextOf(`${edit.title}\n${edit.body}`, pull.audience), membersTexts, () => setPending(edit), { before: `${pull.title}\n${pull.body}` })
                 }}
               >
                 Save
@@ -1472,7 +1474,7 @@ function PullPage({
                       deleteDisabled: archived || guard.disabledReason !== null,
                       onEdit: setEditingComment,
                       // A public comment's edit is public text: it asks first when it repeats members-only text.
-                      onSave: (id, body) => quoteCheck(publicTextOf(addedText(item.comment.body, body), item.comment.audience, pull.audience), membersTexts, () => setPending({ kind: 'edit-comment', id, body })),
+                      onSave: (id, body) => quoteCheck(publicTextOf(body, item.comment.audience, pull.audience), membersTexts, () => setPending({ kind: 'edit-comment', id, body }), { before: item.comment.body }),
                       onDelete: (id) => setPending({ kind: 'delete-comment', id }),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
@@ -1678,7 +1680,9 @@ function PullPage({
                     {actions.canCloseReopen ? (
                       <Button
                         variant="outline"
-                        onClick={() => setPending(withComment === null ? { kind: 'state', to: open ? 'close' : 'reopen' } : { kind: 'state', to: open ? 'close' : 'reopen', comment: withComment })}
+                        onClick={() =>
+                          closeWithComment<Extract<Pending, { kind: 'state' }>>(quoteGate, audience.audience, membersTexts, withComment === null ? { kind: 'state', to: open ? 'close' : 'reopen' } : { kind: 'state', to: open ? 'close' : 'reopen', comment: withComment }, setPending)
+                        }
                         disabled={!signer || guard.disabledReason !== null || archived || reopenBlocked !== null}
                         title={reopenBlocked ?? undefined}
                         data-testid="pull-state-toggle"
@@ -2033,7 +2037,7 @@ function PullPage({
         onConfirm={runPending}
         // The public line is public text: one that repeats members-only text is not posted (H8).
         blocked={
-          pending?.kind === 'review' && blockingQuestion(pending) !== null && quotesMembersText(publicLine, membersTexts) ? (
+          pending?.kind === 'review' && blockingQuestion(pending) !== null && quotesMembersText(publicLine, membersTexts, { extra: [pending.body] }) ? (
             <p className="text-dense text-caution-700 dark:text-caution-400" role="alert" data-testid="public-line-quotes">
               {QUOTE_CONFIRM} Take the quoted text out of the public line to submit.
             </p>

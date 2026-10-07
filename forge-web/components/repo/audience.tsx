@@ -15,7 +15,7 @@
  * "lane", nor any internal id.
  */
 
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import Link from 'next/link'
 import { CircleDot, Eye, EyeOff, Globe, GitPullRequest, Lock } from 'lucide-react'
 
@@ -27,6 +27,7 @@ import { readRunners } from '@/lib/repo/checks'
 import { enableMembersContent } from '@/lib/repo/private-members'
 import { encryptionKeyState } from '@/lib/auth/encryption-key'
 import { NO_KEY_SHARED_TEXT } from '@/lib/repo/members-writes'
+import { openedMembersTexts, subscribeMembersTexts } from '@/lib/repo/members-texts'
 import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
 import { previewCredits } from '@/lib/sdk'
 import { cachedDpnsName } from '@/lib/view/dpns'
@@ -52,6 +53,8 @@ import {
   membersOnlyTitle,
   membersSentence,
   quotesMembersText,
+  QuoteIndex,
+  type MembersTexts,
   removalReads,
   turnOnText,
   type AudienceChoice,
@@ -165,7 +168,7 @@ export function AudienceChip({ home, state, testId = 'audience-chip' }: { home: 
     if (refocus) chipRef.current?.focus()
   }, [])
   // Escape closes the picker (focus returns to the chip), never a dialog it sits in.
-  useEscapeLayer(open, () => close(true))
+  useEscapeLayer(open, () => close(true), wrap)
   // A click outside closes it.
   useEffect(() => {
     if (!open) return
@@ -439,26 +442,54 @@ export function QuoteConfirmDialog({ open, onCancel, onConfirm }: { open: boolea
   )
 }
 
+const NO_TEXTS: readonly string[] = []
+
+/**
+ * The members-only text a public composer of repo `repoId` checks what it posts against (product
+ * H8), prepared once: `pageTexts`, what its page shows, and everything members-only this tab has
+ * opened in the repo (`members-texts.ts`: other threads, comments past the first page). It
+ * follows the tab's opened text as it grows, and empties when the tab locks or signs out.
+ */
+export function useMembersTexts(repoId: string, pageTexts: readonly string[] = NO_TEXTS): QuoteIndex {
+  const opened = useSyncExternalStore(
+    subscribeMembersTexts,
+    () => openedMembersTexts(repoId),
+    () => NO_TEXTS,
+  )
+  return useMemo(() => new QuoteIndex(opened.length === 0 ? pageTexts : [...pageTexts, ...opened]), [pageTexts, opened])
+}
+
+/** What a write makes public for the quote check: one text, several (a review and its comments), or nothing (null). */
+export type PublicText = string | null | readonly (string | null)[]
+
+/** Whether any of `text` repeats `membersTexts` (`opts` as for `quotesMembersText`). */
+export function publicTextQuotes(text: PublicText, membersTexts: MembersTexts, opts: { readonly before?: string; readonly extra?: readonly string[] } = {}): boolean {
+  const all = text === null ? [] : typeof text === 'string' ? [text] : text
+  return all.some((t) => t !== null && t.trim() !== '' && quotesMembersText(t, membersTexts, opts))
+}
+
 /** What {@link useQuoteGate} returns: the check to run before a public post, and its dialog to render. */
 export interface QuoteGate {
   /**
    * Run `go` now, unless `publicText` (what is about to become public; null when nothing is)
-   * repeats members-only text the page shows (`membersTexts`): then ask first, and run `go` only
-   * when the writer confirms.
+   * repeats members-only text (`membersTexts`, from {@link useMembersTexts}): then ask first, and
+   * run `go` only when the writer confirms. `opts.before`: an edit's text before it (only what it
+   * adds is checked); `opts.extra`: more members-only text, such as the writer's own unposted text.
    */
-  readonly check: (publicText: string | null, membersTexts: readonly string[], go: () => void) => void
+  readonly check: (publicText: PublicText, membersTexts: MembersTexts, go: () => void, opts?: { readonly before?: string; readonly extra?: readonly string[] }) => void
   /** The confirmation; render it once beside the composer. */
   readonly dialog: JSX.Element
 }
 
 /**
  * The quote confirmation (DESIGN §3.3, §10; product H8) for every way a composer makes text
- * public: a comment, a review, a diff comment or reply, a pending comment, an edit.
+ * public: a comment, a review, a diff comment or reply, a pending comment, an edit, a new issue
+ * or PR.
  */
 export function useQuoteGate(): QuoteGate {
   const [ask, setAsk] = useState<{ readonly go: () => void } | null>(null)
-  const check = useCallback((publicText: string | null, membersTexts: readonly string[], go: () => void) => {
-    if (publicText !== null && quotesMembersText(publicText, membersTexts)) setAsk({ go })
+  const check = useCallback<QuoteGate['check']>((publicText, membersTexts, go, opts = {}) => {
+    if (publicTextQuotes(publicText, membersTexts, opts)) setAsk({ go })
     else go()
   }, [])
   const dialog = (
@@ -473,6 +504,15 @@ export function useQuoteGate(): QuoteGate {
     />
   )
   return { check, dialog }
+}
+
+/**
+ * "Close with comment" (QW2-008) through the quote gate: a public comment that repeats
+ * members-only text asks first; confirmed, the close goes ahead with the comment (`confirm`);
+ * cancelled, nothing happens (never a close that silently leaves the comment out).
+ */
+export function closeWithComment<P extends { readonly comment?: string }>(gate: QuoteGate, audience: ComposerAudience, membersTexts: MembersTexts, pending: P, confirm: (p: P) => void): void {
+  gate.check(audience === 'public' ? pending.comment ?? null : null, membersTexts, () => confirm(pending))
 }
 
 // ---------------------------------------------------------------------------

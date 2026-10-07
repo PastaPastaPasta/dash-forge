@@ -300,6 +300,12 @@ export interface ReviewDraft {
    * draft lives in this page's memory only (no members-only text at rest, DESIGN §4.1).
    */
   readonly audience?: 'members'
+  /**
+   * Its public text quotes members-only text the tab has opened (DESIGN §4.1): kept in this
+   * page's memory only, as a members-only draft is. Set on the draft itself, so every save of it
+   * (the page's, and each one a submit makes as documents land) keeps it off disk.
+   */
+  readonly memoryOnly?: true
   readonly network: string
   readonly identity: string
   readonly repoId: string
@@ -340,8 +346,8 @@ export async function loadReviewDraft(network: string, identity: string, prId: s
   const memory = memoryDrafts.get(key)
   if (memory !== undefined) return memory
   const stored = await idbGet<ReviewDraft>('journal', key)
-  // A private or members-only draft never belongs in IndexedDB (one from an earlier build is dropped).
-  if (stored !== undefined && (stored.private === true || draftHasMembersText(stored))) {
+  // A private, members-only or memory-only draft never belongs in IndexedDB (one from an earlier build is dropped).
+  if (stored !== undefined && (stored.private === true || stored.memoryOnly === true || draftHasMembersText(stored))) {
     await idbDelete('journal', key)
     return undefined
   }
@@ -349,21 +355,17 @@ export async function loadReviewDraft(network: string, identity: string, prId: s
 }
 
 /**
- * Keep a draft: in memory for a private repo (`repo`, or the draft's own flag) and for a
- * members-only review, else IndexedDB.
- */
-/**
  * Keep `draft`: in IndexedDB when all its text is public, else in this page's memory only (a
- * private repo's, a members-only one's, or `opts.memoryOnly`: public text that quotes members-only
- * text the page shows, DESIGN §4.1), its stored copy then removed.
+ * private repo's, a members-only one's, or one marked {@link ReviewDraft.memoryOnly}: public text
+ * that quotes members-only text, DESIGN §4.1), its stored copy then removed.
  */
-export function saveReviewDraft(draft: ReviewDraft, repo?: RepoRef, opts: { readonly memoryOnly?: boolean } = {}): Promise<void> {
+export function saveReviewDraft(draft: ReviewDraft, repo?: RepoRef): Promise<void> {
   const key = reviewDraftKey(draft.network, draft.identity, draft.prId)
   if (draft.private === true || repo?.visibility === 'private') {
     memoryDrafts.set(key, { ...draft, private: true })
     return idbDelete('journal', key)
   }
-  if (draftHasMembersText(draft) || opts.memoryOnly === true) {
+  if (draftHasMembersText(draft) || draft.memoryOnly === true) {
     memoryDrafts.set(key, draft)
     return idbDelete('journal', key)
   }

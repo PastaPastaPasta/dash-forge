@@ -237,51 +237,15 @@ export function audienceWarnings(input: {
 /** The quote confirmation (DESIGN §3.3, product H8), word for word. */
 export const QUOTE_CONFIRM = "You're quoting a members-only comment into a public reply. Everyone will be able to read the quoted text."
 
-/** One line of a draft, as a quote check compares it: no quote markers, spaces collapsed. */
-function normalized(line: string): string {
-  return line.replace(/^\s*(>\s*)+/, '').replace(/\s+/g, ' ').trim()
-}
-
-/** Shortest quoted line (`> …`) and shortest plain line that count as copied text. */
-const QUOTED_MIN = 4
-const COPIED_MIN = 24
+export { QuoteIndex, quoteIndex, quotesMembersText, type MembersTexts } from './quote-check'
 
 /**
- * Whether a public draft repeats members-only text this page shows (`membersTexts`): a quoted
- * line (`> …`) of at least {@link QUOTED_MIN} characters, or any line of at least
- * {@link COPIED_MIN}, found in one of them. Posting it publicly needs a confirmation.
- */
-export function quotesMembersText(draft: string, membersTexts: readonly string[]): boolean {
-  if (membersTexts.length === 0) return false
-  const haystacks = membersTexts.map((t) => t.replace(/\s+/g, ' '))
-  for (const raw of draft.split('\n')) {
-    const quoted = /^\s*>/.test(raw)
-    const line = normalized(raw)
-    if (line.length < (quoted ? QUOTED_MIN : COPIED_MIN)) continue
-    if (haystacks.some((h) => h.includes(line))) return true
-  }
-  return false
-}
-
-/**
- * What a write makes public, for {@link quotesMembersText}: its text, or null when it is
+ * What a write makes public, for `quotesMembersText`: its text, or null when it is
  * members-only by its own audience (`own`: the chip's, or the edited item's) or by its thread's
  * (`thread`: a members-only issue or PR keeps everything in it members-only).
  */
 export function publicTextOf(text: string, own: ComposerAudience | 'specificPeople' | undefined, thread?: ComposerAudience | 'specificPeople'): string | null {
   return (own ?? 'public') === 'public' && (thread ?? 'public') === 'public' ? text : null
-}
-
-/**
- * What an edit adds: the lines of `after` that `before` did not have. An edit is checked for
- * quotes on these alone, so fixing a typo in text a members-only reply quotes never asks.
- */
-export function addedText(before: string, after: string): string {
-  const had = new Set(before.split('\n').map((l) => l.trim()))
-  return after
-    .split('\n')
-    .filter((l) => !had.has(l.trim()))
-    .join('\n')
 }
 
 /** A pending review's comments by audience: "Submitting 1 members-only and 2 public comments" (product H8). */

@@ -50,6 +50,7 @@ import {
   sessionGate,
   type ContentGate,
 } from './private-content'
+import { clearMembersTexts, noteOpenedDoc } from './members-texts'
 import { repoSource } from './source'
 
 /** How long a session serves page views before it is read again. */
@@ -258,6 +259,8 @@ export function closePrivateSessions(): void {
   for (const s of liveSessions) s.close()
   liveSessions.clear()
   sessionCache.clear()
+  // The members-only text this tab opened goes with the sessions that opened it.
+  clearMembersTexts()
   for (const l of closeListeners) l()
 }
 
@@ -393,7 +396,14 @@ export async function loadPrivateSession(input: {
       visibility: repo.visibility,
       // A closed session admits nothing it would have opened: a sealed document is hidden, as for
       // a reader without keys (a public repo's plaintext still reads through the public rule).
-      admit: (type, doc) => (closed ? closedGate.admit(type, doc) : gate.admit(type, doc)),
+      // A members-only document of a public repo it opens is remembered for this tab's public
+      // composers (`members-texts.ts`), unless the session closed while it opened.
+      admit: async (type, doc) => {
+        if (closed) return closedGate.admit(type, doc)
+        const r = await gate.admit(type, doc)
+        if (r.ok && !closed) noteOpenedDoc(repo, r.doc)
+        return r
+      },
     },
     headerCache,
     members,

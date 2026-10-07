@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest'
 
 import type { Membership } from '../rules/v2'
 import {
-  addedText,
   ENABLE_ANCHOR_CREDITS,
   ENABLE_WRAP_CREDITS,
   LETTER_TITLE,
@@ -101,11 +100,10 @@ describe('turning members-only content on', () => {
 })
 
 describe('what an edit adds, for the quote check', () => {
-  it('is only the new or changed lines, so a typo fix in quoted text never asks', () => {
+  it('counts only what the edit adds, so a typo fix in quoted text never asks', () => {
     const before = 'Fix the login bug\nSteps: open the page'
-    expect(addedText(before, 'Fix the login bug!\nSteps: open the page')).toBe('Fix the login bug!')
-    expect(addedText(before, `${before}\n> a quoted members-only line`)).toBe('> a quoted members-only line')
-    expect(quotesMembersText(addedText(before, 'Fix the login bug\nSteps: open the page.'), ['Steps: open the page'])).toBe(false)
+    expect(quotesMembersText('Fix the login bug\nSteps: open the page.', ['Steps: open the page'], { before })).toBe(false)
+    expect(quotesMembersText(`${before}\n> a quoted members-only line`, ['a quoted members-only line here'], { before })).toBe(true)
   })
 })
 

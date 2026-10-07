@@ -3,7 +3,9 @@
  * The review drawer and members-only text (stream 1D review fixes, PR #406):
  * - a members-only draft starts on Members and is never saved as public (so never to IndexedDB),
  *   not even for a moment, unless the writer picks Public;
- * - a public summary that repeats members-only text asks first (product H8);
+ * - a public summary, or a public pending comment not yet posted, that repeats members-only text
+ *   asks first at submit (product H8);
+ * - a public line may not repeat members-only text, the review's own unposted text included;
  * - the "Add one public line?" question is not asked on a members-only PR or before the members
  *   are known, and a public line that fails after the review landed never holds the draft.
  */
@@ -161,12 +163,29 @@ describe('submitting public review text', () => {
     expect(submitReviewDraft).toHaveBeenCalledTimes(1)
   })
 
-  it('does not ask again at submit for a pending comment confirmed as it was added', async () => {
+  it('checks every public pending comment not yet posted again at submit (members-only text read since)', async () => {
     const draft = draftOf({ summary: 'Looks good.', comments: [{ localId: 'l1', anchor: { path: 'a.ts', line: 1, side: 1 }, body: SECRET }] as ReviewDraft['comments'] })
     submitReviewDraft.mockResolvedValue({ reviewId: 'r1', commentIds: ['c1'] })
     show(draft)
     act(() => button('Review changes')!.click())
     await act(async () => button('Submit review')!.click())
+    expect(q('quote-confirm')).not.toBeNull()
+    expect(submitReviewDraft).not.toHaveBeenCalled()
+    await act(async () => q('quote-confirm')!.click())
+    await wait(0)
+    expect(submitReviewDraft).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not ask for a members-only pending comment, nor for one already posted', async () => {
+    const comments = [
+      { localId: 'l1', anchor: { path: 'a.ts', line: 1, side: 1 }, body: SECRET, audience: 'members' },
+      { localId: 'l2', anchor: { path: 'a.ts', line: 2, side: 1 }, body: SECRET, landedId: 'c2' },
+    ] as ReviewDraft['comments']
+    submitReviewDraft.mockResolvedValue({ reviewId: 'r1', commentIds: ['c1', 'c2'] })
+    // A retry: the review and the second comment landed before.
+    show(draftOf({ summary: 'Looks good.', comments, reviewId: 'r1', attemptedAt: 5 }))
+    act(() => button('Review changes')!.click())
+    await act(async () => button('Retry')!.click())
     expect(q('quote-confirm')).toBeNull()
     expect(submitReviewDraft).toHaveBeenCalledTimes(1)
   })
@@ -195,6 +214,17 @@ describe('"Add one public line?"', () => {
     act(() => type(document.getElementById('review-public-line') as HTMLInputElement, `> ${SECRET}`))
     expect(q('public-line-quotes')).not.toBeNull()
     expect(button('Submit review')?.disabled).toBe(true)
+  })
+
+  it("refuses a public line that repeats the review's own unposted members-only text", () => {
+    const own = 'Rotate the vendor API token before Thursday’s audit window closes.'
+    show(draftOf({ audience: 'members', verdict: 'requestChanges', summary: own }), { membersTexts: [] })
+    act(() => button('Review changes')!.click())
+    act(() => type(document.getElementById('review-public-line') as HTMLInputElement, 'FYI: rotate the vendor API token before Thursday'))
+    expect(q('public-line-quotes')).not.toBeNull()
+    expect(button('Submit review')?.disabled).toBe(true)
+    act(() => type(document.getElementById('review-public-line') as HTMLInputElement, 'Changes requested: see the review.'))
+    expect(q('public-line-quotes')).toBeNull()
   })
 
   it('a line that fails after the review landed: the review is done, the draft cleared, the failure said', async () => {

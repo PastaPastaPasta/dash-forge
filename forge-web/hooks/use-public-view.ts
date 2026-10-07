@@ -43,7 +43,6 @@ export function takePublicViewFocus(repoId: string, to: 'exit' | 'enter'): boole
   focusNext = null
   // Unless the reader already moved on (focus is somewhere on the page).
   return typeof document === 'undefined' || document.activeElement === null || document.activeElement === document.body
-
 }
 
 /** Whether `repoId` is shown as the public sees it, and the switch. */

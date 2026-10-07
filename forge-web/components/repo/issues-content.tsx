@@ -46,7 +46,7 @@ import {
 import { createIssue, issueFirsts, queryIssues, readLabels, contentKey, repoContractIds, repoKey, rowFiltersOf, setLabel, type IssueListPage, type IssueSelection } from '@/lib/repo'
 import { SupersededWriteError, UnconfirmedWriteError, previewCreate, sumPreviews } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { AudienceChip, AudienceWarnings, useAudienceWarnings, useComposerAudience } from '@/components/repo/audience'
+import { AudienceChip, AudienceWarnings, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate } from '@/components/repo/audience'
 import { useRepoWriteGeneration, useViewerRole } from '@/hooks/use-repo-chrome'
 import { toast } from '@/hooks/use-toasts'
 import { useIntent } from '@/hooks/use-intent'
@@ -432,6 +432,9 @@ function ComposeIssueDialog({
   const canLabel = capabilitiesOf(viewerRole).canLabel
   // Who it is for (DESIGN §10): public, or Members when a member picks it.
   const audience = useComposerAudience(home, { maintainer: viewerRole === 'maintainer' })
+  // A public issue that repeats members-only text this tab opened in the repo asks first (product H8).
+  const membersTexts = useMembersTexts(repo.repoId)
+  const quoteGate = useQuoteGate()
   // The repo's labels, read only when a template asks for some and the author may apply them.
   const wantsLabels = open && canLabel && (template?.labels.length ?? 0) > 0
   const labelDefs = useAsync(() => readLabels(sdk!, repo), [repoKey(repo), wantsLabels ? 1 : 0], { enabled: wantsLabels && sdk !== null })
@@ -497,9 +500,16 @@ function ComposeIssueDialog({
     if (failed > 0) toast({ title: `The template's labels were not all applied`, tone: 'warn', detail: 'Add them from the issue’s Labels menu.' })
   }
 
-  const submit = async (): Promise<void> => {
+  const submit = (): void => {
     if (pending || bodyTooLong || missing.length > 0 || needsTemplate || labelsLoading || !guard.check(cost, 'collab', 'open an issue')) return
     if (!sdk || !signer || title.trim() === '') return
+    // Checked at submit, against all the members-only text the tab has opened by now (text pasted
+    // while the members session was still loading included).
+    quoteGate.check(audience.audience === 'public' ? `${title}\n${issueBody}` : null, membersTexts, () => void send())
+  }
+
+  const send = async (): Promise<void> => {
+    if (pending || !sdk || !signer) return
     setPending(true)
     setError(null)
     setNote(null)
@@ -534,6 +544,7 @@ function ComposeIssueDialog({
   }
 
   return (
+    <>
     <Dialog
       open={open}
       onClose={onClose}
@@ -602,5 +613,7 @@ function ComposeIssueDialog({
         ) : null}
       </div>
     </Dialog>
+    {quoteGate.dialog}
+    </>
   )
 }

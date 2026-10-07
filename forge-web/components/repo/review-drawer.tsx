@@ -27,7 +27,7 @@ import {
 import { SupersededWriteError, newIntent, sumPreviews } from '@/lib/sdk'
 import type { RepoHome } from '@/lib/view'
 import type { Membership } from '@/lib/rules/v2'
-import { QUOTE_CONFIRM, publicLineQuestion, publicTextOf, quotesMembersText, submitSummary } from '@/lib/view/audience'
+import { QUOTE_CONFIRM, publicLineQuestion, quotesMembersText, submitSummary, type MembersTexts } from '@/lib/view/audience'
 import { AudienceChip, AudienceWarnings, useAudienceWarnings, useComposerAudience, useQuoteGate, warningName } from '@/components/repo/audience'
 import { composeCost } from '@/components/repo/private-compose'
 import { Field, Input } from '@/components/ui/input'
@@ -37,7 +37,10 @@ import {
   addDraftComment,
   draftAudienceCounts,
   draftIsEmpty,
+  draftMembersTexts,
+  draftPublicTexts,
   draftQuotesMembersText,
+  withMemoryOnly,
   draftWhereabouts,
   editDraftComment,
   newReviewDraft,
@@ -61,7 +64,7 @@ import type { PendingReview } from '@/components/repo/inline-comments'
 import { cn } from '@/lib/utils'
 import { spendAction } from '@/lib/spend-toast'
 
-const NO_TEXTS: readonly string[] = []
+const NO_TEXTS: MembersTexts = []
 
 const VERDICTS: readonly { value: VerdictInput; label: string; help: string }[] = [
   { value: 'comment', label: 'Comment', help: 'General feedback without an explicit verdict.' },
@@ -76,13 +79,12 @@ export const VERDICT_WORDS: Readonly<Record<VerdictInput, string>> = { comment: 
  * The viewer's pending review on a PR: loaded, edited and submitted in this browser. Nothing is
  * offered until the stored draft has loaded (adding a comment earlier would start a second
  * draft over it), and every change reads the latest draft, never a render's stale copy.
- */
-/**
  * `membersOnly`: the PR is members-only, so its pending review never goes to disk.
- * `membersTexts`: members-only text the page shows; a draft whose public text quotes it stays in
- * memory too.
+ * `membersTexts`: members-only text the tab has opened in the repo; a draft whose public text
+ * quotes it is marked memory-only (`ReviewDraft.memoryOnly`), so every later save of it, the
+ * submit's included, keeps it off disk too.
  */
-export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, membersOnly = false, membersTexts: readonly string[] = NO_TEXTS): {
+export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, membersOnly = false, membersTexts: MembersTexts = NO_TEXTS): {
   draft: ReviewDraft | null
   loaded: boolean
   pending: PendingReview | undefined
@@ -119,20 +121,22 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
   }, [network, identity, pullId])
 
   const update = useCallback(
-    (d: ReviewDraft | null) => {
+    (next: ReviewDraft | null) => {
+      // The flag travels with the draft: the submit's own saves of it respect it too.
+      const d = next === null ? null : withMemoryOnly(next, draftQuotesMembersText(next, texts.current))
       latest.current = d
       setDraft(d)
       if (identity === null) return
       if (d === null || draftIsEmpty(d)) void discardReviewDraft(network, identity, pullId)
-      else void saveReviewDraft(membersOnly && repo.visibility === 'public' ? { ...d, audience: 'members' } : d, repo, { memoryOnly: draftQuotesMembersText(d, texts.current) })
+      else void saveReviewDraft(membersOnly && repo.visibility === 'public' ? { ...d, audience: 'members' } : d, repo)
     },
     [identity, network, pullId, repo, membersOnly],
   )
-  // Members-only text the page read after the draft was stored: a draft that quotes it leaves disk.
-  const quotes = draft !== null && !draftIsEmpty(draft) && draftQuotesMembersText(draft, membersTexts)
+  // Members-only text read after the draft was stored: a draft that quotes it leaves disk.
+  const quotes = draft !== null && !draftIsEmpty(draft) && draft.memoryOnly !== true && draftQuotesMembersText(draft, membersTexts)
   useEffect(() => {
-    if (quotes && latest.current !== null) void saveReviewDraft(latest.current, repo, { memoryOnly: true })
-  }, [quotes, repo])
+    if (quotes && latest.current !== null) update(latest.current)
+  }, [quotes, update])
 
   const ensure = useCallback(
     (): ReviewDraft | null =>
@@ -197,8 +201,8 @@ export function ReviewDrawer({
   author: string
   /** The PR is members-only: its pending review lives in this tab only. */
   membersOnly?: boolean
-  /** Members-only text the page shows: public review text that repeats it asks first (product H8). */
-  membersTexts?: readonly string[]
+  /** Members-only text the tab has opened in the repo: public review text that repeats it asks first (product H8). */
+  membersTexts?: MembersTexts
   repo: RepoRef
   pullId: string
   headOid: string
@@ -289,11 +293,9 @@ export function ReviewDrawer({
     planned === null
       ? null
       : publicLineQuestion({ verdict, audience: planned.audience === 'members' || prAudience === 'members' ? 'members' : 'public', prMembersOnly: membersOnly, author, authorName: warningName(network, author), holders: textAudience.holders })
-  // The public line is public text: one that repeats members-only text is not posted.
-  const lineQuotes = question !== null && quotesMembersText(publicLine, membersTexts)
-  // What the submit makes public that was not confirmed where it was written: the summary, when
-  // it is public (each public pending comment was checked as it was added or edited).
-  const publicSummary = (d: ReviewDraft): string | null => (d.reviewId !== undefined ? null : publicTextOf(d.summary, d.audience, prAudience))
+  // The public line is public text: one that repeats members-only text, the review's own unposted
+  // members-only text included, is not posted.
+  const lineQuotes = question !== null && planned !== null && quotesMembersText(publicLine, membersTexts, { extra: draftMembersTexts(planned, prAudience) })
 
   const submit = (): void => {
     if (!sdk || !signer || identity === null || planned === null) return
@@ -303,7 +305,9 @@ export function ReviewDrawer({
       return
     }
     if (lineQuotes) return
-    quoteGate.check(frozen ? null : publicSummary(planned), membersTexts, () => void send())
+    // Checked again now (a retry too), against all the members-only text the tab has opened by
+    // now: the summary when it is public and not yet posted, and every public comment not yet posted.
+    quoteGate.check(draftPublicTexts(planned, prAudience), membersTexts, () => void send())
   }
 
   const send = async (): Promise<void> => {

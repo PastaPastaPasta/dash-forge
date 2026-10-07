@@ -29,8 +29,8 @@ import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/lib/view'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
-import { addedText, publicTextOf, quotesMembersText } from '@/lib/view/audience'
-import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, useAudienceWarnings, useComposerAudience, useQuoteGate } from '@/components/repo/audience'
+import { publicTextOf, quotesMembersText } from '@/lib/view/audience'
+import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate } from '@/components/repo/audience'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
 import type { ClosedAs } from '@/lib/rules/transition'
@@ -191,9 +191,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
   // Who the comment is for (DESIGN §10): the issue's audience, or Members when picked.
   const audience = useComposerAudience(home, { parent: data?.issue.audience ?? 'public', members: data?.members ?? null, maintainer: holdings.data?.maintain === true })
-  // Members-only text on this page: a public post that repeats it asks first (product H8), and a
-  // draft that quotes it is never kept on disk.
-  const membersTexts = useMemo(() => (data === null ? [] : membersTextsOf(data)), [data])
+  // Members-only text on this page, and all this tab has opened in the repo: a public post that
+  // repeats it asks first (product H8), and a draft that quotes it is never kept on disk.
+  const pageTexts = useMemo(() => (data === null ? [] : membersTextsOf(data)), [data])
+  const membersTexts = useMembersTexts(home.repo.repoId, pageTexts)
   // The unsent comment survives a reload (never stored for a private repo, nor while members-only),
   // decided for each new text: one that quotes members-only text is removed before it is stored.
   const [comment, setComment, holdDraft] = useDraftText(
@@ -291,7 +292,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const stateCost = previewCreate('transition', {}, stateFirst)
   // "Close with comment" (QW2-008): the composer's text goes with a close or reopen, as on GitHub,
   // when this viewer could post it (not locked out, nothing blocking the composer, within the limit).
-  const withComment = comment.trim() !== '' && composeBlock === null && !lockedOutNow && !commentTooLong && !quoting ? comment.trim() : null
+  // One that repeats members-only text asks first: posted with the close, or neither happens.
+  const withComment = comment.trim() !== '' && composeBlock === null && !lockedOutNow && !commentTooLong ? comment.trim() : null
+  const toggleState = (p: Extract<Pending, { kind: 'state' }>): void => closeWithComment(quoteGate, audience.audience, membersTexts, p, setPending)
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
   const postComment = async (confirmed = false): Promise<void> => {
@@ -492,7 +495,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   onClick={() => {
                     const edit = { kind: 'editIssue' as const, title: editing.title.trim(), body: editing.body }
                     // A public issue's edit is public text: it asks first when it repeats members-only text.
-                    quoteGate.check(publicTextOf(addedText(`${issue.title}\n${issue.body}`, `${edit.title}\n${edit.body}`), issue.audience), membersTexts, () => setPending(edit))
+                    quoteGate.check(publicTextOf(`${edit.title}\n${edit.body}`, issue.audience), membersTexts, () => setPending(edit), { before: `${issue.title}\n${issue.body}` })
                   }}
                 >
                   Save
@@ -600,7 +603,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 deleteDisabled: archived || guard.disabledReason !== null,
                 onEdit: setEditingComment,
                 // A public comment's edit is public text: it asks first when it repeats members-only text.
-                onSave: (id, body) => quoteGate.check(publicTextOf(addedText(item.comment.body, body), item.comment.audience, issue.audience), membersTexts, () => setPending({ kind: 'editComment', id, body })),
+                onSave: (id, body) => quoteGate.check(publicTextOf(body, item.comment.audience, issue.audience), membersTexts, () => setPending({ kind: 'editComment', id, body }), { before: item.comment.body }),
                 onDelete: (id) => setPending({ kind: 'deleteComment', id }),
                 links,
               })
@@ -644,13 +647,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   label={stateToggleLabel(open, withComment !== null, 'issue')}
                   disabled={!signer || guard.disabledReason !== null || archived}
                   {...(guard.disabledReason ? { title: guard.disabledReason } : {})}
-                  onClose={(closedAs) => setPending(withComment === null ? { kind: 'state', closedAs } : { kind: 'state', comment: withComment, closedAs })}
+                  onClose={(closedAs) => toggleState(withComment === null ? { kind: 'state', closedAs } : { kind: 'state', comment: withComment, closedAs })}
                   checkDuplicate={async (n) => ((await readDuplicateTargets(sdk!, home.repo, [n])).has(n) ? null : `#${n} is not an issue of this repo`)}
                 />
               ) : canToggle ? (
                 <Button
                   variant="outline"
-                  onClick={() => setPending(withComment === null ? { kind: 'state' } : { kind: 'state', comment: withComment })}
+                  onClick={() => toggleState(withComment === null ? { kind: 'state' } : { kind: 'state', comment: withComment })}
                   disabled={!signer || guard.disabledReason !== null || archived}
                   title={guard.disabledReason ?? undefined}
                   data-testid="issue-state-toggle"

@@ -9,44 +9,59 @@
  * screen-reader correct.
  */
 
-import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useRef, type ReactNode, type RefObject } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { initialFocus, trapTab } from '@/lib/focus'
 import { Button } from './button'
 
-/** Open dialogs, innermost last: only the top one traps Tab and answers Escape. */
-const openStack: string[] = []
+/** Open dialogs and their panels, innermost last: only the top one traps Tab and answers Escape. */
+const openStack: { readonly id: string; readonly panel: HTMLElement }[] = []
 
 /**
  * Open popovers that answer Escape before any dialog (a picker opened inside a dialog), innermost
- * last. They are not dialogs: the dialog under one keeps trapping Tab and pulling focus back.
+ * last, with the element each sits in. They are not dialogs: the dialog under one keeps trapping
+ * Tab and pulling focus back.
  */
-const escapeLayers: string[] = []
+const escapeLayers: { readonly id: string; readonly el: RefObject<HTMLElement | null> }[] = []
+
+/**
+ * The popovers that may take an Escape now: those inside the top dialog's panel, or every one
+ * when no dialog is open. A popover left open on the page under a dialog never takes the
+ * dialog's Escape (nor stops it).
+ */
+function liveEscapeLayers(): readonly { readonly id: string }[] {
+  const top = openStack[openStack.length - 1]
+  if (top === undefined) return escapeLayers
+  return escapeLayers.filter((l) => l.el.current !== null && top.panel.contains(l.el.current))
+}
 
 /**
  * A popover's Escape while `active`: it closes the popover (`onEscape`) and not the dialog under
- * it, which answers Escape again once the popover closes.
+ * it, which answers Escape again once the popover closes. `el`: the element the popover sits in
+ * (inside a dialog's panel, it takes that dialog's Escape; elsewhere, only while no dialog is open).
  */
-export function useEscapeLayer(active: boolean, onEscape: () => void): void {
+export function useEscapeLayer(active: boolean, onEscape: () => void, el: RefObject<HTMLElement | null>): void {
   const id = useId()
   const escapeRef = useRef(onEscape)
   escapeRef.current = onEscape
   useEffect(() => {
     if (!active) return
-    escapeLayers.push(id)
+    escapeLayers.push({ id, el })
     const onKey = (e: KeyboardEvent): void => {
-      if (escapeLayers[escapeLayers.length - 1] !== id || e.isComposing || e.key !== 'Escape') return
+      if (e.defaultPrevented || e.isComposing || e.key !== 'Escape') return
+      const live = liveEscapeLayers()
+      if (live[live.length - 1]?.id !== id) return
       e.preventDefault()
       escapeRef.current()
     }
     document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('keydown', onKey)
-      const at = escapeLayers.lastIndexOf(id)
+      const at = escapeLayers.findLastIndex((l) => l.id === id)
       if (at >= 0) escapeLayers.splice(at, 1)
     }
-  }, [active, id])
+  }, [active, id, el])
 }
 
 export interface DialogProps {
@@ -87,20 +102,23 @@ export function Dialog({
     if (!open) return
     const panel = panelRef.current
     if (panel === null) return
-    openStack.push(id)
+    openStack.push({ id, panel })
     const onKey = (e: KeyboardEvent): void => {
       // Only the top dialog answers; an Escape that cancels IME composition is not a close.
-      if (openStack[openStack.length - 1] !== id || e.isComposing) return
+      if (openStack[openStack.length - 1]?.id !== id || e.isComposing) return
       if (e.key === 'Escape') {
-        // A popover open over it (a picker) takes this Escape.
-        if (escapeLayers.length === 0) closeRef.current()
+        // Taken already (a field or a popover handled it), or a popover inside it (a picker)
+        // takes it.
+        if (e.defaultPrevented || liveEscapeLayers().length > 0) return
+        e.preventDefault()
+        closeRef.current()
         return
       }
       trapTab(panel, e)
     }
     // Focus that lands behind the dialog (a click on the page, a programmatic focus) is pulled back.
     const onFocusIn = (e: FocusEvent): void => {
-      if (openStack[openStack.length - 1] !== id) return
+      if (openStack[openStack.length - 1]?.id !== id) return
       if (e.target instanceof Node && !panel.contains(e.target)) panel.focus()
     }
     document.addEventListener('keydown', onKey)
@@ -112,7 +130,7 @@ export function Dialog({
     return () => {
       document.removeEventListener('keydown', onKey)
       document.removeEventListener('focusin', onFocusIn)
-      const at = openStack.lastIndexOf(id)
+      const at = openStack.findLastIndex((d) => d.id === id)
       if (at >= 0) openStack.splice(at, 1)
       document.body.style.overflow = prevOverflow
       // Only on a real close (the panel has left the DOM). StrictMode's simulated unmount keeps

@@ -37,7 +37,7 @@ import { idbEntries, resetMemoryStores } from '../idb'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { draftHasMembersText, loadReviewDraft, postComment, saveReviewDraft, type ReviewDraft } from './review-writes'
-import { addDraftComment, draftQuotesMembersText, newReviewDraft, removeDraftComment } from '../view/pending-review'
+import { addDraftComment, draftQuotesMembersText, newReviewDraft, removeDraftComment, withMemoryOnly } from '../view/pending-review'
 
 const id = (b: number): Uint8Array => new Uint8Array(32).fill(b)
 const b58 = (u: Uint8Array): string => base58Encode(u)
@@ -99,8 +99,19 @@ describe('a pending review with members-only comments', () => {
     expect(draftQuotesMembersText(quoting, [SECRET], 'members')).toBe(false)
     expect(draftQuotesMembersText({ ...quoting, audience: 'members' }, [SECRET])).toBe(false)
     expect(draftQuotesMembersText(addDraftComment(base(), 'l1', { path: 'a.rs', line: 1, side: 1 }, SECRET), [SECRET])).toBe(true)
-    await saveReviewDraft(quoting, REPO, { memoryOnly: draftQuotesMembersText(quoting, [SECRET]) })
+    await saveReviewDraft(withMemoryOnly(quoting, draftQuotesMembersText(quoting, [SECRET])), REPO)
     expect(JSON.stringify(await idbEntries('journal'))).not.toContain('staging database')
     expect((await loadReviewDraft('devnet', auth.identityId, PR))?.summary).toContain('staging database')
+    // The quote taken out: the mark goes, and the draft is back on disk.
+    const clean = { ...quoting, summary: 'Agreed.' }
+    await saveReviewDraft(withMemoryOnly({ ...clean, memoryOnly: true }, draftQuotesMembersText(clean, [SECRET])), REPO)
+    expect(JSON.stringify(await idbEntries('journal'))).toContain('Agreed.')
+  })
+
+  it('drops a memory-only draft an earlier build left in IndexedDB', async () => {
+    const { idbPut } = await import('../idb')
+    await idbPut('journal', `review:devnet:${auth.identityId}:${PR}`, { ...base(), summary: 'QUOTED', memoryOnly: true })
+    expect(await loadReviewDraft('devnet', auth.identityId, PR)).toBeUndefined()
+    expect(JSON.stringify(await idbEntries('journal'))).not.toContain('QUOTED')
   })
 })

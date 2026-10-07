@@ -10,7 +10,7 @@
 import type { AnchorInput, DraftComment, ReviewDraft, VerdictInput } from '../repo'
 import { previewCreate, previewCredits, type CostPreview } from '../sdk'
 import { plural } from './format'
-import { quotesMembersText } from './audience'
+import { quoteIndex, quotesMembersText, type MembersTexts } from './quote-check'
 
 /**
  * Where a pending review lives, said wherever one is shown: unlike a GitHub pending review it is
@@ -90,15 +90,41 @@ export function setDraftAudience(d: ReviewDraft, audience: 'public' | 'members')
 }
 
 /**
- * Whether a draft's public text (its summary when that is public, and its public comments not yet
- * on Platform) repeats members-only text the page shows: such a draft is kept in memory only, as a
- * members-only one is (DESIGN §4.1). `pr`: the PR's own audience (a members-only PR's text is all
- * members-only).
+ * What a submit of `d` would make public that is not public yet: its summary when that is public
+ * and its review not yet on Platform, and each public comment not yet on Platform. `pr`: the PR's
+ * own audience (a members-only PR's text is all members-only).
  */
-export function draftQuotesMembersText(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments'>, membersTexts: readonly string[], pr: 'public' | 'members' = 'public'): boolean {
-  if (pr === 'members' || membersTexts.length === 0) return false
-  const texts = [...(d.audience === 'members' ? [] : [d.summary]), ...d.comments.filter((c) => c.audience !== 'members' && c.landedId === undefined).map((c) => c.body)]
-  return texts.some((t) => quotesMembersText(t, membersTexts))
+export function draftPublicTexts(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments' | 'reviewId'>, pr: 'public' | 'members' = 'public'): string[] {
+  if (pr === 'members') return []
+  return [
+    ...(d.audience === 'members' || d.reviewId !== undefined ? [] : [d.summary]),
+    ...d.comments.filter((c) => c.audience !== 'members' && c.landedId === undefined).map((c) => c.body),
+  ].filter((t) => t.trim() !== '')
+}
+
+/** A draft's own members-only text (its summary when members-only, and its members-only comments): a public line beside it must not repeat it. */
+export function draftMembersTexts(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments'>, pr: 'public' | 'members' = 'public'): string[] {
+  const members = (own: 'members' | undefined): boolean => own === 'members' || pr === 'members'
+  return [...(members(d.audience) ? [d.summary] : []), ...d.comments.filter((c) => members(c.audience)).map((c) => c.body)].filter((t) => t.trim() !== '')
+}
+
+/**
+ * Whether a draft's public text ({@link draftPublicTexts}) repeats members-only text the tab has
+ * opened: such a draft is kept in memory only, as a members-only one is (DESIGN §4.1).
+ */
+export function draftQuotesMembersText(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments' | 'reviewId'>, membersTexts: MembersTexts, pr: 'public' | 'members' = 'public'): boolean {
+  const index = quoteIndex(membersTexts)
+  if (index.empty) return false
+  return draftPublicTexts(d, pr).some((t) => quotesMembersText(t, index))
+}
+
+/** `d` marked memory-only (`on`), or without the mark. */
+export function withMemoryOnly(d: ReviewDraft, on: boolean): ReviewDraft {
+  if ((d.memoryOnly === true) === on) return d
+  if (on) return { ...d, memoryOnly: true }
+  const { memoryOnly: _dropped, ...rest } = d
+  void _dropped
+  return rest
 }
 
 /**

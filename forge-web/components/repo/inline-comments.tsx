@@ -52,7 +52,7 @@ import { Oid } from '@/components/ui/oid'
 import type { RepoHome } from '@/lib/view'
 import type { Membership } from '@/lib/rules/v2'
 import { AudienceChip, AudienceWarnings, VisibleToMembers, MEMBERS_CARD, useAudienceWarnings, useComposerAudience, useQuoteGate } from '@/components/repo/audience'
-import { addedText, publicTextOf } from '@/lib/view/audience'
+import { publicTextOf, type MembersTexts } from '@/lib/view/audience'
 import { cn } from '@/lib/utils'
 
 /** Who a diff composer may write for: the page, its members, and the PR (DESIGN §10). */
@@ -64,8 +64,8 @@ export interface InlineAudience {
   /** The PR's own audience. */
   readonly pr: 'public' | 'members'
   readonly author: string
-  /** Members-only text the page shows: a public comment that repeats it asks first (product H8). */
-  readonly membersTexts?: readonly string[]
+  /** Members-only text the tab has opened in the repo: a public comment that repeats it asks first (product H8). */
+  readonly membersTexts?: MembersTexts
 }
 
 const InlineAudienceOf = createContext<InlineAudience | null>(null)
@@ -659,10 +659,15 @@ function PendingComment({
               variant="primary"
               disabled={editing.trim() === ''}
               onClick={() =>
-                quoteGate.check(publicTextOf(addedText(draft.body, editing), draft.audience, who?.pr), who?.membersTexts ?? [], () => {
-                  pending.onEdit(draft.localId, editing)
-                  setEditing(null)
-                })
+                quoteGate.check(
+                  publicTextOf(editing, draft.audience, who?.pr),
+                  who?.membersTexts ?? [],
+                  () => {
+                    pending.onEdit(draft.localId, editing)
+                    setEditing(null)
+                  },
+                  { before: draft.body },
+                )
               }
             >
               Save

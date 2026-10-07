@@ -272,14 +272,14 @@ function membersOnlyEntries(tally: HiddenTally, reviews: readonly ReviewView[]):
     .sort((a, b) => a.item.createdAt - b.item.createdAt)
 }
 
+/** The comment sub-query's page size on a thread read: a full page may not be all of them. */
+const COMMENT_PAGE = 100
+
 /** The members-only target page of `placeholder` (a well-formed sealed issue or PR this reader cannot open). */
 function membersOnlyTarget(placeholder: MembersOnlyItem, number: number, transitions: readonly TransitionView[], comments: number): MembersOnlyTarget {
   const status = statusOfCode(stateCode(transitions))
   return { placeholder, number, open: status.open, merged: status.merged, comments, ...(comments >= COMMENT_PAGE ? { moreComments: true as const } : {}) }
 }
-
-/** The comment sub-query's page size on a thread read: a full page may not be all of them. */
-const COMMENT_PAGE = 100
 
 /** A full issue detail: the folded issue + its merged timeline. */
 export interface IssueThread {
@@ -407,7 +407,7 @@ export async function loadIssueOrMembersOnly(sdk: EvoSDK, repo: RepoRef, number:
   const res = await queryComposite(
     sdk,
     compositeOf(page, 1, [
-      { documentType: DOC.comment, bind: bound, limit: 100 },
+      { documentType: DOC.comment, bind: bound, limit: COMMENT_PAGE },
       { documentType: DOC.event, dataContractId: repo.forge.community, bind: bound, limit: 100 },
       { documentType: DOC.transition, bind: bound, limit: 100 },
       siblingOf(labelQuery),
@@ -688,7 +688,7 @@ export async function loadPullOrMembersOnly(
   const res = await queryComposite(
     sdk,
     compositeOf(page, 1, [
-      { documentType: DOC.comment, bind: toTarget, limit: 100 },
+      { documentType: DOC.comment, bind: toTarget, limit: COMMENT_PAGE },
       { documentType: DOC.event, dataContractId: repo.forge.community, bind: toTarget, limit: 100 },
       { documentType: DOC.authorEvent, dataContractId: repo.forge.community, bind: toTarget, limit: 100 },
       { documentType: DOC.review, bind: { sourceProperty: '$id', field: 'patchId' }, limit: 100 },
