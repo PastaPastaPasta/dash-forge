@@ -1272,6 +1272,25 @@ pub enum PrCommand {
     /// Merge a pull request: fast-forward, merge commit or squash, push to the base, post the
     /// event.
     Merge(Box<PrMergeArgs>),
+    /// Revert a merged pull request: push a branch that undoes its merge and open a pull
+    /// request for it (GitHub's Revert button).
+    ///
+    /// Works in a throwaway repository, as `dg pr merge` does, so your working tree is never
+    /// touched. Fetches the base branch, checks that the recorded merge contains the PR, and
+    /// builds one commit on the base's tip that undoes what the merge brought in: a merge
+    /// commit against its first parent, a squash commit, or the commits a rebase or a
+    /// fast-forward added. Nothing is pushed when the revert conflicts with later changes.
+    /// Then it pushes the branch `revert-<n>-<head branch>` and opens a pull request titled
+    /// `Revert "<title>"` into the same base. Needs write access to the repository.
+    Revert {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The merged PR's number.
+        number: u64,
+        /// The branch to push the revert to (default: `revert-<n>-<the PR's head branch>`).
+        #[arg(long, value_name = "BRANCH")]
+        branch: Option<String>,
+    },
     /// Merge the base branch into the PR's source branch (a merge commit pushed to the source
     /// repository, then a head update). Needs write access to the source repository.
     UpdateBranch {
@@ -1495,9 +1514,15 @@ pub struct PrMergeArgs {
     /// it. A head already on the base tip with a linear history is fast-forwarded unchanged.
     #[arg(long, conflicts_with_all = ["squash", "no_ff", "message", "event_only"])]
     pub rebase: bool,
-    /// Delete the source branch after merging (needs write access to the source repo).
+    /// Delete the source branch after merging (needs write access to the source repo). Refused
+    /// before merging when another open PR uses the branch as its head or its base. Only the
+    /// newest 100 pull requests are checked; the output says when there are older ones.
     #[arg(long = "delete-branch", conflicts_with = "event_only")]
     pub delete_branch: bool,
+    /// Delete the source branch after merging even when other open PRs use it as their head
+    /// or base (implies --delete-branch). Those PRs are left without their branch.
+    #[arg(long = "force-delete-branch", conflicts_with = "event_only")]
+    pub force_delete_branch: bool,
     /// Merge although the branch policy's approvals or checks are not met (maintainers only;
     /// "bypass rules"). The bypassed rules are recorded on the PR as a policy-bypass event,
     /// which nobody can delete; the allowed merge methods still apply. Forge apps enforce the
