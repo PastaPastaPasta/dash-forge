@@ -1092,21 +1092,8 @@ mod tests {
     /// parser would split differently, the guard and the connection agree on the host.
     #[tokio::test]
     async fn the_request_goes_to_the_url_that_was_validated() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = srv.local_addr().unwrap().port();
-        let head = Arc::new(Mutex::new(String::new()));
-        let seen = Arc::clone(&head);
-        tokio::spawn(async move {
-            loop {
-                let (mut s, _) = srv.accept().await.unwrap();
-                let mut buf = vec![0u8; 65536];
-                let n = s.read(&mut buf).await.unwrap_or(0);
-                *seen.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
-                let reply = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                let _ = s.write_all(reply.as_bytes()).await;
-            }
-        });
+        let (addr, heads) = recorder().await;
+        let port = addr.port();
         // The WHATWG host is 127.0.0.1 (a backslash ends the authority); the `@` suffix is path.
         let url = format!("http://127.0.0.1:{port}\\@unresolvable.invalid/hook");
 
@@ -1115,14 +1102,14 @@ mod tests {
             .await
             .unwrap_err();
         assert!(refused.to_string().contains("ssrf guard"), "{refused}");
-        assert!(head.lock().unwrap().is_empty(), "nothing was sent");
+        assert!(heads.lock().unwrap().is_empty(), "nothing was sent");
 
         let receipt = Deliverer::new(quick())
             .deliver(&url, b"s", "h", &push(1))
             .await
             .unwrap();
         assert_eq!(receipt.status, 200);
-        let head = head.lock().unwrap().to_ascii_lowercase();
+        let head = heads.lock().unwrap()[0].to_ascii_lowercase();
         assert!(
             head.starts_with("post /@unresolvable.invalid/hook http/1.1\r\n"),
             "{head}"
@@ -1214,6 +1201,60 @@ mod tests {
             hits.load(std::sync::atomic::Ordering::SeqCst) <= 1,
             "queued events of a removed hook are not delivered"
         );
+    }
+
+    /// A receiver that answers `200` to every request and records each request head.
+    async fn recorder() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = srv.local_addr().unwrap();
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&heads);
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = srv.accept().await.unwrap();
+                let mut buf = vec![0u8; 65536];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let head = raw.split("\r\n\r\n").next().unwrap_or_default().to_string();
+                seen.lock().unwrap().push(head + "\r\n");
+                let reply = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = s.write_all(reply.as_bytes()).await;
+            }
+        });
+        (addr, heads)
+    }
+
+    /// Hooks are keyed by (repo, hook id): a hook of repo A that reuses repo B's hook id is a
+    /// separate worker with its own URL and secret, and an event of A is never signed with B's.
+    #[tokio::test]
+    async fn the_same_hook_id_in_two_repos_is_two_hooks_each_with_its_own_secret() {
+        let ((addr_a, heads_a), (addr_b, heads_b)) = (recorder().await, recorder().await);
+        let hook = |repo: &str, addr: std::net::SocketAddr, key: u8| WebhookSub {
+            repo_id: repo.into(),
+            secret: forge_core::envelope::SecretBytes::new(vec![key; 32]),
+            ..sub(&format!("http://{addr}/h"), &[])
+        };
+        let d = Dispatcher::new(Deliverer::new(quick()));
+        d.sync_all(&[hook("A", addr_a, b'a'), hook("B", addr_b, b'b')]);
+        assert_eq!(
+            d.hooks.lock().unwrap().len(),
+            2,
+            "one worker per (repo, hook)"
+        );
+
+        d.enqueue("A", push(1));
+        wait_until(|| heads_a.lock().unwrap().len() == 1).await;
+        let body = serde_json::to_vec(&push(1).payload).unwrap();
+        let head = heads_a.lock().unwrap()[0].to_ascii_lowercase();
+        let signed_with = |key: u8| {
+            let sig = sign_body(&[key; 32], &body);
+            head.contains(&format!("\r\nx-hub-signature-256: {sig}\r\n"))
+        };
+        assert!(signed_with(b'a'), "{head}");
+        assert!(!signed_with(b'b'), "{head}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(heads_b.lock().unwrap().is_empty(), "B's hook got nothing");
     }
 
     /// A receiver that answers every request with `status` and counts them.

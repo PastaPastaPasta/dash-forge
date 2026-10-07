@@ -34,14 +34,38 @@ const MAX_WAITING: usize = 64;
 /// authenticated); more are dropped.
 const MAX_CONNECTIONS: usize = 256;
 
+/// How long a response may take to write before the connection is dropped.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The listener's per-connection bounds (the constants above; tests shrink them).
+#[derive(Clone, Copy)]
+struct Limits {
+    head_timeout: Duration,
+    max_connections: usize,
+}
+
+const LIMITS: Limits = Limits {
+    head_timeout: HEAD_TIMEOUT,
+    max_connections: MAX_CONNECTIONS,
+};
+
 /// Serve on `addr` until the task is dropped.
 pub async fn serve(addr: &str, durable: bool, wake: Option<Arc<WakeHub>>) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| RelayError::Io(format!("binding the listener on {addr}: {e}")))?;
     tracing::info!(%addr, wake = wake.is_some(), "listener up");
+    serve_on(listener, durable, wake, LIMITS).await
+}
+
+async fn serve_on(
+    listener: TcpListener,
+    durable: bool,
+    wake: Option<Arc<WakeHub>>,
+    limits: Limits,
+) -> Result<()> {
     let waiting = Arc::new(Semaphore::new(MAX_WAITING));
-    let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let connections = Arc::new(Semaphore::new(limits.max_connections));
     loop {
         let (stream, _peer) = match listener.accept().await {
             Ok(pair) => pair,
@@ -58,7 +82,14 @@ pub async fn serve(addr: &str, durable: bool, wake: Option<Arc<WakeHub>>) -> Res
         };
         let (wake, waiting) = (wake.clone(), Arc::clone(&waiting));
         tokio::spawn(async move {
-            let _ = handle(stream, durable, wake.as_deref(), &waiting).await;
+            let _ = handle(
+                stream,
+                durable,
+                wake.as_deref(),
+                &waiting,
+                limits.head_timeout,
+            )
+            .await;
             drop(slot);
         });
     }
@@ -97,8 +128,9 @@ fn parse_head(raw: &[u8]) -> Option<Head> {
     Some(head)
 }
 
-/// Read the request head (up to the blank line), within [`HEAD_TIMEOUT`] and [`MAX_HEAD`].
-async fn read_head(stream: &mut TcpStream) -> Option<Vec<u8>> {
+/// Read the request head (up to the blank line), within `timeout` ([`HEAD_TIMEOUT`]) and
+/// [`MAX_HEAD`].
+async fn read_head(stream: &mut TcpStream, timeout: Duration) -> Option<Vec<u8>> {
     let mut buf = Vec::with_capacity(1024);
     let read = async {
         let mut chunk = [0u8; 1024];
@@ -117,11 +149,12 @@ async fn read_head(stream: &mut TcpStream) -> Option<Vec<u8>> {
             }
         }
     };
-    tokio::time::timeout(HEAD_TIMEOUT, read).await.ok()??;
+    tokio::time::timeout(timeout, read).await.ok()??;
     Some(buf)
 }
 
-/// Write the response and close; `signature` is a wake answer's signature header.
+/// Write the response and close, within [`REPLY_TIMEOUT`]; `signature` is a wake answer's
+/// signature header.
 async fn reply(
     stream: &mut TcpStream,
     status: &str,
@@ -135,8 +168,13 @@ async fn reply(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{sig}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(resp.as_bytes()).await?;
-    stream.shutdown().await
+    let write = async {
+        stream.write_all(resp.as_bytes()).await?;
+        stream.shutdown().await
+    };
+    tokio::time::timeout(REPLY_TIMEOUT, write)
+        .await
+        .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
 }
 
 /// Refuse the request with `status` and `{"error": why}`.
@@ -151,8 +189,11 @@ async fn handle(
     durable: bool,
     wake: Option<&WakeHub>,
     waiting: &Semaphore,
+    head_timeout: Duration,
 ) -> std::io::Result<()> {
-    let head = read_head(&mut stream).await.and_then(|b| parse_head(&b));
+    let head = read_head(&mut stream, head_timeout)
+        .await
+        .and_then(|b| parse_head(&b));
     let Some(head) = head else {
         return refuse(&mut stream, "400 Bad Request", "bad request").await;
     };
@@ -269,5 +310,68 @@ mod tests {
         let (head, _) = get(&addr, target, &hdrs).await;
         assert!(head.starts_with("HTTP/1.1 401"), "a replay: {head}");
         server.abort();
+    }
+
+    /// A listener with small bounds on a free port, for the timeout and cap tests.
+    async fn small_listener(head_timeout: Duration, max_connections: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let limits = Limits {
+            head_timeout,
+            max_connections,
+        };
+        tokio::spawn(serve_on(listener, true, None, limits));
+        addr
+    }
+
+    /// Everything the server sends until it closes, or `None` if it is still open after
+    /// `within`. A reset counts as closed.
+    async fn until_closed(s: &mut TcpStream, within: Duration) -> Option<String> {
+        let mut out = Vec::new();
+        match tokio::time::timeout(within, s.read_to_end(&mut out)).await {
+            Ok(_) => Some(String::from_utf8_lossy(&out).into_owned()),
+            Err(_) => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_idle_client_is_closed_after_the_head_timeout() {
+        let addr = small_listener(Duration::from_millis(300), 4).await;
+        let mut idle = TcpStream::connect(&addr).await.unwrap();
+        let start = std::time::Instant::now();
+        let got = until_closed(&mut idle, Duration::from_secs(5))
+            .await
+            .expect("closed by the server");
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(got.starts_with("HTTP/1.1 400"), "{got}");
+    }
+
+    #[tokio::test]
+    async fn connections_past_the_cap_are_dropped_until_idle_ones_time_out() {
+        let head_timeout = Duration::from_millis(1500);
+        let addr = small_listener(head_timeout, 2).await;
+        let _idle = [
+            TcpStream::connect(&addr).await.unwrap(),
+            TcpStream::connect(&addr).await.unwrap(),
+        ];
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // A third connection is accepted and dropped at once, unanswered.
+        let mut extra = TcpStream::connect(&addr).await.unwrap();
+        let _ = extra.write_all(b"GET /healthz HTTP/1.1\r\n\r\n").await;
+        let got = until_closed(&mut extra, Duration::from_millis(500))
+            .await
+            .expect("dropped well before the head timeout");
+        assert!(got.is_empty(), "{got}");
+
+        // Once the idle ones time out, health answers again.
+        tokio::time::sleep(head_timeout + Duration::from_millis(300)).await;
+        let (head, body) = get(&addr, "/healthz", "").await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert_eq!(body, "{\"status\":\"ok\",\"durable\":true}");
     }
 }
