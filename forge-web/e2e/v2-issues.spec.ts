@@ -24,7 +24,7 @@ test.beforeEach(quorumGuard)
 
 /** The F-1 identities per devnet (the seed of `issues-paging`); E2E_F1_OWNER / E2E_F1_COLLAB override. */
 const F1_IDS: Readonly<Record<string, { readonly owner: string; readonly collab: string }>> = {
-  sakura: { owner: 'AQTWh1SADs1rDc3ziP6xU84uTbMDpk6txnyaCMaMoxcB', collab: 'AJpWoHMxwZCGiXaxvna81qyCUgoMedKmi1ZkC8JuvYvJ' },
+  sakura: { owner: '14rH1SbJxacvYuut136H5n6eW26hdbVz1cBjsKaasqmC', collab: '7qNDNMFDxndtNsxQ7ojRbF6K8yHyZ2uKEDqu4UCjXWzB' },
   bonsia: { owner: 'BU4G4BdyHfEtWJdTXdnuTHqxnf46LCxfoEbHfYYuEsAH', collab: '41EeGdqGx6BnCCErZFZ7K6n9pp9QuAonc3GAKA8zKzAx' },
   moutai: { owner: '8dn4mwXbdruHrRtMbk2KpNevAGSfRsxpcxYip8Uk4LsX', collab: 'Abjm1HbHNzLJbSxwJrrDd4vyUkm5ymiCZswodKrqpcYW' },
 }
