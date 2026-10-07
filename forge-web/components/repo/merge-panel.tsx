@@ -158,9 +158,9 @@ export function MergePanel({
   checkSourceBranch?: () => Promise<string | null>
   /**
    * Judge the merge again with the members read now, `bypass` the rules confirmed bypassed: why
-   * not to merge, or null. A failed read stops the merge.
+   * not to merge, or null. A failed read (or a throw) stops the merge.
    */
-  recheckMembers?: (bypass: readonly string[]) => Promise<string | null>
+  recheckMembers: (bypass: readonly string[]) => Promise<string | null>
   /** Told once "Delete the branch after merging" deleted it (the page shows it deleted at once). */
   onBranchDeleted?: () => void
 }): JSX.Element | null {
@@ -404,10 +404,15 @@ export function MergePanel({
     setFailure(null)
     setStopped(null)
     // The branch moved past the head since the page read it (QW3-013): merging now would leave
-    // the newer commits out. Then the members, read now: one revoked since the page loaded must
-    // not carry the merge. Only a fresh run checks; a retry resumes the merge it started.
+    // the newer commits out. And the members, read now: one revoked since the page loaded must
+    // not carry the merge (a failed read stops it too). Only a fresh run checks; a retry resumes the
+    // merge it started.
     if (run.done.length === 0) {
-      const why = (await checkSourceBranch?.().catch(() => null)) ?? (await recheckMembers?.(bypass ?? [])) ?? null
+      const [moved, members] = await Promise.all([
+        checkSourceBranch?.().catch(() => null) ?? null,
+        recheckMembers(bypass ?? []).catch((e: unknown) => (e instanceof Error ? e.message : "Couldn't confirm the merge. Try again.")),
+      ])
+      const why = moved ?? members
       if (why !== null) {
         setStopped(why)
         setBusy(false)

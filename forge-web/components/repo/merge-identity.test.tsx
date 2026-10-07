@@ -94,7 +94,7 @@ function type(el: HTMLInputElement, value: string): void {
 
 describe('the merge box with no commit name and email (QW4-027)', () => {
   it('sets them in place, and then the merge can start', async () => {
-    await act(async () => root.render(<PullMerge repo={repo} home={home} pull={pull} canMerge isMaintainer checkout="dg pr checkout 1" onMerged={() => undefined} />))
+    await act(async () => root.render(<PullMerge recheckMembers={async () => null} repo={repo} home={home} pull={pull} canMerge isMaintainer checkout="dg pr checkout 1" onMerged={() => undefined} />))
     await act(async () => undefined)
     const ask = host.querySelector('[data-testid="merge-identity"]')
     expect(ask).not.toBeNull()

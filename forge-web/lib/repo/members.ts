@@ -88,8 +88,9 @@ export function membersGeneration(): number {
 }
 
 // Membership changes rarely and every issue, PR and browse view of a repo consults it, so it
-// is cached per repo for display. A failed read is never cached. A decision (merging, bypassing
-// the branch rules, publishing a release) reads it afresh: {@link readMembershipsFresh}.
+// is cached per repo for display. A failed read is never cached. A decision reads it afresh: a
+// merge or a bypass of the branch rules through {@link readMembershipsFresh}, a release through
+// {@link requireMaintainer}.
 const MEMBERS_TTL_MS = 5 * 60_000
 /** `started`: the {@link membersGeneration} the read behind `promise` took as it started. */
 const membersCache = new Map<string, { at: number; started: number; promise: Promise<Membership[]> }>()

@@ -49,6 +49,8 @@ vi.mock('@/components/repo/merge-upload', async (importOriginal) => {
 })
 // A check after the merge compares the head with a base that already holds it: seen live as a
 // conflict on '/'. The first check says "merge"; any later one says what that live one did.
+/** Each merge run that started its steps (writes). */
+const stepsRun = vi.fn()
 let checkCount = 0
 const checks = vi.fn(async (_input?: unknown) =>
   ++checkCount === 1 ? { check: 'merge', conflictPaths: [] as string[], packEstimate: { bytes: 4000, objectCount: 4 } } : { check: 'conflict', conflictPaths: ['/'], packEstimate: null },
@@ -63,6 +65,7 @@ vi.mock('@/lib/merge/runner', async (importOriginal) => {
     ...real,
     // Every step lands; the run reports the new tip.
     runMergeSteps: async (_deps: unknown, from: import('@/lib/merge/runner').MergeRun, onStep: (e: { step: string; state: string }) => void) => {
+      stepsRun()
       for (const s of real.MERGE_STEPS) onStep({ step: s.id, state: 'done' })
       return { ...from, done: real.MERGE_STEPS.map((s) => s.id), result: { newTip: NEW_TIP } }
     },
@@ -112,6 +115,7 @@ function Page({ onDelete, closeIssues = null }: { onDelete: () => Promise<void>;
   const [merged, setMerged] = useState(false)
   return (
     <PullMerge
+      recheckMembers={async () => null}
       repo={repo}
       home={homeAt(merged ? NEW_TIP : BASE)}
       pull={pullOf(merged)}
@@ -263,6 +267,7 @@ describe('--no-ff where a fast-forward is possible (QW-069)', () => {
     await act(async () =>
       root.render(
         <PullMerge
+          recheckMembers={async () => null}
           repo={repo}
           home={homeAt(BASE)}
           pull={pullOf(false)}
@@ -313,7 +318,7 @@ describe('--no-ff where a fast-forward is possible (QW-069)', () => {
     root = createRoot(host)
     await act(async () =>
       root.render(
-        <PullMerge repo={repo} home={homeAt(BASE)} pull={pullOf(false)} canMerge isMaintainer checkout="dg pr checkout …" onMerged={() => undefined} extras={{ deleteBranch: null, allowedMethods: 0 }} />,
+        <PullMerge recheckMembers={async () => null} repo={repo} home={homeAt(BASE)} pull={pullOf(false)} canMerge isMaintainer checkout="dg pr checkout …" onMerged={() => undefined} extras={{ deleteBranch: null, allowedMethods: 0 }} />,
       ),
     )
     await act(async () => undefined)
@@ -328,7 +333,7 @@ describe('a source branch past the PR head (QW3-013)', () => {
     checks.mockReset()
     checks.mockImplementation(mergeCheck)
     await act(async () =>
-      root.render(<PullMerge repo={repo} home={homeAt(BASE)} pull={pullOf(false)} canMerge isMaintainer checkout="dg pr checkout …" onMerged={onMerged} extras={{ deleteBranch: null, ...extras }} />),
+      root.render(<PullMerge recheckMembers={async () => null} repo={repo} home={homeAt(BASE)} pull={pullOf(false)} canMerge isMaintainer checkout="dg pr checkout …" onMerged={onMerged} extras={{ deleteBranch: null, ...extras }} />),
     )
     await act(async () => undefined)
   }
@@ -362,5 +367,65 @@ describe('a source branch past the PR head (QW3-013)', () => {
     await act(async () => undefined)
     expect(run).toHaveBeenCalledTimes(1)
     expect(onBranchDeleted).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the members, read again at the click', () => {
+  const mergeCheck = async (): Promise<{ check: string; conflictPaths: string[]; packEstimate: { bytes: number; objectCount: number } }> => ({ check: 'fast-forward', conflictPaths: [], packEstimate: { bytes: 900, objectCount: 3 } })
+  const render = async (recheckMembers: (bypass: readonly string[]) => Promise<string | null>, extras: import('./pull-merge').MergeExtras = {}, onMerged: () => void = () => undefined): Promise<void> => {
+    checks.mockReset()
+    checks.mockImplementation(mergeCheck)
+    stepsRun.mockClear()
+    await act(async () =>
+      root.render(<PullMerge recheckMembers={recheckMembers} repo={repo} home={homeAt(BASE)} pull={pullOf(false)} canMerge isMaintainer checkout="dg pr checkout …" onMerged={onMerged} extras={{ deleteBranch: null, ...extras }} />),
+    )
+    await act(async () => undefined)
+  }
+  const submit = (): HTMLButtonElement => host.querySelector('[data-testid="merge-submit"]') as HTMLButtonElement
+
+  it('a refusal stops the merge before anything is written, and says why', async () => {
+    const onMerged = vi.fn()
+    const recheck = vi.fn(async () => 'Something changed since the page loaded: the branch rules are no longer met (required approvals: 0 of 1).')
+    await render(recheck, {}, onMerged)
+    await act(async () => submit().click())
+    await act(async () => undefined)
+    expect(recheck).toHaveBeenCalledWith([])
+    expect(stepsRun).not.toHaveBeenCalled()
+    expect(onMerged).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Merge stopped: Something changed since the page loaded: the branch rules are no longer met')
+    // The box is free again: the merge can be tried once more.
+    expect(submit().disabled).toBe(false)
+  })
+
+  it('a recheck that fails stops the merge too (fail closed), and frees the box', async () => {
+    const onMerged = vi.fn()
+    await render(async () => Promise.reject(new Error("Couldn't read this repo's members to confirm the merge. Try again.")), {}, onMerged)
+    await act(async () => submit().click())
+    await act(async () => undefined)
+    expect(stepsRun).not.toHaveBeenCalled()
+    expect(onMerged).not.toHaveBeenCalled()
+    expect(host.textContent).toContain("Merge stopped: Couldn't read this repo's members to confirm the merge.")
+    expect(submit().disabled).toBe(false)
+  })
+
+  it('a bypass is judged with the rules the maintainer confirmed', async () => {
+    const recheck = vi.fn(async (_bypass: readonly string[]) => 'Something changed since the page loaded. You can no longer merge this pull request.')
+    await render(recheck, { unmetRules: ['required approvals: 0 of 1'], canBypass: true })
+    await act(async () => (host.querySelector('[data-testid="merge-bypass"]') as HTMLInputElement).click())
+    await act(async () => submit().click())
+    await act(async () => (document.querySelector('[data-testid="merge-bypass-confirm"]') as HTMLButtonElement).click())
+    await act(async () => undefined)
+    expect(recheck).toHaveBeenCalledWith(['required approvals: 0 of 1'])
+    expect(stepsRun).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Merge stopped: Something changed since the page loaded.')
+  })
+
+  it('no refusal: the merge runs', async () => {
+    const onMerged = vi.fn()
+    await render(async () => null, {}, onMerged)
+    await act(async () => submit().click())
+    await act(async () => undefined)
+    expect(stepsRun).toHaveBeenCalledTimes(1)
+    expect(onMerged).toHaveBeenCalledTimes(1)
   })
 })
