@@ -32,7 +32,7 @@ The repository owner alone adds and removes members, and edits the description a
 
 Anyone, member or not, can open issues and PRs, comment and review. Approvals count toward a branch policy only from maintainers and writers: a triage member's or reader's approval is shown as **not counted**, and their request for changes does not block. Imported issues and comments (a mirror's provenance and upstream numbers) are trusted from the same people.
 
-On a public repository everyone can read the public content already, so a reader is for its [members-only content](#members-only-content-in-a-public-repository): someone who should follow the members-only discussion without pushing or merging. `dg collab add --role reader` works on public repositories too, and the web app offers Reader there from its update with members-only support. <!-- PENDING #400 (weblane): web role picker offers reader on public repos --> A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Members has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
+On a public repository everyone can read the public content already, so a reader is for its [members-only content](#members-only-content-in-a-public-repository): someone who should follow the members-only discussion without pushing or merging. `dg collab add --role reader` works on public repositories too, and the web app offers Reader there too. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Members has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
 
 Adding a collaborator is two steps: the owner adds them, and the collaborator accepts. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
 
@@ -47,7 +47,7 @@ dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 
 If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).
 
-From the web app, the invitee opens the repository's **invite link** (Settings → Members, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Members lists **Pending invitations** (accepted, not added yet) with a role picker (writer, triage, maintainer and reader <!-- PENDING #400 (weblane): on master the web offers reader on private repositories only -->) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
+From the web app, the invitee opens the repository's **invite link** (Settings → Members, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Members lists **Pending invitations** (accepted, not added yet) with a role picker (writer, triage, maintainer and reader) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
 
 Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
 
@@ -188,7 +188,7 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 
 **Reading.** Members read members-only items in `dg issue view`/`list` and `dg pr view`/`list`, marked "members-only". Everyone else sees `#3 · members-only issue by @alice · open`, "3 members-only comments hidden, shown as placeholders (you're not a member of alice/shop)", and lists that say how many rows they can't read ("Issues 3 (1 members-only; only members of alice/shop can read them)"). In `--json`, every item has `"audience"` and `"readable"`. A `dg` key protected by a passphrase is asked for on the terminal. Without a terminal (or with `--json`, and no `DASH_FORGE_PASSPHRASE`), a member sees the items as locked instead. A removed member still reads what was posted before the removal.
 
-**From the web app**, members read members-only issues, comments and reviews after one unlock per tab, and a reply in a members-only conversation stays members-only. <!-- PENDING #400 (weblane) --> Choosing Members for a new issue or comment, the members-only rows and placeholders for everyone else, and **View as public** are **coming soon**. <!-- PENDING web UX stream (1D) -->
+**From the web app**, members read members-only issues, comments and reviews after one unlock per tab, and a reply in a members-only conversation stays members-only. Choosing Members for a new issue or comment, the members-only rows and placeholders for everyone else, and **View as public** are **coming soon**. <!-- PENDING web UX stream (1D) -->
 
 **A members-only review counts.** Its verdict is public, so an approval counts toward the branch policy for everyone, member or not, while its text stays members-only. Older Forge builds don't count it, and may refuse a merge an up-to-date build allows ([`E804`](../errors.md#e804)). Update to see and count members-only reviews.
 
@@ -197,8 +197,8 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 - `dg collab add` shares the key with the new member (about 0.0007 DASH more). They read everything members-only, including what was posted before they joined. A member with no encryption key is added anyway and can do everything public. They get the key after they set one up and a maintainer runs `dg repo keys repair`.
 - `dg collab remove` changes the key (about 0.0007 DASH per remaining member, plus about 0.0006 DASH), and says so before you confirm: new members-only issues, comments and reviews will be unreadable to them, and what they could already read stays readable to them.
 - A role change between writer, triage and reader keeps the key: every role holds it, readers included.
-- The web app's **Settings → Members** does the same from its update with members-only support. <!-- PENDING #400 (weblane) (1F web): on master the web refuses membership changes on a repository with members-only content -->
-- Change members only with an up-to-date Forge. A member added by an older build has no key yet and sees [`E311`](../errors.md#e311) until a maintainer shares it: **Repair** on the repo page <!-- PENDING #400 (weblane) -->, or `dg repo keys repair`. Nothing shares it automatically. A member removed by an older build keeps reading new content until `dg repo keys repair` changes the key. `dg repo keys status` shows both.
+- The web app's **Settings → Members** does the same.
+- Change members only with an up-to-date Forge. A member added by an older build has no key yet and sees [`E311`](../errors.md#e311) until a maintainer shares it: **Repair** on the repo page, or `dg repo keys repair`. Nothing shares it automatically. A member removed by an older build keeps reading new content until `dg repo keys repair` changes the key. `dg repo keys status` shows both.
 
 **CI runners are not members.** A runner key (`dg ci runner add`) reports check runs and never receives the members key. If you make a runner's identity a reader, it reads everything members-only.
 
@@ -626,7 +626,7 @@ On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-
 | Merge a PR (see below) | |
 | Create a repository (public or private), or fork one, with a cost preview; sync a fork with its parent (fast-forward) | Syncing a fork whose branch has commits of its own (open the pull request it offers) |
 | Add and remove members (owner) | |
-| Read members-only issues, comments and reviews (members, after one unlock per tab) <!-- PENDING #400 (weblane) --> | Choosing Members for a new issue or comment, and turning members-only content on (use `dg`) <!-- PENDING 1D --> |
+| Read members-only issues, comments and reviews (members, after one unlock per tab) | Choosing Members for a new issue or comment, and turning members-only content on (use `dg`) <!-- PENDING 1D --> |
 | Publish a release with assets, creating its tag when it does not exist (maintainers) | |
 | Star repositories and follow people | |
 | See your repositories, issues, PRs and stars in **Explore**, and new activity in **Notifications** | |

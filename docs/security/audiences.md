@@ -106,7 +106,7 @@ $ dg pr view alice/shop 7
 
 `dg issue view` adds a line saying only members can read it, and `dg pr view --comments` shows each members-only comment as a placeholder with its author and time. Lists say how many rows you can't read: "Issues 3 (1 members-only; only members of alice/shop can read them)".
 
-**In the web app**, members read members-only issues, comments and reviews after unlocking once in the tab, and a reply in a members-only conversation stays members-only. <!-- PENDING #400 (weblane) (1B/1F web) for reading and replies. --> The audience picker for a new issue or comment, the members-only rows and placeholders for everyone else, the "#N · members-only" page and **View as public** are **coming soon**. <!-- PENDING web UX stream (1D). -->
+**In the web app**, members read members-only issues, comments and reviews after unlocking once in the tab, and a reply in a members-only conversation stays members-only. The audience picker for a new issue or comment, the members-only rows and placeholders for everyone else, the "#N · members-only" page and **View as public** are **coming soon**. <!-- PENDING web UX stream (1D). -->
 
 **Search** looks only at what you can read. `dg search` tells you how many members-only issues it could not search.
 
@@ -185,9 +185,9 @@ People using older Forge builds see fewer things until they update. Nothing leak
 - an older web app may describe members-only items as "encrypted by someone who is not a member". That is wrong. Update;
 - an older build does not count a members-only review's approval, so it may refuse a merge an up-to-date build allows ([E804](../errors.md#e804)). Never the reverse. **Update to see and count members-only reviews.**
 
-Change members only with an up-to-date Forge (`dg`, and the web app from its update with members-only support <!-- PENDING #400 (weblane) -->), so the key follows every change:
+Change members only with an up-to-date Forge (`dg` or the web app), so the key follows every change:
 
-- a member added by an older build has no key yet, and sees [E311](#e311). Nothing shares it automatically: a maintainer chooses **Repair** on the repository page <!-- PENDING #400 (weblane): the web Repair --> or runs `dg repo keys repair`;
+- a member added by an older build has no key yet, and sees [E311](#e311). Nothing shares it automatically: a maintainer chooses **Repair** on the repository page or runs `dg repo keys repair`;
 - a member removed by an older build can still read new members-only content until the key changes. `dg repo keys status` flags it, and `dg repo keys repair` changes the key.
 
 ## Errors
@@ -198,7 +198,7 @@ Change members only with an up-to-date Forge (`dg`, and the web app from its upd
 
 Forge says: "You're a member, but no key has been shared with you yet. Ask a maintainer to share it: Repair on the repo page, or `dg repo keys repair`."
 
-**What to do:** ask a maintainer to share it. They choose **Repair** on the repository page <!-- PENDING #400 (weblane) --> (it shows the cost first), or run `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, set one up first: `dg auth keys add --encryption`.
+**What to do:** ask a maintainer to share it. They choose **Repair** on the repository page (it shows the cost first), or run `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, set one up first: `dg auth keys add --encryption`.
 
 ### E312
 
