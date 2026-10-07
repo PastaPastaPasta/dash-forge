@@ -123,6 +123,7 @@ export {
   readBrowseManifests,
   readPackCopies,
   packsOfKind,
+  plannedSuperseded,
   type AsOf,
   type PackManifest,
 } from './packs'
