@@ -1,0 +1,60 @@
+{
+  "name": "null_target_is_no_record",
+  "description": "A null target records nothing: the tag's history alone decides.",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "a",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      }
+    ],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": []
+      }
+    ],
+    "target": "0000000000000000000000000000000000000000"
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "alice"
+    },
+    "baseline": {
+      "oid": "a",
+      "by": "alice",
+      "at": 100
+    },
+    "pinnedBy": "tag",
+    "lateTag": false,
+    "current": {
+      "oid": "a",
+      "by": "alice",
+      "at": 100
+    },
+    "moves": [],
+    "tag": "unchanged",
+    "assets": {
+      "added": [],
+      "removed": [],
+      "replaced": []
+    },
+    "recorded": null,
+    "recordDiffers": false
+  }
+}

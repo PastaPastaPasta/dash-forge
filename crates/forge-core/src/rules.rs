@@ -2610,6 +2610,8 @@ mod tests {
                     revisions: Vec<super::provenance::ProvenanceRevision>,
                     #[serde(default)]
                     pin: Option<String>,
+                    #[serde(default)]
+                    target: Option<String>,
                 }
                 let inp: Input =
                     serde_json::from_value(v.input.clone()).expect("release_provenance input");
@@ -2619,6 +2621,7 @@ mod tests {
                     &inp.configs,
                     &inp.revisions,
                     inp.pin.as_deref(),
+                    inp.target.as_deref(),
                 );
                 assert_eq!(
                     serde_json::to_value(&got).expect("provenance json"),
@@ -2714,6 +2717,20 @@ mod tests {
             identity_id: String,
         }
         let ctx = &v.name;
+        if v.case == "profile_bot" {
+            #[derive(Deserialize, Serialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct BotInput {
+                bot_id: String,
+                bot: Option<super::profile::BotClaim>,
+                operator: Option<super::profile::BotClaim>,
+            }
+            let inp: BotInput = input(v);
+            let got =
+                super::profile::bot_operator(&inp.bot_id, inp.bot.as_ref(), inp.operator.as_ref());
+            assert_eq!(got, expected::<Option<String>>(v), "vector `{ctx}`");
+            return;
+        }
         if v.case == "profile_input" {
             let inp: super::profile::ProfileInput = input(v);
             let got = serde_json::to_value(super::profile::check_profile(&inp)).expect("serialize");
@@ -2869,7 +2886,25 @@ mod tests {
                 let got = v2::ref_name_hashes_agree(&inp.doc, key.as_ref());
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
-            "profile_input" | "avatar_config" => run_profile_case(v),
+            "profile_input" | "avatar_config" | "profile_bot" => run_profile_case(v),
+            "closed_by_pr" => {
+                #[derive(Deserialize, Serialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct ClosedByInput {
+                    issue: u32,
+                    closed_by_pr: Option<u32>,
+                    closed_at: u64,
+                    pr: Option<super::transition::ClosingPr>,
+                }
+                let inp: ClosedByInput = input(v);
+                let got = super::transition::closed_by_pr(
+                    inp.issue,
+                    inp.closed_by_pr,
+                    inp.closed_at,
+                    inp.pr.as_ref(),
+                );
+                assert_eq!(got, expected::<Option<u32>>(v), "vector `{}`", v.name);
+            }
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
             "pubkey_entry" | "commit_signature" | "tag_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),

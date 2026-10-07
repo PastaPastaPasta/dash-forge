@@ -9,12 +9,29 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { AUTHOR_ROLE_LABEL, AUTHOR_ROLE_TITLE, authorRoles } from '@/lib/view/author-role'
 import type { Membership } from '@/lib/rules/v2'
+import { BotBadgeScope } from '@/components/bot-badge'
 
 const Roles = createContext<ReturnType<typeof authorRoles> | null>(null)
 
-export function AuthorRolesProvider({ owner, members, children }: { owner: string; members: readonly Membership[]; children: ReactNode }): JSX.Element {
+export function AuthorRolesProvider({
+  owner,
+  members,
+  authors = [],
+  children,
+}: {
+  owner: string
+  members: readonly Membership[]
+  /** The thread's participants, for their bot badges (none: no badge, nothing read). */
+  authors?: readonly string[]
+  children: ReactNode
+}): JSX.Element {
   const roles = useMemo(() => authorRoles(owner, members), [owner, members])
-  return <Roles.Provider value={roles}>{children}</Roles.Provider>
+  // A thread names its authors' roles, and their bot badges (read once for the thread).
+  return (
+    <Roles.Provider value={roles}>
+      <BotBadgeScope ids={authors}>{children}</BotBadgeScope>
+    </Roles.Provider>
+  )
 }
 
 /** `identity`'s role badge, when the page provides roles and it holds one. */

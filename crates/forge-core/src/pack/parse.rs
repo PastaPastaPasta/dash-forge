@@ -25,7 +25,7 @@ use crate::error::{Error, Result};
 use flate2::read::ZlibDecoder;
 use sha1::{Digest as _, Sha1};
 use sha2::Sha256;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read as _;
 
 /// Raw byte length of a git SHA-1 object id.
@@ -33,6 +33,21 @@ pub const OID_LEN: usize = 20;
 
 /// Trailing checksum length of a SHA-1 packfile (its final 20 bytes).
 const PACK_TRAILER: usize = 20;
+
+/// The longest delta chain git writes: `pack-objects` clamps `--depth` / `pack.depth` to 4095
+/// (its 12-bit depth field), so a longer chain — or one that loops — is not a git pack.
+/// forge-web's reader walks at most this many bases too (`DELTA_WALK_MAX`).
+pub const MAX_DELTA_DEPTH: u32 = 4095;
+
+/// Deflate cannot expand its input by more than this factor (a 258-byte match per ~2 bits);
+/// forge-web's pack reader holds a declared size to the same bound. No reconstructed object can
+/// honestly be larger than its input inflated at this ratio, so the decoder refuses to grow one
+/// past that: bytes a pack only *declares* are never reserved.
+const DEFLATE_MAX_RATIO: u64 = 1032;
+
+/// What a decoder reserves up front for an inflated object before the stream proves it is
+/// that large; past it the buffer grows with the bytes actually produced.
+const INITIAL_RESERVE: usize = 64 * 1024;
 
 // Packfile object type codes (the 3-bit type nibble of the first header byte).
 const T_COMMIT: u8 = 1;
@@ -281,7 +296,11 @@ impl ParsedPack {
                 "object chain is not contiguous; use the per-base walk".into(),
             ));
         }
-        let base_addr = obj.end() - obj.delta_chain_span;
+        let base_addr = obj
+            .offset
+            .checked_add(obj.length)
+            .and_then(|end| end.checked_sub(obj.delta_chain_span))
+            .ok_or_else(|| Error::Config("span geometry out of range".into()))?;
         if span_slice.len() as u64 != obj.delta_chain_span {
             return Err(Error::Config("span slice length mismatch".into()));
         }
@@ -300,8 +319,14 @@ impl ParsedPack {
         Ok(self.objects.len())
     }
 
-    /// Decode the object at pack-absolute `abs_off`, where `buf[0]` corresponds to
-    /// pack-absolute `base_addr`. Recurses into (earlier) delta bases within `buf`.
+    /// Decode the object at pack-absolute `abs_off`, where `buf[0]` corresponds to pack-absolute
+    /// `base_addr`.
+    ///
+    /// Walks the delta chain down to its base first — OFS bases inside `buf`, REF bases by OID
+    /// when `allow_ref` (set only when `buf` is the whole pack) — then applies the deltas back up.
+    /// The walk is a loop, not a recursion, and it refuses a chain that revisits an object or runs
+    /// past [`MAX_DELTA_DEPTH`], so no bytes can drive it into a stack overflow or a hang. Every
+    /// output is held to what `buf` can inflate to ([`DEFLATE_MAX_RATIO`]).
     fn decode_at(
         &self,
         buf: &[u8],
@@ -309,36 +334,56 @@ impl ParsedPack {
         abs_off: u64,
         allow_ref: bool,
     ) -> Result<(GitObjType, Vec<u8>)> {
-        let pos = usize::try_from(abs_off - base_addr)
-            .map_err(|_| Error::Config("offset exceeds usize".into()))?;
-        let (t, size, after) = parse_obj_header(buf, pos)?;
-        match t {
-            T_COMMIT | T_TREE | T_BLOB | T_TAG => {
-                let data = inflate(&buf[after..], size)?;
-                Ok((GitObjType::from_code(t)?, data))
+        let budget = (buf.len() as u64).saturating_mul(DEFLATE_MAX_RATIO);
+        // (start of the delta's zlib stream, its declared inflated size), outermost first.
+        let mut deltas: Vec<(usize, usize)> = Vec::new();
+        let mut seen = HashSet::new();
+        let mut at = abs_off;
+        let (obj_type, mut data) = loop {
+            if !seen.insert(at) {
+                return Err(Error::Config("delta chain loops back on itself".into()));
             }
-            T_OFS_DELTA => {
-                let (rel, dpos) = parse_ofs_base(buf, after)?;
-                let base_abs = abs_off
-                    .checked_sub(rel)
-                    .ok_or_else(|| Error::Config("OFS base before pack start".into()))?;
-                let (bt, base) = self.decode_at(buf, base_addr, base_abs, allow_ref)?;
-                let delta = inflate(&buf[dpos..], size)?;
-                Ok((bt, apply_delta(&base, &delta)?))
-            }
-            T_REF_DELTA => {
-                if !allow_ref {
-                    return Err(Error::Config(
-                        "REF_DELTA in a span read (pack is not self-contained/OFS-only)".into(),
-                    ));
+            let pos = at
+                .checked_sub(base_addr)
+                .and_then(|p| usize::try_from(p).ok())
+                .ok_or_else(|| Error::Config("delta base outside the bytes read".into()))?;
+            let (t, size, after) = parse_obj_header(buf, pos)?;
+            at = match t {
+                T_COMMIT | T_TREE | T_BLOB | T_TAG => {
+                    break (GitObjType::from_code(t)?, inflate(&buf[after..], size)?);
                 }
-                let oid = &buf[after..after + OID_LEN];
-                let (bt, base) = self.object_bytes(oid)?;
-                let delta = inflate(&buf[after + OID_LEN..], size)?;
-                Ok((bt, apply_delta(&base, &delta)?))
+                T_OFS_DELTA => {
+                    let (rel, dpos) = parse_ofs_base(buf, after)?;
+                    deltas.push((dpos, size));
+                    at.checked_sub(rel)
+                        .ok_or_else(|| Error::Config("OFS base before pack start".into()))?
+                }
+                T_REF_DELTA => {
+                    if !allow_ref {
+                        return Err(Error::Config(
+                            "REF_DELTA in a span read (pack is not self-contained/OFS-only)".into(),
+                        ));
+                    }
+                    let end = after + OID_LEN;
+                    let oid = buf
+                        .get(after..end)
+                        .ok_or_else(|| Error::Config("truncated REF_DELTA base oid".into()))?;
+                    deltas.push((end, size));
+                    self.object(oid).ok_or(Error::NotFound)?.offset
+                }
+                other => return Err(Error::Config(format!("unknown pack object type {other}"))),
+            };
+            if deltas.len() > MAX_DELTA_DEPTH as usize {
+                return Err(Error::Config(format!(
+                    "delta chain deeper than {MAX_DELTA_DEPTH}"
+                )));
             }
-            other => Err(Error::Config(format!("unknown pack object type {other}"))),
+        };
+        for &(dpos, size) in deltas.iter().rev() {
+            let delta = inflate(&buf[dpos..], size)?;
+            data = apply_delta(&data, &delta, budget)?;
         }
+        Ok((obj_type, data))
     }
 }
 
@@ -363,19 +408,21 @@ fn parse_idx_v2(idx: &[u8]) -> Result<(Vec<[u8; OID_LEN]>, Vec<u64>)> {
         return Err(Error::Config("unsupported pack index version".into()));
     }
     let fanout_at = 8;
-    let n = read_u32(idx, fanout_at + 255 * 4)? as usize;
+    let n = read_u32(idx, fanout_at + 255 * 4)?;
 
-    let oids_at = fanout_at + 256 * 4;
-    let off32_at = oids_at + n * OID_LEN + n * 4; // after the oid + CRC tables
-    let big_at = off32_at + n * 4;
-
-    // The off32 table and both 20-byte trailers must fit under a SHA-1 layout before
-    // we can safely scan for large offsets.
-    if big_at + 2 * PACK_TRAILER > idx.len() {
+    // The oid, CRC and off32 tables and both 20-byte trailers must fit under a SHA-1 layout
+    // before we can safely scan for large offsets. Sized in u64 first, so every usize position
+    // below is within `idx`.
+    let tables = u64::from(n) * (OID_LEN as u64 + 4 + 4);
+    if 8 + 1024 + tables + 2 * PACK_TRAILER as u64 > idx.len() as u64 {
         return Err(Error::Config(
             "pack index too short for its object count".into(),
         ));
     }
+    let n = n as usize;
+    let oids_at = fanout_at + 256 * 4;
+    let off32_at = oids_at + n * OID_LEN + n * 4; // after the oid + CRC tables
+    let big_at = off32_at + n * 4;
 
     // Count large-offset entries, then require the SHA-1 layout to reconcile to the
     // file length EXACTLY. A genuine SHA-256 index shares the magic + version 2 but
@@ -388,11 +435,7 @@ fn parse_idx_v2(idx: &[u8]) -> Result<(Vec<[u8; OID_LEN]>, Vec<u64>)> {
             num_big += 1;
         }
     }
-    let expected = 8
-        + 1024
-        + n as u64 * (OID_LEN as u64 + 4 + 4)
-        + num_big as u64 * 8
-        + 2 * PACK_TRAILER as u64;
+    let expected = 8 + 1024 + tables + num_big as u64 * 8 + 2 * PACK_TRAILER as u64;
     if expected != idx.len() as u64 {
         return Err(Error::Config(
             "pack index length does not match a SHA-1 v2 layout \
@@ -414,7 +457,11 @@ fn parse_idx_v2(idx: &[u8]) -> Result<(Vec<[u8; OID_LEN]>, Vec<u64>)> {
         let v = read_u32(idx, off32_at + i * 4)?;
         if v & 0x8000_0000 != 0 {
             let j = (v & 0x7fff_ffff) as usize;
-            offsets.push(read_u64(idx, big_at + j * 8)?);
+            let at = j
+                .checked_mul(8)
+                .and_then(|o| o.checked_add(big_at))
+                .ok_or_else(|| Error::Config("index truncated (u64)".into()))?;
+            offsets.push(read_u64(idx, at)?);
         } else {
             offsets.push(u64::from(v));
         }
@@ -437,7 +484,8 @@ fn parse_obj_header(buf: &[u8], pos: usize) -> Result<(u8, usize, usize)> {
             .get(p)
             .ok_or_else(|| Error::Config("truncated object size varint".into()))?;
         p += 1;
-        size |= u64::from(c & 0x7f) << shift;
+        size |= shl_exact(u64::from(c & 0x7f), shift)
+            .ok_or_else(|| Error::Config("object size varint overflow".into()))?;
         shift += 7;
     }
     let size =
@@ -458,16 +506,37 @@ fn parse_ofs_base(buf: &[u8], pos: usize) -> Result<(u64, usize)> {
             .get(p)
             .ok_or_else(|| Error::Config("truncated OFS base varint".into()))?;
         p += 1;
-        ofs = ((ofs + 1) << 7) | u64::from(c & 0x7f);
+        ofs = ofs
+            .checked_add(1)
+            .and_then(|o| o.checked_mul(128))
+            .ok_or_else(|| Error::Config("OFS base varint overflow".into()))?
+            | u64::from(c & 0x7f);
+    }
+    // git reads a zero back-pointer as out of bounds: an object cannot be its own base.
+    if ofs == 0 {
+        return Err(Error::Config("OFS delta names itself as its base".into()));
     }
     Ok((ofs, p))
 }
 
 /// Inflate one zlib stream, asserting it yields exactly `expected` bytes.
+///
+/// `expected` is the pack's claim. A claim `compressed` could not inflate to is refused outright,
+/// and the stream is read through a limit of one byte past the claim, so memory follows the bytes
+/// the stream actually produces and stops just past `expected`.
 fn inflate(compressed: &[u8], expected: usize) -> Result<Vec<u8>> {
-    let mut d = ZlibDecoder::new(compressed);
-    let mut out = Vec::with_capacity(expected);
-    d.read_to_end(&mut out)
+    let most = (compressed.len() as u64)
+        .saturating_mul(DEFLATE_MAX_RATIO)
+        .saturating_add(64);
+    if expected as u64 > most {
+        return Err(Error::Config(
+            "object declares more bytes than its stream can inflate to".into(),
+        ));
+    }
+    let mut out = Vec::with_capacity(expected.min(INITIAL_RESERVE));
+    ZlibDecoder::new(compressed)
+        .take((expected as u64).saturating_add(1))
+        .read_to_end(&mut out)
         .map_err(|e| Error::Io(e.to_string()))?;
     if out.len() != expected {
         return Err(Error::Integrity);
@@ -475,12 +544,32 @@ fn inflate(compressed: &[u8], expected: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Apply a git delta (`src_size, dst_size, [copy|insert]*`) to `base`.
-fn apply_delta(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
+/// Apply a git delta (`src_size, dst_size, [copy|insert]*`) to `base`, producing at most
+/// `budget` bytes.
+///
+/// `dst_size` is the delta's claim. It is checked against what the opcodes could produce
+/// before anything is reserved (each opcode byte yields at most one copy, which is at most
+/// 0xffffff bytes and never more than `base`, or one literal byte), and every opcode is checked
+/// against it before its bytes are appended, so a few bytes of delta cannot claim gigabytes.
+fn apply_delta(base: &[u8], delta: &[u8], budget: u64) -> Result<Vec<u8>> {
     let mut pos = 0usize;
-    let _src = read_delta_size(delta, &mut pos)?;
+    let src = read_delta_size(delta, &mut pos)?;
+    // git's patch_delta refuses a delta made against a base of another size.
+    if src != base.len() {
+        return Err(Error::Config(
+            "delta source size does not match its base".into(),
+        ));
+    }
     let dst = read_delta_size(delta, &mut pos)?;
-    let mut out = Vec::with_capacity(dst);
+    let per_op_byte = base.len().clamp(1, 0xff_ffff) as u64;
+    let can_produce = ((delta.len() - pos) as u64).saturating_mul(per_op_byte);
+    if dst as u64 > can_produce.min(budget) {
+        return Err(Error::Config(
+            "delta declares more output than it can produce".into(),
+        ));
+    }
+    let mut out = Vec::with_capacity(dst.min(base.len().saturating_add(delta.len())));
+    let overrun = || Error::Config("delta output runs past its declared size".into());
     while pos < delta.len() {
         let op = delta[pos];
         pos += 1;
@@ -508,12 +597,18 @@ fn apply_delta(base: &[u8], delta: &[u8]) -> Result<Vec<u8>> {
             let src = base
                 .get(s..e)
                 .ok_or_else(|| Error::Config("delta copy out of base bounds".into()))?;
+            if src.len() > dst - out.len() {
+                return Err(overrun());
+            }
             out.extend_from_slice(src);
         } else if op != 0 {
             let n = op as usize;
             let ins = delta
                 .get(pos..pos + n)
                 .ok_or_else(|| Error::Config("delta insert past end".into()))?;
+            if n > dst - out.len() {
+                return Err(overrun());
+            }
             out.extend_from_slice(ins);
             pos += n;
         } else {
@@ -551,8 +646,10 @@ fn resolve_chain(
             break;
         };
         j = next;
-        if depth > 100_000 {
-            return Err(Error::Config("delta chain too deep (cycle?)".into()));
+        if depth > MAX_DELTA_DEPTH {
+            return Err(Error::Config(format!(
+                "delta chain deeper than {MAX_DELTA_DEPTH} (or a cycle)"
+            )));
         }
     }
     let obj_type = GitObjType::from_code(raw_type[j])?;
@@ -569,13 +666,21 @@ fn read_delta_size(buf: &[u8], pos: &mut usize) -> Result<usize> {
     let mut shift = 0u32;
     loop {
         let b = read_byte(buf, pos)?;
-        r |= u64::from(b & 0x7f) << shift;
+        r |= shl_exact(u64::from(b & 0x7f), shift)
+            .ok_or_else(|| Error::Config("delta size varint overflow".into()))?;
         if b & 0x80 == 0 {
             break;
         }
         shift += 7;
     }
     usize::try_from(r).map_err(|_| Error::Config("delta size exceeds usize".into()))
+}
+
+/// `bits << shift`, or `None` when any bit would fall off the top of a u64: an overlong
+/// varint, which no git writer emits.
+fn shl_exact(bits: u64, shift: u32) -> Option<u64> {
+    let v = bits.checked_shl(shift)?;
+    (v >> shift == bits).then_some(v)
 }
 
 fn read_byte(buf: &[u8], pos: &mut usize) -> Result<u8> {
@@ -588,21 +693,27 @@ fn read_byte(buf: &[u8], pos: &mut usize) -> Result<u8> {
 
 fn read_u32(buf: &[u8], at: usize) -> Result<u32> {
     let s = buf
-        .get(at..at + 4)
+        .get(at..at.saturating_add(4))
         .ok_or_else(|| Error::Config("index truncated (u32)".into()))?;
     Ok(u32::from_be_bytes(s.try_into().unwrap()))
 }
 
 fn read_u64(buf: &[u8], at: usize) -> Result<u64> {
     let s = buf
-        .get(at..at + 8)
+        .get(at..at.saturating_add(8))
         .ok_or_else(|| Error::Config("index truncated (u64)".into()))?;
     Ok(u64::from_be_bytes(s.try_into().unwrap()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_delta, parse_idx_v2};
+    use super::{
+        apply_delta, parse_idx_v2, GitObjType, PackObject, ParsedPack, MAX_DELTA_DEPTH, OID_LEN,
+        T_BLOB, T_OFS_DELTA, T_REF_DELTA,
+    };
+    use crate::pack::TestRng;
+    use flate2::{write::ZlibEncoder, Compression};
+    use std::io::Write as _;
 
     /// A minimal, well-formed SHA-1 v2 idx header for `n` objects (fanout says `n`,
     /// tables + trailers are zero-filled). `n` must be small enough that no off32
@@ -682,6 +793,350 @@ mod tests {
         delta.push(5); // copy size = 5
         delta.push(2); // insert 2 literal bytes
         delta.extend_from_slice(b"!!");
-        assert_eq!(apply_delta(base, &delta).unwrap(), b"hello!!");
+        assert_eq!(apply_delta(base, &delta, u64::MAX).unwrap(), b"hello!!");
+    }
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut e = ZlibEncoder::new(Vec::new(), Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// A pack object header: the type nibble and git's size varint.
+    fn obj_header(t: u8, mut size: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut c = (t << 4) | (size & 0x0f) as u8;
+        size >>= 4;
+        while size != 0 {
+            out.push(c | 0x80);
+            c = (size & 0x7f) as u8;
+            size >>= 7;
+        }
+        out.push(c);
+        out
+    }
+
+    /// git's `OFS_DELTA` back-pointer encoding of `rel`.
+    fn ofs_varint(mut rel: u64) -> Vec<u8> {
+        let mut out = vec![(rel & 0x7f) as u8];
+        rel >>= 7;
+        while rel != 0 {
+            rel -= 1;
+            out.push(0x80 | (rel & 0x7f) as u8);
+            rel >>= 7;
+        }
+        out.reverse();
+        out
+    }
+
+    /// A delta header size (little-endian base-128).
+    fn delta_size(mut v: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                return out;
+            }
+            out.push(b | 0x80);
+        }
+    }
+
+    /// A delta that copies the whole of a `len`-byte base (`len` in 1..=255).
+    fn copy_all_delta(len: u8) -> Vec<u8> {
+        vec![len, len, 0x80 | 0x10, len]
+    }
+
+    /// A packed `OFS_DELTA` entry `rel` bytes after its base.
+    fn ofs_entry(rel: u64, delta: &[u8]) -> Vec<u8> {
+        let mut e = obj_header(T_OFS_DELTA, delta.len() as u64);
+        e.extend(ofs_varint(rel));
+        e.extend(zlib(delta));
+        e
+    }
+
+    /// A packed `REF_DELTA` entry against `base`.
+    fn ref_entry(base: [u8; OID_LEN], delta: &[u8]) -> Vec<u8> {
+        let mut e = obj_header(T_REF_DELTA, delta.len() as u64);
+        e.extend(base);
+        e.extend(zlib(delta));
+        e
+    }
+
+    fn blob_entry(data: &[u8]) -> Vec<u8> {
+        let mut e = obj_header(T_BLOB, data.len() as u64);
+        e.extend(zlib(data));
+        e
+    }
+
+    fn object(oid: [u8; OID_LEN], offset: u64, length: u64) -> PackObject {
+        PackObject {
+            oid,
+            offset,
+            length,
+            obj_type: GitObjType::Blob,
+            delta_depth: 0,
+            is_ref_delta: false,
+            delta_chain_span: offset + length,
+            contiguous: true,
+        }
+    }
+
+    /// A parsed pack over `pack` that knows only `objects`: enough for the decoders.
+    fn bare(pack: Vec<u8>, objects: Vec<PackObject>) -> ParsedPack {
+        let oid_to_idx = objects
+            .iter()
+            .enumerate()
+            .map(|(i, o)| (o.oid, i))
+            .collect();
+        ParsedPack {
+            pack_bytes: pack,
+            pack_hash: [0; 32],
+            objects,
+            oid_to_idx,
+        }
+    }
+
+    /// Decode the object at `offset` of `buf` as a span read covering all of `buf`.
+    fn span_decode(buf: &[u8], offset: usize) -> crate::error::Result<(GitObjType, Vec<u8>)> {
+        let obj = object([0; OID_LEN], offset as u64, (buf.len() - offset) as u64);
+        bare(Vec::new(), Vec::new()).reconstruct_from_span(&obj, buf)
+    }
+
+    /// `PACK` v2 header, `entries` back to back, and a zero trailer; plus each entry's offset.
+    fn pack_of(entries: &[Vec<u8>]) -> (Vec<u8>, Vec<u64>) {
+        let mut pack = b"PACK".to_vec();
+        pack.extend(2u32.to_be_bytes());
+        pack.extend((entries.len() as u32).to_be_bytes());
+        let mut offsets = Vec::new();
+        for e in entries {
+            offsets.push(pack.len() as u64);
+            pack.extend(e);
+        }
+        pack.extend([0u8; 20]);
+        (pack, offsets)
+    }
+
+    /// A v2 `.idx` for `(oid, offset)` pairs (offsets under 2^31).
+    fn idx_of(objects: &[([u8; OID_LEN], u64)]) -> Vec<u8> {
+        let mut sorted = objects.to_vec();
+        sorted.sort_unstable();
+        let mut idx = b"\xfftOc".to_vec();
+        idx.extend(2u32.to_be_bytes());
+        for b in 0..=255u8 {
+            let n = sorted.iter().filter(|(o, _)| o[0] <= b).count() as u32;
+            idx.extend(n.to_be_bytes());
+        }
+        for (oid, _) in &sorted {
+            idx.extend(oid);
+        }
+        idx.extend(vec![0u8; 4 * sorted.len()]);
+        for (_, off) in &sorted {
+            idx.extend((*off as u32).to_be_bytes());
+        }
+        idx.extend([0u8; 40]);
+        idx
+    }
+
+    #[test]
+    fn huge_declared_object_size_fails_before_allocating() {
+        let mut buf = obj_header(T_BLOB, 1 << 60);
+        buf.extend(zlib(b"hi"));
+        assert!(span_decode(&buf, 0).is_err());
+    }
+
+    #[test]
+    fn declared_object_size_must_match_the_stream() {
+        let mut buf = obj_header(T_BLOB, 3);
+        buf.extend(zlib(b"four"));
+        assert!(span_decode(&buf, 0).is_err());
+        let mut buf = obj_header(T_BLOB, 4);
+        buf.extend(zlib(b"four"));
+        assert_eq!(span_decode(&buf, 0).unwrap().1, b"four");
+    }
+
+    #[test]
+    fn huge_delta_destination_fails_before_allocating() {
+        let mut delta = vec![3u8];
+        delta.extend(delta_size(1 << 60));
+        delta.extend([0x80 | 0x10, 3]);
+        assert!(apply_delta(b"abc", &delta, u64::MAX).is_err());
+
+        // The same through the decoder: a tiny delta entry claiming an exabyte.
+        let mut buf = blob_entry(b"abc");
+        let rel = buf.len() as u64;
+        buf.extend(ofs_entry(rel, &delta));
+        assert!(span_decode(&buf, rel as usize).is_err());
+    }
+
+    #[test]
+    fn delta_output_is_held_to_its_declared_size_and_base() {
+        // Claims 2 bytes, copies 3.
+        assert!(apply_delta(b"abc", &[3, 2, 0x80 | 0x10, 3], u64::MAX).is_err());
+        // Made against a 4-byte base, applied to a 3-byte one.
+        assert!(apply_delta(b"abc", &[4, 3, 0x80 | 0x10, 3], u64::MAX).is_err());
+        // Within the declared size but over the caller's budget.
+        assert!(apply_delta(b"abc", &copy_all_delta(3)[..], 2).is_err());
+        assert_eq!(
+            apply_delta(b"abc", &copy_all_delta(3), u64::MAX).unwrap(),
+            b"abc"
+        );
+    }
+
+    #[test]
+    fn overlong_size_varints_are_refused() {
+        // An object header whose size runs past 64 bits.
+        let mut buf = vec![0xb0];
+        buf.extend([0xff; 10]);
+        buf.push(0x7f);
+        assert!(span_decode(&buf, 0).is_err());
+        // A delta size that does.
+        let mut delta = vec![0xff; 10];
+        delta.push(0x7f);
+        assert!(apply_delta(b"", &delta, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn a_self_referencing_ofs_delta_is_refused() {
+        let mut buf = obj_header(T_OFS_DELTA, 4);
+        buf.push(0x00); // back-pointer 0: the object itself
+        buf.extend(zlib(&copy_all_delta(1)));
+        assert!(span_decode(&buf, 0).is_err());
+    }
+
+    #[test]
+    fn an_ofs_base_outside_the_span_is_refused() {
+        let mut buf = blob_entry(b"x");
+        let rel = buf.len() as u64;
+        buf.extend(ofs_entry(rel + 1000, &copy_all_delta(1)));
+        assert!(span_decode(&buf, rel as usize).is_err());
+    }
+
+    #[test]
+    fn ref_delta_cycles_are_refused() {
+        let (a, b) = ([1u8; OID_LEN], [2u8; OID_LEN]);
+        // A names itself as its base.
+        let (pack, offs) = pack_of(&[ref_entry(a, &copy_all_delta(1))]);
+        let p = bare(pack, vec![object(a, offs[0], 1)]);
+        assert!(p.object_bytes(&a).is_err());
+
+        // A and B name each other.
+        let entries = [
+            ref_entry(b, &copy_all_delta(1)),
+            ref_entry(a, &copy_all_delta(1)),
+        ];
+        let (pack, offs) = pack_of(&entries);
+        let p = bare(
+            pack.clone(),
+            vec![object(a, offs[0], 1), object(b, offs[1], 1)],
+        );
+        assert!(p.object_bytes(&a).is_err());
+        assert!(p.object_bytes(&b).is_err());
+
+        // And the full parse refuses the pack itself.
+        let idx = idx_of(&[(a, offs[0]), (b, offs[1])]);
+        assert!(ParsedPack::parse(&pack, &idx).is_err());
+    }
+
+    /// A blob "x" then `deltas` OFS deltas, each against the entry before it.
+    fn chain(deltas: usize) -> (Vec<u8>, Vec<u64>) {
+        let mut entries = vec![blob_entry(b"x")];
+        let step = ofs_entry(1, &copy_all_delta(1)).len();
+        for i in 0..deltas {
+            let rel = if i == 0 { entries[0].len() } else { step };
+            entries.push(ofs_entry(rel as u64, &copy_all_delta(1)));
+            // Every back-pointer encodes in one byte, so every delta entry has the same length.
+            assert_eq!(entries[i + 1].len(), step);
+        }
+        pack_of(&entries)
+    }
+
+    #[test]
+    fn delta_chains_deeper_than_git_writes_are_refused() {
+        let depth = MAX_DELTA_DEPTH as usize;
+        let (pack, offs) = chain(depth);
+        let top = offs[depth] as usize;
+        let span = &pack[..pack.len() - 20];
+        assert_eq!(span_decode(span, top).unwrap().1, b"x");
+
+        let (pack, offs) = chain(depth + 1);
+        let top = offs[depth + 1] as usize;
+        let span = &pack[..pack.len() - 20];
+        assert!(span_decode(span, top).is_err());
+        let oids: Vec<([u8; OID_LEN], u64)> = offs
+            .iter()
+            .enumerate()
+            .map(|(i, &o)| {
+                let mut oid = [0u8; OID_LEN];
+                oid[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                (oid, o)
+            })
+            .collect();
+        assert!(ParsedPack::parse(&pack, &idx_of(&oids)).is_err());
+    }
+
+    #[test]
+    fn a_hand_built_pack_parses_and_reconstructs() {
+        let (a, b) = ([1u8; OID_LEN], [2u8; OID_LEN]);
+        let base = blob_entry(b"hello");
+        let rel = base.len() as u64;
+        let mut delta = vec![5, 7, 0x80 | 0x10, 5, 2];
+        delta.extend(b"!!");
+        let (pack, offs) = pack_of(&[base, ofs_entry(rel, &delta)]);
+        let p = ParsedPack::parse(&pack, &idx_of(&[(a, offs[0]), (b, offs[1])])).unwrap();
+        assert_eq!(p.object_bytes(&b).unwrap().1, b"hello!!");
+        let obj = p.object(&b).unwrap().clone();
+        let start = (obj.end() - obj.delta_chain_span) as usize;
+        let slice = &pack[start..obj.end() as usize];
+        assert_eq!(p.reconstruct_from_span(&obj, slice).unwrap().1, b"hello!!");
+    }
+
+    #[test]
+    fn random_bytes_never_panic_the_pack_decoders() {
+        let mut rng = TestRng(0x9e37_79b9_7f4a_7c15);
+        // Raw random spans and deltas.
+        for _ in 0..4000 {
+            let len = 1 + rng.below(96);
+            let buf = rng.bytes(len);
+            let _ = span_decode(&buf, rng.below(len));
+            let base_len = rng.below(32);
+            let base = rng.bytes(base_len);
+            let _ = apply_delta(&base, &buf, 1 << 20);
+        }
+        // Mutations of a well-formed pack + index with a delta in it.
+        let (a, b) = ([1u8; OID_LEN], [2u8; OID_LEN]);
+        let base = blob_entry(b"hello");
+        let rel = base.len() as u64;
+        let mut delta = vec![5, 7, 0x80 | 0x10, 5, 2];
+        delta.extend(b"!!");
+        let (pack, offs) = pack_of(&[base, ofs_entry(rel, &delta)]);
+        let idx = idx_of(&[(a, offs[0]), (b, offs[1])]);
+        for _ in 0..4000 {
+            let (mut pk, mut ix) = (pack.clone(), idx.clone());
+            for _ in 0..=rng.below(4) {
+                if rng.below(2) == 0 {
+                    let at = rng.below(pk.len());
+                    pk[at] = rng.byte();
+                } else {
+                    let at = rng.below(ix.len());
+                    ix[at] = rng.byte();
+                }
+            }
+            let Ok(p) = ParsedPack::parse(&pk, &ix) else {
+                continue;
+            };
+            let _ = p.verify_all_oids();
+            for obj in p.objects.clone() {
+                let _ = p.object_bytes(&obj.oid);
+                let start = obj.offset.saturating_add(obj.length);
+                let range = start
+                    .checked_sub(obj.delta_chain_span)
+                    .map(|s| s as usize..start as usize);
+                if let Some(slice) = range.and_then(|r| pk.get(r)) {
+                    let _ = p.reconstruct_from_span(&obj, slice);
+                }
+            }
+        }
     }
 }

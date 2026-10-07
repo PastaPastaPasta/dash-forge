@@ -267,6 +267,20 @@ impl Helper {
             .read_default_branch(&conn.repo)
             .await?
             .unwrap_or_else(|| "main".to_string());
+        // A fetch or clone of a public repository a maintainer marked as moved says where it
+        // went (best effort, one small read); nothing is redirected.
+        if !for_push {
+            if let Ok(Some(id)) = svc.moved_to(&conn.repo).await {
+                // A new repository that does not resolve is still a dash:// address (by id).
+                let to = forge_core::resolve::resolve_id(&conn.client, &id)
+                    .await
+                    .map_or_else(|_| format!("dash://{id}"), |r| r.remote_url());
+                eprintln!(
+                    "{}",
+                    moved_hint(&conn.repo.remote_url(), &to, self.remote.as_deref())
+                );
+            }
+        }
         Ok(list_lines(&refs, &default_branch, for_push))
     }
 
@@ -3452,6 +3466,17 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
     Ok(forge_core::keystore::configured_default_source()?.map_or(per_owner, PathBuf::from))
 }
 
+/// The `hint:` a fetch of a repository marked as moved prints: where it went, and, for a named
+/// remote (not a URL fetched directly), the `git remote set-url` that follows it.
+fn moved_hint(from: &str, to: &str, remote: Option<&str>) -> String {
+    match remote.filter(|r| !r.is_empty() && !r.contains("://")) {
+        Some(r) => format!(
+            "hint: {from} has moved to {to}; to follow it, run `git remote set-url {r} {to}`"
+        ),
+        None => format!("hint: {from} has moved to {to}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3460,6 +3485,18 @@ mod tests {
         settle_ref_writes, write_denied, Planned, PushOutcome, PushSpec, Unreadable,
     };
     use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
+
+    #[test]
+    fn a_moved_hint_names_the_remote_to_update() {
+        assert_eq!(
+            super::moved_hint("dash://a/x", "dash://b/y", Some("upstream")),
+            "hint: dash://a/x has moved to dash://b/y; to follow it, run `git remote set-url upstream dash://b/y`"
+        );
+        assert_eq!(
+            super::moved_hint("dash://a/x", "dash://b/y", Some("dash://a/x")),
+            "hint: dash://a/x has moved to dash://b/y"
+        );
+    }
 
     #[test]
     fn a_lease_holds_only_where_the_ref_still_points() {

@@ -43,7 +43,7 @@ import type { RepoRef } from './contract'
 import { requireMaintainer } from './members'
 import { readReleases, type ReleaseAssetView } from './releases'
 import type { ResolvedSealedRelease, SealedReleaseEvent, SealedReleaseWarning } from './sealed-release'
-import { ensureTag } from './ref-admin'
+import { ensureTag, readRefNow } from './ref-admin'
 import { createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
 import { isLongBody, longBodyField } from './long-body'
 import { isRc1TagName } from '../rules'
@@ -320,6 +320,26 @@ interface PublishInput {
    * that exists at another commit refuses the publish before anything uploads.
    */
   readonly createTag?: { readonly target: string }
+  /**
+   * The existing tag's tip as the page read it (hex). The publish reads the tip again and refuses
+   * when it moved (the person chose a release of what they saw), else records it: provenance checks
+   * the tag's history against it. With `createTag`, the new tag's target is recorded.
+   */
+  readonly tagTip?: string
+}
+
+/**
+ * The tag's tip now, read fresh: what a public release records as its target. Refused when the page
+ * showed another tip (`shown`): the tag moved while the form was open, and recording either would
+ * mislabel the release. Undefined when the tag names nothing for sure (deleted, or two pushes race).
+ */
+export async function currentTagTip(sdk: EvoSDK, repo: RepoRef, tag: string, shown: string | undefined): Promise<string | undefined> {
+  const { state } = await readRefNow(sdk, repo, `refs/tags/${tag}`)
+  const now = state?.state === 'resolved' ? state.oid.toLowerCase() : undefined
+  if (shown !== undefined && now !== shown.toLowerCase()) {
+    throw new Error(`${tag} moved after this page loaded${now !== undefined ? ` (it is at ${now.slice(0, 7)} now)` : ''}. Reload the page and publish again.`)
+  }
+  return now
 }
 
 /** Create the tag a publish names, when asked to: once the role is known, before any upload. */
@@ -434,6 +454,7 @@ export async function publishRelease(
     releaseTextProblem({ name, notes: longNotes ? '' : typed }) ??
     (input.stored ? null : (assetFilesProblem(input.files, keep) ?? assetPlanProblem(input.files, storage.policy, storage.profiles, keep)))
   if (problem) throw new Error(problem)
+  const target = input.createTag?.target ?? (await currentTagTip(sdk, repo, input.tagName, input.tagTip))
   await createTagFirst(sdk, auth, repo, input, onEvent)
 
   // A retry of an unconfirmed write re-signs exactly what it named (kept assets included) and
@@ -460,6 +481,7 @@ export async function publishRelease(
       ...(name ? { name } : {}),
       ...(notes ? { notes } : {}),
       ...(assets.length > 0 ? { assets } : {}),
+      ...(target !== undefined ? { targetOid: target } : {}),
       intent,
     })
     return { release, assets }

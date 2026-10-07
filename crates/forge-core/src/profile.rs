@@ -14,10 +14,14 @@ use crate::platform::{
 };
 #[cfg(test)]
 use crate::rules::profile::PROFILE_FIELDS;
-use crate::rules::profile::{check_profile, profile_problems, ProfileFields, ProfileInput};
+use crate::rules::profile::{
+    check_profile, profile_problems, BotClaim, ProfileFields, ProfileInput, MAX_OPERATED_BOTS,
+};
 
 /// forge-community: an identity's profile.
 pub const DOC_PROFILE: &str = "profile";
+/// `profile.bot` (UPDATE-1 `profile_bot`).
+pub const PROFILE_BOT: &str = "bot";
 
 /// A stored profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,6 +36,9 @@ pub struct Profile {
     pub fields: ProfileFields,
     /// Signing keys (`gpg:…` / `ssh-…`), for signed-commit badges.
     pub pubkeys: Vec<String>,
+    /// The `bot` claim (UPDATE-1): its operator, or the bots it operates. A badge needs both
+    /// sides ([`crate::rules::profile::bot_operator`]).
+    pub bot: Option<BotClaim>,
 }
 
 fn text_field(d: &FetchedDocument, name: &str) -> Option<String> {
@@ -65,7 +72,120 @@ pub fn profile_from_doc(d: &FetchedDocument) -> Profile {
             company: text_field(d, "company"),
         },
         pubkeys: list_field(d, "pubkeys"),
+        bot: bot_field(d),
     }
+}
+
+/// The `bot` object of a profile document: ids that are not 32 bytes are skipped.
+fn bot_field(d: &FetchedDocument) -> Option<BotClaim> {
+    let FieldValue::Object(o) = d.fields.get(PROFILE_BOT)? else {
+        return None;
+    };
+    let id = |v: &FieldValue| {
+        v.as_bytes()
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .map(platform::encode_identifier)
+    };
+    let claim = BotClaim {
+        operator: o.get("operator").and_then(id),
+        operates: match o.get("operates") {
+            Some(FieldValue::List(items)) => items.iter().filter_map(id).collect(),
+            _ => Vec::new(),
+        },
+    };
+    (claim != BotClaim::default()).then_some(claim)
+}
+
+/// The `bot` value to store for `claim` (`None`: the property is removed).
+fn bot_value(claim: &BotClaim) -> Result<Option<FieldValue>> {
+    if claim.operates.len() > MAX_OPERATED_BOTS {
+        return Err(crate::error::Error::Config(format!(
+            "a profile lists at most {MAX_OPERATED_BOTS} bots"
+        )));
+    }
+    let mut o = BTreeMap::new();
+    if let Some(op) = &claim.operator {
+        o.insert(
+            "operator".to_string(),
+            FieldValue::identifier(platform::decode_identifier(op)?),
+        );
+    }
+    if !claim.operates.is_empty() {
+        let ids = claim
+            .operates
+            .iter()
+            .map(|b| platform::decode_identifier(b).map(FieldValue::identifier))
+            .collect::<Result<Vec<_>>>()?;
+        o.insert("operates".to_string(), FieldValue::List(ids));
+    }
+    Ok((!o.is_empty()).then_some(FieldValue::Object(o)))
+}
+
+/// Set the signer's `bot` claim to `claim` (an empty claim removes it), keeping every other
+/// field: create a profile holding only it when the identity has none.
+pub async fn write_bot(
+    engine: &WriteEngine<'_>,
+    client: &PlatformClient,
+    forge: &ForgeIds,
+    existing: Option<&Profile>,
+    claim: &BotClaim,
+) -> Result<ProfileWrite> {
+    let community = client.fetch_contract(&forge.community).await?;
+    if !community.has_property(DOC_PROFILE, PROFILE_BOT) {
+        return Err(crate::error::Error::Config(
+            "this network's Forge doesn't support bot accounts yet".into(),
+        ));
+    }
+    let value = bot_value(claim)?;
+    match (existing, value) {
+        (None, None) => Err(crate::error::Error::Config(
+            "there is no bot claim to write".into(),
+        )),
+        (None, Some(v)) => Ok(ProfileWrite::Created(
+            engine
+                .create_document(
+                    &community,
+                    DOC_PROFILE,
+                    BTreeMap::from([(PROFILE_BOT.to_string(), v)]),
+                )
+                .await?,
+        )),
+        (Some(p), v) => {
+            let changes = BTreeMap::from([(PROFILE_BOT.to_string(), v)]);
+            Ok(
+                if engine
+                    .replace_document_guarded(&community, DOC_PROFILE, &p.id, &changes, p.revision)
+                    .await?
+                {
+                    ProfileWrite::Replaced(p.id.clone())
+                } else {
+                    ProfileWrite::Unchanged(p.id.clone())
+                },
+            )
+        }
+    }
+}
+
+/// The operator of `bot_id` when both profiles agree, reading the operator's profile only when
+/// the bot's names one (`bot`: the bot's profile, already read).
+pub async fn verified_operator(
+    client: &PlatformClient,
+    forge: &ForgeIds,
+    bot_id: &str,
+    bot: Option<&Profile>,
+) -> Result<Option<String>> {
+    let Some(claimed) = bot
+        .and_then(|p| p.bot.as_ref())
+        .and_then(|b| b.operator.clone())
+    else {
+        return Ok(None);
+    };
+    let operator = read_profile(client, forge, &claimed).await?;
+    Ok(crate::rules::profile::bot_operator(
+        bot_id,
+        bot.and_then(|p| p.bot.as_ref()),
+        operator.as_ref().and_then(|p| p.bot.as_ref()),
+    ))
 }
 
 /// The profile of `identity_id` (base58), if it has one (proved either way).
