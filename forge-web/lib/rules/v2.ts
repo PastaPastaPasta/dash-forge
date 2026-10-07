@@ -317,6 +317,14 @@ export interface V2Pack {
 }
 
 /**
+ * Whether a `supersedes` entry naming `claimed` counts (forge-v2.md §4): a pack never
+ * supersedes itself, and a manifest supersedes only packs of its own kind.
+ */
+function claimCounts(claimantHash: string, claimantKind: number, claimedHash: string, claimedKind: number): boolean {
+  return claimedHash !== claimantHash && claimedKind === claimantKind
+}
+
+/**
  * Every pack of a repository with its `packRef`, from all its `packManifest` copies
  * (forge-v2.md §4; the Rust `v2_pack_list`; vectors `v2_pack_list__*`). Kind-agnostic:
  * pass every copy and select a kind from the output.
@@ -326,7 +334,7 @@ export interface V2Pack {
  * representative (a hash with none is left out), whose kind and metadata are the pack's;
  * copies of another kind leave `copies`. `first` is the earliest key among ALL the hash's
  * copies; `packRef` is the index by `first` among packs of the same kind. A pack is
- * superseded only by a listed pack whose representative verified (`true`).
+ * superseded only by a listed pack of the same kind whose representative verified (`true`).
  * Output order: kind, then packRef.
  */
 export function v2PackList(copies: readonly PackCopyRow[], asOf?: CopyKey | null): V2Pack[] {
@@ -361,10 +369,14 @@ export function v2PackList(copies: readonly PackCopyRow[], asOf?: CopyKey | null
       verified: rep.verified === true,
     })
   }
+  const kindOf = new Map(packs.map(({ pack }) => [pack.packHash, pack.kind]))
   const superseded = new Set<string>()
   for (const { pack, verified } of packs) {
     if (!verified) continue
-    for (const s of pack.supersedes) if (s !== pack.packHash) superseded.add(s)
+    for (const s of pack.supersedes) {
+      const kind = kindOf.get(s)
+      if (kind !== undefined && claimCounts(pack.packHash, pack.kind, s, kind)) superseded.add(s)
+    }
   }
   const sorted = packs
     .map((p) => p.pack)
@@ -380,6 +392,21 @@ export function v2PackList(copies: readonly PackCopyRow[], asOf?: CopyKey | null
     out.push({ packRef: index++, ...p, superseded: superseded.has(p.packHash) })
   }
   return out
+}
+
+/**
+ * The `kind` artifacts write-side planning treats as superseded (the Rust
+ * `planning_superseded`; vectors `planning_superseded__*`), sorted: hashes named by a
+ * manifest of that kind whose uploader is currently a maintainer or writer. The web plans no
+ * repack or reindex; this port keeps the shared rule checked from both sides.
+ */
+export function planningSuperseded(copies: readonly PackCopyRow[], kind: number): string[] {
+  const out = new Set<string>()
+  for (const c of copies) {
+    if (c.kind !== kind || (c.ownerRole !== 'maintainer' && c.ownerRole !== 'writer')) continue
+    for (const s of c.supersedes ?? []) if (claimCounts(c.packHash, c.kind, s, kind)) out.add(s)
+  }
+  return [...out].sort(compareStrings)
 }
 
 // ---------------------------------------------------------------------------

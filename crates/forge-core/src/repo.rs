@@ -589,10 +589,7 @@ fn recheck_reindex(
         )));
     }
     // A folded fragment superseded meanwhile (another fold) must not be folded again.
-    let superseded: BTreeSet<[u8; 32]> = fresh
-        .iter()
-        .flat_map(|m| m.supersedes.iter().copied())
-        .collect();
+    let superseded = planning_superseded(fresh, roles, crate::pack::KIND_OBJECT_LOCATOR);
     if fold.iter().any(|f| superseded.contains(&f.pack_hash)) {
         return Err(Error::Config(
             "the index fragments were folded while this ran; nothing was published — run \
@@ -2168,7 +2165,7 @@ impl<'a> RepoService<'a> {
         let locator = crate::pack::ObjectLocator::build(pack, pack_ref)?;
         // A manifest names at most MAX_SUPERSEDES packs: past that, the newest ones. The rest
         // stay live, and readers still merge them (they index a prefix of the space).
-        let supersedes = live_locator_manifests(&manifests)
+        let supersedes = live_locator_manifests(&manifests, roles)
             .iter()
             .take(fold_limit())
             .map(|m| m.pack_hash)
@@ -2388,7 +2385,7 @@ impl<'a> RepoService<'a> {
         let live = if missing.is_empty() {
             Vec::new()
         } else {
-            fold_set(&live_locator_manifests(&manifests)).unwrap_or_default()
+            fold_set(&live_locator_manifests(&manifests, &roles)).unwrap_or_default()
         };
         let fold = read
             .into_iter()
@@ -3936,8 +3933,8 @@ fn resolved_tip_oids(refs: &[(String, RefState)]) -> Vec<String> {
 pub const MAX_SUPERSEDES: usize = 1024 / 32;
 
 /// Pack hashes a repack's consolidated manifest lists in `supersedes`: the git packs no
-/// current member's manifest already names in `supersedes`, except the new one, in
-/// pack-space order.
+/// current maintainer's or writer's git pack manifest already names in `supersedes`
+/// ([`planning_superseded`]), except the new one, in pack-space order.
 ///
 /// A pack an earlier repack superseded stays superseded (the manifest that says so is
 /// permanent), so it needs no slot here. Claims made by another copy of the new pack itself
@@ -3972,11 +3969,11 @@ fn unclaimed_packs(
     roles: &RoleMap,
     new_pack_hash: [u8; 32],
 ) -> Vec<[u8; 32]> {
-    let claimed: BTreeSet<[u8; 32]> = manifests
-        .iter()
-        .filter(|m| m.pack_hash != new_pack_hash && roles.contains_key(&m.owner_id))
-        .flat_map(|m| m.supersedes.iter().copied())
-        .collect();
+    let claimed = planning_superseded(
+        manifests.iter().filter(|m| m.pack_hash != new_pack_hash),
+        roles,
+        crate::pack::KIND_GIT_PACK,
+    );
     let new_hash = hex::encode(new_pack_hash);
     locator_pack_space(manifests, &RoleMap::new(), None)
         .iter()
@@ -4143,7 +4140,7 @@ fn plan_push_index(
     if !fragments_index_prefixes(manifests, roles, &space, &index_fragments(manifests, roles)) {
         return PushIndexPlan::Skip(IndexSkip::new(FRAGMENT_MISMATCH, IndexRemedy::Repack));
     }
-    let live_locators = live_locator_manifests(manifests);
+    let live_locators = live_locator_manifests(manifests, roles);
     if !fragments_index_prefixes(manifests, roles, &space, &live_locators) {
         return PushIndexPlan::Skip(IndexSkip::new(FRAGMENT_MISMATCH, IndexRemedy::Repack));
     }
@@ -4168,8 +4165,16 @@ pub fn pack_list(
     roles: &RoleMap,
     as_of: Option<&CopyKey>,
 ) -> Vec<V2Pack> {
-    let rows: Vec<PackCopyRow> = manifests
-        .iter()
+    crate::rules::v2::v2_pack_list(&copy_rows(manifests, roles), as_of)
+}
+
+/// `manifests` as the rules' unchecked (`verified: None`) copy rows, ranked by `roles`.
+fn copy_rows<'a>(
+    manifests: impl IntoIterator<Item = &'a PackManifestInfo>,
+    roles: &RoleMap,
+) -> Vec<PackCopyRow> {
+    manifests
+        .into_iter()
         .map(|m| PackCopyRow {
             id: m.document_id.clone(),
             pack_hash: hex::encode(m.pack_hash),
@@ -4182,8 +4187,21 @@ pub fn pack_list(
             supersedes: m.supersedes.iter().map(hex::encode).collect(),
             verified: None,
         })
-        .collect();
-    crate::rules::v2::v2_pack_list(&rows, as_of)
+        .collect()
+}
+
+/// The `kind` artifacts write-side planning treats as superseded
+/// ([`crate::rules::v2::planning_superseded`]: same-kind claims by current maintainers and
+/// writers only).
+fn planning_superseded<'a>(
+    manifests: impl IntoIterator<Item = &'a PackManifestInfo>,
+    roles: &RoleMap,
+    kind: u8,
+) -> BTreeSet<[u8; 32]> {
+    crate::rules::v2::planning_superseded(&copy_rows(manifests, roles), u64::from(kind))
+        .into_iter()
+        .filter_map(|h| hash32(&h))
+        .collect()
 }
 
 /// The space a locator's `packRef` indexes: the git (kind-0) packs of [`pack_list`], in
@@ -4290,8 +4308,8 @@ fn manifest_info(d: &FetchedDocument) -> Result<PackManifestInfo> {
 /// repository's manifests: the push's own fragment, or, when the live fragments have
 /// reached [`MAX_LOCATOR_FRAGMENTS`] (the push folds them into one index), every object they
 /// index as well. For pricing the push before it is made.
-pub fn push_index_objects(manifests: &[PackManifestInfo], objects: u64) -> u64 {
-    let live = live_locator_manifests(manifests);
+pub fn push_index_objects(manifests: &[PackManifestInfo], roles: &RoleMap, objects: u64) -> u64 {
+    let live = live_locator_manifests(manifests, roles);
     if live.len() >= MAX_LOCATOR_FRAGMENTS {
         objects + live.iter().map(|m| m.object_count).sum::<u64>()
     } else {
@@ -4300,12 +4318,13 @@ pub fn push_index_objects(manifests: &[PackManifestInfo], objects: u64) -> u64 {
 }
 
 /// The live (non-superseded) `objectLocator` manifests, newest-first — the index fragments a
-/// reader must merge, and the set a consolidation supersedes.
-fn live_locator_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
-    let superseded: BTreeSet<[u8; 32]> = manifests
-        .iter()
-        .flat_map(|m| m.supersedes.iter().copied())
-        .collect();
+/// reader must merge, and the set a consolidation supersedes. Only a current maintainer's or
+/// writer's index fragment retires one ([`planning_superseded`]).
+fn live_locator_manifests(
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+) -> Vec<PackManifestInfo> {
+    let superseded = planning_superseded(manifests, roles, crate::pack::KIND_OBJECT_LOCATOR);
     let mut live: Vec<PackManifestInfo> = manifests
         .iter()
         .filter(|m| m.kind == u64::from(crate::pack::KIND_OBJECT_LOCATOR))
@@ -5028,6 +5047,13 @@ mod tests {
         ms.iter().map(|m| m.pack_hash[0]).collect()
     }
 
+    /// The roles of a repository whose only member is [`manifest`]'s uploader, a maintainer.
+    fn owner() -> RoleMap {
+        [("owner".to_string(), Role::Maintainer)]
+            .into_iter()
+            .collect()
+    }
+
     /// The first byte of each pack in the locator space (unranked copies, as of now or `t`).
     fn space(ms: &[PackManifestInfo], as_of: Option<(u64, &str)>) -> Vec<u8> {
         let key = as_of.map(|(created_at, id)| CopyKey {
@@ -5088,11 +5114,11 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            super::push_index_objects(&fragments(MAX_LOCATOR_FRAGMENTS - 1), 7),
+            super::push_index_objects(&fragments(MAX_LOCATOR_FRAGMENTS - 1), &RoleMap::new(), 7),
             7
         );
         assert_eq!(
-            super::push_index_objects(&fragments(MAX_LOCATOR_FRAGMENTS), 7),
+            super::push_index_objects(&fragments(MAX_LOCATOR_FRAGMENTS), &RoleMap::new(), 7),
             7 + 1_000 * MAX_LOCATOR_FRAGMENTS as u64
         );
     }
@@ -5107,7 +5133,10 @@ mod tests {
             manifest("dd", 200, 1, 7), // superseded by the fold
             manifest("aa", 100, 0, 1), // a git pack is not a fragment
         ];
-        assert_eq!(hashes(&live_locator_manifests(&manifests)), vec![9, 8]);
+        assert_eq!(
+            hashes(&live_locator_manifests(&manifests, &owner())),
+            vec![9, 8]
+        );
     }
 
     #[test]
@@ -5383,7 +5412,7 @@ mod tests {
         let a = manifest("aa", 100, 1, 1);
         let b = manifest("bb", 100, 1, 2);
         assert_eq!(
-            live_locator_manifests(&[a, b])
+            live_locator_manifests(&[a, b], &RoleMap::new())
                 .iter()
                 .map(|m| m.document_id.clone())
                 .collect::<Vec<_>>(),
@@ -5564,10 +5593,14 @@ mod tests {
             manifest("p2", 200, 0, 2),
             manifest("p1", 100, 0, 1),
         ];
-        let roles: RoleMap = [("alice".to_string(), Role::Maintainer)]
-            .into_iter()
-            .collect();
-        assert!(live_locator_manifests(&ms)
+        // The fold is the owner's (a writer here, so alice's relabel still ranks first).
+        let roles: RoleMap = [
+            ("alice".to_string(), Role::Maintainer),
+            ("owner".to_string(), Role::Writer),
+        ]
+        .into_iter()
+        .collect();
+        assert!(live_locator_manifests(&ms, &roles)
             .iter()
             .all(|m| m.document_id != "f0"));
         let got = plan_push_index(&ms, &roles, [2; 32]);
@@ -5614,11 +5647,11 @@ mod tests {
         for m in &mut ms {
             m.object_count = 5;
         }
-        let roles = RoleMap::new();
+        let roles = owner();
         let space = locator_pack_space(&ms, &roles, None);
         assert_eq!(space.len(), 3);
         // Rust's live set drops the superseded fragments; the web's merged set keeps them.
-        assert_eq!(live_locator_manifests(&ms).len(), 1);
+        assert_eq!(live_locator_manifests(&ms, &roles).len(), 1);
         let merged = index_fragments(&ms, &roles);
         assert_eq!(
             merged
@@ -5642,7 +5675,7 @@ mod tests {
     /// meanwhile refuses.
     #[test]
     fn reindex_rechecks_the_pack_space_before_writing() {
-        let roles = RoleMap::new();
+        let roles = owner();
         let base = vec![manifest("p0", 100, 0, 1), manifest("p1", 200, 0, 2)];
         let planned = locator_pack_space(&base, &roles, None);
         let known = std::collections::BTreeSet::new();
@@ -5671,6 +5704,75 @@ mod tests {
         folded.push(other);
         let known: std::collections::BTreeSet<[u8; 32]> = [[7; 32]].into_iter().collect();
         let err = recheck_reindex(&folded, &roles, &planned, &known, &[f]).unwrap_err();
+        assert!(err.to_string().contains("folded while this ran"), "{err}");
+    }
+
+    /// A `supersedes` claim steers write-side planning only when a current maintainer or
+    /// writer makes it from a manifest of the claimed pack's own kind. A writer's manifest of
+    /// another kind, or a claim by an uploader who is no longer a maintainer or writer, does
+    /// not refuse a reindex, hide a live index fragment, or keep a pack out of a repack.
+    #[test]
+    fn planning_counts_only_same_kind_claims_by_current_writers() {
+        let roles: RoleMap = [
+            ("owner", Role::Maintainer),
+            ("w", Role::Writer),
+            ("t", Role::Triage),
+        ]
+        .into_iter()
+        .map(|(i, r)| (i.to_string(), r))
+        .collect();
+        let claim = |id: &str, at: u64, kind: u8, hash: u8, owner: &str, names: &[u8]| {
+            let mut m = manifest(id, at, kind, hash);
+            m.owner_id = owner.into();
+            m.supersedes = names.iter().map(|n| [*n; 32]).collect();
+            m
+        };
+        let base = vec![
+            manifest("p1", 100, 0, 1),
+            manifest("f7", 150, 1, 7),
+            manifest("f8", 160, 1, 8),
+        ];
+        let mut ms = base.clone();
+        // A writer's long-body artifact (kind 6) naming both fragments and the git pack.
+        ms.push(claim("x6", 200, 6, 60, "w", &[7, 8, 1]));
+        // A writer's index fragment naming the git pack.
+        ms.push(claim("x1", 205, 1, 61, "w", &[1]));
+        // Same-kind fragments by a revoked uploader and by a triage member.
+        ms.push(claim("xr", 210, 1, 62, "gone", &[7, 8]));
+        ms.push(claim("xt", 220, 1, 63, "t", &[7, 8]));
+
+        let live = hashes(&live_locator_manifests(&ms, &roles));
+        assert!(live.contains(&7) && live.contains(&8), "{live:?}");
+
+        let planned = locator_pack_space(&base, &roles, None);
+        let fold = vec![base[1].clone()];
+        let known: std::collections::BTreeSet<[u8; 32]> = [[7; 32], [8; 32]].into_iter().collect();
+        assert!(recheck_reindex(&ms, &roles, &planned, &known, &fold).is_ok());
+
+        let out = repack_supersedes(&ms, &roles, [9u8; 32]);
+        assert!(out.contains(&[1u8; 32]), "{out:?}");
+
+        // At the fragment cap, a foreign claim does not hide the fragments a push folds (and
+        // pays for).
+        let mut at_cap: Vec<PackManifestInfo> = (0u8..)
+            .take(MAX_LOCATOR_FRAGMENTS)
+            .map(|i| {
+                let mut m = manifest(&format!("g{i:02}"), 300 + u64::from(i), 1, 100 + i);
+                m.object_count = 10;
+                m
+            })
+            .collect();
+        let all: Vec<u8> = hashes(&at_cap);
+        at_cap.push(claim("y6", 900, 6, 99, "w", &all));
+        assert_eq!(
+            super::push_index_objects(&at_cap, &roles, 1),
+            1 + 10 * MAX_LOCATOR_FRAGMENTS as u64
+        );
+
+        // A writer's own index fragment naming f7 does retire it.
+        ms.push(claim("xw", 230, 1, 64, "w", &[7]));
+        assert!(!hashes(&live_locator_manifests(&ms, &roles)).contains(&7));
+        let err = recheck_reindex(&ms, &roles, &planned, &known, &fold).unwrap_err();
         assert!(err.to_string().contains("folded while this ran"), "{err}");
     }
 

@@ -577,8 +577,21 @@ pub struct V2Pack {
     pub first: CopyKey,
     /// The usable copies, in the order a reader tries them; the representative first.
     pub copies: Vec<String>,
-    /// A pack whose representative copy verified lists this pack in `supersedes`.
+    /// A pack of the same kind whose representative copy verified lists this pack in
+    /// `supersedes`.
     pub superseded: bool,
+}
+
+/// Whether a `supersedes` entry naming `claimed` counts (forge-v2.md §4): a pack never
+/// supersedes itself, and a manifest supersedes only packs of its own `kind` (a long text or
+/// an index fragment cannot retire a git pack).
+fn supersedes_claim_counts(
+    claimant_hash: &str,
+    claimant_kind: u64,
+    claimed_hash: &str,
+    claimed_kind: u64,
+) -> bool {
+    claimed_hash != claimant_hash && claimed_kind == claimant_kind
 }
 
 /// Every pack of a repository with its position (`packRef`), from all its `packManifest`
@@ -595,9 +608,10 @@ pub struct V2Pack {
 /// 3. `first` is the earliest `($createdAt, $id)` among all the hash's copies (failed and
 ///    other-kind ones included), so a copy uploaded later — or one ranked higher — never
 ///    moves a pack. `pack_ref` is the pack's index among the packs of its kind, by `first`.
-/// 4. A pack is `superseded` when another listed pack's representative names it in
-///    `supersedes` and that representative verified (`Some(true)`); an unchecked claim
-///    supersedes nothing. Superseded packs keep their `pack_ref`.
+/// 4. A pack is `superseded` when another listed pack of the same `kind` names it in its
+///    representative's `supersedes` and that representative verified (`Some(true)`); an
+///    unchecked claim, or one on a pack of another kind, supersedes nothing. Superseded packs
+///    keep their `pack_ref`.
 ///
 /// Output order: by `kind`, then `pack_ref`.
 #[must_use]
@@ -656,17 +670,21 @@ pub fn v2_pack_list(copies: &[PackCopyRow], as_of: Option<&CopyKey>) -> Vec<V2Pa
         ));
     }
 
-    let superseded: BTreeSet<String> = packs
+    let kind_of: std::collections::BTreeMap<&str, u64> = packs
         .iter()
-        .filter(|(_, verified)| *verified)
-        .flat_map(|(p, _)| {
-            p.supersedes
-                .iter()
-                .filter(|s| **s != p.pack_hash)
-                .cloned()
-                .collect::<Vec<_>>()
-        })
+        .map(|(p, _)| (p.pack_hash.as_str(), p.kind))
         .collect();
+    let mut superseded: BTreeSet<String> = BTreeSet::new();
+    for (p, _) in packs.iter().filter(|(_, verified)| *verified) {
+        for s in &p.supersedes {
+            if kind_of
+                .get(s.as_str())
+                .is_some_and(|&kind| supersedes_claim_counts(&p.pack_hash, p.kind, s, kind))
+            {
+                superseded.insert(s.clone());
+            }
+        }
+    }
     let mut out: Vec<V2Pack> = packs.into_iter().map(|(p, _)| p).collect();
     out.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.first.cmp(&b.first)));
     let mut kind = None;
@@ -681,6 +699,30 @@ pub fn v2_pack_list(copies: &[PackCopyRow], as_of: Option<&CopyKey>) -> Vec<V2Pa
         p.superseded = superseded.contains(&p.pack_hash);
     }
     out
+}
+
+/// The `kind` artifacts write-side planning treats as superseded (forge-v2.md §4, vectors
+/// `planning_superseded__*`): the hashes named in `supersedes` by a manifest of that same kind
+/// whose uploader is currently a maintainer or a writer (the roles consensus lets record a
+/// manifest). Planning reads no bytes, so a claim is not checked against the claimant's
+/// content; the uploader's role stands in for it. Pure.
+///
+/// Native clients plan with it which index fragments are live (and so which a new index
+/// folds), which git packs a repack names, and whether a reindex raced a fold. It never
+/// changes what readers fetch ([`v2_pack_list`]).
+#[must_use]
+pub fn planning_superseded(copies: &[PackCopyRow], kind: u64) -> BTreeSet<String> {
+    copies
+        .iter()
+        .filter(|c| c.kind == kind)
+        .filter(|c| matches!(c.owner_role, Some(Role::Maintainer | Role::Writer)))
+        .flat_map(|c| {
+            c.supersedes
+                .iter()
+                .filter(move |s| supersedes_claim_counts(&c.pack_hash, c.kind, s, kind))
+        })
+        .cloned()
+        .collect()
 }
 
 // ===========================================================================
