@@ -85,6 +85,7 @@ import {
   postTargetEvent,
   readViewerPermissions,
   repoContractIds,
+  contentKey,
   repoKey,
   setAssignee,
   setLabel,
@@ -286,7 +287,7 @@ export function PullContent({
       }
       return t
     },
-    [ready, repoKey(home.repo), number, network],
+    [ready, contentKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
   const refresh = useCallback(
@@ -589,7 +590,7 @@ function PullPage({
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
   // The unsent comment survives a reload (never stored for a private repo).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity))
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity, pull.audience ?? 'public'))
   const commentIntent = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -629,7 +630,7 @@ function PullPage({
   const confirmEvent = (p: Pending, cost: Cost = eventCost): void => {
     if (guard.check(cost, 'collab')) setPending(p)
   }
-  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid)
+  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid, pull.audience === 'members')
   // The diff's lines, as the inline comments saw them load (re-anchoring a pending review).
   const knownLines = useRef<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
   const refreshRef = useRef(refresh)
@@ -1325,7 +1326,7 @@ function PullPage({
           <MessageSquareDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
           <span className="min-w-0 flex-1">
             You have a pending review ({plural(reviewDraft.draft.comments.length, 'comment')}), not yet submitted.{' '}
-            <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private')}</span>
+            <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private', pull.audience === 'members')}</span>
           </span>
           {tab !== 'files' ? (
             <Button size="sm" variant="outline" onClick={() => setTab('files')}>
@@ -1779,6 +1780,7 @@ function PullPage({
               action={
                 identity !== null && open && !writeBlocked ? (
                   <ReviewDrawer
+                    membersOnly={pull.audience === 'members'}
                     repo={repo}
                     pullId={pull.id}
                     headOid={pull.headOid}

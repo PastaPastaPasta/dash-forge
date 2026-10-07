@@ -55,6 +55,7 @@ import { PrivateWriteError, privateWriter, privateWriterWithSession, sealedInten
 import { repoContentWritten, writePackManifest } from './push'
 import { readReleases, type ReleaseList, type ReleaseView } from './releases'
 import { writeRepoDoc } from './writes'
+import { keyedContentKey } from './members-writes'
 
 /** What the CLI and the composer say the sealed budget holds (§16.2 "Budget"). */
 export const SEALED_RELEASE_BUDGET = `a private release holds ${RELEASE_MAX_PLAINTEXT} bytes of tag, name, notes preview and provenance`
@@ -653,7 +654,9 @@ async function writeSealed(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, keys: Ep
   }
   // The content the retry cache compares (the enc is sealed afresh on every attempt), and an
   // intent bound to it and to the key: a retry after a rotation signs afresh (§5.5).
-  const digest = hex256(new TextEncoder().encode(canonicalJson(statement(fields)))).slice(0, 32)
+  // Keyed under the epoch's key: the intent and the retry tag are kept in this browser, and a
+  // plain hash of the release's sealed fields would be an equality oracle at rest.
+  const digest = (await keyedContentKey(keys, hex256(new TextEncoder().encode(canonicalJson(statement(fields)))))).slice(0, 32)
   try {
     // delta 0 always (`oneLive`), and no retry against a ledger there is none of (§16.3)
     return await writeRepoDoc(

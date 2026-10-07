@@ -23,7 +23,7 @@ export function usePrivateWrite(repo: RepoRef): {
   const { identity, signer } = useAuth()
   const ops = useAsync(
     () => encryptionOps(sdk!, network, identity!, repo.forge.collab),
-    [ready, network, identity ?? '', repo.forge.collab, repo.session?.id ?? ''],
+    [ready, network, identity ?? '', repo.forge.collab, repo.session?.id ?? '', repo.lane?.id ?? ''],
     { enabled: ready && sdk !== null && identity !== null },
   )
   const context: PrivateWriteContext | null =

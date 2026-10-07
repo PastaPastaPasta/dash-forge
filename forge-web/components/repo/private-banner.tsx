@@ -27,6 +27,7 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
+import { NO_KEY_SHARED_TEXT } from '@/lib/repo/members-writes'
 import { ENCRYPTION_KEY_ELSEWHERE, ENCRYPTION_KEY_OTHER_APPROVAL } from '@/lib/auth/encryption-key'
 
 function Note({ tone, icon, children, testId }: { tone: 'caution' | 'danger' | 'info'; icon: React.ReactNode; children: React.ReactNode; testId?: string }): JSX.Element {
@@ -72,7 +73,20 @@ function AlertLine({ alert }: { alert: EpochAlert }): JSX.Element | null {
   }
 }
 
+
 export function PrivateBanner({ home }: { home: RepoHome }): JSX.Element | null {
+  // A public repo with members-only content: a member with no key shared yet (added by an older
+  // client) is told so; a member who holds the key gets the same key alerts and, as a
+  // maintainer, the repair check that shares the key with members who have none.
+  const lane = home.lane
+  if (lane?.access === 'no-key-shared') {
+    return (
+      <Note tone="caution" icon={<KeyRound className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />} testId="members-no-key-shared">
+        <p>{NO_KEY_SHARED_TEXT}</p>
+      </Note>
+    )
+  }
+  if (lane?.access === 'member') return <MemberAlerts home={home} session={lane.session} />
   const access = home.private
   if (access === undefined) return null
   if (access.access === 'no-key') {

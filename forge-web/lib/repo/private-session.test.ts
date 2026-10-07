@@ -350,7 +350,7 @@ describe('private reads through the gate', () => {
     const page = await queryIssues(sdk, repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')
     const list = page.rows
     expect(list.map((i) => i.title).sort()).toEqual(['in grace', 'readable'])
-    expect(page.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1, lateEdit: 0 })
+    expect(page.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1, lateEdit: 0, membersOnly: 0, letter: 0 })
     const body = list.find((i) => i.title === 'readable')?.body
     expect(body).toBe('hello')
   })
@@ -370,7 +370,7 @@ describe('private reads through the gate', () => {
     const page = await queryIssues(mockSdk({ issue: issues, event: [], authorEvent: [] }), repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')
     const list = page.rows
     expect(list.map((i) => i.title)).toEqual(['edited in grace'])
-    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 1 })
+    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 1, membersOnly: 0, letter: 0 })
     // Maintainers read why (the CLI's bucket text is the same).
     const { HIDDEN_REASON_TEXT } = await import('./private-content')
     expect(HIDDEN_REASON_TEXT.lateEdit).toBe('edited after its author was removed; the original text is gone')

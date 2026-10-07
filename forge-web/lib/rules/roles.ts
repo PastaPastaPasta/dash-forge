@@ -35,11 +35,30 @@ export function writerRoleOf(code: unknown): WriterRole | null {
 }
 
 /**
- * The roles the owner may grant on a repo of `visibility`, in picker order: a reader only on a
- * private repo (a public one has nothing to read that everyone cannot; a client rule).
+ * Whether readers (role 3) are in a public repo's members key, so they receive its key and read
+ * members-only content (DESIGN §2.1, owner question 2). Runners are never in it: a `runner`
+ * document is not a membership. Private repos always share their key with readers. Kept in one
+ * place so the decision is cheap to change (forge-core `members::READERS_IN_MEMBERS_KEY`).
+ */
+export const READERS_IN_MEMBERS_KEY = true
+
+/**
+ * Whether a member with `role` receives the members key of a repo of `visibility` (wraps,
+ * rotations, repairs): every role of a private repo; in a public one every role but a reader
+ * unless {@link READERS_IN_MEMBERS_KEY} (forge-core `members::holds_members_key`).
+ */
+export function holdsMembersKey(role: Role, visibility: 'public' | 'private'): boolean {
+  return role !== 'reader' || READERS_IN_MEMBERS_KEY || visibility === 'private'
+}
+
+/**
+ * The roles the owner may grant on a repo of `visibility`, in picker order. A reader is grantable
+ * on a public repo too: there it reads the members-only content (DESIGN §4.1); a reader of a
+ * public repo with no members-only content reads what everyone reads.
  */
 export function grantableRoles(visibility: 'public' | 'private'): readonly Role[] {
-  return visibility === 'private' ? ['writer', 'triage', 'reader', 'maintainer'] : ['writer', 'triage', 'maintainer']
+  void visibility
+  return ['writer', 'triage', 'reader', 'maintainer']
 }
 
 /** How a role is named to users. */
@@ -80,7 +99,7 @@ export const ROLE_SUMMARY: Readonly<Record<Role, string>> = {
   maintainer: 'Everything a writer can, plus protected branches, settings, releases and moderation.',
   writer: 'Push, merge, review with a counted approval, and manage issues and pull requests.',
   triage: 'Close, reopen and lock, label, assign, set milestones, request reviews and resolve threads. Cannot push or merge; approvals are not counted.',
-  reader: 'Read the private repo (receives its key). Can comment, review, and open issues and pull requests, but changes nothing as a member; approvals are not counted.',
+  reader: 'Reads everything members can, including members-only content (receives the key). Can comment, review, and open issues and pull requests, but changes nothing as a member; approvals are not counted.',
 }
 
 /** What a role may do as a member (an author keeps its author abilities whatever its role). */
