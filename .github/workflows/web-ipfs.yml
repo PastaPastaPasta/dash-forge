@@ -32,6 +32,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same PR supersedes the older build. Pushes to master and calls from
+# release.yml (whose github.workflow is "Release") get their own groups and are never cancelled.
+concurrency:
+  group: web-ipfs-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: build (${{ matrix.runner }})

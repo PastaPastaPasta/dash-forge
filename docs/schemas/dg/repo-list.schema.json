@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-list.schema.json",
+  "title": "dg repo list --json",
+  "description": "An identity's repositories.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "repoId": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "repoId"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "ownerId",
+    "count",
+    "repos"
+  ],
+  "additionalProperties": true
+}

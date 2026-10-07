@@ -16,7 +16,7 @@ use anyhow::{bail, Context, Result};
 use forge_core::user_error::{codes, UserError};
 use serde_json::json;
 
-use forge_core::backends::{Health, IpfsBackend, PackBackend, PackMeta, S3Backend, Uri};
+use forge_core::backends::{IpfsBackend, PackBackend, PackMeta, S3Backend, Uri};
 use forge_core::storage::copies::{count_copies, policy_copies, CopyCount};
 use forge_core::storage::cors::{cors_fix, kubo_cors_fix, probe_cors, provider_of};
 use forge_core::storage::policy::{
@@ -644,7 +644,7 @@ async fn check_public_read(
     body: &[u8],
 ) -> bool {
     let got = forge_core::backends::HttpsBackend::with_client(http.clone())
-        .get(&Uri(url.to_string()), None)
+        .get_capped(&Uri(url.to_string()), body.len() as u64)
         .await;
     match got {
         Ok(b) if b == body => r.pass(name, format!("anonymous GET {url} OK")),
@@ -856,7 +856,7 @@ async fn test_ipfs(profile: &Profile, http: &reqwest::Client, r: &mut Report) {
     if let Some(gw) = local_gw {
         let url = format!("{}/ipfs/{cid}", gw.trim_end_matches('/'));
         match forge_core::backends::HttpsBackend::with_client(http.clone())
-            .get(&Uri(url.clone()), None)
+            .get_capped(&Uri(url.clone()), body.len() as u64)
             .await
         {
             Ok(b) if b == body => r.pass("gateway", format!("GET {url} OK")),
@@ -1434,7 +1434,6 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     let scope = handle.scope()?;
     let roles = svc.copy_roles(&handle).await.unwrap_or_default();
     let reader = svc.repo_reader(&handle, &manifests, &roles).await;
-    let https = forge_core::backends::HttpsBackend::with_client(forge_core::storage::http_client());
 
     let mut packs = Vec::new();
     for m in &manifests {
@@ -1443,7 +1442,7 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
         uris.sort();
         uris.dedup();
         let locator = scope.locator(&m.owner_id, &hex::encode(m.pack_hash));
-        let rows = probe_rows(m, &uris, &locator, &reader, &https).await;
+        let rows = probe_rows(m, &uris, &locator, &reader).await;
         packs.push(json!({
             "packHash": hex::encode(m.pack_hash),
             "uploader": m.owner_id,
@@ -1514,14 +1513,16 @@ fn artifact_kind(kind: u64) -> &'static str {
 }
 
 /// The availability rows for one pack: its on-chain copy, every http(s) URL, every
-/// `ipfs://` CID on every configured gateway, and the credentialed `s3://` locators.
+/// `ipfs://` CID on every configured gateway, and the credentialed `s3://` locators. A
+/// manifest is written by whoever pushed: its URLs are probed through `reader`, so one on
+/// plain http, this machine or a private network is reported, never contacted.
 async fn probe_rows(
     m: &forge_core::repo::PackManifestInfo,
     uris: &[String],
     platform_locator: &str,
     reader: &PackReader,
-    https: &forge_core::backends::HttpsBackend,
 ) -> Vec<serde_json::Value> {
+    use futures::StreamExt as _;
     let mut probe_urls: Vec<String> = Vec::new();
     for u in uris {
         let uri = Uri(u.clone());
@@ -1548,11 +1549,22 @@ async fn probe_rows(
             "detail": "on-chain chunk documents",
         }));
     }
-    for url in &probe_urls {
-        let health = https
-            .probe(&Uri(url.clone()))
-            .await
-            .unwrap_or_else(|_| Health::down(std::time::Duration::ZERO));
+    // A few at a time, in order: each probe ends by its own timeout.
+    let healths: Vec<_> = futures::stream::iter(&probe_urls)
+        .map(|url| reader.probe(url))
+        .buffered(4)
+        .collect()
+        .await;
+    for (url, health) in probe_urls.iter().zip(healths) {
+        let Some(health) = health else {
+            rows.push(json!({
+                "uri": url,
+                "scheme": Uri(url.clone()).scheme(),
+                "ok": serde_json::Value::Null,
+                "detail": reader.unfollowed(std::slice::from_ref(url)).join("; "),
+            }));
+            continue;
+        };
         rows.push(json!({
             "uri": url,
             "scheme": Uri(url.clone()).scheme(),
@@ -1712,6 +1724,40 @@ pub(crate) mod tests {
             }
         });
         format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn status_reports_a_private_copy_without_contacting_it() {
+        // An uploader's manifest naming this machine: listed, never probed.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/pack", listener.local_addr().unwrap());
+        let m = forge_core::repo::PackManifestInfo {
+            document_id: String::new(),
+            created_at: 0,
+            owner_id: String::new(),
+            pack_hash: [0; 32],
+            kind: 0,
+            size_bytes: 1,
+            object_count: 0,
+            chunk_count: 0,
+            storage: 1,
+            uris: vec![url.clone()],
+            supersedes: Vec::new(),
+            tips: Vec::new(),
+            created_at_block_height: 0,
+        };
+        let reader = PackReader::new(Vec::new(), &StorageProfiles::default());
+        let rows = probe_rows(&m, &m.uris, "platform://x", &reader).await;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["uri"], url.as_str());
+        assert!(rows[0]["ok"].is_null(), "{rows:?}");
+        let detail = rows[0]["detail"].as_str().unwrap();
+        assert!(detail.contains("never followed"), "{detail}");
+        assert!(
+            matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "the private copy was contacted"
+        );
     }
 
     #[tokio::test]

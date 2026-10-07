@@ -339,19 +339,18 @@ fn fork_estimate(manifest_uris: &[u64], refs: u64) -> u64 {
     REPO_CREATE_ESTIMATE_CREDITS + manifests + refs
 }
 
-/// Print (or `--json`-emit) a finished fork; an incomplete one is E503.
-fn report_fork(
-    ctx: &Ctx,
+/// The `--json` body of a fork (an incomplete one is printed with its error).
+pub(crate) fn fork_body(
     parent: &forge_core::scope::RepoRef,
     result: &forge_core::fork::ForkResult,
     price: Option<f64>,
-) -> Result<()> {
+) -> serde_json::Value {
     let fork = &result.created.repo;
     let nothing_new = result.created.already_existed()
         && result.manifests_written == 0
         && result.refs_written.is_empty();
     let incomplete = !result.unreferenceable.is_empty();
-    let body = json!({
+    json!({
         "status": if incomplete { "incomplete" } else if nothing_new { "exists" } else { "forked" },
         "repoId": fork.id(),
         "ownerId": fork.owner_id(),
@@ -365,7 +364,19 @@ fn report_fork(
         "unreferenceablePacks": result.unreferenceable.iter().map(hex::encode).collect::<Vec<_>>(),
         "refsWritten": result.refs_written,
         "cost": cost_json(result.cost_credits, price),
-    });
+    })
+}
+
+/// Print (or `--json`-emit) a finished fork; an incomplete one is E503.
+fn report_fork(
+    ctx: &Ctx,
+    parent: &forge_core::scope::RepoRef,
+    result: &forge_core::fork::ForkResult,
+    price: Option<f64>,
+) -> Result<()> {
+    let fork = &result.created.repo;
+    let incomplete = !result.unreferenceable.is_empty();
+    let body = fork_body(parent, result, price);
     if incomplete {
         // Some objects are nowhere a fork can point at: refs were not copied (they could
         // name commits the fork cannot serve). The repository exists; the user pushes.
@@ -898,7 +909,7 @@ async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
         })
         .collect();
     ctx.emit(
-        json!({ "owner": owner_id, "count": rows.len(), "repos": rows }),
+        json!({ "ownerId": owner_id, "count": rows.len(), "repos": rows }),
         || {
             println!(
                 "{} for {owner_id}:",

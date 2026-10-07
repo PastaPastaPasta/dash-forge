@@ -357,6 +357,10 @@ impl PackBackend for PlatformBackend<'_> {
         }
     }
 
+    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
+        super::within_cap(uri, self.get(uri, None).await?, max_bytes)
+    }
+
     async fn probe(&self, uri: &Uri) -> Result<Health> {
         // A cheap presence check: seek the first chunk (`limit 1`) for the pack. `ok` is
         // whether any chunk is stored; size is left unknown (a whole-pack size would

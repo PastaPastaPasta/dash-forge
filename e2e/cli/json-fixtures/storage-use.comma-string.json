@@ -1,0 +1,23 @@
+{
+  "command": "storage use",
+  "args": [
+    "--json",
+    "storage",
+    "use",
+    "s3a,platform",
+    "--global"
+  ],
+  "exit": 0,
+  "source": "emitter: crates/dg/src/storage.rs use_profiles() (storage: target names joined with ',')",
+  "expect": "valid",
+  "stdout": {
+    "schemaVersion": 1,
+    "storage": "s3a,platform",
+    "replicas": null,
+    "platformFallback": false,
+    "scope": "global",
+    "warnings": [],
+    "advertisedMode": null,
+    "existingPacks": null
+  }
+}

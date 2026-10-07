@@ -201,6 +201,43 @@ describe('chunk LRU', () => {
     expect(Array.from(await fetchRange(0, 10))).toEqual(Array.from(full.subarray(0, 10)))
   })
 
+  it("never serves one repo's or contract's cached chunks for another's read", async () => {
+    // Each scope stores different bytes under the same pack hash, uploader and seq.
+    const bytesOf = (scope: string): Uint8Array => new TextEncoder().encode(`${scope} chunk bytes`)
+    const scopes: string[] = []
+    const sdk = {
+      documents: {
+        query: (q: { dataContractId: string; where?: readonly (readonly unknown[])[] }): Promise<Map<string, unknown>> => {
+          const repoId = String((q.where ?? []).find((w) => w[0] === 'repoId')?.[2])
+          const scope = `${q.dataContractId}/${repoId}`
+          scopes.push(scope)
+          return Promise.resolve(new Map([['c0', { seq: 0, d0: bytesToBase64(bytesOf(scope)) }]]))
+        },
+      },
+    } as unknown as EvoSDK
+    const manifest = gitPack('ab', 0, 'dc')
+    const other: RepoRef = { ...REPO, repoId: 'REP2' }
+    const otherCore: RepoRef = { ...REPO, forge: { ...REPO.forge, core: 'COR2' } }
+    const read = async (repo: RepoRef): Promise<string> =>
+      new TextDecoder().decode(await artifactRangeFetch(sdk, repo, manifest)(0, 'CORE/REPO chunk bytes'.length))
+    expect(await read(REPO)).toBe('CORE/REPO chunk bytes')
+    expect(await read(other)).toBe('CORE/REP2 chunk bytes')
+    expect(await read(otherCore)).toBe('COR2/REPO chunk bytes')
+    // Each scope's own entry is reused.
+    expect(await read(REPO)).toBe('CORE/REPO chunk bytes')
+    expect(scopes).toEqual(['CORE/REPO', 'CORE/REP2', 'COR2/REPO'])
+  })
+
+  it("drops a copy's cached chunks when the whole artifact does not hash to its packHash", async () => {
+    const { sdk, calls } = spyingSdk()
+    const manifest = { ...gitPack('00'.repeat(32), 0, 'dd'), sizeBytes: total }
+    await expect(loadArtifactBytesProgress(sdk, REPO, manifest)).rejects.toThrow(/does not hash to the pack/)
+    expect(calls).toEqual([[0, 1, 2]])
+    // Nothing of it was kept: a later read of the same copy asks Platform again.
+    await artifactRangeFetch(sdk, REPO, manifest)(0, 10)
+    expect(calls).toEqual([[0, 1, 2], [0]])
+  })
+
   it('keeps at most CHUNK_QUERIES_IN_FLIGHT chunk queries out across every pack read at once', async () => {
     const inner = mockSdk(() => full) as unknown as { documents: { query: (q: unknown) => Promise<Map<string, unknown>> } }
     let inFlight = 0

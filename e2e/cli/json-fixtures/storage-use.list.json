@@ -1,0 +1,24 @@
+{
+  "command": "storage use",
+  "args": [
+    "--json",
+    "storage",
+    "use",
+    "s3a,platform",
+    "--global"
+  ],
+  "exit": 0,
+  "source": "negative: storage is one comma-separated string, not a list",
+  "expect": "invalid",
+  "stdout": {
+    "schemaVersion": 1,
+    "storage": [
+      "s3a",
+      "platform"
+    ],
+    "replicas": null,
+    "platformFallback": false,
+    "scope": "global",
+    "warnings": []
+  }
+}

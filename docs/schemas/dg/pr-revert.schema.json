@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-revert.schema.json",
+  "title": "dg pr revert --json",
+  "description": "A pull request that reverts a merged one, opened on a new branch.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created"
+      ]
+    },
+    "pr": {
+      "type": "integer",
+      "description": "The merged pull request reverted."
+    },
+    "number": {
+      "type": "integer",
+      "description": "The new pull request."
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "baseRef": {
+      "type": "string"
+    },
+    "headRef": {
+      "type": "string"
+    },
+    "revertCommit": {
+      "$ref": "common.schema.json#/$defs/oid"
+    },
+    "mergeOid": {
+      "$ref": "common.schema.json#/$defs/oid"
+    },
+    "landed": {
+      "type": "string",
+      "enum": [
+        "merge-commit",
+        "squash",
+        "rebase",
+        "fast-forward"
+      ]
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "steps": {
+      "$ref": "common.schema.json#/$defs/steps"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr",
+    "number",
+    "documentId",
+    "baseRef",
+    "headRef",
+    "revertCommit"
+  ],
+  "additionalProperties": true
+}

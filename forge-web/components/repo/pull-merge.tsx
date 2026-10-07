@@ -38,6 +38,7 @@ export function PullMerge({
   isMaintainer,
   checkout,
   onMerged,
+  recheckMembers,
   extras = {},
 }: {
   repo: RepoRef
@@ -47,6 +48,8 @@ export function PullMerge({
   isMaintainer: boolean
   checkout: string
   onMerged: () => void
+  /** Judge the merge again with the members read now (`MergePanel`): why not to merge, or null. */
+  recheckMembers: (bypass: readonly string[]) => Promise<string | null>
   /** Review-parity additions: allowed methods, squash authors, delete the branch after merging. */
   extras?: MergeExtras
 }): JSX.Element | null {
@@ -58,7 +61,7 @@ export function PullMerge({
   if (shown && !shownBefore) setShownBefore(true)
   // Only a maintainer or writer resolves the readers the merge needs.
   if (!shown) return null
-  return <MergeReaders repo={repo} home={home} pull={pull} isMaintainer={isMaintainer} checkout={checkout} onMerged={onMerged} extras={extras} />
+  return <MergeReaders repo={repo} home={home} pull={pull} isMaintainer={isMaintainer} checkout={checkout} onMerged={onMerged} recheckMembers={recheckMembers} extras={extras} />
 }
 
 /** What the PR page adds to the merge panel. */
@@ -90,6 +93,7 @@ function MergeReaders({
   isMaintainer,
   checkout,
   onMerged,
+  recheckMembers,
   extras,
 }: {
   repo: RepoRef
@@ -98,6 +102,7 @@ function MergeReaders({
   isMaintainer: boolean
   checkout: string
   onMerged: () => void
+  recheckMembers: (bypass: readonly string[]) => Promise<string | null>
   extras: MergeExtras
 }): JSX.Element | null {
   const { sides, baseOnly, sidesKey } = useComparisonSides(repo, pull.sourceId)
@@ -118,6 +123,7 @@ function MergeReaders({
       isMaintainer={isMaintainer}
       checkout={checkout}
       onMerged={onMerged}
+      recheckMembers={recheckMembers}
       {...(extras.allowedMethods !== undefined ? { allowedMethods: extras.allowedMethods } : {})}
       {...(extras.squashAuthors !== undefined ? { squashAuthors: extras.squashAuthors } : {})}
       {...(extras.deleteBranch !== undefined ? { deleteBranch: extras.deleteBranch } : {})}

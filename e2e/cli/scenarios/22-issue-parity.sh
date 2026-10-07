@@ -73,7 +73,7 @@ fi
 if dg_write "$ID_OWNER" "$LOG-ladd" issue label "$REPO" "$N" add "$LABEL" e2e-extra; then
   check "two label events" assert_eq "2" "$(jq_py "$LOG-ladd.json" 'len(d["eventIds"])')"
   dg_write "$ID_OWNER" "$LOG-lrm" issue label "$REPO" "$N" remove e2e-extra || { cat "$LOG-lrm.json" >&2; bad "label remove failed"; }
-  check "labels fold to just $LABEL" until_read "$LOG-lv" "d['state']['labels'] == ['$LABEL']" issue view "$REPO" "$N"
+  check "labels fold to just $LABEL" until_read "$LOG-lv" "d['labels'] == ['$LABEL']" issue view "$REPO" "$N"
 else
   cat "$LOG-ladd.json" >&2; bad "label add failed"
 fi
@@ -81,7 +81,7 @@ fi
 step "assignees: assign me, check the addressee index, list --assignee me, unassign"
 if dg_write "$ID_OWNER" "$LOG-assign" issue assign "$REPO" "$N" me; then
   EV="$(jq_py "$LOG-assign.json" 'd["eventIds"][0]')"
-  check "assignee reads back" until_read "$LOG-av" "d['state']['assignees'] == ['$E2E_OWNER_ID']" issue view "$REPO" "$N"
+  check "assignee reads back" until_read "$LOG-av" "d['assignees'] == ['$E2E_OWNER_ID']" issue view "$REPO" "$N"
   check "list --assignee me finds it" until_read "$LOG-al" "$N in [i['number'] for i in d['issues']]" issue list "$REPO" --assignee me --limit 100
   # The event's refId, read raw: the sparse addressee index holds only events with a refId.
   # E2E_CHAIN_DOC: the QA harness's independent reader (bin/chain-doc.mjs), pointed at this
@@ -95,7 +95,7 @@ if dg_write "$ID_OWNER" "$LOG-assign" issue assign "$REPO" "$N" me; then
     fi
   fi
   if dg_write "$ID_OWNER" "$LOG-unassign" issue unassign "$REPO" "$N" "$E2E_OWNER_ID"; then
-    check "unassigned" until_read "$LOG-uv" "d['state']['assignees'] == []" issue view "$REPO" "$N"
+    check "unassigned" until_read "$LOG-uv" "d['assignees'] == []" issue view "$REPO" "$N"
   else
     cat "$LOG-unassign.json" >&2; bad "unassign failed"
   fi

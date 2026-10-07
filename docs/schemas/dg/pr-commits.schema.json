@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-commits.schema.json",
+  "title": "dg pr commits --json",
+  "description": "The pull request's commits.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "baseOid": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "headOid": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "pr",
+    "headOid",
+    "commits"
+  ],
+  "additionalProperties": true
+}
