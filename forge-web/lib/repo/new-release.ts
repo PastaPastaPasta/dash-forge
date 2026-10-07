@@ -86,17 +86,25 @@ export function releaseTextProblem(input: { name: string; notes: string }): stri
   return fits('the title', input.name, RELEASE_LIMITS.name) ?? fits('the notes', input.notes, RELEASE_LIMITS.notes)
 }
 
-/** C0 controls, DEL, bidi embeddings/overrides/isolates, LRM/RLM and ALM: they disguise a name. */
-const DISGUISING = /[\u0000-\u001f\u007f‪-‮⁦-⁩‎‏؜]/
+/** C0 and C1 controls, DEL, bidi embeddings/overrides/isolates, LRM/RLM and ALM: they disguise a name. */
+const DISGUISING = /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩‎‏؜]/
+
+/**
+ * A Windows device name, alone or with an extension (`nul.txt`), a name ending in a dot or a
+ * space (Windows drops them) or `.git`: `dg release download` refuses to save under them.
+ */
+const NOT_SAVED_AS_ITSELF = /^((con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³]) *(\..*)?|\.git)$|[. ]$/i
 
 /** Why a set of asset files cannot be published, or null. */
 export function assetFilesProblem(files: readonly { readonly name: string; readonly size: number }[]): string | null {
   const names = files.map((f) => f.name)
   if (new Set(names).size !== names.length) return 'two assets have the same name'
   for (const f of files) {
-    if (f.name === '' || f.name.includes('/') || f.name.includes('\\') || f.name === '.' || f.name === '..') return 'an asset name must be a plain file name'
+    // `:` is a drive or a stream on Windows.
+    if (f.name === '' || /[/\\:]/.test(f.name) || f.name === '.' || f.name === '..') return 'an asset name must be a plain file name'
     // Control and text-direction characters disguise a file name.
     if (DISGUISING.test(f.name)) return `${f.name}: the name holds control or text-direction characters`
+    if (NOT_SAVED_AS_ITSELF.test(f.name)) return `${f.name}: a Windows device name, a name ending in a dot or space, or .git can't be downloaded under its own name, so rename the file`
     // UTF-16 length, as the reader's zod `.max(255)` counts it.
     if (f.name.length > MAX_ASSET_NAME) return `${f.name.slice(0, 40)}…: asset names hold at most ${MAX_ASSET_NAME} characters`
     if (f.size === 0) return `${f.name} is empty`

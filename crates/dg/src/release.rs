@@ -36,7 +36,10 @@ const MAX_ASSET_URIS: usize = 4;
 /// Dispatch a `release` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
     match cmd {
-        ReleaseCommand::Create(args) => create(ctx, args).await,
+        ReleaseCommand::Create(args) => {
+            check_upload_names(&args.assets)?;
+            create(ctx, args).await
+        }
         ReleaseCommand::List { repo } => list(ctx, repo).await,
         ReleaseCommand::Download {
             repo,
@@ -44,6 +47,7 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
             asset,
             output,
             dir,
+            force,
         } => {
             // `-D/--dir` is always a directory, made when missing, as gh's is (QW3-069).
             let output = match dir {
@@ -54,7 +58,7 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
                 }
                 None => output.clone(),
             };
-            download(ctx, repo, tag, asset.as_deref(), output).await
+            download(ctx, repo, tag, asset.as_deref(), output, *force).await
         }
         ReleaseCommand::Unpublish { repo, tag } => unpublish(ctx, repo, tag).await,
         ReleaseCommand::Verify { repo, tag } => crate::release_verify::verify(ctx, repo, tag).await,
@@ -1157,9 +1161,89 @@ fn no_readable_copy(asset: &ReleaseAsset) -> UserError {
 #[derive(Debug, PartialEq, Eq)]
 struct Dest {
     path: PathBuf,
-    /// `--output` named this file: an existing one is replaced. Otherwise the file name came
-    /// from the release (someone else's data), and an existing file or symlink is kept.
+    /// `--force`: an existing file (or symlink, which is replaced, never followed) goes.
+    /// Otherwise an existing one is kept.
     replace: bool,
+}
+
+/// Why `name` is not one plain file name that saves as itself on every system, or None. A
+/// recorded asset name is the publisher's data: `download` saves under it only when it names
+/// one new file in the chosen directory, and `create` refuses to record a name `download`
+/// would refuse.
+fn file_name_problem(name: &str) -> Option<&'static str> {
+    // Bidi embeddings, overrides and isolates, LRM, RLM and ALM disguise a name (the web app's
+    // publish form refuses them too).
+    let disguising = |c: char| {
+        matches!(c, '\u{200e}' | '\u{200f}' | '\u{61c}')
+            || ('\u{202a}'..='\u{202e}').contains(&c)
+            || ('\u{2066}'..='\u{2069}').contains(&c)
+    };
+    // A Windows device name, with or without an extension (`nul.txt` is the device too).
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let device = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str())
+        || ["COM", "LPT"].iter().any(|p| {
+            stem.strip_prefix(p).is_some_and(|n| {
+                (n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+                    || matches!(n, "\u{b9}" | "\u{b2}" | "\u{b3}")
+            })
+        });
+    if name.is_empty() || name == "." || name == ".." {
+        Some("it is not a file name")
+    } else if name.contains(['/', '\\']) {
+        Some("it is a path")
+    } else if name.contains(':') {
+        Some("it holds `:` (a drive or a stream on Windows)")
+    } else if name.chars().any(|c| c.is_control() || disguising(c)) {
+        Some("it holds control or text-direction characters")
+    } else if name.ends_with(['.', ' ']) {
+        Some("it ends in a dot or a space, which Windows drops")
+    } else if device {
+        Some("it is a device name on Windows")
+    } else if name.eq_ignore_ascii_case(".git") {
+        Some("git reads a `.git` file as a repository link")
+    } else {
+        None
+    }
+}
+
+/// E201: the release recorded `name`, which [`file_name_problem`] refuses to save under.
+fn not_a_file_name(name: &str, why: &str) -> anyhow::Error {
+    UserError::new(
+        codes::USAGE,
+        format!(
+            "the release names an asset {:?}, which is not saved under that name: {why}",
+            crate::fmt::safe(name)
+        ),
+    )
+    .fix("choose the file yourself: --asset <name> --output <file>")
+    .note("nothing was downloaded")
+    .into()
+}
+
+/// E201 before anything is uploaded: `dg release create` records each file's own name, and one
+/// a download would refuse to save under is refused here (rename the file).
+fn check_upload_names(paths: &[PathBuf]) -> Result<()> {
+    for p in paths {
+        let Some(why) = upload_name(p).and_then(file_name_problem) else {
+            continue;
+        };
+        return Err(UserError::new(
+            codes::USAGE,
+            format!(
+                "{} can't be published as a release asset: {why}",
+                crate::fmt::safe(&p.display().to_string())
+            ),
+        )
+        .fix("rename the file, then publish it")
+        .note("nothing was uploaded or written")
+        .into());
+    }
+    Ok(())
 }
 
 /// Whether `path` is a regular file already holding the bytes whose sha256 is `sha256`: an
@@ -1174,19 +1258,24 @@ fn already_saved(path: &Path, sha256: &str) -> bool {
 }
 
 /// Where each of the assets `names` goes (L-22). No `--output`: the current directory. An
-/// `--output` that is a directory (or ends in `/`): one file per asset, by its name. Any other
-/// `--output`: that file, for exactly one asset. Every destination is checked before anything
-/// is downloaded.
-fn plan_outputs(assets: &[(&str, &str)], output: Option<&Path>) -> Result<Vec<Dest>> {
+/// `--output` that is a directory (or ends in `/`): one file per asset, by its name, which
+/// must be a plain file name ([`file_name_problem`]). Any other `--output`: that file, for
+/// exactly one asset. An existing file is refused unless `force` (or it already holds the
+/// asset's bytes). Every destination is checked before anything is downloaded.
+fn plan_outputs(assets: &[(&str, &str)], output: Option<&Path>, force: bool) -> Result<Vec<Dest>> {
+    let dest = |path: PathBuf, sha256: &str| {
+        if !force && path.symlink_metadata().is_ok() && !already_saved(&path, sha256) {
+            return Err(already_exists(&path));
+        }
+        Ok(Dest {
+            path,
+            replace: force,
+        })
+    };
     let dir = match output {
         None => PathBuf::new(),
         Some(p) if p.is_dir() || p.as_os_str().to_string_lossy().ends_with('/') => p.to_path_buf(),
-        Some(file) if assets.len() == 1 => {
-            return Ok(vec![Dest {
-                path: file.to_path_buf(),
-                replace: true,
-            }]);
-        }
+        Some(file) if assets.len() == 1 => return Ok(vec![dest(file.to_path_buf(), assets[0].1)?]),
         Some(_) => {
             return Err(crate::errors::usage(format!(
                 "--output names one file, and the release has {} assets: pass an --output directory, or --asset <name>",
@@ -1200,33 +1289,27 @@ fn plan_outputs(assets: &[(&str, &str)], output: Option<&Path>) -> Result<Vec<De
     assets
         .iter()
         .map(|(name, sha256)| {
-            // A recorded name is data anyone with the maintainer role wrote: never let it
-            // choose a path outside the directory.
-            let file = Path::new(name)
-                .file_name()
-                .map_or_else(|| PathBuf::from("asset"), PathBuf::from);
-            let path = dir.join(&file);
-            if !seen.insert(file.to_string_lossy().to_lowercase()) {
+            // A recorded name is data anyone with the maintainer role wrote: it never chooses
+            // a path, only one plain file in the directory.
+            if let Some(why) = file_name_problem(name) {
+                return Err(not_a_file_name(name, why));
+            }
+            let path = dir.join(name);
+            if !seen.insert(name.to_lowercase()) {
                 return Err(crate::errors::usage(format!(
                     "two assets of the release save as {}: download them one at a time, with --asset <name> --output <file>",
                     crate::fmt::safe(&path.display().to_string())
                 )));
             }
-            if path.symlink_metadata().is_ok() && !already_saved(&path, sha256) {
-                return Err(already_exists(&path));
-            }
-            Ok(Dest {
-                path,
-                replace: false,
-            })
+            dest(path, sha256)
         })
         .collect()
 }
 
-/// E201: `path` is taken, and a name that came from the release never replaces a file.
+/// E201: `path` is taken, and without `--force` a download never replaces a file.
 fn already_exists(path: &Path) -> anyhow::Error {
     crate::errors::usage(format!(
-        "{} already exists; pass --output <directory or file> to choose where the assets go",
+        "{} already exists; pass --force to replace it, or --output <directory or file> to save elsewhere",
         crate::fmt::safe(&path.display().to_string())
     ))
 }
@@ -1411,6 +1494,7 @@ async fn download(
     tag: &str,
     asset_name: Option<&str>,
     output: Option<PathBuf>,
+    force: bool,
 ) -> Result<()> {
     // No key is opened to read them for a public repository (L-12).
     let s = Reader::open(ctx, repo).await?;
@@ -1449,7 +1533,7 @@ async fn download(
         .iter()
         .map(|a| (a.name.as_str(), a.sha256.as_str()))
         .collect();
-    let dests = plan_outputs(&planned, output.as_deref())?;
+    let dests = plan_outputs(&planned, output.as_deref(), force)?;
     if let Some(dir) = dests.first().and_then(|d| d.path.parent()) {
         if !dir.as_os_str().is_empty() && !dir.exists() {
             std::fs::create_dir_all(dir).map_err(|e| save_failed(dir, &e))?;
@@ -1571,7 +1655,7 @@ mod download_tests {
     /// Assets named `names`, whose sha256 nothing on disk matches.
     fn plan(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {
         let assets: Vec<(&str, &str)> = names.iter().map(|n| (*n, "00")).collect();
-        plan_outputs(&assets, output)
+        plan_outputs(&assets, output, false)
     }
 
     fn dests(names: &[&str], output: Option<&Path>) -> Result<Vec<(PathBuf, bool)>> {
@@ -1581,11 +1665,19 @@ mod download_tests {
             .collect())
     }
 
+    fn dests_forced(names: &[&str], output: Option<&Path>) -> Result<Vec<(PathBuf, bool)>> {
+        let assets: Vec<(&str, &str)> = names.iter().map(|n| (*n, "00")).collect();
+        Ok(plan_outputs(&assets, output, true)?
+            .into_iter()
+            .map(|d| (d.path, d.replace))
+            .collect())
+    }
+
     /// L-22: `--output <dir>` saves every asset in it by name (it was "Is a directory").
     #[test]
     fn an_output_directory_takes_every_asset_by_name() {
         let dir = tempfile::tempdir().unwrap();
-        let got = dests(&["a.tar.gz", "../../etc/b.zip"], Some(dir.path())).unwrap();
+        let got = dests(&["a.tar.gz", "b.zip"], Some(dir.path())).unwrap();
         assert_eq!(
             got,
             [
@@ -1610,7 +1702,7 @@ mod download_tests {
     fn a_file_output_takes_one_asset_and_existing_files_stay() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("out.bin");
-        assert_eq!(dests(&["a"], Some(&file)).unwrap(), [(file.clone(), true)]);
+        assert_eq!(dests(&["a"], Some(&file)).unwrap(), [(file.clone(), false)]);
         let two = plan(&["a", "b"], Some(&file)).unwrap_err();
         assert!(format!("{two:#}").contains("--output directory"), "{two:#}");
         std::fs::write(dir.path().join("a"), b"mine").unwrap();
@@ -1619,10 +1711,155 @@ mod download_tests {
             format!("{exists:#}").contains("already exists"),
             "{exists:#}"
         );
-        // Two recorded names that land on one file, also when they differ only in case.
-        assert!(plan(&["x/c", "y/c"], Some(dir.path())).is_err());
+        // Two recorded names that land on one file when they differ only in case.
         let case = plan(&["README.txt", "readme.TXT"], Some(dir.path())).unwrap_err();
         assert!(format!("{case:#}").contains("two assets"), "{case:#}");
+    }
+
+    /// A recorded name is saved only as one plain file name: a path, a Windows drive, UNC or
+    /// device name, a control character or a name Windows would change is refused, with or
+    /// without an --output directory, and nothing is written.
+    #[test]
+    fn a_name_that_is_not_a_plain_file_name_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "../x",
+            "../../etc/b.zip",
+            ".git/config",
+            "/abs",
+            "/etc/passwd",
+            "C:\\x",
+            "C:x",
+            "c:",
+            "\\\\server\\share",
+            "\\\\server\\share\\x",
+            "\\\\?\\C:\\x",
+            "x/y",
+            "x\\y",
+            "x/",
+            "\\x",
+            ".",
+            "..",
+            "",
+            ".git",
+            ".GIT",
+            "CON",
+            "con.txt",
+            "Nul",
+            "nul.tar.gz",
+            "COM1",
+            "lpt9.bin",
+            "COM\u{b9}",
+            "CONIN$",
+            "AUX .txt",
+            "x.",
+            "x ",
+            "a:stream",
+            "a\0b",
+            "a\nb",
+            "a\u{7f}b",
+            "a\u{9b}b",
+            "evil\u{202e}gpj.exe",
+        ] {
+            for output in [None, Some(dir.path())] {
+                let err = plan(&[name], output).expect_err(name);
+                let u = err.downcast_ref::<UserError>().unwrap();
+                assert_eq!(u.code, "E201", "{name:?}: {u:?}");
+                assert!(u.fix[0].contains("--output <file>"), "{name:?}: {u:?}");
+            }
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        for name in [
+            "a.tar.gz",
+            "README",
+            ".hidden",
+            "a..b",
+            "console.log",
+            "COM10",
+            "nulls.txt",
+            "Ünïcode ✓.txt",
+        ] {
+            assert_eq!(
+                dests(&[name], Some(dir.path())).unwrap(),
+                [(dir.path().join(name), false)],
+                "{name:?}"
+            );
+        }
+    }
+
+    /// An existing file is replaced only with --force, the --output file named too; a file
+    /// already holding the asset's bytes is kept either way.
+    #[test]
+    fn an_existing_file_is_replaced_only_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("out.bin");
+        std::fs::write(&file, b"mine").unwrap();
+        std::fs::write(dir.path().join("a"), b"mine").unwrap();
+        for output in [file.as_path(), dir.path()] {
+            let err = plan_outputs(&[("a", "00")], Some(output), false).unwrap_err();
+            assert!(format!("{err:#}").contains("--force"), "{err:#}");
+        }
+        assert_eq!(
+            dests_forced(&["a"], Some(&file)).unwrap(),
+            [(file.clone(), true)]
+        );
+        assert_eq!(
+            dests_forced(&["a"], Some(dir.path())).unwrap(),
+            [(dir.path().join("a"), true)]
+        );
+        // The same bytes: kept, not refused.
+        let sha = PackMeta::for_bytes(b"mine").pack_hash;
+        let d = plan_outputs(&[("a", sha.as_str())], Some(&file), false).unwrap();
+        assert_eq!((d[0].path.as_path(), d[0].replace), (file.as_path(), false));
+        assert_eq!(std::fs::read(&file).unwrap(), b"mine");
+    }
+
+    /// A symlink where an asset goes is never written through: refused without --force, and
+    /// with it replaced by the file itself, its target untouched.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_destination_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let link = dir.path().join("a");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let sha = PackMeta::for_bytes(b"keep").pack_hash;
+        // Even when the target holds the asset's bytes: the link is not "already saved".
+        assert!(plan_outputs(&[("a", sha.as_str())], Some(dir.path()), false).is_err());
+        assert!(plan_outputs(&[("a", "00")], Some(&link), false).is_err());
+        let keep = Dest {
+            path: link.clone(),
+            replace: false,
+        };
+        assert!(save(&keep, b"evil").is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        save(
+            &Dest {
+                replace: true,
+                ..keep
+            },
+            b"new",
+        )
+        .unwrap();
+        assert!(link.symlink_metadata().unwrap().is_file());
+        assert_eq!(std::fs::read(&link).unwrap(), b"new");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+    }
+
+    /// `dg release create` refuses a file whose name a download would refuse.
+    #[test]
+    fn an_upload_with_a_name_a_download_refuses_is_refused() {
+        for bad in ["CON.txt", "x.", "a:b", "a\u{202e}b"] {
+            let err =
+                check_upload_names(&[PathBuf::from("ok.bin"), PathBuf::from(bad)]).expect_err(bad);
+            let u = err.downcast_ref::<UserError>().unwrap();
+            assert!(
+                u.message.contains(bad) && u.fix[0].contains("rename"),
+                "{u:?}"
+            );
+        }
+        check_upload_names(&[PathBuf::from("dist/app-1.0.tar.gz")]).unwrap();
     }
 
     /// A rerun after one asset failed resumes: a file already holding the asset's bytes
@@ -1632,7 +1869,7 @@ mod download_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a"), b"mine").unwrap();
         let sha = PackMeta::for_bytes(b"mine").pack_hash;
-        let d = plan_outputs(&[("a", sha.as_str())], Some(dir.path())).unwrap();
+        let d = plan_outputs(&[("a", sha.as_str())], Some(dir.path()), false).unwrap();
         assert_eq!(d[0].path, dir.path().join("a"));
         assert!(already_saved(&d[0].path, &sha.to_ascii_uppercase()));
         assert!(!already_saved(&d[0].path, &"0".repeat(64)));

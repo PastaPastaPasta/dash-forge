@@ -70,6 +70,12 @@ describe('release input rules', () => {
     expect(assetFilesProblem([{ name: 'a.tar.gz', size: 1 }, { name: 'b.zip', size: 2 }])).toBeNull()
     expect(assetFilesProblem([{ name: 'a', size: 1 }, { name: 'a', size: 1 }])).toMatch(/same name/)
     expect(assetFilesProblem([{ name: '../a', size: 1 }])).toMatch(/plain file name/)
+    for (const name of ['C:x', 'a:stream', 'x\\y', '..']) expect(assetFilesProblem([{ name, size: 1 }])).toMatch(/plain file name/)
+    for (const name of ['CON', 'nul.txt', 'Com1.tar.gz', 'LPT¹', 'CONIN$', 'AUX .txt', 'x.', 'x ', '.git', '.GIT']) {
+      expect(assetFilesProblem([{ name, size: 1 }])).toMatch(/rename the file/)
+    }
+    for (const name of ['console.log', 'COM10', 'nulls.txt', '.hidden', 'a..b']) expect(assetFilesProblem([{ name, size: 1 }])).toBeNull()
+    expect(assetFilesProblem([{ name: 'a\u009bb', size: 1 }])).toMatch(/control/)
     expect(assetFilesProblem([{ name: 'exe‮txt.sh', size: 1 }])).toMatch(/text-direction/)
     expect(assetFilesProblem([{ name: 'empty.bin', size: 0 }])).toMatch(/empty/)
     expect(assetFilesProblem([{ name: 'n'.repeat(256), size: 1 }])).toMatch(/255/)

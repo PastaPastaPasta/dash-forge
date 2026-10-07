@@ -1576,6 +1576,10 @@ pub enum ReleaseCommand {
         /// A directory to save the assets in, made if it does not exist (gh's `-D/--dir`).
         #[arg(long, short = 'D')]
         dir: Option<PathBuf>,
+        /// Replace a file that already exists (a symlink there is replaced, not followed).
+        /// Without it, an existing file is refused. `--clobber` works too.
+        #[arg(long, alias = "clobber")]
+        force: bool,
     },
     /// Unpublish a live release (maintainers only).
     ///
