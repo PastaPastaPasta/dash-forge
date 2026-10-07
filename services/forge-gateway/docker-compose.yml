@@ -20,7 +20,7 @@ services:
       DASH_FORGE_DAPI_ADDRESSES: ${DASH_FORGE_DAPI_ADDRESSES:-}
       DASH_FORGE_QUORUM_URL: ${DASH_FORGE_QUORUM_URL:-}
       # Where it is reachable, and what it links to.
-      GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:?set GATEWAY_PUBLIC_URL, e.g. https://git.forge.dashhq.org}
+      GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:?set GATEWAY_PUBLIC_URL, e.g. https://git-forge.dashhq.org}
       GATEWAY_WEB_URL: ${GATEWAY_WEB_URL:-https://forge.dashhq.org}
       # What it serves.
       GATEWAY_ALL_PUBLIC: ${GATEWAY_ALL_PUBLIC:-true}

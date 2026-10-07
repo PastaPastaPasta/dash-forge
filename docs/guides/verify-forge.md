@@ -173,7 +173,7 @@ dg verify-mirror https://<gateway>/<owner>/<repo>.git
 ```
 
 ```
-https://git.forge.dashhq.org/alice/project.git  G6D3…/project
+https://git-forge.dashhq.org/alice/project.git  G6D3…/project
   match     8f3e2a1c40a1  refs/heads/main  (the proved tip)
   stale     c41d9e0b7f22  refs/heads/dev   (an earlier tip; the ref moved after the mirror's snapshot)
   manifest: snapshot at Platform height 51234 (3 blocks behind the chain tip)
