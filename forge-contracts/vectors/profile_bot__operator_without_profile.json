@@ -1,0 +1,14 @@
+{
+  "name": "operator_without_profile",
+  "description": "The named operator has no profile: no badge.",
+  "rules": "v2",
+  "case": "profile_bot",
+  "input": {
+    "botId": "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv",
+    "bot": {
+      "operator": "AbcPFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8xyz"
+    },
+    "operator": null
+  },
+  "expected": null
+}

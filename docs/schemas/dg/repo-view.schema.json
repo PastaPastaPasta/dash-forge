@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-view.schema.json",
+  "title": "dg repo view --json",
+  "description": "A repository: its refs, packs and members.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "visibility": {
+      "type": "string",
+      "enum": [
+        "public",
+        "private"
+      ]
+    },
+    "archived": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Whether the repository is archived; null when its config could not be read."
+    },
+    "defaultBranch": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "state": {}
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    "packCount": {
+      "type": "integer"
+    },
+    "packBytes": {
+      "type": "integer"
+    },
+    "members": {},
+    "remoteUrl": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repoId",
+    "ownerId",
+    "name",
+    "visibility"
+  ],
+  "additionalProperties": true
+}

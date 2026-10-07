@@ -704,9 +704,9 @@ async fn repos(ctx: &Ctx, a: &crate::SearchReposArgs) -> Result<()> {
         json!({
             "count": found.len(),
             "repos": found.iter().map(|f| json!({
-                "owner": f.repo.owner_id(),
+                "ownerId": f.repo.owner_id(),
                 "name": f.repo.name(),
-                "id": f.repo.id(),
+                "repoId": f.repo.id(),
                 "fullName": f.repo.display(),
                 "description": f.description,
                 "visibility": f.repo.visibility,

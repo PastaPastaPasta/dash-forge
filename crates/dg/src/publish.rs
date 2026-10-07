@@ -851,11 +851,7 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         .steps
         .last()
         .is_some_and(|(_, o)| *o == StepOutcome::Created);
-    let steps: serde_json::Map<_, _> = result
-        .steps
-        .iter()
-        .map(|(name, o)| ((*name).to_string(), json!(o)))
-        .collect();
+    let steps = steps_json(&result.steps);
     let body = json!({
         "status": if result.already_existed() { "exists" } else { "created" },
         "generation": "v2",
@@ -927,6 +923,16 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         println!("Open it: {url}");
     });
     Ok(())
+}
+
+/// A create's steps for `--json`: each document's name and what this run did about it.
+pub(crate) fn steps_json(steps: &[(&str, StepOutcome)]) -> Value {
+    Value::Object(
+        steps
+            .iter()
+            .map(|(name, o)| ((*name).to_string(), json!(o)))
+            .collect(),
+    )
 }
 
 /// `✓ created  <web url>` (or `✓ exists`), and any step an earlier run left unfinished.

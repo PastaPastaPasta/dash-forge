@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-policy-show.schema.json",
+  "title": "dg repo policy show --json",
+  "description": "The branch policy in force.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "policy": {
+      "$ref": "common.schema.json#/$defs/policy"
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "policy"
+  ],
+  "additionalProperties": true
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/storage-remove.schema.json",
+  "title": "dg storage remove --json",
+  "description": "A storage profile removed.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "removed"
+      ]
+    },
+    "profile": {
+      "type": "string"
+    },
+    "keychain": {}
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "profile"
+  ],
+  "additionalProperties": true
+}

@@ -73,6 +73,21 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
     if !ctx.json {
         summary.print();
     }
+    let (body, error) = outcome(summary)?;
+    match error {
+        None => {
+            if ctx.json {
+                crate::errors::print_json(&body);
+            }
+            Ok(())
+        }
+        // In human mode the table is already out, and `reported` prints only the error.
+        Some(e) => Err(crate::errors::reported(e, body)),
+    }
+}
+
+/// A summary's `--json` body, and the error a run that did not finish exits with.
+pub(crate) fn outcome(summary: &Summary) -> Result<(serde_json::Value, Option<UserError>)> {
     let error = match summary.status {
         Status::Ok | Status::DryRun => None,
         Status::Partial => Some(
@@ -108,17 +123,7 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
             ))
         }
     };
-    let body = serde_json::to_value(summary)?;
-    match error {
-        None => {
-            if ctx.json {
-                crate::errors::print_json(&body);
-            }
-            Ok(())
-        }
-        // In human mode the table is already out, and `reported` prints only the error.
-        Some(e) => Err(crate::errors::reported(e, body)),
-    }
+    Ok((serde_json::to_value(summary)?, error))
 }
 
 /// `dg import`.

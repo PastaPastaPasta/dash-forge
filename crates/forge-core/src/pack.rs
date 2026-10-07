@@ -139,6 +139,33 @@ pub fn join(chunks: &[Chunk]) -> Vec<u8> {
     out
 }
 
+/// A small deterministic xorshift generator for the parsers' random-input tests.
+#[cfg(test)]
+struct TestRng(u64);
+
+#[cfg(test)]
+impl TestRng {
+    fn next_u64(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    /// A value in `0..n` (`n > 0`).
+    fn below(&mut self, n: usize) -> usize {
+        usize::try_from(self.next_u64() % n as u64).expect("below a usize")
+    }
+
+    fn byte(&mut self) -> u8 {
+        self.next_u64().to_le_bytes()[0]
+    }
+
+    fn bytes(&mut self, n: usize) -> Vec<u8> {
+        (0..n).map(|_| self.byte()).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{join, split, Chunk, DOC_PAYLOAD_MAX, FIELDS_PER_DOC, FIELD_MAX, ST_SIZE_LIMIT};

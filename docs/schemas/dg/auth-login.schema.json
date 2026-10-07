@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-login.schema.json",
+  "title": "dg auth login --json",
+  "description": "Signed in: the identity and the key stored for it.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "logged_in"
+      ]
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "network": {
+      "type": "string"
+    },
+    "keyId": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "fullKey": {
+      "type": "boolean"
+    },
+    "encryptionKeyIds": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "budgetCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "expiresAt": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "storage": {
+      "type": "string"
+    },
+    "storedAt": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "balanceCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "balanceDash": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "cost": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/cost"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "unknownGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "uncheckedGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "identityId",
+    "network"
+  ],
+  "additionalProperties": true
+}

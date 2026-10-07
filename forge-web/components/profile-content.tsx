@@ -44,6 +44,7 @@ import { Oid } from '@/components/ui/oid'
 import { ProfileAvatar } from '@/components/ui/profile-avatar'
 import { LookalikeNote, useRememberAcquaintance } from '@/components/lookalike-note'
 import { RepoCard } from '@/components/repo-card'
+import { ProfileBot } from '@/components/profile-bot'
 import { Button, buttonClass } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
@@ -273,6 +274,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
           <Count value={data.repos.length} one="repo" />
         </div>
         <ProfileFacts fields={fields} />
+        {data.profile !== null && data.profile !== 'unread' ? <ProfileBot identityId={identityId} profile={data.profile} /> : null}
         <p className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
           Identity <Oid value={identityId} label="identity id" />
         </p>

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-lock.schema.json",
+  "title": "dg pr lock --json",
+  "description": "A pull request's conversation locked or unlocked.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "locked": {
+      "type": "boolean"
+    },
+    "transitionId": {
+      "type": "string"
+    },
+    "written": {
+      "type": "boolean"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr"
+  ],
+  "additionalProperties": true
+}

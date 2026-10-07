@@ -424,14 +424,14 @@ export function squashDraft(
   const fallback = authors === null ? null : members ? membersSquashMessage(pr.number, listed, authorLine) : squashMessage(pr.title, pr.body, pr.number, listed, authorLine)
   const ready = edited !== null || fallback !== null
   const message = edited ?? fallback ?? ''
-  const warning =
+  const authorsWarning =
     authors !== null && 'error' in authors
       ? `The PR's commits could not be read (${authors.error}), so you are the commit's author and the message has no Co-authored-by lines: add them by hand, or squash with \`dg pr merge --squash\` to credit the PR's author.`
       : authors !== null && !authors.complete
         ? "This PR has more commits than the page lists, so its first commit's author is not known here: you are the commit's author. Add any missing Co-authored-by lines, or squash with `dg pr merge --squash` to credit the PR's author."
-        : members
-          ? MEMBERS_MESSAGE_WARNING
-          : null
+        : null
+  // A members-only PR's message is public whatever else is said about its authors.
+  const warning = [members ? MEMBERS_MESSAGE_WARNING : null, authorsWarning].filter((w) => w !== null).join(' ') || null
   const problem = !ready ? "Reading the PR's commits for the Co-authored-by lines…" : message.trim() === '' ? 'Write a commit message to squash and merge.' : null
   return { message, ready, warning, problem, author }
 }

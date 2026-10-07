@@ -1,0 +1,37 @@
+{
+  "source": "emitter: crates/dg/src/pr/review.rs submit",
+  "command": "pr review",
+  "args": [
+    "--yes",
+    "--json",
+    "pr",
+    "review",
+    "o/r",
+    "5",
+    "--approve"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "reviewed",
+    "pr": 5,
+    "verdict": 1,
+    "verdictLabel": "approved",
+    "audience": "public",
+    "commitOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reviewId": "R",
+    "comments": [],
+    "documents": 1,
+    "landed": 1,
+    "failed": 0,
+    "resumed": false,
+    "cost": {
+      "credits": 45300000,
+      "dash": 0.000453,
+      "usd": 0.011325,
+      "usdPrice": 25.0
+    },
+    "counts": true,
+    "schemaVersion": 1
+  }
+}
