@@ -348,6 +348,23 @@ export function squashMessage(title: string, body: string, number: number, autho
   return m
 }
 
+/**
+ * What a merger reads before editing the commit message of a members-only PR: the commit lands
+ * on a public branch, so its message is public for good (its default names only the PR's number).
+ */
+export const MEMBERS_MESSAGE_WARNING = "This pull request is members-only, but its commit message will be public: everyone can read it. Leave out anything members-only."
+
+/**
+ * The default squash message of a members-only PR: its number (`#N`) and the co-author trailers
+ * of the commits it squashes (their authors are on public commits anyway), never its title or
+ * body, which only members can read.
+ */
+export function membersSquashMessage(number: number, authors: readonly string[], author: string): string {
+  const own = canonicalIdent(author)
+  const co = authors.filter((a) => canonicalIdent(a) !== own)
+  return co.length > 0 ? `#${number}\n\n${co.map((a) => `Co-authored-by: ${a}`).join('\n')}` : `#${number}`
+}
+
 /** The PR's commit authors for a squash: loading (null), read (`complete` false: the list was capped), or unreadable. */
 export type SquashAuthors = { readonly authors: readonly string[]; readonly complete: boolean } | { readonly error: string } | null
 
@@ -395,22 +412,26 @@ export function squashAuthor(authors: SquashAuthors): { name: string; email: str
  * not list again as a co-author.
  */
 export function squashDraft(
-  pr: { readonly title: string; readonly body: string; readonly number: number },
+  pr: { readonly title: string; readonly body: string; readonly number: number; readonly audience?: 'members' },
   authors: SquashAuthors,
   merger: string,
   edited: string | null,
 ): { message: string; ready: boolean; warning: string | null; problem: string | null; author: { name: string; email: string } | null } {
   const author = squashAuthor(authors)
   const authorLine = author === null ? merger : `${author.name} <${author.email}>`
-  const fallback = authors === null ? null : squashMessage(pr.title, pr.body, pr.number, 'error' in authors ? [] : authors.authors, authorLine)
+  const members = pr.audience === 'members'
+  const listed = authors === null || 'error' in authors ? [] : authors.authors
+  const fallback = authors === null ? null : members ? membersSquashMessage(pr.number, listed, authorLine) : squashMessage(pr.title, pr.body, pr.number, listed, authorLine)
   const ready = edited !== null || fallback !== null
   const message = edited ?? fallback ?? ''
-  const warning =
+  const authorsWarning =
     authors !== null && 'error' in authors
       ? `The PR's commits could not be read (${authors.error}), so you are the commit's author and the message has no Co-authored-by lines: add them by hand, or squash with \`dg pr merge --squash\` to credit the PR's author.`
       : authors !== null && !authors.complete
         ? "This PR has more commits than the page lists, so its first commit's author is not known here: you are the commit's author. Add any missing Co-authored-by lines, or squash with `dg pr merge --squash` to credit the PR's author."
         : null
+  // A members-only PR's message is public whatever else is said about its authors.
+  const warning = [members ? MEMBERS_MESSAGE_WARNING : null, authorsWarning].filter((w) => w !== null).join(' ') || null
   const problem = !ready ? "Reading the PR's commits for the Co-authored-by lines…" : message.trim() === '' ? 'Write a commit message to squash and merge.' : null
   return { message, ready, warning, problem, author }
 }

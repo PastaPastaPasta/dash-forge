@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { atRoute, collectPageErrors, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 
 /**
  * Ref resolution on the dash showcase mirror (FG-1: L-01, L-02, L-28, L-32, L-63), read-only:
@@ -121,7 +121,7 @@ test.describe('ref resolution (dash showcase mirror)', () => {
   test('tr-6. a directory path in /repo/blob opens the directory (L-63)', async ({ page }) => {
     await page.goto(repoUrl('blob', '&path=src', DASH), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expect(page).toHaveURL(/\/repo\/tree\/\?.*path=src/, { timeout: 90_000 })
+    await expect(page).toHaveURL(atRoute(/\/repo\/tree\/\?.*path=src/), { timeout: 90_000 })
     await expect(page.getByText(/is not a blob|is a tree, not a blob/)).toHaveCount(0)
     await expect(page.getByRole('link', { name: 'init.cpp' })).toBeVisible({ timeout: 60_000 })
   })

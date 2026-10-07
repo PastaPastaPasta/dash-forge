@@ -41,7 +41,7 @@ import {
   unresolvedPullQualifiers,
   type PullListQuery,
 } from '@/lib/view/pull-query'
-import { queryPulls, repoContractIds, repoKey, rowFiltersOf, type PullListPage, type PullRow, type PullSelection } from '@/lib/repo'
+import { queryPulls, contentKey, repoContractIds, rowFiltersOf, type PullListPage, type PullRow, type PullSelection } from '@/lib/repo'
 import { pastLastPage } from '@/lib/view/issue-query'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -142,7 +142,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
     },
     // Not `total`: it arrives while page 1 reads, and the same query again reads on a load (a sort or
     // search would read two loads cold). The page's own proved count fills in for it.
-    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
+    [ready, contentKey(home.repo), generation, JSON.stringify(query), identity ?? '', query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 

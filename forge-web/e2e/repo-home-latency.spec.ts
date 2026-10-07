@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, countDapi, countDocumentQueries, E2E_DEVNET, repoUrl, shot } from './helpers'
+import { atRoute, collectPageErrors, countDapi, countDocumentQueries, E2E_DEVNET, repoUrl, shot } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -94,7 +94,7 @@ test.describe('repo home latency (showcase repos)', () => {
 
     // Warm: the same page again in this tab.
     await page.getByRole('link', { name: /^Issues/ }).first().click()
-    await expect(page).toHaveURL(/\/repo\/issues\//)
+    await expect(page).toHaveURL(atRoute(/\/repo\/issues\//))
     const t1 = Date.now()
     await page.getByRole('link', { name: /^Code$/ }).first().click()
     await expect(fileRows(page).first()).toBeVisible({ timeout: 10_000 })

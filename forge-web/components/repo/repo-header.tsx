@@ -7,7 +7,6 @@
  */
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
 import { Archive, Code2, GitFork, GitPullRequest, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
@@ -17,11 +16,12 @@ import { StarButton } from '@/components/repo/star-button'
 import { WatchButton } from '@/components/repo/watch-button'
 import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
+import { usePathname, useShortAddressBar } from '@/hooks/use-route'
 import { cn, shortId } from '@/lib/utils'
 import { TabStrip } from '@/components/ui/tab-strip'
 import { bareRoute, ownerLabel } from '@/lib/page-title'
 import { LookalikeNote } from '@/components/lookalike-note'
-import { useDpnsName } from '@/hooks/use-dpns-name'
+import { useSettledDpnsName } from '@/hooks/use-dpns-name'
 import { ForkButton } from '@/components/repo/fork-button'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
 import { CodeSearchBox } from '@/components/repo/code-search-box'
@@ -92,7 +92,10 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   const { role } = useViewerRole(home.repo)
   const TitleTag = VIEWS_WITH_OWN_H1.includes(pathname) ? 'div' : 'h1'
   // The owner pill reads the same name: no extra request. Look-alikes of known names (TS-24).
-  const ownerName = useDpnsName(home.repo.ownerId)
+  const ownerLookup = useSettledDpnsName(home.repo.ownerId)
+  const ownerName = ownerLookup ?? undefined
+  // The address bar shows the page's short URL, by the owner's name once read (CJ-6).
+  useShortAddressBar(home.repo.visibility, ownerLookup)
   const repoName = home.repo.name || addr.name
   const lookalikes = [
     ownerName ? { kind: 'owner' as const, name: ownerName, identity: home.repo.ownerId } : null,

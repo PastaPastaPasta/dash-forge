@@ -12,7 +12,7 @@
  */
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname } from '@/hooks/use-route'
 import { Code2, GitPullRequest, MessageSquare, Tag } from 'lucide-react'
 import { activeRepoTab } from '@/components/repo/repo-header'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'

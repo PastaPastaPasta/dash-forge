@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { E2E_DEVNET, expectLanded, idFile, repoUrl, shot, signedIn, waitForRepoResolved } from './helpers'
+import { E2E_DEVNET, expectLanded, idFile, repoUrl, routeOf, shot, signedIn, waitForRepoResolved } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -147,7 +147,7 @@ test.describe('writes', () => {
     await page.getByLabel('Description').fill('Mentions @nobody-here and #1.')
     await page.getByRole('button', { name: /submit issue/i }).click()
     await expect(page.getByRole('heading', { name: new RegExp(TITLE) })).toBeVisible({ timeout: 90_000 })
-    number = Number(new URL(page.url()).searchParams.get('number'))
+    number = Number(routeOf(page.url()).searchParams.get('number'))
     // #1 is autolinked to the repo's issue 1.
     await expect(page.locator('[data-autolink="ref"]').first()).toHaveAttribute('href', /number=1/)
     await page.getByRole('button', { name: /^edit$/i }).first().click()

@@ -82,7 +82,9 @@ jobs:
     # superseded build.
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The suite alone takes about 40 minutes against a busy devnet; 45 left the dash mirror step
+    # no time and cancelled otherwise-green runs.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: forge-web
@@ -131,10 +133,13 @@ jobs:
       # so its owner is named here; the specs skip without it. Sakura's Platform reset to
       # 5.0.0-beta.2 (2026-10-06) took the mirror with it: set E2E_SHOWCASE_DASHPAY to the new
       # mirror owner once the dash mirror is re-imported. Until then these specs skip.
+      # Not run at all while E2E_SHOWCASE_DASHPAY (a repository variable) is unset: the specs
+      # would skip anyway, but the suite's devnet readiness guard first waits up to six minutes.
       - name: Playwright (dash mirror budgets)
-        if: success() || failure()
+        if: (success() || failure()) && vars.E2E_SHOWCASE_DASHPAY != ''
         env:
           E2E_SKIP_BUILD: '1'
+          E2E_SHOWCASE_DASHPAY: ${{ vars.E2E_SHOWCASE_DASHPAY }}
         run: pnpm exec playwright test page-budget.spec.ts --project chromium --grep "bi-1|cb-"
       - uses: actions/upload-artifact@v4
         if: failure()

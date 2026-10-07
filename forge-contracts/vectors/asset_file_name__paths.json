@@ -1,0 +1,50 @@
+{
+  "name": "paths",
+  "description": "A path, a UNC or drive path and look-alike separators are refused as a path.",
+  "case": "asset_file_name",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "../x",
+      "../../etc/b.zip",
+      ".git/config",
+      "/abs",
+      "/etc/passwd",
+      "C:\\x",
+      "\\\\server\\share",
+      "\\\\?\\C:\\x",
+      "x/y",
+      "x\\y",
+      "x/",
+      "\\x",
+      "a\u2215b",
+      "a\u2044b",
+      "a\uff0fb",
+      "a\uff3cb",
+      "a\u29f8b",
+      "a\u29f5b",
+      "a\u29f9b"
+    ]
+  },
+  "expected": [
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path",
+    "path"
+  ]
+}

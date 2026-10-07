@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { canonicalOfShort } from '../lib/short-url'
 import { E2E_DEVNET, loadSeedPulls, seedRepo, type SeedPulls } from './seed-summary'
 export { E2E_DEVNET, loadSeedPulls, type SeedPulls }
 
@@ -557,4 +558,60 @@ export function readKeptSession(page: Page): Promise<Record<string, unknown> | n
         }
       }),
   )
+}
+
+/**
+ * The route a page at `url` reads: its canonical query route, also once the address bar shows the
+ * page's short URL (CJ-6), which the 404.html shim opens as that route.
+ */
+export function routeOf(url: URL | string): URL {
+  const u = new URL(String(url))
+  const route = canonicalOfShort(u.pathname, u.search.slice(1))
+  return route === null ? u : new URL(`${route}${u.hash}`, u.origin)
+}
+
+/** A `toHaveURL` / `waitForURL` matcher: `want` against the route the page reads ({@link routeOf}). */
+export function atRoute(want: RegExp | ((route: URL) => boolean)): (url: URL) => boolean {
+  return (url) => {
+    const route = routeOf(url)
+    return typeof want === 'function' ? want(route) : want.test(route.href)
+  }
+}
+
+const ownerNamesCache = new Map<string, Promise<readonly string[]>>()
+
+/** The DPNS names identity `id` goes by on this devnet, read in Node (as {@link showcaseRepo} does). */
+function ownerNames(id: string): Promise<readonly string[]> {
+  let names = ownerNamesCache.get(id)
+  if (names === undefined) {
+    showcaseSdk ??= nodeSdk()
+    names = showcaseSdk.then(async (sdk) => ((await sdk.dpns.usernames({ identityId: id, limit: 20 })) as unknown[]).map(String))
+    // A failed read is not cached: the next caller reads again.
+    names.catch(() => {
+      ownerNamesCache.delete(id)
+      showcaseSdk = undefined
+    })
+    ownerNamesCache.set(id, names)
+  }
+  return names
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * `owner=…` in a route pattern, for the identity `id`: its id, or one of its own DPNS names (the
+ * label `alice` or the full `alice.dash`, any case), as the address bar's short URL writes the
+ * owner once the page has read the name. Another identity's name does not match.
+ */
+export async function ownerIs(id: string): Promise<string> {
+  const forms = new Set([escapeRe(id)])
+  if (/^[1-9A-HJ-NP-Za-km-z]{42,44}$/.test(id)) {
+    for (const name of await ownerNames(id)) {
+      for (const form of [name, name.replace(/\.dash$/i, '')]) {
+        forms.add(escapeRe(form))
+        forms.add(escapeRe(form.toLowerCase()))
+      }
+    }
+  }
+  return `owner=(?:${[...forms].join('|')})`
 }

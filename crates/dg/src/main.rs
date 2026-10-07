@@ -1647,12 +1647,16 @@ pub enum ReleaseCommand {
         #[arg(long)]
         asset: Option<String>,
         /// A directory to save the assets in, by name (default: the current directory), or a
-        /// file name for a single asset. `-o` works too.
+        /// file name for a single asset. An existing file is kept unless --force. `-o` works too.
         #[arg(long, short = 'O', short_alias = 'o', conflicts_with = "dir")]
         output: Option<PathBuf>,
         /// A directory to save the assets in, made if it does not exist (gh's `-D/--dir`).
         #[arg(long, short = 'D')]
         dir: Option<PathBuf>,
+        /// Replace a file that already exists (a symlink there is replaced, not followed).
+        /// Without it, an existing file is refused. `--clobber` works too.
+        #[arg(long, alias = "clobber")]
+        force: bool,
     },
     /// Unpublish a live release (maintainers only).
     ///

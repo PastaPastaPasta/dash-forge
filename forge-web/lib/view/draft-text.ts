@@ -4,8 +4,9 @@
  * deleted), after two weeks, and with the identity's key ("Sign out & forget key").
  *
  * Kept per signed-in identity, so another identity in this browser never sees (or posts) it,
- * and only for public repositories: a private repository's text is encrypted on Platform, and a
- * plaintext copy on disk would outlive the session.
+ * and only for public text: a private repository's text, and a public repository's members-only
+ * text, is encrypted on Platform, and a plaintext copy on disk would outlive the session (no
+ * members-only text at rest, DESIGN §4.1).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -28,9 +29,19 @@ function store(): Storage | null {
   }
 }
 
-/** Where `viewer`'s comment draft on `targetId` is kept, or null: not kept (a private repo, signed out). */
-export function commentDraftKey(repo: { readonly repoId: string; readonly visibility?: string }, targetId: string, viewer: string | null): string | null {
-  if (repo.visibility !== 'public' || viewer === null || targetId === '') return null
+/**
+ * Where `viewer`'s comment draft on `targetId` is kept, or null: not kept (a private repo, a
+ * members-only composer, signed out). `audience`: who the composer writes for (a members-only
+ * thread's composer is members-only); required, so no caller can default a members-only one to
+ * a stored draft.
+ */
+export function commentDraftKey(
+  repo: { readonly repoId: string; readonly visibility?: string },
+  targetId: string,
+  viewer: string | null,
+  audience: 'public' | 'members' | 'specificPeople',
+): string | null {
+  if (repo.visibility !== 'public' || audience !== 'public' || viewer === null || targetId === '') return null
   return `${viewer}:${repo.repoId}:${targetId}:comment`
 }
 

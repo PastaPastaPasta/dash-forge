@@ -1,0 +1,17 @@
+{
+  "name": "set_case_fold",
+  "description": "Names differing only in case save as one file on a case-insensitive file system.",
+  "case": "asset_file_names",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "README.txt",
+      "notes",
+      "readme.TXT"
+    ]
+  },
+  "expected": {
+    "name": "readme.TXT",
+    "sameFileAs": "README.txt"
+  }
+}

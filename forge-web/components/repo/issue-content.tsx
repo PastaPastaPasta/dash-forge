@@ -47,6 +47,7 @@ import {
   eventFirsts,
   readViewerPermissions,
   repoContractIds,
+  contentKey,
   repoKey,
   setAssignee,
   setLabel,
@@ -154,7 +155,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
       return t
     },
-    [ready, repoKey(home.repo), number, network],
+    [ready, contentKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
   const refresh = useCallback(
@@ -186,7 +187,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   )
 
   // The unsent comment survives a reload (never stored for a private repo).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity))
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'))
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)

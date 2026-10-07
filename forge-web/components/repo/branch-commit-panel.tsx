@@ -22,7 +22,7 @@ import { holdingsOfRole, readConfigBundle, readRoleOracle, repoKey, type PullVie
 import { readBranchTip } from '@/lib/repo/source-branch'
 import { matchesProtected } from '@/lib/rules'
 import { EXISTING, previewCreate, sumPreviews } from '@/lib/sdk'
-import { unapplicable, applySuggestionCommit, planSuggestion, readTextFile, SuggestionRefused, updateBranchCommit, type BranchCommit, type SuggestionComment } from '@/lib/merge/branch-commit'
+import { MEMBERS_SUGGESTION_CONFIRM, unapplicable, applySuggestionCommit, planSuggestion, readTextFile, SuggestionRefused, updateBranchCommit, type BranchCommit, type SuggestionComment } from '@/lib/merge/branch-commit'
 import { parseSuggestions } from '@/lib/rules/v2'
 import { parseCommit } from '@/lib/view/git-objects'
 import type { CommentView } from '@/lib/view'
@@ -467,6 +467,7 @@ function asSuggestion(c: CommentView): SuggestionComment {
     anchor: c.anchor === null ? {} : { path: c.anchor.path, line: c.anchor.line, startLine: c.anchor.startLine, side: c.anchor.side, commitOid: c.anchor.commitOid },
     // a long comment whose rest could not be read is never applied (forge-v2.md §6.3)
     ...(c.long ? { long: c.long } : {}),
+    ...(c.audience === 'members' ? { audience: 'members' as const } : {}),
   }
 }
 
@@ -620,6 +621,8 @@ export function useSuggestions({
   applyRef.current = (ids, at) => {
     if (headReader === null || who === null || sdk === null) return
     const chosen = suggestive.filter((c) => ids.includes(c.id)).map(asSuggestion)
+    // A members-only comment's suggestion becomes part of a public commit: the committer says so first.
+    if (chosen.some((c) => c.audience === 'members') && !window.confirm(MEMBERS_SUGGESTION_CONFIRM)) return
     const key = `suggest:${pull.headOid}:${chosen.map((c) => c.id).sort().join(',')}`
     void runner.run(key, `Apply ${chosen.length} suggestion${chosen.length === 1 ? '' : 's'}`, () => buildSuggestionCommit(sdk, network, headReader, pull.headOid, chosen, who), at)
   }
