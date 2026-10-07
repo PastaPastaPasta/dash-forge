@@ -18,6 +18,37 @@ import { Button } from './button'
 /** Open dialogs, innermost last: only the top one traps Tab and answers Escape. */
 const openStack: string[] = []
 
+/**
+ * Open popovers that answer Escape before any dialog (a picker opened inside a dialog), innermost
+ * last. They are not dialogs: the dialog under one keeps trapping Tab and pulling focus back.
+ */
+const escapeLayers: string[] = []
+
+/**
+ * A popover's Escape while `active`: it closes the popover (`onEscape`) and not the dialog under
+ * it, which answers Escape again once the popover closes.
+ */
+export function useEscapeLayer(active: boolean, onEscape: () => void): void {
+  const id = useId()
+  const escapeRef = useRef(onEscape)
+  escapeRef.current = onEscape
+  useEffect(() => {
+    if (!active) return
+    escapeLayers.push(id)
+    const onKey = (e: KeyboardEvent): void => {
+      if (escapeLayers[escapeLayers.length - 1] !== id || e.isComposing || e.key !== 'Escape') return
+      e.preventDefault()
+      escapeRef.current()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      const at = escapeLayers.lastIndexOf(id)
+      if (at >= 0) escapeLayers.splice(at, 1)
+    }
+  }, [active, id])
+}
+
 export interface DialogProps {
   open: boolean
   onClose: () => void
@@ -61,7 +92,8 @@ export function Dialog({
       // Only the top dialog answers; an Escape that cancels IME composition is not a close.
       if (openStack[openStack.length - 1] !== id || e.isComposing) return
       if (e.key === 'Escape') {
-        closeRef.current()
+        // A popover open over it (a picker) takes this Escape.
+        if (escapeLayers.length === 0) closeRef.current()
         return
       }
       trapTab(panel, e)

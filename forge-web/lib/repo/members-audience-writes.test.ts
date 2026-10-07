@@ -37,7 +37,7 @@ import { idbEntries, resetMemoryStores } from '../idb'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { draftHasMembersText, loadReviewDraft, postComment, saveReviewDraft, type ReviewDraft } from './review-writes'
-import { addDraftComment, newReviewDraft, removeDraftComment } from '../view/pending-review'
+import { addDraftComment, draftQuotesMembersText, newReviewDraft, removeDraftComment } from '../view/pending-review'
 
 const id = (b: number): Uint8Array => new Uint8Array(32).fill(b)
 const b58 = (u: Uint8Array): string => base58Encode(u)
@@ -90,5 +90,17 @@ describe('a pending review with members-only comments', () => {
     await saveReviewDraft(back, REPO)
     expect(JSON.stringify(await idbEntries('journal'))).toContain('a public note')
     expect((await loadReviewDraft('devnet', auth.identityId, PR))?.comments.map((c) => c.body)).toEqual(['a public note'])
+  })
+
+  it('lives in memory while its public text quotes members-only text the page shows', async () => {
+    const SECRET = 'The staging database password rotates on Friday at noon.'
+    const quoting = { ...base(), summary: `> ${SECRET}\nAgreed.` }
+    expect(draftQuotesMembersText(quoting, [SECRET])).toBe(true)
+    expect(draftQuotesMembersText(quoting, [SECRET], 'members')).toBe(false)
+    expect(draftQuotesMembersText({ ...quoting, audience: 'members' }, [SECRET])).toBe(false)
+    expect(draftQuotesMembersText(addDraftComment(base(), 'l1', { path: 'a.rs', line: 1, side: 1 }, SECRET), [SECRET])).toBe(true)
+    await saveReviewDraft(quoting, REPO, { memoryOnly: draftQuotesMembersText(quoting, [SECRET]) })
+    expect(JSON.stringify(await idbEntries('journal'))).not.toContain('staging database')
+    expect((await loadReviewDraft('devnet', auth.identityId, PR))?.summary).toContain('staging database')
   })
 })

@@ -149,6 +149,12 @@ export function isSealedDoc(doc: PlainDocument): boolean {
   return (bytesField(doc, 'enc')?.length ?? 0) > 0
 }
 
+/**
+ * What a specific-people document (`enc` v0x04) is called where it can't be opened: neutral,
+ * since it is not members-only and its recipients are not public.
+ */
+export const LETTER_TITLE = 'Encrypted for specific people'
+
 /** The audience a raw document was written for (its `enc`, never the repo's visibility). */
 export function docAudience(doc: PlainDocument): Audience {
   const enc = bytesField(doc, 'enc')

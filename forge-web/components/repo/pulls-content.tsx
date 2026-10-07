@@ -266,7 +266,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   </div>
                   <div className="flex shrink-0 items-center gap-3 pt-0.5">
                     <AssigneeAvatars ids={p.state.assignees} />
-                    <CommentCount n={p.comments} />
+                    <CommentCount n={p.comments} membersOnly={p.membersOnly || p.audience === 'members' ? p.comments ?? 0 : 0} />
                   </div>
                 </li>
               )

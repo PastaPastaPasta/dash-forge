@@ -73,7 +73,7 @@ export function RepoScaffold({
   if (!publicView) return body
   return (
     <>
-      <PublicViewBanner onExit={() => setPublicView(false)} />
+      <PublicViewBanner repoId={repoHome.data?.repo.repoId ?? ''} onExit={() => setPublicView(false)} />
       <SignedOutView>{body}</SignedOutView>
     </>
   )

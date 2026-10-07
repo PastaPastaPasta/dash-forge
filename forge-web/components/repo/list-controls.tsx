@@ -16,7 +16,7 @@ import type { Network } from '@/lib/constants'
 import type { LabelDef } from '@/lib/repo'
 import { plural, resolveDpnsId } from '@/lib/view'
 import { dpnsAuthorCandidates, Q_MAX, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
-import { membersOnlyTitle } from '@/lib/view/audience'
+import { countWithMembersOnly, membersOnlyTitle } from '@/lib/view/audience'
 import { formatCount as grouped } from '@/lib/view/text-limits'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
@@ -240,16 +240,52 @@ export function MembersOnlyShare({ n }: { n: number | null | undefined }): JSX.E
  * The state tabs' row. On a phone it stays one row (QW2-071: "All" wrapped onto a row of its
  * own): the tabs drop their icons below `sm`, as GitHub's underline nav does when it is short of
  * room, and the row scrolls sideways if counts still make it too wide (`p-1 -m-1`: room inside
- * the scroller for a tab's focus ring).
+ * the scroller for a tab's focus ring). While tabs are cut off on the right (labelled counts,
+ * "Open (1 members-only)"), a fade and an arrow there say so, and the arrow scrolls to them.
  */
 export function StateTabs({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  const ref = useRef<HTMLDivElement>(null)
+  const [more, setMore] = useState(false)
+  const check = (): void => {
+    const el = ref.current
+    if (el !== null) setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1)
+  }
+  // Re-measured after every render (the counts change the tabs' width) and on scroll or resize.
+  useEffect(check)
+  useEffect(() => {
+    const el = ref.current
+    if (el === null) return
+    el.addEventListener('scroll', check, { passive: true })
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(check)
+    ro?.observe(el)
+    return () => {
+      el.removeEventListener('scroll', check)
+      ro?.disconnect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   return (
-    <div
-      className="-m-1 flex items-center gap-x-3 overflow-x-auto p-1 [scrollbar-width:none] max-sm:w-[calc(100%+0.5rem)] max-sm:gap-x-2 max-sm:[&_svg]:hidden [&::-webkit-scrollbar]:hidden"
-      role="tablist"
-      aria-label={label}
-    >
-      {children}
+    <div className="relative min-w-0 max-sm:w-full">
+      <div
+        ref={ref}
+        className="-m-1 flex items-center gap-x-3 overflow-x-auto p-1 [scrollbar-width:none] max-sm:w-[calc(100%+0.5rem)] max-sm:gap-x-2 max-sm:[&_svg]:hidden [&::-webkit-scrollbar]:hidden"
+        role="tablist"
+        aria-label={label}
+      >
+        {children}
+      </div>
+      {more ? (
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-hidden
+          onClick={() => ref.current?.scrollBy({ left: ref.current.clientWidth / 2, behavior: 'smooth' })}
+          className="absolute inset-y-0 right-0 flex items-center bg-gradient-to-l from-anvil-50 from-60% pl-5 text-anvil-500 dark:from-anvil-900 dark:text-anvil-400"
+          data-testid="state-tabs-more"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
+      ) : null}
     </div>
   )
 }
@@ -742,7 +778,8 @@ export function RowLink({
       <Link href={href} className="hit-area text-dense font-medium text-anvil-900 hover:text-forge-700 dark:text-anvil-50 dark:hover:text-forge-400" {...(membersOnly ? { 'data-testid': 'members-only-title' } : {})}>
         {membersOnly ? (
           <span className="inline-flex items-center gap-1">
-            <Lock className="h-3.5 w-3.5" aria-hidden /> {membersOnlyTitle(type)}
+            {/* Its title names it: members-only, or (a specific-people one) encrypted for specific people. */}
+            <Lock className="h-3.5 w-3.5" aria-hidden /> {title || membersOnlyTitle(type)}
           </span>
         ) : (
           title || '(untitled)'
@@ -757,13 +794,24 @@ export function RowLink({
   )
 }
 
-/** A row's comment count (nothing when there are none). */
-export function CommentCount({ n }: { n: number | null }): JSX.Element | null {
+/**
+ * A row's comment count (nothing when there are none), labelled with how many are members-only
+ * when that is known: "5 comments (5 members-only)" (DESIGN §10). A members-only issue's or PR's
+ * comments are all members-only (a public reply to one is refused).
+ */
+export function CommentCount({ n, membersOnly = 0 }: { n: number | null; membersOnly?: number }): JSX.Element | null {
   if (!n) return null
+  const label = countWithMembersOnly(n, Math.min(membersOnly, n), 'comment')
   return (
-    <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="comment-count">
+    <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="comment-count" title={label}>
       <MessageSquare className="h-3.5 w-3.5" aria-hidden /> <span aria-hidden>{n}</span>
-      <span className="sr-only">{plural(n, 'comment')}</span>
+      {membersOnly > 0 ? (
+        <span aria-hidden className="inline-flex items-center gap-0.5" data-testid="comment-count-members-only">
+          (<Lock className="h-3 w-3" />
+          {Math.min(membersOnly, n)})
+        </span>
+      ) : null}
+      <span className="sr-only">{label}</span>
     </span>
   )
 }

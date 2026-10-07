@@ -77,6 +77,12 @@ export interface RepoHome {
    */
   readonly lane?: MembersAccess
   /**
+   * A signed-in viewer's members access is still being read (a public repo): what the page says
+   * to a reader who can't open members-only content waits, so a member never sees an outsider's
+   * text first.
+   */
+  readonly laneLoading?: true
+  /**
    * `branches` holds only the default branch and `tags` nothing: a home read for a page that
    * shows no other ref (an issue or PR list, {@link RepoHomeRefs}). A page that lists refs reads
    * its own home.

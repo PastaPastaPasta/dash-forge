@@ -15,7 +15,7 @@
  * "lane", nor any internal id.
  */
 
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { CircleDot, Eye, EyeOff, Globe, GitPullRequest, Lock } from 'lucide-react'
 
@@ -26,6 +26,7 @@ import { readMembershipsCached, repoContractIds } from '@/lib/repo'
 import { readRunners } from '@/lib/repo/checks'
 import { enableMembersContent } from '@/lib/repo/private-members'
 import { encryptionKeyState } from '@/lib/auth/encryption-key'
+import { NO_KEY_SHARED_TEXT } from '@/lib/repo/members-writes'
 import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
 import { previewCredits } from '@/lib/sdk'
 import { cachedDpnsName } from '@/lib/view/dpns'
@@ -43,12 +44,14 @@ import {
   audienceLabel,
   audienceWarnings,
   enableEstimate,
+  isLetter,
   keyHolders,
   lockedCount,
   membersCount,
   membersOnlyNoun,
   membersOnlyTitle,
   membersSentence,
+  quotesMembersText,
   removalReads,
   turnOnText,
   type AudienceChoice,
@@ -59,12 +62,12 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { usePrivateWrite } from '@/hooks/use-private-write'
-import { usePublicView } from '@/hooks/use-public-view'
+import { takePublicViewFocus, usePublicView } from '@/hooks/use-public-view'
 import { Author } from '@/components/author'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { UnlockMore, UNLOCK_MEMBERS_ONLY } from '@/components/auth/unlock-more'
 import { Button } from '@/components/ui/button'
-import { Dialog } from '@/components/ui/dialog'
+import { Dialog, useEscapeLayer } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
 const MUTED = 'text-anvil-500 dark:text-anvil-400'
@@ -98,7 +101,21 @@ export interface ComposerAudienceState {
 export function useComposerAudience(
   /** The repo page; null where the composer has none (its writes then take their parents' audience). */
   home: RepoHome | null,
-  { parent = 'public', members = null, maintainer = false }: { parent?: ComposerAudience; members?: readonly Membership[] | null; maintainer?: boolean },
+  {
+    parent = 'public',
+    members = null,
+    maintainer = false,
+    start,
+  }: {
+    parent?: ComposerAudience
+    members?: readonly Membership[] | null
+    maintainer?: boolean
+    /**
+     * Where it starts instead of the thread's audience: a saved draft's (the review drawer). A
+     * pick holds until this or the thread's audience changes.
+     */
+    start?: ComposerAudience | undefined
+  },
 ): ComposerAudienceState {
   const repo = home?.repo ?? null
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
@@ -111,12 +128,21 @@ export function useComposerAudience(
   const count = list === null || list === undefined ? null : membersCount(list, visibility)
   const holders = list === null || list === undefined ? EMPTY : keyHolders(list, visibility)
   const initial = choice?.initial ?? 'members'
-  const [audience, setAudience] = useState<ComposerAudience>(initial)
-  // The thread loaded, or turned out members-only: follow its audience.
-  useEffect(() => setAudience(initial), [initial])
+  // Inside a members-only thread nothing starts public, whatever a draft says.
+  const preferred: ComposerAudience = start === 'members' || (start === 'public' && choice?.publicAllowed !== false) ? start : initial
+  // The writer's pick, made over `preferred`: it holds until the thread or the draft moves the
+  // starting point (the thread loaded, or turned out members-only), and is derived during render,
+  // so no render shows a stale audience.
+  const [picked, setPicked] = useState<{ readonly over: ComposerAudience; readonly to: ComposerAudience } | null>(null)
+  // A pick over an earlier starting point is dropped for good (render-phase reset), so it never
+  // comes back if the starting point returns.
+  if (picked !== null && picked.over !== preferred) setPicked(null)
+  const audience = picked !== null && picked.over === preferred ? picked.to : preferred
+  const setAudience = useCallback((a: ComposerAudience) => setPicked({ over: preferred, to: a }), [preferred])
+  const reset = useCallback(() => setPicked(null), [])
   // A private repo's composer writes members-only content; one with no page takes its parents'.
   const settled: ComposerAudience = choice !== null ? audience : repo?.visibility === 'private' ? 'members' : parent
-  return { choice, audience: settled, setAudience, count, holders, maintainer, reset: () => setAudience(initial) }
+  return { choice, audience: settled, setAudience, count, holders, maintainer, reset }
 }
 
 const EMPTY: ReadonlySet<string> = new Set()
@@ -128,26 +154,32 @@ const EMPTY: ReadonlySet<string> = new Set()
 export function AudienceChip({ home, state, testId = 'audience-chip' }: { home: RepoHome; state: ComposerAudienceState; testId?: string }): JSX.Element | null {
   const [open, setOpen] = useState(false)
   const [turnOn, setTurnOn] = useState(false)
+  // Which side of the chip the picker opens on (from `sm` up; a phone gets a bottom sheet).
+  const [align, setAlign] = useState<'left' | 'right'>('right')
   const panelId = useId()
   const wrap = useRef<HTMLDivElement>(null)
+  const chipRef = useRef<HTMLButtonElement>(null)
   const { choice, audience } = state
-  // Close on a click outside or Escape (focus returns to the chip).
+  const close = useCallback((refocus: boolean) => {
+    setOpen(false)
+    if (refocus) chipRef.current?.focus()
+  }, [])
+  // Escape closes the picker (focus returns to the chip), never a dialog it sits in.
+  useEscapeLayer(open, () => close(true))
+  // A click outside closes it.
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent): void => {
-      if (wrap.current !== null && !wrap.current.contains(e.target as Node)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return
-      setOpen(false)
-      wrap.current?.querySelector<HTMLButtonElement>('button')?.focus()
+      if (wrap.current !== null && !wrap.current.contains(e.target as Node)) close(false)
     }
     document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open, close])
+  // Open toward the side with room: right-aligned to the chip unless that runs off the left edge.
+  useLayoutEffect(() => {
+    if (!open || wrap.current === null) return
+    const right = wrap.current.getBoundingClientRect().right
+    setAlign(right - PICKER_WIDTH >= PICKER_MARGIN ? 'right' : 'left')
   }, [open])
   if (choice === null) return null
   const label = audienceLabel(audience, state.count?.total ?? null)
@@ -165,6 +197,7 @@ export function AudienceChip({ home, state, testId = 'audience-chip' }: { home: 
   return (
     <div ref={wrap} className="relative inline-block">
       <button
+        ref={chipRef}
         type="button"
         className={cn(chip, tone, 'hover:border-forge-500')}
         aria-expanded={open}
@@ -177,13 +210,24 @@ export function AudienceChip({ home, state, testId = 'audience-chip' }: { home: 
         <Icon className="h-3 w-3" aria-hidden /> {label}
       </button>
       {open ? (
-        <div id={panelId} className="absolute bottom-full right-0 z-30 mb-2 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-anvil-200 bg-white p-3 text-left shadow-xl dark:border-anvil-750 dark:bg-anvil-950">
+        <div
+          id={panelId}
+          data-testid={`${testId}-panel`}
+          data-align={align}
+          className={cn(
+            // A phone: a sheet along the bottom of the screen, always in view. From `sm` up: a
+            // popover above the chip, on the side with room.
+            'fixed inset-x-2 bottom-2 z-50 max-h-[70vh] overflow-y-auto rounded-lg border border-anvil-200 bg-white p-3 text-left shadow-xl dark:border-anvil-750 dark:bg-anvil-950',
+            'sm:absolute sm:inset-x-auto sm:bottom-full sm:z-30 sm:mb-2 sm:max-h-none sm:w-[22rem] sm:overflow-visible',
+            align === 'right' ? 'sm:right-0' : 'sm:left-0',
+          )}
+        >
           <AudiencePicker
             home={home}
             state={state}
             onPick={(a) => {
               state.setAudience(a)
-              setOpen(false)
+              close(true)
             }}
             onTurnOn={() => {
               setOpen(false)
@@ -196,6 +240,10 @@ export function AudienceChip({ home, state, testId = 'audience-chip' }: { home: 
     </div>
   )
 }
+
+/** The picker's width from `sm` up (22rem), and the least room it keeps from the screen's edge. */
+const PICKER_WIDTH = 352
+const PICKER_MARGIN = 8
 
 /** "Who can read this?": Public and Members, each with what it means (DESIGN §10). */
 export function AudiencePicker({
@@ -269,16 +317,31 @@ function Option({
   label: string
   children: ReactNode
 }): JSX.Element {
+  // The radio is named by its label alone ("Members (12)"); what it means, and why it can't be
+  // picked, describe it. Links and buttons in the description sit outside the <label>.
+  const id = useId()
   return (
-    <label className={cn('flex items-start gap-2 rounded-md p-1.5 text-dense', disabled ? 'cursor-default' : 'cursor-pointer hover:bg-anvil-50 dark:hover:bg-anvil-900')} data-testid={`audience-option-${value}`}>
-      <input type="radio" name={name} value={value} checked={checked} disabled={disabled} onChange={() => onPick(value)} className="mt-1 accent-forge-700" />
+    <div className={cn('flex items-start gap-2 rounded-md p-1.5 text-dense', !disabled && 'hover:bg-anvil-50 dark:hover:bg-anvil-900')} data-testid={`audience-option-${value}`}>
+      <input
+        id={`${id}-radio`}
+        type="radio"
+        name={name}
+        value={value}
+        checked={checked}
+        disabled={disabled}
+        onChange={() => onPick(value)}
+        aria-describedby={`${id}-about`}
+        className="mt-1 accent-forge-700"
+      />
       <span className="min-w-0">
-        <span className={cn('flex items-center gap-1 font-medium', disabled && MUTED)}>
+        <label htmlFor={`${id}-radio`} className={cn('flex items-center gap-1 font-medium', disabled ? cn('cursor-default', MUTED) : 'cursor-pointer')}>
           {icon} {label}
+        </label>
+        <span id={`${id}-about`} className={cn('block text-[12px]', MUTED)}>
+          {children}
         </span>
-        <span className={cn('block text-[12px]', MUTED)}>{children}</span>
       </span>
-    </label>
+    </div>
   )
 }
 
@@ -376,6 +439,42 @@ export function QuoteConfirmDialog({ open, onCancel, onConfirm }: { open: boolea
   )
 }
 
+/** What {@link useQuoteGate} returns: the check to run before a public post, and its dialog to render. */
+export interface QuoteGate {
+  /**
+   * Run `go` now, unless `publicText` (what is about to become public; null when nothing is)
+   * repeats members-only text the page shows (`membersTexts`): then ask first, and run `go` only
+   * when the writer confirms.
+   */
+  readonly check: (publicText: string | null, membersTexts: readonly string[], go: () => void) => void
+  /** The confirmation; render it once beside the composer. */
+  readonly dialog: JSX.Element
+}
+
+/**
+ * The quote confirmation (DESIGN §3.3, §10; product H8) for every way a composer makes text
+ * public: a comment, a review, a diff comment or reply, a pending comment, an edit.
+ */
+export function useQuoteGate(): QuoteGate {
+  const [ask, setAsk] = useState<{ readonly go: () => void } | null>(null)
+  const check = useCallback((publicText: string | null, membersTexts: readonly string[], go: () => void) => {
+    if (publicText !== null && quotesMembersText(publicText, membersTexts)) setAsk({ go })
+    else go()
+  }, [])
+  const dialog = (
+    <QuoteConfirmDialog
+      open={ask !== null}
+      onCancel={() => setAsk(null)}
+      onConfirm={() => {
+        const go = ask?.go
+        setAsk(null)
+        go?.()
+      }}
+    />
+  )
+  return { check, dialog }
+}
+
 // ---------------------------------------------------------------------------
 // Turning members-only content on
 // ---------------------------------------------------------------------------
@@ -391,10 +490,30 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
   const write = usePrivateWrite(home.repo)
   const members = useAsync(() => readMembershipsCached(sdk!, home.repo, network), [ready, home.repo.repoId, network], { enabled: ready && sdk !== null && open })
   const key = useAsync(() => encryptionKeyState(network, identity!), [network, identity ?? '', unlockScope ?? ''], { enabled: identity !== null && open })
-  const holders = members.data === null ? 1 : keyHolders(members.data, home.repo.visibility).size
-  const [lead, ...rest] = turnOnText(holders)
+  // Who gets a key: every member who holds the members key, and the maintainer turning it on
+  // (listed or not). Unknown until the members are read: no cost is shown, and Turn on waits.
+  const holders = members.data === null ? null : new Set([...keyHolders(members.data, home.repo.visibility), ...(identity !== null ? [identity] : [])]).size
+  const [lead, costLine, older] = turnOnText(holders ?? 1)
+  const retry = (what: string, onRetry: () => void, testId: string): JSX.Element => (
+    <p className="text-dense text-danger-700 dark:text-danger-400" role="alert" data-testid={testId}>
+      {what}{' '}
+      <button type="button" onClick={onRetry} className="hit-area font-medium text-forge-700 underline dark:text-forge-400">
+        Retry
+      </button>
+    </p>
+  )
   const blocked =
-    write.context !== null ? null : key.data === 'locked' ? (
+    identity === null ? (
+      <p className="text-dense">Sign in as a maintainer of this repo to turn it on.</p>
+    ) : members.error !== null ? (
+      retry(`Couldn't read this repo's members: ${members.error}`, members.reload, 'turn-on-members-error')
+    ) : holders === null ? (
+      <p className={cn('text-dense', MUTED)} data-testid="turn-on-reading-members">
+        Reading the members…
+      </p>
+    ) : write.context !== null ? null : key.error !== null ? (
+      retry(`Couldn't read your encryption key: ${key.error}`, key.reload, 'turn-on-key-error')
+    ) : key.data === 'locked' ? (
       <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="turn-on-unlock" forgot={false} />
     ) : key.data === 'none' ? (
       <p className="text-dense" data-testid="turn-on-no-key">
@@ -403,8 +522,18 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
           {SET_UP_KEY}
         </Link>
       </p>
+    ) : write.error ? (
+      retry(`Couldn't open your encryption key: ${write.error}`, () => write.retry?.(), 'turn-on-key-error')
+    ) : key.data === null || write.loading !== false ? (
+      <p className={cn('text-dense', MUTED)} data-testid="turn-on-reading-keys">
+        Reading your keys…
+      </p>
     ) : (
-      <p className={cn('text-dense', MUTED)}>Reading your keys…</p>
+      // Read, and still nothing to write with (the key went away meanwhile): say so, never wait.
+      retry("Your encryption key isn't available in this tab.", () => {
+        key.reload()
+        write.retry?.()
+      }, 'turn-on-key-error')
     )
   return (
     <ConfirmDialog
@@ -412,7 +541,7 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
       onClose={onClose}
       title="Turn on members-only content?"
       description={lead}
-      cost={previewCredits(enableEstimate(holders))}
+      cost={holders === null ? 'pending' : previewCredits(enableEstimate(holders))}
       confirmLabel="Turn on"
       cancelLabel="Not now"
       blocked={blocked}
@@ -423,8 +552,8 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
         write.done()
       }}
     >
-      {rest.map((p) => (
-        <p key={p} className="text-dense text-anvil-700 dark:text-anvil-200">
+      {(holders === null ? [older] : [costLine, older]).map((p) => (
+        <p key={p} className="text-dense text-anvil-700 dark:text-anvil-200" data-testid={p === costLine ? 'turn-on-cost' : undefined}>
           {p}
         </p>
       ))}
@@ -450,7 +579,7 @@ export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Elem
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-dashed border-anvil-300 px-4 py-2 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="members-only-placeholder" data-type={item.type}>
       <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
       <span>
-        {membersOnlyTitle(item.type)} · <Author identityId={item.author} link={false} className="align-middle" />
+        {membersOnlyTitle(item.type, isLetter(item) ? 'specificPeople' : 'members')} · <Author identityId={item.author} link={false} className="align-middle" />
         {did !== null ? ` ${did}` : ''} · <span className={MUTED}>{timeAgo(item.createdAt)}</span>
       </span>
     </div>
@@ -487,6 +616,7 @@ export function MembersOnlySummary({ entries, lane }: { entries: readonly Member
           </>
         ) : null}
       </p>
+      {why === 'no-key-shared' ? <p data-testid="members-only-no-key-shared">{NO_KEY_SHARED_TEXT}</p> : null}
       {unlocking ? <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="members-only-unlock-panel" forgot={false} /> : null}
     </div>
   )
@@ -519,34 +649,47 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
   const Icon = kind === 'pull' ? GitPullRequest : CircleDot
   const state = target.merged ? 'merged' : target.open ? 'open' : 'closed'
   const why = memberCantRead(home.lane)
+  const letter = isLetter(target.placeholder)
+  const noun = membersOnlyNoun(target.placeholder.type)
+  // A read cut at its page size says "100+", never a count it didn't finish.
+  const comments = target.comments === 0 ? '' : target.moreComments === true ? ` · ${target.comments}+ comments` : ` · ${plural(target.comments, 'comment')}`
   return (
     <div className="space-y-4" data-testid="members-only-target" data-kind={kind}>
       <h1 className="text-2xl">
-        <span className="font-mono">#{target.number}</span> <span className="text-anvil-500 dark:text-anvil-400">· members-only</span>
+        <span className="font-mono">#{target.number}</span> <span className="text-anvil-500 dark:text-anvil-400">· {letter ? 'encrypted' : 'members-only'}</span>
       </h1>
       <p className="flex items-start gap-2 text-dense text-anvil-600 dark:text-anvil-300">
         <Icon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
         <span>
-          {membersOnlyTitle(target.placeholder.type)} · opened by <Author identityId={target.placeholder.author} link={false} className="align-middle" />{' '}
+          {membersOnlyTitle(target.placeholder.type, letter ? 'specificPeople' : 'members')} · opened by <Author identityId={target.placeholder.author} link={false} className="align-middle" />{' '}
           <span className={MUTED}>{timeAgo(target.placeholder.createdAt)}</span> · <span data-testid="members-only-state">{state}</span>
-          {target.comments > 0 ? ` · ${plural(target.comments, 'comment')}` : ''}
+          <span data-testid="members-only-comments">{comments}</span>
         </span>
       </p>
-      <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700">
-        {why === 'locked' ? (
+      <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700" data-testid="members-only-why">
+        {letter ? (
+          <p>This {noun} is encrypted for specific people. Everyone can see that it exists, who opened it and when.</p>
+        ) : home.laneLoading === true ? (
+          // A member's key session is still being read: no outsider's text meanwhile.
+          <p className={MUTED} role="status" data-testid="members-only-reading">
+            Reading members-only content…
+          </p>
+        ) : why === 'locked' ? (
           <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="members-only-target-unlock" forgot={false} />
         ) : why === 'no-key' ? (
           <p>
-            Only members of this repo can read this {membersOnlyNoun(target.placeholder.type)}.{' '}
+            Only members of this repo can read this {noun}.{' '}
             <Link href={PRIVATE_REPOS_SETTINGS} className="hit-area font-medium text-forge-700 underline dark:text-forge-400">
               {SET_UP_KEY}
             </Link>{' '}
             to read it here.
           </p>
+        ) : why === 'no-key-shared' ? (
+          <p data-testid="members-only-no-key-shared">{NO_KEY_SHARED_TEXT}</p>
         ) : home.lane?.access === 'member' ? (
           <p>You can&apos;t read this one. It was written with a key you don&apos;t hold.</p>
-        ) : why === 'no-key-shared' ? null : (
-          <p>Only members of this repo can read this {membersOnlyNoun(target.placeholder.type)}. Everyone can see that it exists, who opened it and when.</p>
+        ) : (
+          <p>Only members of this repo can read this {noun}. Everyone can see that it exists, who opened it and when.</p>
         )}
       </div>
     </div>
@@ -610,22 +753,48 @@ export function RemovalReads({ lane, extras = [] }: { lane: boolean; extras?: re
 // The repo header's chip, and "View as public"
 // ---------------------------------------------------------------------------
 
-/** The header's members-only chip, for a member of a repo where it is on. */
+/** The header's members-only chip, for a member of a repo where it is on: what it means, on a click or a tap. */
 export function MembersChip({ home }: { home: RepoHome }): JSX.Element | null {
+  const [open, setOpen] = useState(false)
+  const id = useId()
   const access = home.lane?.access
   if (home.repo.visibility !== 'public' || access === undefined || access === 'none') return null
-  const title =
+  const about =
     access === 'member'
       ? 'This repo has members-only content. You can read it.'
       : access === 'locked'
         ? 'This repo has members-only content. Unlock this tab to read it.'
         : access === 'no-key'
           ? 'This repo has members-only content. Set up your encryption key to read it.'
-          : "This repo has members-only content. No key has been shared with you yet."
+          : `This repo has members-only content. ${NO_KEY_SHARED_TEXT}`
   return (
-    <span data-testid="members-chip" data-access={access} title={title} className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">
-      <Lock className="h-3 w-3" aria-hidden />
-      Members-only content
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        data-testid="members-chip"
+        data-access={access}
+        aria-expanded={open}
+        aria-controls={id}
+        aria-describedby={`${id}-about`}
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1 rounded bg-anvil-100 px-1.5 py-0.5 text-[11px] text-anvil-600 hover:text-anvil-900 coarse:min-h-11 dark:bg-anvil-800 dark:text-anvil-300 dark:hover:text-anvil-50"
+      >
+        <Lock className="h-3 w-3" aria-hidden />
+        Members-only content
+      </button>
+      <span id={`${id}-about`} className="sr-only">
+        {about}
+      </span>
+      {open ? (
+        <span
+          id={id}
+          role="note"
+          data-testid="members-chip-about"
+          className="absolute left-0 top-full z-30 mt-1 w-[min(18rem,calc(100vw-2rem))] rounded-md border border-anvil-200 bg-white px-3 py-2 text-[12px] text-anvil-700 shadow-lg dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-200"
+        >
+          {about}
+        </span>
+      ) : null}
     </span>
   )
 }
@@ -633,11 +802,17 @@ export function MembersChip({ home }: { home: RepoHome }): JSX.Element | null {
 /** "View as public", for a member of a public repo with members-only content on. */
 export function ViewAsPublicButton({ home }: { home: RepoHome }): JSX.Element | null {
   const [, setPublicView] = usePublicView(home.repo.repoId)
+  const ref = useRef<HTMLButtonElement>(null)
   const access = home.lane?.access
-  if (home.repo.visibility !== 'public' || access === undefined || access === 'none') return null
+  const shown = home.repo.visibility === 'public' && access !== undefined && access !== 'none'
+  // Back from the public view (the page remounted): focus returns here, where it left.
+  useEffect(() => {
+    if (shown && takePublicViewFocus(home.repo.repoId, 'enter')) ref.current?.focus()
+  }, [shown, home.repo.repoId])
+  if (!shown) return null
   return (
     <div className="mb-3 flex justify-end">
-      <Button variant="ghost" size="sm" onClick={() => setPublicView(true)} data-testid="view-as-public">
+      <Button ref={ref} variant="ghost" size="sm" onClick={() => setPublicView(true)} data-testid="view-as-public">
         <Eye className="h-3.5 w-3.5" aria-hidden /> View as public
       </Button>
     </div>
@@ -645,12 +820,17 @@ export function ViewAsPublicButton({ home }: { home: RepoHome }): JSX.Element | 
 }
 
 /** The banner over a page shown as the public sees it, with the way back. */
-export function PublicViewBanner({ onExit }: { onExit: () => void }): JSX.Element {
+export function PublicViewBanner({ repoId, onExit }: { repoId: string; onExit: () => void }): JSX.Element {
+  const ref = useRef<HTMLButtonElement>(null)
+  // Just switched on (the page remounted under it): focus lands on the way back.
+  useEffect(() => {
+    if (takePublicViewFocus(repoId, 'exit')) ref.current?.focus()
+  }, [repoId])
   return (
     <div role="status" className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-anvil-300 bg-anvil-50 px-3 py-2 text-dense text-anvil-800 dark:border-anvil-700 dark:bg-anvil-850 dark:text-anvil-100" data-testid="public-view-banner">
       <EyeOff className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
       <span className="min-w-0 flex-1">{VIEWING_AS_PUBLIC}</span>
-      <Button variant="outline" size="sm" onClick={onExit} data-testid="exit-public-view">
+      <Button ref={ref} variant="outline" size="sm" onClick={onExit} data-testid="exit-public-view">
         Back to your view
       </Button>
     </div>

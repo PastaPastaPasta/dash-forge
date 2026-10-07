@@ -28,6 +28,7 @@ import type { DiscoveredRepo } from './discovery'
 import { mapPooled } from './pool'
 import { compareStrings } from '../rules'
 import { membersOnlyTitle } from './audience'
+import { LETTER_TITLE, docAudience } from '../repo/private-content'
 
 /** A base58 identifier field (identifiers come back base58 or base64; both normalize). */
 export const ident = z.unknown().transform(asIdentifierString).pipe(z.string().min(1))
@@ -120,6 +121,8 @@ export interface TargetRow {
 export function titleOf(d: TargetDoc, kind: 'issue' | 'pull' = 'issue'): string {
   if (d.title) return d.title
   if (d.enc == null) return '(untitled)'
+  // A specific-people document (v0x04) is not members-only: named neutrally.
+  if (docAudience(d as unknown as PlainDocument) === 'specificPeople') return LETTER_TITLE
   return d.vis === 'public' ? membersOnlyTitle(kind === 'pull' ? 'patch' : 'issue') : 'Encrypted (not readable here)'
 }
 

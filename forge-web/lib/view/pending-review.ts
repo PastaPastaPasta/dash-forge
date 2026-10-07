@@ -10,6 +10,7 @@
 import type { AnchorInput, DraftComment, ReviewDraft, VerdictInput } from '../repo'
 import { previewCreate, previewCredits, type CostPreview } from '../sdk'
 import { plural } from './format'
+import { quotesMembersText } from './audience'
 
 /**
  * Where a pending review lives, said wherever one is shown: unlike a GitHub pending review it is
@@ -86,6 +87,18 @@ export function setDraftAudience(d: ReviewDraft, audience: 'public' | 'members')
   const { audience: _dropped, ...rest } = d
   void _dropped
   return rest
+}
+
+/**
+ * Whether a draft's public text (its summary when that is public, and its public comments not yet
+ * on Platform) repeats members-only text the page shows: such a draft is kept in memory only, as a
+ * members-only one is (DESIGN §4.1). `pr`: the PR's own audience (a members-only PR's text is all
+ * members-only).
+ */
+export function draftQuotesMembersText(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments'>, membersTexts: readonly string[], pr: 'public' | 'members' = 'public'): boolean {
+  if (pr === 'members' || membersTexts.length === 0) return false
+  const texts = [...(d.audience === 'members' ? [] : [d.summary]), ...d.comments.filter((c) => c.audience !== 'members' && c.landedId === undefined).map((c) => c.body)]
+  return texts.some((t) => quotesMembersText(t, membersTexts))
 }
 
 /**

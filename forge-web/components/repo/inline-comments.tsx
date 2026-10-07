@@ -51,7 +51,8 @@ import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
 import type { RepoHome } from '@/lib/view'
 import type { Membership } from '@/lib/rules/v2'
-import { AudienceChip, AudienceWarnings, VisibleToMembers, MEMBERS_CARD, useAudienceWarnings, useComposerAudience } from '@/components/repo/audience'
+import { AudienceChip, AudienceWarnings, VisibleToMembers, MEMBERS_CARD, useAudienceWarnings, useComposerAudience, useQuoteGate } from '@/components/repo/audience'
+import { addedText, publicTextOf } from '@/lib/view/audience'
 import { cn } from '@/lib/utils'
 
 /** Who a diff composer may write for: the page, its members, and the PR (DESIGN §10). */
@@ -63,6 +64,8 @@ export interface InlineAudience {
   /** The PR's own audience. */
   readonly pr: 'public' | 'members'
   readonly author: string
+  /** Members-only text the page shows: a public comment that repeats it asks first (product H8). */
+  readonly membersTexts?: readonly string[]
 }
 
 const InlineAudienceOf = createContext<InlineAudience | null>(null)
@@ -624,6 +627,11 @@ function PendingComment({
 }): JSX.Element {
   const [editing, setEditing] = useState<string | null>(null)
   const anchor = useMemo(() => ({ ...draft.anchor, commitOid: draft.anchor.commitOid ?? head }), [draft.anchor, head])
+  // A public pending comment is public text once the review is submitted: an edit that repeats
+  // members-only text asks first (product H8).
+  const who = useContext(InlineAudienceOf)
+  const quoteGate = useQuoteGate()
+
   const ctx = useSuggestionContext(draft.body, anchor, suggestions)
   return (
     <div className="rounded-md border border-dashed border-caution/60 bg-caution/5 px-3 py-2" data-testid="pending-comment" data-local={draft.localId}>
@@ -650,10 +658,12 @@ function PendingComment({
               size="sm"
               variant="primary"
               disabled={editing.trim() === ''}
-              onClick={() => {
-                pending.onEdit(draft.localId, editing)
-                setEditing(null)
-              }}
+              onClick={() =>
+                quoteGate.check(publicTextOf(addedText(draft.body, editing), draft.audience, who?.pr), who?.membersTexts ?? [], () => {
+                  pending.onEdit(draft.localId, editing)
+                  setEditing(null)
+                })
+              }
             >
               Save
             </Button>
@@ -667,6 +677,7 @@ function PendingComment({
           <MarkdownView source={draft.body} suggestion={ctx} />
         </div>
       )}
+      {quoteGate.dialog}
     </div>
   )
 }
@@ -707,6 +718,9 @@ function Composer({
   const who = useContext(InlineAudienceOf)
   const audience = useComposerAudience(who?.home ?? null, { parent: parent ?? who?.pr ?? 'public', members: who?.members ?? null, maintainer: who?.maintainer ?? false })
   const warnings = useAudienceWarnings(audience, body, who === null ? null : { author: who.author, kind: 'pull' })
+  // A public comment or reply that repeats members-only text asks first (product H8).
+  const quoteGate = useQuoteGate()
+  const publicText = (): string | null => publicTextOf(body, audience.audience)
   const [posting, setPosting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Which subtrees this comment would create, read once the viewer starts typing, so the price
@@ -730,8 +744,12 @@ function Composer({
     audience.audience,
   )
   const tooLong = composeTooLong(repo, 'comment', { body: body.trim(), ...(anchor ? { path: anchor.path } : {}) })
-  const submit = async (): Promise<void> => {
+  const submit = (): void => {
     if (posting || body.trim() === '' || tooLong || !guard.check(cost, 'collab') || !sdk || !signer) return
+    quoteGate.check(publicText(), who?.membersTexts ?? [], () => void send())
+  }
+  const send = async (): Promise<void> => {
+    if (posting || !sdk || !signer) return
     setPosting(true)
     setError(null)
     try {
@@ -786,9 +804,11 @@ function Composer({
   const reviewing = pending !== undefined && anchor !== undefined && !pending.frozen
   const addToReview = (): void => {
     if (!reviewing || body.trim() === '' || anchor === undefined) return
-    pending.onAdd(anchor, body, audience.choice !== null ? audience.audience : undefined)
-    setBody('')
-    onDone()
+    quoteGate.check(publicText(), who?.membersTexts ?? [], () => {
+      pending.onAdd(anchor, body, audience.choice !== null ? audience.audience : undefined)
+      setBody('')
+      onDone()
+    })
   }
   return (
     <div className="space-y-2 font-sans">
@@ -806,7 +826,7 @@ function Composer({
           // What the main button would do, and only when it is enabled.
           if (posting || tooLong || body.trim() === '') return
           if (reviewing) addToReview()
-          else void submit()
+          else submit()
         }}
         tools={
           suggestAt !== null ? (
@@ -848,6 +868,7 @@ function Composer({
           {error}
         </p>
       ) : null}
+      {quoteGate.dialog}
     </div>
   )
 }

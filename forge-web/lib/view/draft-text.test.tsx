@@ -10,7 +10,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownEditor } from '@/components/repo/issue-bits'
-import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, readDraft, useDraftText, writeDraft } from './draft-text'
+import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, readDraft, useDraftText, writeDraft, type DraftPersist } from './draft-text'
+import { quotesMembersText } from './audience'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -107,6 +108,55 @@ describe('useDraftText', () => {
     act(() => root.render(<Composer draftKey={null} />))
     type('secret plan')
     expect(field().value).toBe('secret plan')
+    expect(localStorage.length).toBe(0)
+  })
+})
+
+describe('useDraftText with a rule decided per text (members-only text quoted)', () => {
+  const SECRET = 'The staging database password rotates on Friday at noon.'
+  const MEMBERS = [SECRET]
+  const KEY = 'A:R:T:comment'
+  /** Every value this browser's storage held, read during each render. */
+  let seenAtRender: string[]
+  let setText: (t: string) => void = () => undefined
+  function Quoting({ rule }: { rule: DraftPersist }): JSX.Element {
+    const [text, set] = useDraftText(KEY, rule)
+    setText = set
+    seenAtRender.push(Object.keys(localStorage).map((k) => localStorage.getItem(k) ?? '').join('\n'))
+    return <span data-testid="text">{text}</span>
+  }
+  beforeEach(() => {
+    seenAtRender = []
+  })
+
+  it('never stores pasted members-only text, at any render, and drops the stored public copy at once', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const rule = (t: string): boolean => !quotesMembersText(t, MEMBERS)
+    act(() => root.render(<Quoting rule={rule} />))
+    act(() => setText('A public thought'))
+    expect(readDraft(KEY)).toBe('A public thought')
+    // The paste: the stored public copy goes in the same call, before React renders again.
+    act(() => {
+      setText(`A public thought\n${SECRET}`)
+      expect(localStorage.length).toBe(0)
+    })
+    act(() => setText(`A public thought\n> ${SECRET}\nmore`))
+    expect(localStorage.length).toBe(0)
+    expect(host.querySelector('[data-testid="text"]')?.textContent).toContain(SECRET)
+    expect(seenAtRender.some((v) => v.includes('staging database'))).toBe(false)
+    expect(setItem.mock.calls.some(([, v]) => String(v).includes('staging database'))).toBe(false)
+    // The quote taken out: kept again.
+    act(() => setText('A public thought, edited'))
+    expect(readDraft(KEY)).toBe('A public thought, edited')
+    setItem.mockRestore()
+  })
+
+  it('drops a stored copy that turns out to quote members-only text the page read later', () => {
+    act(() => root.render(<Quoting rule={() => true} />))
+    act(() => setText(SECRET))
+    expect(readDraft(KEY)).toBe(SECRET)
+    // The members-only comment loaded: the same text is now a quote of it.
+    act(() => root.render(<Quoting rule={(t) => !quotesMembersText(t, MEMBERS)} />))
     expect(localStorage.length).toBe(0)
   })
 })

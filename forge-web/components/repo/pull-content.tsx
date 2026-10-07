@@ -56,8 +56,8 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
-import { publicLineQuestion, quotesMembersText } from '@/lib/view/audience'
-import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, QuoteConfirmDialog, useAudienceWarnings, useComposerAudience, warningName } from '@/components/repo/audience'
+import { QUOTE_CONFIRM, addedText, publicLineQuestion, publicTextOf, quotesMembersText } from '@/lib/view/audience'
+import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, useAudienceWarnings, useComposerAudience, useQuoteGate, warningName } from '@/components/repo/audience'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
@@ -595,20 +595,27 @@ function PullPage({
 
   // Who the comment or review text is for (DESIGN §10): the PR's audience, or Members when picked.
   const audience = useComposerAudience(home, { parent: pull.audience ?? 'public', members: thread.members, maintainer: holdings.data?.maintain === true })
-  // The unsent comment survives a reload (never stored for a private repo, nor while members-only).
-  // Members-only text quoted into the public composer is not kept on disk either.
-  const quotedRef = useRef(false)
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity, pull.audience ?? 'public'), audience.audience === 'public' && !quotedRef.current)
+  // Members-only text on this page: a public post that repeats it asks first (product H8), and a
+  // draft that quotes it is never kept on disk.
+  const membersTexts = useMemo(() => membersTextsOf(thread), [thread])
+  // The unsent comment survives a reload (never stored for a private repo, nor while members-only),
+  // decided for each new text: one that quotes members-only text is removed before it is stored.
+  const [comment, setComment, holdDraft] = useDraftText(
+    commentDraftKey(repo, pull.id, identity, pull.audience ?? 'public'),
+    (text) => audience.audience === 'public' && !quotesMembersText(text, membersTexts),
+  )
   const warnings = useAudienceWarnings(audience, comment, { author: pull.author, kind: 'pull' })
   // The diff's composers pick their audience the same way (stable while these are).
   const inlineAudience = useMemo(
-    () => ({ home, members: thread.members, maintainer: holdings.data?.maintain === true, pr: pull.audience ?? ('public' as const), author: pull.author }),
-    [home, thread.members, holdings.data?.maintain, pull.audience, pull.author],
+    () => ({ home, members: thread.members, maintainer: holdings.data?.maintain === true, pr: pull.audience ?? ('public' as const), author: pull.author, membersTexts }),
+    [home, thread.members, holdings.data?.maintain, pull.audience, pull.author, membersTexts],
   )
   const blockingQuestion = (p: { verdict: VerdictInput; audience: 'public' | 'members' }): string | null =>
-    publicLineQuestion({ verdict: p.verdict, audience: p.audience, author: pull.author, authorName: warningName(network, pull.author), holders: audience.holders })
-  // A public comment that repeats members-only text asks first (product H8).
-  const [quoteAsk, setQuoteAsk] = useState(false)
+    publicLineQuestion({ verdict: p.verdict, audience: p.audience, prMembersOnly: pull.audience === 'members', author: pull.author, authorName: warningName(network, pull.author), holders: audience.holders })
+  // A public post (a comment, a review, an edit) that repeats members-only text asks first (product H8).
+  const quoteGate = useQuoteGate()
+  const quoteCheck = quoteGate.check
+  const pullAudience = pull.audience
   // A members-only "Request changes" the PR's author can't read: one public line beside it (H8).
   const [publicLine, setPublicLine] = useState('')
   const commentIntent = useIntent()
@@ -648,7 +655,7 @@ function PullPage({
   const confirmEvent = (p: Pending, cost: Cost = eventCost): void => {
     if (guard.check(cost, 'collab')) setPending(p)
   }
-  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid, pull.audience === 'members')
+  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid, pull.audience === 'members', membersTexts)
   // The diff's lines, as the inline comments saw them load (re-anchoring a pending review).
   const knownLines = useRef<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
   const refreshRef = useRef(refresh)
@@ -765,21 +772,15 @@ function PullPage({
         confirmResolve.current({ kind: 'resolve', root, resolve })
       },
       viewer: identity,
-      onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
+      // A public comment's edit is public text: it asks first when it repeats members-only text.
+      onEdit: (c, body) => quoteCheck(publicTextOf(addedText(c.body, body), c.audience, pullAudience), membersTexts, () => setPending({ kind: 'edit-comment', id: c.id, body })),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
       ...(thread.moderation ? { hidden: thread.moderation } : {}),
     }),
-    [canResolve, resolvedKey, identity, setPending, thread.moderation],
+    [canResolve, resolvedKey, identity, setPending, thread.moderation, quoteCheck, membersTexts, pullAudience],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
-  // Members-only text on this page: a public comment that repeats it asks first.
-  const membersTexts = [
-    ...(pull.audience === 'members' ? [pull.title, pull.body] : []),
-    ...thread.comments.flatMap((c) => (c.audience === 'members' ? [c.body] : [])),
-    ...thread.reviews.flatMap((r) => (r.audience === 'members' ? [r.body] : [])),
-  ]
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
-  quotedRef.current = quoting
   // A text over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
   const commentLong = useLongCompose(repo, 'comment', comment.trim())
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() }, commentLong)
@@ -804,7 +805,7 @@ function PullPage({
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     if (quoting && !confirmed) {
-      setQuoteAsk(true)
+      quoteCheck(comment, membersTexts, () => void postComment(true))
       return
     }
     setPosting(true)
@@ -887,17 +888,22 @@ function PullPage({
         const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent, post: postContext, audience: p.audience })
         // The public line the author can read, after the members-only review (one intent per action).
         const line = publicLine.trim()
-        if (line !== '' && blockingQuestion(p) !== null) {
-          await createComment(sdk, signer, repo, { targetId: pull.id, body: line, intent: `${intent}:public-line`, post: postContext, audience: 'public' }).catch((e: unknown) => {
-            if (!(e instanceof SupersededWriteError)) throw e
-          })
-          setPublicLine('')
-        }
+        // The review is on Platform: a failed line never fails the action (a retry would sign the
+        // review again). It goes back to the composer, to post as a comment.
+        const lineFailed: string | null =
+          line !== '' && blockingQuestion(p) !== null
+            ? await createComment(sdk, signer, repo, { targetId: pull.id, body: line, intent: `${intent}:public-line`, post: postContext, audience: 'public' }).then(
+                () => null,
+                (e: unknown) => (e instanceof SupersededWriteError ? null : guard.failed(e)),
+              )
+            : null
+        setPublicLine('')
         audience.reset()
         // On Platform now; remembered until a read shows it, so a reload before then still says so.
         if (ownScope !== null) rememberOwnReview(ownScope, { id: r.documentId, verdict: p.verdict, at: Date.now() })
         setOwnTick((n) => n + 1)
-        setComment('')
+        setComment(lineFailed === null ? '' : line)
+        if (lineFailed !== null) setCommentError(`Your review is posted, but its public line wasn't: ${lineFailed} The line is back in the comment box: post it as a comment.`)
         commentIntent.renew()
         refresh((t) => t.reviews.some((x) => x.id === r.documentId), SUBMIT_WAIT)
         return
@@ -1212,7 +1218,11 @@ function PullPage({
                 variant="primary"
                 size="sm"
                 disabled={editing.title.trim() === '' || (editing.title.trim() === pull.title && editing.body === pull.body) || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX) || guard.disabledReason !== null}
-                onClick={() => setPending({ kind: 'edit-pull', title: editing.title.trim(), body: editing.body })}
+                onClick={() => {
+                  const edit = { kind: 'edit-pull' as const, title: editing.title.trim(), body: editing.body }
+                  // A public PR's edit is public text: it asks first when it repeats members-only text.
+                  quoteCheck(publicTextOf(addedText(`${pull.title}\n${pull.body}`, `${edit.title}\n${edit.body}`), pull.audience), membersTexts, () => setPending(edit))
+                }}
               >
                 Save
               </Button>
@@ -1461,7 +1471,8 @@ function PullPage({
                       disabled: writeBlocked || guard.disabledReason !== null,
                       deleteDisabled: archived || guard.disabledReason !== null,
                       onEdit: setEditingComment,
-                      onSave: (id, body) => setPending({ kind: 'edit-comment', id, body }),
+                      // A public comment's edit is public text: it asks first when it repeats members-only text.
+                      onSave: (id, body) => quoteCheck(publicTextOf(addedText(item.comment.body, body), item.comment.audience, pull.audience), membersTexts, () => setPending({ kind: 'edit-comment', id, body })),
                       onDelete: (id) => setPending({ kind: 'delete-comment', id }),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
@@ -1713,7 +1724,10 @@ function PullPage({
                         // Until the viewer's membership is read, a verdict would be recorded as a non-member's.
                         disabled={guard.disabledReason !== null || (v !== 'comment' && !holdings.settled)}
                         onClick={() => {
-                          if (!commentTooLong && guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst, audience.audience), 'collab')) setPending({ kind: 'review', verdict: v, body: comment.trim(), audience: audience.audience })
+                          if (commentTooLong || !guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst, audience.audience), 'collab')) return
+                          const review = { kind: 'review' as const, verdict: v, body: comment.trim(), audience: audience.audience }
+                          // A public review's text is public: it asks first when it repeats members-only text.
+                          quoteCheck(publicTextOf(review.body, review.audience, pull.audience), membersTexts, () => setPending(review))
                         }}
                       >
                         {VERDICT_TEXT[v]}
@@ -1801,6 +1815,7 @@ function PullPage({
                     maintainer={holdings.data?.maintain === true}
                     author={pull.author}
                     membersOnly={pull.audience === 'members'}
+                    membersTexts={membersTexts}
                     repo={repo}
                     pullId={pull.id}
                     headOid={pull.headOid}
@@ -2007,15 +2022,24 @@ function PullPage({
         ) : null}
       </div>
 
-      <QuoteConfirmDialog
-        open={quoteAsk}
-        onCancel={() => setQuoteAsk(false)}
-        onConfirm={() => {
-          setQuoteAsk(false)
-          void postComment(true)
-        }}
-      />
-      <ConfirmDialog open={pending !== null} onClose={() => setPending(null)} title={confirm.title} description={confirm.description} cost={pendingCost} confirmLabel={confirm.label} onConfirm={runPending}>
+      {quoteGate.dialog}
+      <ConfirmDialog
+        open={pending !== null}
+        onClose={() => setPending(null)}
+        title={confirm.title}
+        description={confirm.description}
+        cost={pendingCost}
+        confirmLabel={confirm.label}
+        onConfirm={runPending}
+        // The public line is public text: one that repeats members-only text is not posted (H8).
+        blocked={
+          pending?.kind === 'review' && blockingQuestion(pending) !== null && quotesMembersText(publicLine, membersTexts) ? (
+            <p className="text-dense text-caution-700 dark:text-caution-400" role="alert" data-testid="public-line-quotes">
+              {QUOTE_CONFIRM} Take the quoted text out of the public line to submit.
+            </p>
+          ) : undefined
+        }
+      >
         {pending?.kind === 'review' && blockingQuestion(pending) !== null ? (
           <div className="space-y-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2" data-testid="public-line-question">
             <p className="text-dense text-anvil-800 dark:text-anvil-100">{blockingQuestion(pending)}</p>
@@ -2028,6 +2052,15 @@ function PullPage({
     </div>
     </AuthorRolesProvider>
   )
+}
+
+/** Members-only text a PR page shows: the PR's own when it is members-only, and members-only comments and reviews. */
+function membersTextsOf(t: PullThread): string[] {
+  return [
+    ...(t.pull.audience === 'members' ? [t.pull.title, t.pull.body] : []),
+    ...t.comments.flatMap((c) => (c.audience === 'members' ? [c.body] : [])),
+    ...t.reviews.flatMap((r) => (r.audience === 'members' ? [r.body] : [])),
+  ]
 }
 
 function TabButton({

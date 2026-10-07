@@ -252,8 +252,10 @@ export interface MembersOnlyTarget {
   readonly number: number
   readonly open: boolean
   readonly merged: boolean
-  /** Comments on it (their text is members-only too). */
+  /** Comments on it (their text is members-only too): at most a page of them, see `moreComments`. */
   readonly comments: number
+  /** The comment read came back full: there may be more than `comments` ("100+ comments"). */
+  readonly moreComments?: true
 }
 
 /** Whether a thread read found a members-only issue or PR this reader cannot open. */
@@ -273,8 +275,11 @@ function membersOnlyEntries(tally: HiddenTally, reviews: readonly ReviewView[]):
 /** The members-only target page of `placeholder` (a well-formed sealed issue or PR this reader cannot open). */
 function membersOnlyTarget(placeholder: MembersOnlyItem, number: number, transitions: readonly TransitionView[], comments: number): MembersOnlyTarget {
   const status = statusOfCode(stateCode(transitions))
-  return { placeholder, number, open: status.open, merged: status.merged, comments }
+  return { placeholder, number, open: status.open, merged: status.merged, comments, ...(comments >= COMMENT_PAGE ? { moreComments: true as const } : {}) }
 }
+
+/** The comment sub-query's page size on a thread read: a full page may not be all of them. */
+const COMMENT_PAGE = 100
 
 /** A full issue detail: the folded issue + its merged timeline. */
 export interface IssueThread {

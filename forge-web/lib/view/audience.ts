@@ -10,7 +10,8 @@
 import { creditsToDash } from '../sdk/cost'
 import { holdsMembersKey } from '../rules/roles'
 import type { Membership, Role } from '../rules/v2'
-import type { MembersOnlyItem } from '../repo/private-content'
+import { LETTER_TITLE, type MembersOnlyItem } from '../repo/private-content'
+import { NO_KEY_SHARED_TEXT } from '../repo/members-writes'
 import type { MembersAccess } from './repo-view'
 import { plural } from './format'
 import { splitRefs } from './markdown'
@@ -119,7 +120,8 @@ export const MEMBERS_OPTION_TEXT: Readonly<Record<Exclude<MembersOption, 'ok'>, 
   'ask-maintainer': 'Ask a maintainer to turn on members-only content for this repo.',
   'no-key': 'Members-only content needs your encryption key in this browser.',
   locked: 'Unlock this tab to write members-only content.',
-  'no-key-shared': "You're a member, but no key has been shared with you yet. A maintainer's client will fix this the next time they open the repo.",
+  // E311 (DESIGN §10): the one copy of it, as the repo banner and the write refusal say it.
+  'no-key-shared': NO_KEY_SHARED_TEXT,
 }
 
 /** Set up your encryption key (an identity, D25): where the link goes. */
@@ -150,7 +152,10 @@ export function aboutDash(credits: number): string {
 export function turnOnText(holders: number): readonly string[] {
   return [
     'Members of this repo will be able to post comments, reviews and issues only members can read. Everyone can still see that something was posted, by whom and when.',
-    `Setting up keys for ${plural(holders, 'member')} costs about ${aboutDash(enableEstimate(holders))}. Each later removal costs about the same again.`,
+    // Only the maintainer turning it on holds the key so far: say so, rather than "1 member".
+    holders <= 1
+      ? `You're the only member so far. Setting up your key costs about ${aboutDash(enableEstimate(1))}.`
+      : `Setting up keys for ${plural(holders, 'member')} costs about ${aboutDash(enableEstimate(holders))}. Each later removal costs about the same again.`,
     'People using older Forge builds will see fewer things until they update.',
   ]
 }
@@ -169,9 +174,16 @@ export function membersOnlyNoun(type: MembersOnlyItem['type']): string {
   }
 }
 
-/** "Members-only comment", "Members-only pull request". */
-export function membersOnlyTitle(type: MembersOnlyItem['type']): string {
-  return `Members-only ${membersOnlyNoun(type)}`
+export { LETTER_TITLE }
+
+/** "Members-only comment", "Members-only pull request"; a specific-people one, {@link LETTER_TITLE}. */
+export function membersOnlyTitle(type: MembersOnlyItem['type'], audience: MembersOnlyItem['audience'] = 'members'): string {
+  return audience === 'specificPeople' ? LETTER_TITLE : `Members-only ${membersOnlyNoun(type)}`
+}
+
+/** Whether a placeholder stands for a specific-people document rather than a members-only one. */
+export function isLetter(item: Pick<MembersOnlyItem, 'why' | 'audience'>): boolean {
+  return item.why === 'letter' || item.audience === 'specificPeople'
 }
 
 /** A labelled count that includes members-only items: "5 comments (4 members-only)", or "5 comments". */
@@ -251,6 +263,27 @@ export function quotesMembersText(draft: string, membersTexts: readonly string[]
   return false
 }
 
+/**
+ * What a write makes public, for {@link quotesMembersText}: its text, or null when it is
+ * members-only by its own audience (`own`: the chip's, or the edited item's) or by its thread's
+ * (`thread`: a members-only issue or PR keeps everything in it members-only).
+ */
+export function publicTextOf(text: string, own: ComposerAudience | 'specificPeople' | undefined, thread?: ComposerAudience | 'specificPeople'): string | null {
+  return (own ?? 'public') === 'public' && (thread ?? 'public') === 'public' ? text : null
+}
+
+/**
+ * What an edit adds: the lines of `after` that `before` did not have. An edit is checked for
+ * quotes on these alone, so fixing a typo in text a members-only reply quotes never asks.
+ */
+export function addedText(before: string, after: string): string {
+  const had = new Set(before.split('\n').map((l) => l.trim()))
+  return after
+    .split('\n')
+    .filter((l) => !had.has(l.trim()))
+    .join('\n')
+}
+
 /** A pending review's comments by audience: "Submitting 1 members-only and 2 public comments" (product H8). */
 export function submitSummary(counts: { readonly members: number; readonly public: number }): string | null {
   if (counts.members === 0) return null
@@ -260,15 +293,20 @@ export function submitSummary(counts: { readonly members: number; readonly publi
 
 /**
  * The blocking-review question (product H8): a request for changes whose text is members-only on
- * a PR whose author can't read it. Null when it does not apply.
+ * a public PR whose author can't read it. Null when it does not apply: a members-only PR (its
+ * thread takes no public line, and its author reads it or can't read the PR at all), or members
+ * not read yet (`holders` empty: nobody is known to be unable to read it).
  */
 export function publicLineQuestion(input: {
   readonly verdict: 'approve' | 'requestChanges' | 'comment'
   readonly audience: ComposerAudience
+  /** The PR itself is members-only. */
+  readonly prMembersOnly?: boolean
   readonly author: string
   readonly authorName: string
   readonly holders: ReadonlySet<string>
 }): string | null {
+  if (input.prMembersOnly === true || input.holders.size === 0) return null
   if (input.verdict !== 'requestChanges' || input.audience !== 'members' || reads(input.holders, input.author)) return null
   return `This review blocks the PR, but its text is members-only and @${input.authorName} can't read it. Add one public line?`
 }

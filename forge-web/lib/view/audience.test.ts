@@ -4,8 +4,11 @@ import { describe, expect, it } from 'vitest'
 
 import type { Membership } from '../rules/v2'
 import {
+  addedText,
   ENABLE_ANCHOR_CREDITS,
   ENABLE_WRAP_CREDITS,
+  LETTER_TITLE,
+  MEMBERS_OPTION_TEXT,
   QUOTE_CONFIRM,
   aboutDash,
   audienceChoice,
@@ -16,6 +19,7 @@ import {
   keyHolders,
   lockedCount,
   membersCount,
+  membersOnlyTitle,
   membersSentence,
   publicLineQuestion,
   quotesMembersText,
@@ -24,6 +28,7 @@ import {
   turnOnText,
 } from './audience'
 import { draftAudienceCounts } from './pending-review'
+import { NO_KEY_SHARED_TEXT } from '../repo/members-writes'
 
 const m = (identity: string, role: Membership['role']): Membership => ({ identity, role, createdAt: 0 })
 const MEMBERS = [m('alice', 'maintainer'), m('bob', 'writer'), m('bob', 'maintainer'), m('carl', 'reader'), m('dora', 'triage'), m('bot', 'reader')]
@@ -89,6 +94,32 @@ describe('turning members-only content on', () => {
     expect(text[2]).toBe('People using older Forge builds will see fewer things until they update.')
     for (const p of text) expect(p).not.toMatch(/;|sealed|lane/)
   })
+
+  it('says so honestly when the maintainer is the only member', () => {
+    for (const n of [0, 1]) expect(turnOnText(n)[1]).toBe(`You're the only member so far. Setting up your key costs about ${aboutDash(enableEstimate(1))}.`)
+  })
+})
+
+describe('what an edit adds, for the quote check', () => {
+  it('is only the new or changed lines, so a typo fix in quoted text never asks', () => {
+    const before = 'Fix the login bug\nSteps: open the page'
+    expect(addedText(before, 'Fix the login bug!\nSteps: open the page')).toBe('Fix the login bug!')
+    expect(addedText(before, `${before}\n> a quoted members-only line`)).toBe('> a quoted members-only line')
+    expect(quotesMembersText(addedText(before, 'Fix the login bug\nSteps: open the page.'), ['Steps: open the page'])).toBe(false)
+  })
+})
+
+describe('E311 and specific-people wording', () => {
+  it("uses the one E311 text, which says how to get the key shared (DESIGN §10)", () => {
+    expect(MEMBERS_OPTION_TEXT['no-key-shared']).toBe(NO_KEY_SHARED_TEXT)
+    expect(NO_KEY_SHARED_TEXT).toBe("You're a member, but no key has been shared with you yet. Ask a maintainer to share it: Repair on the repo page, or dg repo keys repair.")
+  })
+
+  it('names a specific-people document neutrally, never members-only', () => {
+    expect(membersOnlyTitle('comment', 'specificPeople')).toBe('Encrypted for specific people')
+    expect(LETTER_TITLE).toBe('Encrypted for specific people')
+    expect(membersOnlyTitle('patch')).toBe('Members-only pull request')
+  })
 })
 
 describe('composer warnings (product H8)', () => {
@@ -138,6 +169,14 @@ describe('composer warnings (product H8)', () => {
     expect(ask('approve', 'members')).toBeNull()
     expect(ask('requestChanges', 'public')).toBeNull()
     expect(ask('requestChanges', 'members', 'bob')).toBeNull()
+  })
+
+  it('does not ask on a members-only PR, nor before the members are known', () => {
+    const base = { verdict: 'requestChanges' as const, audience: 'members' as const, author: 'carol', authorName: 'carol' }
+    expect(publicLineQuestion({ ...base, holders: new Set(['bob']), prMembersOnly: true })).toBeNull()
+    // members not read yet (or none): nobody is known to be unable to read it
+    expect(publicLineQuestion({ ...base, holders: new Set() })).toBeNull()
+    expect(publicLineQuestion({ ...base, holders: new Set(['bob']), prMembersOnly: false })).not.toBeNull()
   })
 })
 

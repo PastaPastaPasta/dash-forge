@@ -31,8 +31,11 @@ export interface ConfirmDialogProps {
   onClose: () => void
   title: string
   description?: string
-  /** The pre-sign cost, or null for a free action. A negative cost is a refund. */
-  cost: Cost | null
+  /**
+   * The pre-sign cost, or null for a free action. A negative cost is a refund. `'pending'`: not
+   * known yet (what it depends on is still being read): no cost is shown, and Confirm waits.
+   */
+  cost: Cost | null | 'pending'
   refund?: boolean
   confirmLabel: string
   /** The dismiss button's words (default "Cancel"). */
@@ -58,7 +61,7 @@ export function ConfirmDialog({
   onClose,
   title,
   description,
-  cost,
+  cost: costIn,
   refund,
   confirmLabel,
   cancelLabel = 'Cancel',
@@ -75,6 +78,8 @@ export function ConfirmDialog({
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
   const [intent, setIntent] = useState(newIntent)
+  const costPending = costIn === 'pending'
+  const cost = costPending ? null : costIn
   const isRefund = refund || (cost !== null && cost.credits < 0)
 
   useEffect(() => {
@@ -87,7 +92,7 @@ export function ConfirmDialog({
       : ({ ok: true } as const)
 
   const run = async (): Promise<void> => {
-    if (pending) return
+    if (pending || costPending) return
     if (!check.ok) {
       openTopUp({ blocker: check.blocker, shortfall: check.shortfall })
       return
@@ -127,7 +132,7 @@ export function ConfirmDialog({
           <Button variant="ghost" onClick={close} disabled={pending}>
             {cancelLabel}
           </Button>
-          <Button variant={isRefund ? 'danger' : 'primary'} onClick={run} loading={pending} disabled={done || pending || (blocked !== undefined && blocked !== null)}>
+          <Button variant={isRefund ? 'danger' : 'primary'} onClick={run} loading={pending} disabled={done || pending || costPending || (blocked !== undefined && blocked !== null)}>
             {done ? 'Done' : check.ok ? confirmLabel : 'Top up to continue'}
           </Button>
         </>
@@ -135,7 +140,7 @@ export function ConfirmDialog({
     >
       <div className="space-y-3">
         {children}
-        {cost ? (
+        {costPending ? null : cost ? (
           <CostPreview cost={cost} refund={isRefund} />
         ) : (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">This action is free: no credits are spent.</p>

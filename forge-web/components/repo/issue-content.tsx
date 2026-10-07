@@ -19,7 +19,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useCallback, useRef, useState, type SetStateAction } from 'react'
+import { useCallback, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
@@ -29,8 +29,8 @@ import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/lib/view'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
-import { quotesMembersText } from '@/lib/view/audience'
-import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, QuoteConfirmDialog, useAudienceWarnings, useComposerAudience } from '@/components/repo/audience'
+import { addedText, publicTextOf, quotesMembersText } from '@/lib/view/audience'
+import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, useAudienceWarnings, useComposerAudience, useQuoteGate } from '@/components/repo/audience'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
 import type { ClosedAs } from '@/lib/rules/transition'
@@ -191,13 +191,18 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
   // Who the comment is for (DESIGN §10): the issue's audience, or Members when picked.
   const audience = useComposerAudience(home, { parent: data?.issue.audience ?? 'public', members: data?.members ?? null, maintainer: holdings.data?.maintain === true })
-  // The unsent comment survives a reload (never stored for a private repo, nor while members-only).
-  // Members-only text quoted into the public composer is not kept on disk either.
-  const quotedRef = useRef(false)
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'), audience.audience === 'public' && !quotedRef.current)
+  // Members-only text on this page: a public post that repeats it asks first (product H8), and a
+  // draft that quotes it is never kept on disk.
+  const membersTexts = useMemo(() => (data === null ? [] : membersTextsOf(data)), [data])
+  // The unsent comment survives a reload (never stored for a private repo, nor while members-only),
+  // decided for each new text: one that quotes members-only text is removed before it is stored.
+  const [comment, setComment, holdDraft] = useDraftText(
+    commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'),
+    (text) => audience.audience === 'public' && !quotesMembersText(text, membersTexts),
+  )
   const warnings = useAudienceWarnings(audience, comment, data === null ? null : { author: data.issue.author, kind: 'issue' })
-  // A public comment that repeats members-only text asks first (product H8).
-  const [quoteAsk, setQuoteAsk] = useState(false)
+  // A public post (a comment, an edit) that repeats members-only text asks first (product H8).
+  const quoteGate = useQuoteGate()
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -281,13 +286,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       : null
   const target = { id: issue.id, number: issue.number }
   const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
-  // Members-only text on this page: a public comment that repeats it asks first.
-  const membersTexts = [
-    ...(issue.audience === 'members' ? [issue.title, issue.body] : []),
-    ...timeline.flatMap((t) => (t.kind === 'comment' && t.comment.audience === 'members' ? [t.comment.body] : [])),
-  ]
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
-  quotedRef.current = quoting
   // A close or reopen is one `transition`, by a member or by the author.
   const stateCost = previewCreate('transition', {}, stateFirst)
   // "Close with comment" (QW2-008): the composer's text goes with a close or reopen, as on GitHub,
@@ -299,7 +298,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     if (quoting && !confirmed) {
-      setQuoteAsk(true)
+      quoteGate.check(comment, membersTexts, () => void postComment(true))
       return
     }
     setPosting(true)
@@ -490,7 +489,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   variant="primary"
                   size="sm"
                   disabled={editing.title.trim() === '' || (editing.title === issue.title && editing.body === issue.body) || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX) || guard.disabledReason !== null}
-                  onClick={() => setPending({ kind: 'editIssue', title: editing.title.trim(), body: editing.body })}
+                  onClick={() => {
+                    const edit = { kind: 'editIssue' as const, title: editing.title.trim(), body: editing.body }
+                    // A public issue's edit is public text: it asks first when it repeats members-only text.
+                    quoteGate.check(publicTextOf(addedText(`${issue.title}\n${issue.body}`, `${edit.title}\n${edit.body}`), issue.audience), membersTexts, () => setPending(edit))
+                  }}
                 >
                   Save
                 </Button>
@@ -596,7 +599,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 disabled: composeBlock !== null || guard.disabledReason !== null,
                 deleteDisabled: archived || guard.disabledReason !== null,
                 onEdit: setEditingComment,
-                onSave: (id, body) => setPending({ kind: 'editComment', id, body }),
+                // A public comment's edit is public text: it asks first when it repeats members-only text.
+                onSave: (id, body) => quoteGate.check(publicTextOf(addedText(item.comment.body, body), item.comment.audience, issue.audience), membersTexts, () => setPending({ kind: 'editComment', id, body })),
                 onDelete: (id) => setPending({ kind: 'deleteComment', id }),
                 links,
               })
@@ -747,14 +751,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         </SidebarSection>
       </aside>
 
-      <QuoteConfirmDialog
-        open={quoteAsk}
-        onCancel={() => setQuoteAsk(false)}
-        onConfirm={() => {
-          setQuoteAsk(false)
-          void postComment(true)
-        }}
-      />
+      {quoteGate.dialog}
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
@@ -767,6 +764,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     </div>
     </AuthorRolesProvider>
   )
+}
+
+/** Members-only text an issue page shows: the issue's own when it is members-only, and members-only comments. */
+function membersTextsOf(t: IssueThread): string[] {
+  return [
+    ...(t.issue.audience === 'members' ? [t.issue.title, t.issue.body] : []),
+    ...t.timeline.flatMap((x) => (x.kind === 'comment' && x.comment.audience === 'members' ? [x.comment.body] : [])),
+  ]
 }
 
 const NO_DUPLICATES: ReadonlyMap<number, { readonly number: number; readonly title: string }> = new Map()

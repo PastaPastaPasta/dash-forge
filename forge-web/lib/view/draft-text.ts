@@ -113,16 +113,23 @@ export function clearDrafts(identityId: string): void {
 }
 
 /**
+ * Whether a composer's text may be kept on disk: a fixed answer, or one decided from the text
+ * itself (a public draft that quotes members-only text may not, DESIGN §4.1).
+ */
+export type DraftPersist = boolean | ((text: string) => boolean)
+
+/**
  * `useState` for a composer's text, kept under `key` (`null`: memory only). A new key (another
  * issue or PR, another identity) loads that key's draft. `hold(true, …)` takes the stored copy
  * away and stores nothing until `hold(false, text)` stores `text` again: while a post's outcome is unknown, a reload must not
  * bring back text that may already be on chain, where it would be posted twice.
  *
- * `persist` false (the composer turned members-only): the text stays in memory, and the stored
- * copy is removed at once, so no members-only text is at rest (DESIGN §4.1). Back to true, the
- * text is stored again.
+ * `persist`: whether the text may be stored. False (the composer turned members-only), or a
+ * predicate that says no for the new text (it quotes members-only text): the text stays in
+ * memory, and any stored copy is removed in the same call that sets it, before any render, so
+ * no members-only text is at rest (DESIGN §4.1). When it may be stored again, it is.
  */
-export function useDraftText(key: string | null, persist = true): [string, (text: string) => void, (held: boolean, text: string) => void] {
+export function useDraftText(key: string | null, persist: DraftPersist = true): [string, (text: string) => void, (held: boolean, text: string) => void] {
   const [state, setState] = useState<{ key: string | null; text: string }>(() => ({ key, text: key === null ? '' : readDraft(key) }))
   const held = useRef(false)
   const current = state.key === key ? state.text : key === null ? '' : readDraft(key)
@@ -132,26 +139,36 @@ export function useDraftText(key: string | null, persist = true): [string, (text
       setState({ key, text: key === null ? '' : readDraft(key) })
     }
   }, [key, state.key])
-  // The audience changed: drop the stored copy, or store the text again.
+  // The latest rule, read by the setter when it is called (never a stale render's).
+  const rule = useRef(persist)
+  rule.current = persist
+  const allowed = useCallback((text: string): boolean => {
+    const r = rule.current
+    return typeof r === 'function' ? r(text) : r
+  }, [])
+  // Whether the current text may be stored: it changes with the audience, or with what the page
+  // shows (members-only text read after the draft was typed). Then drop the stored copy, or
+  // store the text again.
+  const keep = allowed(current)
   const latest = useRef(current)
   latest.current = current
   useEffect(() => {
     if (key === null || held.current) return
-    writeDraft(key, persist ? latest.current : '')
-  }, [key, persist])
+    writeDraft(key, keep ? latest.current : '')
+  }, [key, keep])
   const set = useCallback(
     (text: string) => {
       setState({ key, text })
-      if (key !== null && !held.current && persist) writeDraft(key, text)
+      if (key !== null && !held.current) writeDraft(key, allowed(text) ? text : '')
     },
-    [key, persist],
+    [key, allowed],
   )
   const hold = useCallback(
     (on: boolean, text: string) => {
       held.current = on
-      if (key !== null) writeDraft(key, on || !persist ? '' : text)
+      if (key !== null) writeDraft(key, on || !allowed(text) ? '' : text)
     },
-    [key, persist],
+    [key, allowed],
   )
   return [current, set, hold]
 }

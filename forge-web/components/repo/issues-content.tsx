@@ -46,7 +46,7 @@ import {
 import { createIssue, issueFirsts, queryIssues, readLabels, contentKey, repoContractIds, repoKey, rowFiltersOf, setLabel, type IssueListPage, type IssueSelection } from '@/lib/repo'
 import { SupersededWriteError, UnconfirmedWriteError, previewCreate, sumPreviews } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { AudienceChip, useComposerAudience } from '@/components/repo/audience'
+import { AudienceChip, AudienceWarnings, useAudienceWarnings, useComposerAudience } from '@/components/repo/audience'
 import { useRepoWriteGeneration, useViewerRole } from '@/hooks/use-repo-chrome'
 import { toast } from '@/hooks/use-toasts'
 import { useIntent } from '@/hooks/use-intent'
@@ -368,7 +368,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 </div>
                 <div className="flex shrink-0 items-center gap-3 pt-0.5">
                   <AssigneeAvatars ids={issue.state.assignees} />
-                  <CommentCount n={issue.comments} />
+                  <CommentCount n={issue.comments} membersOnly={issue.membersOnly || issue.audience === 'members' ? issue.comments ?? 0 : 0} />
                 </div>
               </li>
             ))}
@@ -462,6 +462,8 @@ function ComposeIssueDialog({
   const labelsLoading = wantsLabels && labelDefs.data === null && labelDefs.error === null
   const cost = sumPreviews([composeCost(repo, 'issue', { title: title.trim(), body: issueBody }, first, audience.audience), ...labelsToApply.map(() => previewCreate('event'))])
   const bodyBytes = utf8Length(issueBody)
+  // Who can't read a members-only issue it names (product H8): @mentions outside the members.
+  const warnings = useAudienceWarnings(audience, `${title}\n${issueBody}`, null)
   // A body over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
   const longBody = useLongCompose(repo, 'issue', issueBody, { title: title.trim() })
   const bodyTooLong = longBody.long ? longBody.problem !== null : bodyBytes > BODY_MAX
@@ -578,6 +580,7 @@ function ComposeIssueDialog({
         )}
         <SealedLimit repo={repo} kind="issue" text={title.trim() + issueBody} long={longBody} />
         <BodyCounter repo={repo} text={issueBody} field="description" long={longBody} />
+        <AudienceWarnings warnings={warnings} />
         {needsTemplate ? <p className="text-[12px] text-anvil-600 dark:text-anvil-400">This repository asks for a template: pick one above.</p> : null}
         {template !== null && template.labels.length > 0 ? (
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="template-labels">

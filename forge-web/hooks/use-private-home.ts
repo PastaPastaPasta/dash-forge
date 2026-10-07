@@ -17,7 +17,7 @@
  * the vault locks or the encryption key changes).
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useAuth } from '@/contexts/auth-context'
 import { base58Encode } from '@/lib/auth/base58'
@@ -156,12 +156,16 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
     },
   )
   reloadRef.current = state.reload
+  // A public repo read for a signed-in viewer before their members access is known: marked, so
+  // members-only placeholders wait rather than speak to an outsider (one object per home).
+  const laneUnknown = !isPrivate && home !== null && identity !== null && state.error === null && (state.data === null || state.data.repo.repoId !== home.repo.repoId)
+  const loadingHome = useMemo<RepoHome | null>(() => (laneUnknown && home !== null ? { ...home, laneLoading: true } : null), [laneUnknown, home])
   if (home === null) return null
   // A public repo renders at once; once a member's members-key session is ready the page re-reads
   // its discussion through it (`contentKey`). A failed lookup leaves the public view as it is.
   if (!isPrivate) {
     const data = state.data
-    const fresh = data !== null && state.error === null && data.repo.repoId === home.repo.repoId ? data : home
+    const fresh = data !== null && state.error === null && data.repo.repoId === home.repo.repoId ? data : loadingHome ?? home
     return { home: fresh, pending: false, error: null, retry: state.reload }
   }
   if (state.error !== null) return { home, pending: false, error: state.error, retry: state.reload }

@@ -13,6 +13,7 @@ import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } f
 import { previewCreate, previewCredits, sumPreviews, type CostPreview, type FirstWrite } from '@/lib/sdk'
 import { fieldEstimate, isLongBody, longBodyCredits } from '@/lib/repo/long-body'
 import { utf8Bytes } from '@/lib/rules/long-body'
+import { PAD_BUCKET, pads } from '@/lib/private'
 import { admissionFor, estimateBytesCredits } from '@/lib/sdk/cost'
 import { BODY_LIMIT, TITLE_LIMIT, textUse, type TextLimit } from '@/lib/view/text-limits'
 import { TextCounter } from '@/components/ui/text-counter'
@@ -64,9 +65,24 @@ export function composeCost(
   return extra === null ? doc : sumPreviews([doc, extra])
 }
 
-/** A members-only (`enc` v0x03) document's framing: the 61-byte envelope, and the text padded to 64 bytes. */
-const MEMBERS_FRAME = 61
-const MEMBERS_PAD = 64
+/**
+ * A members-only (`enc` v0x03) document's framing (§4.1): version (1), nonce (12), the key
+ * commitment `COMMIT_obj` (32) and the AES-GCM tag (16), 61 bytes in all.
+ */
+const MEMBERS_FRAME = 1 + 12 + 32 + 16
+/** A TLV record's header: its tag (1) and length (2). The padding record has one too. */
+const RECORD_HEADER = 3
+
+/**
+ * The `enc` bytes of a members-only `kind` whose sealed fields hold `used` bytes in `fields`
+ * records: the records, the padding record that ends the TLV on a multiple of 64 bytes (D28: an
+ * issue, PR, comment or review), and the framing (`sealMembersDoc`'s length).
+ */
+export function membersEncBytes(kind: SealedKind | 'event', used: number, fields: number): number {
+  const records = used + RECORD_HEADER * fields
+  const tlv = pads(kind) ? Math.ceil((records + RECORD_HEADER) / PAD_BUCKET) * PAD_BUCKET : records
+  return tlv + MEMBERS_FRAME
+}
 
 function composeDocCost(
   repo: RepoRef,
@@ -79,7 +95,7 @@ function composeDocCost(
   const members = repo.visibility === 'public' && audience === 'members'
   if ((repo.visibility !== 'private' && !members) || (fields === 0 && kind === 'event')) return previewCreate(kind, data, first)
   const bind = Object.fromEntries(Object.entries(data).filter(([k]) => !props.includes(k)))
-  const sealedBytes = members ? Math.ceil((used + 3 * fields) / MEMBERS_PAD) * MEMBERS_PAD + MEMBERS_FRAME + 32 : used + 3 * fields + 29
+  const sealedBytes = members ? membersEncBytes(kind, used, fields) : used + 3 * fields + 29
   const credits = estimateBytesCredits(kind, sealedBytes, bind, first)
   return previewCredits(credits, admissionFor(kind, sealedBytes, credits))
 }

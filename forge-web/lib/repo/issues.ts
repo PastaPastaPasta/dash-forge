@@ -47,7 +47,7 @@ import {
 import { repoChromeTimelines, type ChromeTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
-import { HiddenTally, MEMBERS_ONLY_ROW, SEALED_EPOCH, admittedAudience, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
+import { HiddenTally, LETTER_TITLE, MEMBERS_ONLY_ROW, SEALED_EPOCH, admittedAudience, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -62,7 +62,10 @@ import type { LongBodyState } from '../rules/long-body'
 export function titleOf(doc: PlainDocument, type: 'issue' | 'patch' = 'issue'): string {
   const title = str(doc, 'title')
   if (title !== '') return title
-  if (byteFieldToHex(doc, 'enc') === '') return ''
+  const enc = byteFieldToHex(doc, 'enc')
+  if (enc === '') return ''
+  // A specific-people document (v0x04) is not members-only: named neutrally.
+  if (enc.startsWith('04')) return LETTER_TITLE
   if (str(doc, 'vis') === 'public') return type === 'patch' ? 'Members-only pull request' : 'Members-only issue'
   return 'Encrypted (not readable here)'
 }
