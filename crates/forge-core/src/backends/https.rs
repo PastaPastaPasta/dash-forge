@@ -27,10 +27,11 @@ impl Default for HttpsBackend {
 }
 
 impl HttpsBackend {
-    /// Build a backend with a fresh HTTP client.
+    /// Build a backend with a fresh HTTP client that has the storage connect and idle-read
+    /// timeouts ([`crate::storage::http_client`]).
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: crate::storage::http_client(),
         }
     }
 
@@ -102,6 +103,10 @@ impl PackBackend for HttpsBackend {
         http_get(&self.client, &uri.0, range).await
     }
 
+    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
+        http_get_capped(&self.client, &uri.0, None, Some(max_bytes)).await
+    }
+
     async fn probe(&self, uri: &Uri) -> Result<Health> {
         http_probe(&self.client, &uri.0).await
     }
@@ -165,6 +170,10 @@ pub(crate) async fn http_get_watched(
     read_body_watched(resp, max_bytes, url, flowing).await
 }
 
+/// Why a body was refused for exceeding the size expected of it ([`read_body_watched`]): when
+/// that size is the artifact's own, the host is serving other bytes, not failing to answer.
+pub(crate) const LARGER_THAN_EXPECTED: &str = "response is larger than the expected";
+
 /// Read a response body, erroring as soon as it exceeds `max_bytes` (checked against
 /// `Content-Length` up front and against the running total while streaming), and setting
 /// `flowing` when the first non-empty chunk arrives.
@@ -176,14 +185,20 @@ pub(crate) async fn read_body_watched(
 ) -> Result<Vec<u8>> {
     let too_big = |n: u64| match max_bytes {
         Some(m) if n > m => Err(Error::Io(format!(
-            "{what}: response is larger than the expected {m} bytes; refusing to read it"
+            "{what}: {LARGER_THAN_EXPECTED} {m} bytes; refusing to read it"
         ))),
         _ => Ok(()),
     };
     if let Some(len) = resp.content_length() {
         too_big(len)?;
     }
-    let mut out = Vec::new();
+    // Sized once from the declared length (never past the cap), and each chunk is checked
+    // before it is kept, so the buffer never grows past `max_bytes`.
+    let presize = match (resp.content_length(), max_bytes) {
+        (Some(len), Some(m)) => usize::try_from(len.min(m)).unwrap_or(0),
+        _ => 0,
+    };
+    let mut out = Vec::with_capacity(presize);
     while let Some(chunk) = resp
         .chunk()
         .await
@@ -194,8 +209,8 @@ pub(crate) async fn read_body_watched(
                 f.store(true, Ordering::Relaxed);
             }
         }
+        too_big(out.len() as u64 + chunk.len() as u64)?;
         out.extend_from_slice(&chunk);
-        too_big(out.len() as u64)?;
     }
     Ok(out)
 }

@@ -18,9 +18,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::backends::https::{http_get_capped, http_get_watched};
+use crate::backends::https::{http_get_capped, http_get_watched, http_probe};
 use crate::backends::s3::key_has_bad_segment;
-use crate::backends::{sha256, ByteRange, S3Backend, Uri};
+use crate::backends::{sha256, ByteRange, Health, S3Backend, Uri};
 use crate::error::{Error, Result};
 
 use super::egress::{may_fetch, Trusted};
@@ -47,6 +47,26 @@ pub const MIN_TRANSFER_RATE: u64 = 1024 * 1024;
 pub fn transfer_deadline(size: Option<u64>) -> Duration {
     let scaled = Duration::from_secs(size.unwrap_or(0).div_ceil(MIN_TRANSFER_RATE));
     scaled.max(MIN_TRANSFER_DEADLINE)
+}
+
+/// The most a candidate's body may be when the caller knows no size (a manifest whose
+/// `sizeBytes` is 0): every body is capped, so a manifest without a size cannot let a host
+/// stream into memory without end. It is the importer's limit for an asset with no recorded
+/// size (`forge_import::assets::UNSIZED_BYTES` is this constant): it hashes at most this
+/// much of one, so every unsized asset with a hash it recorded fits. Every pack and asset
+/// written today records its size.
+pub const MAX_UNSIZED_BYTES: u64 = 256 << 20;
+
+/// How long one read may take in all when each candidate gets `per_candidate`
+/// ([`transfer_deadline`]): two of them. Candidates race [`RACE_WIDTH`] (two) at a time, so
+/// this is one window of hosts that trickle bytes until their own deadline cuts them off,
+/// then a whole transfer at [`MIN_TRANSFER_RATE`] from the next copy. Without it, a manifest's
+/// 8 URIs plus each CID on every gateway, each holding a slot for its whole deadline, could
+/// keep a read going for most of an hour. A caller's `budget` ([`external_budget`], when
+/// Platform chunks are the fallback) already ends a read within `budget + per_candidate`,
+/// which is less, so this only bounds reads that have no budget.
+pub fn read_deadline(per_candidate: Duration) -> Duration {
+    per_candidate * 2
 }
 
 /// How long the copies racing for a pack get while none of them has sent a single byte. A
@@ -109,6 +129,10 @@ impl Candidate {
     }
 }
 
+/// Why a candidate failed when its bytes do not hash to the artifact (a host serving other
+/// content, not one that is down).
+pub(crate) const WRONG_BYTES: &str = "served bytes that do not match the manifest hash";
+
 /// A read that a copy other than the reader's first choice served: where the bytes came from
 /// and every copy tried before it, with why it did not serve them. A clone that succeeds this
 /// way says so ([`fallback_lines`]), so a lost bucket or a dead gateway is noticed while the
@@ -121,6 +145,9 @@ pub struct Fallback {
     pub served_by: String,
     /// The copies that did not, each `place (why)`.
     pub failed: Vec<String>,
+    /// A pack mirror served it: every copy the repository's manifests record failed, so the
+    /// repository survives on a record someone else may delete ([`crate::pack_mirror`]).
+    pub mirror: bool,
 }
 
 impl std::fmt::Display for Fallback {
@@ -160,6 +187,13 @@ pub fn fallback_lines(fallbacks: &[Fallback], repo: &str) -> Vec<String> {
     out.push(format!(
         "hint: a recorded copy of this repository is unavailable; `dg storage status {repo}` checks every copy"
     ));
+    let mirrored = fallbacks.iter().filter(|f| f.mirror).count();
+    if mirrored > 0 {
+        out.push(format!(
+            "hint: no recorded copy of {} served, only a pack mirror someone else may delete; a maintainer or writer restores the copies with `dg reseed {repo}`",
+            if mirrored == 1 { "a pack".to_string() } else { format!("{mirrored} packs") }
+        ));
+    }
     out
 }
 
@@ -200,6 +234,7 @@ impl Served {
                 pack: pack.to_ascii_lowercase(),
                 served_by: self.by,
                 failed: self.failed,
+                mirror: false,
             });
         }
         self.bytes
@@ -297,6 +332,10 @@ pub struct PackReader {
     /// How long the copies of one artifact get while none has sent a byte
     /// ([`FIRST_BYTE_BUDGET`]; shorter in tests).
     first_byte_budget: Duration,
+    /// The cap on a body whose size is unknown ([`MAX_UNSIZED_BYTES`]; smaller in tests).
+    unsized_cap: u64,
+    /// How long one [`Self::probe`] gets ([`GATEWAY_PROBE_TIMEOUT`]; shorter in tests).
+    probe_timeout: Duration,
     /// What the user configured (read gateways, profiles' public URLs and gateways): a
     /// recorded URL on one of these origins is followed even when it is http or private, and
     /// these hosts may resolve to private addresses ([`super::egress`]).
@@ -349,6 +388,8 @@ impl PackReader {
             s3_profiles,
             candidate_timeout: None,
             first_byte_budget: FIRST_BYTE_BUDGET,
+            unsized_cap: MAX_UNSIZED_BYTES,
+            probe_timeout: GATEWAY_PROBE_TIMEOUT,
             trusted,
             race_width: RACE_WIDTH,
             fallbacks: std::sync::Mutex::default(),
@@ -362,6 +403,22 @@ impl PackReader {
     #[must_use]
     pub(crate) fn sequential(mut self) -> Self {
         self.race_width = 1;
+        self
+    }
+
+    /// Cap a body of unknown size at `n` bytes instead of [`MAX_UNSIZED_BYTES`].
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_unsized_cap(mut self, n: u64) -> Self {
+        self.unsized_cap = n;
+        self
+    }
+
+    /// Give each [`Self::probe`] `t` instead of [`GATEWAY_PROBE_TIMEOUT`].
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_probe_timeout(mut self, t: Duration) -> Self {
+        self.probe_timeout = t;
         self
     }
 
@@ -491,15 +548,30 @@ impl PackReader {
         out
     }
 
-    /// Fetch candidate `c` (a `range` of it, or the whole body capped at `max_bytes`),
+    /// Each candidate's whole-transfer deadline for `size` bytes ([`transfer_deadline`], or
+    /// the override).
+    fn candidate_deadline(&self, size: Option<u64>) -> Duration {
+        self.candidate_timeout
+            .unwrap_or_else(|| transfer_deadline(size))
+    }
+
+    /// The most a body may be: `size` when known, else [`MAX_UNSIZED_BYTES`]. Deadlines are
+    /// scaled to this too, so a body the cap allows also gets the time to arrive.
+    fn body_cap(&self, size: Option<u64>) -> u64 {
+        size.unwrap_or(self.unsized_cap)
+    }
+
+    /// Fetch candidate `c` (a `range` of it, or the whole body capped at [`Self::body_cap`]),
     /// setting `flowing` once its body starts arriving.
     async fn fetch(
         &self,
         c: &Candidate,
         range: Option<ByteRange>,
-        max_bytes: Option<u64>,
+        size: Option<u64>,
         flowing: Option<&AtomicBool>,
     ) -> Result<Vec<u8>> {
+        let cap = self.body_cap(range.map(|r| r.len()).or(size));
+        let max_bytes = Some(cap);
         let attempt = async {
             match c {
                 Candidate::Http(url) => {
@@ -519,9 +591,7 @@ impl PackReader {
                 }
             }
         };
-        let deadline = self
-            .candidate_timeout
-            .unwrap_or_else(|| transfer_deadline(range.map(|r| r.len()).or(max_bytes)));
+        let deadline = self.candidate_deadline(Some(cap));
         tokio::time::timeout(deadline, attempt)
             .await
             .unwrap_or_else(|_| {
@@ -547,7 +617,7 @@ impl PackReader {
         if hex::encode(sha256(&bytes)).eq_ignore_ascii_case(expected_sha256) {
             Ok(bytes)
         } else {
-            Err("served bytes that do not match the manifest hash".to_string())
+            Err(WRONG_BYTES.to_string())
         }
     }
 
@@ -602,11 +672,31 @@ impl PackReader {
         !self.candidates(uris).is_empty()
     }
 
+    /// HEAD `url` through this reader's client, held to the same rule as its reads: `None`,
+    /// with nothing sent, for an address a manifest may not steer this computer to (plain
+    /// http, this machine, a private network, unless the user configured that origin; DNS
+    /// answers and redirects are checked too). What `dg storage status` checks every
+    /// uploader's copies with. A host that has not answered within [`GATEWAY_PROBE_TIMEOUT`]
+    /// is down.
+    pub async fn probe(&self, url: &str) -> Option<Health> {
+        if !may_fetch(url, &self.trusted) {
+            return None;
+        }
+        let health =
+            match tokio::time::timeout(self.probe_timeout, http_probe(&self.client, url)).await {
+                Ok(Ok(h)) => h,
+                Ok(Err(_)) => Health::down(Duration::ZERO),
+                Err(_) => Health::down(self.probe_timeout),
+            };
+        Some(health)
+    }
+
     /// Fetch the whole artifact from the first candidate whose bytes hash to
     /// `expected_sha256` (lowercase hex). `size` (the manifest's `sizeBytes`, when known)
-    /// caps every candidate's body and scales its deadline ([`transfer_deadline`]).
-    /// `budget`: no new candidate is started after it (in-flight ones keep their own
-    /// deadline). Errors with every candidate's failure when none verifies.
+    /// caps every candidate's body and scales its deadline ([`transfer_deadline`]); with no
+    /// size the cap is [`MAX_UNSIZED_BYTES`]. `budget`: no new candidate is started after it
+    /// (in-flight ones keep their own deadline). The whole read ends by [`read_deadline`]
+    /// either way. Errors with every candidate's failure when none verifies.
     ///
     /// When a copy verifies after a copy preferred to it failed, the read is recorded as a
     /// [`Fallback`] ([`Self::take_fallbacks`]).
@@ -626,6 +716,7 @@ impl PackReader {
     /// [`Self::fetch_verified`] without recording anything: which copy served, and each
     /// failed copy's `place (why)` apart from the error text, so a caller with more copies
     /// (Platform chunks, other uploaders' copies) records one [`Fallback`] for the whole read.
+    #[allow(clippy::too_many_lines)] // one race: candidate slots, deadlines, refills and the verdict
     pub(crate) async fn race(
         &self,
         uris: &[String],
@@ -674,6 +765,13 @@ impl PackReader {
         };
         let first_byte = tokio::time::sleep(self.first_byte_budget);
         tokio::pin!(first_byte);
+        // The whole read's limit, budget or not: copies that keep trickling bytes hold their
+        // slots until their own deadline, and a long candidate list must not add those up.
+        let limit = read_deadline(self.candidate_deadline(Some(self.body_cap(size))));
+        let overall = tokio::time::sleep(limit);
+        tokio::pin!(overall);
+        // Set when the limit ran out with candidates left untried.
+        let mut limit_skipped = false;
         let mut pending = candidates.iter().enumerate();
         let mut race = FuturesUnordered::new();
         loop {
@@ -699,6 +797,20 @@ impl PackReader {
                 // A finished candidate first: its own error beats "sent no data".
                 biased;
                 r = race.next() => r,
+                () = &mut overall => {
+                    // Out of time: drop the copies in flight (cancelling them) and try no more.
+                    for (i, label) in in_flight.drain(..) {
+                        reasons.push(format!(
+                            "{label}: not done within the read's {limit:?} limit"
+                        ));
+                        places.push((
+                            i,
+                            format!("{} (not done within {limit:?})", candidates[i].place()),
+                        ));
+                    }
+                    limit_skipped = pending.next().is_some();
+                    break;
+                }
                 () = &mut first_byte, if !any_flowing(&in_flight) => {
                     // A body may have started while this select was waiting.
                     if any_flowing(&in_flight) {
@@ -754,29 +866,77 @@ impl PackReader {
                 "the other copies (not tried: gave up after the {secs}s budget)"
             ));
         }
+        if limit_skipped {
+            reasons.push(format!(
+                "the other copies: not tried within the read's {limit:?} limit"
+            ));
+            places.push(format!("the other copies (not tried within {limit:?})"));
+        }
         Err(Missed::unverified(&candidates, &reasons, places))
     }
 
     /// Fetch `range` of the artifact (browse / partial reads). NOT hash-verified here — a
     /// slice cannot be checked against a whole-artifact hash; callers verify the objects
-    /// they decode against their git OIDs.
+    /// they decode against their git OIDs. Copies are tried in turn, each dropped if it
+    /// sends no data within the first-byte budget ([`FIRST_BYTE_BUDGET`]), and the whole read
+    /// ends by [`read_deadline`], like [`Self::fetch_verified`].
     pub async fn fetch_range(&self, uris: &[String], range: ByteRange) -> Result<Vec<u8>> {
         let mut last = Error::NotFound;
-        for c in self.candidates(uris) {
-            match self.fetch(&c, Some(range), Some(range.len()), None).await {
-                Ok(b) if b.len() as u64 == range.len() => return Ok(b),
-                Ok(b) => {
-                    last = Error::Io(format!(
-                        "{} returned {} bytes for a {}-byte range",
-                        c.label(),
-                        b.len(),
-                        range.len()
-                    ));
+        let limit = read_deadline(self.candidate_deadline(Some(range.len())));
+        let tries = async {
+            for c in self.candidates(uris) {
+                match self.fetch_range_one(&c, range).await {
+                    Ok(b) if b.len() as u64 == range.len() => return Ok(b),
+                    Ok(b) => {
+                        last = Error::Io(format!(
+                            "{} returned {} bytes for a {}-byte range",
+                            c.label(),
+                            b.len(),
+                            range.len()
+                        ));
+                    }
+                    Err(e) => last = e,
                 }
-                Err(e) => last = e,
+            }
+            Err(())
+        };
+        let res = tokio::time::timeout(limit, tries).await;
+        match res {
+            Ok(Ok(b)) => Ok(b),
+            Ok(Err(())) => Err(last),
+            Err(_) => Err(Error::Io(format!(
+                "no copy served the range within the read's {limit:?} limit (last: {last})"
+            ))),
+        }
+    }
+
+    /// `range` of candidate `c`, given up when no byte of it has arrived within the
+    /// first-byte budget: a gateway that cannot find a CID holds the request for a minute
+    /// before it says so, and the copies after it must still get their turn. Once the body
+    /// flows the candidate keeps its own deadline.
+    async fn fetch_range_one(&self, c: &Candidate, range: ByteRange) -> Result<Vec<u8>> {
+        let flowing = AtomicBool::new(false);
+        let attempt = self.fetch(c, Some(range), None, Some(&flowing));
+        tokio::pin!(attempt);
+        let first_byte = tokio::time::sleep(self.first_byte_budget);
+        tokio::pin!(first_byte);
+        let mut waiting = true;
+        loop {
+            tokio::select! {
+                biased;
+                r = &mut attempt => return r,
+                () = &mut first_byte, if waiting => {
+                    if !flowing.load(Ordering::Relaxed) {
+                        return Err(Error::Io(format!(
+                            "{}: sent no data within {:?}",
+                            c.label(),
+                            self.first_byte_budget
+                        )));
+                    }
+                    waiting = false;
+                }
             }
         }
-        Err(last)
     }
 }
 
@@ -1262,6 +1422,34 @@ mod tests {
         format!("http://{addr}")
     }
 
+    /// `dg storage mirror add` tells a host serving other bytes (E504) from one that does not
+    /// answer (E503): a body larger than the pack is other bytes, though the size cap refuses
+    /// it before it is hashed.
+    #[tokio::test]
+    async fn a_mirror_check_reads_an_oversized_body_as_wrong_bytes() {
+        use crate::pack_mirror::{check_serves, ServeCheck};
+        let good = b"the real pack".to_vec();
+        let hash = hex::encode(sha256(&good));
+        let base = serve(vec![
+            ("/huge", vec![7u8; 1 << 20]),
+            ("/other", b"not the pack!".to_vec()),
+            ("/good", good.clone()),
+        ]);
+        let r = PackReader::new(vec![base.clone()], &StorageProfiles::default());
+        let size = Some(good.len() as u64);
+        let at = |path: &str| vec![format!("{base}{path}")];
+        let huge = check_serves(&r, &at("/huge"), &hash, size).await;
+        assert!(matches!(huge, ServeCheck::WrongBytes(_)), "{huge:?}");
+        let other = check_serves(&r, &at("/other"), &hash, size).await;
+        assert!(matches!(other, ServeCheck::WrongBytes(_)), "{other:?}");
+        let gone = check_serves(&r, &at("/gone"), &hash, size).await;
+        assert!(matches!(gone, ServeCheck::Unreachable(_)), "{gone:?}");
+        assert_eq!(
+            check_serves(&r, &at("/good"), &hash, size).await,
+            ServeCheck::Serves
+        );
+    }
+
     #[tokio::test]
     async fn oversized_bodies_and_slow_hosts_cost_one_candidate() {
         let good = b"the real pack".to_vec();
@@ -1304,6 +1492,178 @@ mod tests {
             .to_string();
         assert!(err.contains("timed out"), "{err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// A host that answers 200 with no `Content-Length` and then streams zeros until the
+    /// client goes away.
+    fn endless() -> String {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    loop {
+                        let mut h = String::new();
+                        if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                            break;
+                        }
+                    }
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n");
+                    let block = vec![0u8; 64 * 1024];
+                    while stream.write_all(&block).is_ok() {}
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_body_of_unknown_size_stops_at_the_ceiling() {
+        // A manifest with no size (`sizeBytes` 0) must not leave the body uncapped: an
+        // endless stream is refused once it passes the ceiling, long before its deadline.
+        let host = endless();
+        let cap = 1 << 20;
+        let r = PackReader::new(vec![host.clone()], &StorageProfiles::default())
+            .with_candidate_timeout(Duration::from_secs(30))
+            .with_unsized_cap(cap);
+        let started = Instant::now();
+        let err = r
+            .fetch_verified(&[format!("{host}/pack")], &"0".repeat(64), None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&format!("larger than the expected {cap} bytes")),
+            "{err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        // The production ceiling is the importer's unsized-asset limit.
+        let r = PackReader::with_defaults();
+        assert_eq!(r.unsized_cap, MAX_UNSIZED_BYTES);
+        assert_eq!(MAX_UNSIZED_BYTES, 256 << 20);
+    }
+
+    #[tokio::test]
+    async fn trickling_copies_cannot_stretch_a_read_past_its_limit() {
+        // Ten copies that keep sending a byte every 100 ms, so neither the first-byte budget
+        // nor the idle timeout drops them, and no budget from the caller (a release download,
+        // a repo with no Platform chunks). Two at a time, each until its own 1 s deadline,
+        // they would hold the read for 5 s; the read's limit is two deadlines.
+        let slow = trickle(vec![1u8; 10_000], Duration::from_millis(100));
+        let uris: Vec<String> = (0..10).map(|i| format!("{slow}/{i}")).collect();
+        let r = PackReader::new(vec![slow.clone()], &StorageProfiles::default())
+            .with_candidate_timeout(Duration::from_secs(1));
+        let started = Instant::now();
+        let err = r
+            .fetch_verified(&uris, &"0".repeat(64), None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(3500), "{took:?}: {err}");
+        assert!(err.contains("not done within the read's 2s limit"), "{err}");
+        assert!(
+            err.contains("not tried within the read's 2s limit"),
+            "{err}"
+        );
+        assert_eq!(
+            read_deadline(transfer_deadline(None)),
+            Duration::from_secs(240)
+        );
+    }
+
+    #[tokio::test]
+    async fn probes_follow_the_read_rule() {
+        // `dg storage status` probes every uploader's copies: one on this machine is
+        // reported, never contacted.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let r = PackReader::new(Vec::new(), &StorageProfiles::default());
+        for url in [
+            format!("http://127.0.0.1:{port}/p"),
+            format!("https://127.0.0.1:{port}/p"),
+            format!("https://localhost:{port}/p"),
+            format!("https://[::1]:{port}/p"),
+            "https://192.168.1.5/p".to_string(),
+        ] {
+            assert_eq!(r.probe(&url).await, None, "{url}");
+        }
+        assert!(
+            matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "a refused address was contacted"
+        );
+        // An origin the user configured (their own gateway) is probed.
+        let up = serve(vec![("/p", b"x".to_vec())]);
+        let r = PackReader::new(vec![up.clone()], &StorageProfiles::default());
+        assert!(r.probe(&format!("{up}/p")).await.is_some_and(|h| h.ok));
+    }
+
+    #[tokio::test]
+    async fn a_probe_of_a_host_that_never_answers_ends_at_its_timeout() {
+        // `dg storage status` probes every copy in turn: one host holding the request open
+        // must not hold up the command.
+        let gw = silent_gateway();
+        let r = PackReader::new(vec![gw.clone()], &StorageProfiles::default())
+            .with_probe_timeout(Duration::from_millis(300));
+        let started = Instant::now();
+        let h = r
+            .probe(&format!("{gw}/p"))
+            .await
+            .expect("a configured origin is probed");
+        assert!(!h.ok);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            PackReader::with_defaults().probe_timeout,
+            GATEWAY_PROBE_TIMEOUT
+        );
+    }
+
+    #[tokio::test]
+    async fn silent_copies_do_not_use_up_a_range_read() {
+        // Range reads try copies one at a time: each copy that sends nothing gets the
+        // first-byte budget, not its whole deadline, so the copies after it are still tried
+        // within the read's limit.
+        let gws: Vec<String> = (0..3).map(|_| silent_gateway()).collect();
+        let uris: Vec<String> = gws.iter().map(|g| format!("{g}/x")).collect();
+        let r = PackReader::new(gws, &StorageProfiles::default())
+            .with_candidate_timeout(Duration::from_secs(30))
+            .with_first_byte_budget(Duration::from_millis(300));
+        let started = Instant::now();
+        let err = r
+            .fetch_range(&uris, ByteRange { start: 0, end: 4 })
+            .await
+            .unwrap_err()
+            .to_string();
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(5), "{took:?}: {err}");
+        assert!(
+            err.contains(&format!("{}: sent no data within 300ms", uris[2])),
+            "the last copy was tried: {err}"
+        );
+    }
+
+    #[test]
+    fn an_unsized_read_gets_the_time_its_cap_needs() {
+        // The 256 MiB an unsized body may be needs 256 s at the minimum rate, not the 120 s
+        // floor.
+        let r = PackReader::with_defaults();
+        assert_eq!(
+            r.candidate_deadline(Some(r.body_cap(None))),
+            Duration::from_secs(256)
+        );
+        assert_eq!(r.body_cap(Some(10)), 10);
     }
 
     #[tokio::test]
@@ -1673,6 +2033,7 @@ mod tests {
                     format!("{host} (not found)"),
                     format!("{host2} (served bytes that do not match the manifest hash)"),
                 ],
+                mirror: false,
             }]
         );
         // Taken: the list starts over.
@@ -1720,6 +2081,7 @@ mod tests {
             pack: format!("{n:02x}").repeat(32),
             served_by: "Platform chunks".into(),
             failed: vec!["pub.example (HTTP 403 Forbidden)".into()],
+            mirror: false,
         };
         assert_eq!(fallback_lines(&[], "o/r"), Vec::<String>::new());
         let lines = fallback_lines(&[f(1)], "o/r");
@@ -1735,6 +2097,17 @@ mod tests {
         assert_eq!(
             lines[3],
             "warning: and 2 more packs read from a fallback copy"
+        );
+        // A pack only a mirror served says so, and how the copies come back.
+        let m = Fallback {
+            served_by: "a pack mirror at m.example".into(),
+            mirror: true,
+            ..f(9)
+        };
+        let lines = fallback_lines(&[f(1), m], "o/r");
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("hint: no recorded copy of a pack served, only a pack mirror someone else may delete; a maintainer or writer restores the copies with `dg reseed o/r`")
         );
     }
 

@@ -723,6 +723,9 @@ pub(crate) mod tests {
                 None => b,
             })
         }
+        async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
+            crate::backends::within_cap(uri, self.get(uri, None).await?, max_bytes)
+        }
         async fn probe(&self, _uri: &Uri) -> Result<crate::backends::Health> {
             let len = self.store.lock().unwrap().as_ref().map(|b| b.len() as u64);
             Ok(crate::backends::Health {

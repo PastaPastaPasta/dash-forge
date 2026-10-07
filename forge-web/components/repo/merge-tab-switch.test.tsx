@@ -103,7 +103,7 @@ function Page(): JSX.Element {
       {tab === 'conversation' ? <p>The conversation</p> : <p>The {tab} tab</p>}
       {slot === 'none' ? null : (
         <div hidden={slot === 'kept'} data-testid="merge-slot">
-          <PullMerge repo={repo} home={homeAt(merged ? NEW_TIP : BASE)} pull={pullOf(merged)} canMerge={!merged} isMaintainer checkout="dg pr checkout 1" onMerged={() => setMerged(true)} extras={{ onRunning, active: slot === 'shown' }} />
+          <PullMerge recheckMembers={async () => null} repo={repo} home={homeAt(merged ? NEW_TIP : BASE)} pull={pullOf(merged)} canMerge={!merged} isMaintainer checkout="dg pr checkout 1" onMerged={() => setMerged(true)} extras={{ onRunning, active: slot === 'shown' }} />
         </div>
       )}
     </div>

@@ -58,6 +58,11 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Unwatch { repo } => watch(ctx, repo, false).await,
         RepoCommand::Topic { repo, add, remove } => topic(ctx, repo, add, remove).await,
         RepoCommand::View { repo } => Box::pin(view(ctx, repo)).await,
+        RepoCommand::Activity {
+            repo,
+            ref_name,
+            tag,
+        } => crate::ref_activity::activity(ctx, repo, ref_name, *tag).await,
         RepoCommand::List { owner_arg, owner } => {
             list(ctx, owner_arg.as_deref().or(owner.as_deref())).await
         }

@@ -15,7 +15,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { DEFAULT_NETWORK, PACK_KIND, STORAGE, type Network, type PackKind } from '../constants'
 import { repoTimelines } from './chrome'
 import { queryAllDocuments, queryDocumentsWithProof, sumDocumentsGrouped, uintOfGroupKey, type PlainDocument } from '../sdk'
-import { v2PackList, type Role } from '../rules/v2'
+import { planningSuperseded, v2PackList, type PackCopyRow, type Role } from '../rules/v2'
 import { DOC, str, stringArray, type RepoRef } from './contract'
 import { base64ToBytes } from '../sdk'
 import { readRoleOracle } from './members'
@@ -184,21 +184,7 @@ export function packsOfKind(
 ): (PackManifest & { readonly superseded: boolean })[] {
   const byId = new Map(copies.map((m) => [m.documentId, m]))
   const bound = asOf === undefined ? null : typeof asOf === 'number' ? { createdAt: asOf, id: '\uffff' } : asOf
-  const listed = v2PackList(
-    copies.map((m) => ({
-      id: m.documentId,
-      packHash: m.packHash.toLowerCase(),
-      kind: m.kind,
-      createdAt: m.createdAt,
-      ownerRole: m.ownerRole ?? null,
-      sizeBytes: m.sizeBytes,
-      objectCount: m.objectCount,
-      chunkCount: m.chunkCount,
-      supersedes: m.supersedes.map((h) => h.toLowerCase()),
-      verified: null,
-    })),
-    bound,
-  )
+  const listed = v2PackList(packCopyRows(copies), bound)
   return listed
     .filter((p) => p.kind === kind)
     .map((p) => {
@@ -212,6 +198,32 @@ export function packsOfKind(
         superseded: p.superseded,
       }
     })
+}
+
+/** `copies` as the shared rules' unchecked rows (`verified: null`), hashes lowercased. */
+function packCopyRows(copies: readonly PackManifest[]): PackCopyRow[] {
+  return copies.map((m) => ({
+    id: m.documentId,
+    packHash: m.packHash.toLowerCase(),
+    kind: m.kind,
+    createdAt: m.createdAt,
+    ownerRole: m.ownerRole ?? null,
+    sizeBytes: m.sizeBytes,
+    objectCount: m.objectCount,
+    chunkCount: m.chunkCount,
+    supersedes: m.supersedes.map((h) => h.toLowerCase()),
+    verified: null,
+  }))
+}
+
+/**
+ * The `kind` artifacts planning treats as superseded, lowercase (the shared `planningSuperseded`;
+ * forge-core `planning_superseded`): the hashes named in `supersedes` by a `kind` manifest whose
+ * uploader is currently a maintainer or writer. Needs `ownerRole` on the copies
+ * ({@link readRepoPackManifests}).
+ */
+export function plannedSuperseded(copies: readonly PackManifest[], kind: number): Set<string> {
+  return new Set(planningSuperseded(packCopyRows(copies), kind))
 }
 
 /**

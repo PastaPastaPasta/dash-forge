@@ -224,6 +224,14 @@ cmd('repo unwatch', 'The watch removed.', WATCH, ['status', 'repo'])
 cmd('repo topic', 'The repository\'s topics (and what changed).', {
     'repo': S, 'topics': SA, 'added': SA, 'removed': SA, 'cost': COST,
 }, ['repo', 'topics'])
+cmd('repo activity', 'One branch\'s or tag\'s activity, newest first.', {
+    'repo': S, 'ref': S,
+    'events': A(O({
+        'kind': E('created', 'pushed', 'forcePushed', 'updated', 'moved', 'deleted', 'diverged',
+                  'protectionAdded', 'protectionLifted', 'protectionRestored'),
+        'id': S, 'at': I, 'by': nl(S), 'from': nl(S), 'to': nl(S),
+    }, ['kind', 'id', 'at'])),
+}, ['repo', 'ref', 'events'])
 cmd('repo view', 'A repository: its refs, packs and members.', {
     'repoId': S, 'ownerId': S, 'name': S, 'description': nl(S), 'visibility': E('public', 'private'),
     'archived': D('Whether the repository is archived; null when its config could not be read.', nl(B)),
@@ -468,9 +476,20 @@ cmd('milestone create', 'A milestone defined.', MS, ['status', 'title'])
 cmd('milestone close', 'A milestone closed.', MS, ['status', 'title'])
 
 # -- profile, signing keys, collaborators -----------------------------------------------------
-cmd('profile show', 'An identity\'s public profile.', {'identityId': S, 'profile': nl(OBJ)}, ['identityId', 'profile'])
+cmd('profile show', 'An identity\'s public profile.', {
+    'identityId': S, 'profile': nl(OBJ),
+    'bot': D('The identity\'s operator when both profiles agree, else null.', nl(O({'operator': S}, ['operator']))),
+}, ['identityId', 'profile'])
 cmd('profile set', 'Your profile changed.', {'status': S, 'documentId': S, 'fields': OBJ, 'cost': COST}, ['status'])
 cmd('profile delete', 'Your profile deleted.', {'status': E('deleted', 'absent'), 'documentId': S}, ['status'])
+BOT_CLAIM = D('The signer\'s bot claim as written: the identity that operates it, and the bots it operates.',
+              O({'operator': S, 'operates': SA}))
+for _verb, _desc in (('operator', 'Your profile names (or stops naming) the identity that operates it as a bot.'),
+                     ('add', 'Your profile lists a bot you operate.'),
+                     ('remove', 'Your profile stops listing a bot you operate.')):
+    cmd(f'profile bot {_verb}', _desc, {
+        'status': E('created', 'updated', 'unchanged'), 'documentId': S, 'bot': BOT_CLAIM, 'cost': COST,
+    }, ['status'])
 cmd('profile key list', 'The signing keys on your profile.', {'keys': A(OBJ)}, ['keys'])
 cmd('profile key add', 'A signing key added to your profile.', {'status': S, 'entry': S, 'fingerprint': ANY, 'cost': COST}, ['status'])
 cmd('profile key remove', 'A signing key removed from your profile.', {'status': E('removed', 'unchanged')}, ['status'])
@@ -543,6 +562,19 @@ cmd('storage use', 'Which storage profiles pushes use.', {
 cmd('storage advertise', 'The storage the repository advertises to forks and mirrors.', {
     'status': E('advertised', 'unchanged'), 'mode': ANY, 'uris': SA, 'configDocId': nl(S),
 }, ['status'])
+PACK_MIRROR = O({
+    'documentId': S, 'by': D('Its writer\'s identity id.', S), 'repoId': S, 'packHash': S,
+    'kind': D('1: https addresses; 2: IPFS addresses.', I), 'uris': SA, 'createdAt': I,
+}, ['documentId', 'by', 'repoId', 'packHash', 'kind', 'uris', 'createdAt'])
+cmd('storage mirror add', 'A pack mirror recorded.', {
+    'status': E('recorded'), 'repo': S, 'packHash': S, 'uris': SA, 'documentId': S, 'cost': COST,
+}, ['status', 'packHash', 'uris', 'documentId', 'cost'])
+cmd('storage mirror list', 'The pack mirrors recorded for a repository, or by you (`--mine`).', {
+    'mirrors': A(PACK_MIRROR),
+}, ['mirrors'])
+cmd('storage mirror remove', 'A pack mirror record deleted.', {
+    'status': E('removed'), 'documentId': S, 'type': E('packMirror'),
+}, ['status', 'documentId'])
 
 # -- webhooks, CI -----------------------------------------------------------------------------
 cmd('webhook add', 'A webhook registered with a relay.', {

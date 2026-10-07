@@ -1,0 +1,54 @@
+{
+  "name": "unrelated_patterns_not_listed",
+  "description": "Config changes that never change whether this ref is protected are not part of its activity.",
+  "case": "ref_history",
+  "input": {
+    "refName": "refs/heads/dev",
+    "refNameHash": "H",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/dev",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      }
+    ],
+    "configs": [
+      {
+        "id": "c1",
+        "createdAt": 50,
+        "protectedPatterns": [
+          "refs/heads/main"
+        ]
+      },
+      {
+        "id": "c2",
+        "createdAt": 150,
+        "protectedPatterns": [
+          "refs/heads/main",
+          "refs/tags/**"
+        ]
+      },
+      {
+        "id": "c3",
+        "createdAt": 250,
+        "protectedPatterns": []
+      }
+    ]
+  },
+  "expected": [
+    {
+      "kind": "created",
+      "id": "u1",
+      "at": 100,
+      "by": "alice",
+      "from": null,
+      "to": "A"
+    }
+  ]
+}

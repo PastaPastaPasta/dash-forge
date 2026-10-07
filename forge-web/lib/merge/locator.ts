@@ -19,7 +19,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { PACK_KIND } from '../constants'
-import { readRepoPackManifests, packsOfKind, type PackManifest, type RepoRef } from '../repo'
+import { plannedSuperseded, readRepoPackManifests, packsOfKind, type PackManifest, type RepoRef } from '../repo'
 import { writePackManifest } from '../repo/push'
 import type { WriteAuth } from '../sdk'
 import type { UploadPack } from './runner'
@@ -35,7 +35,11 @@ export function planFragment(manifests: readonly PackManifest[], packHash: strin
   const idx = space.findIndex((p) => p.packHash.toLowerCase() === packHash.toLowerCase())
   if (idx < 0) return { kind: 'skip', reason: 'the merge pack is not in the pack list yet', retry: true }
   if (idx > 0xffff) return { kind: 'skip', reason: `the pack list has ${space.length} packs, past the index's 16-bit packRef; run \`dg repack\``, retry: false }
-  const live = packsOfKind(manifests, PACK_KIND.OBJECT_LOCATOR).filter((p) => !p.superseded)
+  // Live as forge-core `live_locator_manifests` counts them: a fragment is retired only by a
+  // current maintainer's or writer's fragment naming it (the pack list's `superseded` needs
+  // verified bytes, which a plan never reads).
+  const superseded = plannedSuperseded(manifests, PACK_KIND.OBJECT_LOCATOR)
+  const live = packsOfKind(manifests, PACK_KIND.OBJECT_LOCATOR).filter((p) => !superseded.has(p.packHash.toLowerCase()))
   for (const f of live) {
     const asOf = packsOfKind(manifests, PACK_KIND.GIT_PACK, { createdAt: f.createdAt, id: f.documentId })
     if (asOf.length > space.length || asOf.some((p, i) => p.packHash !== space[i]?.packHash)) {
@@ -79,7 +83,16 @@ export async function publishMergeIndex(
     await new Promise((r) => setTimeout(r, 1500))
   }
   if (plan.kind === 'skip') return { kind: 'skipped', reason: plan.reason }
-  const fragment = await buildFragment(pack, plan.packRef)
+  const { IndexTooLargeError } = await import('../browse/indexer')
+  let fragment: Awaited<ReturnType<typeof buildFragment>>
+  try {
+    fragment = await buildFragment(pack, plan.packRef)
+  } catch (e) {
+    if (e instanceof IndexTooLargeError) {
+      return { kind: 'skipped', reason: 'the pack is too large to index in the browser; the next CLI push or `dg repack` indexes it' }
+    }
+    throw e
+  }
   const fragmentHash = bytesToHex(sha256(fragment.bytes))
   const stored = await upload(fragment.bytes, { packHash: fragmentHash, objectCount: fragment.objectCount })
   const w = await writePackManifest(

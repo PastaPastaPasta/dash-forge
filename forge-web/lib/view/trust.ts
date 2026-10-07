@@ -378,7 +378,7 @@ function sourceName(source: string): string {
 }
 
 function deriveSource(input: TrustInputs, content: TrustLink): TrustLink {
-  const { sources, unreachable, fellBackFrom } = input.checks
+  const { sources, unreachable, fellBackFrom, mirroredPacks } = input.checks
   const gatewayHosts = new Set((input.gateways ?? readGateways()).map(urlHost))
   const tried = new Set(sources.map((s) => (gatewayHosts.has(s) ? 'ipfs' : s)))
   const notTried = [...new Set((input.configuredUris ?? []).map(urlHost))].filter((h) => h !== '' && !tried.has(h))
@@ -386,7 +386,13 @@ function deriveSource(input: TrustInputs, content: TrustLink): TrustLink {
   // row's state is the content check's.
   const fellBack = fellBackFrom.length > 0 ? ` Unavailable, another copy served instead: ${fellBackFrom.join(', ')}.` : ''
   const alsoRecorded = notTried.length > 0 ? ` Also recorded: ${notTried.map((h) => `${h} (not tried)`).join(', ')}.` : ''
-  const also = fellBack + alsoRecorded
+  // Packs no recorded copy served: a pack mirror anyone may delete is all that holds them.
+  const n = mirroredPacks.length
+  const mirrored =
+    n > 0
+      ? ` No recorded copy of ${n === 1 ? 'a pack' : `${n} packs`} answered, so a mirror someone else recorded served ${n === 1 ? 'it' : 'them'}. Ask a maintainer to store ${n === 1 ? 'it' : 'them'} again.`
+      : ''
+  const also = fellBack + mirrored + alsoRecorded
   const failedPlaces = unreachable.length > 0 ? `Didn't answer: ${unreachable.join(', ')}.` : undefined
   if (sources.length === 0) {
     if (failedPlaces !== undefined) {

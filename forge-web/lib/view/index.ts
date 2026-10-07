@@ -93,6 +93,8 @@ export {
 } from './browse-source'
 export {
   cachedFallback,
+  fallbackNeedsAsk,
+  FallbackTooLargeError,
   restoreFallback,
   startFallback,
   type FallbackProgress,

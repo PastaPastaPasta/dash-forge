@@ -1,0 +1,28 @@
+{
+  "name": "private_repo",
+  "description": "A private repository reads no mirror at all.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "private",
+    "mirrors": [
+      {
+        "id": "m1",
+        "ownerRole": "maintainer",
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://maint.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": []
+  }
+}

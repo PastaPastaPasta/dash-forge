@@ -1,0 +1,15 @@
+{
+  "name": "over_300_chars",
+  "description": "301 characters is too long.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://m.example.com/ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+    ]
+  },
+  "expected": {
+    "problem": "length",
+    "index": 0
+  }
+}

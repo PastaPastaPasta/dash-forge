@@ -1,0 +1,44 @@
+{
+  "name": "stranger_duplicate_not_counted",
+  "description": "A non-member's address already listed is not one of its two.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "s0",
+        "ownerRole": null,
+        "createdAt": 0,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://shared.example/p",
+          "https://s01.example/p",
+          "https://s02.example/p"
+        ]
+      },
+      {
+        "id": "m1",
+        "ownerRole": "maintainer",
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://shared.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://shared.example/p",
+      "https://s01.example/p",
+      "https://s02.example/p"
+    ]
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "name": "cap_keeps_members",
+  "description": "The cap never pushes a member's address out for strangers'.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "s0",
+        "ownerRole": null,
+        "createdAt": 0,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://s00.example/p",
+          "https://s01.example/p",
+          "https://s02.example/p",
+          "https://s03.example/p"
+        ]
+      },
+      {
+        "id": "s1",
+        "ownerRole": null,
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://s10.example/p",
+          "https://s11.example/p",
+          "https://s12.example/p",
+          "https://s13.example/p"
+        ]
+      },
+      {
+        "id": "s2",
+        "ownerRole": null,
+        "createdAt": 2,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://s20.example/p",
+          "https://s21.example/p",
+          "https://s22.example/p",
+          "https://s23.example/p"
+        ]
+      },
+      {
+        "id": "s3",
+        "ownerRole": null,
+        "createdAt": 3,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://s30.example/p",
+          "https://s31.example/p",
+          "https://s32.example/p",
+          "https://s33.example/p"
+        ]
+      },
+      {
+        "id": "s4",
+        "ownerRole": null,
+        "createdAt": 4,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://s40.example/p",
+          "https://s41.example/p",
+          "https://s42.example/p",
+          "https://s43.example/p"
+        ]
+      },
+      {
+        "id": "m1",
+        "ownerRole": "maintainer",
+        "createdAt": 99,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://maint.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://maint.example/p",
+      "https://s00.example/p",
+      "https://s01.example/p",
+      "https://s10.example/p",
+      "https://s11.example/p",
+      "https://s20.example/p",
+      "https://s21.example/p",
+      "https://s30.example/p"
+    ]
+  }
+}

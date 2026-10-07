@@ -36,6 +36,8 @@ import {
 } from '../browse'
 import {
   CHUNK_QUERY_MAX,
+  contractOf,
+  DOC,
   readPackCopies,
   packsOfKind,
   type AsOf,
@@ -67,6 +69,7 @@ import {
 import { mapPooled, trimOldest } from './pool'
 import { openPrivateArtifact, readPrivateRange } from './private-packs'
 import { onPrivateSessionEnded } from '../repo/private-session'
+import { mirrorCopy, mirrorUrisOf, resetMirrorUris } from '../repo/pack-mirrors'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -121,9 +124,11 @@ function chunkPayload(doc: Record<string, unknown>): Uint8Array {
 // ---------------------------------------------------------------------------
 
 /**
- * Chunks are content-addressed (`packHash` is the artifact's sha256) and immutable, so a
- * session-wide LRU is always safe. Entries hold the fetch PROMISE, so concurrent reads of
- * the same chunk dedupe to one query. Only resolved entries carry a size and count toward
+ * Chunk documents are immutable, so a session-wide LRU keyed by everything a chunk query is
+ * scoped by ({@link chunkCopyKey}) serves exactly the bytes asking again would. A chunk carries
+ * no digest of its own (`packHash` is the whole artifact's sha256), so a copy whose whole
+ * artifact fails that check has its chunks dropped ({@link forgetChunks}). Entries hold the
+ * fetch PROMISE, so concurrent reads of the same chunk dedupe to one query. Only resolved entries carry a size and count toward
  * the budget; rejected fetches are evicted so a retry re-queries. Map insertion order is
  * the recency order (touched entries are re-inserted).
  */
@@ -166,6 +171,31 @@ function evictChunks(): void {
     if (entry.size === undefined) continue // in flight — a caller still awaits it
     chunkCache.delete(key)
     chunkCacheBytes -= entry.size
+  }
+}
+
+/**
+ * The cache key of one copy of an artifact: every scope its chunk query has — the network, the
+ * contract, the repo, the uploader and the pack hash. A hostile copy's chunks must never be served
+ * for an honest one (every writer has its own copy of a pack, `forge-v2.md` §4), nor one repo's for
+ * another's. A fork reads its parent's chunks under the parent's repo id, so the two share entries.
+ */
+function chunkCopyKey(repo: RepoRef, manifest: PackManifest): string {
+  return `${copyScope(repo, manifest)}:${manifest.packHash}`
+}
+
+/** Whose chunks a copy is: the network, contract, repo and uploader its chunk query names. */
+function copyScope(repo: RepoRef, manifest: PackManifest): string {
+  return `${ACTIVE_NETWORK.key}:${contractOf(repo.forge, DOC.chunk)}:${repoKey(repo)}:${manifest.uploader}`
+}
+
+/** Drop the cached chunks of a copy whose whole artifact did not hash to its `packHash`. */
+function forgetChunks(repo: RepoRef, manifest: PackManifest): void {
+  const prefix = `${chunkCopyKey(repo, manifest)}:`
+  for (const [key, entry] of chunkCache) {
+    if (!key.startsWith(prefix)) continue
+    chunkCache.delete(key)
+    if (entry.size !== undefined) chunkCacheBytes -= entry.size
   }
 }
 
@@ -297,11 +327,7 @@ async function fetchPlatformRange(
   end: number,
 ): Promise<Uint8Array> {
   const packHashHex = manifest.packHash
-  // Keyed by network, repo and uploader, not the pack hash alone: every writer has its own copy
-  // of a pack (`forge-v2.md` §4), and a hostile copy's chunks must never be served for an
-  // honest one — nor one repo's for another's, nor one network's for another's. A fork reads
-  // its parent's chunks under the parent's repo id, so the two share entries.
-  const cachePrefix = `${ACTIVE_NETWORK.key}:${repoKey(repo)}:${manifest.uploader}:${packHashHex}`
+  const cachePrefix = chunkCopyKey(repo, manifest)
   const firstSeq = Math.floor(start / CHUNK_PAYLOAD_MAX)
   const lastSeq = Math.floor((end - 1) / CHUNK_PAYLOAD_MAX)
   const seqs: number[] = []
@@ -505,6 +531,9 @@ export function resetExternalFetchState(): void {
   originSlots.clear()
   resetGatewayHealth()
   resetRepoGateways()
+  resetMirrorUris()
+  mirroredWhole.clear()
+  mirroredBytes = 0
 }
 
 /**
@@ -975,6 +1004,89 @@ async function afterChunksFailed(
   }
 }
 
+/** The places a copy's failure names (`host: why` each), for {@link servedBy}'s `before`. */
+function failedPlaces(e: unknown): string[] {
+  return e instanceof PackUnavailableError ? e.reason.split('; ') : [errorText(e)]
+}
+
+/**
+ * A public repo's pack from its recorded mirrors (UPDATE-1), once every copy failed (`before`:
+ * their failures): the whole artifact, its size and sha256 checked like any copy's, so a mirror
+ * serving other bytes cannot answer, and one that ignores a size cap cannot stream forever. The
+ * ledger notes the pack survives on a mirror, and the copies that failed. Null when none is
+ * recorded or none serves.
+ */
+async function fromPackMirrors(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifest: PackManifest,
+  before: readonly string[],
+  cancel?: AbortSignal,
+): Promise<Uint8Array | null> {
+  if (repo.session !== undefined || cancel?.aborted) return null
+  const uris = await mirrorUrisOf(sdk, repo, manifest)
+  if (uris.length === 0) return null
+  try {
+    const bytes = await fetchExternalWhole(mirrorCopy(manifest, uris), readGatewaysFor(repoKey(repo)), servedBy(repo, manifest.packHash, undefined, before), cancel)
+    noteContentCheck(repoKey(repo), { mirroredPack: manifest.packHash })
+    return bytes
+  } catch {
+    // the copies' own failure is the one to report
+    return null
+  }
+}
+
+/**
+ * Packs a mirror served whole this session, for range reads (`repoKey:pack`), least recently
+ * used first. `size` is set once the read resolved; only those count toward the budget.
+ */
+const mirroredWhole = new Map<string, { read: Promise<Uint8Array | null>; size?: number }>()
+let mirroredBytes = 0
+
+/**
+ * Bytes of mirror-served packs kept for range reads. A pack larger than this is shared only
+ * while its read is in flight (the ranges a view asks at once), then dropped: a later range
+ * reads it again rather than holding it for the session.
+ */
+const MIRRORED_BYTES_KEPT = 64 * 1024 * 1024
+let mirroredBytesKept = MIRRORED_BYTES_KEPT
+
+/** Test hook: keep `bytes` of mirror-served packs (`null` restores {@link MIRRORED_BYTES_KEPT}). */
+export function overrideMirroredBytesKept(bytes: number | null): void {
+  mirroredBytesKept = bytes ?? MIRRORED_BYTES_KEPT
+}
+
+/** {@link fromPackMirrors} once per pack for range reads: each range is a slice of checked bytes. */
+function mirroredPack(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest, before: readonly string[]): Promise<Uint8Array | null> {
+  const key = `${repoKey(repo)}:${manifest.packHash.toLowerCase()}`
+  const hit = mirroredWhole.get(key)
+  if (hit !== undefined) {
+    // Touch: re-insert so the map stays least recently used first.
+    mirroredWhole.delete(key)
+    mirroredWhole.set(key, hit)
+    return hit.read
+  }
+  const entry: { read: Promise<Uint8Array | null>; size?: number } = { read: Promise.resolve(null) }
+  entry.read = fromPackMirrors(sdk, repo, manifest, before).then((bytes) => {
+    if (mirroredWhole.get(key) !== entry) return bytes
+    if (bytes === null || bytes.length > mirroredBytesKept) {
+      mirroredWhole.delete(key)
+      return bytes
+    }
+    entry.size = bytes.length
+    mirroredBytes += bytes.length
+    for (const [k, e] of mirroredWhole) {
+      if (mirroredBytes <= mirroredBytesKept) break
+      if (e.size === undefined) continue // in flight: a range still awaits it
+      mirroredWhole.delete(k)
+      mirroredBytes -= e.size
+    }
+    return bytes
+  })
+  mirroredWhole.set(key, entry)
+  return entry.read
+}
+
 /** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */
 export function artifactRangeFetch(
   sdk: EvoSDK,
@@ -1033,12 +1145,19 @@ export function artifactRangeFetch(
       return readPlain(chosen, start, end)
     }
     let lastErr: unknown
+    const failed: string[] = []
     for (const c of copies) {
       try {
         return await readPlain(c, start, end)
       } catch (e) {
         lastErr = e
+        failed.push(...failedPlaces(e))
       }
+    }
+    // Every copy failed: a public repo's recorded mirrors (UPDATE-1), read only now.
+    if (session === undefined) {
+      const whole = await mirroredPack(sdk, repo, manifest, failed)
+      if (whole !== null) return whole.subarray(start, Math.min(end, whole.length))
     }
     // The rail's "where the bytes came from" row lists the places that did not answer.
     if (lastErr instanceof PackUnavailableError) {
@@ -1106,26 +1225,27 @@ export async function loadArtifactBytesProgress(
   const session = stored ? undefined : repo.session
   const open = async (copy: PackManifest): Promise<Uint8Array> => {
     const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel, !stored)
-    return session === undefined ? bytes : openPrivateArtifact(session, copy, bytes, manifest.copies ?? [copy])
+    if (session === undefined) return bytes
+    try {
+      return await openPrivateArtifact(session, copy, bytes, manifest.copies ?? [copy])
+    } catch (e) {
+      // Sealed bytes that fail their packHash (or do not open) keep nothing in the chunk cache.
+      if (copy.storage === 0) forgetChunks(repo, copy)
+      throw e
+    }
   }
   const verified = (copy: PackManifest, bytes: Uint8Array): boolean =>
     session !== undefined || bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()
-  if (manifest.copies === undefined) {
-    const bytes = await open(manifest)
-    // Platform chunks are not hashed on the way in (external bodies are): stored bytes are
-    // checked here, so a caller never gets bytes that are not the pack.
-    if (stored && !verified(manifest, bytes)) throw new Error(`copy ${shortId(manifest.documentId)} does not hash to the pack`)
-    return bytes
-  }
   // Every writer may hold a copy of a pack. Read them in `orderPackCopies` order
   // and keep the first whose bytes hash to `packHash`; a copy that does not, or that cannot
   // be read (a missing chunk, a dead mirror), is skipped (`forge-v2.md` §4 reader rule). A
-  // pack no copy serves is unreadable.
+  // pack no copy serves is unreadable. A raw manifest (no `copies`) is its one copy.
   const failures: unknown[] = []
-  for (const copy of manifest.copies) {
+  for (const copy of manifest.copies ?? [manifest]) {
     try {
       const bytes = await open(copy)
       if (verified(copy, bytes)) return bytes
+      if (copy.storage === 0) forgetChunks(repo, copy)
       failures.push(new Error(`copy ${shortId(copy.documentId)} does not hash to the pack`))
     } catch (e) {
       // A cancelled load stops here: the next copy is not tried.
@@ -1133,6 +1253,8 @@ export async function loadArtifactBytesProgress(
       failures.push(e)
     }
   }
+  const mirrored = await fromPackMirrors(sdk, repo, manifest, failures.flatMap(failedPlaces), cancel)
+  if (mirrored !== null) return mirrored
   // One copy: its own error. Every copy external and unserved: the fallback clone's
   // "unavailable" case, which it reports rather than failing the clone on.
   if (failures.length === 1) throw failures[0]
@@ -1247,6 +1369,7 @@ async function loadExternalCopy(
         if (ledger) noteSource(repo, manifest.packHash)
         return bytes
       }
+      forgetChunks(at.repo, at.manifest)
       corrupt = true
       reasons.push('platform: chunks do not match the manifest sha256')
     } catch (e) {
@@ -1641,7 +1764,8 @@ function gatherRanges(
  */
 function openFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest): Promise<ObjectLocator | RangedLocator> {
   const progressKey = repoKey(repo)
-  const memo = `${ACTIVE_NETWORK.key}:${repoKey(repo)}:${m.packHash}`
+  // Opened from this copy's chunks, so held per copy ({@link chunkCopyKey}).
+  const memo = chunkCopyKey(repo, m)
   const opened = openedFragments.get(sdk) ?? new Map<string, Promise<ObjectLocator | RangedLocator>>()
   openedFragments.set(sdk, opened)
   const held = opened.get(memo)
@@ -1654,7 +1778,7 @@ function openFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest): Promise<Obje
     // and kept under that copy: never another copy's or an external mirror's, whose ranges are
     // anyone's. Any range that cannot be read sends the lookup to the whole read, which is
     // checked against the pack hash and may use every copy (`RangedLocator.rowsFor`).
-    const copy = `${scope}:${repoKey(repo)}:${m.uploader}`
+    const copy = copyScope(repo, m)
     const readRange = gatherRanges(
       (ranges) => storedIndexRanges(copy, m.packHash, ranges),
       (start, end) => fetchPlatformRange(sdk, repo, m, start, end),

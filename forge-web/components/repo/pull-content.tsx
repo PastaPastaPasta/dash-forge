@@ -147,6 +147,7 @@ import { Button } from '@/components/ui/button'
 import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
 import { checkMerge } from '@/lib/view/merge-check'
+import { markMerged, recheckPageMerge } from '@/lib/view/merge-recheck'
 import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
@@ -599,6 +600,8 @@ function PullPage({
   // "Close with comment": the comment a close already posted, by the confirm's intent, so a retry
   // of a close that failed after it never posts the comment twice.
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
+  // The intent whose "Mark as merged" transition landed: its retry writes only the bypass record.
+  const markLanded = useRef<string | null>(null)
   const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
   const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
 
@@ -835,17 +838,17 @@ function PullPage({
         return
       }
       case 'mark-merged':
-        await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent })
         // A maintainer recording it past unmet branch rules: the bypass is recorded on the PR,
         // as the merge box and `dg pr merge --event-only --override-policy` record theirs.
-        if (p.bypass.length > 0) {
-          try {
-            await recordPolicyBypass(sdk, signer, repo, { target, rules: p.bypass, mergeOid: pull.headOid, intent: `${intent}:bypass` })
-          } catch (e) {
-            // The merge is recorded (final); a retry of this same action re-uses it and writes only the record.
-            throw new Error(`The merge is recorded, but recording the rules bypass failed: ${guard.failed(e)} Retry to record it.`)
-          }
-        }
+        await markMerged({
+          intent,
+          bypass: p.bypass,
+          landed: markLanded,
+          recheck: recheckMembers,
+          merge: () => setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent }),
+          recordBypass: (rules) => recordPolicyBypass(sdk, signer, repo, { target, rules, mergeOid: pull.headOid, intent: `${intent}:bypass` }),
+          describe: guard.failed,
+        })
         refresh((t) => t.pull.state.merged)
         return
       case 'review': {
@@ -1149,6 +1152,33 @@ function PullPage({
     if (crossRepo) sourceState.reload()
     else reloadHome?.()
     return `${shortBranch(name)} moved to ${tip.slice(0, 7)} since this page read it, ahead of this PR's head ${pull.headOid.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`
+  }
+
+  // A merge (the box's, or "Mark as merged") judged again at the click with the members (and a
+  // counted check's runners) read then: the page's reads can be minutes old. Throws when they
+  // cannot be read, and refuses when there is no connection to read them: either stops the merge.
+  const recheckMembers = async (bypass: readonly string[]): Promise<string | null> => {
+    const problem = await recheckPageMerge(
+      sdk,
+      repo,
+      network,
+      {
+        gate: { pull, viewer, protectedPatterns: home.config?.protectedPatterns ?? [], maintainersOnly: policyNow?.approverRole === 1 },
+        policy: rules.policy,
+        status: rules.status,
+        approvals: thread.approvals,
+        requiredChecks,
+        checkRuns: checks.data,
+      },
+      bypass,
+    )
+    // Refused: show the page as the members (and the runners, cached by the recheck) stand now.
+    if (problem !== null && sdk) {
+      holdings.reload()
+      checks.reload()
+      refresh()
+    }
+    return problem
   }
 
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
@@ -1547,6 +1577,7 @@ function PullPage({
                 canMerge={actions.canMerge && !archived}
                 isMaintainer={holdings.data?.maintain === true}
                 checkout={checkout}
+                recheckMembers={recheckMembers}
                 onMerged={() => {
                   refresh((t) => t.pull.state.merged)
                   // The base branch moved and a pack was stored: the repo's refs and its

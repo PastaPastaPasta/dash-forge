@@ -1,0 +1,52 @@
+{
+  "name": "unknown_ancestry_has_no_badge",
+  "description": "When the caller cannot tell whether the new tip contains the old one, the move reads updated, neither pushed nor force-pushed.",
+  "case": "ref_history",
+  "input": {
+    "refName": "refs/heads/main",
+    "refNameHash": "H",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 200
+      }
+    ],
+    "configs": []
+  },
+  "expected": [
+    {
+      "kind": "created",
+      "id": "u1",
+      "at": 100,
+      "by": "alice",
+      "from": null,
+      "to": "A"
+    },
+    {
+      "kind": "updated",
+      "id": "u2",
+      "at": 200,
+      "by": "alice",
+      "from": "A",
+      "to": "B"
+    }
+  ]
+}
