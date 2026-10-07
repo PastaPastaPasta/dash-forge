@@ -1,9 +1,14 @@
 'use client'
 
-/** Copy a short URL (`ux-dx-spec.md` §5.2): the app copies short links everywhere. */
+/**
+ * Copy a short URL (`ux-dx-spec.md` §5.2): the app copies short links everywhere, with the owner
+ * written by DPNS name once read, as the address bar shows it (no extra request: the repo header
+ * has read it).
+ */
 
 import { Check, Link2 } from 'lucide-react'
 import { useCopy } from '@/hooks/use-copy'
+import { useDpnsName } from '@/hooks/use-dpns-name'
 import { shortRepoUrl, type ShortTarget } from '@/lib/short-url'
 import { cn } from '@/lib/utils'
 
@@ -16,7 +21,7 @@ export function CopyLinkButton({
   target?: ShortTarget
   className?: string
 }): JSX.Element {
-  const href = shortRepoUrl(repo, target)
+  const href = shortRepoUrl(repo, target, useDpnsName(repo.owner))
   const [copied, copy] = useCopy(href)
   return (
     <button

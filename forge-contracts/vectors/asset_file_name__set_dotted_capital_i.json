@@ -1,0 +1,16 @@
+{
+  "name": "set_dotted_capital_i",
+  "description": "A capital I with a dot lower-cases to i and a combining dot.",
+  "case": "asset_file_names",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "\u0130x",
+      "i\u0307x"
+    ]
+  },
+  "expected": {
+    "name": "i\u0307x",
+    "sameFileAs": "\u0130x"
+  }
+}

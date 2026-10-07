@@ -1,0 +1,32 @@
+{
+  "name": "dotfiles",
+  "description": "A leading dot (a hidden file such as .git, .npmrc, .zshenv) is refused.",
+  "case": "asset_file_name",
+  "rules": "v2",
+  "input": {
+    "names": [
+      ".git",
+      ".GIT",
+      ".hidden",
+      ".zshenv",
+      ".npmrc",
+      ".envrc",
+      ".gitconfig",
+      "...",
+      ".a.",
+      ". x"
+    ]
+  },
+  "expected": [
+    "dotfile",
+    "dotfile",
+    "dotfile",
+    "dotfile",
+    "dotfile",
+    "dotfile",
+    "dotfile",
+    "dotfile",
+    "dotfile",
+    "dotfile"
+  ]
+}

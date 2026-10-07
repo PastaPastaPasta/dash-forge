@@ -17,7 +17,8 @@
  */
 
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Award, CircleDot, Compass, Flame, Hash, Info, GitBranch, GitFork, GitPullRequest, History, Package, Search, Star, UserCheck, X } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'

@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PASSPHRASE, idFile, idOf, shot, signedIn, stateFile, unlock, waitForRepoResolved } from './helpers'
+import { atRoute, idFile, idOf, PASSPHRASE, shot, signedIn, stateFile, unlock, waitForRepoResolved } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -273,7 +273,7 @@ test('g2. a release asset uploads on that default; without one the dialog says w
   await shot(page, 'g5-06-release-dialog-names-the-gap')
   // The link opens this repo's storage settings; back to the default there.
   await fix.click()
-  await expect(page).toHaveURL(/\/repo\/settings\/?\?.*#storage$/)
+  await expect(page).toHaveURL(atRoute(/\/repo\/settings\/?\?.*#storage$/))
   await waitForRepoResolved(page)
   await unlockAll(page, repoPolicy)
   await repoPolicy.getByRole('button', { name: /use my default/i }).click()

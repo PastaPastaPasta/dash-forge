@@ -7,7 +7,7 @@
  * served THIS page, and reads a view the viewer left are still running are not counted.
  */
 
-import { usePathname, useSearchParams } from 'next/navigation'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 
 /** The view on screen: its route and query (pure; the rail's layout effect makes it current). */
 export function useTrustView(): string {

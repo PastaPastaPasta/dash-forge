@@ -22,7 +22,7 @@ let consentReads: (string | null)[] = []
 let consentCalls = 0
 let members: Membership[] = []
 
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('owner=o&name=demo&invite=1') }))
+vi.mock('next/navigation', () => ({ usePathname: () => '/repo/', useSearchParams: () => new URLSearchParams('owner=o&name=demo&invite=1') }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
 /** The viewer's session: signed in as ME unless a test signs out or locks. */
 type Auth = { identity: string | null; signer: { identityId: string } | null; locked: boolean; resuming: boolean; vaultsLoaded?: boolean; vaultsError?: string | null; lockedIdentity?: string | null }

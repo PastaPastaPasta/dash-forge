@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { countDocumentQueries, expectPlatformPreAllowed, idFile, idOrEmpty, shot, signedIn, waitForRepoResolved } from './helpers'
+import { atRoute, countDocumentQueries, expectPlatformPreAllowed, idFile, idOrEmpty, shot, signedIn, waitForRepoResolved } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -140,7 +140,7 @@ test('g1. a branch pushed by another user while the tab is open: New PR shows it
   const listings = countDocumentQueries(page, 'packManifest')
   await tab(page, 'Pull requests')
   await page.getByRole('link', { name: /new pull request/i }).click()
-  await page.waitForURL(/\/repo\/pulls\/new/)
+  await page.waitForURL(atRoute(/\/repo\/pulls\/new/))
   const head = page.locator('#pr-head')
   await expect(head.locator('option', { hasText: 'feature/greeting' })).toBeAttached({ timeout: 90_000 })
   await head.selectOption({ label: 'feature/greeting' })
@@ -162,7 +162,7 @@ test('g1. a branch pushed by another user while the tab is open: New PR shows it
   await tab(page, 'Code')
   await tab(page, 'Pull requests')
   await page.getByRole('link', { name: /new pull request/i }).click()
-  await page.waitForURL(/\/repo\/pulls\/new/)
+  await page.waitForURL(atRoute(/\/repo\/pulls\/new/))
   await expect(head.locator('option', { hasText: 'docs/checklist' })).toBeAttached({ timeout: 90_000 })
   await head.selectOption({ label: 'docs/checklist' })
   await expect(page.getByText('CHECKLIST.md').first()).toBeVisible({ timeout: 120_000 })
@@ -176,7 +176,7 @@ test('g2. a browser merge, then the Code tab shows the new tip without a reload 
   test.skip(firstHead === '', 'needs g1')
   await page.getByLabel('Description', { exact: true }).fill('Opened by the G4 browse-cache spec.')
   await page.getByRole('button', { name: /create pull request/i }).click()
-  await page.waitForURL(/\/repo\/pull\/\?.*number=\d+/, { timeout: 180_000 })
+  await page.waitForURL(atRoute(/\/repo\/pull\/\?.*number=\d+/), { timeout: 180_000 })
   await expect(page.getByRole('heading', { name: new RegExp(FIRST) })).toBeVisible({ timeout: 120_000 })
 
   // The head descends from main: a fast-forward, nothing to upload.
@@ -190,7 +190,7 @@ test('g2. a browser merge, then the Code tab shows the new tip without a reload 
   // Same tab, Code tab: the new tip and its file — not "That read did not land", and not the
   // pre-merge tip a node a block behind still serves.
   await tab(page, 'Code')
-  await page.waitForURL((u) => u.pathname.replace(/\/$/, '') === '/repo', { timeout: 30_000 })
+  await page.waitForURL(atRoute((u) => u.pathname.replace(/\/$/, '') === '/repo'), { timeout: 30_000 })
   const refBar = page.getByTestId('commit-count').locator('..')
   await expect(refBar).toBeVisible({ timeout: 120_000 })
   await expect(refBar.getByRole('button', { name: new RegExp(`^${firstHead.slice(0, 7)}\\b`) })).toBeVisible({ timeout: 60_000 })
@@ -213,13 +213,13 @@ test('g3. a merge commit built in the browser (a new pack), then the Code tab re
   })
   await tab(page, 'Pull requests')
   await page.getByRole('link', { name: /new pull request/i }).click()
-  await page.waitForURL(/\/repo\/pulls\/new/)
+  await page.waitForURL(atRoute(/\/repo\/pulls\/new/))
   const head = page.locator('#pr-head')
   await expect(head.locator('option', { hasText: 'docs/checklist' })).toBeAttached({ timeout: 90_000 })
   await head.selectOption({ label: 'docs/checklist' })
   await expect(page.getByLabel('Title', { exact: true })).toHaveValue(SECOND, { timeout: 120_000 })
   await page.getByRole('button', { name: /create pull request/i }).click()
-  await page.waitForURL(/\/repo\/pull\/\?.*number=\d+/, { timeout: 180_000 })
+  await page.waitForURL(atRoute(/\/repo\/pull\/\?.*number=\d+/), { timeout: 180_000 })
 
   await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'merge-commit', { timeout: 180_000 })
   await expectPlatformPreAllowed(page.getByTestId('merge-panel'))

@@ -26,7 +26,8 @@ import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { pullOriginOf, trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import {
   AlertTriangle,
   Check,
