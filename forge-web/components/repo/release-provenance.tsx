@@ -4,7 +4,8 @@
  * The provenance card on a release's page (epic E5): what the release's tag pointed at when the
  * release was first published, who pushed it, whether the tag or the assets changed since, the
  * tag's signature, and whether tags are protected now. Red when the tag moved, was deleted or
- * races, or the assets changed: the code or files under this name are not what was published.
+ * races, the assets changed, or the release records another commit than the tag held at publish:
+ * the code or files under this name are not what was published.
  * Everything is read from the chain (`lib/rules/releaseProvenance.ts`); the signature is checked
  * in the browser against the keys the repository's owner and members publish.
  */
@@ -86,6 +87,9 @@ function assetSentence(a: AssetChanges): string | null {
 
 /** The card's headline: what a person installing from this tag needs to know first. */
 function headline(p: ReleaseProvenance, tag: string): string {
+  if (p.recordDiffers && (p.tag === 'unchanged' || p.tag === 'restored')) {
+    return `When this release was published, ${tag} pointed at a different commit than the release records.`
+  }
   switch (p.tag) {
     case 'unchanged':
       return `${tag} points where it did when this release was published.`
@@ -203,6 +207,18 @@ export function ReleaseProvenanceCard({ home, addr, list, tag }: { home: RepoHom
                 {p.lateTag ? <span className="text-caution-700 dark:text-caution-400">, after the release was published</span> : null}
               </>
             ) : null}
+          </Row>
+        ) : null}
+        {p.recorded !== null && p.pinnedBy === 'tag' ? (
+          <Row label="Release records">
+            <Oid value={p.recorded} />
+            {p.recordDiffers ? (
+              <span className="text-danger-700 dark:text-danger-400" data-testid="provenance-record-differs">
+                the tag did not point here at publish
+              </span>
+            ) : (
+              <span className="text-anvil-600 dark:text-anvil-300">matches the tag at publish</span>
+            )}
           </Row>
         ) : null}
         {moved && p.current !== null ? (

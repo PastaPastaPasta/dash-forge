@@ -1,0 +1,19 @@
+{
+  "name": "no_claim",
+  "description": "A close that names no PR is not decided here (readers keep the timing match).",
+  "rules": "v2",
+  "case": "closed_by_pr",
+  "input": {
+    "issue": 3,
+    "closedByPr": null,
+    "closedAt": 1000,
+    "pr": {
+      "number": 7,
+      "merged": true,
+      "mergedAt": 900,
+      "body": "Fixes #3",
+      "imported": false
+    }
+  },
+  "expected": null
+}

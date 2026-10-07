@@ -1,0 +1,16 @@
+{
+  "source": "mapping: env run prints the command's output",
+  "command": "env run",
+  "args": [
+    "env",
+    "run",
+    "o/r",
+    "--",
+    "sh",
+    "-c",
+    "echo --json"
+  ],
+  "exit": 0,
+  "expect": "skipped",
+  "stdout": "hi\n"
+}

@@ -791,7 +791,7 @@ export async function setTargetState(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string; closed?: ClosedAs },
+  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string; closed?: ClosedAs; closedByPr?: number },
 ): Promise<WriteResult> {
   return writeTransition(sdk, auth, repo, (type, data, intent) => writeRepoDoc(sdk, auth, repo, type, data, intent), input)
 }
@@ -890,6 +890,11 @@ export interface ReleaseInput {
   readonly draft?: boolean
   /** Sealed only (§16.3): this revision unpublishes the tag. */
   readonly unpublished?: boolean
+  /**
+   * Public only: the tag's tip as the writer read it (hex), recorded as `targetOid` where the
+   * contract has the field (UPDATE-1). Release provenance checks the tag's history against it.
+   */
+  readonly targetOid?: string
 }
 
 /**
@@ -919,6 +924,10 @@ export async function createRelease(
   if (input.name && input.name.length > 0) fields['name'] = input.name
   if (input.notes && input.notes.length > 0) fields['notes'] = input.notes
   if (input.assets && input.assets.length > 0) fields['assets'] = releaseAssetsJson(input.assets)
+  if (input.targetOid !== undefined) {
+    if (!isRc1OidHex(input.targetOid)) throw new Error(`${JSON.stringify(input.targetOid)} is not a commit id, so the release cannot record it`)
+    if (await contractHasProperty(sdk, repo.forge.core, DOC.release, 'targetOid')) fields['targetOid'] = hexToBytes(input.targetOid)
+  }
   const attempt = async (): Promise<WriteResult> =>
     writeRepoDoc(sdk, auth, repo, DOC.release, { ...fields, delta: publishDelta(await readTagLive(sdk, repo, input.tagName)) }, input.intent)
   try {

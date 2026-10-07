@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ci-rerun.schema.json",
+  "title": "dg ci rerun --json",
+  "description": "A re-run of a pull request's checks requested.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "requested"
+      ]
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "sha": {
+      "type": "string"
+    },
+    "check": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "eventId": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr",
+    "sha"
+  ],
+  "additionalProperties": true
+}

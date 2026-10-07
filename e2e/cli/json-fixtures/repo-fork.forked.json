@@ -1,0 +1,37 @@
+{
+  "source": "emitter: crates/dg/src/repo.rs fork_body()",
+  "command": "repo fork",
+  "args": [
+    "--yes",
+    "--json",
+    "repo",
+    "fork",
+    "o/r"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "forked",
+    "repoId": "Bq9mN3x7Lq2kXv8sTcY4pR6wZ1hJ5fD2gA7eK9uW3nM",
+    "ownerId": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "name": "r",
+    "forkOf": "P",
+    "parent": "o/r",
+    "remoteUrl": "dash://4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi/r",
+    "manifestsWritten": 1,
+    "platformPacksReferenced": 1,
+    "manifestsExisting": 0,
+    "unreferenceablePacks": [],
+    "refsWritten": [
+      "refs/heads/main",
+      "refs/tags/v1"
+    ],
+    "cost": {
+      "credits": 45300000,
+      "dash": 0.000453,
+      "usd": 0.011325,
+      "usdPrice": 25.0
+    },
+    "schemaVersion": 1
+  }
+}

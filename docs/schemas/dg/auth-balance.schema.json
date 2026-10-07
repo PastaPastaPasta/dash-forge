@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-balance.schema.json",
+  "title": "dg auth balance --json",
+  "description": "An identity's proved balance.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "network": {
+      "type": "string"
+    },
+    "balanceCredits": {
+      "type": "integer"
+    },
+    "balanceDash": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "identityId",
+    "network",
+    "balanceCredits",
+    "balanceDash"
+  ],
+  "additionalProperties": true
+}

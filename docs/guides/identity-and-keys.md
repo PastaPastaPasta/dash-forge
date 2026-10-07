@@ -97,6 +97,7 @@ Things to know:
 - On macOS `dg` reads and writes the keychain through Apple's `/usr/bin/security`, so `dg`, `git-remote-dash` and upgraded copies of either read the entry without an access dialog. Any program running as you can ask `security` for it without a prompt: the keychain protects entries at rest and from other users. What `dg` keeps there is limited identity keys (a budget, an expiry, Forge contracts only), with your identity's encryption key beside them (it reads your private repositories; `--signing-only` leaves it out), and the storage credentials `dg storage add` is given, so scope those to the one bucket. A full identity (`dg auth login --full-key`: master key and recovery phrase) never goes there; it is always a passphrase-sealed file. The GitHub CLI stores its token the same way.
 - Over SSH there is no keychain dialog to answer; use a sealed key file there (`DASH_FORGE_NO_KEYCHAIN=1 dg auth login …`).
 - `--insecure-plaintext` stores the key unencrypted (0600) where there is no keychain and no way to type a passphrase. Every later use warns.
+- Key files are owner-only (0600, in 0700 folders) on macOS and Linux. On Windows they rely on your user profile's default permissions, so pick an `-o` export location only you can read.
 - In the web app, the key never leaves that browser, but any script running on the page can use it while it is unlocked ([details](#the-browser-vault-and-its-limits)). Lock or sign out on shared machines.
 
 ---
@@ -338,6 +339,19 @@ Both check the same rules before anything is signed: a name, company or location
 - **Image link** (`--avatar https://…`): a picture you host. Visitors see your pattern until they choose to load images from its host, as with images in issues and comments, because loading it tells that host their IP address.
 
 Everywhere else (beside your comments, repositories and reviews) Forge draws the pattern of your identity id with its first 7 and last 5 characters, whatever your profile says. Anyone can copy a picture or register a similar name, but not that pattern: it changes with every character of the id.
+
+### Bot accounts
+
+An identity that runs automation (a CI bot, an importer) can carry a **bot** badge beside its name in issue and pull request threads, with its operator on its profile page. The badge needs both sides to agree, so no one can label someone else a bot, and no bot can claim an operator who does not vouch for it:
+
+```sh
+dg profile bot operator @alice     # as the bot: name the identity that runs you ("" clears it)
+dg profile bot add @alice-bot      # as the operator: list a bot you run (up to 8)
+dg profile bot remove @alice-bot
+dg profile show @alice-bot         # "bot  operated by …" once both are set
+```
+
+Each command writes only your own profile, so the badge appears once both identities have run theirs.
 
 ### Signed commits and Verified badges
 

@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-keys-rotate.schema.json",
+  "title": "dg auth keys rotate --json",
+  "description": "The encryption key rotated, and the repositories it was re-shared to.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "added",
+        "replaced"
+      ]
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "oldKeyIds": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "newKeyId": {
+      "type": "integer"
+    },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "repoId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "rotated",
+              "not_maintainer",
+              "failed"
+            ]
+          },
+          "detail": {}
+        }
+      }
+    },
+    "askMaintainer": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "repoId": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "disabledKeyIds": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "storedAt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "storeError": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Why the new key could not be stored on this computer, or null."
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "identityId",
+    "repos"
+  ],
+  "additionalProperties": true
+}

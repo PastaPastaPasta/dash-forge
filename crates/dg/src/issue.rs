@@ -669,6 +669,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
     // carries `asMember`; every one is counted in the note under the timeline.
     let (placeholders, _) = crate::audience::shown(&s.repo, &members_only);
     let issue_audience = view.issue.audience;
+    let created_at = view.issue.created_at;
     // Long bodies (forge-v2.md §6.3): the full text each field's trailer names, fetched and
     // checked; a text whose rest cannot be read keeps its first part and says why.
     let mut body = view.issue.body.clone();
@@ -766,13 +767,17 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             "id": id,
             "audience": crate::audience::json(issue_audience),
             "readable": true,
-            "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
+            "createdAt": created_at,
+            "state": state_word(state.open),
+            "open": state.open,
+            "labels": state.labels,
+            "assignees": state.assignees,
             "stateReason": state_reason,
             "duplicateOf": duplicate_of,
             "milestone": meta.milestone,
             "pinned": meta.pinned,
             "locked": locked,
-            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id), "audience": crate::audience::json(c.audience)})).collect::<Vec<_>>(),
+            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id), "audience": crate::audience::json(c.audience), "createdAt": c.created_at})).collect::<Vec<_>>(),
             // members-only comments this reader cannot open: the ones D14 shows, and how many
             "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),
             "membersOnlyHidden": members_only.len(),
@@ -882,7 +887,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
     Ok(())
 }
 
-/// A transition in `dg issue view --json`; `closed_in`: the PR whose merge made a close.
+/// A transition in `dg issue view --json`; `closed_in`: the PR whose merge made a close (as
+/// verified); `closedByPr`: the PR the close itself names, unverified.
 fn transition_json(t: &Transition, closed_in: Option<u32>) -> serde_json::Value {
     json!({
         "id": t.id,
@@ -892,6 +898,7 @@ fn transition_json(t: &Transition, closed_in: Option<u32>) -> serde_json::Value 
         "createdAt": t.created_at,
         "reason": t.reason,
         "dupNumber": t.dup_number,
+        "closedByPr": t.closed_by_pr,
         "closedIn": closed_in,
     })
 }
@@ -1903,6 +1910,7 @@ mod tests {
             created_at: 1,
             reason,
             dup_number: dup,
+            closed_by_pr: None,
         };
         assert_eq!(
             transition_line(&t(Some(3), Some(1)), 3),
@@ -1932,6 +1940,7 @@ mod tests {
             created_at: at,
             reason: None,
             dup_number: None,
+            closed_by_pr: None,
         };
         let transitions = [transition("t3", 30, 1), transition("t4", 40, 2)];
         let comments = [comment("c2", 20)];
