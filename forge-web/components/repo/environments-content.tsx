@@ -33,6 +33,7 @@ import {
   type EntryView,
   type EnvCardView,
   type EnvPageView,
+  type RemovalView,
 } from '@/lib/env/view'
 import { useEnvironments } from '@/hooks/use-environments'
 import { useDpnsName } from '@/hooks/use-dpns-name'
@@ -347,7 +348,7 @@ export function EnvironmentsRemoval({ home, member, heldMembersKey }: { home: Re
 }
 
 /** The checklist's lines (pure props: the component tests render it). */
-export function RemovalLines({ view, name }: { view: ReturnType<typeof removalView>; name: string }): JSX.Element | null {
+export function RemovalLines({ view, name }: { view: RemovalView; name: string }): JSX.Element | null {
   if (view.exposures.length === 0 && view.unreadable === 0) return null
   return (
     <div className="space-y-1 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-removal">

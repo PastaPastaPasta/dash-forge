@@ -9,16 +9,12 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { PACK_KIND } from '../constants'
 import { fetchIdentityKeys, type EncKeyLike } from '../auth/encryption-key'
-import { hexToBytes, type OwnerKey } from '../private'
+import { KEY_TYPE_ECDSA_SECP256K1, PURPOSE_ENCRYPTION, hexToBytes, type OwnerKey } from '../private'
 import type { RepoRef } from '../repo/contract'
 import { readMemberships } from '../repo/members'
 import { readManifestsOfKind, type PackManifest } from '../repo/packs'
 import { loadStoredArtifactBytes } from '../view/browse-source'
 import type { EnvManifest, EnvSources } from './loader'
-
-/** Platform's numbers for ENCRYPTION and ECDSA_SECP256K1; anything else is a number no sender key has. */
-const PURPOSE_ENCRYPTION = 1
-const KEY_TYPE_ECDSA_SECP256K1 = 0
 
 /** An identity's keys as the letter reader rule takes them (forge-core `env::codec::owner_keys`). */
 export function ownerKeysOf(keys: readonly EncKeyLike[]): OwnerKey[] {

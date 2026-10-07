@@ -19,6 +19,7 @@ import {
   type LetterReader,
   type OwnerKey,
 } from '../private'
+import { mapPooled } from '../view/pool'
 import { exposureOf, resolveSnapshots, type EnvState, type Exposure, type Resolution, type SnapshotRef } from './chain'
 import { openSnapshot, SnapshotOpenError, openErrorReason, type OpenErrorCode } from './codec'
 import { MAX_RECIPIENTS, MAX_SNAPSHOT, compareStrings as cmp, type Snapshot } from './format'
@@ -98,6 +99,10 @@ export interface EnvKeys {
   readonly hasReader: boolean
 }
 
+/** The DFPK version byte of a Members snapshot (a pack) and of a Maintainers one (to specific people). */
+const PACK_VERSION = 0x01
+const LETTER_VERSION = 0x02
+
 /** Artifacts fetched at once (forge-core `FETCH_WINDOW`). */
 const FETCH_WINDOW = 8
 
@@ -116,26 +121,13 @@ export function authorized(manifests: readonly EnvManifest[], maintainers: Reado
   })
 }
 
-async function pool<T, R>(items: readonly T[], width: number, run: (t: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length)
-  let next = 0
-  const worker = async (): Promise<void> => {
-    while (next < items.length) {
-      const i = next++
-      out[i] = await run(items[i] as T)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(width, items.length) }, worker))
-  return out
-}
-
 /**
  * Whether `bytes`, a Members (DFPK 0x01) snapshot, is late content: sealed under an epoch its
  * owner could no longer write when the manifest landed. A manifest with no block height cannot be
  * judged and is late (forge-core `Opener::late`).
  */
 function isLate(members: EnvKeys['members'], m: EnvManifest, bytes: Uint8Array): boolean {
-  if (members === null || bytes[4] !== 0x01) return false
+  if (members === null || bytes[4] !== PACK_VERSION) return false
   let epoch: number
   let owner: Uint8Array
   try {
@@ -161,28 +153,25 @@ export async function readEnvironments(sources: EnvSources, keys: EnvKeys, open:
   if (keys.members === null && !keys.hasReader) {
     for (const m of counted) opened.set(m.id, { kind: 'skipped' })
   } else {
-    const fetched = await pool(counted, FETCH_WINDOW, async (m): Promise<Uint8Array | string | null> => {
+    // the bytes, or what the snapshot came to without them (never rejects)
+    const fetched = await mapPooled(counted, FETCH_WINDOW, async (m): Promise<Uint8Array | Opened> => {
       // larger than any snapshot can be: refused unfetched, as the codec would refuse it
-      if (m.sizeBytes > MAX_SEALED) return null
+      if (m.sizeBytes > MAX_SEALED) return { kind: 'refused', code: 'sizeMismatch' }
       try {
         return await sources.fetch(m)
       } catch (e) {
-        return e instanceof Error ? e.message : String(e)
+        return { kind: 'unfetched', message: e instanceof Error ? e.message : String(e) }
       }
     })
     // a Maintainers snapshot's sender key comes from its manifest owner's identity only
-    const owners = [...new Set(counted.filter((_, i) => fetched[i] instanceof Uint8Array && (fetched[i] as Uint8Array)[4] === 0x02).map((m) => m.ownerId))]
+    const owners = [...new Set(counted.filter((_, i) => { const b = fetched[i]; return b instanceof Uint8Array && b[4] === LETTER_VERSION }).map((m) => m.ownerId))]
     const ownerKeys = new Map<string, readonly OwnerKey[]>(await Promise.all(owners.map(async (o) => [o, await sources.ownerKeys(o)] as const)))
     const epochKeys: EpochKeyring = keys.members?.keys ?? new Map()
     await keys.withReader(async (reader) => {
       for (const [i, m] of counted.entries()) {
-        const bytes = fetched[i] as Uint8Array | string | null
-        if (bytes === null) {
-          opened.set(m.id, { kind: 'refused', code: 'sizeMismatch' })
-          continue
-        }
-        if (typeof bytes === 'string') {
-          opened.set(m.id, { kind: 'unfetched', message: bytes })
+        const bytes = fetched[i] as Uint8Array | Opened
+        if (!(bytes instanceof Uint8Array)) {
+          opened.set(m.id, bytes)
           continue
         }
         if (isLate(keys.members, m, bytes)) {
