@@ -11,7 +11,7 @@ import { PACK_KIND } from '../constants'
 import { fetchIdentityKeys, type EncKeyLike } from '../auth/encryption-key'
 import { KEY_TYPE_ECDSA_SECP256K1, PURPOSE_ENCRYPTION, hexToBytes, type OwnerKey } from '../private'
 import type { RepoRef } from '../repo/contract'
-import { readMemberships } from '../repo/members'
+import { readMaintainers } from '../repo/members'
 import { readManifestsOfKind, type PackManifest } from '../repo/packs'
 import { loadStoredArtifactBytes } from '../view/browse-source'
 import type { EnvManifest, EnvSources } from './loader'
@@ -47,7 +47,7 @@ export function sdkEnvSources(sdk: EvoSDK, repo: RepoRef): EnvSources {
       for (const m of all) raw.set(m.documentId, m)
       return all.map(envManifestOf)
     },
-    maintainers: async () => (await readMemberships(sdk, repo)).filter((m) => m.role === 'maintainer').map((m) => m.identity),
+    maintainers: () => readMaintainers(sdk, repo),
     fetch: async (m) => {
       const manifest = raw.get(m.id)
       if (manifest === undefined) throw new Error('no such manifest')

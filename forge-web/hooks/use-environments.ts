@@ -60,6 +60,15 @@ export function useEnvironments(home: RepoHome): EnvironmentsState {
     [ready, network, repo.repoId, identity ?? '', unlockScope ?? '', session?.id ?? ''],
     { enabled: ready && sdk !== null },
   )
-  const locked = home.lane?.access === 'locked' || home.private?.access === 'locked' || state.data?.encryption === 'locked'
-  return { state, locked }
+  return { state, locked: asksToUnlock(home, state.data?.encryption ?? null) }
+}
+
+/**
+ * Whether the page asks this viewer to unlock: a member whose tab holds the key locked, or whose
+ * browser's encryption key is locked. Never an outsider (of a public repo: no `home.lane`):
+ * environments go to the repo's members, so unlocking would open nothing for them.
+ */
+export function asksToUnlock(home: RepoHome, encryption: EnvironmentsRead['encryption'] | null): boolean {
+  if ((home.repo.visibility === 'public' && home.lane === undefined) || home.private?.access === 'outsider') return false
+  return home.lane?.access === 'locked' || home.private?.access === 'locked' || encryption === 'locked'
 }

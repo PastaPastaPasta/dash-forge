@@ -93,15 +93,47 @@ describe('EnvironmentsView', () => {
     expect(show.getAttribute('aria-pressed')).toBe('false')
   })
 
-  it('hides every shown value when the page is put away (Back cache, hidden tab)', () => {
+  it('shows one value at a time: showing another hides the first', () => {
     render(<EnvironmentsView view={page([card({})])} />)
-    const show = host.querySelector<HTMLButtonElement>('button[aria-label="Show DB_URL"]')!
-    act(() => show.click())
-    expect(host.innerHTML).toContain(SECRET)
-    act(() => {
-      window.dispatchEvent(new Event('pagehide'))
-    })
+    const button = (name: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="Show ${name}"]`)!
+    act(() => button('DB_URL').click())
+    act(() => button('STRIPE_KEY').click())
     expect(host.innerHTML).not.toContain(SECRET)
+    expect(byTestId('env-value')[1]?.textContent).toBe('QAMARK-stripe')
+    expect(button('DB_URL').getAttribute('aria-pressed')).toBe('false')
+    expect(button('STRIPE_KEY').getAttribute('aria-pressed')).toBe('true')
+  })
+
+  describe('when the page is put away (Back cache, hidden tab)', () => {
+    const showDbUrl = (): void => {
+      render(<EnvironmentsView view={page([card({})])} />)
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show DB_URL"]')!.click())
+      expect(host.innerHTML).toContain(SECRET)
+    }
+    // No act() around the event: the value must be gone from the DOM by the time the listener
+    // returns, before the browser snapshots the page.
+    const outsideAct = (fire: () => void): void => {
+      const env = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+      env.IS_REACT_ACT_ENVIRONMENT = false
+      try {
+        fire()
+      } finally {
+        env.IS_REACT_ACT_ENVIRONMENT = true
+      }
+    }
+
+    it('hides the shown value synchronously on pagehide', () => {
+      showDbUrl()
+      outsideAct(() => window.dispatchEvent(new Event('pagehide')))
+      expect(host.innerHTML).not.toContain(SECRET)
+    })
+
+    it('hides the shown value synchronously when the tab is hidden', () => {
+      showDbUrl()
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+      outsideAct(() => document.dispatchEvent(new Event('visibilitychange')))
+      expect(host.innerHTML).not.toContain(SECRET)
+    })
   })
 
   it('says how many changes were ignored, and is not empty when that is all there is', () => {
@@ -191,7 +223,17 @@ describe('RemovalLines', () => {
     ])
   })
 
+  it('asks for no rotation when they stay a maintainer (only another role goes)', () => {
+    const view: RemovalView = { exposures: [{ env: 'dev', audience: 'members', names: ['API_TOKEN'] }], unreadable: 1 }
+    render(<RemovalLines view={view} name="bob" staysMaintainer />)
+    expect(byTestId('env-removal')).toHaveLength(0)
+    expect(text()).not.toContain('Rotate')
+    expect(byTestId('env-removal-kept')[0]?.textContent).toBe("bob stays a maintainer, so they can still read this repo's environments. Nothing needs rotating.")
+  })
+
   it('says nothing when there is nothing to rotate', () => {
+    render(<RemovalLines view={{ exposures: [], unreadable: 0 }} name="bob" staysMaintainer />)
+    expect(host.innerHTML).toBe('')
     render(<RemovalLines view={{ exposures: [], unreadable: 0 }} name="bob" />)
     expect(host.innerHTML).toBe('')
   })

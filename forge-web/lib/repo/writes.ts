@@ -1221,8 +1221,12 @@ export class EnvironmentsMembershipError extends Error {
   }
 }
 
-/** Refuse a maintainer change in a repo that has environments ({@link EnvironmentsMembershipError}). */
-async function refuseMaintainerChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef, change: 'remove' | 'promote'): Promise<void> {
+/**
+ * Refuse a maintainer change in a repo that has environments ({@link EnvironmentsMembershipError}),
+ * before anything is written. Public repos check it here; the key-aware flows in
+ * `private-members.ts` (private repos, and public ones with a members key) check it again first.
+ */
+export async function refuseMaintainerChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef, change: 'remove' | 'promote'): Promise<void> {
   if ((await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) !== null) throw new EnvironmentsMembershipError(change)
 }
 

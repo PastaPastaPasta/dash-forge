@@ -314,7 +314,12 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         }}
       >
         {/* What they could read in the repo's environments (every member holds the repo key). */}
-        {removing !== null && removing.role !== 'maintainer' ? <EnvironmentsRemoval home={home} member={removing.member} heldMembersKey={holdsMembersKey(removing.role, 'private')} /> : null}
+        {removing !== null && removing.role !== 'maintainer' ? <EnvironmentsRemoval
+            home={home}
+            member={removing.member}
+            heldMembersKey={holdsMembersKey(removing.role, 'private')}
+            staysMaintainer={removalEffect(session.members, removing.member, removing.role) === 'none'}
+          /> : null}
       </ConfirmDialog>
       {removing?.role === 'maintainer' ? <VanishingNote session={session} leaving={removing.member} /> : null}
       {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{removalPlan.error}</p> : null}

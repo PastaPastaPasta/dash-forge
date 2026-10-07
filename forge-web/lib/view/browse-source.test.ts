@@ -13,7 +13,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CHUNK_PAYLOAD_MAX } from '../constants'
+import { CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
 import { bytesToBase64 } from '../sdk'
 import { base58Decode, base58Encode } from '../auth/base58'
@@ -27,10 +27,13 @@ import {
   clearChunkCache,
   loadArtifactBytesProgress,
   loadBrowseContext,
+  loadStoredArtifactBytes,
   PackUnavailableError,
   resetExternalFetchState,
 } from './browse-source'
 import { memoryArtifactStore, setIndexArtifactStore } from './index-cache'
+import { contentChecks, resetContentChecks } from './content-checks'
+import { repoKey } from '../repo'
 
 // These fixtures reuse short fake packHashes ('aa', 'bb') with DIFFERENT bytes per suite —
 // impossible in production (packHash = sha256 of the bytes), so the session chunk cache
@@ -315,6 +318,43 @@ describe('whole-artifact load', () => {
     // One copy's windows in flight at the abort, and none of the second copy's.
     expect(w.queries()).toBe(afterFirst)
     expect(w.queries()).toBeLessThanOrEqual(8)
+  })
+})
+
+/**
+ * An artifact with its own codec (an environment snapshot) read as stored: its bytes must hash to
+ * `packHash` whichever place served them, and it is not the repo's git content, so the repo's
+ * content-check ledger does not record it.
+ */
+describe('stored artifact load', () => {
+  const STORED_REPO: RepoRef = { ...REPO, repoId: 'STORED' }
+  const body = new Uint8Array(CHUNK_PAYLOAD_MAX + 77).map((_, i) => (i * 7 + 3) % 251)
+  const hash = bytesToHex(sha256(body))
+  const snapshot = (packHash: string, copies?: boolean): PackManifest => {
+    const m: PackManifest = { ...gitPack(packHash, 0, 'env1'), kind: PACK_KIND.ENV_SNAPSHOT, sizeBytes: body.length }
+    return copies ? { ...m, copies: [m] } : m
+  }
+  beforeEach(() => resetContentChecks())
+
+  it('returns the chunks of the one copy when they hash to packHash', async () => {
+    const got = await loadStoredArtifactBytes(mockSdk(() => body), STORED_REPO, snapshot(hash))
+    expect(bytesToHex(got)).toBe(bytesToHex(body))
+  })
+
+  it('refuses Platform chunks that do not hash to packHash, with or without a copy list', async () => {
+    const other = 'ab'.repeat(32)
+    await expect(loadStoredArtifactBytes(mockSdk(() => body), STORED_REPO, snapshot(other))).rejects.toThrow('does not hash to the pack')
+    clearChunkCache()
+    await expect(loadStoredArtifactBytes(mockSdk(() => body), STORED_REPO, snapshot(other, true))).rejects.toThrow('does not hash to the pack')
+  })
+
+  it("records nothing in the repo's content-check ledger, where a git pack's load records its source", async () => {
+    await loadStoredArtifactBytes(mockSdk(() => body), STORED_REPO, snapshot(hash, true))
+    expect(contentChecks(repoKey(STORED_REPO)).packSources[hash]).toBeUndefined()
+    expect(contentChecks(repoKey(STORED_REPO)).sources).toEqual([])
+    clearChunkCache()
+    await loadArtifactBytesProgress(mockSdk(() => body), STORED_REPO, { ...snapshot(hash), kind: PACK_KIND.GIT_PACK })
+    expect(contentChecks(repoKey(STORED_REPO)).packSources[hash]).toEqual(['platform'])
   })
 })
 

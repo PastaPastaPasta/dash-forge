@@ -57,19 +57,18 @@ function toMembership(doc: PlainDocument, type: MemberDoc): Membership | null {
  * stranger.
  */
 export async function readMemberships(sdk: EvoSDK, repo: RepoRef): Promise<Membership[]> {
-  const source = repoSource(repo)
-  const perRole = await Promise.all(
-    MEMBER_DOCS.map(async (type) => {
-      const docs = await queryAllDocuments(
-        sdk,
-        source.repoQuery(type, {
-          orderBy: [['memberId', 'asc']],
-        }),
-      )
-      return docs.map((d) => toMembership(d, type)).filter((m): m is Membership => m !== null)
-    }),
-  )
-  return perRole.flat()
+  return (await Promise.all(MEMBER_DOCS.map((type) => readMemberDocs(sdk, repo, type)))).flat()
+}
+
+/** The current maintainers of a repo: its `maintainer` documents alone (forge-core `MemberReader::maintainers`). */
+export async function readMaintainers(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
+  return (await readMemberDocs(sdk, repo, DOC.maintainer)).map((m) => m.identity)
+}
+
+/** Every current membership document of one type, complete (paged). */
+async function readMemberDocs(sdk: EvoSDK, repo: RepoRef, type: MemberDoc): Promise<Membership[]> {
+  const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(type, { orderBy: [['memberId', 'asc']] }))
+  return docs.map((d) => toMembership(d, type)).filter((m): m is Membership => m !== null)
 }
 
 // Membership changes rarely and every issue, PR and browse view of a repo consults it, so it

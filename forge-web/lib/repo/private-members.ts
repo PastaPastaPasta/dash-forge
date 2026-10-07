@@ -66,7 +66,15 @@ import {
   type WrapDoc,
 } from './private-session'
 import { contractOf, repoSource } from './source'
-import { CONSENT_LAG_RETRIES, ConsentMissingError, assertNoPlaintext, findConsent, grantMembershipDoc, revokeMembershipDoc } from './writes'
+import {
+  CONSENT_LAG_RETRIES,
+  ConsentMissingError,
+  assertNoPlaintext,
+  findConsent,
+  grantMembershipDoc,
+  refuseMaintainerChangeWithEnvironments,
+  revokeMembershipDoc,
+} from './writes'
 import { retryWhileMissing } from '../view/retry'
 import { shortId } from '../utils'
 
@@ -966,6 +974,8 @@ async function postAnchor(
  * transitions.
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<AddOutcome> {
+  // D24: a new maintainer's snapshots would start to count; `dg` saves the environments again first.
+  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(c.sdk, c.repo, 'promote')
   if ((await retryWhileMissing(() => findConsent(c.sdk, c.repo, memberId), CONSENT_LAG_RETRIES)) === null) throw new ConsentMissingError(memberId)
   const keys = await fetchIdentityKeys(c.sdk, memberId)
   const canReceive = usableEncryptionKey(keys ?? [], c.repo.forge.core) !== null
@@ -1086,6 +1096,8 @@ export async function removePrivateMember(
   intent: string,
   onStep?: (s: RotationStep) => void,
 ): Promise<number | null> {
+  // D24: the maintainer's snapshots would stop counting; refused before any re-anchor is paid for.
+  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(c.sdk, c.repo, 'remove')
   // §5.3: a maintainer's anchors stop counting when their role goes. Re-anchor each of their
   // epochs that stays ({@link epochsToReanchor}) first, so no kept epoch falls back.
   // The rotation after the delete chains from the epoch that stays current: refuse now, before

@@ -356,7 +356,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         >
           {/* What they could read in the repo's environments, to rotate at its source. A
               maintainer's removal is refused while the repo has environments (dg handles it). */}
-          {action?.kind === 'revoke' && action.role !== 'maintainer' ? <EnvironmentsRemoval home={home} member={action.member} heldMembersKey={keyed && holdsMembersKey(action.role, 'public')} /> : null}
+          {action?.kind === 'revoke' && action.role !== 'maintainer' ? <EnvironmentsRemoval
+                  home={home}
+                  member={action.member}
+                  heldMembersKey={keyed && holdsMembersKey(action.role, 'public')}
+                  staysMaintainer={removalEffect(memberRows, action.member, action.role) === 'none'}
+                /> : null}
         </ConfirmDialog>
         </>
         )}

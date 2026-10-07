@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import { flushSync } from 'react-dom'
 import Link from 'next/link'
 import { AlertTriangle, ChevronLeft, Eye, EyeOff, KeyRound, Lock, Users } from 'lucide-react'
 
@@ -27,6 +28,7 @@ import {
   hiddenLine,
   ignoredLine,
   ignoredWarning,
+  keptAccessLine,
   removalView,
   unreadableLine,
   utc,
@@ -99,17 +101,14 @@ function Environments({ home, addr }: { home: RepoHome; addr: RepoAddress }): JS
 
 /** The list itself, from a {@link EnvPageView} (pure props: the component tests render it). */
 export function EnvironmentsView({ view, onRetry }: { view: EnvPageView; onRetry?: () => void }): JSX.Element {
-  // `env|version|name` of each value shown now. Page state only: leaving the page clears it.
+  // `env|version|name` of the one value shown now (showing another hides it). Page state only:
+  // leaving the page clears it.
   const [shown, setShown] = useState<ReadonlySet<string>>(new Set())
-  const toggle = (k: string): void =>
-    setShown((s) => {
-      const next = new Set(s)
-      if (!next.delete(k)) next.add(k)
-      return next
-    })
-  // A page kept for Back (the back/forward cache) or a hidden tab shows nothing it showed.
+  const toggle = (k: string): void => setShown((s) => (s.has(k) ? new Set() : new Set([k])))
+  // A page kept for Back (the back/forward cache) or a hidden tab shows nothing it showed: hidden
+  // synchronously, before the browser snapshots the page.
   useEffect(() => {
-    const hide = (): void => setShown(new Set())
+    const hide = (): void => flushSync(() => setShown(new Set()))
     const onVisibility = (): void => {
       if (document.visibilityState === 'hidden') hide()
     }
@@ -337,19 +336,37 @@ function Conflict({
  * The member-removal hook (DESIGN §10, `dg collab remove`'s checklist): the environments and
  * current value names `member` could read, to rotate at their source. Reads only while shown.
  */
-export function EnvironmentsRemoval({ home, member, heldMembersKey }: { home: RepoHome; member: string; heldMembersKey: boolean }): JSX.Element | null {
+export function EnvironmentsRemoval({
+  home,
+  member,
+  heldMembersKey,
+  staysMaintainer = false,
+}: {
+  home: RepoHome
+  member: string
+  heldMembersKey: boolean
+  /** They keep a maintainer role (only another role goes): nothing to rotate, they still read them. */
+  staysMaintainer?: boolean
+}): JSX.Element | null {
   const { state } = useEnvironments(home)
   const name = useIdentityText(member)
   if (state.error !== null) {
     return <p className="text-[12px] text-caution-700 dark:text-caution-400">Couldn&apos;t list the environments {name} could read: {state.error}</p>
   }
   if (state.data === null) return <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Checking which environments {name} could read…</p>
-  return <RemovalLines view={removalView(state.data.book, member, heldMembersKey)} name={name} />
+  return <RemovalLines view={removalView(state.data.book, member, heldMembersKey)} name={name} staysMaintainer={staysMaintainer} />
 }
 
 /** The checklist's lines (pure props: the component tests render it). */
-export function RemovalLines({ view, name }: { view: RemovalView; name: string }): JSX.Element | null {
+export function RemovalLines({ view, name, staysMaintainer = false }: { view: RemovalView; name: string; staysMaintainer?: boolean }): JSX.Element | null {
   if (view.exposures.length === 0 && view.unreadable === 0) return null
+  if (staysMaintainer) {
+    return (
+      <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-removal-kept">
+        {keptAccessLine(name)}
+      </p>
+    )
+  }
   return (
     <div className="space-y-1 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-removal">
       {view.exposures.map((e) => (

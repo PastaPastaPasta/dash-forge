@@ -152,6 +152,11 @@ export function exposureLine(member: string, e: Exposure): string {
   return `${member} could read ${n} ${e.env} ${n === 1 ? 'value' : 'values'}${past}. ${rotate}: ${e.names.join(', ')}`
 }
 
+/** The removal dialog's line when `member` stays a maintainer: nothing to rotate, they still read the environments. */
+export function keptAccessLine(member: string): string {
+  return `${member} stays a maintainer, so they can still read this repo's environments. Nothing needs rotating.`
+}
+
 /** What the removal dialog lists for `removed` ({@link exposureFor}), and the environments the remover can't read. */
 export interface RemovalView {
   readonly exposures: readonly Exposure[]
