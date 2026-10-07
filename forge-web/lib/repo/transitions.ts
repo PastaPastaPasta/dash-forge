@@ -71,6 +71,8 @@ export interface TransitionView extends Transition {
   readonly actor: string
   readonly asAuthor: number
   readonly createdAt: number
+  /** `closedByPr`: the PR whose merge made this issue close, as its writer says (verified on read). */
+  readonly closedByPr?: number
 }
 
 /** A `transition` document as a {@link TransitionView}. */
@@ -80,6 +82,7 @@ export function transitionOf(d: PlainDocument): TransitionView {
   const int = (f: string): number | undefined => (typeof d[f] === 'number' || typeof d[f] === 'bigint' ? num(d, f) : undefined)
   const reason = int('reason')
   const dupNumber = int('dupNumber')
+  const closedByPr = int('closedByPr')
   return {
     id: str(d, '$id'),
     targetId: asIdentifierString(d['targetId']),
@@ -90,6 +93,7 @@ export function transitionOf(d: PlainDocument): TransitionView {
     ...(oid !== '' ? { oid } : {}),
     ...(reason !== undefined ? { reason } : {}),
     ...(dupNumber !== undefined ? { dupNumber } : {}),
+    ...(closedByPr !== undefined && closedByPr > 0 ? { closedByPr } : {}),
   }
 }
 
@@ -317,7 +321,7 @@ export async function writeTransition(
   auth: WriteAuth,
   repo: RepoRef,
   write: TransitionWriter,
-  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string; closed?: ClosedAs },
+  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string; closed?: ClosedAs; closedByPr?: number },
 ): Promise<WriteResult> {
   const { target, action } = input
   const isAuthor = auth.identityId === target.author
@@ -327,6 +331,16 @@ export async function writeTransition(
   const why =
     input.closed !== undefined && action === 'close' && target.type === 'issue' && (await contractHasProperty(sdk, repo.forge.collab, DOC.transition, 'reason'))
       ? closeReasonData(input.closed, target.number)
+      : null
+  // The merge that closes an issue, named on a public repo where the contract has the field: an
+  // issue close only. Readers verify it before they say "closed in #N".
+  const byPr =
+    input.closedByPr !== undefined &&
+    action === 'close' &&
+    target.type === 'issue' &&
+    repo.visibility === 'public' &&
+    (await contractHasProperty(sdk, repo.forge.collab, DOC.transition, 'closedByPr'))
+      ? { closedByPr: input.closedByPr }
       : null
   let actor: Actor = input.isMember ? 'member' : 'author'
   const codeNow = async (): Promise<number> => (await readStateCodes(sdk, repo, [target.id])).get(target.id) ?? 0
@@ -340,7 +354,8 @@ export async function writeTransition(
     const intent = input.intent ? `${input.intent}:${action}:${actor === 'member' ? 'm' : 'a'}${reasonKey}` : undefined
     try {
       const data = transitionData(target, code, action, actor, input.oidHex)
-      return await write(DOC.transition, why !== null && data['kind'] === ISSUE_CLOSE ? { ...data, ...why } : data, intent)
+      const close = data['kind'] === ISSUE_CLOSE ? { ...(why ?? {}), ...(byPr ?? {}) } : {}
+      return await write(DOC.transition, { ...data, ...close }, intent)
     } catch (e) {
       // A stale membership read (the gate refused), or a role that cannot make this move as a
       // member (triage: draft and ready; a reader: anything): the author writes it as the author.

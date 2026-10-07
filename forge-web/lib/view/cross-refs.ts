@@ -2,8 +2,9 @@
  * An issue's cross-references (QW2-048), as GitHub's timeline shows them:
  *
  * - "closed this as completed in #3": the close was made by the merge of a pull request whose
- *   description closes the issue ("Fixes #1"). A `transition` names no cause, so the close is
- *   matched to the merge it followed: the same identity recorded both, the close at or after the
+ *   description closes the issue ("Fixes #1"). A close written since UPDATE-1 names that pull
+ *   request (`closedByPr`), and it counts only when it is merged and closes the issue. An older
+ *   close names no cause, so it is matched to the merge it followed: the same identity recorded both, the close at or after the
  *   merge and within {@link CLOSED_IN_WINDOW_MS} of it (the merge box, and `dg pr merge`, close the
  *   linked issues right after merging).
  * - "mentioned this issue in #4": a pull request whose description names `#N` without closing it
@@ -61,11 +62,19 @@ export interface ClosingMerge<P> {
 }
 
 /**
- * The merged pull request `close` was made by, or null: of the merges by the same identity at or
- * before the close, and at most {@link CLOSED_IN_WINDOW_MS} before it, the latest.
+ * The merged pull request `close` was made by, or null. A close that names its merge
+ * (`closedByPr`) is judged by `named` alone (a public repo's reader passes it: the PR must be
+ * merged and close the issue, the shared `closedByPr` rule), else it is a plain close. Any other
+ * close: of the merges by the same identity at or before the close, and at most
+ * {@link CLOSED_IN_WINDOW_MS} before it, the latest.
  */
-export function closedIn<P>(close: Pick<TransitionView, 'kind' | 'actor' | 'createdAt'>, merges: readonly ClosingMerge<P>[]): P | null {
+export function closedIn<P>(
+  close: Pick<TransitionView, 'kind' | 'actor' | 'createdAt' | 'closedByPr'>,
+  merges: readonly ClosingMerge<P>[],
+  named?: (pr: number) => P | null,
+): P | null {
   if (close.kind !== ISSUE_CLOSE) return null
+  if (named !== undefined && close.closedByPr !== undefined) return named(close.closedByPr)
   let best: ClosingMerge<P> | null = null
   for (const m of merges) {
     if (m.merge.actor !== close.actor) continue
