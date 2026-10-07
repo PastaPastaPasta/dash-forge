@@ -1,0 +1,51 @@
+{
+  "name": "stranger_gives_two",
+  "description": "A non-member's record gives two of its addresses; a member's gives all of its own.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "s0",
+        "ownerRole": null,
+        "createdAt": 0,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://s00.example/p",
+          "https://s01.example/p",
+          "https://s02.example/p",
+          "https://s03.example/p"
+        ]
+      },
+      {
+        "id": "w1",
+        "ownerRole": "writer",
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://w10.example/p",
+          "https://w11.example/p",
+          "https://w12.example/p",
+          "https://w13.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://w10.example/p",
+      "https://w11.example/p",
+      "https://w12.example/p",
+      "https://w13.example/p",
+      "https://s00.example/p",
+      "https://s01.example/p"
+    ]
+  }
+}

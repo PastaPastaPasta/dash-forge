@@ -55,6 +55,8 @@ export interface ConfigDoc {
   readonly createdAt: number
   /** git-`wildmatch` globs; empty means nothing is protected as-of this config. */
   readonly protectedPatterns?: readonly string[]
+  /** Document `$ownerId`, when the reader has it: who wrote the config. No rule reads it. */
+  readonly author?: string
 }
 
 /** One live tip of a diverged ref. */

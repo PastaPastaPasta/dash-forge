@@ -15,6 +15,8 @@ import { repoContractIds, repoKey, type PackManifest, type RepoRef } from '@/lib
 import { errorMessage } from '@/lib/utils'
 import {
   cachedFallback,
+  fallbackNeedsAsk,
+  FallbackTooLargeError,
   restoreFallback,
   startFallback,
   type BrowseContext,
@@ -31,6 +33,12 @@ export interface FallbackBrowse {
   readonly error: string | null
   /** The thrown value behind `error` (e.g. a StorageUnreachableError listing the places tried). */
   readonly cause: unknown
+  /**
+   * A clone of this pack set that started without asking stopped at its smaller budget (on this
+   * page or an earlier one): it waits for `start()` (the user asking), even for a repo small
+   * enough to start without asking.
+   */
+  readonly needsAsk: boolean
   readonly start: () => void
 }
 
@@ -44,6 +52,7 @@ export function useFallbackBrowse(
   const [context, setContext] = useState<BrowseContext | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [cause, setCause] = useState<unknown>(null)
+  const [needsAsk, setNeedsAsk] = useState(false)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -55,6 +64,7 @@ export function useFallbackBrowse(
   const settle = useCallback((run: Promise<BrowseContext>) => {
     setStatus('working')
     setError(null)
+    setNeedsAsk(false)
     run
       .then((ctx) => {
         if (!mounted.current) return
@@ -63,23 +73,33 @@ export function useFallbackBrowse(
       })
       .catch((e: unknown) => {
         if (!mounted.current) return
+        // Decided by the run itself: this page may have joined one another page started.
+        if (e instanceof FallbackTooLargeError && e.automatic) {
+          setProgress(null)
+          setNeedsAsk(true)
+          setStatus('idle')
+          return
+        }
         setError(errorMessage(e))
         setCause(e)
         setStatus('error')
       })
   }, [])
 
-  const start = useCallback(() => {
+  const run = useCallback((automatic: boolean) => {
     if (sdk === null || repo === null || livePacks === null || livePacks.length === 0) return
-    settle(startFallback(sdk, repo, livePacks, (p) => {
-      if (mounted.current) setProgress(p)
-    }))
+    settle(
+      startFallback(sdk, repo, livePacks, (p) => {
+        if (mounted.current) setProgress(p)
+      }, automatic),
+    )
   }, [sdk, repo, livePacks, settle])
+  const start = useCallback(() => run(false), [run])
 
   // Resume a memory/IndexedDB-cached run silently; auto-start small repos once the SDK is up.
   const totalSizeBytes = (livePacks ?? []).reduce((s, m) => s + m.sizeBytes, 0)
-  const startRef = useRef(start)
-  startRef.current = start
+  const startRef = useRef(run)
+  startRef.current = run
   useEffect(() => {
     if (repo === null) return
     if (livePacks === null || livePacks.length === 0) return
@@ -92,14 +112,20 @@ export function useFallbackBrowse(
     let cancelled = false
     setStatus('working')
     setError(null)
+    setNeedsAsk(false)
     restoreFallback(repo, livePacks, sdk)
       .then((ctx) => {
         if (cancelled || !mounted.current) return
         if (ctx !== null) {
           setContext(ctx)
           setStatus('ready')
+        } else if (fallbackNeedsAsk(repoKey(repo), livePacks)) {
+          // One that started without asking already stopped at its budget: ask, not decode again.
+          setProgress(null)
+          setNeedsAsk(true)
+          setStatus('idle')
         } else if (sdk !== null && totalSizeBytes <= AUTO_LOAD_MAX_BYTES) {
-          startRef.current()
+          startRef.current(true)
         } else {
           setProgress(null)
           setStatus('idle')
@@ -117,5 +143,5 @@ export function useFallbackBrowse(
     // livePacks identity tracks its load; the repo key scopes the cache probe.
   }, [repo === null ? '' : repoKey(repo), sdk, livePacks, totalSizeBytes, settle]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { status, progress, context, error, cause, start }
+  return { status, progress, context, error, cause, needsAsk, start }
 }

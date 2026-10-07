@@ -55,6 +55,16 @@ describe('liveHistoryIndexes', () => {
     const live = liveHistoryIndexes([a, b, stranger, hostile])
     expect(live.map((e) => e.tip)).toEqual(['bb'.repeat(20)])
   })
+
+  it('takes supersedes claims only from a maintainer or writer index of the same kind', () => {
+    const a = manifest(fullOf('aa'.repeat(20)), ['aa'.repeat(20)])
+    // Version lists (kind 5) and a triage member's column index name it: neither retires it.
+    const lists = manifest(new Uint8Array([2]), ['bb'.repeat(20)], { kind: 5, supersedes: [a.packHash] })
+    const triage = manifest(new Uint8Array([3]), ['cc'.repeat(20)], { uploader: 't', ownerRole: 'triage', supersedes: [a.packHash] })
+    expect(liveHistoryIndexes([lists, triage, a]).map((e) => e.tip)).toEqual(['aa'.repeat(20), 'cc'.repeat(20)])
+    const writer = manifest(new Uint8Array([4]), ['dd'.repeat(20)], { supersedes: [a.packHash.toUpperCase()] })
+    expect(liveHistoryIndexes([writer, lists, triage, a]).map((e) => e.tip)).not.toContain('aa'.repeat(20))
+  })
 })
 
 describe('historySource', () => {

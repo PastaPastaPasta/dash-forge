@@ -48,6 +48,7 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   ['commits', repoUrl('commits'), (page) => page.locator('a[href*="/repo/commit/"]').first()],
   ['branches', repoUrl('branches'), (page) => page.getByText('feature/greeting').first()],
   ['tags', repoUrl('tags'), (page) => page.getByText('v0.1.0').first()],
+  ['activity', repoUrl('activity', '&branch=main'), (page) => page.getByTestId('ref-activity')],
   ['issues', repoUrl('issues'), (page) => page.getByRole('list', { name: 'Issues', exact: true }).getByText('README should explain the event split')],
   ['issue', repoUrl('issue', '&number=3'), (page) => page.getByText('Done in docs/rules.md; closing.')],
   ['pulls', repoUrl('pulls'), (page) => page.locator('a[href*="/repo/pull/"]').first()],

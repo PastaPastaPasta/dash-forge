@@ -40,14 +40,27 @@ const PACK_TRAILER: usize = 20;
 pub const MAX_DELTA_DEPTH: u32 = 4095;
 
 /// Deflate cannot expand its input by more than this factor (a 258-byte match per ~2 bits);
-/// forge-web's pack reader holds a declared size to the same bound. No reconstructed object can
-/// honestly be larger than its input inflated at this ratio, so the decoder refuses to grow one
-/// past that: bytes a pack only *declares* are never reserved.
+/// forge-web's pack reader holds a declared size to the same bound. The decoder refuses to grow
+/// an object past its chain's stored bytes inflated at this ratio, so bytes a pack only
+/// *declares* are never reserved. A delta's copy ops can reuse base bytes, so an honest object
+/// built from a base that compresses near this ratio can exceed it; such a read fails rather
+/// than allocate.
 const DEFLATE_MAX_RATIO: u64 = 1032;
 
 /// What a decoder reserves up front for an inflated object before the stream proves it is
 /// that large; past it the buffer grows with the bytes actually produced.
 const INITIAL_RESERVE: usize = 64 * 1024;
+
+/// How many single steps' worth of bytes ([`DEFLATE_MAX_RATIO`] × the bytes a chain is stored
+/// in) one read may build across its whole chain, base included.
+///
+/// Each step of a chain is already held to that per-step bound; without a total, a chain of
+/// [`MAX_DELTA_DEPTH`] steps could build that much again at every one. An honest chain rebuilds
+/// an object of about the same size at each step, so it costs `depth × size`: even at git's
+/// deepest chain this admits every object up to 64× the bytes its chain is stored in (256 ×
+/// 1032 / 4096), far more than real content compresses by, and any chain of up to 255 steps is
+/// bounded only per step.
+const CHAIN_BUILD_HEADROOM: u64 = 256;
 
 // Packfile object type codes (the 3-bit type nibble of the first header byte).
 const T_COMMIT: u8 = 1;
@@ -120,9 +133,10 @@ pub struct PackObject {
 }
 
 impl PackObject {
-    /// Absolute end offset of the object within the pack (`offset + length`).
+    /// Absolute end offset of the object within the pack (`offset + length`, saturating: no
+    /// parsed object comes near `u64::MAX`, but the fields are public).
     pub fn end(&self) -> u64 {
-        self.offset + self.length
+        self.offset.saturating_add(self.length)
     }
 }
 
@@ -136,16 +150,103 @@ pub struct ParsedPack {
     /// Objects in `.idx` order (ascending OID).
     pub objects: Vec<PackObject>,
     oid_to_idx: HashMap<[u8; OID_LEN], usize>,
+    /// Object index by pack offset (offsets are distinct).
+    at_offset: HashMap<u64, usize>,
+    /// Each object's immediate delta base, by index, when that base is in this pack.
+    bases: Vec<Option<usize>>,
 }
 
-/// Immediate delta base of a pack object, before chain resolution.
-enum RawBase {
+/// What a delta names as its base, as stored.
+enum EntryBase<'a> {
     /// Not a delta.
     None,
-    /// `OFS_DELTA`: base is `offset - rel` in the same pack.
+    /// `OFS_DELTA`: the base starts this many bytes before the delta.
     Ofs(u64),
-    /// `REF_DELTA`: base referenced by OID (resolved to an offset in a later pass).
-    Ref([u8; OID_LEN]),
+    /// `REF_DELTA`: the base's OID.
+    Ref(&'a [u8]),
+}
+
+/// A pack entry's header: its type code, declared inflated size, where its zlib stream starts,
+/// and the base a delta names.
+struct Entry<'a> {
+    t: u8,
+    size: usize,
+    data: usize,
+    base: EntryBase<'a>,
+}
+
+/// One zlib stream of a delta chain: `buf[start..end]` inflates to `size` bytes.
+#[derive(Debug, Clone, Copy)]
+struct Link {
+    start: usize,
+    end: usize,
+    size: usize,
+}
+
+/// An object's delta chain as stored, ready to build.
+struct Links {
+    obj_type: GitObjType,
+    base: Link,
+    /// Outermost (the object itself) first.
+    deltas: Vec<Link>,
+    /// Bytes the chain is stored in: what bounds what it may build ([`ReadBudget`]).
+    covered: u64,
+}
+
+/// One object's resolved delta chain, as [`resolve_chains`] memoizes it.
+#[derive(Debug, Clone, Copy)]
+struct Chain {
+    /// Type code of the entry the chain ends at.
+    root: u8,
+    /// Delta hops down to it.
+    depth: u32,
+    /// Lowest offset among the object and every base in its chain.
+    min_off: u64,
+    /// Whether every base sits at a lower offset than the delta naming it.
+    contiguous: bool,
+}
+
+/// What one read may build: each delta step at most `step` bytes, and every step (and the
+/// base) together at most `left` more.
+#[derive(Debug, Clone, Copy)]
+struct ReadBudget {
+    step: u64,
+    left: u64,
+}
+
+impl ReadBudget {
+    /// The budget of a read whose chain is stored in `covered` bytes.
+    fn new(covered: u64) -> Self {
+        let step = covered.saturating_mul(DEFLATE_MAX_RATIO);
+        Self {
+            step,
+            left: step.saturating_mul(CHAIN_BUILD_HEADROOM),
+        }
+    }
+
+    /// The most the next step may produce.
+    fn next_step(self) -> u64 {
+        self.step.min(self.left)
+    }
+
+    /// Count `n` bytes built.
+    fn spend(&mut self, n: u64) -> Result<()> {
+        self.left = self
+            .left
+            .checked_sub(n)
+            .ok_or_else(|| Error::Config("delta chain builds more than one read may".into()))?;
+        Ok(())
+    }
+}
+
+/// One object of [`ParsedPack::verify_all_oids`]' walk, with the bytes its deltas build on.
+struct VerifyFrame {
+    idx: usize,
+    obj_type: GitObjType,
+    data: Vec<u8>,
+    covered: u64,
+    built: u64,
+    next_child: usize,
 }
 
 impl ParsedPack {
@@ -163,6 +264,9 @@ impl ParsedPack {
         // start of the 20-byte pack trailer).
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by_key(|&i| offsets[i]);
+        if order.windows(2).any(|w| offsets[w[0]] == offsets[w[1]]) {
+            return Err(Error::Config("two pack objects share one offset".into()));
+        }
         let mut length = vec![0u64; n];
         for (k, &i) in order.iter().enumerate() {
             let end = order
@@ -173,48 +277,28 @@ impl ParsedPack {
                 .ok_or_else(|| Error::Config("overlapping pack offsets".into()))?;
         }
 
-        // First pass: header type + immediate base.
+        let oid_to_idx: HashMap<[u8; OID_LEN], usize> =
+            oids.iter().enumerate().map(|(i, o)| (*o, i)).collect();
+        let at_offset: HashMap<u64, usize> =
+            offsets.iter().enumerate().map(|(i, o)| (*o, i)).collect();
+
+        // Header type + immediate base, resolved to an in-pack offset (REF → OID lookup).
         let mut raw_type = vec![0u8; n];
-        let mut base = Vec::with_capacity(n);
+        let mut base_off: Vec<Option<u64>> = Vec::with_capacity(n);
+        let mut is_ref = vec![false; n];
         for i in 0..n {
             let off = usize::try_from(offsets[i])
                 .map_err(|_| Error::Config("pack offset exceeds usize".into()))?;
-            let (t, _size, after) = parse_obj_header(pack_bytes, off)?;
-            raw_type[i] = t;
-            base.push(match t {
-                T_OFS_DELTA => {
-                    let (rel, _) = parse_ofs_base(pack_bytes, after)?;
-                    let b = offsets[i]
+            let entry = read_entry(pack_bytes, off)?;
+            raw_type[i] = entry.t;
+            base_off.push(match entry.base {
+                EntryBase::None => None,
+                EntryBase::Ofs(rel) => Some(
+                    offsets[i]
                         .checked_sub(rel)
-                        .ok_or_else(|| Error::Config("OFS base before pack start".into()))?;
-                    RawBase::Ofs(b)
-                }
-                T_REF_DELTA => {
-                    let end = after + OID_LEN;
-                    let slice = pack_bytes
-                        .get(after..end)
-                        .ok_or_else(|| Error::Config("truncated REF_DELTA base oid".into()))?;
-                    let mut oid = [0u8; OID_LEN];
-                    oid.copy_from_slice(slice);
-                    RawBase::Ref(oid)
-                }
-                _ => RawBase::None,
-            });
-        }
-
-        let oid_to_idx: HashMap<[u8; OID_LEN], usize> =
-            oids.iter().enumerate().map(|(i, o)| (*o, i)).collect();
-        let off_to_idx: HashMap<u64, usize> =
-            offsets.iter().enumerate().map(|(i, o)| (*o, i)).collect();
-
-        // Resolve each immediate base to an in-pack offset (REF → OID lookup).
-        let mut base_off: Vec<Option<u64>> = Vec::with_capacity(n);
-        let mut is_ref = vec![false; n];
-        for (i, b) in base.iter().enumerate() {
-            base_off.push(match b {
-                RawBase::None => None,
-                RawBase::Ofs(o) => Some(*o),
-                RawBase::Ref(oid) => {
+                        .ok_or_else(|| Error::Config("OFS base before pack start".into()))?,
+                ),
+                EntryBase::Ref(oid) => {
                     is_ref[i] = true;
                     // A self-contained pack resolves the base internally. If it does
                     // not (a raw thin pack), the object has no in-pack base.
@@ -223,22 +307,32 @@ impl ParsedPack {
             });
         }
 
-        // Second pass: walk each chain for resolved type, depth, span, contiguity.
+        // Resolved type, depth, span and contiguity of every chain, each resolved once.
+        let chains = resolve_chains(&order, &offsets, &raw_type, &base_off, &at_offset)?;
         let mut objects = Vec::with_capacity(n);
-        for i in 0..n {
-            let (obj_type, depth, span, contiguous) =
-                resolve_chain(i, &offsets, &length, &raw_type, &base_off, &off_to_idx)?;
+        for (i, chain) in chains.into_iter().enumerate() {
+            // `offset + length` is the next object's offset or the trailer's: no overflow, and
+            // a contiguous chain's lowest offset is at most the object's own.
+            let end = offsets[i] + length[i];
             objects.push(PackObject {
                 oid: oids[i],
                 offset: offsets[i],
                 length: length[i],
-                obj_type,
-                delta_depth: depth,
+                obj_type: GitObjType::from_code(chain.root)?,
+                delta_depth: chain.depth,
                 is_ref_delta: is_ref[i],
-                delta_chain_span: span,
-                contiguous,
+                delta_chain_span: if chain.contiguous {
+                    end - chain.min_off
+                } else {
+                    length[i]
+                },
+                contiguous: chain.contiguous,
             });
         }
+        let bases = base_off
+            .iter()
+            .map(|off| off.and_then(|o| at_offset.get(&o).copied()))
+            .collect();
 
         let pack_hash = {
             let mut h = Sha256::new();
@@ -251,6 +345,8 @@ impl ParsedPack {
             pack_hash,
             objects,
             oid_to_idx,
+            at_offset,
+            bases,
         })
     }
 
@@ -309,14 +405,126 @@ impl ParsedPack {
 
     /// Reconstruct + hash every object and confirm each git OID matches the `.idx`.
     /// Returns the number of objects verified. `Err(Integrity)` on any mismatch.
+    ///
+    /// Each object is built once, from its base's bytes, by walking the delta tree from every
+    /// base object down — not by rebuilding its whole chain, which would cost objects × depth.
+    /// What each object may build is held to exactly what [`Self::object_bytes`] allows it. A
+    /// base's bytes are dropped once its last delta starts, and its heaviest subtree goes last,
+    /// so at most about log2(objects) bases are held at once.
     pub fn verify_all_oids(&self) -> Result<usize> {
-        for obj in &self.objects {
-            let (t, bytes) = self.object_bytes(&obj.oid)?;
-            if git_oid(t, &bytes) != obj.oid {
-                return Err(Error::Integrity);
+        let n = self.objects.len();
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut roots = Vec::new();
+        for (i, base) in self.bases.iter().enumerate() {
+            match *base {
+                Some(b) => children[b].push(i),
+                None => roots.push(i),
             }
         }
-        Ok(self.objects.len())
+        // Subtree weights, children before parents (reverse preorder).
+        let mut preorder = Vec::with_capacity(n);
+        let mut pending = roots.clone();
+        while let Some(i) = pending.pop() {
+            preorder.push(i);
+            pending.extend_from_slice(&children[i]);
+        }
+        if preorder.len() != n {
+            return Err(Error::Config("delta bases form a cycle".into()));
+        }
+        let mut weight = vec![1usize; n];
+        for &i in preorder.iter().rev() {
+            if let Some(b) = self.bases[i] {
+                weight[b] += weight[i];
+            }
+        }
+        for kids in &mut children {
+            kids.sort_by_key(|&c| weight[c]);
+        }
+
+        let check = |i: usize, t: GitObjType, data: &[u8]| {
+            if git_oid(t, data) == self.objects[i].oid {
+                Ok(())
+            } else {
+                Err(Error::Integrity)
+            }
+        };
+        for &root in &roots {
+            // At its own offset: a duplicate oid elsewhere in the idx must not stand in for it.
+            let (obj_type, data) =
+                self.decode_at(&self.pack_bytes, 0, self.objects[root].offset, true)?;
+            check(root, obj_type, &data)?;
+            let mut stack = vec![VerifyFrame {
+                idx: root,
+                obj_type,
+                covered: self.objects[root].length,
+                built: data.len() as u64,
+                data,
+                next_child: 0,
+            }];
+            while let Some(top) = stack.last_mut() {
+                let kids = &children[top.idx];
+                let Some(&child) = kids.get(top.next_child) else {
+                    stack.pop();
+                    continue;
+                };
+                top.next_child += 1;
+                let last = top.next_child == kids.len();
+                let (obj_type, built) = (top.obj_type, top.built);
+                let covered = top.covered.saturating_add(self.objects[child].length);
+                // The same budget `object_bytes(child)` would spend: its chain's bytes, less what
+                // building the base already took.
+                let mut budget = ReadBudget::new(covered);
+                budget.spend(built)?;
+                let data = self.apply_own_delta(child, &top.data, budget.next_step())?;
+                if last {
+                    stack.pop();
+                }
+                check(child, obj_type, &data)?;
+                if !children[child].is_empty() {
+                    stack.push(VerifyFrame {
+                        idx: child,
+                        obj_type,
+                        covered,
+                        built: built.saturating_add(data.len() as u64),
+                        data,
+                        next_child: 0,
+                    });
+                }
+            }
+        }
+        Ok(n)
+    }
+
+    /// `[offset, offset + length)` of the object at pack offset `at`, as positions in the pack.
+    fn extent(&self, at: u64) -> Result<(usize, usize)> {
+        let obj = self
+            .at_offset
+            .get(&at)
+            .map(|&i| &self.objects[i])
+            .ok_or_else(|| Error::Config("delta base is not an object in the pack".into()))?;
+        let start = usize::try_from(obj.offset).ok();
+        let end = obj
+            .offset
+            .checked_add(obj.length)
+            .and_then(|e| usize::try_from(e).ok())
+            .filter(|&e| e <= self.pack_bytes.len());
+        match (start, end) {
+            (Some(s), Some(e)) if s <= e => Ok((s, e)),
+            _ => Err(Error::Config("object runs outside the pack".into())),
+        }
+    }
+
+    /// Apply object `i`'s own delta to `base`, its base's bytes, producing at most `budget`.
+    fn apply_own_delta(&self, i: usize, base: &[u8], budget: u64) -> Result<Vec<u8>> {
+        let (start, end) = self.extent(self.objects[i].offset)?;
+        let stored = &self.pack_bytes[..end];
+        let entry = read_entry(stored, start)?;
+        if matches!(entry.base, EntryBase::None) {
+            return Err(Error::Config(
+                "pack object has a base but is no delta".into(),
+            ));
+        }
+        apply_delta(base, &inflate(&stored[entry.data..], entry.size)?, budget)
     }
 
     /// Decode the object at pack-absolute `abs_off`, where `buf[0]` corresponds to pack-absolute
@@ -325,8 +533,9 @@ impl ParsedPack {
     /// Walks the delta chain down to its base first — OFS bases inside `buf`, REF bases by OID
     /// when `allow_ref` (set only when `buf` is the whole pack) — then applies the deltas back up.
     /// The walk is a loop, not a recursion, and it refuses a chain that revisits an object or runs
-    /// past [`MAX_DELTA_DEPTH`], so no bytes can drive it into a stack overflow or a hang. Every
-    /// output is held to what `buf` can inflate to ([`DEFLATE_MAX_RATIO`]).
+    /// past [`MAX_DELTA_DEPTH`], so no bytes can drive it into a stack overflow or a hang. What
+    /// the chain builds, step by step and in total, is held to what the bytes it is stored in can
+    /// inflate to ([`ReadBudget`]).
     fn decode_at(
         &self,
         buf: &[u8],
@@ -334,12 +543,22 @@ impl ParsedPack {
         abs_off: u64,
         allow_ref: bool,
     ) -> Result<(GitObjType, Vec<u8>)> {
-        let budget = (buf.len() as u64).saturating_mul(DEFLATE_MAX_RATIO);
-        // (start of the delta's zlib stream, its declared inflated size), outermost first.
-        let mut deltas: Vec<(usize, usize)> = Vec::new();
+        let links = self.links_at(buf, base_addr, abs_off, allow_ref)?;
+        let data = build(buf, &links, ReadBudget::new(links.covered))?;
+        Ok((links.obj_type, data))
+    }
+
+    /// The stored delta chain of the object at pack-absolute `abs_off` ([`Self::decode_at`]).
+    ///
+    /// In the whole pack each link is cut to its own object's extent and the chain covers the
+    /// sum of them; a span read holds only the chain, so its links run to the end of `buf` and
+    /// the chain covers all of it.
+    fn links_at(&self, buf: &[u8], base_addr: u64, abs_off: u64, allow_ref: bool) -> Result<Links> {
+        let mut deltas = Vec::new();
+        let mut covered = 0u64;
         let mut seen = HashSet::new();
         let mut at = abs_off;
-        let (obj_type, mut data) = loop {
+        let (obj_type, base) = loop {
             if !seen.insert(at) {
                 return Err(Error::Config("delta chain loops back on itself".into()));
             }
@@ -347,44 +566,93 @@ impl ParsedPack {
                 .checked_sub(base_addr)
                 .and_then(|p| usize::try_from(p).ok())
                 .ok_or_else(|| Error::Config("delta base outside the bytes read".into()))?;
-            let (t, size, after) = parse_obj_header(buf, pos)?;
-            at = match t {
-                T_COMMIT | T_TREE | T_BLOB | T_TAG => {
-                    break (GitObjType::from_code(t)?, inflate(&buf[after..], size)?);
-                }
-                T_OFS_DELTA => {
-                    let (rel, dpos) = parse_ofs_base(buf, after)?;
-                    deltas.push((dpos, size));
-                    at.checked_sub(rel)
-                        .ok_or_else(|| Error::Config("OFS base before pack start".into()))?
-                }
-                T_REF_DELTA => {
+            let end = if allow_ref {
+                let (start, end) = self.extent(at)?;
+                covered = covered.saturating_add((end - start) as u64);
+                end
+            } else {
+                buf.len()
+            };
+            let stored = buf
+                .get(..end)
+                .ok_or_else(|| Error::Config("pack object outside the bytes read".into()))?;
+            let entry = read_entry(stored, pos)?;
+            let link = Link {
+                start: entry.data,
+                end,
+                size: entry.size,
+            };
+            at = match entry.base {
+                EntryBase::None => break (GitObjType::from_code(entry.t)?, link),
+                EntryBase::Ofs(rel) => at
+                    .checked_sub(rel)
+                    .ok_or_else(|| Error::Config("OFS base before pack start".into()))?,
+                EntryBase::Ref(oid) => {
                     if !allow_ref {
                         return Err(Error::Config(
                             "REF_DELTA in a span read (pack is not self-contained/OFS-only)".into(),
                         ));
                     }
-                    let end = after + OID_LEN;
-                    let oid = buf
-                        .get(after..end)
-                        .ok_or_else(|| Error::Config("truncated REF_DELTA base oid".into()))?;
-                    deltas.push((end, size));
                     self.object(oid).ok_or(Error::NotFound)?.offset
                 }
-                other => return Err(Error::Config(format!("unknown pack object type {other}"))),
             };
+            deltas.push(link);
             if deltas.len() > MAX_DELTA_DEPTH as usize {
                 return Err(Error::Config(format!(
                     "delta chain deeper than {MAX_DELTA_DEPTH}"
                 )));
             }
         };
-        for &(dpos, size) in deltas.iter().rev() {
-            let delta = inflate(&buf[dpos..], size)?;
-            data = apply_delta(&data, &delta, budget)?;
+        if !allow_ref {
+            covered = buf.len() as u64;
         }
-        Ok((obj_type, data))
+        Ok(Links {
+            obj_type,
+            base,
+            deltas,
+            covered,
+        })
     }
+}
+
+/// Build a stored chain's object: inflate its base, then apply its deltas back up, all within
+/// `budget`.
+fn build(buf: &[u8], links: &Links, mut budget: ReadBudget) -> Result<Vec<u8>> {
+    let Link { start, end, size } = links.base;
+    let mut data = inflate(&buf[start..end], size)?;
+    budget.spend(data.len() as u64)?;
+    for &Link { start, end, size } in links.deltas.iter().rev() {
+        let delta = inflate(&buf[start..end], size)?;
+        data = apply_delta(&data, &delta, budget.next_step())?;
+        budget.spend(data.len() as u64)?;
+    }
+    Ok(data)
+}
+
+/// Read the entry header at `pos`: type, declared size, the base a delta names, and where its
+/// zlib stream starts (never past `buf`).
+fn read_entry(buf: &[u8], pos: usize) -> Result<Entry<'_>> {
+    let (t, size, after) = parse_obj_header(buf, pos)?;
+    let (data, base) = match t {
+        T_OFS_DELTA => {
+            let (rel, data) = parse_ofs_base(buf, after)?;
+            (data, EntryBase::Ofs(rel))
+        }
+        T_REF_DELTA => {
+            let end = after + OID_LEN;
+            let oid = buf
+                .get(after..end)
+                .ok_or_else(|| Error::Config("truncated REF_DELTA base oid".into()))?;
+            (end, EntryBase::Ref(oid))
+        }
+        _ => (after, EntryBase::None),
+    };
+    Ok(Entry {
+        t,
+        size,
+        data,
+        base,
+    })
 }
 
 /// git OID of an object: `sha1("<type> <len>\0" + payload)`.
@@ -552,6 +820,8 @@ fn inflate(compressed: &[u8], expected: usize) -> Result<Vec<u8>> {
 /// 0xffffff bytes and never more than `base`, or one literal byte), and every opcode is checked
 /// against it before its bytes are appended, so a few bytes of delta cannot claim gigabytes.
 fn apply_delta(base: &[u8], delta: &[u8], budget: u64) -> Result<Vec<u8>> {
+    #[cfg(test)]
+    DELTAS_APPLIED.with(|c| c.set(c.get() + 1));
     let mut pos = 0usize;
     let src = read_delta_size(delta, &mut pos)?;
     // git's patch_delta refuses a delta made against a base of another size.
@@ -621,44 +891,97 @@ fn apply_delta(base: &[u8], delta: &[u8], budget: u64) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Walk an object's delta chain: `(resolved_type, depth, span, contiguous)`.
-fn resolve_chain(
-    start: usize,
+#[cfg(test)]
+thread_local! {
+    /// Steps [`resolve_chains`] has taken on this thread, so a test can hold it to linear time.
+    static CHAIN_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Deltas [`apply_delta`] has applied on this thread.
+    static DELTAS_APPLIED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn count_chain_step() {
+    #[cfg(test)]
+    CHAIN_STEPS.with(|c| c.set(c.get() + 1));
+}
+
+/// Resolve every object's delta chain, in time linear in the object count.
+///
+/// An object's chain is its base's chain plus one hop, so each is resolved once and reused.
+/// Objects are taken in ascending offset (`order`), which resolves every `OFS_DELTA` base (always
+/// earlier) before its deltas; a base not resolved yet (a `REF_DELTA` base stored later) is walked
+/// down to with an explicit stack, never recursion. A walk that reaches an object still on its
+/// stack is a cycle, and one longer than [`MAX_DELTA_DEPTH`] is refused before it gets longer.
+fn resolve_chains(
+    order: &[usize],
     offsets: &[u64],
-    length: &[u64],
     raw_type: &[u8],
     base_off: &[Option<u64>],
-    off_to_idx: &HashMap<u64, usize>,
-) -> Result<(GitObjType, u32, u64, bool)> {
-    let end = offsets[start] + length[start];
-    let mut min_off = offsets[start];
-    let mut depth = 0u32;
-    let mut contiguous = true;
-    let mut j = start;
-    while let Some(b) = base_off[j] {
-        if b >= offsets[j] {
-            contiguous = false; // a fix-thin'd REF base sits *after* the object
-        }
-        min_off = min_off.min(b);
-        depth += 1;
-        let Some(&next) = off_to_idx.get(&b) else {
-            contiguous = false;
-            break;
+    at_offset: &HashMap<u64, usize>,
+) -> Result<Vec<Chain>> {
+    let too_deep = || {
+        Error::Config(format!(
+            "delta chain deeper than {MAX_DELTA_DEPTH} (or a cycle)"
+        ))
+    };
+    let mut chains: Vec<Option<Chain>> = vec![None; offsets.len()];
+    let mut on_path = vec![false; offsets.len()];
+    // (object, its base's offset) for each delta walked through, outermost first.
+    let mut path: Vec<(usize, u64)> = Vec::new();
+    for &start in order {
+        let mut j = start;
+        let mut chain = loop {
+            count_chain_step();
+            if let Some(known) = chains[j] {
+                break known;
+            }
+            if on_path[j] {
+                return Err(too_deep());
+            }
+            let Some(b) = base_off[j] else {
+                break Chain {
+                    root: raw_type[j],
+                    depth: 0,
+                    min_off: offsets[j],
+                    contiguous: true,
+                };
+            };
+            let Some(&next) = at_offset.get(&b) else {
+                // The base is not in this pack: the chain ends at the delta itself.
+                break Chain {
+                    root: raw_type[j],
+                    depth: 1,
+                    min_off: offsets[j].min(b),
+                    contiguous: false,
+                };
+            };
+            on_path[j] = true;
+            path.push((j, b));
+            if path.len() > MAX_DELTA_DEPTH as usize {
+                return Err(too_deep());
+            }
+            j = next;
         };
-        j = next;
-        if depth > MAX_DELTA_DEPTH {
-            return Err(Error::Config(format!(
-                "delta chain deeper than {MAX_DELTA_DEPTH} (or a cycle)"
-            )));
+        chains[j] = Some(chain);
+        while let Some((p, b)) = path.pop() {
+            count_chain_step();
+            on_path[p] = false;
+            chain = Chain {
+                root: chain.root,
+                depth: chain.depth + 1,
+                min_off: offsets[p].min(chain.min_off),
+                // A base at or after its delta (a fix-thin'd REF base) breaks the single span.
+                contiguous: chain.contiguous && b < offsets[p],
+            };
+            if chain.depth > MAX_DELTA_DEPTH {
+                return Err(too_deep());
+            }
+            chains[p] = Some(chain);
         }
     }
-    let obj_type = GitObjType::from_code(raw_type[j])?;
-    let span = if contiguous {
-        end - min_off
-    } else {
-        length[start]
-    };
-    Ok((obj_type, depth, span, contiguous))
+    chains
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| Error::Config("pack object left unresolved".into()))
 }
 
 fn read_delta_size(buf: &[u8], pos: &mut usize) -> Result<usize> {
@@ -708,11 +1031,12 @@ fn read_u64(buf: &[u8], at: usize) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_delta, parse_idx_v2, GitObjType, PackObject, ParsedPack, MAX_DELTA_DEPTH, OID_LEN,
-        T_BLOB, T_OFS_DELTA, T_REF_DELTA,
+        apply_delta, build, git_oid, parse_idx_v2, GitObjType, PackObject, ParsedPack, ReadBudget,
+        CHAIN_STEPS, DELTAS_APPLIED, MAX_DELTA_DEPTH, OID_LEN, T_BLOB, T_OFS_DELTA, T_REF_DELTA,
     };
     use crate::pack::TestRng;
     use flate2::{write::ZlibEncoder, Compression};
+    use std::cell::Cell;
     use std::io::Write as _;
 
     /// A minimal, well-formed SHA-1 v2 idx header for `n` objects (fanout says `n`,
@@ -890,11 +1214,18 @@ mod tests {
             .enumerate()
             .map(|(i, o)| (o.oid, i))
             .collect();
+        let at_offset = objects
+            .iter()
+            .enumerate()
+            .map(|(i, o)| (o.offset, i))
+            .collect();
         ParsedPack {
             pack_bytes: pack,
             pack_hash: [0; 32],
+            bases: vec![None; objects.len()],
             objects,
             oid_to_idx,
+            at_offset,
         }
     }
 
@@ -1138,5 +1469,265 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Distinct made-up oids for objects at `offs`.
+    fn numbered(offs: &[u64]) -> Vec<([u8; OID_LEN], u64)> {
+        offs.iter()
+            .enumerate()
+            .map(|(i, &o)| {
+                let mut oid = [0u8; OID_LEN];
+                oid[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                (oid, o)
+            })
+            .collect()
+    }
+
+    /// A delta copy opcode for `base[off..off + size]` (`size` in `1..1 << 24`).
+    fn copy_op(off: usize, size: usize) -> Vec<u8> {
+        let mut op = vec![0x80u8];
+        for i in 0..4 {
+            let b = (off >> (8 * i)) as u8;
+            if b != 0 {
+                op[0] |= 1 << i;
+                op.push(b);
+            }
+        }
+        for i in 0..3 {
+            let b = (size >> (8 * i)) as u8;
+            if b != 0 {
+                op[0] |= 1 << (4 + i);
+                op.push(b);
+            }
+        }
+        op
+    }
+
+    /// A delta that keeps all of a `base_len`-byte base and appends `extra` (1..=127 bytes).
+    fn appending_delta(base_len: usize, extra: &[u8]) -> Vec<u8> {
+        let mut d = delta_size(base_len as u64);
+        d.extend(delta_size((base_len + extra.len()) as u64));
+        if base_len > 0 {
+            d.extend(copy_op(0, base_len));
+        }
+        d.push(extra.len() as u8);
+        d.extend(extra);
+        d
+    }
+
+    /// A pack under construction whose objects' contents are known, so its oids are real.
+    #[derive(Default)]
+    struct Packer {
+        entries: Vec<Vec<u8>>,
+        offs: Vec<u64>,
+        contents: Vec<Vec<u8>>,
+    }
+
+    impl Packer {
+        /// Where the next entry goes.
+        fn next_off(&self) -> u64 {
+            match (self.offs.last(), self.entries.last()) {
+                (Some(&o), Some(e)) => o + e.len() as u64,
+                _ => 12, // after the `PACK` header
+            }
+        }
+
+        /// Append a packed entry whose object is `content`; returns its index.
+        fn raw(&mut self, entry: Vec<u8>, content: Vec<u8>) -> usize {
+            let at = self.next_off();
+            self.entries.push(entry);
+            self.offs.push(at);
+            self.contents.push(content);
+            self.offs.len() - 1
+        }
+
+        fn blob(&mut self, data: &[u8]) -> usize {
+            self.raw(blob_entry(data), data.to_vec())
+        }
+
+        /// An `OFS_DELTA` on object `base` that appends `extra` to it.
+        fn appending(&mut self, base: usize, extra: &[u8]) -> usize {
+            let at = self.next_off();
+            let delta = appending_delta(self.contents[base].len(), extra);
+            let content = [&self.contents[base][..], extra].concat();
+            self.raw(ofs_entry(at - self.offs[base], &delta), content)
+        }
+
+        /// The pack, its index and every object's oid, in entry order.
+        fn finish(&self) -> (Vec<u8>, Vec<u8>, Vec<[u8; OID_LEN]>) {
+            let (pack, offs) = pack_of(&self.entries);
+            assert_eq!(offs, self.offs);
+            let oids: Vec<[u8; OID_LEN]> = self
+                .contents
+                .iter()
+                .map(|c| git_oid(GitObjType::Blob, c))
+                .collect();
+            let idx = idx_of(&oids.iter().copied().zip(offs).collect::<Vec<_>>());
+            (pack, idx, oids)
+        }
+    }
+
+    #[test]
+    fn parse_resolves_every_chain_in_linear_steps() {
+        // A chain as deep as git writes, then many deltas on its tip: walking each object's
+        // chain afresh would take objects × depth steps.
+        let depth = MAX_DELTA_DEPTH as usize - 1;
+        let (mut pack, mut offs) = chain(depth);
+        pack.truncate(pack.len() - 20);
+        let tip = offs[depth];
+        for _ in 0..3000 {
+            let at = pack.len() as u64;
+            pack.extend(ofs_entry(at - tip, &copy_all_delta(1)));
+            offs.push(at);
+        }
+        let n = offs.len();
+        pack[8..12].copy_from_slice(&(n as u32).to_be_bytes());
+        pack.extend([0u8; 20]);
+        let ids = numbered(&offs);
+
+        let before = CHAIN_STEPS.with(Cell::get);
+        let p = ParsedPack::parse(&pack, &idx_of(&ids)).unwrap();
+        let steps = CHAIN_STEPS.with(Cell::get) - before;
+        assert!(steps <= 4 * n as u64, "{steps} chain steps for {n} objects");
+
+        // And the geometry is what walking each chain gives.
+        for (k, (oid, off)) in ids.iter().enumerate() {
+            let o = p.object(oid).unwrap();
+            assert_eq!(o.offset, *off);
+            assert_eq!(o.delta_depth as usize, k.min(depth + 1));
+            assert!(o.contiguous && !o.is_ref_delta);
+            assert_eq!(o.delta_chain_span, o.end() - offs[0]);
+            assert_eq!(o.obj_type, GitObjType::Blob);
+        }
+        assert_eq!(p.object_bytes(&ids[n - 1].0).unwrap().1, b"x");
+    }
+
+    #[test]
+    fn verify_builds_each_object_once_from_its_base() {
+        // A chain of deltas each appending to the last, with a two-delta branch off every one,
+        // and a REF delta whose base is stored after it.
+        let mut pk = Packer::default();
+        let mut tip = pk.blob(b"base");
+        for i in 0..400 {
+            let branch = pk.appending(tip, format!("b{i}").as_bytes());
+            pk.appending(branch, b"+");
+            tip = pk.appending(tip, format!("c{i}").as_bytes());
+        }
+        let later = b"stored after its delta".to_vec();
+        let thin = [&later[..], &b"!"[..]].concat();
+        let delta = appending_delta(later.len(), b"!");
+        let ref_delta = pk.raw(ref_entry(git_oid(GitObjType::Blob, &later), &delta), thin);
+        pk.blob(&later);
+        let (pack, idx, oids) = pk.finish();
+        let p = ParsedPack::parse(&pack, &idx).unwrap();
+        assert!(p.objects.iter().any(|o| !o.contiguous));
+
+        let before = DELTAS_APPLIED.with(Cell::get);
+        assert_eq!(p.verify_all_oids().unwrap(), oids.len());
+        // Every delta applied once; rebuilding every chain would apply about 240 000.
+        let applied = DELTAS_APPLIED.with(Cell::get) - before;
+        assert_eq!(applied, oids.len() as u64 - 2);
+        for i in (0..oids.len()).step_by(97).chain([tip, ref_delta]) {
+            assert_eq!(p.object_bytes(&oids[i]).unwrap().1, pk.contents[i]);
+        }
+
+        // A wrong oid for a delta is still caught.
+        let mut ids: Vec<_> = oids.iter().copied().zip(pk.offs.iter().copied()).collect();
+        ids[2].0[OID_LEN - 1] ^= 1;
+        let p = ParsedPack::parse(&pack, &idx_of(&ids)).unwrap();
+        assert!(matches!(
+            p.verify_all_oids(),
+            Err(crate::error::Error::Integrity)
+        ));
+    }
+
+    #[test]
+    fn a_read_is_held_to_one_total_across_its_chain() {
+        // A base and ten deltas, one byte each: eleven bytes built in all.
+        let (pack, offs) = chain(10);
+        let span = &pack[..pack.len() - 20];
+        let p = bare(Vec::new(), Vec::new());
+        let links = p.links_at(span, 0, offs[10], false).unwrap();
+        let total = |left| ReadBudget {
+            step: u64::MAX,
+            left,
+        };
+        assert_eq!(build(span, &links, total(11)).unwrap(), b"x");
+        assert!(build(span, &links, total(10)).is_err());
+        // Each step is still held to its own bound too.
+        let per_step = ReadBudget {
+            step: 0,
+            left: u64::MAX,
+        };
+        assert!(build(span, &links, per_step).is_err());
+        // The default total is the per-step bound times the headroom.
+        let budget = ReadBudget::new(links.covered);
+        assert_eq!(budget.left, budget.step * super::CHAIN_BUILD_HEADROOM);
+    }
+
+    #[test]
+    fn a_whole_pack_read_is_budgeted_on_its_own_chain() {
+        // A small chain that builds far more than its own bytes inflate to, in a pack whose
+        // other bytes would cover it.
+        let filler = TestRng(7).bytes(8192);
+        let run = vec![b'a'; 1000];
+        let mut delta = delta_size(1000);
+        delta.extend(delta_size(200_000));
+        for _ in 0..200 {
+            delta.extend(copy_op(0, 1000));
+        }
+        let (a, b, c) = ([1u8; OID_LEN], [2u8; OID_LEN], [3u8; OID_LEN]);
+        let run_entry = blob_entry(&run);
+        let rel = run_entry.len() as u64;
+        let (pack, offs) = pack_of(&[blob_entry(&filler), run_entry, ofs_entry(rel, &delta)]);
+        let idx = idx_of(&[(a, offs[0]), (b, offs[1]), (c, offs[2])]);
+        let p = ParsedPack::parse(&pack, &idx).unwrap();
+        assert!(p.object_bytes(&c).is_err());
+        assert_eq!(p.object_bytes(&a).unwrap().1, filler);
+        assert_eq!(p.object_bytes(&b).unwrap().1, run);
+        // As the span read of the same chain is.
+        let obj = p.object(&c).unwrap().clone();
+        let start = (obj.end() - obj.delta_chain_span) as usize;
+        let slice = &pack[start..obj.end() as usize];
+        assert!(p.reconstruct_from_span(&obj, slice).is_err());
+    }
+
+    #[test]
+    fn an_honest_deepest_chain_of_a_large_file_still_reads() {
+        // 64 KiB of text, then git's deepest chain of versions, each changing one byte.
+        let mut text = Vec::new();
+        let mut line = 0;
+        while text.len() < 64 * 1024 {
+            text.extend(
+                format!("line {line} of a file that changes a little each version\n").bytes(),
+            );
+            line += 1;
+        }
+        text.truncate(64 * 1024);
+        let len = text.len();
+        let mut pk = Packer::default();
+        pk.blob(&text);
+        for v in 0..MAX_DELTA_DEPTH as usize {
+            let at = (v * 997) % (len - 2) + 1;
+            let mut d = delta_size(len as u64);
+            d.extend(delta_size(len as u64));
+            d.extend(copy_op(0, at));
+            d.extend([1, b'#']);
+            d.extend(copy_op(at + 1, len - at - 1));
+            let mut content = pk.contents.last().unwrap().clone();
+            content[at] = b'#';
+            let rel = pk.next_off() - pk.offs.last().unwrap();
+            pk.raw(ofs_entry(rel, &d), content);
+        }
+        let (pack, idx, oids) = pk.finish();
+        let p = ParsedPack::parse(&pack, &idx).unwrap();
+        let want = pk.contents.last().unwrap();
+        let oid = oids.last().unwrap();
+        assert_eq!(&p.object_bytes(oid).unwrap().1, want);
+        let obj = p.object(oid).unwrap().clone();
+        assert_eq!(obj.delta_depth, MAX_DELTA_DEPTH);
+        let start = (obj.end() - obj.delta_chain_span) as usize;
+        let slice = &pack[start..obj.end() as usize];
+        assert_eq!(&p.reconstruct_from_span(&obj, slice).unwrap().1, want);
     }
 }

@@ -473,9 +473,10 @@ Every clone, fetch, repack and reseed reads each pack like this:
 4. Only then does it fall back to Platform chunks, if the manifest has any.
 
 A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
-- a body larger than the manifest's `sizeBytes` is refused;
+- a body larger than the manifest's `sizeBytes` is refused. A manifest with no size (`sizeBytes` 0) allows 256 MiB, and the deadline below is set for that size;
 - each candidate's whole transfer gets `max(120 s, size ÷ 1 MiB/s)`, so a 2 GiB pack gets about 34 minutes. A host that stalls outright is cut off sooner, after 120 s with no bytes;
-- when Platform chunks exist, no new external candidate is started after `max(90 s, half that deadline)`, and the reader falls back to the chunks. A transfer already in progress is not abandoned.
+- when Platform chunks exist, no new external candidate is started after `max(90 s, half that deadline)`, and the reader falls back to the chunks. A transfer already in progress is not abandoned;
+- one pass over the copies in steps 1 to 3 ends after twice the candidate deadline (4 minutes for a small pack), however many copies are left. The Platform fallback in step 4 is not part of it.
 
 The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json), with the date it was last verified. `git-remote-dash`, `dg` and the web app all embed it; in the web app, **Settings → Your IPFS gateways** adds gateways tried before it. It is deliberately short: public gateways come and go (ipfs.io and dweb.link stopped serving on 2026-09-21), and every dead entry costs a timeout. Override it for the CLI in `storage.toml`:
 
@@ -486,7 +487,7 @@ ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.filebase.io"]
 
 `dg doctor` probes every gateway in the list (and each IPFS profile's public gateway) and flags the dead ones. When no gateway can serve a repo, the web app says which gateways failed and offers to add one, instead of loading forever.
 
-`dg storage status <owner>/<repo>` probes every copy of every pack: each recorded URL, and each CID on each gateway.
+`dg storage status <owner>/<repo>` probes every copy of every pack: each recorded URL, and each CID on each gateway. A recorded URL on plain http, this machine or a private network is listed with the reason and not contacted, unless it is on an origin you configured.
 
 ## Restoring a lost copy
 
@@ -508,9 +509,26 @@ The command looks for the pack's exact bytes in two places:
 - `.git/dash/packs/<sha256>.pack`: `git-remote-dash` keeps a copy there of every pack it stores on external storage only. This covers the pusher's own clone, including a push that was interrupted before its refs landed.
 - `.git/objects/pack/pack-*.pack`: any clone that fetched the pack holds its exact bytes.
 
-It verifies the SHA-256, uploads to the targets (at least `dash.replicas` must confirm), and reports which recorded copies are readable again. Copies it stored at **new** locations can't be added to the immutable manifest, and the forge-v2 contracts have no document type to announce them yet, so they are only printed. Re-upload through the pack's original profile to make the recorded copy readable again.
+It verifies the SHA-256, uploads to the targets (at least `dash.replicas` must confirm), and reports which recorded copies are readable again. Copies it stored at **new** locations can't be added to the immutable manifest, so they are only printed. Re-upload through the pack's original profile to make the recorded copy readable again, or record the new location as a mirror (next section).
 
 Plain `dg reseed --profile <name>` (without `--from-local`) re-uploads packs that are still readable to an additional target. It downloads them first, so it can't restore a pack whose copies are all gone. It is for maintainers and writers only, because the new copy is recorded as your own pack manifest, and it refuses anyone else before uploading. For a pack you already recorded, it reports whether the upload re-created an address a recorded copy names; if not, the copy is not recorded, and `dg repack --profile <name>` is the way to record your packs at a new address.
+
+## Mirroring a pack
+
+Anyone can record another copy of a public repository's pack, at their own storage, so readers have somewhere else to go when every copy the repository's manifests name is gone:
+
+```sh
+dg storage status <owner>/<repo>                                  # the packs, by hash
+dg storage mirror add <owner>/<repo> <pack sha256> https://mirror.example/packs/<sha256>.pack
+dg storage mirror add <owner>/<repo> <pack sha256> ipfs://<CID>   # or up to 4 IPFS CIDs
+dg storage mirror list <owner>/<repo>                             # every mirror of its packs
+dg storage mirror list --mine                                     # the mirrors you recorded
+dg storage mirror remove <record id>                              # delete one of yours
+```
+
+A mirror holds up to 4 addresses, all public `https://` URLs (no user name or password, not on a private network) or all bare `ipfs://<CID>`s. Before paying for the record, `dg` checks the addresses against the contract's rules and that they serve the pack's exact bytes (`--no-verify` skips the download). A mirror is only for a pack the repository lists, and only for a public repository: a private repository's packs are sealed to its members. You hold one mirror per pack: to change its addresses, remove it and add a new one.
+
+**How readers use them.** `dg`, `git clone`/`git fetch` and the web app read the recorded mirrors only after every copy the manifests name has failed, never on a healthy read. They try members' mirrors first (maintainers, then other members), then everyone else's, each oldest first, at most 8 addresses for one pack, and at most 2 from any one non-member's mirror; an `ipfs://` address is read through your IPFS gateways. Bytes that don't hash to the pack are discarded, so a wrong or hostile mirror can only fail to serve. When a mirror serves a pack, `git clone` and `git fetch` print a warning and the web app's storage row says so: the repository is surviving on a record its writer may delete, and a maintainer or writer should restore the copies (`dg reseed`). A push never counts a mirror as a stored copy: it stores the pack, and its browse index, again. `dg repo reindex` reads only the index's recorded copies to decide which packs it lacks. A mirror record costs about 0.00075 DASH; deleting your own refunds part of it.
 
 ## Troubleshooting
 

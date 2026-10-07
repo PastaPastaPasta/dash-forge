@@ -1,0 +1,52 @@
+{
+  "name": "triage_and_reader_are_members",
+  "description": "Every current member ranks with the writers.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "r1",
+        "ownerRole": "reader",
+        "createdAt": 5,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://reader.example/p"
+        ]
+      },
+      {
+        "id": "s1",
+        "ownerRole": null,
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://stranger.example/p"
+        ]
+      },
+      {
+        "id": "t1",
+        "ownerRole": "triage",
+        "createdAt": 4,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://triage.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://triage.example/p",
+      "https://reader.example/p",
+      "https://stranger.example/p"
+    ]
+  }
+}

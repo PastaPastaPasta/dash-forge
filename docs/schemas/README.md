@@ -102,6 +102,9 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg pr update-branch` | [`pr-update-branch.schema.json`](dg/pr-update-branch.schema.json) |
 | `dg pr verify` | [`pr-verify.schema.json`](dg/pr-verify.schema.json) |
 | `dg pr view` | [`pr-view.schema.json`](dg/pr-view.schema.json) |
+| `dg profile bot add` | [`profile-bot-add.schema.json`](dg/profile-bot-add.schema.json) |
+| `dg profile bot operator` | [`profile-bot-operator.schema.json`](dg/profile-bot-operator.schema.json) |
+| `dg profile bot remove` | [`profile-bot-remove.schema.json`](dg/profile-bot-remove.schema.json) |
 | `dg profile delete` | [`profile-delete.schema.json`](dg/profile-delete.schema.json) |
 | `dg profile key add` | [`profile-key-add.schema.json`](dg/profile-key-add.schema.json) |
 | `dg profile key list` | [`profile-key-list.schema.json`](dg/profile-key-list.schema.json) |
@@ -114,6 +117,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg release unpublish` | [`release-unpublish.schema.json`](dg/release-unpublish.schema.json) |
 | `dg release verify` | [`release-verify.schema.json`](dg/release-verify.schema.json) |
 | `dg repack` | [`repack.schema.json`](dg/repack.schema.json) |
+| `dg repo activity` | [`repo-activity.schema.json`](dg/repo-activity.schema.json) |
 | `dg repo archive` | [`repo-archive.schema.json`](dg/repo-archive.schema.json) |
 | `dg repo backend set` | [`repo-backend-set.schema.json`](dg/repo-backend-set.schema.json) |
 | `dg repo clone` | [`repo-clone.schema.json`](dg/repo-clone.schema.json) |
@@ -148,6 +152,9 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg storage add` | [`storage-add.schema.json`](dg/storage-add.schema.json) |
 | `dg storage advertise` | [`storage-advertise.schema.json`](dg/storage-advertise.schema.json) |
 | `dg storage list` | [`storage-list.schema.json`](dg/storage-list.schema.json) |
+| `dg storage mirror add` | [`storage-mirror-add.schema.json`](dg/storage-mirror-add.schema.json) |
+| `dg storage mirror list` | [`storage-mirror-list.schema.json`](dg/storage-mirror-list.schema.json) |
+| `dg storage mirror remove` | [`storage-mirror-remove.schema.json`](dg/storage-mirror-remove.schema.json) |
 | `dg storage remove` | [`storage-remove.schema.json`](dg/storage-remove.schema.json) |
 | `dg storage status` | [`storage-status.schema.json`](dg/storage-status.schema.json) |
 | `dg storage test` | [`storage-test.schema.json`](dg/storage-test.schema.json) |

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/storage-mirror-list.schema.json",
+  "title": "dg storage mirror list --json",
+  "description": "The pack mirrors recorded for a repository, or by you (`--mine`).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "mirrors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string",
+            "description": "Its writer's identity id."
+          },
+          "repoId": {
+            "type": "string"
+          },
+          "packHash": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "integer",
+            "description": "1: https addresses; 2: IPFS addresses."
+          },
+          "uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "documentId",
+          "by",
+          "repoId",
+          "packHash",
+          "kind",
+          "uris",
+          "createdAt"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "mirrors"
+  ],
+  "additionalProperties": true
+}

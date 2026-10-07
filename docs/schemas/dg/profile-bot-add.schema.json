@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/profile-bot-add.schema.json",
+  "title": "dg profile bot add --json",
+  "description": "Your profile lists a bot you operate.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created",
+        "updated",
+        "unchanged"
+      ]
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "bot": {
+      "type": "object",
+      "properties": {
+        "operator": {
+          "type": "string"
+        },
+        "operates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "The signer's bot claim as written: the identity that operates it, and the bots it operates."
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status"
+  ],
+  "additionalProperties": true
+}

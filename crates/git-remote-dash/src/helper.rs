@@ -757,7 +757,7 @@ async fn fetch_one(
 ) -> Result<([u8; 32], Got)> {
     let hash = hex::encode(h);
     let got = match svc
-        .fetch_best_copy(repo, contract, copies, roles, reader)
+        .fetch_best_copy_or_mirror(repo, contract, copies, roles, reader)
         .await
     {
         // A private repository's copy verified by its (ciphertext) hash; open it.
@@ -2247,18 +2247,22 @@ impl<'a> PackJob<'a> {
 /// the push folds the live fragments into one index (every 16th push,
 /// `RepoService::publish_push_locator`), theirs too, which a Platform-stored index pays
 /// for in chunks. A policy that stores nothing on Platform (and cannot fall back to it)
-/// pays nothing for the index's size, so it is not read. When the manifests cannot be read,
-/// the pack's own objects (a fold then goes unpriced; the push's own manifest read, which
-/// follows, fails it in that case).
+/// pays nothing for the index's size, so it is not read. When the manifests or the members
+/// cannot be read, the pack's own objects (a fold then goes unpriced; the push's own manifest
+/// read, which follows, fails it in that case).
 async fn folded_index_objects(ctx: &PushContext<'_>, objects: u64) -> u64 {
     let resolved = &ctx.policy.resolved;
     if !(resolved.platform || resolved.platform_fallback) {
         return objects;
     }
-    let Ok(manifests) = ctx.svc.read_pack_manifests(ctx.repo).await else {
+    let (manifests, roles) = futures::join!(
+        ctx.svc.read_pack_manifests(ctx.repo),
+        ctx.svc.copy_roles(ctx.repo)
+    );
+    let (Ok(manifests), Ok(roles)) = (manifests, roles) else {
         return objects;
     };
-    forge_core::repo::push_index_objects(&manifests, objects)
+    forge_core::repo::push_index_objects(&manifests, &roles, objects)
 }
 
 /// The policy's external targets, built from the user's profiles (secrets resolved here,
@@ -4282,5 +4286,26 @@ mod tests {
             PushOutcome::Error("refs/heads/main".into(), "non-fast-forward".into()).wire(),
             "error refs/heads/main non-fast-forward"
         );
+    }
+
+    /// A push asks whether a pack is already stored, and whether its index is, from the copies
+    /// the repository's manifests record, never a pack mirror (source check): a mirror anyone
+    /// may record and delete must not let a push skip storing its pack or its index.
+    /// `is_pack_indexed` reading recorded copies only is pinned in forge-core
+    /// (`only_the_read_path_reaches_pack_mirrors`).
+    #[test]
+    fn a_push_never_takes_a_pack_mirror_as_stored() {
+        let src = include_str!("helper.rs");
+        let body = |from: &str| {
+            let at = src.find(from).unwrap_or_else(|| panic!("{from}"));
+            &src[at..at + src[at..].find("\n}\n").expect("its end")]
+        };
+        let stored = body("async fn confirm_existing_manifest");
+        assert!(stored.contains(".fetch_best_copy(ctx.repo"), "{stored}");
+        let indexed = body("async fn missing_index(");
+        assert!(indexed.contains(".is_pack_indexed(ctx.repo"), "{indexed}");
+        for b in [stored, indexed] {
+            assert!(!b.contains("mirror("), "{b}");
+        }
     }
 }

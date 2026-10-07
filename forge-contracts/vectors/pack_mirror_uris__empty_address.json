@@ -1,0 +1,16 @@
+{
+  "name": "empty_address",
+  "description": "An empty address.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://m.example.com/p",
+      ""
+    ]
+  },
+  "expected": {
+    "problem": "length",
+    "index": 1
+  }
+}

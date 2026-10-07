@@ -1,9 +1,6 @@
 /**
  * The inputs of a release's provenance (`lib/rules/releaseProvenance.ts`, epic E5): its tag's
- * update history and the config timeline, and the release's revisions. A public repo's history
- * comes from the repo chrome store when this tab holds it (usually no request at all), else
- * from one equality read per ref-update type and the config timeline; a private repo's from the
- * member's session.
+ * update history and the config timeline ({@link readRefHistory}), and the release's revisions.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -15,31 +12,16 @@ import { repoChromeTimelines } from './chrome'
 import { configBundleOf, readConfigBundle } from './config'
 import type { RepoRef } from './contract'
 import { refNameHash } from './push'
-import { readAllRefUpdates, readRefUpdates, refUpdatesFromRows } from './refs'
+import { readRefHistory, type RefHistory } from './ref-history'
+import { readAllRefUpdates, refUpdatesFromRows } from './refs'
 import type { ReleaseList, ReleaseView } from './releases'
 
 /** A tag's update history and the config timeline it is judged by. */
-export interface TagHistory {
-  readonly refNameHash: string
-  readonly updates: readonly RefUpdate[]
-  readonly configs: readonly ConfigDoc[]
-}
+export type TagHistory = RefHistory
 
 /** The history of `refs/tags/<tag>`. */
-export async function readTagHistory(sdk: EvoSDK, repo: RepoRef, tag: string): Promise<TagHistory> {
-  const hash = refNameHash(`refs/tags/${tag}`)
-  const b64 = bytesToBase64(hash)
-  const stored = repo.visibility === 'public' ? await repoChromeTimelines(sdk, repo) : null
-  if (stored !== null) {
-    const [rows, config] = await Promise.all([stored.ref(b64), stored.config()])
-    return {
-      refNameHash: bytesToHex(hash),
-      updates: refUpdatesFromRows(repo, rows.refUpdate, rows.protectedRefUpdate, b64),
-      configs: configBundleOf(repo, config).history,
-    }
-  }
-  const [updates, bundle] = await Promise.all([readRefUpdates(sdk, repo, b64), readConfigBundle(sdk, repo)])
-  return { refNameHash: bytesToHex(hash), updates, configs: bundle.history }
+export function readTagHistory(sdk: EvoSDK, repo: RepoRef, tag: string): Promise<TagHistory> {
+  return readRefHistory(sdk, repo, `refs/tags/${tag}`)
 }
 
 const byKey = (a: ReleaseView, b: ReleaseView): number => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)

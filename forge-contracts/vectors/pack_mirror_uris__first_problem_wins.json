@@ -1,0 +1,17 @@
+{
+  "name": "first_problem_wins",
+  "description": "Problems are reported for the first address that has one.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://m.example.com/p",
+      "http://x/p",
+      "ipfs://a/b"
+    ]
+  },
+  "expected": {
+    "problem": "address",
+    "index": 1
+  }
+}
