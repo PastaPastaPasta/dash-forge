@@ -1,6 +1,11 @@
 import { test, expect, devices, type Browser, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { atRoute, expectLanded, loadSeedPulls, PASSPHRASE, repoUrl, waitForRepoResolved } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside the devnet's quorum-service lag (#212): these tests wait a fixed time for a page's
+// Platform content.
+test.beforeEach(quorumGuard)
 
 /**
  * Phones and tablets, on the forge-v2 read fixture (e2e/helpers.ts `DEMO`; read only).

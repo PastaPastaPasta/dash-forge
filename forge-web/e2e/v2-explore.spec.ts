@@ -3,6 +3,11 @@ import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { atRoute, collectPageErrors, DEMO, E2E_DEVNET, ownerIs, routeOf, runAxe, shot } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside the devnet's quorum-service lag (#212): these tests wait a fixed time for a page's
+// Platform content.
+test.beforeEach(quorumGuard)
 
 /** The read fixture's owner (`forge-contracts/scripts/seed-v2-fixture.mjs`). */
 const DEMO_OWNER = DEMO.owner
