@@ -11,12 +11,48 @@
  */
 
 import { newCommits } from '../merge/objects'
+import { parseCommit } from './git-objects'
 import type { HeadUpdate } from '../rules/review'
 import type { ObjectReader } from './tree-nav'
 import { plural } from './format'
 
 /** Commits a phrase walk reads per update before it falls back to the plain wording. */
 const WALK_CAP = 500
+
+/**
+ * Whether commit `next` contains commit `old` (`old` is `next` or one of its ancestors): a push,
+ * not a force-push. Exact, whatever the commit dates say: a breadth-first search of `next`'s
+ * ancestry for `old`. True when found; false when `next`'s whole history was read without it;
+ * null when `cap` commits were read first (or `budget.left`, a total shared by several checks, ran
+ * out), or a commit cannot be read. The PR timeline and a branch's Activity page both decide
+ * "force-pushed" with it.
+ */
+export async function tipContains(reader: ObjectReader, old: string, next: string, cap = WALK_CAP, budget?: { left: number }): Promise<boolean | null> {
+  if (old === next) return true
+  const seen = new Set<string>([next])
+  const queue = [next]
+  try {
+    for (let i = 0; i < queue.length; i++) {
+      if (i >= cap) return null
+      if (budget !== undefined) {
+        if (budget.left <= 0) return null
+        budget.left--
+      }
+      const obj = await reader.readObject(queue[i] as string)
+      if (obj.type !== 'commit') return null
+      for (const p of parseCommit(obj.bytes).parents) {
+        if (p === old) return true
+        if (!seen.has(p)) {
+          seen.add(p)
+          queue.push(p)
+        }
+      }
+    }
+    return false
+  } catch {
+    return null
+  }
+}
 
 /** A head update's words; `who`, when set, is the identity the words end with ("pushed by …"). */
 export interface HeadUpdatePhrase {
@@ -49,16 +85,16 @@ export async function headUpdatePhrases(
       else if (prev !== '') {
         // Without the base when its history is too long to walk past (the plain count then).
         const added = await (base === '' ? newCommits(reader, u.oid, [prev], WALK_CAP) : newCommits(reader, u.oid, [prev, base], WALK_CAP).catch(() => newCommits(reader, u.oid, [prev], WALK_CAP)))
-        // The old head is in the new one's history when walking it back from the new head
-        // finds nothing new.
-        const descends = (await newCommits(reader, prev, [u.oid], WALK_CAP)).length === 0
+        const descends = await tipContains(reader, prev, u.oid)
         const n = plural(added.length, 'commit')
-        phrase =
-          other === null
-            ? { text: descends ? `pushed ${n} ${arrow}` : `force-pushed ${arrow}` }
-            : descends
-              ? { text: `updated the head with ${n} ${arrow} pushed by`, who: other }
-              : { text: `updated the head ${arrow}, force-pushed by`, who: other }
+        if (descends !== null) {
+          phrase =
+            other === null
+              ? { text: descends ? `pushed ${n} ${arrow}` : `force-pushed ${arrow}` }
+              : descends
+                ? { text: `updated the head with ${n} ${arrow} pushed by`, who: other }
+                : { text: `updated the head ${arrow}, force-pushed by`, who: other }
+        }
       }
     } catch {
       // An unreadable commit or a history past the cap: keep the plain wording.

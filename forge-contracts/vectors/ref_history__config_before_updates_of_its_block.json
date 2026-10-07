@@ -1,0 +1,64 @@
+{
+  "name": "config_before_updates_of_its_block",
+  "description": "A config change and an update in the same block: the update was judged by the config, so the change comes first.",
+  "case": "ref_history",
+  "input": {
+    "refName": "refs/heads/main",
+    "refNameHash": "H",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 100
+      }
+    ],
+    "configs": [
+      {
+        "id": "c1",
+        "createdAt": 50,
+        "protectedPatterns": [
+          "refs/heads/main"
+        ]
+      },
+      {
+        "id": "c2",
+        "createdAt": 100,
+        "protectedPatterns": [
+          "refs/tags/**"
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "kind": "protectionAdded",
+      "id": "c1",
+      "at": 50,
+      "by": null,
+      "from": null,
+      "to": null
+    },
+    {
+      "kind": "protectionLifted",
+      "id": "c2",
+      "at": 100,
+      "by": null,
+      "from": null,
+      "to": null
+    },
+    {
+      "kind": "created",
+      "id": "u1",
+      "at": 100,
+      "by": "bob",
+      "from": null,
+      "to": "A"
+    }
+  ]
+}

@@ -39,6 +39,7 @@ mod profile;
 mod prompt;
 mod publish;
 mod quote;
+mod ref_activity;
 mod release;
 mod release_verify;
 mod repo;
@@ -461,6 +462,19 @@ pub enum RepoCommand {
     View {
         /// The repository (`owner/name`).
         repo: String,
+    },
+    /// A branch's or tag's activity: every push, force-push, move and deletion, and every
+    /// change to its protection, newest first. Inside a clone, a push is checked against local
+    /// git to tell a force-push from a fast-forward.
+    Activity {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The branch (`main`), or with --tag the tag (`v1.0`); a full `refs/…` name also works.
+        #[arg(value_name = "REF")]
+        ref_name: String,
+        /// Name a tag rather than a branch.
+        #[arg(long)]
+        tag: bool,
     },
     /// List an owner's repositories.
     List {
