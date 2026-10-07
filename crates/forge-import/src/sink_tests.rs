@@ -546,6 +546,7 @@ impl Chain for &Recorded {
             created_at: 1,
             delta: 0,
             sealed: None,
+            target_oid: None,
         });
         Ok(document_id)
     }

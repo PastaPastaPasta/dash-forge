@@ -259,6 +259,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("could not read your signing keys", None)
         }
         Command::Profile(crate::ProfileCommand::Key(_)) => ("signing keys not changed", None),
+        Command::Profile(crate::ProfileCommand::Bot(_)) => ("bot claim not changed", None),
         Command::VerifyCommit { repo, .. } => ("could not verify the commits", repo.as_ref()),
         Command::VerifyMirror { .. } => ("could not verify the mirror", None),
         Command::VerifyApp(_) => ("could not verify the web app", None),

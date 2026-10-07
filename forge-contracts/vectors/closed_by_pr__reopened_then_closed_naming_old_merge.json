@@ -1,0 +1,19 @@
+{
+  "name": "reopened_then_closed_naming_old_merge",
+  "description": "After a reopen, a later close naming the PR merged before it still reads closed in #7 (merged no later than this close).",
+  "rules": "v2",
+  "case": "closed_by_pr",
+  "input": {
+    "issue": 3,
+    "closedByPr": 7,
+    "closedAt": 5000,
+    "pr": {
+      "number": 7,
+      "merged": true,
+      "mergedAt": 900,
+      "body": "Fixes #3",
+      "imported": false
+    }
+  },
+  "expected": 7
+}

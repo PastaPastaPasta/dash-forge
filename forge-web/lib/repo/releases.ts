@@ -77,6 +77,11 @@ export interface ReleaseView {
    * states. Absent on a public release.
    */
   readonly sealed?: SealedReleaseInfo
+  /**
+   * A public revision's `targetOid` (hex): the tag's tip its writer read at publish. Absent on a
+   * sealed revision, and on one written before the field existed.
+   */
+  readonly targetOid?: string
 }
 
 /** What a sealed revision states besides the fields {@link ReleaseView} flattens. */
@@ -269,7 +274,9 @@ function toRelease(doc: PlainDocument): ReleaseView {
   const created = doc['$createdAt']
   const notes = str(doc, 'notes')
   const { body, omitted, published } = notesShown(notes)
+  const target = bytesField(doc, 'targetOid')
   return {
+    ...(target !== undefined && (target.length === 20 || target.length === 32) ? { targetOid: bytesToHex(target) } : {}),
     id: str(doc, '$id'),
     tagName: str(doc, 'tagName'),
     name: str(doc, 'name'),

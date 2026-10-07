@@ -75,6 +75,10 @@ describe('config changes', () => {
     })
     expect(configData(NOW)['protectedPatterns']).toEqual(['refs/heads/main'])
     expect(configData(DEFAULT_CONFIG)).toEqual({ defaultBranch: 'main', backend: { mode: 0 }, archived: false })
+    // a move is carried by every later config write
+    const moved = { ...NOW, movedTo: '4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF' }
+    expect(configData(applyConfigChange(moved, { archived: true }))['movedTo']).toBeInstanceOf(Uint8Array)
+    expect(sameConfig(moved, NOW)).toBe(false)
   })
 
   it('refuse a private repo before signing: its config is sealed', async () => {
