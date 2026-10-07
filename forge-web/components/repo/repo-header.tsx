@@ -86,7 +86,7 @@ export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | '
   if (p === '/repo/issues' || p === '/repo/issue' || p === '/repo/labels' || p === '/repo/milestones') return 'issues'
   if (p === '/repo/pulls' || p === '/repo/pull' || p === '/repo/pulls/new') return 'pulls'
   if (p === '/repo/releases' || p === '/repo/release') return 'releases'
-  if (p === '/repo/settings') return 'settings'
+  if (p === '/repo/settings' || p === '/repo/settings/environments') return 'settings'
   return null
 }
 

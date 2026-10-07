@@ -964,8 +964,13 @@ function noteFailedPlaces(repo: RepoRef, packHash: string, failed: readonly stri
   })
 }
 
-/** The {@link OnServed} for pack `packHash` (copy `copy`): the source, and what failed before it (`before`, then the mirrors'). */
-function servedBy(repo: RepoRef, packHash: string, copy?: string, before: readonly string[] = []): OnServed {
+/**
+ * The {@link OnServed} for pack `packHash` (copy `copy`): the source, and what failed before it
+ * (`before`, then the mirrors'). `ledger` false: nothing is recorded (an artifact that is not the
+ * repo's content, {@link loadStoredArtifactBytes}).
+ */
+function servedBy(repo: RepoRef, packHash: string, copy?: string, before: readonly string[] = [], ledger = true): OnServed {
+  if (!ledger) return () => undefined
   return (uri, failed) => {
     noteSource(repo, packHash, uri, copy)
     noteFailedPlaces(repo, packHash, [...before, ...failed])
@@ -986,12 +991,13 @@ async function afterChunksFailed(
   documentId: string | undefined,
   chunkError: unknown,
   read: (gateways: readonly string[], onServed: OnServed) => Promise<Uint8Array>,
+  ledger = true,
 ): Promise<Uint8Array> {
   const gateways = readGatewaysFor(repoKey(repo))
   if (externalFetchUrls(copy.uris, gateways).length === 0) throw chunkError
   const chunks = `platform: ${errorText(chunkError)}`
   try {
-    return await read(gateways, servedBy(repo, copy.packHash, documentId, [chunks]))
+    return await read(gateways, servedBy(repo, copy.packHash, documentId, [chunks], ledger))
   } catch (e) {
     if (!(e instanceof PackUnavailableError)) throw e
     throw new PackUnavailableError(copy.packHash, ['platform', ...e.hosts], e.corrupt, `${chunks}; ${e.reason}`, e.unfollowed)
@@ -1180,6 +1186,16 @@ export function loadArtifactBytes(
 }
 
 /**
+ * A whole artifact's bytes as stored, never opened as a pack, even in a private repo: the first
+ * copy whose bytes hash to its `packHash`. For artifacts with their own codec (an environment
+ * snapshot), which checks and opens them itself. `repo` keeps its session, so the repo's own
+ * gateways and caches are the ones used.
+ */
+export function loadStoredArtifactBytes(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest): Promise<Uint8Array> {
+  return loadArtifactBytesProgress(sdk, repo, manifest, undefined, undefined, true)
+}
+
+/**
  * Bytes per windowed whole-artifact fetch. `fetchPlatformRange` now splits an oversized
  * request across parallel {@link CHUNK_QUERY_MAX}-row queries, so this is a
  * memory/progress-granularity knob rather than a correctness ceiling.
@@ -1200,12 +1216,15 @@ export async function loadArtifactBytesProgress(
   manifest: PackManifest,
   onProgress?: (bytesFetched: number, bytesTotal: number) => void,
   cancel?: AbortSignal,
+  stored = false,
 ): Promise<Uint8Array> {
   // A private repo: every copy's sealed bytes are checked against `packHash`, then its standing,
-  // then decrypted; the plaintext is what the caller gets.
-  const session = repo.session
+  // then decrypted; the plaintext is what the caller gets. `stored`: the bytes as uploaded,
+  // checked against `packHash` and never opened, nor recorded in the repo's content-check ledger
+  // (not git content; {@link loadStoredArtifactBytes}).
+  const session = stored ? undefined : repo.session
   const open = async (copy: PackManifest): Promise<Uint8Array> => {
-    const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel)
+    const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel, !stored)
     if (session === undefined) return bytes
     try {
       return await openPrivateArtifact(session, copy, bytes, manifest.copies ?? [copy])
@@ -1254,12 +1273,13 @@ async function loadOneCopy(
   manifest: PackManifest,
   onProgress?: (bytesFetched: number, bytesTotal: number) => void,
   cancel?: AbortSignal,
+  ledger = true,
 ): Promise<Uint8Array> {
   const total = manifest.sizeBytes
   if (total <= 0) return new Uint8Array(0)
   onProgress?.(0, total)
   if (manifest.storage !== 0) {
-    const bytes = await loadExternalCopy(sdk, repo, manifest, onProgress, cancel)
+    const bytes = await loadExternalCopy(sdk, repo, manifest, onProgress, cancel, ledger)
     onProgress?.(total, total)
     return bytes
   }
@@ -1269,13 +1289,18 @@ async function loadOneCopy(
   } catch (e) {
     // A cancelled clone stops here: no external copy is fetched for it.
     if (cancel?.aborted) throw e
-    const bytes = await afterChunksFailed(repo, manifest, undefined, e, (gateways, served) =>
-      fetchExternalWhole(manifest, gateways, served, cancel),
+    const bytes = await afterChunksFailed(
+      repo,
+      manifest,
+      undefined,
+      e,
+      (gateways, served) => fetchExternalWhole(manifest, gateways, served, cancel),
+      ledger,
     )
     onProgress?.(total, total)
     return bytes
   }
-  noteSource(repo, manifest.packHash)
+  if (ledger) noteSource(repo, manifest.packHash)
   return out
 }
 
@@ -1330,6 +1355,7 @@ async function loadExternalCopy(
   manifest: PackManifest,
   onProgress?: (bytesFetched: number, bytesTotal: number) => void,
   cancel?: AbortSignal,
+  ledger = true,
 ): Promise<Uint8Array> {
   const reasons: string[] = []
   let corrupt = false
@@ -1340,7 +1366,7 @@ async function loadExternalCopy(
         loadPlatformWhole(sdk, at.repo, at.manifest, onProgress, cancel),
       )
       if (bytesToHex(sha256(bytes)) === manifest.packHash.toLowerCase()) {
-        noteSource(repo, manifest.packHash)
+        if (ledger) noteSource(repo, manifest.packHash)
         return bytes
       }
       forgetChunks(at.repo, at.manifest)
@@ -1352,7 +1378,7 @@ async function loadExternalCopy(
     }
   }
   const gateways = readGatewaysFor(repoKey(repo))
-  const served = servedBy(repo, manifest.packHash, undefined, reasons)
+  const served = servedBy(repo, manifest.packHash, undefined, reasons, ledger)
   if (reasons.length === 0) return fetchExternalWhole(manifest, gateways, served, cancel)
   const unavailable = (hosts: readonly string[], why: readonly string[], bad: boolean): PackUnavailableError =>
     new PackUnavailableError(

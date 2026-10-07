@@ -21,7 +21,7 @@ import { MembersContentSetting, RemovalReads, useMembersKeyBlock } from '@/compo
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
-import { ROLE_LABEL, ROLE_NOUN, grantableRoles, membershipTitle } from '@/lib/rules/roles'
+import { ROLE_LABEL, ROLE_NOUN, grantableRoles, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import { decodeIdentifier } from '@/lib/auth'
@@ -40,6 +40,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 import { PrivateMembers } from '@/components/repo/private-members'
+import { EnvironmentsRemoval } from '@/components/repo/environments-content'
 import { SettingsReadOnly } from '@/components/repo/settings-read-only'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { WebhookSettings } from '@/components/repo/webhook-settings'
@@ -360,7 +361,18 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           blocked={keyBlock}
           onConfirm={runAction}
         >
-          {action?.kind === 'revoke' && keyed ? <RemovalReads lane={keyed} /> : null}
+          {/* What they could read: members-only discussion and the repo's environments, to rotate
+              at its source. Nothing is listed when they keep a role that holds the key. A
+              maintainer's removal is refused while the repo has environments (dg handles it). */}
+          {action?.kind === 'revoke' && keyed && removalEffect(memberRows, action.member, action.role) !== 'none'
+            ? <RemovalReads lane={keyed} />
+            : null}
+          {action?.kind === 'revoke' && action.role !== 'maintainer' ? <EnvironmentsRemoval
+                  home={home}
+                  member={action.member}
+                  heldMembersKey={keyed && holdsMembersKey(action.role, 'public')}
+                  staysMaintainer={removalEffect(memberRows, action.member, action.role) === 'none'}
+                /> : null}
         </ConfirmDialog>
         </>
         )}
