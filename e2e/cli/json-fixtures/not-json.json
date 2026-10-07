@@ -1,0 +1,13 @@
+{
+  "source": "negative: --json prints one JSON document",
+  "command": "label list",
+  "args": [
+    "--json",
+    "label",
+    "list",
+    "o/r"
+  ],
+  "exit": 0,
+  "expect": "invalid",
+  "stdout": "label list\n"
+}
