@@ -7,8 +7,8 @@
 //!   resolved);
 //! - the output of dg's own JSON builders, versioned as dg prints it, validates against the
 //!   schema of the command that prints it;
-//! - the case files in `e2e/cli/json-fixtures/` (dg output captured offline, shapes taken from
-//!   the emitters, and wrong shapes that must fail) get the verdict each expects, so this full
+//! - the case files in `e2e/cli/json-fixtures/` (shapes copied from reading each emitter, and
+//!   wrong shapes that must fail; the e2e suite's capture checks real dg output) get the verdict each expects, so this full
 //!   validator and `e2e/cli/json_check.py`, which checks the e2e suite's real output, agree.
 //!
 //! CI also runs `python3 docs/schemas/generate.py --check`, so a schema edited by hand without
