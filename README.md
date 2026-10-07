@@ -129,7 +129,7 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Verification
 
-The web app at **https://forge.dashhq.org** (GitHub Pages) runs on devnet sakura (Dash Platform v5.0.0-beta.1); [Networks](docs/networks.md) has the earlier devnets. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against sakura ("Devnet Nightly", from master's workflow file). See [e2e/README.md](e2e/README.md).
+The web app at **https://forge.dashhq.org** (GitHub Pages) runs on devnet sakura (Dash Platform v5.0.0-beta.2); [Networks](docs/networks.md) has the earlier devnets. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against sakura ("Devnet Nightly", from master's workflow file). See [e2e/README.md](e2e/README.md).
 
 Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
 
