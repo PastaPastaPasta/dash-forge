@@ -460,7 +460,8 @@ pub struct PackPick {
 
 /// Every readable pack of a repo, in the order a reader fetches them.
 ///
-/// `copies` are all the repo's pack manifests (any number of packs). Per pack hash the copy is
+/// `copies` are the repo's pack manifests of one kind (a reader passes its git packs; any
+/// number of packs), so every `supersedes` claim here is within that kind. Per pack hash the copy is
 /// [`select_pack_copy`]'s; a pack with no verified copy is left out. A pack is *superseded*
 /// when the selected copy of another readable pack lists it in `supersedes`: a `supersedes`
 /// claim is honoured only if the pack making it verifies, and only from the copy actually read.
@@ -701,15 +702,18 @@ pub fn v2_pack_list(copies: &[PackCopyRow], as_of: Option<&CopyKey>) -> Vec<V2Pa
     out
 }
 
-/// The `kind` artifacts write-side planning treats as superseded (forge-v2.md §4, vectors
-/// `planning_superseded__*`): the hashes named in `supersedes` by a manifest of that same kind
-/// whose uploader is currently a maintainer or a writer (the roles consensus lets record a
-/// manifest). Planning reads no bytes, so a claim is not checked against the claimant's
-/// content; the uploader's role stands in for it. Pure.
+/// The supersedes claims planning honours for `kind` artifacts (forge-v2.md §4, vectors
+/// `planning_superseded__*`): every hash named in `supersedes` by a manifest of `kind` whose
+/// uploader is currently a maintainer or a writer (the roles consensus lets record a manifest),
+/// except the manifest's own hash. A `kind` artifact is superseded for planning when its hash
+/// is in the set; hashes of other kinds the set may hold mean nothing. Planning reads no bytes,
+/// so a claim is not checked against the claimant's content; the uploader's role stands in for
+/// it. Pure.
 ///
-/// Native clients plan with it which index fragments are live (and so which a new index
-/// folds), which git packs a repack names, and whether a reindex raced a fold. It never
-/// changes what readers fetch ([`v2_pack_list`]).
+/// Clients plan with it which index fragments are live (and so which a new index folds, or
+/// whether a browser merge may add one), which git packs a repack names, whether a reindex
+/// raced a fold, and which history indexes are live. It never changes what readers fetch
+/// ([`v2_pack_list`]).
 #[must_use]
 pub fn planning_superseded(copies: &[PackCopyRow], kind: u64) -> BTreeSet<String> {
     copies

@@ -247,8 +247,8 @@ export interface PackPick {
 }
 
 /**
- * Every readable pack of a repo, in fetch order: per pack hash the selected copy (packs with
- * no verified copy left out); packs a selected copy of another pack supersedes go last, not
+ * Every readable pack of a repo, in fetch order, from its manifests of one kind (a reader passes
+ * its git packs): per pack hash the selected copy (packs with no verified copy left out); packs a selected copy of another pack supersedes go last, not
  * dropped; then `createdAt`, then `packHash`.
  */
 export function packReadOrder(copies: readonly PackCopy[]): PackPick[] {
@@ -395,10 +395,11 @@ export function v2PackList(copies: readonly PackCopyRow[], asOf?: CopyKey | null
 }
 
 /**
- * The `kind` artifacts write-side planning treats as superseded (the Rust
- * `planning_superseded`; vectors `planning_superseded__*`), sorted: hashes named by a
- * manifest of that kind whose uploader is currently a maintainer or writer. The web plans no
- * repack or reindex; this port keeps the shared rule checked from both sides.
+ * The supersedes claims planning honours for `kind` artifacts (the Rust `planning_superseded`;
+ * vectors `planning_superseded__*`), sorted: every hash named by a manifest of `kind` whose
+ * uploader is currently a maintainer or writer, except the manifest's own. A `kind` artifact is
+ * superseded for planning when its hash is listed. The web plans a merge's index fragment and
+ * which history indexes are live with it (`plannedSuperseded` in `lib/repo/packs.ts`).
  */
 export function planningSuperseded(copies: readonly PackCopyRow[], kind: number): string[] {
   const out = new Set<string>()

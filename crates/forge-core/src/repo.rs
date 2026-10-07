@@ -3056,13 +3056,11 @@ struct Series {
 
 /// The live indexes of `kind` among `manifests` (see [`Series`]).
 fn series(manifests: &[PackManifestInfo], roles: &RoleMap, kind: u8, tip: [u8; 20]) -> Series {
+    // Each kind is its own series: only a current maintainer's or writer's index of this kind
+    // retires one (docs/design/history-index.md).
+    let superseded = planning_superseded(manifests, roles, kind);
     let kind = u64::from(kind);
     let member = |m: &PackManifestInfo| roles.contains_key(&m.owner_id);
-    let superseded: BTreeSet<[u8; 32]> = manifests
-        .iter()
-        .filter(|m| member(m))
-        .flat_map(|m| m.supersedes.iter().copied())
-        .collect();
     // Newest first (the manifest list's order), one entry per packHash.
     let mut seen = BTreeSet::new();
     let live: Vec<HistoryEntry> = manifests
@@ -3121,8 +3119,8 @@ fn covers_tip(live: &[HistoryEntry], tip: [u8; 20]) -> bool {
 
 /// Plan the history index publish for `tip` from the repository's manifests: the live version
 /// lists (kind 5) and column indexes (kind 3), each by a current member and not superseded by a
-/// member's manifest, whether both already cover `tip`, and the newest full version-lists index
-/// a delta could extend.
+/// current maintainer's or writer's index of its own kind ([`planning_superseded`]), whether both
+/// already cover `tip`, and the newest full version-lists index a delta could extend.
 pub fn plan_history_index(
     manifests: &[PackManifestInfo],
     roles: &RoleMap,
@@ -4709,6 +4707,32 @@ mod tests {
         let mut newer = history("g", 30, 3, "w", 0xc0, None);
         newer.supersedes = vec![base.pack_hash];
         assert!(!plan_history_index(&[newer, delta, base], &roles, [0xb0; 20]).lists_covered);
+    }
+
+    /// Each history kind is its own series: a column index (kind 3) naming a version-lists
+    /// index, or a same-kind claim by a triage member or a removed uploader, leaves it live.
+    #[test]
+    fn history_series_count_only_same_kind_claims_by_current_writers() {
+        use super::plan_history_index;
+        let roles: RoleMap = [
+            ("w".to_string(), Role::Writer),
+            ("t".to_string(), Role::Triage),
+        ]
+        .into();
+        let base = history("f", 10, 1, "w", 0xa0, None);
+        let mut column = as_column(&history("c", 20, 2, "w", 0xc0, None), 0x32);
+        column.supersedes = vec![base.pack_hash];
+        let mut triage = history("t", 30, 3, "t", 0xd0, None);
+        triage.supersedes = vec![base.pack_hash];
+        let mut gone = history("g", 40, 4, "gone", 0xe0, None);
+        gone.supersedes = vec![base.pack_hash];
+        let mut all = vec![gone, triage, column, base.clone()];
+        assert!(plan_history_index(&all, &roles, [0xa0; 20]).lists_covered);
+        // A writer's version lists naming it do retire it.
+        let mut writer = history("w2", 50, 5, "w", 0xf0, None);
+        writer.supersedes = vec![base.pack_hash];
+        all.insert(0, writer);
+        assert!(!plan_history_index(&all, &roles, [0xa0; 20]).lists_covered);
     }
 
     /// Review M2: the delta's base is the newest live full index on the new tip's first-parent
