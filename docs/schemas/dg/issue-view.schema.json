@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/issue-view.schema.json",
+  "title": "dg issue view --json",
+  "description": "An issue, its comments, events and state.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "number": {
+      "type": "integer"
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "body": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "bodyIncomplete": {},
+    "author": {
+      "type": "string"
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "audience": {
+      "$ref": "common.schema.json#/$defs/audience"
+    },
+    "readable": {
+      "type": "boolean"
+    },
+    "why": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "integer"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "open",
+        "closed"
+      ]
+    },
+    "open": {
+      "type": "boolean"
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assignees": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "stateReason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "duplicateOf": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "milestone": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pinned": {
+      "type": "boolean"
+    },
+    "locked": {
+      "type": "boolean"
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bodyIncomplete": {},
+          "audience": {
+            "$ref": "common.schema.json#/$defs/audience"
+          },
+          "createdAt": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "author"
+        ]
+      }
+    },
+    "membersOnlyComments": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "membersOnlyHidden": {
+      "type": "integer"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {},
+          "actor": {
+            "type": "string"
+          },
+          "asAuthor": {},
+          "createdAt": {
+            "type": "integer"
+          },
+          "reason": {},
+          "dupNumber": {},
+          "closedIn": {}
+        }
+      }
+    },
+    "hiddenComments": {},
+    "moderation": {},
+    "hiddenEventValues": {},
+    "plaintextEventValues": {}
+  },
+  "required": [
+    "schemaVersion",
+    "number",
+    "author",
+    "id",
+    "readable",
+    "state",
+    "open",
+    "labels",
+    "assignees"
+  ],
+  "additionalProperties": true
+}

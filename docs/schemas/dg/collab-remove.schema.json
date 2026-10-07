@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/collab-remove.schema.json",
+  "title": "dg collab remove --json",
+  "description": "A member removed.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "removed",
+        "not_a_member"
+      ]
+    },
+    "member": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "repo": {
+      "type": "string"
+    },
+    "rotation": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/rotation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "droppedEpochs": {},
+    "losingMembers": {},
+    "environments": {},
+    "resavedEnvironments": {}
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "member"
+  ],
+  "additionalProperties": true
+}

@@ -14,7 +14,7 @@
 use super::https::HttpsBackend;
 use super::ipfs::{IpfsBackend, IpfsConfig};
 use super::s3::{S3Backend, S3Config};
-use super::{sha256, verify_and_get, BackendRegistry, ByteRange, PackBackend, PackMeta, Uri};
+use super::{sha256, verify_and_get, ByteRange, PackBackend, PackMeta, Uri};
 use crate::error::Error;
 
 const STATIC_HTTP: &str = "http://127.0.0.1:8082";
@@ -196,16 +196,16 @@ async fn ipfs_put_get_range_verify_probe() {
 }
 
 /// End-to-end failover across *live* backends: a bad (missing) URI first, a good one
-/// second → the registry falls through and returns hash-verified bytes from the good one.
+/// second → the reader falls through and returns hash-verified bytes from the good one.
 #[tokio::test]
-async fn registry_live_failover_bad_then_good() {
+async fn reader_live_failover_bad_then_good() {
     skip_unless!(
         &format!("{IPFS_GATEWAY}/ipfs/bafkqaaa"),
-        "registry_live_failover_bad_then_good"
+        "reader_live_failover_bad_then_good"
     );
     skip_unless!(
         &format!("{S3_ENDPOINT}/{S3_BUCKET}/"),
-        "registry_live_failover_bad_then_good"
+        "reader_live_failover_bad_then_good"
     );
 
     let data = payload();
@@ -215,20 +215,23 @@ async fn registry_live_failover_bad_then_good() {
     let ipfs = IpfsBackend::new(IpfsConfig::local(IPFS_API, IPFS_GATEWAY));
     let good_uri = ipfs.put(&data, &meta).await.expect("IPFS add").remove(0);
 
-    // Registry: s3 backend (preferred, but we point at a MISSING key) + ipfs (good).
-    let s3 = S3Backend::new(S3Config::public(S3_ENDPOINT, S3_BUCKET));
-    let mut reg = BackendRegistry::new();
-    reg.register(Box::new(s3)).register(Box::new(ipfs));
-
-    // Default preference tries s3 first → 404 → fails over to the ipfs uri.
-    let bad_uri = Uri(format!(
-        "s3://{S3_BUCKET}/packs/does-not-exist-{}.pack",
+    // The fixture bucket's public URL (a MISSING key) first, then the ipfs copy. Both are
+    // on loopback, so they are configured origins: a profile's public URL and a gateway.
+    let profiles = crate::storage::StorageProfiles::parse(&format!(
+        "[profiles.fixture]\nkind = \"s3\"\nendpoint = \"{S3_ENDPOINT}\"\nbucket = \"{S3_BUCKET}\"\n\
+         public_url = \"{S3_ENDPOINT}/{S3_BUCKET}\"\n"
+    ))
+    .unwrap();
+    let reader = crate::storage::PackReader::new(vec![IPFS_GATEWAY.into()], &profiles).sequential();
+    let bad_uri = format!(
+        "{S3_ENDPOINT}/{S3_BUCKET}/packs/does-not-exist-{}.pack",
         meta.pack_hash
-    ));
-    let uris = vec![bad_uri, good_uri];
+    );
+    let uris = vec![bad_uri, good_uri.0];
 
-    let got = reg
-        .get_verified(&uris, &meta.pack_hash)
+    // The missing key → 404 → the reader falls over to the ipfs copy.
+    let got = reader
+        .fetch_verified(&uris, &meta.pack_hash, Some(data.len() as u64), None)
         .await
         .expect("failover to the good uri");
     assert_eq!(got, data);

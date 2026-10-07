@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/doctor.schema.json",
+  "title": "dg doctor --json",
+  "description": "Each check of the setup, and what fixes it.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "network": {
+      "type": "string"
+    },
+    "forgeV2": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "core": {
+              "type": "string"
+            },
+            "collab": {
+              "type": "string"
+            },
+            "community": {
+              "type": "string"
+            },
+            "group": {}
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "failed": {
+      "type": "integer"
+    },
+    "warnings": {
+      "type": "integer"
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "fix": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "autoFix": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "status",
+                "ok"
+              ]
+            }
+          }
+        },
+        "required": [
+          "name",
+          "checks"
+        ]
+      }
+    },
+    "fixesApplied": {
+      "type": "array",
+      "items": {}
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "ok",
+    "network",
+    "failed",
+    "warnings",
+    "sections"
+  ],
+  "additionalProperties": true
+}

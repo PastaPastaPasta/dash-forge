@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-protect-list.schema.json",
+  "title": "dg repo protect list --json",
+  "description": "The repository's protected patterns.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "protectedPatterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "defaultBranch": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "protectedPatterns"
+  ],
+  "additionalProperties": true
+}

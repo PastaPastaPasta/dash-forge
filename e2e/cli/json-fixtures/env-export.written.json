@@ -1,0 +1,25 @@
+{
+  "source": "emitter: crates/dg/src/env.rs export -o",
+  "command": "env export",
+  "args": [
+    "--json",
+    "env",
+    "export",
+    "o/r",
+    "--env",
+    "prod",
+    "-o",
+    ".env"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "written",
+    "env": "prod",
+    "file": ".env",
+    "entries": 1,
+    "mode": "0600",
+    "ignored": [],
+    "schemaVersion": 1
+  }
+}

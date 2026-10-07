@@ -398,6 +398,12 @@ function runCaseV2(v: Vector): void {
       expect(v2.v2PackList(inp.copies, inp.asOf)).toEqual(v.expected)
       break
     }
+    case 'planning_superseded': {
+      onlyKeys(v, ['copies', 'kind'], PACK_LIST_KEYS)
+      const inp = v.input as { readonly copies: readonly v2.PackCopyRow[]; readonly kind: number }
+      expect(v2.planningSuperseded(inp.copies, inp.kind)).toEqual(v.expected)
+      break
+    }
     case 'approvals': {
       onlyKeys(v, ['reviews', 'memberships', 'headOid', 'dismissed', 'prAuthor'])
       const inp = v.input as {

@@ -1,0 +1,58 @@
+{
+  "name": "non_member_ignored",
+  "description": "Index fragments naming F1 and F2 from an uploader who is no longer a member, and from a triage member (whose role records no manifest), do not count: only current maintainers and writers steer planning.",
+  "case": "planning_superseded",
+  "rules": "v2",
+  "input": {
+    "kind": 1,
+    "copies": [
+      {
+        "id": "f1",
+        "packHash": "F1",
+        "kind": 1,
+        "createdAt": 10,
+        "ownerRole": "writer",
+        "supersedes": []
+      },
+      {
+        "id": "f2",
+        "packHash": "F2",
+        "kind": 1,
+        "createdAt": 10,
+        "ownerRole": "writer",
+        "supersedes": []
+      },
+      {
+        "id": "r",
+        "packHash": "R1",
+        "kind": 1,
+        "createdAt": 10,
+        "supersedes": [
+          "F1",
+          "F2"
+        ]
+      },
+      {
+        "id": "t",
+        "packHash": "T1",
+        "kind": 1,
+        "createdAt": 10,
+        "ownerRole": "triage",
+        "supersedes": [
+          "F1"
+        ]
+      },
+      {
+        "id": "d",
+        "packHash": "D1",
+        "kind": 1,
+        "createdAt": 10,
+        "ownerRole": "reader",
+        "supersedes": [
+          "F2"
+        ]
+      }
+    ]
+  },
+  "expected": []
+}

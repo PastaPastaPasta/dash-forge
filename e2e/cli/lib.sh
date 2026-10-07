@@ -91,7 +91,14 @@ harness_find_binaries() {
     BIN_DIR="${dbg}"
   fi
   export BIN_DIR
-  export DG="${BIN_DIR}/dg"
+  # DG is dg behind dg-json-capture, which keeps each --json run's output for json_check.py
+  # (finish_scenario). E2E_JSON_CHECK=0 runs dg itself.
+  export E2E_DG_REAL="${BIN_DIR}/dg"
+  if [[ "${E2E_JSON_CHECK:-1}" != 0 ]]; then
+    export DG="${E2E_LIB_DIR}/dg-json-capture"
+  else
+    export DG="${E2E_DG_REAL}"
+  fi
   # The helper must be on PATH so `git` can invoke git-remote-dash for dash:// URLs.
   export PATH="${BIN_DIR}:${PATH}"
   info "using binaries in ${BIN_DIR}"
@@ -319,6 +326,10 @@ harness_init() {
   mkdir -p "${WORKROOT}"
 
   harness_find_binaries || exit 1
+  # Where this script's dg --json outputs are kept (dg-json-capture), one directory each.
+  E2E_JSON_DIR="${WORKROOT}/json/$(basename "$0" .sh)"
+  rm -rf "${E2E_JSON_DIR}"
+  export E2E_JSON_DIR
 
   # Preflight: fixture files present.
   local missing=0 f
@@ -348,7 +359,15 @@ harness_ensure_repo() { # harness_ensure_repo <name>
 }
 
 # --- scenario finish ---------------------------------------------------------
+# Every dg --json output this scenario captured, checked against its schema in docs/schemas/dg/
+# (the command's own on exit 0, error.schema.json otherwise). A mismatch fails the scenario.
+check_json_outputs() {
+  [[ "${E2E_JSON_CHECK:-1}" != 0 && -n "${E2E_JSON_DIR:-}" && -d "${E2E_JSON_DIR}" ]] || return 0
+  python3 "${E2E_LIB_DIR}/json_check.py" "${E2E_JSON_DIR}"
+}
+
 finish_scenario() {
+  check_json_outputs || bad "dg --json output matches docs/schemas (json_check.py, above)"
   if [[ "${SCENARIO_FAILS}" -eq 0 ]]; then
     printf '%sPASS%s  %s\n' "${C_GRN}" "${C_RST}" "${SCENARIO_NAME}" >&2
     exit 0

@@ -134,7 +134,7 @@ if dg_read_retry "$P_MEMBER" "$LOG-iv.json" "$LOG-iv.err" --json issue view "$RE
    && dg_read_retry "$P_MEMBER" "$LOG-pv.json" "$LOG-pv.err" --json pr view "$REPO" "$PR"; then
   [[ "$(json_field "$LOG-iv.json" 'd["title"]')" == "$ISSUE_TITLE" && "$(json_field "$LOG-iv.json" 'd["comments"][0]["body"]')" == "member comment ${RUN_ID}" ]] \
     && ok "issue #$ISSUE: title and comment decrypt" || { cat "$LOG-iv.json" >&2; bad "issue view"; }
-  [[ "$(json_field "$LOG-iv.json" 'd["state"]["labels"]')" == "['$LABEL']" ]] \
+  [[ "$(json_field "$LOG-iv.json" 'd["labels"]')" == "['$LABEL']" ]] \
     && ok "issue #$ISSUE: the sealed label opens" || { cat "$LOG-iv.json" >&2; bad "issue label"; }
   # the list folds every issue from the repo's event feed: the sealed label filters it too
   if dg_read_retry "$P_MEMBER" "$LOG-il.json" "$LOG-il.err" --json issue list "$REPO" --label "$LABEL" --state all \
@@ -190,7 +190,7 @@ if dg_read_retry "$P_MEMBER" "$LOG-iv2.json" "$LOG-iv2.err" --json issue view "$
    && [[ "$(json_field "$LOG-iv2.json" 'd["title"]')" == "$NEW_TITLE" \
       && "$(json_field "$LOG-iv2.json" 'd["body"]')" == "secret body ${RUN_ID}" \
       && "$(json_field "$LOG-iv2.json" 'd["comments"][0]["body"]')" == "member comment edited ${RUN_ID}" \
-      && "$(json_field "$LOG-iv2.json" 'd["state"]["labels"]')" == "['$LABEL']" \
+      && "$(json_field "$LOG-iv2.json" 'd["labels"]')" == "['$LABEL']" \
       && "$(json_field "$LOG-pv2.json" 'd["body"]')" == "pr body edited ${RUN_ID}" \
       && "$(json_field "$LOG-pv2.json" 'd["baseRef"]')" == refs/heads/main ]]; then
   ok "the member reads the edits (the untouched body, the label and the PR's base branch intact)"

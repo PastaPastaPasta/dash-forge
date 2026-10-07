@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/webhook-remove.schema.json",
+  "title": "dg webhook remove --json",
+  "description": "A webhook removed.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "removed"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "hookId": {
+      "type": "string"
+    },
+    "deleted": {},
+    "tombstone": {}
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "hookId"
+  ],
+  "additionalProperties": true
+}

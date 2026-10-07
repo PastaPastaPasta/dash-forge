@@ -92,7 +92,7 @@ function choose(value: string): void {
   el.dispatchEvent(new Event('change', { bubbles: true }))
 }
 const render = async (): Promise<void> => {
-  await act(async () => root.render(<PullMerge repo={repo} home={home} pull={pull} canMerge isMaintainer checkout="dg pr checkout 7" onMerged={() => undefined} />))
+  await act(async () => root.render(<PullMerge recheckMembers={async () => null} repo={repo} home={home} pull={pull} canMerge isMaintainer checkout="dg pr checkout 7" onMerged={() => undefined} />))
   await act(async () => undefined)
 }
 

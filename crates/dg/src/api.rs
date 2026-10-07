@@ -233,7 +233,7 @@ async fn query(ctx: &Ctx, a: &crate::ApiQueryArgs) -> Result<()> {
         let n = client
             .count_documents(&contract, &a.doc_type, &filters)
             .await?;
-        crate::errors::print_json(&json!({ "count": n }));
+        crate::errors::print_raw_json(&json!({ "count": n }));
         return Ok(());
     }
     let order = orders(a.order.as_deref().unwrap_or("[]"))?;
@@ -264,7 +264,7 @@ async fn query(ctx: &Ctx, a: &crate::ApiQueryArgs) -> Result<()> {
         .iter()
         .map(|d| doc_json(&contract, &a.doc_type, d))
         .collect();
-    crate::errors::print_json(&Value::Array(rows));
+    crate::errors::print_raw_json(&Value::Array(rows));
     Ok(())
 }
 

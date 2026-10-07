@@ -136,6 +136,12 @@ describe('parseMarkdown line terminators (D-900)', () => {
     expect(await parseWithDeadline(`one${sep}- two`)).toEqual([{ t: 'paragraph', c: [{ t: 'text', v: 'one - two' }] }])
   })
 
+  it.each(['#', '-', '1.', '>', '***', '```'])('returns for a %s marker right before U+2028, U+2029 or a lone CR', async (marker) => {
+    for (const sep of ['\u2028', '\u2029', '\r', '\u2028\r\n\u2029\r']) {
+      expect((await parseWithDeadline(`${marker}${sep}x`)).length).toBeGreaterThan(0)
+    }
+  })
+
   it('returns for a heading ending in U+2028 (the preact 10.10.0 release notes)', async () => {
     expect(await parseWithDeadline('# a\u2028')).toEqual([{ t: 'heading', level: 1, c: [{ t: 'text', v: 'a' }] }])
     const notes = await parseWithDeadline('## Feature\u2028\r\n\r\n* Microtick')
