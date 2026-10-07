@@ -27,10 +27,11 @@ impl Default for HttpsBackend {
 }
 
 impl HttpsBackend {
-    /// Build a backend with a fresh HTTP client.
+    /// Build a backend with a fresh HTTP client that has the storage connect and idle-read
+    /// timeouts ([`crate::storage::http_client`]).
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: crate::storage::http_client(),
         }
     }
 
@@ -100,6 +101,10 @@ impl PackBackend for HttpsBackend {
 
     async fn get(&self, uri: &Uri, range: Option<ByteRange>) -> Result<Vec<u8>> {
         http_get(&self.client, &uri.0, range).await
+    }
+
+    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
+        http_get_capped(&self.client, &uri.0, None, Some(max_bytes)).await
     }
 
     async fn probe(&self, uri: &Uri) -> Result<Health> {

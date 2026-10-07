@@ -35,8 +35,9 @@ pub const MAX_HASHED_BYTES: u64 = 2 << 30;
 /// What one run downloads for hashing, in all (later runs hash the rest).
 pub const RUN_BYTES: u64 = 4 << 30;
 
-/// The most an asset with no recorded size is read for hashing.
-pub const UNSIZED_BYTES: u64 = 256 << 20;
+/// The most an asset with no recorded size is read for hashing: also the most a reader takes
+/// of a body whose size is unknown, so every asset hashed here can be downloaded.
+pub const UNSIZED_BYTES: u64 = forge_core::storage::read::MAX_UNSIZED_BYTES;
 
 /// Redirect hops followed (each one checked like the first URL).
 const MAX_REDIRECTS: usize = 5;
