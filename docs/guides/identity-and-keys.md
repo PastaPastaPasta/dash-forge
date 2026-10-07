@@ -97,6 +97,7 @@ Things to know:
 - On macOS `dg` reads and writes the keychain through Apple's `/usr/bin/security`, so `dg`, `git-remote-dash` and upgraded copies of either read the entry without an access dialog. Any program running as you can ask `security` for it without a prompt: the keychain protects entries at rest and from other users. What `dg` keeps there is limited identity keys (a budget, an expiry, Forge contracts only), with your identity's encryption key beside them (it reads your private repositories; `--signing-only` leaves it out), and the storage credentials `dg storage add` is given, so scope those to the one bucket. A full identity (`dg auth login --full-key`: master key and recovery phrase) never goes there; it is always a passphrase-sealed file. The GitHub CLI stores its token the same way.
 - Over SSH there is no keychain dialog to answer; use a sealed key file there (`DASH_FORGE_NO_KEYCHAIN=1 dg auth login …`).
 - `--insecure-plaintext` stores the key unencrypted (0600) where there is no keychain and no way to type a passphrase. Every later use warns.
+- Key files are owner-only (0600, in 0700 folders) on macOS and Linux. On Windows they rely on your user profile's default permissions, so pick an `-o` export location only you can read.
 - In the web app, the key never leaves that browser, but any script running on the page can use it while it is unlocked ([details](#the-browser-vault-and-its-limits)). Lock or sign out on shared machines.
 
 ---
