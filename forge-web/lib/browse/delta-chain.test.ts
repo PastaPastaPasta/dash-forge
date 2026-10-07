@@ -9,9 +9,9 @@ import { describe, expect, it } from 'vitest'
 
 import { serializeLocator, memoryPackSource, type IndexedObject } from './indexer'
 import { ObjectLocator } from './locator'
-import { BuildBudget, ObjectTooLargeError, buildMaxBytes, gitOidHex, parseOfsBase, reconstructFromSpan } from './pack'
+import { BuildBudget, BuildBudgetError, ObjectTooLargeError, applyDelta, buildMaxBytes, gitOidHex, parseOfsBase, reconstructFromSpan } from './pack'
 import { T_BLOB, T_OFS_DELTA, T_REF_DELTA, concat, copyInsertDelta, deltaSize, hexToBytes, objHeader, ofsBase } from './pack-fixtures'
-import { BrowseReader, type PackSource } from './reader'
+import { BrowseReader, PACK_COPIES_TRIED, type PackSource } from './reader'
 
 const PACK_HEADER_LEN = 12
 /** git's ceiling on `pack.depth`, written out so this file stands on its own. */
@@ -196,11 +196,140 @@ describe('delta depth', () => {
     expect(reconstructFromSpan(loc, deep.pack.subarray(PACK_HEADER_LEN), Infinity, Infinity, new BuildBudget(2_000)).bytes.length).toBe(51)
   })
 
+  it('caps what a read with no limit of its own may build at 2 GiB', () => {
+    expect(buildMaxBytes(Infinity)).toBe(2 * 1024 * 1024 * 1024)
+  })
+
+  it('charges a step to the budget before building it', () => {
+    // 16 copies of a 64 KiB base: a 1 MiB result from a 100-byte delta.
+    const base = new Uint8Array(64 * 1024)
+    const delta = new Uint8Array([...deltaSize(base.length), ...deltaSize(16 * base.length), ...Array<number>(16).fill(0x80)])
+    const budget = new BuildBudget(1024 * 1024 - 1)
+    expect(() => applyDelta(base, delta, Infinity, budget)).toThrow(BuildBudgetError)
+    // Refused, it was not counted: what is left still builds a smaller step.
+    expect(applyDelta(base, new Uint8Array([...deltaSize(base.length), ...deltaSize(base.length), 0x80]), Infinity, budget).length).toBe(base.length)
+    expect(applyDelta(base, delta, Infinity, new BuildBudget(1024 * 1024)).length).toBe(1024 * 1024)
+  })
+
   it('refuses a chain deeper than git allows in a span read', () => {
     const deep = chain(DELTA_DEPTH_MAX + 1)
     const top = deep.rows[deep.rows.length - 1] as { offset: number; length: number }
     const span = top.offset + top.length - PACK_HEADER_LEN
     const loc = { offset: top.offset, length: top.length, deltaChainSpan: span }
     expect(() => reconstructFromSpan(loc, deep.pack.subarray(PACK_HEADER_LEN))).toThrow(/over 4095 deep/)
+  })
+})
+
+/** `entry` followed by zeros up to `length` bytes: a reader stops at the end of its zlib stream. */
+function padded(entry: Uint8Array, length: number): Uint8Array {
+  const out = new Uint8Array(length)
+  out.set(entry)
+  return out
+}
+
+/**
+ * A reader over packs given as one byte array per copy (`packs[packRef][copy]`), whose locator
+ * says each `oid` is at the matching entry. `copiesRead` collects the copies fetched from.
+ */
+function copiesReaderOf(
+  packs: readonly (readonly Uint8Array[])[],
+  rows: readonly { oid: string; packRef: number; offset: number; length: number }[],
+  copiesRead = new Set<string>(),
+  opts: ConstructorParameters<typeof BrowseReader>[2] = {},
+): BrowseReader {
+  const objects: IndexedObject[] = rows.map((r) => ({ oidHex: r.oid, packRef: r.packRef, offset: r.offset, length: r.length, deltaDepth: 1 }))
+  const source: PackSource = {
+    fetchRange: (packRef, start, end, copy) => {
+      copiesRead.add(`${packRef}:${copy ?? 0}`)
+      const pack = packs[packRef]?.[copy ?? 0]
+      if (pack === undefined || end > pack.length) return Promise.reject(new Error(`no pack ${packRef} copy ${copy}`))
+      return Promise.resolve(pack.subarray(start, end))
+    },
+    copyCount: (packRef) => packs[packRef]?.length ?? 1,
+  }
+  return new BrowseReader(ObjectLocator.parse(serializeLocator(objects)), source, opts)
+}
+
+describe('pack copies', () => {
+  it('reads the honest copy after a hostile one built nearly all of a read’s budget', async () => {
+    // Copy 0 holds a chain of 2,047 entries of 128 KiB each at the object's address: 2,047 x 128
+    // KiB is 128 KiB short of the 256 MiB a read under 256 KiB may build, and it does not hash to
+    // the object. Copy 1 holds the object itself (200 KiB), which must still read.
+    const size = 128 * 1024
+    const first = new Uint8Array(size).map((_, i) => i % 251)
+    const junk = [concat(objHeader(T_BLOB, size), zlibSync(first))]
+    for (let k = 1; k < 2_047; k++) {
+      const delta = copyThenInsert(size, size - 2, [k & 0xff, k >> 8])
+      junk.push(concat(objHeader(T_OFS_DELTA, delta.length), ofsBase((junk[k - 1] as Uint8Array).length), zlibSync(delta)))
+    }
+    const honest = new Uint8Array(200 * 1024).map((_, i) => i % 13)
+    const honestEntry = concat(objHeader(T_BLOB, honest.length), zlibSync(honest))
+    const hostileTop = junk.pop() as Uint8Array
+    const length = Math.max(hostileTop.length, honestEntry.length)
+    const below = packOf(junk).pack
+    const top = below.length
+    const copies = [concat(below, padded(hostileTop, length)), concat(below, padded(honestEntry, length))]
+    const { offsets } = packOf(junk)
+    const rows = [
+      ...junk.map((s, k) => ({ oid: (k + 1).toString(16).padStart(40, '0'), packRef: 0, offset: offsets[k] as number, length: s.length })),
+      { oid: gitOidHex('blob', honest), packRef: 0, offset: top, length },
+    ]
+    const maxBytes = 256 * 1024
+    expect(2_047 * size + honest.length).toBeGreaterThan(buildMaxBytes(maxBytes))
+    const obj = await copiesReaderOf([copies], rows).readObject(gitOidHex('blob', honest), { maxBytes })
+    expect(obj.bytes).toEqual(honest)
+  }, 60_000)
+
+  it('reads the honest copy after a hostile one failed a shared REF base on its depth', async () => {
+    // Pack 1 (one copy) holds Z. Copy 0 of pack 0 reaches Z under 4,096 deltas, past the depth a
+    // read follows; copy 1 is one delta on Z. Z failing deep in copy 0 says nothing about Z.
+    const z = new Uint8Array([1, 2, 3, 4])
+    const zEntry = concat(objHeader(T_BLOB, z.length), zlibSync(z))
+    const zPack = packOf([zEntry])
+    const deep = [refDelta(gitOidHex('blob', z))]
+    for (let k = 1; k <= DELTA_DEPTH_MAX; k++) {
+      deep.push(concat(objHeader(T_OFS_DELTA, DELTA.length), ofsBase((deep[k - 1] as Uint8Array).length), zlibSync(DELTA)))
+    }
+    const want = new Uint8Array([1, 2, 3, 4, 0x21])
+    const honestTop = refDelta(gitOidHex('blob', z))
+    const hostileTop = deep.pop() as Uint8Array
+    const length = Math.max(hostileTop.length, honestTop.length)
+    const below = packOf(deep)
+    const top = below.pack.length
+    const copies = [concat(below.pack, padded(hostileTop, length)), concat(below.pack, padded(honestTop, length))]
+    const rows = [
+      { oid: gitOidHex('blob', z), packRef: 1, offset: zPack.offsets[0] as number, length: zEntry.length },
+      ...deep.map((s, k) => ({ oid: (k + 1).toString(16).padStart(40, '0'), packRef: 0, offset: below.offsets[k] as number, length: s.length })),
+      { oid: gitOidHex('blob', want), packRef: 0, offset: top, length },
+    ]
+    const obj = await copiesReaderOf([copies, [zPack.pack]], rows).readObject(gitOidHex('blob', want))
+    expect(obj.bytes).toEqual(want)
+  }, 30_000)
+
+  it('tries a bounded number of a pack’s copies', async () => {
+    const real = new Uint8Array([1, 2, 3])
+    const entry = concat(objHeader(T_BLOB, 3), zlibSync(new Uint8Array([9, 9, 9])))
+    const { pack, offsets } = packOf([entry])
+    const read = new Set<string>()
+    const reader = copiesReaderOf([Array.from({ length: 12 }, () => pack)], [{ oid: gitOidHex('blob', real), packRef: 0, offset: offsets[0] as number, length: entry.length }], read)
+    await expect(reader.readObject(gitOidHex('blob', real))).rejects.toThrow(/oid mismatch/)
+    expect(read.size).toBe(PACK_COPIES_TRIED)
+  })
+
+  it('does not let a stale reader’s failed entries fail the fresher reader it asks', async () => {
+    // The stale reader's copy 0 holds a broken entry at the address where the fresher reader's
+    // pack 0 holds X; its copy 1 is a delta on X, which only the fresher reader indexes.
+    const x = new Uint8Array([1, 2, 3, 4])
+    const xEntry = concat(objHeader(T_BLOB, x.length), zlibSync(x))
+    const want = new Uint8Array([1, 2, 3, 4, 0x21])
+    const good = refDelta(gitOidHex('blob', x))
+    const length = Math.max(good.length, xEntry.length)
+    const broken = padded(concat(objHeader(T_BLOB, 4), new Uint8Array([0x78, 0x9c, 0xff, 0xff])), length)
+    const stale = [packOf([broken]).pack, packOf([padded(good, length)]).pack]
+    const fresh = copiesReaderOf([[packOf([padded(xEntry, length)]).pack]], [{ oid: gitOidHex('blob', x), packRef: 0, offset: PACK_HEADER_LEN, length }])
+    const reader = copiesReaderOf([stale], [{ oid: gitOidHex('blob', want), packRef: 0, offset: PACK_HEADER_LEN, length }], new Set(), {
+      onMiss: () => Promise.resolve(fresh),
+    })
+    expect((await reader.readObject(gitOidHex('blob', want))).bytes).toEqual(want)
   })
 })

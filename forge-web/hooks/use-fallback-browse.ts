@@ -15,6 +15,7 @@ import { repoContractIds, repoKey, type PackManifest, type RepoRef } from '@/lib
 import { errorMessage } from '@/lib/utils'
 import {
   cachedFallback,
+  fallbackNeedsAsk,
   FallbackTooLargeError,
   restoreFallback,
   startFallback,
@@ -33,8 +34,9 @@ export interface FallbackBrowse {
   /** The thrown value behind `error` (e.g. a StorageUnreachableError listing the places tried). */
   readonly cause: unknown
   /**
-   * The clone that started without asking stopped at its smaller budget: it waits for `start()`
-   * (the user asking), even for a repo small enough to start without asking.
+   * A clone of this pack set that started without asking stopped at its smaller budget (on this
+   * page or an earlier one): it waits for `start()` (the user asking), even for a repo small
+   * enough to start without asking.
    */
   readonly needsAsk: boolean
   readonly start: () => void
@@ -59,10 +61,10 @@ export function useFallbackBrowse(
     }
   }, [])
 
-  const settle = useCallback((run: Promise<BrowseContext>, automatic = false) => {
+  const settle = useCallback((run: Promise<BrowseContext>) => {
     setStatus('working')
     setError(null)
-    if (!automatic) setNeedsAsk(false)
+    setNeedsAsk(false)
     run
       .then((ctx) => {
         if (!mounted.current) return
@@ -71,7 +73,8 @@ export function useFallbackBrowse(
       })
       .catch((e: unknown) => {
         if (!mounted.current) return
-        if (automatic && e instanceof FallbackTooLargeError) {
+        // Decided by the run itself: this page may have joined one another page started.
+        if (e instanceof FallbackTooLargeError && e.automatic) {
           setProgress(null)
           setNeedsAsk(true)
           setStatus('idle')
@@ -89,7 +92,6 @@ export function useFallbackBrowse(
       startFallback(sdk, repo, livePacks, (p) => {
         if (mounted.current) setProgress(p)
       }, automatic),
-      automatic,
     )
   }, [sdk, repo, livePacks, settle])
   const start = useCallback(() => run(false), [run])
@@ -117,6 +119,11 @@ export function useFallbackBrowse(
         if (ctx !== null) {
           setContext(ctx)
           setStatus('ready')
+        } else if (fallbackNeedsAsk(repoKey(repo), livePacks)) {
+          // One that started without asking already stopped at its budget: ask, not decode again.
+          setProgress(null)
+          setNeedsAsk(true)
+          setStatus('idle')
         } else if (sdk !== null && totalSizeBytes <= AUTO_LOAD_MAX_BYTES) {
           startRef.current(true)
         } else {

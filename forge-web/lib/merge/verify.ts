@@ -38,7 +38,7 @@ export async function missingFromClosure(pack: Uint8Array, tip: string, baseTip:
   const rows =
     pack.length > 32
       ? await indexPacks([pack]).catch((e: unknown) => {
-          throw e instanceof IndexTooLargeError ? new Error('This change is too large to check in the browser. Make it with dg instead.') : e
+          throw e instanceof IndexTooLargeError ? new Error('the pack is too large to check in the browser; use `dg` instead') : e
         })
       : []
   const packReader = rows.length > 0 ? new BrowseReader(ObjectLocator.parse(serializeLocator(rows)), memoryPackSource([pack])) : null

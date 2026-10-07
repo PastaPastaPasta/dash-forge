@@ -141,6 +141,29 @@ export class ObjectTooLargeError extends Error {
   }
 }
 
+/**
+ * A delta chain no honest pack holds: one that loops back on itself or runs past
+ * {@link DELTA_DEPTH_MAX}, or a read that took too many steps. Where the chain was entered decides
+ * it as much as the entry does, so it says nothing about the entry read on another path.
+ */
+export class DeltaChainError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DeltaChainError'
+  }
+}
+
+/**
+ * A read built more than its {@link BuildBudget}: what it built before says as much as the
+ * entry it stopped at, so it says nothing about that entry read on another path.
+ */
+export class BuildBudgetError extends ObjectTooLargeError {
+  constructor(built: number, max: number) {
+    super(built, max, `reading this object built ${built} bytes, over the ${max}-byte limit`)
+    this.name = 'BuildBudgetError'
+  }
+}
+
 /** The least a read may build however small its limit: 4095 steps of 64 KiB, git's deepest chain of small objects. */
 const BUILD_FLOOR_BYTES = 256 * 1024 * 1024
 
@@ -149,10 +172,12 @@ const BUILD_FLOOR_BYTES = 256 * 1024 * 1024
  * delta result, added up. Each step is bounded ({@link DECODE_MAX_BYTES}), but a chain of 4095
  * of them is not. 64 steps of the largest base the read allows ({@link baseMaxBytes}) cover
  * git's default `pack.depth` of 50 even when every base is that large; the floor lets small
- * objects use the whole depth git allows; and no read builds more than 4 decodes' worth.
+ * objects use the whole depth git allows. No read builds more than 2 decodes' worth, the most
+ * one step needs (a delta's largest base, then its largest result): a tab that holds that has
+ * little left, and a read with no limit of its own would otherwise get 64 times it.
  */
 export function buildMaxBytes(maxBytes: number): number {
-  return Math.min(4 * DECODE_MAX_BYTES, Math.max(64 * baseMaxBytes(maxBytes), BUILD_FLOOR_BYTES))
+  return Math.min(2 * DECODE_MAX_BYTES, Math.max(64 * baseMaxBytes(maxBytes), BUILD_FLOOR_BYTES))
 }
 
 /** What one read has built so far, against its {@link buildMaxBytes}. */
@@ -161,12 +186,10 @@ export class BuildBudget {
 
   constructor(readonly max: number) {}
 
-  /** Count `bytes` just built; past the budget, the read fails. */
+  /** Count `bytes` about to be built, before they are allocated; past the budget, the read fails instead. */
   spend(bytes: number): void {
+    if (this.built + bytes > this.max) throw new BuildBudgetError(this.built + bytes, this.max)
     this.built += bytes
-    if (this.built > this.max) {
-      throw new ObjectTooLargeError(this.built, this.max, `reading this object built ${this.built} bytes, over the ${this.max}-byte limit`)
-    }
   }
 }
 
@@ -190,8 +213,8 @@ const INFLATE_CHUNK = 64 * 1024
  * pusher's claim, nothing checks it), and a short stream followed by megabytes of other
  * entries costs only the stream.
  */
-export function inflateZlib(buf: Uint8Array, from: number, expected: number, maxBytes = Infinity): Uint8Array {
-  return inflateStream(buf, from, expected, maxBytes).bytes
+export function inflateZlib(buf: Uint8Array, from: number, expected: number, maxBytes = Infinity, budget?: BuildBudget): Uint8Array {
+  return inflateStream(buf, from, expected, maxBytes, true, budget).bytes
 }
 
 /**
@@ -227,11 +250,14 @@ function inflateStream(
   expected: number,
   maxBytes: number,
   keep = true,
+  /** Charged `expected` before it is allocated. */
+  budget?: BuildBudget,
 ): { readonly bytes: Uint8Array; readonly inflater: Inflate } {
   const limit = Math.min(maxBytes, DECODE_MAX_BYTES)
   if (expected > limit) throw new ObjectTooLargeError(expected, limit)
   const input = buf.subarray(from)
   if (expected > input.length * DEFLATE_MAX_RATIO + 64) throw new Error('inflate size mismatch')
+  budget?.spend(expected)
   const out = new Uint8Array(keep ? expected : 0)
   let got = 0
   // windowBits 15: zlib only (no gzip or raw-deflate detection).
@@ -305,18 +331,19 @@ export function storedMaxBytes(maxBytes: number): number {
 /**
  * Inflate the delta whose zlib stream is at `buf[from..]` (declared `size`) and apply it to
  * `base`, refusing a delta or a result that could exceed `maxBytes` before allocating either.
+ * `budget` is charged the result, before it is allocated.
  */
-export function inflateDelta(base: Uint8Array, buf: Uint8Array, from: number, size: number, maxBytes = Infinity): Uint8Array {
-  return applyDelta(base, inflateZlib(buf, from, size, deltaMaxBytes(maxBytes)), maxBytes)
+export function inflateDelta(base: Uint8Array, buf: Uint8Array, from: number, size: number, maxBytes = Infinity, budget?: BuildBudget): Uint8Array {
+  return applyDelta(base, inflateZlib(buf, from, size, deltaMaxBytes(maxBytes)), maxBytes, budget)
 }
 
 /**
  * Apply a git delta (`src_size, dst_size, [copy|insert]*`) to `base`. A `dst_size` over
  * `maxBytes` is refused before anything is allocated: a few KiB of copy opcodes can ask for
  * gigabytes. So is one the instructions do not build: they are sized before `dst_size` bytes
- * are reserved for them.
+ * are reserved for them, and charged to `budget`.
  */
-export function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes = Infinity): Uint8Array {
+export function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes = Infinity, budget?: BuildBudget): Uint8Array {
   let pos = 0
   const readSize = (): number => {
     let r = 0
@@ -336,6 +363,7 @@ export function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes = Infin
   const limit = Math.min(maxBytes, DECODE_MAX_BYTES)
   if (dst > limit) throw new ObjectTooLargeError(dst, limit)
   if (runDelta(base, delta, pos, null) !== dst) throw new Error('delta output size mismatch')
+  budget?.spend(dst)
   const out = new Uint8Array(dst)
   runDelta(base, delta, pos, out)
   return out
@@ -437,11 +465,10 @@ function decodeAt(
   let limit = maxBytes
   let base: GitObject
   for (;;) {
-    if (deltas.length > DELTA_DEPTH_MAX) throw new Error(`delta chain is over ${DELTA_DEPTH_MAX} deep`)
+    if (deltas.length > DELTA_DEPTH_MAX) throw new DeltaChainError(`delta chain is over ${DELTA_DEPTH_MAX} deep`)
     const h = parseObjHeader(buf, at - baseAddr)
     if (h.type === T_COMMIT || h.type === T_TREE || h.type === T_BLOB || h.type === T_TAG) {
-      base = { type: typeFromCode(h.type), bytes: inflateZlib(buf, h.after, h.size, limit) }
-      budget.spend(base.bytes.length)
+      base = { type: typeFromCode(h.type), bytes: inflateZlib(buf, h.after, h.size, limit, budget) }
       break
     }
     if (h.type === T_OFS_DELTA) {
@@ -465,8 +492,7 @@ function decodeAt(
   }
   for (let i = deltas.length - 1; i >= 0; i--) {
     const d = deltas[i] as (typeof deltas)[number]
-    base = { type: base.type, bytes: inflateDelta(base.bytes, buf, d.pos, d.size, d.limit) }
-    budget.spend(base.bytes.length)
+    base = { type: base.type, bytes: inflateDelta(base.bytes, buf, d.pos, d.size, d.limit, budget) }
   }
   return base
 }

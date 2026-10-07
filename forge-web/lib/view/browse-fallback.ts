@@ -63,11 +63,16 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>()
 const restores = new Map<string, Promise<BrowseContext | null>>()
+/**
+ * The pack sets (`repoKey\0manifestKey`) whose clone started without asking stopped at its
+ * budget: the next page asks first rather than decode them again ({@link fallbackNeedsAsk}).
+ */
+const overBudget = new Set<string>()
 
 // A private repo's entries are keyed `repoId#sessionId` and hold decrypted state: they go with
 // the session, however it ends (lock, key change, retirement).
 onPrivateSessionEnded((id) => {
-  for (const m of [cache, restores]) for (const k of [...m.keys()]) if (k.endsWith(`#${id}`) || k.includes(`#${id}\0`)) m.delete(k)
+  for (const m of [cache, restores, overBudget]) for (const k of [...m.keys()]) if (k.endsWith(`#${id}`) || k.includes(`#${id}\0`)) m.delete(k)
 })
 
 /**
@@ -104,6 +109,14 @@ export function cachedFallback(
   if (entry === undefined) return null
   if (livePacks !== undefined && entry.manifestKey !== fallbackManifestKey(livePacks)) return null
   return entry.promise
+}
+
+/**
+ * Whether a clone of this pack set started without asking stopped at its budget this session:
+ * a clone of it waits for the user to ask.
+ */
+export function fallbackNeedsAsk(key: string, livePacks: readonly PackManifest[]): boolean {
+  return overBudget.has(`${key}\0${fallbackManifestKey(livePacks)}`)
 }
 
 /**
@@ -169,7 +182,10 @@ export function startFallback(
   const existing = cachedFallback(repoKey(repo), livePacks)
   if (existing !== null) return existing
 
-  const run = runFallback(sdk, repo, livePacks, onProgress, automatic)
+  const run = runFallback(sdk, repo, livePacks, onProgress, automatic).catch((e: unknown) => {
+    if (e instanceof FallbackTooLargeError && e.automatic) overBudget.add(`${repoKey(repo)}\0${manifestKey}`)
+    throw e
+  })
   return remember(repoKey(repo), manifestKey, run)
 }
 
