@@ -16,6 +16,12 @@
  * or racing at the first publish is not a late tag: its later tip is no baseline, so a push
  * after the publish reads as a move.
  *
+ * A public release records its tag's tip at publish (`target`: the first published revision's
+ * `release.targetOid`). It is the baseline only when the tag named nothing then, like a pin.
+ * When the tag did name something, the two must agree: a record that names another commit than
+ * the tag's history (`recordDiffers`) is an altered release. A sealed pin is not compared,
+ * because it may name the commit an annotated tag points at.
+ *
  * Parity: forge-core `rules::release_provenance` (vectors `release_provenance__*`).
  */
 
@@ -41,8 +47,10 @@ export interface ProvenanceInput {
   readonly configs: readonly ConfigDoc[]
   /** Every revision of the release's tag, any order. */
   readonly revisions: readonly ProvenanceRevision[]
-  /** The commit (or tag object) the release itself records, when it records one. */
+  /** The commit (or tag object) a sealed release records, when it records one. */
   readonly pin?: string | null
+  /** The tag tip a public release records (its first published revision's `targetOid`). */
+  readonly target?: string | null
 }
 
 /** A tip and the update that set it. */
@@ -94,6 +102,10 @@ export interface ReleaseProvenance {
   readonly tag: TagVerdict
   /** The newest revision's assets against the first published revision's. */
   readonly assets: AssetChanges
+  /** The tag tip a public release records (`target`), lower-cased; a sealed pin is not listed (never compared). */
+  readonly recorded: string | null
+  /** The release records (`target`) another tip than the tag held at the first publish. */
+  readonly recordDiffers: boolean
 }
 
 /** The tag or the assets differ from what was first published: a reader shows it in red. */
@@ -103,7 +115,8 @@ export function provenanceAltered(p: ReleaseProvenance): boolean {
     p.tag === 'deleted' ||
     p.tag === 'diverged' ||
     p.tag === 'missing' ||
-    p.assets.added.length + p.assets.removed.length + p.assets.replaced.length > 0
+    p.assets.added.length + p.assets.removed.length + p.assets.replaced.length > 0 ||
+    p.recordDiffers
   )
 }
 
@@ -151,8 +164,12 @@ export function releaseProvenance(input: ProvenanceInput): ReleaseProvenance {
   const later = valid.filter((u) => u.createdAt > publishedAt)
   const firstLater = later.find((u) => !isNullOid(u.newOid))
   const lateTag = before.length === 0 && firstLater !== undefined
+  const record = (o: string | null | undefined): string | null => (o && !isNullOid(o) ? o.toLowerCase() : null)
+  const recorded = record(input.target)
+  // A public record must agree with the tag's history at the first publish.
+  const recordDiffers = recorded !== null && atPublish !== null && recorded !== atPublish.oid.toLowerCase()
   // The release's own record counts only when the tag named nothing at the first publish.
-  const pin = input.pin && !isNullOid(input.pin) && atPublish === null ? input.pin.toLowerCase() : null
+  const pin = atPublish === null ? (recorded ?? record(input.pin)) : null
   const tagBaseline = lateTag ? { oid: firstLater.newOid, by: firstLater.author, at: firstLater.createdAt } : atPublish
   const baseline = pin !== null ? { oid: pin, by: first?.publisher ?? '', at: publishedAt } : tagBaseline
 
@@ -182,5 +199,7 @@ export function releaseProvenance(input: ProvenanceInput): ReleaseProvenance {
     moves,
     tag,
     assets,
+    recorded,
+    recordDiffers,
   }
 }

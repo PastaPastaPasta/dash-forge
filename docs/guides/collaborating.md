@@ -60,6 +60,7 @@ dg repo protect remove <owner>/<repo> main
 dg repo protect list   <owner>/<repo>
 dg repo edit <owner>/<repo> --default-branch trunk       # maintainers
 dg repo edit <owner>/<repo> --description "…" --topics rust,cli   # the owner
+dg repo edit <owner>/<repo> --moved-to <owner>/<new-repo>          # maintainers; "" clears it
 dg repo policy set  <owner>/<repo> --required-approvals 2 --maintainers-only true --merge-methods ff,squash
 dg repo policy show <owner>/<repo>
 dg repo archive   <owner>/<repo>
@@ -72,6 +73,7 @@ What each one enforces:
 - **The default branch** is what a clone checks out and what the web opens on.
 - **The branch policy** is enforced by Forge apps. The web disables the merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). The PR author's own approval never counts. When the policy requires approvals, a request for changes from a maintainer or writer whose approval would count blocks the merge, as on GitHub, until they approve or the review is dismissed. A maintainer can bypass it, as on GitHub: tick "bypass rules" in the merge box and confirm, or pass `dg pr merge --override-policy`. The code is really merged, and an event on the PR records which rules were bypassed. Unlike a comment, the event cannot be edited or deleted, by the maintainer who bypassed or anyone else. Nothing on Platform requires approvals.
 - **Mark as merged (done elsewhere)** records a merge that already happened some other way (a push). It moves no code, so the web offers it only once the PR's head is on the base branch (`dg pr merge --event-only`).
+- **Moving** a public repository marks it with the repository that replaces it. Its pages then show "This repository moved to …" with a link, `dg` commands on it print a one-line note, and `git clone` or `git fetch` prints a hint with the `git remote set-url` to run. Nothing is redirected: the old repository stays readable and writable, so archive it as well if work should stop there. A private repository cannot be marked.
 - **Archiving** is enforced by Forge apps too. They refuse writes to an archived repository: the web disables issues, PRs, merges and releases; `dg` refuses issue, PR, comment, review, merge and release writes; and the push helper refuses pushes. All of these use [`E606`](../errors.md#e606). Override with `dg --allow-archived …` or `git push -o allow-archived`. Platform still accepts a member's writes.
 
 ### Who enforces what
@@ -447,7 +449,7 @@ Merging PR #7 of <owner>/project into refs/heads/main
 2. Fast-forward if it can. Otherwise build a merge commit, authored with your git `user.name` and `user.email`, with the message `Merge pull request #7 from <branch>` and the PR title (`--message` sets your own; `--no-ff` writes a merge commit even where the base could fast-forward). `--squash` instead makes one commit on the base with the PR's changes, authored by the PR's author (the author of its oldest commit) and committed by you, with a `Co-authored-by` line for each other author (`--message` sets its message). `--rebase` instead replays the PR's commits on the base with `git rebase`: each keeps its author and message and you commit it, a commit whose change the base already has is skipped, and a head already on the base tip is fast-forwarded unchanged. A commit that does not apply cleanly stops it, naming the commit and files.
 3. Push the result to the base branch. The push uses your `dash.storage` settings when you run `dg pr merge` inside a clone of the repository.
 4. Post the `merge` event naming the commit that landed.
-5. Close the open issues the description closes (`Fixes #12`, `closes #3`, `resolves #7`; at most 10), as GitHub and the web's merge box do. `--keep-linked-open` leaves them open, and each close is quoted with the merge.
+5. Close the open issues the description closes (`Fixes #12`, `closes #3`, `resolves #7`; at most 10), as GitHub and the web's merge box do. `--keep-linked-open` leaves them open, and each close is quoted with the merge. On a public repository each close names the pull request, and the issue reads "closed this as completed in #7" once readers confirm that the pull request was merged before the close and its description closes the issue. A close that names a pull request that fails that check reads as a plain close.
 
 Each step is reported. If one fails, the output says what already happened. If the push landed but the event did not, `dg pr merge --event-only` records the event. `--delete-branch` deletes the PR's branch afterwards. This needs write access to the repository it lives in. Before merging, it checks the repository's newest 100 pull requests: when another open PR is based on that branch (a stack) or uses it as its head, the merge is refused with [`E808`](../errors.md#e808), naming them. When there are older pull requests, or some can't be read, the output says they were not checked (`branchCheckNote` in `--json`). Retarget them first (`dg pr edit <repo> <n> --base <branch>`), merge without `--delete-branch`, or pass `--force-delete-branch` to delete it anyway.
 
@@ -528,6 +530,8 @@ The tag must exist in the repository first (push it, as above, or publish from t
 - whether tags are protected now.
 
 The card turns red, and the release list marks the release **changed since publish**, when the tag points somewhere else, was deleted, or two pushes race on it, or when the assets changed. A tag that was moved and then moved back is shown in amber.
+
+A public release also records the commit its tag pointed at when you published it (the web's release form and `dg release create` both write it). The card shows it under **Release records** and turns red if the tag's history says the tag pointed somewhere else at that moment. If the tag moved while you had the release form open, publishing stops and asks you to reload, so the record is always what you saw. A release whose tag named nothing when it was published (it was deleted then, or pushed only later) is checked against its record instead of the tag's history.
 
 `dg release verify <owner>/<repo> <tag>` prints the same checks and exits with [E504](../errors.md#e504) when the release changed, so a script can stop before installing from the tag. Run it inside a clone that has fetched the tag (`git fetch --tags`) to check the tag's signature as well. A private repository's sealed release may record its commit; it is checked against that when its tag named nothing at the moment of publish (the tag's own history wins otherwise).
 

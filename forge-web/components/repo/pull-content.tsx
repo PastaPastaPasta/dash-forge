@@ -169,6 +169,7 @@ import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
 import { cn, shortId } from '@/lib/utils'
 import { useDpnsName } from '@/hooks/use-dpns-name'
+import { threadAuthorIds } from '@/lib/repo/bots'
 
 /** No pending review comments (a stable empty list). */
 const NO_DRAFTS: readonly DraftComment[] = []
@@ -1110,11 +1111,13 @@ function PullPage({
           target: { id: i.id, number: i.number, type: 'issue', author: i.author },
           action: 'close',
           isMember: true,
+          // An imported PR's links are mapped from the source's numbers: not named as the cause.
+          ...(linkedUpstream ? {} : { closedByPr: pull.number }),
           intent: `close-linked:${repo.repoId}:${pull.number}:${i.number}`,
         })
       },
     }
-  }, [linkedOpen.data, sdk, signer, repo, pull.number, linked.length])
+  }, [linkedOpen.data, sdk, signer, repo, pull.number, linked.length, linkedUpstream])
   // D-104: a merged PR's header says what happened ("2 commits merged into main"), not "wants to".
   // Who recorded the merge is in the timeline. A count only from a real comparison (not the
   // first-parent fallback).
@@ -1163,7 +1166,7 @@ function PullPage({
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
   return (
-    <AuthorRolesProvider owner={repo.ownerId} members={thread.members}>
+    <AuthorRolesProvider owner={repo.ownerId} members={thread.members} authors={tab === 'conversation' ? threadAuthorIds(pull.author, thread.timeline) : []}>
     <div className="space-y-4" data-testid="pull-page">
       {/* Header */}
       <div>

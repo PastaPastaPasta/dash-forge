@@ -882,7 +882,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
     Ok(())
 }
 
-/// A transition in `dg issue view --json`; `closed_in`: the PR whose merge made a close.
+/// A transition in `dg issue view --json`; `closed_in`: the PR whose merge made a close (as
+/// verified); `closedByPr`: the PR the close itself names, unverified.
 fn transition_json(t: &Transition, closed_in: Option<u32>) -> serde_json::Value {
     json!({
         "id": t.id,
@@ -892,6 +893,7 @@ fn transition_json(t: &Transition, closed_in: Option<u32>) -> serde_json::Value 
         "createdAt": t.created_at,
         "reason": t.reason,
         "dupNumber": t.dup_number,
+        "closedByPr": t.closed_by_pr,
         "closedIn": closed_in,
     })
 }
@@ -1905,6 +1907,7 @@ mod tests {
             created_at: 1,
             reason,
             dup_number: dup,
+            closed_by_pr: None,
         };
         assert_eq!(
             transition_line(&t(Some(3), Some(1)), 3),
@@ -1934,6 +1937,7 @@ mod tests {
             created_at: at,
             reason: None,
             dup_number: None,
+            closed_by_pr: None,
         };
         let transitions = [transition("t3", 30, 1), transition("t4", 40, 2)];
         let comments = [comment("c2", 20)];

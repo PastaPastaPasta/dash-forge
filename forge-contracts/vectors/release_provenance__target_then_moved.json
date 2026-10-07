@@ -1,0 +1,79 @@
+{
+  "name": "target_then_moved",
+  "description": "A recorded tip that matched at publish does not hide a later move of the tag.",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "a",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "a",
+        "newOid": "c",
+        "force": true,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 300
+      }
+    ],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": []
+      }
+    ],
+    "target": "a"
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "alice"
+    },
+    "baseline": {
+      "oid": "a",
+      "by": "alice",
+      "at": 100
+    },
+    "pinnedBy": "tag",
+    "lateTag": false,
+    "current": {
+      "oid": "c",
+      "by": "bob",
+      "at": 300
+    },
+    "moves": [
+      {
+        "id": "u2",
+        "at": 300,
+        "by": "bob",
+        "from": "a",
+        "to": "c"
+      }
+    ],
+    "tag": "moved",
+    "assets": {
+      "added": [],
+      "removed": [],
+      "replaced": []
+    },
+    "recorded": "a",
+    "recordDiffers": false
+  }
+}

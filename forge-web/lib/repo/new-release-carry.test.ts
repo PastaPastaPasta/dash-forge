@@ -34,6 +34,11 @@ const current: ReleaseView = {
   createdAt: 1,
 }
 
+let tagTipNow: string | null = 'cd'.repeat(20)
+vi.mock('./ref-admin', async (orig) => ({
+  ...(await orig<typeof import('./ref-admin')>()),
+  readRefNow: async () => ({ state: tagTipNow === null ? null : { state: 'resolved', oid: tagTipNow, author: 'M', createdAt: 1 }, patterns: [] }),
+}))
 vi.mock('./members', () => ({
   requireMaintainer: async () => undefined,
 }))
@@ -112,5 +117,20 @@ describe('publishRelease superseding a release (D-504)', () => {
     const [first, second] = written.slice(-2)
     expect(first).toMatchObject({ name: 'One', notes: 'first notes', yanked: true })
     expect(second).toEqual(first)
+  })
+
+  it("records the tag's tip read now, and refuses one that moved since the page loaded", async () => {
+    failWrite = false
+    tagTipNow = 'cd'.repeat(20)
+    const input = { tagName: 'v1', name: '', notes: '', draft: 'd2', files: [], tagTip: 'cd'.repeat(20) }
+    await publishRelease(sdk, auth, repo, input, storage)
+    expect(written[written.length - 1]).toMatchObject({ targetOid: 'cd'.repeat(20) })
+    tagTipNow = 'ef'.repeat(20)
+    const before = written.length
+    await expect(publishRelease(sdk, auth, repo, input, storage)).rejects.toThrow(/v1 moved after this page loaded \(it is at efefefe now\)/)
+    expect(written.length).toBe(before)
+    // without a shown tip (the form had none), the tip read now is recorded
+    await publishRelease(sdk, auth, repo, { ...input, tagTip: undefined }, storage)
+    expect(written[written.length - 1]).toMatchObject({ targetOid: 'ef'.repeat(20) })
   })
 })
