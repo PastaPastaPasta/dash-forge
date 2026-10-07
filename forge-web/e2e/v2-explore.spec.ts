@@ -64,7 +64,7 @@ test('x2. the header: New menu, jump box, and the landing links Explore', async 
   await expect(page.getByRole('status').filter({ hasText: /inside a repo/ })).toBeVisible()
   await jump.fill(`${DEMO_OWNER}/forge-v2-demo`)
   await jump.press('Enter')
-  await expect(page).toHaveURL(atRoute(new RegExp(`/repo/?\\?${ownerIs(DEMO_OWNER)}`)))
+  await expect(page).toHaveURL(atRoute(new RegExp(`/repo/?\\?${await ownerIs(DEMO_OWNER)}&name=forge-v2-demo(&|$)`)))
 })
 
 /**
@@ -120,10 +120,13 @@ test('x3. #n in a repo opens the issue or the PR', async ({ page }) => {
   }
 
   // Neither: say so, stay put.
-  // The page, not the address bar's spelling of it: that may turn to the owner's name meanwhile.
+  // The page, not the address bar's spelling of its owner: that may turn to the owner's name meanwhile.
+  const owner = new RegExp(`^${await ownerIs(DEMO_OWNER)}$`)
   const here = (): string => {
     const route = routeOf(page.url())
-    return `${route.pathname}?number=${route.searchParams.get('number')}`
+    const q = route.searchParams
+    const who = owner.test(`owner=${q.get('owner')}`) ? DEMO_OWNER : q.get('owner')
+    return `${route.pathname}?owner=${who}&name=${q.get('name')}&number=${q.get('number')}`
   }
   const before = here()
   await go(absent)

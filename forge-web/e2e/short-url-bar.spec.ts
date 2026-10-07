@@ -54,6 +54,13 @@ test('sb-1. a short address bar: the page still reads its route; tabs, Back and 
   await shorten(page, '/alice/project/pulls')
   await shot(page, 'cj6-short-pulls')
 
+  // The tab already open: no new entry, and the address bar stays short.
+  const entries = await page.evaluate(() => history.length)
+  await tab(page, 'Pull requests').click()
+  await page.waitForTimeout(500)
+  await expect(page).toHaveURL('/alice/project/pulls')
+  expect(await page.evaluate(() => history.length)).toBe(entries)
+
   // Back restores the short URL into the router: the page reads the route it stands for.
   await page.goBack()
   await expect(page).toHaveURL('/alice/project/issues?q=is%3Aclosed&page=2')

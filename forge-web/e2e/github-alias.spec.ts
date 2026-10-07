@@ -35,7 +35,7 @@ test.describe('GitHub addresses (CJ-3)', () => {
     test.skip(mirror === null, 'no single mirror of github.com/dashpay/dash on this devnet')
     const { errors } = collectPageErrors(page)
     await page.goto('/github.com/dashpay/dash', { waitUntil: 'domcontentloaded' })
-    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/\\?${ownerIs(mirror!.owner)}&name=dash&repo=${mirror!.id}`)), { timeout: 60_000 })
+    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/\\?${await ownerIs(mirror!.owner)}&name=dash&repo=${mirror!.id}`)), { timeout: 60_000 })
     await expect(page.getByTestId('repo-title').filter({ hasText: 'dash' })).toBeVisible({ timeout: 60_000 })
     await shot(page, 'ga-01-github-alias')
     expect(errors, errors.join('\n')).toEqual([])
@@ -45,16 +45,16 @@ test.describe('GitHub addresses (CJ-3)', () => {
     const mirror = await dashMirror()
     test.skip(mirror === null, 'no single mirror of github.com/dashpay/dash on this devnet')
     await page.goto('/dashpay/dash/issues', { waitUntil: 'domcontentloaded' })
-    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/issues/\\?${ownerIs(mirror!.owner)}&name=dash&repo=${mirror!.id}`)), { timeout: 60_000 })
+    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/issues/\\?${await ownerIs(mirror!.owner)}&name=dash&repo=${mirror!.id}`)), { timeout: 60_000 })
   })
 
   test('ga-4. the rest of a GitHub path opens the same page of the mirror; an unknown one, its home', async ({ page }) => {
     const mirror = await dashMirror()
     test.skip(mirror === null, 'no single mirror of github.com/dashpay/dash on this devnet')
     await page.goto('/github.com/dashpay/dash/pulls', { waitUntil: 'domcontentloaded' })
-    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/pulls/\\?${ownerIs(mirror!.owner)}&name=dash&repo=${mirror!.id}`)), { timeout: 60_000 })
+    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/pulls/\\?${await ownerIs(mirror!.owner)}&name=dash&repo=${mirror!.id}`)), { timeout: 60_000 })
     await page.goto('/github.com/dashpay/dash/actions', { waitUntil: 'domcontentloaded' })
-    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/\\?${ownerIs(mirror!.owner)}&name=dash&repo=${mirror!.id}`)), { timeout: 60_000 })
+    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/\\?${await ownerIs(mirror!.owner)}&name=dash&repo=${mirror!.id}`)), { timeout: 60_000 })
   })
 
   test('ga-3. a GitHub repo with no mirror says so and offers to mirror it', async ({ page }) => {

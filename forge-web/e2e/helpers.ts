@@ -578,10 +578,40 @@ export function atRoute(want: RegExp | ((route: URL) => boolean)): (url: URL) =>
   }
 }
 
+const ownerNamesCache = new Map<string, Promise<readonly string[]>>()
+
+/** The DPNS names identity `id` goes by on this devnet, read in Node (as {@link showcaseRepo} does). */
+function ownerNames(id: string): Promise<readonly string[]> {
+  let names = ownerNamesCache.get(id)
+  if (names === undefined) {
+    showcaseSdk ??= nodeSdk()
+    names = showcaseSdk.then(async (sdk) => ((await sdk.dpns.usernames({ identityId: id, limit: 20 })) as unknown[]).map(String))
+    // A failed read is not cached: the next caller reads again.
+    names.catch(() => {
+      ownerNamesCache.delete(id)
+      showcaseSdk = undefined
+    })
+    ownerNamesCache.set(id, names)
+  }
+  return names
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 /**
- * `owner=<id>` in a route pattern, or the owner's DPNS name: the address bar's short URL writes the
- * owner by name once the page has read it, so a URL alone cannot tell which identity it is.
+ * `owner=…` in a route pattern, for the identity `id`: its id, or one of its own DPNS names (the
+ * label `alice` or the full `alice.dash`, any case), as the address bar's short URL writes the
+ * owner once the page has read the name. Another identity's name does not match.
  */
-export function ownerIs(id: string): string {
-  return `owner=(?:${id}|[A-Za-z0-9-]+(?:\\.dash)?)`
+export async function ownerIs(id: string): Promise<string> {
+  const forms = new Set([escapeRe(id)])
+  if (/^[1-9A-HJ-NP-Za-km-z]{42,44}$/.test(id)) {
+    for (const name of await ownerNames(id)) {
+      for (const form of [name, name.replace(/\.dash$/i, '')]) {
+        forms.add(escapeRe(form))
+        forms.add(escapeRe(form.toLowerCase()))
+      }
+    }
+  }
+  return `owner=(?:${[...forms].join('|')})`
 }

@@ -123,7 +123,7 @@ test.describe('titles, headings and short links', () => {
     await waitForRepoResolved(page)
     const href = String(await page.getByTestId('copy-link').first().getAttribute('data-href'))
     await page.goto(new URL(href).pathname + new URL(href).search, { waitUntil: 'domcontentloaded' })
-    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/\\?${ownerIs(DEMO.owner)}&name=${DEMO.name}`)))
+    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/\\?${await ownerIs(DEMO.owner)}&name=${DEMO.name}`)))
     await expect(README(page)).toBeVisible({ timeout: 90_000 })
   })
 })
