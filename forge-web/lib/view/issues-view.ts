@@ -48,14 +48,14 @@ import {
 } from '../repo'
 import { sortTransitions, transitionOf } from '../repo/transitions'
 import { readProvedVerdicts, type ProvedVerdicts } from '../repo/verdicts'
-import { closeReasonOf, currentCloseReason, isLocked, stateCode, type ClosedAs } from '../rules/transition'
+import { closeReasonOf, currentCloseReason, isLocked, stateCode, statusOfCode, type ClosedAs } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
 import { withLongBodies, withLongBody, type LongBodyState } from './long-body'
 import type { Membership } from '../rules/v2'
 import type { RerunRequest } from '../rules/ci-rerun'
-import { HiddenTally, admitAll, admittedAudience, gateFor, type HiddenCounts } from '../repo/private-content'
+import { HiddenTally, admitAll, admittedAudience, gateFor, placeholderShown, type HiddenCounts, type MembersOnlyItem } from '../repo/private-content'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
@@ -231,12 +231,64 @@ export type TimelineItem =
       readonly expected: number
     }
 
+/**
+ * Something on a thread this reader cannot open, shown as DESIGN D14 says (a comment or review
+ * written by a member, `asMember`): who and when, never what. A review's verdict is public and
+ * counts (D15), so it is shown too.
+ */
+export interface MembersOnlyEntry {
+  readonly item: MembersOnlyItem
+  /** A members-only review's public verdict. */
+  readonly verdict?: ReviewView['verdict']
+}
+
+/**
+ * An issue or PR this reader cannot open (a public repo's members-only one): its row and page say
+ * "#N · members-only" with what is public about it (author, time, state, how many comments),
+ * never "not found" (DESIGN D14, D19).
+ */
+export interface MembersOnlyTarget {
+  readonly placeholder: MembersOnlyItem
+  readonly number: number
+  readonly open: boolean
+  readonly merged: boolean
+  /** Comments on it (their text is members-only too): at most a page of them, see `moreComments`. */
+  readonly comments: number
+  /** The comment read came back full: there may be more than `comments` ("100+ comments"). */
+  readonly moreComments?: true
+}
+
+/** Whether a thread read found a members-only issue or PR this reader cannot open. */
+export function isMembersOnlyTarget(t: unknown): t is MembersOnlyTarget {
+  return typeof t === 'object' && t !== null && 'placeholder' in t
+}
+
+/** The placeholders a thread shows (D14) from what its read could not open: comments, plus `reviews` this reader counts but cannot open. */
+function membersOnlyEntries(tally: HiddenTally, reviews: readonly ReviewView[]): MembersOnlyEntry[] {
+  const verdicts = new Map(reviews.filter((r) => r.membersOnly === true).map((r) => [r.id, r.verdict]))
+  return tally.placeholders
+    .filter((p) => placeholderShown(p) && (p.type === 'comment' || p.type === 'review'))
+    .map((item) => (item.type === 'review' && verdicts.has(item.id) ? { item, verdict: verdicts.get(item.id) as ReviewView['verdict'] } : { item }))
+    .sort((a, b) => a.item.createdAt - b.item.createdAt)
+}
+
+/** The comment sub-query's page size on a thread read: a full page may not be all of them. */
+const COMMENT_PAGE = 100
+
+/** The members-only target page of `placeholder` (a well-formed sealed issue or PR this reader cannot open). */
+function membersOnlyTarget(placeholder: MembersOnlyItem, number: number, transitions: readonly TransitionView[], comments: number): MembersOnlyTarget {
+  const status = statusOfCode(stateCode(transitions))
+  return { placeholder, number, open: status.open, merged: status.merged, comments, ...(comments >= COMMENT_PAGE ? { moreComments: true as const } : {}) }
+}
+
 /** A full issue detail: the folded issue + its merged timeline. */
 export interface IssueThread {
   readonly issue: IssueView
   readonly timeline: TimelineItem[]
   /** Comments (and reviews) left out as unreadable, by reason (private repos). */
   readonly hidden: HiddenCounts
+  /** Members-only comments this reader cannot open, shown as placeholders (D14). */
+  readonly membersOnly: readonly MembersOnlyEntry[]
   /** The repo's label definitions (newest per name). */
   readonly labels: readonly LabelDef[]
   /** The repo's current members (the assignee picker's choices). */
@@ -337,6 +389,15 @@ function eventValues(log: TargetLog): EventValueCounts {
  * Null if not found.
  */
 export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number, network: Network = DEFAULT_NETWORK): Promise<IssueThread | null> {
+  const t = await loadIssueOrMembersOnly(sdk, repo, number, network)
+  return isMembersOnlyTarget(t) ? null : t
+}
+
+/**
+ * {@link loadIssueThread}, or the {@link MembersOnlyTarget} of a public repo's members-only issue
+ * this reader cannot open (the issue page shows it, never "not found").
+ */
+export async function loadIssueOrMembersOnly(sdk: EvoSDK, repo: RepoRef, number: number, network: Network = DEFAULT_NETWORK): Promise<IssueThread | MembersOnlyTarget | null> {
   const source = repoSource(repo)
   const page = source.repoQuery(DOC.issue, { where: [['number', '==', number]] })
   const bound = { sourceProperty: '$id', field: 'targetId' }
@@ -346,7 +407,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const res = await queryComposite(
     sdk,
     compositeOf(page, 1, [
-      { documentType: DOC.comment, bind: bound, limit: 100 },
+      { documentType: DOC.comment, bind: bound, limit: COMMENT_PAGE },
       { documentType: DOC.event, dataContractId: repo.forge.community, bind: bound, limit: 100 },
       { documentType: DOC.transition, bind: bound, limit: 100 },
       siblingOf(labelQuery),
@@ -359,7 +420,13 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   // A private repo's issue opens with the reader's session keys (the gate decrypts it).
   const gate = gateFor(repo)
   const admitted = await gate.admit('issue', raw)
-  if (!admitted.ok) return null
+  if (!admitted.ok) {
+    // A public repo's members-only issue this reader cannot open: its public facts (D14, D19).
+    if (admitted.placeholder === undefined) return null
+    const rows = docsAt(res, 2)
+    const transitions = rows.length < 100 ? rows.map(transitionOf) : await readTransitions(sdk, repo, str(raw, '$id'))
+    return membersOnlyTarget(admitted.placeholder, number, sortTransitions(transitions), docsAt(res, 0).length)
+  }
   const doc = admitted.doc
   const id = str(doc, '$id')
   const docs = (i: number): PlainDocument[] => docsAt(res, i)
@@ -426,6 +493,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     issue,
     timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0, transitions),
     hidden: tally.value,
+    membersOnly: membersOnlyEntries(tally, []),
     eventValues: eventValues(log),
     labels,
     members,
@@ -559,6 +627,8 @@ export interface PullThread {
   readonly labels: readonly LabelDef[]
   /** Comments and reviews left out as unreadable, by reason (private repos). */
   readonly hidden: HiddenCounts
+  /** Members-only comments and reviews this reader cannot open, shown as placeholders (D14). */
+  readonly membersOnly: readonly MembersOnlyEntry[]
   /** Private repos: the PR's event values not readable here, and those not encrypted. */
   readonly eventValues: EventValueCounts
   /** The PR's CI re-run requests (event kind 26), oldest first, counted or not (`rerunCounts` judges). */
@@ -594,8 +664,23 @@ export async function loadPullThread(
   number: number,
   network: Network = DEFAULT_NETWORK,
   /** A re-read after this page's own write: the base ref's history is read afresh (a delta), not the chrome's. */
-  { fresh = false }: { readonly fresh?: boolean } = {},
+  options: { readonly fresh?: boolean } = {},
 ): Promise<PullThread | null> {
+  const t = await loadPullOrMembersOnly(sdk, repo, number, network, options)
+  return isMembersOnlyTarget(t) ? null : t
+}
+
+/**
+ * {@link loadPullThread}, or the {@link MembersOnlyTarget} of a public repo's members-only PR this
+ * reader cannot open (the PR page shows it, never "not found").
+ */
+export async function loadPullOrMembersOnly(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  number: number,
+  network: Network = DEFAULT_NETWORK,
+  { fresh = false }: { readonly fresh?: boolean } = {},
+): Promise<PullThread | MembersOnlyTarget | null> {
   const source = repoSource(repo)
   const page = source.repoQuery(DOC.patch, { where: [['number', '==', number]] })
   const toTarget = { sourceProperty: '$id', field: 'targetId' }
@@ -604,7 +689,7 @@ export async function loadPullThread(
   const res = await queryComposite(
     sdk,
     compositeOf(page, 1, [
-      { documentType: DOC.comment, bind: toTarget, limit: 100 },
+      { documentType: DOC.comment, bind: toTarget, limit: COMMENT_PAGE },
       { documentType: DOC.event, dataContractId: repo.forge.community, bind: toTarget, limit: 100 },
       { documentType: DOC.authorEvent, dataContractId: repo.forge.community, bind: toTarget, limit: 100 },
       { documentType: DOC.review, bind: { sourceProperty: '$id', field: 'patchId' }, limit: 100 },
@@ -619,7 +704,13 @@ export async function loadPullThread(
   if (raw === undefined) return null
   const gate = gateFor(repo)
   const admitted = await gate.admit('patch', raw)
-  if (!admitted.ok) return null
+  if (!admitted.ok) {
+    // A public repo's members-only PR this reader cannot open: its public facts (D14, D19).
+    if (admitted.placeholder === undefined) return null
+    const rows = docsAt(res, 8)
+    const transitions = rows.length < 100 ? rows.map(transitionOf) : await readTransitions(sdk, repo, str(raw, '$id'))
+    return membersOnlyTarget(admitted.placeholder, number, sortTransitions(transitions), docsAt(res, 0).length)
+  }
   const doc = admitted.doc
   const id = str(doc, '$id')
   const docs = (i: number): PlainDocument[] => docsAt(res, i)
@@ -700,6 +791,7 @@ export async function loadPullThread(
     members: members ?? [],
     labels,
     hidden: tally.value,
+    membersOnly: membersOnlyEntries(tally, readReviews.counted),
     eventValues: eventValues(log),
     ciReruns: log.ciReruns ?? [],
     locked: isLocked(transitions),

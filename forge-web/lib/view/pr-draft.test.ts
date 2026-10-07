@@ -35,4 +35,17 @@ describe('the new-PR draft', () => {
     closePrivateSessions()
     expect(loadPrDraft(PRIV)).toBeNull()
   })
+
+  it('a public repo draft that quotes members-only text lives in page memory only, its stored copy removed, until it no longer quotes', () => {
+    savePrDraft(PUB, d)
+    savePrDraft(PUB, { ...d, body: 'quoted members-only text' }, { memoryOnly: true })
+    expect([...store.values()].join()).not.toContain('secret')
+    expect(loadPrDraft(PUB)?.body).toBe('quoted members-only text')
+    closePrivateSessions()
+    expect(loadPrDraft(PUB)).toBeNull()
+    savePrDraft(PUB, { ...d, body: 'quoted again' }, { memoryOnly: true })
+    savePrDraft(PUB, d)
+    expect(loadPrDraft(PUB)).toEqual(d)
+    expect([...store.values()].join()).toContain('secret body')
+  })
 })

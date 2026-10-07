@@ -230,7 +230,8 @@ export function useRepoHome(
     for (const k of homeCacheKeys(key)) homeCache.delete(k)
     if (data !== null) {
       invalidateBrowseContext(repoKey(data.repo))
-      if (data.repo.visibility === 'private') forgetPrivateHome(data.repo)
+      // A private repo's session, or a public one's members-key session: read afresh too.
+      forgetPrivateHome(data.repo)
     }
     rerun()
   }, [key, data, rerun])

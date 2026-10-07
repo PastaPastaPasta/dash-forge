@@ -72,6 +72,7 @@ import {
   budgetEmptyTitle,
   readingLabel,
   tabCount,
+  MembersOnlyShare,
   useAutoReadOn,
   useListQuery,
   useReadProgress,
@@ -209,7 +210,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           {bulkAllowed ? <BulkBar kind="pull" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} onBusy={bulkHold.setBusy} /> : null}
           <StateTabs label="Pull request state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
-              <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.open)}Open
+              <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.open)}Open<MembersOnlyShare n={data?.membersOnly?.open} />
             </StateTab>
             <StateTab active={query.state === 'merged'} onClick={() => change({ state: 'merged' })}>
               <GitMerge className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.merged)}Merged
@@ -260,7 +261,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   <span className={cn('mt-0.5 shrink-0', st.klass)}>{st.icon}</span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <RowLink href={repoHref('/repo/pull', addr, { number: String(p.number) })} title={p.title} />
+                      <RowLink href={repoHref('/repo/pull', addr, { number: String(p.number) })} title={p.title} type="patch" {...(p.audience ? { audience: p.audience } : {})} {...(p.membersOnly ? { membersOnly: true } : {})} />
                       <CheckDot counts={outcomes.get(p.headOid)} />
                       {p.state.labels.map((l) => (
                         <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />
@@ -268,14 +269,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                     </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                       <span className="font-mono">#{p.number}</span>
-                      <span>{st.label} · into <span className="font-mono">{branchName(p.mergeBaseRefName) || '?'}</span> · opened by</span>
+                      {p.membersOnly ? <span>{st.label} · opened by</span> : <span>{st.label} · into <span className="font-mono">{branchName(p.mergeBaseRefName) || '?'}</span> · opened by</span>}
                       <Byline author={p.author} createdAt={p.createdAt} origin={trustedOrigin(p.origin, p.author, trust)} link={false} />
                       <HiddenRowMark hidden={hiddenIds.get(p.id)} />
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-3 pt-0.5">
                     <AssigneeAvatars ids={p.state.assignees} />
-                    <CommentCount n={p.comments} />
+                    <CommentCount n={p.comments} membersOnly={p.membersOnly || p.audience === 'members' ? p.comments ?? 0 : 0} />
                   </div>
                 </li>
               )
@@ -294,7 +295,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
       <Pager label="Pull request pages" page={query.page} hasNext={data?.hasNext ?? false} matching={data?.matching ?? null} pageSize={PULL_PAGE_SIZE} onPage={(page) => change({ page })} />
 
-      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'pull request' : 'pull requests'} home={home} by={data?.hiddenBy} />
+      <HiddenNote hidden={data?.hidden ?? 0} what="pull request" home={home} by={data?.hiddenBy} />
     </div>
   )
 }

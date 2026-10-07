@@ -149,6 +149,12 @@ export function isSealedDoc(doc: PlainDocument): boolean {
   return (bytesField(doc, 'enc')?.length ?? 0) > 0
 }
 
+/**
+ * What a specific-people document (`enc` v0x04) is called where it can't be opened: neutral,
+ * since it is not members-only and its recipients are not public.
+ */
+export const LETTER_TITLE = 'Encrypted for specific people'
+
 /** The audience a raw document was written for (its `enc`, never the repo's visibility). */
 export function docAudience(doc: PlainDocument): Audience {
   const enc = bytesField(doc, 'enc')
@@ -310,6 +316,18 @@ export const SEALED_EPOCH = '$sealedEpoch'
  * know who it was written for (DESIGN §2.4, §3.3).
  */
 export const AUDIENCE_FIELD = '$audience'
+
+/**
+ * Where a list keeps a members-only issue or PR this reader cannot open as a row (DESIGN D14:
+ * top-level issues and PRs always get one, "#42 · Members-only pull request"): the stored
+ * document, untouched, with this mark. Its views have no title or body, only what is public.
+ */
+export const MEMBERS_ONLY_ROW = '$membersOnlyRow'
+
+/** `doc` (a well-formed sealed issue or PR this reader cannot open) as a list's placeholder row. */
+export function membersOnlyRow(doc: PlainDocument): PlainDocument {
+  return { ...doc, [MEMBERS_ONLY_ROW]: true }
+}
 
 /** The audience of an admitted document ({@link AUDIENCE_FIELD}; plaintext otherwise). */
 export function admittedAudience(doc: PlainDocument): Audience {

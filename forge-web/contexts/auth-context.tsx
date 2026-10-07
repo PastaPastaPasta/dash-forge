@@ -337,6 +337,46 @@ export function AuthProvider({
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
+/**
+ * `children` as a signed-out visitor sees them ("View as public", DESIGN §10): the same app with
+ * no identity, no key and nothing stored, so a member checks exactly what the public reads. The
+ * real session is untouched (the header outside keeps it), and the sign-in actions still work.
+ */
+export function SignedOutView({ children }: { children: React.ReactNode }): JSX.Element {
+  const real = useAuth()
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      ...real,
+      identity: null,
+      balance: null,
+      balanceReadAt: null,
+      funds: null,
+      keyLimits: null,
+      keyId: null,
+      heldOnly: NONE,
+      isLoading: false,
+      step: null,
+      error: null,
+      signer: null,
+      storage: null,
+      grants: null,
+      unlimitedKey: false,
+      unboundedKey: false,
+      vaults: [],
+      vaultsError: null,
+      vaultsLoaded: true,
+      resuming: false,
+      locked: false,
+      lastIdentity: null,
+      lockedIdentity: null,
+      unlockScope: null,
+      newKeys: NO_KEYS,
+    }),
+    [real],
+  )
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+}
+
 /** Access the auth context. Throws if used outside an {@link AuthProvider}. */
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext)

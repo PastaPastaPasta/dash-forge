@@ -47,7 +47,7 @@ import {
 import { repoChromeTimelines, type ChromeTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
-import { HiddenTally, SEALED_EPOCH, admittedAudience, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
+import { HiddenTally, LETTER_TITLE, MEMBERS_ONLY_ROW, SEALED_EPOCH, admittedAudience, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -55,11 +55,19 @@ import { readRepoCounts, readStateCodes, readTransitions, transitionOf, type Tra
 import { ISSUE_CLOSE } from '../rules/transition'
 import type { LongBodyState } from '../rules/long-body'
 
-/** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
-export function titleOf(doc: PlainDocument): string {
+/**
+ * A row's title; ciphertext says what it is: a public repo's members-only issue or PR by name
+ * (DESIGN D14, `type` says which), a private repo's (which this client cannot decrypt) as encrypted.
+ */
+export function titleOf(doc: PlainDocument, type: 'issue' | 'patch' = 'issue'): string {
   const title = str(doc, 'title')
   if (title !== '') return title
-  return byteFieldToHex(doc, 'enc') !== '' ? 'Encrypted (not readable here)' : ''
+  const enc = byteFieldToHex(doc, 'enc')
+  if (enc === '') return ''
+  // A specific-people document (v0x04) is not members-only: named neutrally.
+  if (enc.startsWith('04')) return LETTER_TITLE
+  if (str(doc, 'vis') === 'public') return type === 'patch' ? 'Members-only pull request' : 'Members-only issue'
+  return 'Encrypted (not readable here)'
 }
 
 /** An issue with its folded state. */
@@ -67,6 +75,11 @@ export interface IssueView {
   readonly id: string
   /** Who it was written for (a public repo's members-only issue reads as `members`). Absent: public. */
   readonly audience?: 'members'
+  /**
+   * A members-only issue this reader cannot open (a list's placeholder row, DESIGN D14): its
+   * title and body are empty, and everything else is what is public about it.
+   */
+  readonly membersOnly?: true
   readonly number: number
   readonly title: string
   /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
@@ -120,12 +133,21 @@ export function revisionOf(doc: PlainDocument): number {
   return typeof r === 'number' && r > 0 ? r : typeof r === 'bigint' ? Number(r) : 1
 }
 
+/**
+ * The audience marks of an issue or PR view: `members` for a members-only one this reader opened,
+ * and `membersOnly` too for one it cannot open (a list's placeholder row, {@link MEMBERS_ONLY_ROW}).
+ */
+function audienceOf(doc: PlainDocument): { audience?: 'members'; membersOnly?: true } {
+  if (doc[MEMBERS_ONLY_ROW] === true) return { audience: 'members', membersOnly: true }
+  return admittedAudience(doc) === 'members' ? { audience: 'members' } : {}
+}
+
 /** An issue document, its state code and its target log (no reads). */
 export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: number): IssueView {
   const author = str(issueDoc, '$ownerId')
   return {
     id: str(issueDoc, '$id'),
-    ...(admittedAudience(issueDoc) === 'members' ? { audience: 'members' as const } : {}),
+    ...audienceOf(issueDoc),
     number: num(issueDoc, 'number'),
     title: titleOf(issueDoc),
     body: str(issueDoc, 'body'),
@@ -142,8 +164,10 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: numbe
 /** A PR (patch) with its folded state. */
 export interface PullView {
   readonly id: string
-  /** Who it was written for (a members-only PR reads as `members`). Absent: public. */
+  /** Who it was written for (a public repo's members-only PR reads as `members`). Absent: public. */
   readonly audience?: 'members'
+  /** A members-only PR this reader cannot open (a list's placeholder row): see {@link IssueView.membersOnly}. */
+  readonly membersOnly?: true
   readonly number: number
   readonly title: string
   /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
@@ -295,6 +319,8 @@ export interface ReviewView {
    * D15), with no body. Never part of a thread's readable reviews.
    */
   readonly membersOnly?: true
+  /** A members-only review this reader opened: its text is for members (its verdict is public). Absent: public. */
+  readonly audience?: 'members'
 }
 
 
@@ -698,6 +724,7 @@ export function reviewViewOf(d: PlainDocument): ReviewView {
   const { verdict, code } = verdictFromCode(num(d, 'verdict'))
   return {
     id: str(d, '$id'),
+    ...(admittedAudience(d) === 'members' ? { audience: 'members' as const } : {}),
     reviewer: str(d, '$ownerId'),
     verdict,
     verdictCode: code,
@@ -885,9 +912,9 @@ export async function readPull(
 
   return {
     id,
-    ...(admittedAudience(patchDoc) === 'members' ? { audience: 'members' as const } : {}),
+    ...audienceOf(patchDoc),
     number: num(patchDoc, 'number'),
-    title: titleOf(patchDoc),
+    title: titleOf(patchDoc, 'patch'),
     body: str(patchDoc, 'body'),
     author,
     createdAt,
@@ -984,8 +1011,9 @@ export function incompletePullView(doc: PlainDocument, code: number): PullView {
   }
   return {
     id: str(doc, '$id'),
+    ...audienceOf(doc),
     number: num(doc, 'number'),
-    title: titleOf(doc),
+    title: titleOf(doc, 'patch'),
     body: str(doc, 'body'),
     author: str(doc, '$ownerId'),
     createdAt: num(doc, '$createdAt'),

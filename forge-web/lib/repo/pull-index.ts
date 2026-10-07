@@ -35,12 +35,14 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import type { MembersOnlyCount } from './members-only-counts'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { IncompleteReadError } from '../sdk'
 import type { RepoRef } from './contract'
 import { compareRows, eventFiltered, rowMatches, selectionFiltered, type RowFilters } from './issue-index'
 import { baseRefReaders, countsSettled, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
+import { MEMBERS_ONLY_ROW } from './private-content'
 import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE, statusOfCode } from '../rules/transition'
 import { linkedIssues } from '../rules/review'
 import type { Event } from '../rules'
@@ -53,6 +55,7 @@ import {
   candidatesCheaper,
   feedOf,
   indexCache,
+  membersOnlyOfIndex,
   intersect,
   logsVerified,
   matchingOf,
@@ -113,6 +116,8 @@ function readersOf(sdk: EvoSDK, index: PullIndex): BaseRefReaders {
  * keeps its proved state, unverified.
  */
 const indexOf = indexCache<PullRow>('patch', async (sdk, index, doc, log, code) => {
+  // A members-only PR this reader cannot open: what is public about it, no base history to read.
+  if (doc[MEMBERS_ONLY_ROW] === true) return { ...incompletePullView(doc, code), stateComplete: true, threadHides: threadHidesOf(log.events) }
   const base = readersOf(sdk, index)
   const view = await readPull(sdk, index.repo, doc, log, base.configHistory, base.refUpdates, { code }).catch((e: unknown) => {
     if (!(e instanceof IncompleteReadError)) throw e
@@ -165,6 +170,8 @@ export interface PullListPage {
   readonly labels: readonly LabelDef[]
   readonly hidden: number
   readonly hiddenBy: HiddenCounts
+  /** How many PRs are members-only, by state (closed: merged too), once every PR was read (else null). */
+  readonly membersOnly?: MembersOnlyCount | null
 }
 
 const NO_COUNTS: PullCounts = { open: null, merged: null, closed: null }
@@ -334,6 +341,7 @@ export async function queryPulls(
     labels: index.labels,
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
+    membersOnly: membersOnlyOfIndex(index, 'patch'),
   }
 }
 

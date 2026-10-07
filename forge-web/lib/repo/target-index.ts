@@ -28,6 +28,7 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { countMembersOnly, noteMembersOnly, type MembersOnlyCount } from './members-only-counts'
 
 import { NETWORKS, type Network } from '../constants'
 import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type CompositeResult, type CompositeSub } from '../sdk/composite'
@@ -37,7 +38,7 @@ import { compareKey } from '../rules/oid'
 import { DOC, asIdentifierString, contentKey, num, str, type RepoRef } from './contract'
 import { EMPTY_LOG, feedQuery, groupFeed, onRepoInvalidated, readRepoFeedFrom, repoEpoch, sharedRepoCounts, sharedRepoFeed, toLog, type TargetLog } from './issues'
 import { newestLabels, type LabelDef } from './labels'
-import { HiddenTally, gateFor, type ContentGate } from './private-content'
+import { HiddenTally, gateFor, membersOnlyRow, placeholderShown, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { newScan, readScanPage, scanCodes, scanFloor, settledCode, type StateScan } from './state-scan'
@@ -350,6 +351,9 @@ async function recordChunk<Row extends RowExtras>(
     if (id === '' || index.notRows.has(id) || index.rows.has(id) || fresh.has(id) || hidden.some((h) => h.id === id)) continue
     const admitted = await index.gate.admit(index.type, raw)
     if (admitted.ok) fresh.set(id, admitted.doc)
+    // A public repo's members-only issue or PR this reader cannot open is a row all the same
+    // (DESIGN D14: its number is public): "#42 · Members-only issue", never hidden.
+    else if (admitted.placeholder !== undefined && placeholderShown(admitted.placeholder)) fresh.set(id, membersOnlyRow(raw))
     else hidden.push({ id, reason: admitted.reason, number: num(raw, 'number') })
   }
   const code = await codes
@@ -381,6 +385,20 @@ async function recordChunk<Row extends RowExtras>(
   }
   if (walk !== null) advance(index, walk, docs)
   await seedNames(index.network, docs, docsAt(res, 1))
+}
+
+/**
+ * How many of an index's rows are members-only, by state, when it holds every row of the repo
+ * (recorded for the repo header's tab too); null while some are not read.
+ */
+export function membersOnlyOfIndex<Row extends RowExtras & { readonly audience?: 'members'; readonly state: { readonly open: boolean } }>(
+  index: ListIndex<Row>,
+  type: 'issue' | 'patch',
+): MembersOnlyCount | null {
+  if (!index.all) return null
+  const count = countMembersOnly(index.rows.values())
+  noteMembersOnly(index.repo, type, count)
+  return count
 }
 
 /** Add a keyset chunk's rows to its walk, in order, and move the walk's bound. */
