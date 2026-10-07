@@ -291,6 +291,44 @@ pub fn check_profile(input: &ProfileInput) -> ProfileCheck {
     }
 }
 
+/// A profile's `bot` claim (UPDATE-1 `profile.bot`): on a bot's profile, the identity that
+/// operates it (`operator`); on an operator's, the bots it operates (`operates`, at most 8).
+/// Identity ids, base58.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BotClaim {
+    /// The identity that operates this one, when this one is a bot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    /// The bots this identity operates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operates: Vec<String>,
+}
+
+/// The most bots one profile lists (`bot.operates` maxItems).
+pub const MAX_OPERATED_BOTS: usize = 8;
+
+/// The operator of `bot_id` when both sides agree: the bot's profile names an operator
+/// (`bot.operator`), that is another identity, and the operator's profile lists the bot
+/// (`operator.operates`). `None` otherwise: a one-sided claim earns no badge, so nobody can
+/// label someone else a bot, and no bot can claim an operator who does not vouch for it.
+#[must_use]
+pub fn bot_operator(
+    bot_id: &str,
+    bot: Option<&BotClaim>,
+    operator: Option<&BotClaim>,
+) -> Option<String> {
+    let claimed = bot?
+        .operator
+        .as_deref()
+        .filter(|o| !o.is_empty() && *o != bot_id)?;
+    operator?
+        .operates
+        .iter()
+        .any(|b| b == bot_id)
+        .then(|| claimed.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

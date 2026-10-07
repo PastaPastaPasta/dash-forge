@@ -58,4 +58,14 @@ describe('closedIn', () => {
   it('never explains a reopen', () => {
     expect(closedIn(close('owner', 1_000_000, ISSUE_REOPEN), [{ pull: pull(3), merge: merge('owner', 990_000) }])).toBeNull()
   })
+
+  it('judges a close that names its merge by that alone', () => {
+    const named = { ...close('owner', 1_000_000), closedByPr: 7 }
+    const merges = [{ pull: pull(3), merge: merge('owner', 990_000) }]
+    expect(closedIn(named, merges, (n) => (n === 7 ? pull(7) : null))).toEqual(pull(7))
+    // a named PR that does not hold is a plain close, never the timing guess
+    expect(closedIn(named, merges, () => null)).toBeNull()
+    // without a judge (a private repo) the timing match stands
+    expect(closedIn(named, merges)).toEqual(pull(3))
+  })
 })

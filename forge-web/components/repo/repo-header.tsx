@@ -25,6 +25,7 @@ import { useSettledDpnsName } from '@/hooks/use-dpns-name'
 import { ForkButton } from '@/components/repo/fork-button'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
 import { CodeSearchBox } from '@/components/repo/code-search-box'
+import { MovedBanner } from '@/components/repo/moved-banner'
 
 /**
  * "forked from owner/name", linking to the parent, and GitHub's Contribute: the parent's New pull
@@ -149,6 +150,8 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       {home.description ? (
         <p className="mt-2 max-w-3xl text-dense text-anvil-600 dark:text-anvil-300">{home.description}</p>
       ) : null}
+
+      <MovedBanner home={home} />
 
       {home.config?.archived ? (
         <div className="mt-3 flex items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-1.5 text-dense text-caution-700 dark:text-caution-400">
