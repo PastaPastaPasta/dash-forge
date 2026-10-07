@@ -206,6 +206,12 @@ pub(crate) fn revert_title(title: &str) -> String {
 }
 
 /// The revert PR's description: GitHub's `Reverts #<n>`, and the merge it undoes.
+/// `s` as one POSIX shell word: single-quoted, each `'` written as `'\''`, so `$(…)`, backticks
+/// and `$VAR` in it stay literal when the command is pasted.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 pub(crate) fn revert_body(number: u32, merge_oid: &str, landed: Landed) -> String {
     format!(
         "Reverts #{number}\n\nThis undoes {} on the base branch.",
@@ -562,11 +568,12 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
         Err(e) => {
             let u = super::step_failure(&e, number, repo, "pull request not opened", "")
                 .note(format!(
-                    "the branch {short_branch} was pushed; `dg pr create {repo} --head {short_branch} --base {} --title {:?} --body {:?}` opens the PR",
+                    "the branch {short_branch} was pushed; `dg pr create {repo} --head {short_branch} --base {} --title {} --body {}` opens the PR",
                     forge_core::repo::short_branch_name(&base_ref),
-                    title,
+                    // The title is the PR author's text: quoted so pasting the command runs nothing.
+                    sh_quote(&title),
                     // One line, so the command pastes into any shell.
-                    input.body.split_whitespace().collect::<Vec<_>>().join(" ")
+                    sh_quote(&input.body.split_whitespace().collect::<Vec<_>>().join(" "))
                 ));
             return Err(crate::errors::reported(
                 u,
@@ -776,6 +783,11 @@ mod tests {
             "Revert \"Add parser\"\n\nThis reverts pull request #12, merged as ab."
         );
         assert!(revert_body(12, &"a".repeat(40), Landed::Squash).starts_with("Reverts #12\n\n"));
+        assert_eq!(
+            sh_quote("Revert \"x `id` $(id)\""),
+            "'Revert \"x `id` $(id)\"'"
+        );
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
         assert_eq!(
             default_branch(12, Some("refs/heads/feature/x")),
             "refs/heads/revert-12-feature/x"
