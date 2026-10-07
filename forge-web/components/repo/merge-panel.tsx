@@ -48,6 +48,7 @@ import { StepRow, type StepState } from '@/components/repo/step-list'
 import { widenEstimate, type PackEstimate } from '@/lib/storage/merge-choice'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
+import { MERGE_UNCONFIRMED } from '@/lib/view/merge-recheck'
 import { CommitIdentityPrompt } from '@/components/repo/branch-commit-panel'
 import { branchName, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
@@ -410,7 +411,7 @@ export function MergePanel({
     if (run.done.length === 0) {
       const [moved, members] = await Promise.all([
         checkSourceBranch?.().catch(() => null) ?? null,
-        recheckMembers(bypass ?? []).catch((e: unknown) => (e instanceof Error ? e.message : "Couldn't confirm the merge. Try again.")),
+        recheckMembers(bypass ?? []).catch((e: unknown) => (e instanceof Error ? e.message : MERGE_UNCONFIRMED)),
       ])
       const why = moved ?? members
       if (why !== null) {
@@ -772,7 +773,7 @@ export function MergePanel({
       ) : null}
       {stopped ? (
         <p role="alert" className="mt-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
-          Merge stopped: {stopped}
+          Merge stopped. {stopped}
         </p>
       ) : null}
       {newTip ? (

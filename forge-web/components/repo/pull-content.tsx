@@ -146,7 +146,7 @@ import { Button } from '@/components/ui/button'
 import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
 import { checkMerge } from '@/lib/view/merge-check'
-import { markMerged, recheckMergeMembers } from '@/lib/view/merge-recheck'
+import { markMerged, recheckPageMerge } from '@/lib/view/merge-recheck'
 import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
@@ -839,18 +839,12 @@ function PullPage({
         // A maintainer recording it past unmet branch rules: the bypass is recorded on the PR,
         // as the merge box and `dg pr merge --event-only --override-policy` record theirs.
         await markMerged({
-          landed: markLanded.current === intent,
-          recheck: () => recheckMembers(p.bypass),
-          merge: async () => {
-            await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent })
-            markLanded.current = intent
-          },
-          recordBypass:
-            p.bypass.length > 0
-              ? async () => {
-                  await recordPolicyBypass(sdk, signer, repo, { target, rules: p.bypass, mergeOid: pull.headOid, intent: `${intent}:bypass` })
-                }
-              : null,
+          intent,
+          bypass: p.bypass,
+          landed: markLanded,
+          recheck: recheckMembers,
+          merge: () => setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent }),
+          recordBypass: (rules) => recordPolicyBypass(sdk, signer, repo, { target, rules, mergeOid: pull.headOid, intent: `${intent}:bypass` }),
           describe: guard.failed,
         })
         refresh((t) => t.pull.state.merged)
@@ -1160,20 +1154,24 @@ function PullPage({
   // counted check's runners) read then: the page's reads can be minutes old. Throws when they
   // cannot be read, and refuses when there is no connection to read them: either stops the merge.
   const recheckMembers = async (bypass: readonly string[]): Promise<string | null> => {
-    if (!sdk) return "Couldn't confirm the merge: not connected to Platform yet. Try again."
-    const counted = requiredChecks !== null && requiredChecks !== 'unknown' && checks.data !== null && policyNow !== null ? { data: checks.data, policy: policyNow } : null
-    const problem = await recheckMergeMembers(sdk, repo, network, {
-      gate: { pull, viewer, protectedPatterns: home.config?.protectedPatterns ?? [], maintainersOnly: policyNow?.approverRole === 1 },
-      policy: rules.policy,
-      status: rules.status,
-      approvals: thread.approvals,
-      checks: (oracle, runners) => (counted === null ? requiredChecks : checksState(counted.data.rows, pull.headOid, oracle, runners ?? counted.data.runners, counted.policy)),
-      readsRunners: counted !== null,
+    const problem = await recheckPageMerge(
+      sdk,
+      repo,
+      network,
+      {
+        gate: { pull, viewer, protectedPatterns: home.config?.protectedPatterns ?? [], maintainersOnly: policyNow?.approverRole === 1 },
+        policy: rules.policy,
+        status: rules.status,
+        approvals: thread.approvals,
+        requiredChecks,
+        checkRuns: checks.data,
+      },
       bypass,
-    })
-    // Refused: show the page as the members stand now.
-    if (problem !== null) {
+    )
+    // Refused: show the page as the members (and the runners, cached by the recheck) stand now.
+    if (problem !== null && sdk) {
       holdings.reload()
+      checks.reload()
       refresh()
     }
     return problem

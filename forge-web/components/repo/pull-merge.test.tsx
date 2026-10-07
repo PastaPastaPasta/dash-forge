@@ -356,7 +356,7 @@ describe('a source branch past the PR head (QW3-013)', () => {
     await act(async () => undefined)
     expect(checkSourceBranch).toHaveBeenCalledTimes(1)
     expect(onMerged).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('Merge stopped: feature moved to ddddddd since this page read it')
+    expect(host.textContent).toContain('Merge stopped. feature moved to ddddddd since this page read it')
   })
 
   it('tells the page once "Delete … after merging" deleted the branch (QW3-053)', async () => {
@@ -385,26 +385,26 @@ describe('the members, read again at the click', () => {
 
   it('a refusal stops the merge before anything is written, and says why', async () => {
     const onMerged = vi.fn()
-    const recheck = vi.fn(async () => 'Something changed since the page loaded: the branch rules are no longer met (required approvals: 0 of 1).')
+    const recheck = vi.fn(async () => 'Something changed since the page loaded. The branch rules are no longer met. Review the pull request and try again.')
     await render(recheck, {}, onMerged)
     await act(async () => submit().click())
     await act(async () => undefined)
     expect(recheck).toHaveBeenCalledWith([])
     expect(stepsRun).not.toHaveBeenCalled()
     expect(onMerged).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('Merge stopped: Something changed since the page loaded: the branch rules are no longer met')
+    expect(host.textContent).toContain('Merge stopped. Something changed since the page loaded. The branch rules are no longer met.')
     // The box is free again: the merge can be tried once more.
     expect(submit().disabled).toBe(false)
   })
 
   it('a recheck that fails stops the merge too (fail closed), and frees the box', async () => {
     const onMerged = vi.fn()
-    await render(async () => Promise.reject(new Error("Couldn't read this repo's members to confirm the merge. Try again.")), {}, onMerged)
+    await render(async () => Promise.reject(new Error("Couldn't confirm the merge. Try again.")), {}, onMerged)
     await act(async () => submit().click())
     await act(async () => undefined)
     expect(stepsRun).not.toHaveBeenCalled()
     expect(onMerged).not.toHaveBeenCalled()
-    expect(host.textContent).toContain("Merge stopped: Couldn't read this repo's members to confirm the merge.")
+    expect(host.textContent).toContain("Merge stopped. Couldn't confirm the merge. Try again.")
     expect(submit().disabled).toBe(false)
   })
 
@@ -417,7 +417,7 @@ describe('the members, read again at the click', () => {
     await act(async () => undefined)
     expect(recheck).toHaveBeenCalledWith(['required approvals: 0 of 1'])
     expect(stepsRun).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('Merge stopped: Something changed since the page loaded.')
+    expect(host.textContent).toContain('Merge stopped. Something changed since the page loaded.')
   })
 
   it('no refusal: the merge runs', async () => {

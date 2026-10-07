@@ -9,9 +9,10 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { readRunners } from '../repo/checks'
+import { readRunnersFresh } from '../repo/checks'
 import type { RepoRef } from '../repo/contract'
 import { holdingsOfRole, readMembershipsFresh } from '../repo/members'
+import { checksState, type CheckRunRow } from '../rules/parity'
 import { meetsPolicy, RoleOracle, type Approvals, type ChecksState, type Membership, type Policy, type PolicyStatus } from '../rules/v2'
 import { pullActions, type PullActionInputs } from './pull-actions'
 
@@ -35,7 +36,7 @@ export interface MergeRecheck {
   readonly bypass: readonly string[]
 }
 
-const CHANGED = 'Something changed since the page loaded'
+const CHANGED = 'Something changed since the page loaded.'
 
 /**
  * Why the merge must stop under `members` (the membership now) and `runners` (null: the page's),
@@ -47,53 +48,102 @@ export function mergeMembersProblem(members: readonly Membership[], r: MergeRech
   const status = r.approvals !== null && r.policy !== null && r.policy !== 'unknown' ? meetsPolicy(r.approvals, oracle, r.policy) : r.status
   const role = r.gate.viewer === null ? null : oracle.currentRole(r.gate.viewer)
   const now = pullActions({ ...r.gate, holdings: holdingsOfRole(role), policy: status, checks: r.checks(oracle, runners) })
-  if (!now.canMerge) return `${CHANGED}. ${now.mergeHint ?? 'You can no longer merge this pull request.'}`
+  if (!now.canMerge) return `${CHANGED} ${now.mergeHint ?? 'You can no longer merge this pull request.'}`
   if (now.unmetRules.length === r.bypass.length && now.unmetRules.every((rule, i) => rule === r.bypass[i])) return null
-  if (r.bypass.length === 0) return `${CHANGED}: the branch rules are no longer met (${now.unmetRules.join('; ')}).`
-  return `${CHANGED}: the branch rules to bypass are different now.`
+  // The merge box lists the rules as they stand now (the page re-reads on a refusal).
+  if (r.bypass.length === 0) return `${CHANGED} The branch rules are no longer met. Review the pull request and try again.`
+  return `${CHANGED} The branch rules to bypass are different now. Review them and try again.`
 }
 
-/** The error a merge stops with when the members cannot be read: whether it may go ahead is unknown. */
-export const MEMBERS_UNREAD = "Couldn't read this repo's members to confirm the merge. Try again."
+/** The error a merge stops with when the members or runners cannot be read: whether it may go ahead is unknown. */
+export const MERGE_UNCONFIRMED = "Couldn't confirm the merge. Try again."
+
+/** The refusal when there is no Platform connection to read the members with. */
+export const MERGE_OFFLINE = "Couldn't confirm the merge because Platform isn't connected yet. Try again."
 
 /**
  * {@link mergeMembersProblem} with the membership (and the runners, {@link MergeRecheck.readsRunners})
- * read now.
+ * read now. Both reads land in their caches, so the page's next read shows them.
  *
- * @throws Error ({@link MEMBERS_UNREAD}) when they cannot be read: the caller stops the merge.
+ * @throws Error ({@link MERGE_UNCONFIRMED}) when they cannot be read: the caller stops the merge.
  */
 export async function recheckMergeMembers(sdk: EvoSDK, repo: RepoRef, network: Network, r: MergeRecheck): Promise<string | null> {
   const [members, runners] = await Promise.all([
     readMembershipsFresh(sdk, repo, network),
-    r.readsRunners ? readRunners(sdk, repo).then((ids) => new Set(ids)) : null,
+    r.readsRunners ? readRunnersFresh(sdk, repo).then((ids) => new Set(ids)) : null,
   ]).catch(() => {
-    throw new Error(MEMBERS_UNREAD)
+    throw new Error(MERGE_UNCONFIRMED)
   })
   return mergeMembersProblem(members, r, runners)
 }
 
+/** The pull page's reads behind its merge gate, as {@link pageMergeRecheck} takes them. */
+export interface PageMerge {
+  readonly gate: MergeRecheck['gate']
+  /** The branch policy in force (null: none; `'unknown'`: unread). */
+  readonly policy: Policy | null | 'unknown'
+  readonly status: PolicyStatus | null | 'unknown'
+  readonly approvals: Approvals | null
+  /** The head's required checks as the page judged them (null: none required; `'unknown'`: unread). */
+  readonly requiredChecks: ChecksState | null | 'unknown'
+  /** The head's check runs and the runners the page read (null: not read yet). */
+  readonly checkRuns: { readonly rows: readonly CheckRunRow[]; readonly runners: ReadonlySet<string> } | null
+}
+
 /**
- * "Mark as merged (done elsewhere)": judge the merge again (`recheck`), record it (`merge`, the
- * merge transition), then a bypass's record (`recordBypass`, null: none). `landed`: this action's
- * transition already landed (a retry after the record failed): the merge is recorded and final,
- * so it is neither judged nor written again, and only the record is retried.
+ * The recheck of the page's merge gate, `bypass` the rules confirmed bypassed. Required checks the
+ * page counted are judged again with the members (and the runners) read at the click; an unread
+ * or absent requirement stays as the page judged it, and no runners are read for it.
+ */
+export function pageMergeRecheck(page: PageMerge, bypass: readonly string[]): MergeRecheck {
+  const { policy, requiredChecks, checkRuns } = page
+  const counted = requiredChecks !== null && requiredChecks !== 'unknown' && checkRuns !== null && policy !== null && policy !== 'unknown' ? { runs: checkRuns, policy } : null
+  return {
+    gate: page.gate,
+    policy,
+    status: page.status,
+    approvals: page.approvals,
+    checks: (oracle, runners) => (counted === null ? requiredChecks : checksState(counted.runs.rows, page.gate.pull.headOid, oracle, runners ?? counted.runs.runners, counted.policy)),
+    readsRunners: counted !== null,
+    bypass,
+  }
+}
+
+/**
+ * The pull page's merge recheck ({@link recheckMergeMembers} of {@link pageMergeRecheck}): a
+ * refusal ({@link MERGE_OFFLINE}) with no Platform connection to read with.
+ */
+export function recheckPageMerge(sdk: EvoSDK | null, repo: RepoRef, network: Network, page: PageMerge, bypass: readonly string[]): Promise<string | null> {
+  if (sdk === null) return Promise.resolve(MERGE_OFFLINE)
+  return recheckMergeMembers(sdk, repo, network, pageMergeRecheck(page, bypass))
+}
+
+/**
+ * "Mark as merged (done elsewhere)" under the confirm's `intent`: judge the merge again
+ * (`recheck(bypass)`), record it (`merge`, the merge transition), then the bypass's record
+ * (`recordBypass(bypass)`, when `bypass` names rules). `landed` holds the intent whose transition
+ * landed: a retry of that intent (the record failed) neither judges nor writes the merge again,
+ * as it is recorded and final, and only the record is retried. Any other intent starts afresh.
  */
 export async function markMerged(run: {
-  readonly landed: boolean
-  readonly recheck: () => Promise<string | null>
-  readonly merge: () => Promise<void>
-  readonly recordBypass: (() => Promise<void>) | null
+  readonly intent: string
+  readonly bypass: readonly string[]
+  readonly landed: { current: string | null }
+  readonly recheck: (bypass: readonly string[]) => Promise<string | null>
+  readonly merge: () => Promise<unknown>
+  readonly recordBypass: (bypass: readonly string[]) => Promise<unknown>
   /** Platform's answer, worded for the person (the write guard's `failed`). */
   readonly describe: (e: unknown) => string
 }): Promise<void> {
-  if (!run.landed) {
-    const problem = await run.recheck()
+  if (run.landed.current !== run.intent) {
+    const problem = await run.recheck(run.bypass)
     if (problem !== null) throw new Error(problem)
     await run.merge()
+    run.landed.current = run.intent
   }
-  if (run.recordBypass === null) return
+  if (run.bypass.length === 0) return
   try {
-    await run.recordBypass()
+    await run.recordBypass(run.bypass)
   } catch (e) {
     throw new Error(`The merge is recorded, but recording the rules bypass failed: ${run.describe(e)} Retry to record it.`)
   }
