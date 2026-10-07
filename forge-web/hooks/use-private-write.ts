@@ -18,6 +18,11 @@ export function usePrivateWrite(repo: RepoRef): {
   readonly context: PrivateWriteContext | null
   /** After a membership or key change: re-read this repo (the page stays up meanwhile). */
   readonly done: () => void
+  /** The vault's operations are still being read. */
+  readonly loading?: boolean
+  /** Why they could not be read (then `retry`), or null. */
+  readonly error?: string | null
+  readonly retry?: () => void
 } {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, signer } = useAuth()
@@ -28,5 +33,5 @@ export function usePrivateWrite(repo: RepoRef): {
   )
   const context: PrivateWriteContext | null =
     sdk !== null && signer !== null && ops.data !== null ? { sdk, auth: signer, repo, network, ops: ops.data } : null
-  return { context, done: () => refreshPrivateHome(repo) }
+  return { context, done: () => refreshPrivateHome(repo), loading: !ops.settled, error: ops.error, retry: ops.reload }
 }

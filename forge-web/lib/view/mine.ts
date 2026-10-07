@@ -27,6 +27,8 @@ import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from 
 import type { DiscoveredRepo } from './discovery'
 import { mapPooled } from './pool'
 import { compareStrings } from '../rules'
+import { membersOnlyTitle } from './audience'
+import { LETTER_TITLE, docAudience } from '../repo/private-content'
 
 /** A base58 identifier field (identifiers come back base58 or base64; both normalize). */
 export const ident = z.unknown().transform(asIdentifierString).pipe(z.string().min(1))
@@ -38,7 +40,7 @@ const text = z.string().optional().catch(undefined)
 export const baseDoc = z.object({ $id: z.string().min(1), $ownerId: z.string().min(1), $createdAt: z.number() })
 
 /** An `issue` or `patch` row. */
-export const targetDoc = baseDoc.extend({ repoId: ident, number: int, title: text, body: text, enc: z.unknown().optional() })
+export const targetDoc = baseDoc.extend({ repoId: ident, number: int, title: text, body: text, enc: z.unknown().optional(), vis: text })
 export type TargetDoc = z.infer<typeof targetDoc>
 
 /** A `repo` row. */
@@ -112,10 +114,16 @@ export interface TargetRow {
   readonly sealed?: boolean
 }
 
-/** A row's title; a private repo's ciphertext says so rather than showing nothing. */
-export function titleOf(d: TargetDoc): string {
+/**
+ * A row's title; an encrypted one says what it is rather than showing nothing: a public repo's
+ * members-only issue or PR by name (DESIGN D14), a private repo's as encrypted.
+ */
+export function titleOf(d: TargetDoc, kind: 'issue' | 'pull' = 'issue'): string {
   if (d.title) return d.title
-  return d.enc != null ? 'Encrypted (not readable here)' : '(untitled)'
+  if (d.enc == null) return '(untitled)'
+  // A specific-people document (v0x04) is not members-only: named neutrally.
+  if (docAudience(d as unknown as PlainDocument) === 'specificPeople') return LETTER_TITLE
+  return d.vis === 'public' ? membersOnlyTitle(kind === 'pull' ? 'patch' : 'issue') : 'Encrypted (not readable here)'
 }
 
 /** A page that may have been cut short: `more` says a full page came back. */
@@ -169,7 +177,7 @@ export async function listMyTargets(
       kind,
       repoId: d.repoId,
       number: d.number,
-      title: titleOf(d),
+      title: titleOf(d, kind),
       author: d.$ownerId,
       createdAt: d.$createdAt,
       repo: repos.get(d.repoId) ?? null,
@@ -269,7 +277,7 @@ export async function readTargetsByIds(
           kind,
           repoId: d.repoId,
           number: d.number,
-          title: titleOf(d),
+          title: titleOf(d, kind),
           author: d.$ownerId,
           createdAt: d.$createdAt,
           repo: null,
@@ -490,7 +498,7 @@ export async function scanAssignedAndMentions(
     const mentioned = (docs: PlainDocument[], kind: 'issue' | 'pull'): TargetRow[] =>
       parseDocs(targetDoc, docs)
         .filter((d) => d.$ownerId !== me && mentions(d.body, me, name))
-        .map((d) => ({ id: d.$id, kind, repoId: repo.id, number: d.number, title: titleOf(d), author: d.$ownerId, createdAt: d.$createdAt, repo }))
+        .map((d) => ({ id: d.$id, kind, repoId: repo.id, number: d.number, title: titleOf(d, kind), author: d.$ownerId, createdAt: d.$createdAt, repo }))
     return {
       assignedIds: [...assignedTargets(parseDocs(eventDoc, events), me, repo.private)],
       mentioned: [...mentioned(issues, 'issue'), ...mentioned(patches, 'pull')],

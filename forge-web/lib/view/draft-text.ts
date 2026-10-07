@@ -139,12 +139,26 @@ export function clearDrafts(identityId: string): void {
 }
 
 /**
+ * Whether a composer's text may be kept on disk: a fixed answer, or one decided from the text
+ * itself (a public draft that quotes members-only text may not, DESIGN §4.1).
+ */
+export type DraftPersist = boolean | ((text: string) => boolean)
+
+/**
  * `useState` for a composer's text, kept under `key` (`null`: memory only). A new key (another
  * issue or PR, another identity) loads that key's draft. `hold(true, …)` takes the stored copy
  * away and stores nothing until `hold(false, text)` stores `text` again: while a post's outcome is unknown, a reload must not
  * bring back text that may already be on chain, where it would be posted twice.
+ *
+ * `persist`: whether the text may be stored. False (the composer turned members-only), or a
+ * predicate that says no for the new text (it quotes members-only text): the text stays in
+ * memory, and any stored copy is removed in the same call that sets it, before any render, so
+ * no members-only text is at rest (DESIGN §4.1). Once refused, the draft stays in memory until
+ * it is emptied (posted or deleted) or the key changes: the answer can flip back to yes without
+ * the text changing (a locked tab forgets the members-only text it compared against), and the
+ * quoting text must not land on disk then.
  */
-export function useDraftText(key: string | null): [string, (text: string) => void, (held: boolean, text: string) => void] {
+export function useDraftText(key: string | null, persist: DraftPersist = true): [string, (text: string) => void, (held: boolean, text: string) => void] {
   const [state, setState] = useState<{ key: string | null; text: string }>(() => ({ key, text: key === null ? '' : readDraft(key) }))
   const held = useRef(false)
   const current = state.key === key ? state.text : key === null ? '' : readDraft(key)
@@ -154,32 +168,79 @@ export function useDraftText(key: string | null): [string, (text: string) => voi
       setState({ key, text: key === null ? '' : readDraft(key) })
     }
   }, [key, state.key])
+  // The latest rule, read by the setter when it is called (never a stale render's).
+  const rule = useRef(persist)
+  rule.current = persist
+  // Set once this key's text was refused; cleared only when the text is emptied or the key changes.
+  const refused = useRef<{ key: string | null; on: boolean }>({ key, on: false })
+  const allowed = useCallback(
+    (text: string): boolean => {
+      if (refused.current.key !== key) refused.current = { key, on: false }
+      if (text.trim() === '') {
+        refused.current.on = false
+        return true
+      }
+      const r = rule.current
+      if (!(typeof r === 'function' ? r(text) : r)) refused.current.on = true
+      return !refused.current.on
+    },
+    [key],
+  )
+  // Whether the current text may be stored: it changes with the audience, or with what the page
+  // shows (members-only text read after the draft was typed). Then drop the stored copy.
+  const keep = allowed(current)
+  const latest = useRef(current)
+  latest.current = current
+  useEffect(() => {
+    if (key === null || held.current) return
+    writeDraft(key, keep ? latest.current : '')
+  }, [key, keep])
   const set = useCallback(
     (text: string) => {
       setState({ key, text })
-      if (key !== null && !held.current) writeDraft(key, text)
+      if (key !== null && !held.current) writeDraft(key, allowed(text) ? text : '')
     },
-    [key],
+    [key, allowed],
   )
   const hold = useCallback(
     (on: boolean, text: string) => {
       held.current = on
-      if (key !== null) writeDraft(key, on ? '' : text)
+      if (key !== null) writeDraft(key, on || !allowed(text) ? '' : text)
     },
-    [key],
+    [key, allowed],
   )
   return [current, set, hold]
 }
+
+/**
+ * Whether a form's text quoted members-only text (`quotesNow`) at any point since it was last
+ * `empty`: the answer can flip back to no without the text changing (a locked tab forgets the
+ * members-only text it compared against), and a quoting draft must stay in memory then.
+ */
+export function useQuotedUntilEmptied(quotesNow: boolean, empty: boolean): boolean {
+  const [quoted, setQuoted] = useState(false)
+  if (quotesNow && !quoted) setQuoted(true)
+  else if (empty && quoted) setQuoted(false)
+  return quotesNow || (quoted && !empty)
+}
+
+/** {@link DraftPersist} for a structured draft: a fixed answer, or one decided from the value. */
+export type DraftValuePersist<T> = boolean | ((value: T) => boolean)
 
 /**
  * {@link useDraftText} for a structured value (its `hold` the same: nothing stored while a write's
  * outcome is unknown) (an edit's title and body, with the revision it
  * started from), kept as JSON under `key`. A stored value `valid` rejects (the document changed
  * since the edit started, the comment is gone) reads as none and is dropped, so an old edit never
- * resurrects over a newer saved version. `null` removes it.
+ * resurrects over a newer saved version. `null` removes it. `persist` as in {@link useDraftText},
+ * judged on the value: one it refuses (members-only, or quoting members-only text) stays in memory.
  */
-export function useDraftState<T>(key: string | null, valid: (value: T) => boolean): [T | null, (value: T | null) => void, (held: boolean, value: T | null) => void, boolean] {
-  const [text, setText, holdText] = useDraftText(key)
+export function useDraftState<T>(
+  key: string | null,
+  valid: (value: T) => boolean,
+  persist: DraftValuePersist<T> = true,
+): [T | null, (value: T | null) => void, (held: boolean, value: T | null) => void, boolean] {
+  const [text, setText, holdText] = useDraftText(key, typeof persist === 'function' ? (t) => persistJson(t, persist) : persist)
   // A stored value dropped as stale in this mount (the page says so).
   const [dropped, setDropped] = useState(false)
   const validRef = useRef(valid)
@@ -204,15 +265,27 @@ export function useDraftState<T>(key: string | null, valid: (value: T) => boolea
   return [stale ? null : value, set, hold, dropped]
 }
 
+/** Whether a stored structured draft's JSON may stay on disk (unreadable JSON: no). */
+function persistJson<T>(text: string, persist: (value: T) => boolean): boolean {
+  try {
+    return persist(JSON.parse(text) as T)
+  } catch {
+    return false
+  }
+}
+
 /**
  * An edit box's draft ({@link useDraftState}): the edit in progress, stored only while it differs
  * from the saved document (`changed`), so opening Edit and leaving stores nothing. `dropped`: a
- * stored edit was discarded because the document changed since it started.
+ * stored edit was discarded because the document changed since it started. `persist`: as in
+ * {@link useDraftState} (a members-only document's edit, or one quoting members-only text, is
+ * never stored).
  */
 export function useEditDraft<T>(
   key: string | null,
   valid: (value: T) => boolean,
   changed: (value: T) => boolean,
+  persist: DraftValuePersist<T> = true,
 ): {
   readonly value: T | null
   readonly set: (value: T | null) => void
@@ -224,7 +297,7 @@ export function useEditDraft<T>(
    */
   readonly saving: <R>(write: () => Promise<R>) => Promise<R>
 } {
-  const [stored, store, hold, droppedStored] = useDraftState<T>(key, valid)
+  const [stored, store, hold, droppedStored] = useDraftState<T>(key, valid, persist)
   const [local, setLocal] = useState<{ readonly key: string | null; readonly value: T | null } | null>(null)
   // The "discarded" note goes once the user edits again.
   const [seen, setSeen] = useState(false)

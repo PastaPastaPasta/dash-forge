@@ -28,9 +28,12 @@ import type { NamedPull } from '@/lib/repo/closing-pull'
 import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
-import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
+import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/lib/view'
 import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
-import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
+import { publicTextOf, quotesMembersText } from '@/lib/view/audience'
+import { cn } from '@/lib/utils'
+import { AudienceChip, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, VisibleToMembers, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate } from '@/components/repo/audience'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
 import type { ClosedAs } from '@/lib/rules/transition'
@@ -138,7 +141,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // satisfies them all; a newer read aborts the older one's polling.
   const expectations = useRef<((t: IssueThread) => boolean)[]>([])
   const current = useRef<{ aborted: boolean }>({ aborted: false })
-  const { data, loading, error, reload } = useAsync<IssueThread | null>(
+  const { data: read, loading, error, reload } = useAsync<IssueThread | MembersOnlyTarget | null>(
     async (stop) => {
       current.current.aborted = true
       const own = { aborted: false }
@@ -146,11 +149,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       // Stopped by a newer read, or by useAsync (deps changed, or the page unmounted).
       const signal = { get aborted() { return own.aborted || stop.aborted } }
       const want = [...expectations.current]
-      const load = (): Promise<IssueThread | null> => loadIssueThread(sdk!, home.repo, number, network)
+      const load = (): Promise<IssueThread | MembersOnlyTarget | null> => loadIssueOrMembersOnly(sdk!, home.repo, number, network)
       const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
-      if (first === null || want.length === 0) return first
+      // A members-only issue this reader cannot open has nothing to re-read for.
+      if (first === null || isMembersOnlyTarget(first) || want.length === 0) return first
       // A re-read that fails keeps the thread just read rather than replacing the page with an error.
-      const reread = (): Promise<IssueThread | null> => load().catch(() => first)
+      const reread = (): Promise<IssueThread | null> => load().then((t) => (isMembersOnlyTarget(t) ? first : t)).catch(() => first)
       const t = await readUntil(reread, want, { signal, first })
       if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
       return t
@@ -158,6 +162,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     [ready, contentKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
+  // The thread this reader can read (null too for a members-only issue it cannot open).
+  const data = read === null || isMembersOnlyTarget(read) ? null : read
   const refresh = useCallback(
     (want?: (t: IssueThread) => boolean) => {
       if (want) expectations.current.push(want)
@@ -186,8 +192,21 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     { enabled: ready && sdk !== null && canSetMilestone },
   )
 
-  // The unsent comment survives a reload (never stored for a private repo).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'))
+  // Who the comment is for (DESIGN §10): the issue's audience, or Members when picked.
+  const audience = useComposerAudience(home, { parent: data?.issue.audience ?? 'public', members: data?.members ?? null, maintainer: holdings.data?.maintain === true })
+  // Members-only text on this page, and all this tab has opened in the repo: a public post that
+  // repeats it asks first (product H8), and a draft that quotes it is never kept on disk.
+  const pageTexts = useMemo(() => (data === null ? [] : membersTextsOf(data)), [data])
+  const membersTexts = useMembersTexts(home.repo.repoId, pageTexts)
+  // The unsent comment survives a reload (never stored for a private repo, nor while members-only),
+  // decided for each new text: one that quotes members-only text is removed before it is stored.
+  const [comment, setComment, holdDraft] = useDraftText(
+    commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'),
+    (text) => audience.audience === 'public' && !quotesMembersText(text, membersTexts),
+  )
+  const warnings = useAudienceWarnings(audience, comment, data === null ? null : { author: data.issue.author, kind: 'issue' })
+  // A public post (a comment, an edit) that repeats members-only text asks first (product H8).
+  const quoteGate = useQuoteGate()
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -199,13 +218,16 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // of a close that failed after it never posts the comment twice.
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
   // Unsaved edits survive a reload (public repos only), bound to the revision they started from:
-  // once the issue or the comment changes, the old edit is dropped, never restored over it.
+  // once the issue or the comment changes, the old edit is dropped, never restored over it. Like
+  // the comment, never kept for members-only text, nor once it quotes members-only text.
   const editIssueId = data?.issue.id ?? ''
   const issueRev = data?.issue.revision ?? -1
+  const storable = (text: string | null): boolean => text !== null && !quotesMembersText(text, membersTexts)
   const editDraft = useEditDraft<{ title: string; body: string; rev: number }>(
     editDraftKey(home.repo, editIssueId, identity),
     (d) => d.rev === issueRev,
     (d) => d.title !== (data?.issue.title ?? '') || d.body !== (data?.issue.body ?? ''),
+    (d) => data !== null && storable(publicTextOf(`${d.title}\n${d.body}`, data.issue.audience)),
   )
   const editing = editDraft.value
   const setEditing = (e: { title: string; body: string } | null): void => editDraft.set(e === null ? null : { title: e.title, body: e.body, rev: issueRev })
@@ -214,6 +236,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     commentEditDraftKey(home.repo, editIssueId, identity),
     (d) => comments.some((c) => c.id === d.id && (c.revision ?? null) === d.rev),
     (d) => d.body !== comments.find((c) => c.id === d.id)?.body,
+    (d) => {
+      const c = comments.find((x) => x.id === d.id)
+      return data !== null && c !== undefined && storable(publicTextOf(d.body, c.audience, data.issue.audience))
+    },
   )
   const editingComment = commentDraft.value
   const setEditingComment = (e: { id: string; body: string } | null): void =>
@@ -257,6 +283,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Loading issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
+  if (isMembersOnlyTarget(read)) return <MembersOnlyTargetPage home={home} target={read} />
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="issue" icon={CircleDot} title={`Issue #${number} not found`} body="No issue or pull request with that number in this repo." />
 
   const { issue, timeline, labels, members, hidden, eventValues, meta } = data
@@ -284,33 +311,41 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const lockApplies = meta.locked && !archived
   const lockedOutNow = lockApplies && lockedOut(postContext)
   const lockViewer = lockViewerOf(identity, holdings)
-  const composeBlock = archived ? ARCHIVED_REASON : lockedOutNow ? LOCKED_REASON : privateComposeBlock(home)
+  const composeBlock = archived ? ARCHIVED_REASON : lockedOutNow ? LOCKED_REASON : privateComposeBlock(home, issue.audience ?? 'public')
   const isPrivate = home.repo.visibility === 'private'
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
       ? `Couldn't read this repo's ${ACL_NAME}, so close/reopen permission is unknown.`
       : null
   const target = { id: issue.id, number: issue.number }
-  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst)
+  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
+  const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
   // A close or reopen is one `transition`, by a member or by the author.
   const stateCost = previewCreate('transition', {}, stateFirst)
   // "Close with comment" (QW2-008): the composer's text goes with a close or reopen, as on GitHub,
   // when this viewer could post it (not locked out, nothing blocking the composer, within the limit).
+  // One that repeats members-only text asks first: posted with the close, or neither happens.
   const withComment = comment.trim() !== '' && composeBlock === null && !lockedOutNow && !commentTooLong ? comment.trim() : null
+  const toggleState = (p: Extract<Pending, { kind: 'state' }>): void => closeWithComment(quoteGate, audience.audience, membersTexts, p, setPending)
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
-  const postComment = async (): Promise<void> => {
+  const postComment = async (confirmed = false): Promise<void> => {
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
+    if (quoting && !confirmed) {
+      quoteGate.check(comment, membersTexts, () => void postComment(true))
+      return
+    }
     setPosting(true)
     setCommentError(null)
     // Until the outcome is known, a reload must not bring the text back to be posted again.
     holdDraft(true, comment)
     try {
-      const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext })
+      const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext, audience: audience.audience })
       setComment('')
       holdDraft(false, '')
       draft.renew()
+      audience.reset()
       refresh((t) => issueWriteShows(t, { kind: 'comment', id: posted.documentId }))
     } catch (e) {
       if (e instanceof SupersededWriteError) {
@@ -339,7 +374,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'state': {
         // The comment first, as GitHub posts it: it is part of why the issue closes.
         if (pending.comment !== undefined && closeComment.current?.intent !== intent) {
-          const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: pending.comment, intent: `${intent}:comment`, post: postContext }).catch((e: unknown) => {
+          const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: pending.comment, intent: `${intent}:comment`, post: postContext, audience: audience.audience }).catch((e: unknown) => {
             if (e instanceof SupersededWriteError) return { documentId: e.documentId }
             throw e
           })
@@ -436,7 +471,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const pendingCost = ((): Cost => {
     switch (pending?.kind) {
       case 'state':
-        return pending.comment === undefined ? stateCost : sumPreviews([composeCost(home.repo, 'comment', { body: pending.comment }, commentFirst), stateCost])
+        return pending.comment === undefined ? stateCost : sumPreviews([composeCost(home.repo, 'comment', { body: pending.comment }, commentFirst, audience.audience), stateCost])
       case 'labels':
         return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => composeCost(home.repo, 'event', { value }, eventFirst)))
       case 'assignees':
@@ -475,6 +510,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     <AuthorRolesProvider owner={home.repo.ownerId} members={members} authors={threadAuthorIds(issue.author, timeline)}>
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]">
       <div className="min-w-0 space-y-5">
+        {/* What anyone can read of the thread (the e2e "View as public" check compares it). */}
+        <div className="space-y-5" data-testid="thread-conversation">
         {/* Header */}
         <div>
           {editing ? (
@@ -487,7 +524,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   variant="primary"
                   size="sm"
                   disabled={editing.title.trim() === '' || (editing.title === issue.title && editing.body === issue.body) || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX) || guard.disabledReason !== null}
-                  onClick={() => setPending({ kind: 'editIssue', title: editing.title.trim(), body: editing.body })}
+                  onClick={() => {
+                    const edit = { kind: 'editIssue' as const, title: editing.title.trim(), body: editing.body }
+                    // A public issue's edit is public text: it asks first when it repeats members-only text.
+                    quoteGate.check(publicTextOf(`${edit.title}\n${edit.body}`, issue.audience), membersTexts, () => setPending(edit), { before: `${issue.title}\n${issue.body}` })
+                  }}
                 >
                   Save
                 </Button>
@@ -533,9 +574,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
         {/* Body */}
         {threadCollapsed ? null : (
-        <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
+        <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', issue.audience === 'members' && MEMBERS_CARD)}>
+          <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', issue.audience === 'members' && MEMBERS_CARD_HEADER)}>
             <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="authored" />
+            {issue.audience === 'members' ? <VisibleToMembers /> : null}
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
           </div>
           <div className="px-4 py-3">
@@ -562,9 +604,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         )}
 
         {/* Timeline */}
-        {!threadCollapsed && (timeline.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 || (duplicatesOf.data?.length ?? 0) > 0) ? (
+        {!threadCollapsed && (timeline.length > 0 || data.membersOnly.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 || (duplicatesOf.data?.length ?? 0) > 0) ? (
           <Timeline
             items={timeline}
+            membersOnly={data.membersOnly}
+            {...(home.lane ? { lane: home.lane } : {})}
             links={links}
             trust={trust}
             {...(moderation ? { moderation } : {})}
@@ -596,7 +640,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 disabled: composeBlock !== null || guard.disabledReason !== null,
                 deleteDisabled: archived || guard.disabledReason !== null,
                 onEdit: setEditingComment,
-                onSave: (id, body) => setPending({ kind: 'editComment', id, body }),
+                // A public comment's edit is public text: it asks first when it repeats members-only text.
+                onSave: (id, body) => quoteGate.check(publicTextOf(body, item.comment.audience, issue.audience), membersTexts, () => setPending({ kind: 'editComment', id, body }), { before: item.comment.body }),
                 onDelete: (id) => setPending({ kind: 'deleteComment', id }),
                 links,
               })
@@ -616,8 +661,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           />
         ) : null}
 
-        <HiddenNote hidden={0} what="comments" home={home} by={hidden} />
+        <HiddenNote hidden={totalHidden(hidden)} what="comment" home={home} by={hidden} shown={data.membersOnly.length} />
         <EventValuesNote counts={eventValues} />
+        </div>
 
         {/* Composer */}
         <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="issue-composer">
@@ -627,24 +673,25 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
             <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={composeBlock === null ? () => void postComment() : undefined} />
             <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} long={commentLong} />
+            <AudienceWarnings warnings={warnings} />
           </LockedBanner>
           {lockedOutNow && !canToggle ? null : (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             {lockedOutNow ? <span /> : <CostPreview cost={commentCost} />}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               {canToggle && open ? (
                 <CloseIssueButton
                   number={issue.number}
                   label={stateToggleLabel(open, withComment !== null, 'issue')}
                   disabled={!signer || guard.disabledReason !== null || archived}
                   {...(guard.disabledReason ? { title: guard.disabledReason } : {})}
-                  onClose={(closedAs) => setPending(withComment === null ? { kind: 'state', closedAs } : { kind: 'state', comment: withComment, closedAs })}
+                  onClose={(closedAs) => toggleState(withComment === null ? { kind: 'state', closedAs } : { kind: 'state', comment: withComment, closedAs })}
                   checkDuplicate={async (n) => ((await readDuplicateTargets(sdk!, home.repo, [n])).has(n) ? null : `#${n} is not an issue of this repo`)}
                 />
               ) : canToggle ? (
                 <Button
                   variant="outline"
-                  onClick={() => setPending(withComment === null ? { kind: 'state' } : { kind: 'state', comment: withComment })}
+                  onClick={() => toggleState(withComment === null ? { kind: 'state' } : { kind: 'state', comment: withComment })}
                   disabled={!signer || guard.disabledReason !== null || archived}
                   title={guard.disabledReason ?? undefined}
                   data-testid="issue-state-toggle"
@@ -653,10 +700,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   {stateToggleLabel(open, withComment !== null, 'issue')}
                 </Button>
               ) : null}
+              {lockedOutNow ? null : <AudienceChip home={home} state={audience} />}
               {lockedOutNow ? null : (
                 <Button
                   variant="primary"
-                  onClick={postComment}
+                  onClick={() => void postComment()}
                   loading={posting}
                   disabled={composeBlock !== null || comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
                   title={guard.disabledReason ?? undefined}
@@ -667,7 +715,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             </div>
           </div>
           )}
-          {lockedOutNow ? null : <BodyCounter repo={home.repo} text={comment} field="comment" long={commentLong} />}
+          {lockedOutNow ? null : <BodyCounter repo={home.repo} text={comment} field="comment" long={commentLong} members={audience.audience === 'members' ? 'comment' : undefined} />}
           {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
           {commentError ? (
             <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
@@ -744,6 +792,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         </SidebarSection>
       </aside>
 
+      {quoteGate.dialog}
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
@@ -756,6 +805,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     </div>
     </AuthorRolesProvider>
   )
+}
+
+/** Members-only text an issue page shows: the issue's own when it is members-only, and members-only comments. */
+function membersTextsOf(t: IssueThread): string[] {
+  return [
+    ...(t.issue.audience === 'members' ? [t.issue.title, t.issue.body] : []),
+    ...t.timeline.flatMap((x) => (x.kind === 'comment' && x.comment.audience === 'members' ? [x.comment.body] : [])),
+  ]
 }
 
 const NO_DUPLICATES: ReadonlyMap<number, { readonly number: number; readonly title: string }> = new Map()

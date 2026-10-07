@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
-import { composeCost, privateWriteBlock } from './private-compose'
+import { EpochKeys, sealMembersDoc } from '@/lib/private'
+import { composeCost, membersEncBytes, privateWriteBlock } from './private-compose'
 
 const FORGE = { core: 'C', collab: 'L', community: 'L', group: 'G' }
 const PRIV: RepoRef = { forge: FORGE, repoId: 'R', ownerId: 'O', name: 'r', visibility: 'private' }
@@ -64,5 +65,29 @@ describe('the composer cost on a private repo', () => {
     const used = 1 + 1 + 'refs/heads/main'.length + 'refs/heads/x'.length
     expect(composeCost(PRIV, 'patch', withBind).credits).toBe(estimateBytesCredits('patch', used + 3 * 4 + 29, { sourceRepoId: 'S'.repeat(44), headOid: 'ab'.repeat(20) }))
     expect(composeCost(PRIV, 'patch', withBind).credits).toBeGreaterThan(composeCost(PRIV, 'patch', sealedOnly).credits)
+  })
+})
+
+describe('the composer cost of members-only text (enc v0x03)', () => {
+  const REPO_ID = new Uint8Array(32).fill(7)
+  const OWNER = new Uint8Array(32).fill(9)
+  const TARGET = new Uint8Array(32).fill(3)
+  it("prices the bytes sealMembersDoc writes: the records, the padding record's 3-byte header, and the 61-byte framing (commitment included, once)", async () => {
+    const keys = await EpochKeys.import(REPO_ID, 0, new Uint8Array(32).fill(0x60))
+    for (const n of [0, 1, 20, 57, 58, 59, 60, 61, 64, 120, 121, 122, 500]) {
+      const body = 'x'.repeat(Math.max(1, n))
+      const enc = await sealMembersDoc(keys, { type: 'comment', vis: 'public', ownerId: OWNER, epoch: 0, targetId: TARGET }, { body })
+      expect(membersEncBytes('comment', body.length, 1), `a ${body.length}-byte comment`).toBe(enc.length)
+    }
+    const title = 'A title'
+    const body = 'y'.repeat(200)
+    const issue = await sealMembersDoc(keys, { type: 'issue', vis: 'public', ownerId: OWNER, epoch: 0, number: 2 }, { title, body })
+    expect(membersEncBytes('issue', title.length + body.length, 2)).toBe(issue.length)
+  })
+
+  it('costs more than the same text posted publicly', () => {
+    const pub = composeCost(PUB, 'comment', { body: 'hello members' }, {}, 'public').credits
+    const members = composeCost(PUB, 'comment', { body: 'hello members' }, {}, 'members').credits
+    expect(members).toBeGreaterThan(pub)
   })
 })

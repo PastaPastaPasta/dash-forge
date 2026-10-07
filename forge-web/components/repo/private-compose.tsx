@@ -9,17 +9,23 @@
 
 import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
+import { FORMER_MEMBER_TEXT } from '@/lib/view/audience'
+import { MEMBERS_TEXT_LIMIT } from '@/lib/repo/members-writes'
 import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
 import { previewCreate, previewCredits, sumPreviews, type CostPreview, type FirstWrite } from '@/lib/sdk'
 import { fieldEstimate, isLongBody, longBodyCredits } from '@/lib/repo/long-body'
 import { utf8Bytes } from '@/lib/rules/long-body'
+import { PAD_BUCKET, pads } from '@/lib/private'
 import { admissionFor, estimateBytesCredits } from '@/lib/sdk/cost'
 import { BODY_LIMIT, TITLE_LIMIT, textUse, type TextLimit } from '@/lib/view/text-limits'
 import { TextCounter } from '@/components/ui/text-counter'
 import { LongComposeNote, type LongCompose } from '@/components/repo/long-body'
 
 /** For a public repo: always null. For a private one: null when sealed writes can go ahead, else why not. */
-export function privateComposeBlock(home: RepoHome): string | null {
+export function privateComposeBlock(home: RepoHome, thread: 'public' | 'members' = 'public'): string | null {
+  // A member removed since reads a members-only thread they held the key for, but can't reply:
+  // a public reply is refused there, and they can no longer write members-only content.
+  if (thread === 'members' && home.lane?.access === 'former') return FORMER_MEMBER_TEXT
   return privateWriteBlock(home.repo, home.private)
 }
 
@@ -51,6 +57,8 @@ export function composeCost(
   kind: SealedKind | 'event',
   input: Readonly<Record<string, unknown>>,
   first: FirstWrite = {},
+  /** A public repo's members-only text is stored encrypted too (DESIGN §4.1): priced so. */
+  audience: 'public' | 'members' = 'public',
 ): CostPreview {
   // A body over its field is priced as the field it is written as, plus its artifact
   // (forge-v2.md §6.3: `longBodyField`).
@@ -58,8 +66,27 @@ export function composeCost(
   const long = kind !== 'event' && typeof body === 'string' && isLongBody(repo, kind, body, input)
   const data = long ? { ...input, body: fieldEstimate(repo, kind, body, input) } : input
   const extra = long ? previewCredits(longBodyCredits(repo, utf8Bytes(body))) : null
-  const doc = composeDocCost(repo, kind, data, first)
+  const doc = composeDocCost(repo, kind, data, first, audience)
   return extra === null ? doc : sumPreviews([doc, extra])
+}
+
+/**
+ * A members-only (`enc` v0x03) document's framing (§4.1): version (1), nonce (12), the key
+ * commitment `COMMIT_obj` (32) and the AES-GCM tag (16), 61 bytes in all.
+ */
+const MEMBERS_FRAME = 1 + 12 + 32 + 16
+/** A TLV record's header: its tag (1) and length (2). The padding record has one too. */
+const RECORD_HEADER = 3
+
+/**
+ * The `enc` bytes of a members-only `kind` whose sealed fields hold `used` bytes in `fields`
+ * records: the records, the padding record that ends the TLV on a multiple of 64 bytes (D28: an
+ * issue, PR, comment or review), and the framing (`sealMembersDoc`'s length).
+ */
+export function membersEncBytes(kind: SealedKind | 'event', used: number, fields: number): number {
+  const records = used + RECORD_HEADER * fields
+  const tlv = pads(kind) ? Math.ceil((records + RECORD_HEADER) / PAD_BUCKET) * PAD_BUCKET : records
+  return tlv + MEMBERS_FRAME
 }
 
 function composeDocCost(
@@ -67,11 +94,13 @@ function composeDocCost(
   kind: SealedKind | 'event',
   data: Readonly<Record<string, unknown>>,
   first: FirstWrite,
+  audience: 'public' | 'members',
 ): CostPreview {
   const { used, fields, props } = sealedTextUse(kind, data)
-  if (repo.visibility !== 'private' || (fields === 0 && kind === 'event')) return previewCreate(kind, data, first)
+  const members = repo.visibility === 'public' && audience === 'members'
+  if ((repo.visibility !== 'private' && !members) || (fields === 0 && kind === 'event')) return previewCreate(kind, data, first)
   const bind = Object.fromEntries(Object.entries(data).filter(([k]) => !props.includes(k)))
-  const sealedBytes = used + 3 * fields + 29
+  const sealedBytes = members ? membersEncBytes(kind, used, fields) : used + 3 * fields + 29
   const credits = estimateBytesCredits(kind, sealedBytes, bind, first)
   return previewCredits(credits, admissionFor(kind, sealedBytes, credits))
 }
@@ -97,10 +126,24 @@ export function composeTooLong(repo: RepoRef, kind: SealedKind, data: Readonly<R
  * The public composer's live byte counter for a body (private repos show {@link SealedLimit}); a
  * text over the field (`long`, `useLongCompose`) shows where its whole text goes instead.
  */
-export function BodyCounter({ repo, text, field = 'text', long }: { repo: RepoRef; text: string; field?: string; long?: LongCompose }): JSX.Element | null {
+export function BodyCounter({
+  repo,
+  text,
+  field = 'text',
+  long,
+  members,
+}: {
+  repo: RepoRef
+  text: string
+  field?: string
+  long?: LongCompose
+  /** The composer writes members-only content of this kind: counted against its v0x03 room (5,053 bytes for a comment), not the public field's. */
+  members?: keyof typeof MEMBERS_TEXT_LIMIT | undefined
+}): JSX.Element | null {
   if (long?.long) return <LongComposeNote compose={long} text={text} />
   if (repo.visibility === 'private') return null
-  return <TextCounter text={text} limit={BODY_LIMIT} field={field} />
+  const limit = members === undefined ? BODY_LIMIT : { chars: Math.min(BODY_LIMIT.chars, MEMBERS_TEXT_LIMIT[members]), bytes: MEMBERS_TEXT_LIMIT[members] }
+  return <TextCounter text={text} limit={limit} field={field} />
 }
 
 /**

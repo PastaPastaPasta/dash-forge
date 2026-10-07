@@ -216,7 +216,8 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
           <Button size="sm" variant="primary" disabled={write.context === null || cost === null} onClick={() => setOpen(true)}>
             Repair
           </Button>
-          {write.context === null ? (
+          {/* Only once the key state is read: right after sign-in it is still loading, not locked. */}
+          {write.context === null && write.loading === false ? (
             <span className="ml-2 text-[12px] text-anvil-500 dark:text-anvil-400">Unlock with your encryption key to repair.</span>
           ) : null}
         </div>

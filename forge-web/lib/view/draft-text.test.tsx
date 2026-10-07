@@ -10,7 +10,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownEditor } from '@/components/repo/issue-bits'
-import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, commentEditDraftKey, editDraftKey, newIssueDraftKey, readDraft, useDraftState, useDraftText, useEditDraft, writeDraft } from './draft-text'
+import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, commentEditDraftKey, editDraftKey, newIssueDraftKey, readDraft, useDraftState, useDraftText, useEditDraft, useQuotedUntilEmptied, writeDraft, type DraftPersist } from './draft-text'
+import { quotesMembersText } from './audience'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -111,6 +112,91 @@ describe('useDraftText', () => {
   })
 })
 
+describe('useDraftText with a rule decided per text (members-only text quoted)', () => {
+  const SECRET = 'The staging database password rotates on Friday at noon.'
+  const MEMBERS = [SECRET]
+  const KEY = 'A:R:T:comment'
+  /** Every value this browser's storage held, read during each render. */
+  let seenAtRender: string[]
+  let setText: (t: string) => void = () => undefined
+  function Quoting({ rule }: { rule: DraftPersist }): JSX.Element {
+    const [text, set] = useDraftText(KEY, rule)
+    setText = set
+    seenAtRender.push(Object.keys(localStorage).map((k) => localStorage.getItem(k) ?? '').join('\n'))
+    return <span data-testid="text">{text}</span>
+  }
+  beforeEach(() => {
+    seenAtRender = []
+  })
+
+  it('never stores pasted members-only text, at any render, and drops the stored public copy at once', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const rule = (t: string): boolean => !quotesMembersText(t, MEMBERS)
+    act(() => root.render(<Quoting rule={rule} />))
+    act(() => setText('A public thought'))
+    expect(readDraft(KEY)).toBe('A public thought')
+    // The paste: the stored public copy goes in the same call, before React renders again.
+    act(() => {
+      setText(`A public thought\n${SECRET}`)
+      expect(localStorage.length).toBe(0)
+    })
+    act(() => setText(`A public thought\n> ${SECRET}\nmore`))
+    expect(localStorage.length).toBe(0)
+    expect(host.querySelector('[data-testid="text"]')?.textContent).toContain(SECRET)
+    expect(seenAtRender.some((v) => v.includes('staging database'))).toBe(false)
+    expect(setItem.mock.calls.some(([, v]) => String(v).includes('staging database'))).toBe(false)
+    // The quote taken out: still in memory only, until the text is emptied (posted or deleted).
+    act(() => setText('A public thought, edited'))
+    expect(localStorage.length).toBe(0)
+    act(() => setText(''))
+    act(() => setText('A new thought'))
+    expect(readDraft(KEY)).toBe('A new thought')
+    setItem.mockRestore()
+  })
+
+  it('keeps a quoting draft off disk when the members-only text is forgotten (the tab locked)', () => {
+    act(() => root.render(<Quoting rule={(t) => !quotesMembersText(t, MEMBERS)} />))
+    act(() => setText(`> ${SECRET}`))
+    expect(localStorage.length).toBe(0)
+    // Locked: the store is cleared, so the same rule now finds nothing to compare against.
+    act(() => root.render(<Quoting rule={(t) => !quotesMembersText(t, [])} />))
+    expect(localStorage.length).toBe(0)
+    act(() => setText(`> ${SECRET}\nand more`))
+    expect(localStorage.length).toBe(0)
+  })
+
+  it('drops a stored copy that turns out to quote members-only text the page read later', () => {
+    act(() => root.render(<Quoting rule={() => true} />))
+    act(() => setText(SECRET))
+    expect(readDraft(KEY)).toBe(SECRET)
+    // The members-only comment loaded: the same text is now a quote of it.
+    act(() => root.render(<Quoting rule={(t) => !quotesMembersText(t, MEMBERS)} />))
+    expect(localStorage.length).toBe(0)
+  })
+})
+
+describe('useQuotedUntilEmptied (the new-PR form)', () => {
+  let seen: boolean[] = []
+  function Form({ quotes, empty }: { quotes: boolean; empty: boolean }): null {
+    seen.push(useQuotedUntilEmptied(quotes, empty))
+    return null
+  }
+  it('stays true from the first quote until the form is emptied, whatever the check says later', () => {
+    seen = []
+    act(() => root.render(<Form quotes={false} empty={false} />))
+    expect(seen.at(-1)).toBe(false)
+    act(() => root.render(<Form quotes empty={false} />))
+    expect(seen.at(-1)).toBe(true)
+    // The tab locked: the check finds nothing now, the text is the same.
+    act(() => root.render(<Form quotes={false} empty={false} />))
+    expect(seen.at(-1)).toBe(true)
+    act(() => root.render(<Form quotes={false} empty />))
+    expect(seen.at(-1)).toBe(false)
+    act(() => root.render(<Form quotes={false} empty={false} />))
+    expect(seen.at(-1)).toBe(false)
+  })
+})
+
 describe('useDraftState (edits and new issues)', () => {
   type Edit = { title: string; body: string; rev: number }
   let api: { value: Edit | null; set: (v: Edit | null) => void; hold: (on: boolean, v: Edit | null) => void } | null = null
@@ -204,6 +290,129 @@ describe('useEditDraft', () => {
       await api!.saving(async () => 'ok')
     })
     expect(readDraft('A:R:T:edit')).toBe('')
+  })
+})
+
+describe('edit and new-issue drafts keep no members-only text at rest (DESIGN §4.1)', () => {
+  const SECRET = 'The staging database password rotates on Friday at noon.'
+  const MEMBERS = [SECRET]
+  type Issue = { title: string; body: string }
+  type Edit = { title: string; body: string; rev: number }
+  /** Whether any value this browser's storage held (at a render, or in any write) names the secret. */
+  let seenAtRender: string[]
+  const leaked = (setItem: { mock: { calls: unknown[][] } }): boolean =>
+    seenAtRender.some((v) => v.includes('staging database')) || setItem.mock.calls.some(([, v]) => String(v).includes('staging database'))
+  const snapshot = (): void => {
+    seenAtRender.push(Object.keys(localStorage).map((k) => localStorage.getItem(k) ?? '').join('\n'))
+  }
+  beforeEach(() => {
+    seenAtRender = []
+  })
+
+  let issue: { value: Issue | null; set: (v: Issue | null) => void; hold: (on: boolean, v: Issue | null) => void } | null = null
+  function NewIssue({ members, audience }: { members: string[]; audience: 'public' | 'members' }): JSX.Element {
+    const [value, set, hold] = useDraftState<Issue>('A:R:new:issue', () => true, (d) => audience === 'public' && !quotesMembersText(`${d.title}\n${d.body}`, members))
+    issue = { value, set, hold }
+    snapshot()
+    return <span data-testid="issue">{value?.body ?? ''}</span>
+  }
+
+  it('a new issue quoting members-only text stays in memory, from the call that sets it, until emptied', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    act(() => root.render(<NewIssue members={MEMBERS} audience="public" />))
+    act(() => issue!.set({ title: 'Ship it', body: 'public notes' }))
+    expect(JSON.parse(readDraft('A:R:new:issue'))).toEqual({ title: 'Ship it', body: 'public notes' })
+    act(() => {
+      issue!.set({ title: 'Ship it', body: `public notes\n> ${SECRET}` })
+      // Removed in the same call, before React renders again.
+      expect(localStorage.length).toBe(0)
+    })
+    expect(host.querySelector('[data-testid="issue"]')?.textContent).toContain(SECRET)
+    // The tab locks (the members-only text is forgotten): the quoting draft still stays off disk.
+    act(() => root.render(<NewIssue members={[]} audience="public" />))
+    act(() => issue!.set({ title: 'Ship it', body: `public notes\n> ${SECRET}\nmore` }))
+    expect(localStorage.length).toBe(0)
+    // A failed submit that sent nothing keeps the draft again: still not on disk.
+    act(() => issue!.hold(true, null))
+    act(() => issue!.hold(false, { title: 'Ship it', body: `> ${SECRET}` }))
+    expect(localStorage.length).toBe(0)
+    expect(leaked(setItem)).toBe(false)
+    // Emptied (posted or deleted): a new public draft is kept again.
+    act(() => issue!.set(null))
+    act(() => issue!.set({ title: 'Next', body: 'public' }))
+    expect(JSON.parse(readDraft('A:R:new:issue'))).toEqual({ title: 'Next', body: 'public' })
+    setItem.mockRestore()
+  })
+
+  it('a members-only new issue is never stored, and switching to Members drops the stored public copy', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    act(() => root.render(<NewIssue members={MEMBERS} audience="public" />))
+    act(() => issue!.set({ title: 'Plan', body: 'draft' }))
+    expect(readDraft('A:R:new:issue')).not.toBe('')
+    act(() => root.render(<NewIssue members={MEMBERS} audience="members" />))
+    expect(localStorage.length).toBe(0)
+    act(() => issue!.set({ title: 'Plan', body: `draft ${SECRET}` }))
+    expect(localStorage.length).toBe(0)
+    expect(leaked(setItem)).toBe(false)
+    setItem.mockRestore()
+  })
+
+  let edit: ReturnType<typeof useEditDraft<Edit>> | null = null
+  function EditBox({ members, persist }: { members: string[]; persist?: boolean }): JSX.Element {
+    edit = useEditDraft<Edit>(
+      'A:R:T:edit',
+      (d) => d.rev === 1,
+      (d) => d.title !== 'Saved' || d.body !== 'saved body',
+      persist ?? ((d) => !quotesMembersText(`${d.title}\n${d.body}`, members)),
+    )
+    snapshot()
+    return <span data-testid="edit">{edit.value?.body ?? ''}</span>
+  }
+
+  it('an edit of a members-only issue, PR or comment is never stored', async () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    act(() => root.render(<EditBox members={MEMBERS} persist={false} />))
+    act(() => edit!.set({ title: 'Saved', body: `edited: ${SECRET}`, rev: 1 }))
+    expect(edit!.value?.body).toContain(SECRET)
+    expect(localStorage.length).toBe(0)
+    // A save known not to have been sent keeps the edit in memory only.
+    await act(async () => {
+      await expect(edit!.saving(async () => { throw new Error('refused') })).rejects.toThrow()
+    })
+    expect(localStorage.length).toBe(0)
+    expect(leaked(setItem)).toBe(false)
+    setItem.mockRestore()
+  })
+
+  it('a public edit that quotes members-only text is removed before it is stored, and stays off disk once the tab locks', async () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    act(() => root.render(<EditBox members={MEMBERS} />))
+    act(() => edit!.set({ title: 'Saved', body: 'a public fix', rev: 1 }))
+    expect(JSON.parse(readDraft('A:R:T:edit'))).toMatchObject({ body: 'a public fix' })
+    act(() => {
+      edit!.set({ title: 'Saved', body: `a public fix\n${SECRET}`, rev: 1 })
+      expect(localStorage.length).toBe(0)
+    })
+    act(() => root.render(<EditBox members={[]} />))
+    expect(localStorage.length).toBe(0)
+    act(() => edit!.set({ title: 'Saved', body: `a public fix\n${SECRET}!`, rev: 1 }))
+    expect(localStorage.length).toBe(0)
+    await act(async () => {
+      await expect(edit!.saving(async () => { throw new Error('refused') })).rejects.toThrow()
+    })
+    expect(localStorage.length).toBe(0)
+    expect(edit!.value?.body).toContain(SECRET)
+    expect(leaked(setItem)).toBe(false)
+    setItem.mockRestore()
+  })
+
+  it('drops a stored edit that turns out to quote members-only text the page read later', () => {
+    act(() => root.render(<EditBox members={[]} />))
+    act(() => edit!.set({ title: 'Saved', body: SECRET, rev: 1 }))
+    expect(readDraft('A:R:T:edit')).not.toBe('')
+    act(() => root.render(<EditBox members={MEMBERS} />))
+    expect(localStorage.length).toBe(0)
+    expect(edit!.value?.body).toBe(SECRET)
   })
 })
 

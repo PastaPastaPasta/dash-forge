@@ -151,6 +151,26 @@ describe("a member's members-key session (laneGate)", () => {
   })
 })
 
+describe('a member removed since reads with the key shares they still hold (DESIGN §12 item 6)', () => {
+  it('opens what was written under the epochs they held; later writing is a placeholder', async () => {
+    // Their session: the epoch-0 key only (the removal rotated to epoch 1, never shared with them).
+    const ctx = await ctxWith(K0)
+    const K1 = Uint8Array.from({ length: 32 }, (_, i) => 0xa0 + i)
+    const earlier = await membersComment(BOB, 'written while they were a member', K0, { asMember: b58(BOB) })
+    const keys1 = await EpochKeys.import(REPO, 1, new Uint8Array(K1))
+    const later = {
+      ...(await membersComment(BOB, 'placeholder', K0, { asMember: b58(BOB) })),
+      epoch: 1,
+      enc: await sealMembersDoc(keys1, { type: 'comment', vis: 'public', ownerId: BOB, epoch: 1, targetId: ISSUE }, { body: 'written after the removal' }),
+    }
+    const tally = new HiddenTally()
+    const { docs } = await admitAll(laneGate(PUBLIC, ctx), 'comment', [earlier, later], tally)
+    expect(docs.map((d) => d['body'])).toEqual(['written while they were a member'])
+    expect(tally.placeholders).toHaveLength(1)
+    expect(JSON.stringify(tally.placeholders)).not.toContain('written after the removal')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // A members-key session is not a private session
 // ---------------------------------------------------------------------------
