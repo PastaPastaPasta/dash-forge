@@ -230,12 +230,11 @@ pub async fn check_serves(
             "this computer reads none of these addresses (an ipfs:// address needs a read gateway in storage.toml)".into(),
         ),
         Err(Missed::Unverified { error, places }) => {
-            // A body over the pack's `size` (the only cap a read sets) is other bytes too,
-            // refused before it was hashed.
-            if places
-                .iter()
-                .any(|p| p.contains(WRONG_BYTES) || p.contains(LARGER_THAN_EXPECTED))
-            {
+            // A body over the pack's known `size` is other bytes too, refused before it was
+            // hashed. Without a size the cap is the reader's ceiling, which says nothing of the
+            // pack.
+            let oversized = |p: &String| size.is_some() && p.contains(LARGER_THAN_EXPECTED);
+            if places.iter().any(|p| p.contains(WRONG_BYTES) || oversized(p)) {
                 ServeCheck::WrongBytes(error.to_string())
             } else {
                 ServeCheck::Unreachable(error.to_string())

@@ -543,6 +543,19 @@ cmd('storage use', 'Which storage profiles pushes use.', {
 cmd('storage advertise', 'The storage the repository advertises to forks and mirrors.', {
     'status': E('advertised', 'unchanged'), 'mode': ANY, 'uris': SA, 'configDocId': nl(S),
 }, ['status'])
+PACK_MIRROR = O({
+    'documentId': S, 'by': D('Its writer\'s identity id.', S), 'repoId': S, 'packHash': S,
+    'kind': D('1: https addresses; 2: IPFS addresses.', I), 'uris': SA, 'createdAt': I,
+}, ['documentId', 'by', 'repoId', 'packHash', 'kind', 'uris', 'createdAt'])
+cmd('storage mirror add', 'A pack mirror recorded.', {
+    'status': E('recorded'), 'repo': S, 'packHash': S, 'uris': SA, 'documentId': S, 'cost': COST,
+}, ['status', 'packHash', 'uris', 'documentId', 'cost'])
+cmd('storage mirror list', 'The pack mirrors recorded for a repository, or by you (`--mine`).', {
+    'mirrors': A(PACK_MIRROR),
+}, ['mirrors'])
+cmd('storage mirror remove', 'A pack mirror record deleted.', {
+    'status': E('removed'), 'documentId': S, 'type': E('packMirror'),
+}, ['status', 'documentId'])
 
 # -- webhooks, CI -----------------------------------------------------------------------------
 cmd('webhook add', 'A webhook registered with a relay.', {

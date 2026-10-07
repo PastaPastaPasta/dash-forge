@@ -198,7 +198,7 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
     Ok(())
 }
 
-fn mirror_json(m: &PackMirror) -> serde_json::Value {
+pub(crate) fn mirror_json(m: &PackMirror) -> serde_json::Value {
     json!({
         "documentId": m.id,
         "by": m.owner_id,
