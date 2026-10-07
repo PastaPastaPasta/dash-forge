@@ -1312,7 +1312,7 @@ fn plan_outputs(
     }
     // Compared without case: on a case-insensitive filesystem (macOS, Windows) `A.bin` and
     // `a.bin` are one file.
-    let mut seen = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     let mut first_refusal = None;
     let mut planned = Vec::new();
     for &(name, sha256) in assets {
