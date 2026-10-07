@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { BrowseReader, ObjectLocator, gitOidHex } from './index'
 import {
   INDEX_DECODE_MAX_BYTES,
+  IndexTooLargeError,
   indexPacks,
   memoryPackSource,
   scanPack,
@@ -84,7 +85,13 @@ describe('fallback clone budgets', () => {
     const deltaStored = concat(objHeader(T_OFS_DELTA, delta.length), ofsBase(baseStored.length), zlibSync(delta, { level: 9 }))
     const pack = packFrame(baseStored, deltaStored)
     expect(pack.length).toBeLessThan(4096)
-    await expect(indexPacks([pack])).rejects.toThrow(/too large to open in the browser/)
+    await expect(indexPacks([pack])).rejects.toBeInstanceOf(IndexTooLargeError)
+  })
+
+  it('holds a caller to the budget it passes, over both passes', async () => {
+    const pack = zeroBlobPack(2 * 1024 * 1024)
+    await expect(indexPacks([pack], undefined, 1024 * 1024)).rejects.toBeInstanceOf(IndexTooLargeError)
+    expect(await indexPacks([pack], undefined, 4 * 1024 * 1024)).toHaveLength(1)
   })
 
   it('refuses a chain longer than git allows, and reads one at the limit', async () => {

@@ -134,9 +134,39 @@ export class ObjectTooLargeError extends Error {
   constructor(
     readonly size: number,
     readonly maxBytes: number,
+    message = `object is ${size} bytes, over the ${maxBytes}-byte limit`,
   ) {
-    super(`object is ${size} bytes, over the ${maxBytes}-byte limit`)
+    super(message)
     this.name = 'ObjectTooLargeError'
+  }
+}
+
+/** The least a read may build however small its limit: 4095 steps of 64 KiB, git's deepest chain of small objects. */
+const BUILD_FLOOR_BYTES = 256 * 1024 * 1024
+
+/**
+ * The most bytes one read may build across its whole delta chain: every inflate and every
+ * delta result, added up. Each step is bounded ({@link DECODE_MAX_BYTES}), but a chain of 4095
+ * of them is not. 64 steps of the largest base the read allows ({@link baseMaxBytes}) cover
+ * git's default `pack.depth` of 50 even when every base is that large; the floor lets small
+ * objects use the whole depth git allows; and no read builds more than 4 decodes' worth.
+ */
+export function buildMaxBytes(maxBytes: number): number {
+  return Math.min(4 * DECODE_MAX_BYTES, Math.max(64 * baseMaxBytes(maxBytes), BUILD_FLOOR_BYTES))
+}
+
+/** What one read has built so far, against its {@link buildMaxBytes}. */
+export class BuildBudget {
+  private built = 0
+
+  constructor(readonly max: number) {}
+
+  /** Count `bytes` just built; past the budget, the read fails. */
+  spend(bytes: number): void {
+    this.built += bytes
+    if (this.built > this.max) {
+      throw new ObjectTooLargeError(this.built, this.max, `reading this object built ${this.built} bytes, over the ${this.max}-byte limit`)
+    }
   }
 }
 
@@ -364,19 +394,21 @@ function runDelta(base: Uint8Array, delta: Uint8Array, pos: number, out: Uint8Ar
  * browse-plane single-read path.
  *
  * `spanSlice` must be exactly the pack bytes `[end - deltaChainSpan, end)` where
- * `end = offset + length`. Recurses into (earlier, in-slice) OFS delta bases. REF_DELTA
- * is rejected here (the span model is only valid on self-contained, all-OFS packs).
+ * `end = offset + length`. Follows (earlier, in-slice) OFS delta bases in a loop, charging what
+ * every step builds to `budget`. REF_DELTA is rejected here (the span model is only valid on
+ * self-contained, all-OFS packs).
  */
 export function reconstructFromSpan(
   loc: { offset: number; length: number; deltaChainSpan: number },
   spanSlice: Uint8Array,
   maxBytes = Infinity,
   baseMax = baseMaxBytes(maxBytes),
+  budget = new BuildBudget(buildMaxBytes(maxBytes)),
 ): GitObject {
   const end = loc.offset + loc.length
   const baseAddr = end - loc.deltaChainSpan
   if (spanSlice.length !== loc.deltaChainSpan) throw new Error('span slice length mismatch')
-  return decodeAt(spanSlice, baseAddr, loc.offset, null, maxBytes, baseMax)
+  return decodeAt(spanSlice, baseAddr, loc.offset, null, maxBytes, baseMax, budget)
 }
 
 /** A resolver for REF_DELTA bases / per-base fetches, keyed by OID (hex). */
@@ -387,7 +419,8 @@ export type ObjectByOid = (oidHex: string) => Promise<GitObject> | GitObject
  * `baseAddr`. Follows earlier OFS bases within `buf` down to the chain's root, then applies the
  * deltas back up: a loop, so a chain as deep as git allows ({@link DELTA_DEPTH_MAX}) needs no
  * stack, and a deeper one is refused. `refResolver` (may be null in a span read) resolves
- * REF_DELTA bases by OID. The object is bounded by `maxBytes`, every base by `baseMax`.
+ * REF_DELTA bases by OID. The object is bounded by `maxBytes`, every base by `baseMax`, and
+ * everything built together by `budget`.
  */
 function decodeAt(
   buf: Uint8Array,
@@ -396,6 +429,7 @@ function decodeAt(
   refResolver: ((oidHex: string) => GitObject) | null,
   maxBytes: number,
   baseMax: number,
+  budget: BuildBudget,
 ): GitObject {
   /** The deltas met on the way down, the object's first: each one's stream and limit. */
   const deltas: { readonly pos: number; readonly size: number; readonly limit: number }[] = []
@@ -407,6 +441,7 @@ function decodeAt(
     const h = parseObjHeader(buf, at - baseAddr)
     if (h.type === T_COMMIT || h.type === T_TREE || h.type === T_BLOB || h.type === T_TAG) {
       base = { type: typeFromCode(h.type), bytes: inflateZlib(buf, h.after, h.size, limit) }
+      budget.spend(base.bytes.length)
       break
     }
     if (h.type === T_OFS_DELTA) {
@@ -431,6 +466,7 @@ function decodeAt(
   for (let i = deltas.length - 1; i >= 0; i--) {
     const d = deltas[i] as (typeof deltas)[number]
     base = { type: base.type, bytes: inflateDelta(base.bytes, buf, d.pos, d.size, d.limit) }
+    budget.spend(base.bytes.length)
   }
   return base
 }

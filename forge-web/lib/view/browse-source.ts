@@ -180,7 +180,12 @@ function evictChunks(): void {
  * another's. A fork reads its parent's chunks under the parent's repo id, so the two share entries.
  */
 function chunkCopyKey(repo: RepoRef, manifest: PackManifest): string {
-  return `${ACTIVE_NETWORK.key}:${contractOf(repo.forge, DOC.chunk)}:${repoKey(repo)}:${manifest.uploader}:${manifest.packHash}`
+  return `${copyScope(repo, manifest)}:${manifest.packHash}`
+}
+
+/** Whose chunks a copy is: the network, contract, repo and uploader its chunk query names. */
+function copyScope(repo: RepoRef, manifest: PackManifest): string {
+  return `${ACTIVE_NETWORK.key}:${contractOf(repo.forge, DOC.chunk)}:${repoKey(repo)}:${manifest.uploader}`
 }
 
 /** Drop the cached chunks of a copy whose whole artifact did not hash to its `packHash`. */
@@ -1107,7 +1112,14 @@ export async function loadArtifactBytesProgress(
   const session = repo.session
   const open = async (copy: PackManifest): Promise<Uint8Array> => {
     const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel)
-    return session === undefined ? bytes : openPrivateArtifact(session, copy, bytes, manifest.copies ?? [copy])
+    if (session === undefined) return bytes
+    try {
+      return await openPrivateArtifact(session, copy, bytes, manifest.copies ?? [copy])
+    } catch (e) {
+      // Sealed bytes that fail their packHash (or do not open) keep nothing in the chunk cache.
+      if (copy.storage === 0) forgetChunks(repo, copy)
+      throw e
+    }
   }
   const verified = (copy: PackManifest, bytes: Uint8Array): boolean =>
     session !== undefined || bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()
@@ -1630,7 +1642,8 @@ function gatherRanges(
  */
 function openFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest): Promise<ObjectLocator | RangedLocator> {
   const progressKey = repoKey(repo)
-  const memo = `${ACTIVE_NETWORK.key}:${repoKey(repo)}:${m.packHash}`
+  // Opened from this copy's chunks, so held per copy ({@link chunkCopyKey}).
+  const memo = chunkCopyKey(repo, m)
   const opened = openedFragments.get(sdk) ?? new Map<string, Promise<ObjectLocator | RangedLocator>>()
   openedFragments.set(sdk, opened)
   const held = opened.get(memo)
@@ -1643,7 +1656,7 @@ function openFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest): Promise<Obje
     // and kept under that copy: never another copy's or an external mirror's, whose ranges are
     // anyone's. Any range that cannot be read sends the lookup to the whole read, which is
     // checked against the pack hash and may use every copy (`RangedLocator.rowsFor`).
-    const copy = `${scope}:${repoKey(repo)}:${m.uploader}`
+    const copy = copyScope(repo, m)
     const readRange = gatherRanges(
       (ranges) => storedIndexRanges(copy, m.packHash, ranges),
       (start, end) => fetchPlatformRange(sdk, repo, m, start, end),

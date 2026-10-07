@@ -29,6 +29,8 @@ import {
   PACK_TYPE,
   gitOidHex,
   baseMaxBytes,
+  BuildBudget,
+  buildMaxBytes,
   DELTA_DEPTH_MAX,
   deltaMaxBytes,
   inflateDelta,
@@ -423,15 +425,31 @@ function zlibMaxBytes(size: number): number {
 }
 
 /**
+ * Pack entries one read may decode, over every chain and every copy it tries: a read that falls
+ * back to another copy of a pack walks a chain again, and each REF base in it is a read of its
+ * own, so a few copies of a deep chain would otherwise multiply.
+ */
+const DELTA_STEPS_MAX = 4 * DELTA_DEPTH_MAX
+
+/**
  * The pack entries one read is decoding, from the object down to the base it has reached. An
  * entry met again is a cycle (OFS bases only ever move back, but a REF base can name any
- * object, the delta itself included), and a chain past {@link DELTA_DEPTH_MAX} is a hostile
- * pack: either fails the read before another base is fetched.
+ * object, the delta itself included), a chain past {@link DELTA_DEPTH_MAX} is a hostile pack,
+ * and so is a read past {@link DELTA_STEPS_MAX} steps or its {@link BuildBudget}: each fails
+ * the read before another base is fetched.
  */
 class DeltaChain {
   /** Entries in progress, per object index (a fresher reader's pack numbering is its own). */
   private readonly on = new Map<object, Set<string>>()
   private depth = 0
+  private steps = 0
+  /**
+   * What this read failed to read: REF bases by oid, pack entries by address and copy. Asked for
+   * again (another copy's walk reaches them too), they fail at once rather than be read again.
+   */
+  readonly failed = new Map<string, unknown>()
+
+  constructor(readonly budget: BuildBudget) {}
 
   async through<T>(index: object, at: string, decode: () => Promise<T>): Promise<T> {
     let entries = this.on.get(index)
@@ -439,6 +457,7 @@ class DeltaChain {
     if (entries.has(at)) throw new Error(`delta chain loops back to pack entry ${at}`)
     // `depth` deltas are in progress above this entry: it may be the root of the deepest chain.
     if (this.depth > DELTA_DEPTH_MAX) throw new Error(`delta chain is over ${DELTA_DEPTH_MAX} deep`)
+    if (++this.steps > DELTA_STEPS_MAX) throw new Error(`reading this object took over ${DELTA_STEPS_MAX} delta steps`)
     entries.add(at)
     this.depth += 1
     try {
@@ -460,7 +479,11 @@ interface Limits {
   readonly chain: DeltaChain
 }
 
-const limitsFor = (maxBytes: number): Limits => ({ item: maxBytes, base: baseMaxBytes(maxBytes), chain: new DeltaChain() })
+const limitsFor = (maxBytes: number): Limits => ({
+  item: maxBytes,
+  base: baseMaxBytes(maxBytes),
+  chain: new DeltaChain(new BuildBudget(buildMaxBytes(maxBytes))),
+})
 
 /** Per-reader object-memo budget — readers live for the session (cached browse context). */
 const OBJECT_CACHE_BUDGET_BYTES = 8 * 1024 * 1024
@@ -779,7 +802,15 @@ export class BrowseReader {
       throw this.missing(oidHex)
     }
 
-    const obj = await this.readVerified(entry, oidKey, limits)
+    const failed = limits.chain.failed
+    if (failed.has(oidKey)) throw failed.get(oidKey)
+    let obj: GitObject
+    try {
+      obj = await this.readVerified(entry, oidKey, limits)
+    } catch (e) {
+      failed.set(oidKey, e)
+      throw e
+    }
     this.objectsByOid.set(oidKey, obj)
     this.noteRead(entry.packRef)
     if (obj.type === 'commit') await this.afterCommit?.(entry)
@@ -888,10 +919,14 @@ export class BrowseReader {
     if (singleReadAdvised(entry)) {
       const end = entry.offset + entry.length
       const slice = await this.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
-      return reconstructFromSpan(entry, slice, limits.item, limits.base)
+      return reconstructFromSpan(entry, slice, limits.item, limits.base, limits.chain.budget)
     }
     const walk = (e: PackEntry, limit: number): Promise<GitObject> =>
-      limits.chain.through(this.index, offsetKey(e.packRef, e.offset), () => walkEntry(e, limit))
+      limits.chain.through(this.index, offsetKey(e.packRef, e.offset), async () => {
+        const obj = await walkEntry(e, limit)
+        limits.chain.budget.spend(obj.bytes.length)
+        return obj
+      })
     const walkEntry = async (e: PackEntry, limit: number): Promise<GitObject> => {
       const self = await this.fetchEntry(e, limit, copy)
       const h = parseObjHeader(self, 0)
@@ -922,7 +957,7 @@ export class BrowseReader {
     const end = entry.offset + entry.length
     const start = end - entry.deltaChainSpan
     const slice = await this.fetchRange(entry.packRef, start, end, this.copyOf.get(entry.packRef))
-    return reconstructFromSpan(entry, slice, limits.item, limits.base)
+    return reconstructFromSpan(entry, slice, limits.item, limits.base, limits.chain.budget)
   }
 
   /**
@@ -936,7 +971,19 @@ export class BrowseReader {
     const addrKey = `${offsetKey(entry.packRef, entry.offset)}:${this.copyOf.get(entry.packRef) ?? 0}`
     const cached = this.objectsByAddr.get(addrKey)
     if (cached !== undefined) return withinLimit(cached, maxBytes)
-    const obj = await limits.chain.through(this.index, offsetKey(entry.packRef, entry.offset), () => this.decodeEntryUncached(entry, maxBytes, limits))
+    const failed = limits.chain.failed
+    if (failed.has(addrKey)) throw failed.get(addrKey)
+    let obj: GitObject
+    try {
+      obj = await limits.chain.through(this.index, offsetKey(entry.packRef, entry.offset), async () => {
+        const built = await this.decodeEntryUncached(entry, maxBytes, limits)
+        limits.chain.budget.spend(built.bytes.length)
+        return built
+      })
+    } catch (e) {
+      failed.set(addrKey, e)
+      throw e
+    }
     this.objectsByAddr.set(addrKey, obj)
     return obj
   }

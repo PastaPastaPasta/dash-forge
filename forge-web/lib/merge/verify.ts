@@ -34,8 +34,13 @@ class Missing extends Error {
  * treat as "not verified".
  */
 export async function missingFromClosure(pack: Uint8Array, tip: string, baseTip: string, base: ObjectReader, cap = VERIFY_OBJECT_CAP): Promise<string[]> {
-  const { indexPacks, memoryPackSource, serializeLocator } = await import('../browse/indexer')
-  const rows = pack.length > 32 ? await indexPacks([pack]) : []
+  const { indexPacks, memoryPackSource, serializeLocator, IndexTooLargeError } = await import('../browse/indexer')
+  const rows =
+    pack.length > 32
+      ? await indexPacks([pack]).catch((e: unknown) => {
+          throw e instanceof IndexTooLargeError ? new Error('This change is too large to check in the browser. Make it with dg instead.') : e
+        })
+      : []
   const packReader = rows.length > 0 ? new BrowseReader(ObjectLocator.parse(serializeLocator(rows)), memoryPackSource([pack])) : null
   const inPack = new Set(rows.map((r) => r.oidHex))
   let reads = 0

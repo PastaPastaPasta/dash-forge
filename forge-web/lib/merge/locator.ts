@@ -79,7 +79,16 @@ export async function publishMergeIndex(
     await new Promise((r) => setTimeout(r, 1500))
   }
   if (plan.kind === 'skip') return { kind: 'skipped', reason: plan.reason }
-  const fragment = await buildFragment(pack, plan.packRef)
+  const { IndexTooLargeError } = await import('../browse/indexer')
+  let fragment: Awaited<ReturnType<typeof buildFragment>>
+  try {
+    fragment = await buildFragment(pack, plan.packRef)
+  } catch (e) {
+    if (e instanceof IndexTooLargeError) {
+      return { kind: 'skipped', reason: 'the pack is too large to index in the browser; the next CLI push or `dg repack` indexes it' }
+    }
+    throw e
+  }
   const fragmentHash = bytesToHex(sha256(fragment.bytes))
   const stored = await upload(fragment.bytes, { packHash: fragmentHash, objectCount: fragment.objectCount })
   const w = await writePackManifest(

@@ -162,12 +162,14 @@ export function startFallback(
   repo: RepoRef,
   livePacks: readonly PackManifest[],
   onProgress?: (p: FallbackProgress) => void,
+  /** Started without asking the user: decodes at most {@link AUTO_INDEX_DECODE_MAX_BYTES}. */
+  automatic = false,
 ): Promise<BrowseContext> {
   const manifestKey = fallbackManifestKey(livePacks)
   const existing = cachedFallback(repoKey(repo), livePacks)
   if (existing !== null) return existing
 
-  const run = runFallback(sdk, repo, livePacks, onProgress)
+  const run = runFallback(sdk, repo, livePacks, onProgress, automatic)
   return remember(repoKey(repo), manifestKey, run)
 }
 
@@ -277,11 +279,32 @@ async function downloadPacks(
   }
 }
 
+/**
+ * Bytes a clone started without asking may decode in each pass: 64 times the most packed bytes
+ * that start one (2 MiB, `AUTO_LOAD_MAX_BYTES`). A repo's history rarely decodes to more than a
+ * few dozen times its packed size, and a phone kills a tab long before the 1 GiB a clone the
+ * user asked for may use. Past it the clone stops and waits to be asked.
+ */
+export const AUTO_INDEX_DECODE_MAX_BYTES = 128 * 1024 * 1024
+
+/** A clone whose packs decode past its budget. `automatic`: one started without asking, which a user may still ask for. */
+export class FallbackTooLargeError extends Error {
+  constructor(readonly automatic: boolean) {
+    super(
+      automatic
+        ? 'This repo is larger than the browser loads without asking.'
+        : 'This repo is too large to open in the browser. Clone it with git to read it.',
+    )
+    this.name = 'FallbackTooLargeError'
+  }
+}
+
 async function runFallback(
   sdk: EvoSDK,
   repo: RepoRef,
   livePacks: readonly PackManifest[],
-  onProgress?: (p: FallbackProgress) => void,
+  onProgress: ((p: FallbackProgress) => void) | undefined,
+  automatic: boolean,
 ): Promise<BrowseContext> {
   if (livePacks.length === 0) throw new Error('no live packs to index')
   const bytesTotal = livePacks.reduce((s, m) => s + m.sizeBytes, 0)
@@ -329,13 +352,16 @@ async function runFallback(
   }
   noteContentCheck(repoKey(repo), { packsVerified: packs.length })
 
-  const { indexPacks, serializeLocator, memoryPackSource } = await import('../browse/indexer')
+  const { indexPacks, serializeLocator, memoryPackSource, IndexTooLargeError, INDEX_DECODE_MAX_BYTES } = await import('../browse/indexer')
   let objects: Awaited<ReturnType<typeof indexPacks>>
   try {
-    objects = await indexPacks(packs, (objectsIndexed, objectsTotal) =>
-      report({ phase: 'index', bytesFetched: bytesTotal, objectsIndexed, objectsTotal }),
+    objects = await indexPacks(
+      packs,
+      (objectsIndexed, objectsTotal) => report({ phase: 'index', bytesFetched: bytesTotal, objectsIndexed, objectsTotal }),
+      automatic ? AUTO_INDEX_DECODE_MAX_BYTES : INDEX_DECODE_MAX_BYTES,
     )
   } catch (e) {
+    if (e instanceof IndexTooLargeError) throw new FallbackTooLargeError(automatic)
     // A thin pack (imported or third-party) can REF_DELTA a base that only a skipped pack
     // holds. Say so, naming the skipped packs, instead of a bare indexer error.
     const base = /REF_DELTA base not found in live packs: ([0-9a-f]+)/.exec(

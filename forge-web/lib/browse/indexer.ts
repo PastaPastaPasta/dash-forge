@@ -43,11 +43,20 @@ const PACK_HEADER_LEN = 12
 const PACK_TRAILER_LEN = 20
 
 /**
- * The most bytes each pass of the fallback clone decodes, all objects together: the scan
- * inflates every stream once, and the resolve holds every object it decodes until the index is
- * built. A repo past it is too large to open in a tab ({@link DECODE_MAX_BYTES}).
+ * The most bytes each pass of an index build decodes by default, all objects together: the
+ * scan inflates every stream once, and the resolve holds every object it decodes until the
+ * index is built ({@link DECODE_MAX_BYTES}). A caller that did not ask the user first passes
+ * a smaller budget.
  */
 export const INDEX_DECODE_MAX_BYTES = DECODE_MAX_BYTES
+
+/** The packs decode to more than the budget {@link indexPacks} was given: nothing was indexed. */
+export class IndexTooLargeError extends Error {
+  constructor(readonly budget: number) {
+    super(`the packs decode to more than ${budget} bytes`)
+    this.name = 'IndexTooLargeError'
+  }
+}
 
 /** What a pass may still decode, of {@link INDEX_DECODE_MAX_BYTES}. */
 export interface DecodeBudget {
@@ -155,31 +164,31 @@ const YIELD_EVERY = 500
  * pack may REF an object stored in an earlier one): an object blocked on a REF base waits for
  * that OID and is resolved again once it is, so each object is tried at most twice. Decoded
  * objects are memoized in full for the duration of the call — peak memory is roughly the
- * repo's decompressed size, transient, and at most {@link INDEX_DECODE_MAX_BYTES}.
+ * repo's decompressed size, transient, and at most `budget` ({@link IndexTooLargeError} past it).
  */
 export async function indexPacks(
   packs: readonly Uint8Array[],
   onProgress?: (objectsIndexed: number, objectsTotal: number) => void,
+  budget = INDEX_DECODE_MAX_BYTES,
 ): Promise<IndexedObject[]> {
   try {
-    return await resolvePacks(packs, onProgress)
+    return await resolvePacks(packs, onProgress, budget)
   } catch (e) {
-    if (e instanceof ObjectTooLargeError) {
-      throw new Error('This repo is too large to open in the browser. Clone it with git to read it.')
-    }
+    if (e instanceof ObjectTooLargeError) throw new IndexTooLargeError(budget)
     throw e
   }
 }
 
 async function resolvePacks(
   packs: readonly Uint8Array[],
-  onProgress?: (objectsIndexed: number, objectsTotal: number) => void,
+  onProgress: ((objectsIndexed: number, objectsTotal: number) => void) | undefined,
+  budget: number,
 ): Promise<IndexedObject[]> {
   interface Site {
     readonly packRef: number
     readonly rec: ScanRecord
   }
-  const scanned: DecodeBudget = { left: INDEX_DECODE_MAX_BYTES }
+  const scanned: DecodeBudget = { left: budget }
   const perPack = packs.map((p) => scanPack(p, scanned))
   const byOffset = perPack.map((recs) => new Map(recs.map((r) => [r.offset, r])))
   const totalObjects = perPack.reduce((s, recs) => s + recs.length, 0)
@@ -187,7 +196,7 @@ async function resolvePacks(
 
   const memo = new Map<ScanRecord, Resolved>()
   const byOid = new Map<string, Resolved>()
-  const held: DecodeBudget = { left: INDEX_DECODE_MAX_BYTES }
+  const held: DecodeBudget = { left: budget }
   const out: IndexedObject[] = []
   // Keyed by (packRef, oid), NOT by oid. An object routinely sits in more than one live
   // pack, and each copy's row is the only record of THAT pack's address for it. The reader
@@ -202,12 +211,19 @@ async function resolvePacks(
   const queue: Site[] = perPack.flatMap((recs, packRef) => recs.map((rec) => ({ packRef, rec })))
   /** Sites blocked on a REF base, by the base's OID: queued again once it resolves. */
   const waiting = new Map<string, Site[]>()
+  /**
+   * Records whose chain is blocked, and the OID it waits for: an OFS delta on top of one is
+   * blocked too, at once, rather than walking the chain down again.
+   */
+  const blockedOn = new Map<ScanRecord, string>()
 
   // Resolve a record's full chain, or return the OID of the REF base it is blocked on, whose
   // object has not been resolved yet. `depth`: OFS steps taken to reach `rec`.
   const tryResolve = (packRef: number, rec: ScanRecord, depth = 0): Resolved | string => {
     const hit = memo.get(rec)
     if (hit !== undefined) return hit
+    const waitsFor = blockedOn.get(rec)
+    if (waitsFor !== undefined && !byOid.has(waitsFor)) return waitsFor
     if (depth > DELTA_DEPTH_MAX) throw new Error(`delta chain at ${rec.offset} is over ${DELTA_DEPTH_MAX} deep`)
     const pack = packs[packRef] as Uint8Array
     let res: Resolved
@@ -220,7 +236,10 @@ async function resolvePacks(
       } else {
         base = byOid.get(rec.refBaseOid as string) ?? (rec.refBaseOid as string)
       }
-      if (typeof base === 'string') return base
+      if (typeof base === 'string') {
+        blockedOn.set(rec, base)
+        return base
+      }
       if (base.depth >= DELTA_DEPTH_MAX) throw new Error(`delta chain at ${rec.offset} is over ${DELTA_DEPTH_MAX} deep`)
       // The scan inflated this delta to its declared size, within the budget.
       const delta = inflateZlib(pack, rec.dataPos, rec.size)
