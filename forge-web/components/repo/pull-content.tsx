@@ -2441,7 +2441,6 @@ function commitAuthors(commits: readonly { readonly commit: { readonly author: {
   return out
 }
 
-/** What a merged PR's recorded merge commit holds (`merge-content.ts`), next to its state. */
 /**
  * "Record merge of <commit>": the base already makes this PR's changes but no merge was recorded
  * (a browser merge that stopped after moving the branch, or a merge pushed with git).
@@ -2479,6 +2478,7 @@ function RecordMergeBox({
   )
 }
 
+/** What a merged PR's recorded merge commit holds (`merge-content.ts`), next to its state. */
 function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeOid: string }) {
   const combined = content.combined.length > 0 ? `, combined with base changes in ${plural(content.combined.length, 'file')}` : ''
   const words: Record<MergeContent['verdict'], string> = {

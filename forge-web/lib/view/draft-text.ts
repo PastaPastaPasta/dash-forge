@@ -225,8 +225,6 @@ export function useEditDraft<T>(
     store(keep(v))
   }
   const saving = async <R,>(write: () => Promise<R>): Promise<R> => {
-    // The text being saved is the user's own, whatever happens to the write.
-    setSeen(true)
     const v = value
     hold(true, null)
     try {
@@ -234,7 +232,10 @@ export function useEditDraft<T>(
       hold(false, null)
       return r
     } catch (e) {
-      if (!(e instanceof UnconfirmedWriteError)) hold(false, keep(v))
+      // A write that may have landed: its text is the user's own, so a later revision is no
+      // discarded draft. A write known not to have landed keeps its draft, still judged as one.
+      if (e instanceof UnconfirmedWriteError) setSeen(true)
+      else hold(false, keep(v))
       throw e
     }
   }
