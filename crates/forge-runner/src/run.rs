@@ -558,7 +558,9 @@ fn changed_paths(cfg: &Config, cache: &Path, range: &str) -> Option<Vec<String>>
     c.arg("--git-dir")
         .arg(cache)
         .args(["diff", "--name-only", "--no-renames", "-z", range]);
-    let out = output(&mut c, "git diff").ok()?;
+    let out = output(&mut c, "git diff")
+        .map_err(|e| eprintln!("forge-runner: the changes {range} could not be read: {e:#}"))
+        .ok()?;
     Some(
         out.split('\0')
             .filter(|s| !s.is_empty())
@@ -853,6 +855,7 @@ fn fetch_run(
 /// in_progress → completed, one act run per file. Secrets go to act only when
 /// [`Trigger::trusted`]. `run_dir` is this run's own directory (checkout, event, logs, act's
 /// caches).
+#[allow(clippy::too_many_lines)]
 pub fn run(
     cfg: &Config,
     repo: &RepoConfig,
@@ -945,12 +948,126 @@ pub fn run(
         ran.checks.push((name, "failure"));
     }
     if !plan.path_filtered.is_empty() {
-        skip_filtered(&ctx, &plan, opts.only.as_deref(), &mut ran)?;
+        let policy = match &opts.only {
+            Some(_) => Err(anyhow::anyhow!("not read: a re-run names its check")),
+            None => dg_read(cfg, &["repo", "policy", "show", &repo.repo]),
+        };
+        let skips = judge_filtered(repo, trig, opts.only.as_deref(), policy, &mut plan);
+        if !plan.path_filtered.is_empty() {
+            skip_filtered(&ctx, &plan, &skips, &mut ran)?;
+        } else if plan.run.is_empty() {
+            if let Some(only) = &opts.only {
+                eprintln!(
+                    "forge-runner: {} {}: no workflow here reports the check {only:?}; nothing re-run",
+                    repo.repo,
+                    &key.oid[..12]
+                );
+            }
+        }
     }
     for wf in &plan.run {
         run_workflow(&ctx, wf, &mut ran)?;
     }
     Ok(ran)
+}
+
+/// What [`skip_filtered`] may report: the check names (`None`: every filtered one), and who
+/// changes no selected file ("PR #4 changes").
+struct Skips {
+    wanted: Option<BTreeSet<String>>,
+    subject: String,
+}
+
+/// The check names of `plan`'s workflows that run here.
+fn running_checks(plan: &workflow::Plan, trig: &Trigger) -> BTreeSet<String> {
+    plan.run
+        .iter()
+        .flat_map(|wf| &wf.jobs)
+        .map(|j| trig.check_name(&j.check_name))
+        .collect()
+}
+
+/// Settle `plan.path_filtered`, the workflows a `paths` filter alone left out, against what a
+/// merge waits for. The branch policy is read first, so a filtered workflow none of whose checks
+/// it requires costs nothing more.
+///
+/// * A pull request's changes are the whole PR, so its filtered workflows stay in
+///   `plan.path_filtered`, narrowed to those with a check to report `skipped` ([`Skips`]).
+/// * A push's changes are only its own commits, not the PR's, so a skip there could pass a
+///   required check on a head whose earlier commits it never ran on. Instead each job whose
+///   check the policy requires (and the jobs it needs) moves to `plan.run` and runs for real,
+///   whatever the filter says; when the policy can't be read, every filtered job runs. Nothing
+///   is skipped on a push.
+fn judge_filtered(
+    repo: &RepoConfig,
+    trig: &Trigger,
+    only: Option<&str>,
+    policy: std::result::Result<serde_json::Value, anyhow::Error>,
+    plan: &mut workflow::Plan,
+) -> Skips {
+    let running = running_checks(plan, trig);
+    // Nothing else reports here: under a policy requiring every check, the filtered ones are
+    // then the only checks the head can get.
+    let alone = plan.broken.is_empty() && running.is_empty();
+    // Why every filtered check is wanted, when it is (`wanted` is `None`).
+    let mut every = "the branch policy requires every check, and nothing else reports here";
+    let wanted = match only {
+        Some(o) => Some(BTreeSet::from([o.to_string()])),
+        None => match policy {
+            Ok(v) => checks_to_skip(&v, alone),
+            Err(e) => {
+                every = "the branch policy could not be read";
+                eprintln!(
+                    "forge-runner: {}: branch policy not read, so every path-filtered check is {}: {e:#}",
+                    repo.repo,
+                    if matches!(trig, Trigger::Push(_)) { "run" } else { "reported" }
+                );
+                None
+            }
+        },
+    };
+    let required = |wf: &workflow::Workflow| -> BTreeSet<String> {
+        wf.jobs
+            .iter()
+            .filter(|j| {
+                let name = trig.check_name(&j.check_name);
+                !running.contains(&name) && wanted.as_ref().is_none_or(|w| w.contains(&name))
+            })
+            .map(|j| j.id.clone())
+            .collect()
+    };
+    if let Trigger::Push(push) = trig {
+        for wf in std::mem::take(&mut plan.path_filtered) {
+            let jobs = required(&wf);
+            if jobs.is_empty() {
+                continue;
+            }
+            let why = if wanted.is_none() {
+                every.to_string()
+            } else {
+                let names: Vec<String> = wf
+                    .jobs
+                    .iter()
+                    .filter(|j| jobs.contains(&j.id))
+                    .map(|j| format!("{:?}", trig.check_name(&j.check_name)))
+                    .collect();
+                format!("the branch policy requires {}", names.join(", "))
+            };
+            eprintln!(
+                "forge-runner: {} {}: {} runs although its `paths` filter leaves this push out: {why}",
+                repo.repo,
+                push.refname,
+                wf.file.display()
+            );
+            plan.run.push(wf.only_jobs(&jobs));
+        }
+    } else {
+        plan.path_filtered.retain(|wf| !required(wf).is_empty());
+    }
+    Skips {
+        wanted,
+        subject: format!("{} changes", trig.label()),
+    }
 }
 
 /// Which of a pull request's path-filtered checks get a report, from `dg repo policy show
@@ -972,45 +1089,31 @@ fn checks_to_skip(policy: &serde_json::Value, alone: bool) -> Option<BTreeSet<St
     (!(require_all && alone)).then_some(names)
 }
 
-/// Report the checks of the workflows a pull request's paths filtered out (`plan.path_filtered`)
-/// that a merge waits for, so they are decided instead of waiting for a run that will never
-/// come (GitHub's "Expected — waiting for status" trap): `skipped`, which counts as passed, or
-/// the refusal a job the runner never runs gets wherever it runs. A check is reported when the
-/// branch policy requires it ([`checks_to_skip`]; every one when the policy can't be read) or
-/// a re-run asks for it (`only`), and never when a workflow that runs here reports the same
-/// name. Other checks get nothing: each report is a paid write.
+/// Report the checks of the workflows a pull request's paths filtered out (`plan.path_filtered`;
+/// pull requests only: a push runs its required filtered jobs instead, [`judge_filtered`]) that a
+/// merge waits for, so they are decided instead of waiting for a run that will never come
+/// (GitHub's "Expected — waiting for status" trap): `skipped`, which counts as passed, or the
+/// refusal a job the runner never runs gets wherever it runs. `subject` says who changes no
+/// selected file ("PR #4 changes"). A check is reported when the branch policy requires it
+/// ([`checks_to_skip`]; every one when the policy can't be read, and under a policy requiring
+/// every check only when nothing else reports in this run and `alone` holds) or a re-run asks
+/// for it (`only`), and never when a workflow that runs here reports the same name. Other
+/// checks get nothing: each report is a paid write.
 ///
 /// Called before any workflow runs: a report that fails twice fails the run, which is tried
 /// again on the next poll rather than leaving the check undecided.
 fn skip_filtered(
     c: &RunCtx<'_>,
     plan: &workflow::Plan,
-    only: Option<&str>,
+    skips: &Skips,
     ran: &mut Ran,
 ) -> Result<()> {
-    let running: BTreeSet<String> = plan
-        .run
-        .iter()
-        .flat_map(|wf| &wf.jobs)
-        .map(|j| c.trig.check_name(&j.check_name))
-        .collect();
-    let wanted = match only {
-        Some(o) => Some(BTreeSet::from([o.to_string()])),
-        None => match dg_read(c.cfg, &["repo", "policy", "show", &c.repo.repo]) {
-            Ok(v) => checks_to_skip(&v, running.is_empty() && plan.broken.is_empty()),
-            Err(e) => {
-                eprintln!(
-                    "forge-runner: {}: branch policy not read, so every path-filtered check is reported: {e:#}",
-                    c.repo.repo
-                );
-                None
-            }
-        },
-    };
+    let running = running_checks(plan, c.trig);
     for wf in &plan.path_filtered {
         for j in &wf.jobs {
             let name = c.trig.check_name(&j.check_name);
-            if running.contains(&name) || wanted.as_ref().is_some_and(|w| !w.contains(&name)) {
+            if running.contains(&name) || skips.wanted.as_ref().is_some_and(|w| !w.contains(&name))
+            {
                 continue;
             }
             let (conclusion, summary) = match &j.refused {
@@ -1018,9 +1121,8 @@ fn skip_filtered(
                 None => (
                     "skipped",
                     format!(
-                        "Skipped: {} changes no file this workflow's `paths` filters select{}.",
-                        c.trig.label(),
-                        c.note
+                        "Skipped: {} no file this workflow's `paths` filters select{}.",
+                        skips.subject, c.note
                     ),
                 ),
             };
@@ -1056,9 +1158,9 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
         }
     }
     let action_cache = c.run_dir.join("act");
-    // With refused jobs, act gets a copy without them (outside the checkout, where a job cannot
-    // rewrite it); else the file itself.
-    let workflow_path = match wf.without_refused() {
+    // With refused jobs, or jobs left out ([`workflow::Workflow::only_jobs`]), act gets a copy
+    // without them (outside the checkout, where a job cannot rewrite it); else the file itself.
+    let workflow_path = match wf.for_act() {
         Some(doc) => {
             let dir = c.run_dir.join("filtered");
             std::fs::create_dir_all(&dir)?;
@@ -1454,6 +1556,7 @@ mod tests {
                 })
                 .collect(),
             doc: serde_json::Value::Null,
+            trimmed: false,
         };
         let plan = || workflow::Plan {
             run: vec![
@@ -1530,6 +1633,7 @@ mod tests {
         let off = json!({"policy": {"requireChecks": false, "requiredChecks": []}});
         assert_eq!(checks_to_skip(&off, true), none);
     }
+
     #[test]
     fn rerun_requests_read_from_dg() {
         let v = serde_json::json!([{

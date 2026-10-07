@@ -441,7 +441,7 @@ impl Helper {
             specs.iter().cloned().partition(|s| is_head(&s.dst));
         let mut outcomes: Vec<PushOutcome> = head.into_iter().map(head_outcome).collect();
         if !refs.is_empty() {
-            outcomes.extend(self.push_refs(&refs, options).await?);
+            outcomes.extend(Box::pin(self.push_refs(&refs, options)).await?);
         }
         Ok(outcomes)
     }
