@@ -82,9 +82,10 @@ jobs:
     # superseded build.
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.web == 'true') }}
     runs-on: ubuntu-latest
-    # The suite alone takes about 40 minutes against a busy devnet; 45 left the dash mirror step
-    # no time and cancelled otherwise-green runs.
-    timeout-minutes: 60
+    # The suite takes about 40 minutes against a busy devnet, but slow runner setup (24 minutes on
+    # 2026-10-07) and quorum-guard holds (up to 6 minutes each, #212) have pushed green-going runs
+    # past 60. A hang still ends here rather than at GitHub's 6-hour default.
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: forge-web
