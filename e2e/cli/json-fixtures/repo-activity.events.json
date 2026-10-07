@@ -1,0 +1,44 @@
+{
+  "source": "emitter: crates/dg/src/ref_activity.rs (events: rules::ref_history::RefEvent)",
+  "command": "repo activity",
+  "args": [
+    "--json",
+    "repo",
+    "activity",
+    "o/r",
+    "main"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "schemaVersion": 1,
+    "repo": "o/r",
+    "ref": "refs/heads/main",
+    "events": [
+      {
+        "kind": "forcePushed",
+        "id": "D2",
+        "at": 1759800000000,
+        "by": "Bk1",
+        "from": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "to": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      {
+        "kind": "protectionAdded",
+        "id": "C1",
+        "at": 1759700000001,
+        "by": null,
+        "from": null,
+        "to": null
+      },
+      {
+        "kind": "created",
+        "id": "D1",
+        "at": 1759700000000,
+        "by": "Bk1",
+        "from": null,
+        "to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  }
+}

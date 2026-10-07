@@ -224,6 +224,14 @@ cmd('repo unwatch', 'The watch removed.', WATCH, ['status', 'repo'])
 cmd('repo topic', 'The repository\'s topics (and what changed).', {
     'repo': S, 'topics': SA, 'added': SA, 'removed': SA, 'cost': COST,
 }, ['repo', 'topics'])
+cmd('repo activity', 'One branch\'s or tag\'s activity, newest first.', {
+    'repo': S, 'ref': S,
+    'events': A(O({
+        'kind': E('created', 'pushed', 'forcePushed', 'updated', 'moved', 'deleted', 'diverged',
+                  'protectionAdded', 'protectionLifted', 'protectionRestored'),
+        'id': S, 'at': I, 'by': nl(S), 'from': nl(S), 'to': nl(S),
+    }, ['kind', 'id', 'at'])),
+}, ['repo', 'ref', 'events'])
 cmd('repo view', 'A repository: its refs, packs and members.', {
     'repoId': S, 'ownerId': S, 'name': S, 'description': nl(S), 'visibility': E('public', 'private'),
     'archived': D('Whether the repository is archived; null when its config could not be read.', nl(B)),

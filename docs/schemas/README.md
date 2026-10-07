@@ -117,6 +117,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg release unpublish` | [`release-unpublish.schema.json`](dg/release-unpublish.schema.json) |
 | `dg release verify` | [`release-verify.schema.json`](dg/release-verify.schema.json) |
 | `dg repack` | [`repack.schema.json`](dg/repack.schema.json) |
+| `dg repo activity` | [`repo-activity.schema.json`](dg/repo-activity.schema.json) |
 | `dg repo archive` | [`repo-archive.schema.json`](dg/repo-archive.schema.json) |
 | `dg repo backend set` | [`repo-backend-set.schema.json`](dg/repo-backend-set.schema.json) |
 | `dg repo clone` | [`repo-clone.schema.json`](dg/repo-clone.schema.json) |
