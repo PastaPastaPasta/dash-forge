@@ -433,12 +433,16 @@ function zlibMaxBytes(size: number): number {
 const DELTA_STEPS_MAX = 4 * DELTA_DEPTH_MAX
 
 /**
- * The most copies of a pack one read tries. Any writer may post a copy of a pack, but they are
+ * The most copies of a pack one read decodes. Any writer may post a copy of a pack, but they are
  * tried in `orderPackCopies` order (maintainers' first, then each role's oldest first), one per
  * uploader, so the honest copy that was uploaded first comes ahead of any posted after it; past a
- * few, more copies only multiply what a read of a bad object costs.
+ * few, more copies only multiply what a read of a bad object costs. A copy that served no bytes
+ * (a mirror that is down) is not counted: it cost nothing to decode.
  */
 export const PACK_COPIES_TRIED = 4
+
+/** The most copies of a pack one read asks for, counting those that served nothing. */
+export const PACK_COPIES_ASKED = 8
 
 /**
  * The pack entries one copy of a read is decoding, from the object down to the base it has
@@ -455,13 +459,18 @@ class DeltaChain {
 
   constructor(readonly budget: BuildBudget) {}
 
+  /** Count one pack entry decoded (a span read counts each entry of its chain). */
+  step(): void {
+    if (++this.steps > DELTA_STEPS_MAX) throw new DeltaChainError(`reading this object took over ${DELTA_STEPS_MAX} delta steps`)
+  }
+
   async through<T>(index: object, at: string, decode: () => Promise<T>): Promise<T> {
     let entries = this.on.get(index)
     if (entries === undefined) this.on.set(index, (entries = new Set()))
     if (entries.has(at)) throw new DeltaChainError(`delta chain loops back to pack entry ${at}`)
     // `depth` deltas are in progress above this entry: it may be the root of the deepest chain.
     if (this.depth > DELTA_DEPTH_MAX) throw new DeltaChainError(`delta chain is over ${DELTA_DEPTH_MAX} deep`)
-    if (++this.steps > DELTA_STEPS_MAX) throw new DeltaChainError(`reading this object took over ${DELTA_STEPS_MAX} delta steps`)
+    this.step()
     entries.add(at)
     this.depth += 1
     try {
@@ -473,7 +482,11 @@ class DeltaChain {
   }
 }
 
-/** Failures that came from the path a read took, not from what it read ({@link dependsOnPath}). */
+/**
+ * Failures that came from the path a read took, not from what it read ({@link dependsOnPath}).
+ * Shared by every read: an error marked here is only ever remembered less, so the worst a
+ * mark costs another read is reading something again.
+ */
 const pathFailures = new WeakSet<object>()
 
 /**
@@ -904,8 +917,9 @@ export class BrowseReader {
   /**
    * Reconstruct `entry` and check its oid, trying the pack's copies in order: a copy whose
    * bytes do not reconstruct the object (a hostile or corrupt writer copy) is skipped for the
-   * next one (`forge-v2.md` §4 "read the first copy that verifies"), up to
-   * {@link PACK_COPIES_TRIED} of them. A single-copy pack behaves exactly as before. Reported
+   * next one (`forge-v2.md` §4 "read the first copy that verifies"): the copy that served last,
+   * then the others in order, until {@link PACK_COPIES_TRIED} of them served bytes or
+   * {@link PACK_COPIES_ASKED} were asked. A single-copy pack behaves exactly as before. Reported
    * `failed` only when some copy's bytes arrived and were wrong; any other failure throws with
    * no verdict ({@link ReadFailure}).
    *
@@ -913,21 +927,23 @@ export class BrowseReader {
    * bad copy spent must not fail the honest one. A REF base's read shares its reader's copy's.
    */
   private async readVerified(entry: LocatorEntry, oidKey: string, limits: Limits): Promise<GitObject> {
-    const copies = Math.min(Math.max(1, this.packs.copyCount?.(entry.packRef) ?? 1), PACK_COPIES_TRIED)
-    // Only a copy tried here is ever kept, so it is one of the first `copies`.
+    const copies = Math.max(1, this.packs.copyCount?.(entry.packRef) ?? 1)
     const start = this.copyOf.get(entry.packRef) ?? 0
+    const order = [start, ...Array.from({ length: copies }, (_, c) => c).filter((c) => c !== start)].slice(0, PACK_COPIES_ASKED)
     // The last error of each kind ({@link ReadFailure}) over the copies tried.
     const failed: Partial<Record<ReadFailure, unknown>> = {}
     let tooLarge: ObjectTooLargeError | null = null
     let onPath = false
-    for (let i = 0; i < copies; i++) {
-      const copy = (start + i) % copies
+    let served = 0
+    for (const [i, copy] of order.entries()) {
+      if (served >= PACK_COPIES_TRIED) break
       const attempt: Attempt = { ...limits, chain: limits.chain ?? new DeltaChain(new BuildBudget(limits.total)) }
       let obj: GitObject
       try {
         obj = i === 0 ? await this.reconstruct(entry, attempt) : await this.reconstructFrom(entry, copy, attempt)
       } catch (e) {
         onPath ||= dependsOnPath(e)
+        if (readFailure(e) !== 'transport') served += 1
         // Over the caller's limit in this copy: another copy may be the honest one (a
         // tampered header must not hide it), and if every copy says so, that is the answer.
         if (e instanceof ObjectTooLargeError) tooLarge = e
@@ -944,6 +960,7 @@ export class BrowseReader {
         this.opts.onObject?.('verified')
         return obj
       }
+      served += 1
       failed.content = new Error(`oid mismatch: wanted ${oidKey}, reconstructed ${got}`)
     }
     // Some copy failed on the path it was read by: on another, the object may read.
@@ -978,7 +995,7 @@ export class BrowseReader {
     if (singleReadAdvised(entry)) {
       const end = entry.offset + entry.length
       const slice = await this.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
-      return reconstructFromSpan(entry, slice, limits.item, limits.base, limits.chain.budget)
+      return reconstructFromSpan(entry, slice, limits.item, limits.base, limits.chain.budget, () => limits.chain.step())
     }
     const budget = limits.chain.budget
     const walk = (e: PackEntry, limit: number): Promise<GitObject> => limits.chain.through(this.index, offsetKey(e.packRef, e.offset), () => walkEntry(e, limit))
@@ -1012,7 +1029,7 @@ export class BrowseReader {
     const end = entry.offset + entry.length
     const start = end - entry.deltaChainSpan
     const slice = await this.fetchRange(entry.packRef, start, end, this.copyOf.get(entry.packRef))
-    return reconstructFromSpan(entry, slice, limits.item, limits.base, limits.chain.budget)
+    return reconstructFromSpan(entry, slice, limits.item, limits.base, limits.chain.budget, () => limits.chain.step())
   }
 
   /**
@@ -1067,6 +1084,13 @@ export class BrowseReader {
     }
   }
 
+  /**
+   * A REF base on the current copy's path: decoded through its own pack's current copy, under this
+   * copy's budget, with no fallback to that pack's other copies. Packs Forge stores have no REF
+   * deltas (every base is an earlier OFS entry), so only a pack that does not conform reaches
+   * here; if it fails, {@link readVerified} still tries the object's other copies, whose REF
+   * bases are read for their own sake ({@link readBounded}).
+   */
   private async decodeByOid(oidHex: string, limits: Attempt): Promise<GitObject> {
     const e = await this.locate(oidHex)
     // A base this reader does not index: the same "missing object" as a direct read of it.

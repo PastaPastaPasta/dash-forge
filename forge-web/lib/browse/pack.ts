@@ -432,11 +432,13 @@ export function reconstructFromSpan(
   maxBytes = Infinity,
   baseMax = baseMaxBytes(maxBytes),
   budget = new BuildBudget(buildMaxBytes(maxBytes)),
+  /** Called for each entry of the chain before it is decoded: a reader counts its steps. */
+  step: () => void = () => {},
 ): GitObject {
   const end = loc.offset + loc.length
   const baseAddr = end - loc.deltaChainSpan
   if (spanSlice.length !== loc.deltaChainSpan) throw new Error('span slice length mismatch')
-  return decodeAt(spanSlice, baseAddr, loc.offset, null, maxBytes, baseMax, budget)
+  return decodeAt(spanSlice, baseAddr, loc.offset, null, maxBytes, baseMax, budget, step)
 }
 
 /** A resolver for REF_DELTA bases / per-base fetches, keyed by OID (hex). */
@@ -458,6 +460,7 @@ function decodeAt(
   maxBytes: number,
   baseMax: number,
   budget: BuildBudget,
+  step: () => void,
 ): GitObject {
   /** The deltas met on the way down, the object's first: each one's stream and limit. */
   const deltas: { readonly pos: number; readonly size: number; readonly limit: number }[] = []
@@ -466,6 +469,7 @@ function decodeAt(
   let base: GitObject
   for (;;) {
     if (deltas.length > DELTA_DEPTH_MAX) throw new DeltaChainError(`delta chain is over ${DELTA_DEPTH_MAX} deep`)
+    step()
     const h = parseObjHeader(buf, at - baseAddr)
     if (h.type === T_COMMIT || h.type === T_TREE || h.type === T_BLOB || h.type === T_TAG) {
       base = { type: typeFromCode(h.type), bytes: inflateZlib(buf, h.after, h.size, limit, budget) }
