@@ -1,0 +1,16 @@
+{
+  "name": "duplicate",
+  "description": "The same address twice.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://m.example.com/p",
+      "https://m.example.com/p"
+    ]
+  },
+  "expected": {
+    "problem": "duplicate",
+    "index": 1
+  }
+}

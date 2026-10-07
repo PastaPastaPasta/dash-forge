@@ -1,0 +1,15 @@
+{
+  "name": "no_host",
+  "description": "An https address needs a host.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https:///p"
+    ]
+  },
+  "expected": {
+    "problem": "address",
+    "index": 0
+  }
+}

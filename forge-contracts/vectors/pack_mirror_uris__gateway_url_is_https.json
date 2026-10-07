@@ -1,0 +1,15 @@
+{
+  "name": "gateway_url_is_https",
+  "description": "An IPFS gateway URL is an https address, so it may sit beside other https addresses.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://ipfs.io/ipfs/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+      "https://m.example.com/p"
+    ]
+  },
+  "expected": {
+    "kind": 1
+  }
+}

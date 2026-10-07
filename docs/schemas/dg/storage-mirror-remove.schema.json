@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/storage-mirror-remove.schema.json",
+  "title": "dg storage mirror remove --json",
+  "description": "A pack mirror record deleted.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "removed"
+      ]
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "packMirror"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "documentId"
+  ],
+  "additionalProperties": true
+}

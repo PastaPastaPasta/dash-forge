@@ -1,0 +1,12 @@
+{
+  "name": "none",
+  "description": "A record needs an address.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": []
+  },
+  "expected": {
+    "problem": "none"
+  }
+}

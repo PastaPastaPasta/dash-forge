@@ -1,0 +1,30 @@
+{
+  "name": "listed_case_insensitive",
+  "description": "Pack hashes compare as hex, whatever the case.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "m1",
+        "ownerRole": "maintainer",
+        "createdAt": 1,
+        "packHash": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+        "kind": 1,
+        "uris": [
+          "https://maint.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://maint.example/p"
+    ]
+  }
+}
