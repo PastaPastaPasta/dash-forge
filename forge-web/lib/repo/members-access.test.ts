@@ -34,6 +34,7 @@ function source(over: Partial<MembersAccessSource<object>>): MembersAccessSource
     ops: async () => (calls.push('ops'), {}),
     locked: () => false,
     session: async () => (calls.push('session'), sessionWith([])),
+    holdsShare: async () => (calls.push('holdsShare'), false),
     ...over,
     calls,
   } as MembersAccessSource<object> & { calls: string[] }
@@ -46,7 +47,11 @@ describe('a member removed since (DESIGN §12 item 6, as dg)', () => {
     expect(access).toEqual({ access: 'former', session: s })
   })
 
-  it('gets nothing when the tab is locked or holds no key (an outsider’s view, no unlock offer)', async () => {
+  it('is offered the unlock in a locked tab when a key share is addressed to them', async () => {
+    expect(await membersAccessOf(source({ locked: () => true, holdsShare: async () => true }))).toEqual({ access: 'locked' })
+  })
+
+  it('an outsider in a locked tab, or with no key here, gets nothing (no unlock offer)', async () => {
     expect(await membersAccessOf(source({ locked: () => true }))).toBeNull()
     expect(await membersAccessOf(source({ ops: async () => null }))).toBeNull()
   })

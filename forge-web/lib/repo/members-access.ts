@@ -30,6 +30,12 @@ export interface MembersAccessSource<Ops> {
   readonly locked: () => boolean
   /** The viewer's members-key session, opened with `ops`. */
   readonly session: (ops: Ops) => Promise<PrivateSession>
+  /**
+   * Whether a key share of the repo is addressed to the viewer (one read; the shares name their
+   * recipient in plaintext). Asked only of a non-member whose tab is locked: a member removed
+   * since is then offered the unlock, as a member is.
+   */
+  readonly holdsShare: () => Promise<boolean>
 }
 
 /** The viewer's members access, or null: none at all (an outsider's view). */
@@ -37,7 +43,7 @@ export async function membersAccessOf<Ops>(src: MembersAccessSource<Ops>): Promi
   if (!(await src.hasMembersKey())) return src.isMember ? { access: 'none' } : null
   const ops = await src.ops()
   if (ops === null) return src.isMember ? { access: 'no-key' } : null
-  if (src.locked()) return src.isMember ? { access: 'locked' } : null
+  if (src.locked()) return src.isMember || (await src.holdsShare()) ? { access: 'locked' } : null
   const session = await src.session(ops)
   const opens = session.resolution.keys.size > 0
   if (!src.isMember) return opens ? { access: 'former', session } : null

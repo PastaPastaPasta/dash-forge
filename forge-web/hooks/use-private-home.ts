@@ -34,6 +34,9 @@ import {
 import { hasMembersKey } from '@/lib/repo/writes'
 import { repoHasMembersKey } from '@/lib/repo/members-writes'
 import { membersAccessOf } from '@/lib/repo/members-access'
+import { DOC } from '@/lib/repo/contract'
+import { repoSource } from '@/lib/repo/source'
+import { queryDocuments } from '@/lib/sdk'
 import { loadPrivateHome, withMembersSession, type RepoHome } from '@/lib/view'
 import { forgetPrivateNav, sealRepoUrls } from '@/lib/view/private-nav'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -116,6 +119,8 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       hasMembersKey: () => (isMember ? hasMembersKey(sdk!, base.repo) : repoHasMembersKey(sdk!, base.repo)),
       ops: () => encryptionOps(sdk!, network, identity, base.repo.forge.collab),
       locked: () => controller.unlockScope() === 'signing',
+      holdsShare: async () =>
+        (await queryDocuments(sdk!, repoSource(base.repo).repoQuery(DOC.repoKey, { where: [['memberId', '==', identity]], orderBy: [['memberId', 'asc']], limit: 1 }))).length > 0,
       session: async (ops) => {
         const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
         if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read members-only content')
