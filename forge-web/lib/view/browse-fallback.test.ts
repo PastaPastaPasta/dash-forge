@@ -128,7 +128,8 @@ describe('startFallback', () => {
     const repo = testRepo('fallback-badhash')
     const sdk = mockSdk(new Map([[manifest.packHash, pack]]))
 
-    await expect(startFallback(sdk, repo, [manifest])).rejects.toThrow(/hash mismatch/)
+    // Refused as it downloads (bytes are checked against packHash before any use).
+    await expect(startFallback(sdk, repo, [manifest])).rejects.toThrow(/does not hash to the pack/)
     await Promise.resolve() // let the eviction handler run
     expect(cachedFallback(repo.repoId)).toBeNull()
   })
