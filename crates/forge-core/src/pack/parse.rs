@@ -40,9 +40,11 @@ const PACK_TRAILER: usize = 20;
 pub const MAX_DELTA_DEPTH: u32 = 4095;
 
 /// Deflate cannot expand its input by more than this factor (a 258-byte match per ~2 bits);
-/// forge-web's pack reader holds a declared size to the same bound. No reconstructed object can
-/// honestly be larger than its input inflated at this ratio, so the decoder refuses to grow one
-/// past that: bytes a pack only *declares* are never reserved.
+/// forge-web's pack reader holds a declared size to the same bound. The decoder refuses to grow
+/// an object past its chain's stored bytes inflated at this ratio, so bytes a pack only
+/// *declares* are never reserved. A delta's copy ops can reuse base bytes, so an honest object
+/// built from a base that compresses near this ratio can exceed it; such a read fails rather
+/// than allocate.
 const DEFLATE_MAX_RATIO: u64 = 1032;
 
 /// What a decoder reserves up front for an inflated object before the stream proves it is
@@ -447,7 +449,9 @@ impl ParsedPack {
             }
         };
         for &root in &roots {
-            let (obj_type, data) = self.object_bytes(&self.objects[root].oid)?;
+            // At its own offset: a duplicate oid elsewhere in the idx must not stand in for it.
+            let (obj_type, data) =
+                self.decode_at(&self.pack_bytes, 0, self.objects[root].offset, true)?;
             check(root, obj_type, &data)?;
             let mut stack = vec![VerifyFrame {
                 idx: root,
