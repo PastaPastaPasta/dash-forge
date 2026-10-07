@@ -73,6 +73,13 @@ describe('what a composer offers', () => {
     expect(choice({ access: 'no-key-shared' })?.members).toBe('no-key-shared')
   })
 
+  it('never offers Members to a member removed since, who reads only what was written before', () => {
+    const session = {} as never
+    expect(choice({ access: 'former', session })).toEqual({ initial: 'public', members: 'former', publicAllowed: true })
+    expect(choice({ access: 'former', session }, 'members')).toEqual({ initial: 'members', members: 'former', publicAllowed: false })
+    expect(MEMBERS_OPTION_TEXT.former).toBe("You're no longer a member of this repo, so you can't write members-only content.")
+  })
+
   it('has no chip in a private repo (everything there is members-only)', () => {
     expect(audienceChoice({ visibility: 'private', parent: 'members', lane: undefined, maintainer: true })).toBeNull()
   })

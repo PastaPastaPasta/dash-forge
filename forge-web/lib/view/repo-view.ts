@@ -112,19 +112,22 @@ export type PrivateAccess =
  * turned it on); `no-key`, their browser holds no encryption key; `locked`, the tab resumed
  * signing-only; `no-key-shared`, no maintainer has shared the key with them yet (E311, a member
  * added by an older client: a maintainer's Repair shares it); `member`, they read it through
- * their members-key session (`repo.lane`). Never changes the public config, branches or packs.
+ * their members-key session (`repo.lane`); `former`, a member removed since who still holds key
+ * shares of earlier epochs: they read what was written under those (DESIGN §12 item 6, as `dg`),
+ * through the same session, and write nothing members-only. Never changes the public config,
+ * branches or packs.
  */
 export type MembersAccess =
   | { readonly access: 'none' | 'no-key' | 'locked' | 'no-key-shared' }
-  | { readonly access: 'member'; readonly session: PrivateSession }
+  | { readonly access: 'member' | 'former'; readonly session: PrivateSession }
 
 /**
  * A member's view of a public repo's members-only content: the plain {@link RepoHome} with the
  * members-key session on `repo.lane` (only the content gate reads it). Its config, default
  * branch, branches, tags and backend are the public ones, untouched (DESIGN §4.1 acceptance).
  */
-export function withMembersSession(home: RepoHome, session: PrivateSession): RepoHome {
-  return { ...home, repo: { ...home.repo, lane: session }, lane: { access: 'member', session } }
+export function withMembersSession(home: RepoHome, session: PrivateSession, access: 'member' | 'former' = 'member'): RepoHome {
+  return { ...home, repo: { ...home.repo, lane: session }, lane: { access, session } }
 }
 
 /**

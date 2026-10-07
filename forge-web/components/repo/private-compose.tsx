@@ -9,6 +9,8 @@
 
 import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
+import { FORMER_MEMBER_TEXT } from '@/lib/view/audience'
+import { MEMBERS_TEXT_LIMIT } from '@/lib/repo/members-writes'
 import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
 import { previewCreate, previewCredits, sumPreviews, type CostPreview, type FirstWrite } from '@/lib/sdk'
 import { fieldEstimate, isLongBody, longBodyCredits } from '@/lib/repo/long-body'
@@ -20,7 +22,10 @@ import { TextCounter } from '@/components/ui/text-counter'
 import { LongComposeNote, type LongCompose } from '@/components/repo/long-body'
 
 /** For a public repo: always null. For a private one: null when sealed writes can go ahead, else why not. */
-export function privateComposeBlock(home: RepoHome): string | null {
+export function privateComposeBlock(home: RepoHome, thread: 'public' | 'members' = 'public'): string | null {
+  // A member removed since reads a members-only thread they held the key for, but can't reply:
+  // a public reply is refused there, and they can no longer write members-only content.
+  if (thread === 'members' && home.lane?.access === 'former') return FORMER_MEMBER_TEXT
   return privateWriteBlock(home.repo, home.private)
 }
 
@@ -121,10 +126,24 @@ export function composeTooLong(repo: RepoRef, kind: SealedKind, data: Readonly<R
  * The public composer's live byte counter for a body (private repos show {@link SealedLimit}); a
  * text over the field (`long`, `useLongCompose`) shows where its whole text goes instead.
  */
-export function BodyCounter({ repo, text, field = 'text', long }: { repo: RepoRef; text: string; field?: string; long?: LongCompose }): JSX.Element | null {
+export function BodyCounter({
+  repo,
+  text,
+  field = 'text',
+  long,
+  members,
+}: {
+  repo: RepoRef
+  text: string
+  field?: string
+  long?: LongCompose
+  /** The composer writes members-only content of this kind: counted against its v0x03 room (5,053 bytes for a comment), not the public field's. */
+  members?: keyof typeof MEMBERS_TEXT_LIMIT | undefined
+}): JSX.Element | null {
   if (long?.long) return <LongComposeNote compose={long} text={text} />
   if (repo.visibility === 'private') return null
-  return <TextCounter text={text} limit={BODY_LIMIT} field={field} />
+  const limit = members === undefined ? BODY_LIMIT : { chars: Math.min(BODY_LIMIT.chars, MEMBERS_TEXT_LIMIT[members]), bytes: MEMBERS_TEXT_LIMIT[members] }
+  return <TextCounter text={text} limit={limit} field={field} />
 }
 
 /**

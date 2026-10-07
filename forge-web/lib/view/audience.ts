@@ -69,7 +69,7 @@ export function membersSentence(c: MembersCount): string {
 }
 
 /** Why the Members option cannot be picked right now, or `ok`. */
-export type MembersOption = 'ok' | 'turn-on' | 'ask-maintainer' | 'no-key' | 'locked' | 'no-key-shared'
+export type MembersOption = 'ok' | 'turn-on' | 'ask-maintainer' | 'no-key' | 'locked' | 'no-key-shared' | 'former'
 
 /** What a composer offers: a fixed audience, or a choice with the Members option's state. */
 export interface AudienceChoice {
@@ -109,10 +109,18 @@ function optionOf(lane: MembersAccess | undefined, maintainer: boolean): Members
       return 'locked'
     case 'no-key-shared':
       return 'no-key-shared'
+    case 'former':
+      return 'former'
     default:
       return maintainer ? 'turn-on' : 'ask-maintainer'
   }
 }
+
+/**
+ * A member removed since, who still reads what was written while they were one (DESIGN §12 item
+ * 6): why they can't write members-only content, or reply in a members-only thread.
+ */
+export const FORMER_MEMBER_TEXT = "You're no longer a member of this repo, so you can't write members-only content."
 
 /** What the picker says under a Members option that cannot be picked. */
 export const MEMBERS_OPTION_TEXT: Readonly<Record<Exclude<MembersOption, 'ok'>, string>> = {
@@ -122,6 +130,7 @@ export const MEMBERS_OPTION_TEXT: Readonly<Record<Exclude<MembersOption, 'ok'>, 
   locked: 'Unlock this tab to write members-only content.',
   // E311 (DESIGN §10): the one copy of it, as the repo banner and the write refusal say it.
   'no-key-shared': NO_KEY_SHARED_TEXT,
+  former: FORMER_MEMBER_TEXT,
 }
 
 /** Set up your encryption key (an identity, D25): where the link goes. */

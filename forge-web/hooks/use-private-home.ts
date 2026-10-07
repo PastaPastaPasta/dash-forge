@@ -20,7 +20,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useAuth } from '@/contexts/auth-context'
-import { base58Encode } from '@/lib/auth/base58'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { encryptionOps } from '@/lib/auth/encryption-key'
@@ -33,6 +32,8 @@ import {
   sessionUnwrapper,
 } from '@/lib/repo/private-session'
 import { hasMembersKey } from '@/lib/repo/writes'
+import { repoHasMembersKey } from '@/lib/repo/members-writes'
+import { membersAccessOf } from '@/lib/repo/members-access'
 import { loadPrivateHome, withMembersSession, type RepoHome } from '@/lib/view'
 import { forgetPrivateNav, sealRepoUrls } from '@/lib/view/private-nav'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -100,25 +101,30 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
   // Re-derive when the plain home is re-read (revalidation, Retry); the session itself is re-read
   // once its view-session TTL runs out, so new pushes and rotations show up.
   const revision = useRevision(home)
-  /** A public repo's home for this viewer: with their members-key session when they hold one. */
+  /**
+   * A public repo's home for this viewer: with their members-key session when they hold one (a
+   * current member, or a member removed since who holds earlier key shares: `former`).
+   */
   const membersHome = async (base: RepoHome, generation: number): Promise<RepoHome> => {
     if (identity === null) return base
     const members = await readMembershipsCached(sdk!, base.repo, network)
-    if (!members.some((m) => m.identity === identity)) return base
-    if (!(await hasMembersKey(sdk!, base.repo))) return { ...base, lane: { access: 'none' } }
-    const ops = await encryptionOps(sdk!, network, identity, base.repo.forge.collab)
-    if (ops === null) return { ...base, lane: { access: 'no-key' } }
-    if (controller.unlockScope() === 'signing') return { ...base, lane: { access: 'locked' } }
-    const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
-    if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read members-only content')
-    // E311: a member nobody has shared the key with yet (added by an older client). No key, no
-    // wrap to them: a maintainer's Repair (the repair check) shares it.
-    const mine = session.wraps.some((w) => base58Encode(w.row.memberId) === identity)
-    if (session.resolution.keys.size === 0 && !mine) return { ...base, lane: { access: 'no-key-shared' } }
-    // Shared with them, and still nothing opens: this browser holds another encryption key than
-    // the one it was shared to (a wallet's, while theirs is held elsewhere). Not a reader here.
-    if (session.resolution.keys.size === 0) return { ...base, lane: { access: 'no-key' } }
-    const out = withMembersSession(base, session)
+    const isMember = members.some((m) => m.identity === identity)
+    const lane = await membersAccessOf({
+      identity,
+      isMember,
+      // A non-member's answer comes from the page's own config read (no read of its own).
+      hasMembersKey: () => (isMember ? hasMembersKey(sdk!, base.repo) : repoHasMembersKey(sdk!, base.repo)),
+      ops: () => encryptionOps(sdk!, network, identity, base.repo.forge.collab),
+      locked: () => controller.unlockScope() === 'signing',
+      session: async (ops) => {
+        const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
+        if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read members-only content')
+        return session
+      },
+    })
+    if (lane === null) return base
+    if (lane.access !== 'member' && lane.access !== 'former') return { ...base, lane }
+    const out = withMembersSession(base, lane.session, lane.access)
     warm.set(key, out)
     return out
   }
@@ -154,7 +160,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
         const hit = warm.get(key)
         if (hit === undefined) return undefined
         if (hit.private?.access === 'member') return hit.private.session.closed ? undefined : hit
-        return hit.lane?.access === 'member' && !hit.lane.session.closed ? hit : undefined
+        return (hit.lane?.access === 'member' || hit.lane?.access === 'former') && !hit.lane.session.closed ? hit : undefined
       },
     },
   )

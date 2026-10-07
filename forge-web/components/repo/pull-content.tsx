@@ -371,7 +371,7 @@ function PullPage({
   const archived = home.config?.archived === true
   // A locked PR takes comments and reviews from members only (RC1: consensus refuses the rest).
   const postContext = { isMember, locked: thread.locked }
-  const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home)
+  const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home, pull.audience ?? 'public')
   const writeBlocked = composeBlock !== null
   // Who the composer's lock banner speaks to (a member keeps the composer).
   const lockViewer = lockViewerOf(viewer, holdings)
@@ -1673,7 +1673,7 @@ function PullPage({
                     <>
                       <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} onSubmit={writeBlocked ? undefined : () => void postComment()} />
                       <SealedLimit repo={repo} kind="comment" text={comment.trim()} long={commentLong} />
-                      <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} />
+                      <BodyCounter repo={repo} text={comment.trim()} field="comment" long={commentLong} members={audience.audience === 'members' ? 'comment' : undefined} />
                       <AudienceWarnings warnings={warnings} />
                     </>
                   )}

@@ -745,6 +745,8 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
           </p>
         ) : why === 'no-key-shared' ? (
           <p data-testid="members-only-no-key-shared">{NO_KEY_SHARED_TEXT}</p>
+        ) : home.lane?.access === 'former' ? (
+          <p>You can&apos;t read this one. It was written after you stopped being a member of this repo.</p>
         ) : home.lane?.access === 'member' ? (
           <p>You can&apos;t read this one. It was written with a key you don&apos;t hold.</p>
         ) : (
@@ -821,6 +823,8 @@ export function MembersChip({ home }: { home: RepoHome }): JSX.Element | null {
   const about =
     access === 'member'
       ? 'This repo has members-only content. You can read it.'
+      : access === 'former'
+        ? 'This repo has members-only content. You can read what was written while you were a member.'
       : access === 'locked'
         ? 'This repo has members-only content. Unlock this tab to read it.'
         : access === 'no-key'

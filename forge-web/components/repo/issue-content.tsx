@@ -285,7 +285,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const lockApplies = meta.locked && !archived
   const lockedOutNow = lockApplies && lockedOut(postContext)
   const lockViewer = lockViewerOf(identity, holdings)
-  const composeBlock = archived ? ARCHIVED_REASON : lockedOutNow ? LOCKED_REASON : privateComposeBlock(home)
+  const composeBlock = archived ? ARCHIVED_REASON : lockedOutNow ? LOCKED_REASON : privateComposeBlock(home, issue.audience ?? 'public')
   const isPrivate = home.repo.visibility === 'private'
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
@@ -684,7 +684,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             </div>
           </div>
           )}
-          {lockedOutNow ? null : <BodyCounter repo={home.repo} text={comment} field="comment" long={commentLong} />}
+          {lockedOutNow ? null : <BodyCounter repo={home.repo} text={comment} field="comment" long={commentLong} members={audience.audience === 'members' ? 'comment' : undefined} />}
           {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
           {commentError ? (
             <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
