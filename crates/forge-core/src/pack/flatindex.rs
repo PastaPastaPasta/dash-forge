@@ -25,6 +25,13 @@ use std::path::Path;
 /// git file mode of a gitlink (submodule) entry.
 pub const MODE_GITLINK: u32 = 0o160_000;
 
+/// The most a flat index may inflate to (~4.5 MB at 100k files, S0.5): a gzip bomb stops here.
+/// forge-web's reader applies the same cap (`FLAT_INDEX_MAX_INFLATED`).
+pub const MAX_INFLATED: u64 = 64 * 1024 * 1024;
+
+/// The fewest body bytes a row takes: mode, oid, and one-byte size and path-length varints.
+const MIN_ROW_LEN: usize = 4 + OID_LEN + 1 + 1;
+
 /// One entry in a flat index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlatEntry {
@@ -146,45 +153,49 @@ impl FlatIndex {
 
     /// Parse a gzip-compressed flat index artifact back into a reader.
     pub fn parse(compressed: &[u8]) -> Result<Self> {
+        Self::parse_bounded(compressed, MAX_INFLATED)
+    }
+
+    /// [`Self::parse`] refusing a body that inflates past `max_inflated` bytes. The declared row
+    /// count is held to what the body can hold before anything is reserved for it.
+    fn parse_bounded(compressed: &[u8], max_inflated: u64) -> Result<Self> {
         let mut body = Vec::new();
         GzDecoder::new(compressed)
+            .take(max_inflated + 1)
             .read_to_end(&mut body)
             .map_err(|e| Error::Io(e.to_string()))?;
+        if body.len() as u64 > max_inflated {
+            return Err(Error::Config(
+                "flatIndex inflates past its size limit".into(),
+            ));
+        }
 
         let mut pos = 0usize;
-        let tip: [u8; OID_LEN] = body
-            .get(pos..pos + OID_LEN)
-            .ok_or_else(|| Error::Config("flatIndex truncated (tip)".into()))?
+        let tip: [u8; OID_LEN] = take(&body, &mut pos, OID_LEN, "tip")?
             .try_into()
-            .unwrap();
-        pos += OID_LEN;
+            .expect("OID_LEN bytes");
         let nrows = read_varint(&body, &mut pos)?;
+        if nrows > ((body.len() - pos) / MIN_ROW_LEN) as u64 {
+            return Err(Error::Config(
+                "flatIndex declares more rows than it holds".into(),
+            ));
+        }
 
-        let mut entries = Vec::with_capacity(usize::try_from(nrows).unwrap_or(0));
+        let mut entries = Vec::with_capacity(nrows as usize);
         for _ in 0..nrows {
             let mode = u32::from_be_bytes(
-                body.get(pos..pos + 4)
-                    .ok_or_else(|| Error::Config("flatIndex truncated (mode)".into()))?
+                take(&body, &mut pos, 4, "mode")?
                     .try_into()
-                    .unwrap(),
+                    .expect("4 bytes"),
             );
-            pos += 4;
-            let oid: [u8; OID_LEN] = body
-                .get(pos..pos + OID_LEN)
-                .ok_or_else(|| Error::Config("flatIndex truncated (oid)".into()))?
+            let oid: [u8; OID_LEN] = take(&body, &mut pos, OID_LEN, "oid")?
                 .try_into()
-                .unwrap();
-            pos += OID_LEN;
+                .expect("OID_LEN bytes");
             let size = read_varint(&body, &mut pos)?;
             let plen = usize::try_from(read_varint(&body, &mut pos)?)
                 .map_err(|_| Error::Config("flatIndex path length overflow".into()))?;
-            let path = String::from_utf8(
-                body.get(pos..pos + plen)
-                    .ok_or_else(|| Error::Config("flatIndex truncated (path)".into()))?
-                    .to_vec(),
-            )
-            .map_err(|_| Error::Config("flatIndex non-utf8 path".into()))?;
-            pos += plen;
+            let path = String::from_utf8(take(&body, &mut pos, plen, "path")?.to_vec())
+                .map_err(|_| Error::Config("flatIndex non-utf8 path".into()))?;
             entries.push(FlatEntry {
                 path,
                 oid,
@@ -194,6 +205,16 @@ impl FlatIndex {
         }
         Ok(Self { tip, entries })
     }
+}
+
+/// The next `n` bytes of `buf` at `pos`, advancing it; an error naming `what` past the end.
+fn take<'a>(buf: &'a [u8], pos: &mut usize, n: usize, what: &str) -> Result<&'a [u8]> {
+    let s = pos
+        .checked_add(n)
+        .and_then(|end| buf.get(*pos..end))
+        .ok_or_else(|| Error::Config(format!("flatIndex truncated ({what})")))?;
+    *pos += n;
+    Ok(s)
 }
 
 /// Parse one `git ls-tree -r -t -l -z` record: `"<mode> <type> <oid> <size>\t<path>"`.
@@ -274,17 +295,115 @@ fn write_varint(buf: &mut Vec<u8>, mut v: u64) {
 
 fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u64> {
     let mut r = 0u64;
-    let mut shift = 0u32;
-    loop {
-        let b = *buf
-            .get(*pos)
-            .ok_or_else(|| Error::Config("flatIndex truncated (varint)".into()))?;
-        *pos += 1;
-        r |= u64::from(b & 0x7f) << shift;
-        if b & 0x80 == 0 {
+    for shift in (0..64).step_by(7) {
+        let b = take(buf, pos, 1, "varint")?[0];
+        let bits = u64::from(b & 0x7f);
+        // The tenth byte holds bit 63 alone: anything more does not fit a u64.
+        if shift == 63 && bits > 1 {
             break;
         }
-        shift += 7;
+        r |= bits << shift;
+        if b & 0x80 == 0 {
+            return Ok(r);
+        }
     }
-    Ok(r)
+    Err(Error::Config("flatIndex varint overflow".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{write_varint, FlatEntry, FlatIndex, OID_LEN};
+    use crate::pack::TestRng;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write as _;
+
+    fn gzip(body: &[u8]) -> Vec<u8> {
+        let mut enc = GzEncoder::new(Vec::new(), Compression::new(9));
+        enc.write_all(body).unwrap();
+        enc.finish().unwrap()
+    }
+
+    /// A body: a tip, then `rest`.
+    fn body(rest: &[u8]) -> Vec<u8> {
+        let mut b = vec![7u8; OID_LEN];
+        b.extend(rest);
+        b
+    }
+
+    #[test]
+    fn a_gzip_bomb_stops_at_the_cap() {
+        let bomb = gzip(&vec![0u8; 1 << 20]);
+        let err = FlatIndex::parse_bounded(&bomb, 64 * 1024).err().unwrap();
+        assert!(format!("{err}").contains("size limit"), "{err}");
+    }
+
+    #[test]
+    fn a_row_count_the_body_cannot_hold_is_refused() {
+        let mut rest = Vec::new();
+        write_varint(&mut rest, u64::MAX >> 1);
+        assert!(FlatIndex::parse(&gzip(&body(&rest))).is_err());
+        // One row's worth of bytes cannot hold two rows.
+        let mut rest = Vec::new();
+        write_varint(&mut rest, 2);
+        rest.extend([0u8; 26]);
+        assert!(FlatIndex::parse(&gzip(&body(&rest))).is_err());
+    }
+
+    #[test]
+    fn an_overlong_varint_is_refused() {
+        let mut rest = vec![0xff; 10];
+        rest.push(0x01);
+        assert!(FlatIndex::parse(&gzip(&body(&rest))).is_err());
+    }
+
+    #[test]
+    fn a_path_length_past_the_body_is_refused() {
+        let mut rest = Vec::new();
+        write_varint(&mut rest, 1);
+        rest.extend(0o100_644u32.to_be_bytes());
+        rest.extend([1u8; OID_LEN]);
+        write_varint(&mut rest, 0);
+        write_varint(&mut rest, u64::MAX);
+        assert!(FlatIndex::parse(&gzip(&body(&rest))).is_err());
+    }
+
+    #[test]
+    fn a_written_index_round_trips() {
+        let entries = vec![
+            FlatEntry {
+                path: "a.txt".into(),
+                oid: [1; OID_LEN],
+                mode: 0o100_644,
+                size: 300,
+            },
+            FlatEntry {
+                path: "dir".into(),
+                oid: [2; OID_LEN],
+                mode: 0o040_000,
+                size: 0,
+            },
+        ];
+        let index = FlatIndex::from_parts([9; OID_LEN], entries.clone());
+        let parsed = FlatIndex::parse(&index.to_compressed().unwrap()).unwrap();
+        assert_eq!(parsed.tip, [9; OID_LEN]);
+        assert_eq!(parsed.entries(), &entries[..]);
+    }
+
+    #[test]
+    fn random_bodies_never_panic_the_parser() {
+        let mut rng = TestRng(0xd1b5_4a32_d192_ed03);
+        for _ in 0..3000 {
+            let len = rng.below(120);
+            let raw = rng.bytes(len);
+            let _ = FlatIndex::parse(&raw);
+            let _ = FlatIndex::parse(&gzip(&raw));
+            // A plausible start (tip + small row count) with random rows after it.
+            let mut rest = Vec::new();
+            write_varint(&mut rest, rng.below(4) as u64);
+            let tail = rng.below(90);
+            rest.extend(rng.bytes(tail));
+            let _ = FlatIndex::parse(&gzip(&body(&rest)));
+        }
+    }
 }
