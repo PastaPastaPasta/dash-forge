@@ -184,11 +184,11 @@ activates there ([mainnet-runbook.md](mainnet-runbook.md)). Until then, pass
 with `dg auth login --network devnet --devnet-name sakura`, which saves the network in
 `~/.config/dash-forge/config.toml`.
 
-**Devnet sakura** (Platform 5.0.0-beta.1, chain id `dash-devnet-sakura`) replaced bonsia on
+**Devnet sakura** (Platform 5.0.0-beta.2 since its Platform reset on 2026-10-06, chain id `dash-devnet-sakura`) replaced bonsia on
 2026-10-01, and the defaults (Makefile `DEVNET`, `E2E_DEVNET`, the Pages and e2e workflows,
 `ipfs-release.sh`) target it. `devnet-sakura.json` records its chain id, 13 DAPI addresses and
 quorum service (`https://quorums.sakura.networks.dash.org`), so `--devnet-name sakura` works
-for every tool, and its `v2` record holds the RC2 contracts registered there on 2026-10-01. A devnet's chain id is not derived from its name (bonsia's was
+for every tool, and its `v2` record holds the RC2 contracts, registered there again on 2026-10-07 after the reset. A devnet's chain id is not derived from its name (bonsia's was
 `dash-devnet-bonsia-g1`, sakura's has no suffix): the deployment file records it.
 Devnet bonsia (Platform 4.2.0-beta.7, the RC1 contracts) is gone, and devnet moutai was
 upgraded in place to beta.7, which retired the forge-v2 contracts registered there.
