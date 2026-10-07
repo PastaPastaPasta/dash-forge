@@ -26,7 +26,7 @@ const load = (op: string): [string, Obj, Json][] =>
     .sort()
     .map((f) => [f, JSON.parse(readFileSync(resolve(VECTORS_DIR, f), 'utf8')) as Obj] as const)
     .filter(([, v]) => (v.input as Obj).op === op)
-    .map(([f, v]) => [f, v.input as Obj, v.expected])
+    .map(([f, v]): [string, Obj, Json] => [f, v.input as Obj, v.expected as Json])
 
 const o = (j: Json | undefined): Obj => j as Obj
 const arr = (j: Json | undefined): Json[] => j as Json[]

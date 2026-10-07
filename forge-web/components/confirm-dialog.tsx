@@ -45,6 +45,8 @@ export interface ConfirmDialogProps {
    * an action of one write ends under that write's own title.
    */
   toast?: SpendActionLabels
+  /** More for the person to weigh before signing (shown above the cost). */
+  children?: React.ReactNode
 }
 
 export function ConfirmDialog({
@@ -52,6 +54,7 @@ export function ConfirmDialog({
   onClose,
   title,
   description,
+  children,
   cost,
   refund,
   confirmLabel,
@@ -125,6 +128,7 @@ export function ConfirmDialog({
       }
     >
       <div className="space-y-3">
+        {children}
         {cost ? (
           <CostPreview cost={cost} refund={isRefund} />
         ) : (

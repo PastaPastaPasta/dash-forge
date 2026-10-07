@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { Archive, Globe, GitBranch, Info, Lock, Plus, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isLive, plural } from '@/lib/view'
@@ -76,6 +77,7 @@ import type { Policy } from '@/lib/rules/v2'
 import { previewCreate, type CostPreview as Cost, type FirstWrite } from '@/lib/sdk'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
+import { repoHref, useRepoAddress } from '@/hooks/use-query-param'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useAuth } from '@/contexts/auth-context'
@@ -92,24 +94,36 @@ import { shortId } from '@/lib/utils'
 // Layout
 // ---------------------------------------------------------------------------------------------
 
+/** The sections on this page, and Environments, which has its own page (it reads more). */
 const SECTIONS = [
   ['general', 'General'],
   ['branches', 'Branches'],
   ['collaborators', 'Members'],
   ['storage', 'Storage'],
+  ['environments', 'Environments'],
   ['webhooks', 'Webhooks'],
   ['danger', 'Danger zone'],
 ] as const
 
-/** In-page navigation between the sections. */
+const NAV_ITEM =
+  'inline-flex items-center rounded px-2 py-1 text-anvil-600 hover:bg-anvil-100 coarse:min-h-11 coarse:px-3 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800'
+
+/** In-page navigation between the sections, and the link to Settings → Environments. */
 export function SettingsNav(): JSX.Element {
+  const addr = useRepoAddress()
   return (
     <nav aria-label="Settings sections" className="flex flex-wrap gap-1 border-b border-anvil-200 pb-2 text-dense dark:border-anvil-800">
-      {SECTIONS.map(([id, label]) => (
-        <a key={id} href={`#${id}`} className="inline-flex items-center rounded px-2 py-1 text-anvil-600 hover:bg-anvil-100 coarse:min-h-11 coarse:px-3 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800">
-          {label}
-        </a>
-      ))}
+      {SECTIONS.map(([id, label]) =>
+        id === 'environments' ? (
+          <Link key={id} href={repoHref('/repo/settings/environments', addr)} className={NAV_ITEM}>
+            {label}
+          </Link>
+        ) : (
+          <a key={id} href={`#${id}`} className={NAV_ITEM}>
+            {label}
+          </a>
+        ),
+      )}
     </nav>
   )
 }
