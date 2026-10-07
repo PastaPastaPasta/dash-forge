@@ -468,9 +468,20 @@ cmd('milestone create', 'A milestone defined.', MS, ['status', 'title'])
 cmd('milestone close', 'A milestone closed.', MS, ['status', 'title'])
 
 # -- profile, signing keys, collaborators -----------------------------------------------------
-cmd('profile show', 'An identity\'s public profile.', {'identityId': S, 'profile': nl(OBJ)}, ['identityId', 'profile'])
+cmd('profile show', 'An identity\'s public profile.', {
+    'identityId': S, 'profile': nl(OBJ),
+    'bot': D('The identity\'s operator when both profiles agree, else null.', nl(O({'operator': S}, ['operator']))),
+}, ['identityId', 'profile'])
 cmd('profile set', 'Your profile changed.', {'status': S, 'documentId': S, 'fields': OBJ, 'cost': COST}, ['status'])
 cmd('profile delete', 'Your profile deleted.', {'status': E('deleted', 'absent'), 'documentId': S}, ['status'])
+BOT_CLAIM = D('The signer\'s bot claim as written: the identity that operates it, and the bots it operates.',
+              O({'operator': S, 'operates': SA}))
+for _verb, _desc in (('operator', 'Your profile names (or stops naming) the identity that operates it as a bot.'),
+                     ('add', 'Your profile lists a bot you operate.'),
+                     ('remove', 'Your profile stops listing a bot you operate.')):
+    cmd(f'profile bot {_verb}', _desc, {
+        'status': E('created', 'updated', 'unchanged'), 'documentId': S, 'bot': BOT_CLAIM, 'cost': COST,
+    }, ['status'])
 cmd('profile key list', 'The signing keys on your profile.', {'keys': A(OBJ)}, ['keys'])
 cmd('profile key add', 'A signing key added to your profile.', {'status': S, 'entry': S, 'fingerprint': ANY, 'cost': COST}, ['status'])
 cmd('profile key remove', 'A signing key removed from your profile.', {'status': E('removed', 'unchanged')}, ['status'])

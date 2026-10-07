@@ -102,6 +102,9 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg pr update-branch` | [`pr-update-branch.schema.json`](dg/pr-update-branch.schema.json) |
 | `dg pr verify` | [`pr-verify.schema.json`](dg/pr-verify.schema.json) |
 | `dg pr view` | [`pr-view.schema.json`](dg/pr-view.schema.json) |
+| `dg profile bot add` | [`profile-bot-add.schema.json`](dg/profile-bot-add.schema.json) |
+| `dg profile bot operator` | [`profile-bot-operator.schema.json`](dg/profile-bot-operator.schema.json) |
+| `dg profile bot remove` | [`profile-bot-remove.schema.json`](dg/profile-bot-remove.schema.json) |
 | `dg profile delete` | [`profile-delete.schema.json`](dg/profile-delete.schema.json) |
 | `dg profile key add` | [`profile-key-add.schema.json`](dg/profile-key-add.schema.json) |
 | `dg profile key list` | [`profile-key-list.schema.json`](dg/profile-key-list.schema.json) |

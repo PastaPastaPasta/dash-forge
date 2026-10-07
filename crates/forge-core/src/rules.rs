@@ -2846,6 +2846,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per vector case
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
