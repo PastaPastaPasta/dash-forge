@@ -1,0 +1,41 @@
+{
+  "name": "same_block_configs_take_effect_together",
+  "description": "Two configs in one block: only the greatest id is ever in force, so the protection one of them added and the other removed never took effect. A later config protecting the ref is its first protection.",
+  "case": "ref_history",
+  "input": {
+    "refName": "refs/heads/main",
+    "refNameHash": "H",
+    "updates": [],
+    "configs": [
+      {
+        "id": "a",
+        "createdAt": 100,
+        "protectedPatterns": [
+          "refs/heads/main"
+        ]
+      },
+      {
+        "id": "b",
+        "createdAt": 100,
+        "protectedPatterns": []
+      },
+      {
+        "id": "c",
+        "createdAt": 200,
+        "protectedPatterns": [
+          "refs/heads/**"
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "kind": "protectionAdded",
+      "id": "c",
+      "at": 200,
+      "by": null,
+      "from": null,
+      "to": null
+    }
+  ]
+}

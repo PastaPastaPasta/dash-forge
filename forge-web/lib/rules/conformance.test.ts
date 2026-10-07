@@ -38,6 +38,7 @@ import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import { refUpdateType } from '../repo/push'
 import { releaseProvenance, type ProvenanceInput } from './releaseProvenance'
 import { applyBans, banReasonLabel, standingBans, type Ban } from './bans'
+import { refHistory } from './refHistory'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
@@ -171,6 +172,18 @@ function runCaseBase(v: Vector): void {
     }
     case 'release_provenance': {
       expect(releaseProvenance(v.input as ProvenanceInput)).toEqual(v.expected)
+      break
+    }
+    case 'ref_history': {
+      const inp = v.input as {
+        readonly refName: string
+        readonly refNameHash: string
+        readonly updates: readonly RefUpdate[]
+        readonly configs?: readonly ConfigDoc[]
+        readonly contains?: readonly (readonly [string, string, boolean])[]
+      }
+      const known = (old: string, next: string): boolean | null => inp.contains?.find(([o, n]) => o === old && n === next)?.[2] ?? null
+      expect(refHistory(inp.refName, inp.refNameHash, inp.updates, inp.configs ?? [], known)).toEqual(v.expected)
       break
     }
     case 'ref_update_route': {

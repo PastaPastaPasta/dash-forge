@@ -105,6 +105,7 @@
     "release unpublish": "release-unpublish.schema.json",
     "release verify": "release-verify.schema.json",
     "repack": "repack.schema.json",
+    "repo activity": "repo-activity.schema.json",
     "repo archive": "repo-archive.schema.json",
     "repo backend set": "repo-backend-set.schema.json",
     "repo ban": "repo-ban.schema.json",

@@ -58,6 +58,7 @@ pub mod parity;
 pub mod profile;
 pub mod provenance;
 pub mod ref_collision;
+pub mod ref_history;
 pub mod review;
 pub mod search;
 pub mod signature;
@@ -1579,6 +1580,7 @@ mod tests {
                 assert_eq!(got, want, "vector `{ctx}`");
             }
             "release_provenance"
+            | "ref_history"
             | "ref_update_route"
             | "missing_default_protection"
             | "default_protection" => run_protection_case(v),
@@ -2672,8 +2674,43 @@ mod tests {
         assert_eq!(got.expect("serialize"), v.expected, "vector `{ctx}`");
     }
 
+    /// `ref_history`: a ref's activity ([`super::ref_history`]).
+    fn run_ref_history_case(v: &Vector) {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Input {
+            ref_name: String,
+            ref_name_hash: String,
+            updates: Vec<RefUpdate>,
+            #[serde(default)]
+            configs: Vec<ConfigDoc>,
+            /// `[old, new, contains]`: what the caller knows; any other pair is unknown.
+            #[serde(default)]
+            contains: Vec<(String, String, bool)>,
+        }
+        let ctx = &v.name;
+        let inp: Input = serde_json::from_value(v.input.clone()).expect("ref_history input");
+        let got = super::ref_history::ref_history(
+            &inp.ref_name,
+            &inp.ref_name_hash,
+            &inp.updates,
+            &inp.configs,
+            |old, new| {
+                inp.contains
+                    .iter()
+                    .find(|(o, n, _)| o == old && n == new)
+                    .map(|(_, _, c)| *c)
+            },
+        );
+        assert_eq!(
+            serde_json::to_value(&got).expect("ref history json"),
+            v.expected,
+            "vector `{ctx}`"
+        );
+    }
+
     /// The protection and release-provenance conventions (epic E5): `default_protection`,
-    /// `missing_default_protection`, `ref_update_route` and `release_provenance`.
+    /// `missing_default_protection`, `ref_update_route`, `release_provenance` and `ref_history`.
     fn run_protection_case(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2706,6 +2743,7 @@ mod tests {
                     "vector `{ctx}`"
                 );
             }
+            "ref_history" => run_ref_history_case(v),
             "ref_update_route" => {
                 let name = v.input["refName"]
                     .as_str()

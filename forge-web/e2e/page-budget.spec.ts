@@ -218,6 +218,26 @@ test.describe('page request budget (S-1)', () => {
   })
 
   /**
+   * A branch's Activity page (E5): its history comes from the repo chrome timelines the page
+   * reads anyway, and the force-push check walks the browse reader, bounded per move.
+   */
+  test('pb-7. a branch Activity page, cold, ≤ budget', async ({ browser }) => {
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    const { errors } = collectPageErrors(page)
+    const dapi = recordDapi(page)
+    await page.goto(repoUrl('activity', '&branch=main'), { waitUntil: 'domcontentloaded' })
+    await expect(page.getByTestId('ref-activity')).toBeVisible({ timeout: 90_000 })
+    await settle(page)
+    const all = dapi.all()
+    test.info().annotations.push({ type: 'dapi', description: `activity of main: ${all.length} ${summary(all)}` })
+    expect(all.length, summary(all)).toBeLessThanOrEqual(COLD_BUDGET)
+    expect(errors, errors.join('\n')).toEqual([])
+    await shot(page, 'pb-08-activity-cold')
+    await context.close()
+  })
+
+  /**
    * Bot badges (UPDATE-1 `profile.bot`): a thread reads its participants' profiles in one batch
    * once its data is in (one `$ownerId in` query, and one more for the operators any of them
    * name), never once per author or per render wave.

@@ -1,0 +1,138 @@
+{
+  "name": "protection_lifted_and_restored",
+  "description": "Protection added, lifted and restored, as of each config. The plain update after the lift moves the branch; the plain update after the restore is inert and not listed; the maintainer's protected update is.",
+  "case": "ref_history",
+  "input": {
+    "refName": "refs/heads/main",
+    "refNameHash": "H",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": true,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "C",
+        "force": false,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 300
+      },
+      {
+        "id": "u4",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "D",
+        "force": false,
+        "protected": true,
+        "author": "alice",
+        "createdAt": 400
+      }
+    ],
+    "configs": [
+      {
+        "id": "c1",
+        "createdAt": 50,
+        "protectedPatterns": [
+          "refs/heads/main"
+        ]
+      },
+      {
+        "id": "c2",
+        "createdAt": 150,
+        "protectedPatterns": []
+      },
+      {
+        "id": "c3",
+        "createdAt": 250,
+        "protectedPatterns": [
+          "refs/heads/*"
+        ]
+      }
+    ],
+    "contains": [
+      [
+        "A",
+        "B",
+        false
+      ],
+      [
+        "B",
+        "D",
+        true
+      ]
+    ]
+  },
+  "expected": [
+    {
+      "kind": "protectionAdded",
+      "id": "c1",
+      "at": 50,
+      "by": null,
+      "from": null,
+      "to": null
+    },
+    {
+      "kind": "created",
+      "id": "u1",
+      "at": 100,
+      "by": "alice",
+      "from": null,
+      "to": "A"
+    },
+    {
+      "kind": "protectionLifted",
+      "id": "c2",
+      "at": 150,
+      "by": null,
+      "from": null,
+      "to": null
+    },
+    {
+      "kind": "forcePushed",
+      "id": "u2",
+      "at": 200,
+      "by": "bob",
+      "from": "A",
+      "to": "B"
+    },
+    {
+      "kind": "protectionRestored",
+      "id": "c3",
+      "at": 250,
+      "by": null,
+      "from": null,
+      "to": null
+    },
+    {
+      "kind": "pushed",
+      "id": "u4",
+      "at": 400,
+      "by": "alice",
+      "from": "B",
+      "to": "D"
+    }
+  ]
+}
