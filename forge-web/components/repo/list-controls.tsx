@@ -9,7 +9,8 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { ChevronDown, ChevronLeft, ChevronRight, Loader2, Lock, MessageSquare, Search, SlidersHorizontal } from 'lucide-react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '@/lib/constants'

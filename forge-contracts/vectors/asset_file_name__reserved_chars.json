@@ -1,0 +1,34 @@
+{
+  "name": "reserved_chars",
+  "description": "Characters Windows refuses in a name, `:` look-alikes included, are refused.",
+  "case": "asset_file_name",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "C:x",
+      "c:",
+      "a:stream",
+      "a<b",
+      "a>b",
+      "a\"b",
+      "a|b",
+      "a?b",
+      "a*b",
+      "a\uff1ab",
+      "a\ua789b"
+    ]
+  },
+  "expected": [
+    "reservedChar",
+    "reservedChar",
+    "reservedChar",
+    "reservedChar",
+    "reservedChar",
+    "reservedChar",
+    "reservedChar",
+    "reservedChar",
+    "reservedChar",
+    "reservedChar",
+    "reservedChar"
+  ]
+}

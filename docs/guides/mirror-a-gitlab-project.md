@@ -136,7 +136,7 @@ What the template does:
 | The head of an open merge request | `refs/mirror/pull/<n>/head`, so it can be checked out. This includes fork merge requests: GitLab keeps a fork MR's head in the project too. |
 | Comments on issues, discussions on merge requests | Comments, oldest first. A diff comment keeps its file, line and commit as the comment's anchor. |
 | Labels | Label definitions, and each item's labels. |
-| Releases | Tag, title, notes, and each asset link, recorded by URL. GitLab reports no digest or size for links. |
+| Releases | Tag, title, notes, and each asset link, recorded by URL. GitLab reports no digest or size for links. A link whose label is not a plain file name (`Linux: x86_64`) is recorded under the last part of its URL, or the label with the unsafe characters replaced by `_`. |
 
 **Merge requests whose commits are gone.** GitLab deletes `refs/merge-requests/<n>/head` 14 days after a merge request closes or merges ([GitLab docs](https://docs.gitlab.com/user/project/merge_requests/merge_request_troubleshooting/)). Such a merge request is still imported: its metadata, state (closed or merged), comments and the head commit id. Its body says that its commits are not available. A merged one's changes are in its target branch anyway.
 

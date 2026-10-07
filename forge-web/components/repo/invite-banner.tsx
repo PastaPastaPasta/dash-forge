@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams } from '@/hooks/use-route'
 import { UserPlus } from 'lucide-react'
 import { CONSENT_LAG_RETRIES, acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
 import type { Role } from '@/lib/rules/v2'

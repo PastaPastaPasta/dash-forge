@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { collectPageErrors, countDapi, countDocumentQueries, DEMO, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { atRoute, collectPageErrors, countDapi, countDocumentQueries, DEMO, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 import { quorumGuard, quorumHeldMs } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -39,7 +39,7 @@ test.describe('permalinks and line anchors (read fixture)', () => {
   test('pl-1. a short URL with #L2-L3 expands, selects and keeps the range after a reload', async ({ page }) => {
     const { errors } = collectPageErrors(page)
     await openBlob(page, `/${DEMO.owner}/${DEMO.name}/blob/main/${MAIN_RS}#L2-L3`)
-    await expect(page).toHaveURL(/\/repo\/blob\/\?.*ref=main.*#L2-L3$/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/blob\/\?.*ref=main.*#L2-L3$/))
     await expect(page.getByText('Lines 2–3 selected')).toBeVisible()
     await expect(page.locator('tr[data-selected]')).toHaveCount(2)
     await expect(page.locator('#L2')).toHaveAttribute('data-selected', 'true')
@@ -81,7 +81,8 @@ test.describe('permalinks and line anchors (read fixture)', () => {
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
     const counts = countDapi(page)
     await page.locator('body').press('y')
-    await expect(page).toHaveURL(new RegExp(`ref=${oid}.*#L2$`))
+    // The router's route; the address bar then shows its short form (`/blob/<oid>/…`).
+    await expect(page).toHaveURL(atRoute(new RegExp(`ref=${oid}.*#L2$`)))
     await expect(page.locator('tr[data-selected]')).toHaveCount(1)
     await expect(page.getByText('Line 2 selected')).toBeVisible()
     // The ref switcher now names the pinned commit.
@@ -93,7 +94,7 @@ test.describe('permalinks and line anchors (read fixture)', () => {
 
     // The copied short link opens the same file at the same commit, range selected.
     await openBlob(page, new URL(href).pathname + '#L2')
-    await expect(page).toHaveURL(new RegExp(`/repo/blob/\\?.*ref=${oid}.*#L2$`))
+    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/blob/\\?.*ref=${oid}.*#L2$`)))
     await expect(page.getByText('Line 2 selected')).toBeVisible()
   })
 
@@ -102,7 +103,7 @@ test.describe('permalinks and line anchors (read fixture)', () => {
     await waitForRepoResolved(page)
     await expect(page.getByRole('link', { name: 'main.rs' })).toBeVisible({ timeout: 60_000 })
     await page.locator('body').press('y')
-    await expect(page).toHaveURL(/\/repo\/tree\/\?.*path=src.*ref=[0-9a-f]{40}|\/repo\/tree\/\?.*ref=[0-9a-f]{40}.*path=src/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/tree\/\?.*path=src.*ref=[0-9a-f]{40}|\/repo\/tree\/\?.*ref=[0-9a-f]{40}.*path=src/))
     await expect(page.getByRole('link', { name: 'main.rs' })).toBeVisible()
 
     await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
@@ -111,7 +112,7 @@ test.describe('permalinks and line anchors (read fixture)', () => {
     await expect(page.locator('section[aria-label=README]')).toBeVisible({ timeout: 60_000 })
     await page.locator('body').press('y')
     // The home stays the home (README included), at the commit, as GitHub's /tree/<oid> does.
-    await expect(page).toHaveURL(/\/repo\/\?.*ref=[0-9a-f]{40}/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/\?.*ref=[0-9a-f]{40}/))
     await expect(page.getByRole('link', { name: 'README.md' }).first()).toBeVisible({ timeout: 60_000 })
     await expect(page.locator('section[aria-label=README]')).toBeVisible()
   })
@@ -123,7 +124,7 @@ test.describe('commits, History and Blame (read fixture)', () => {
     await page.goto(repoUrl('blob', `&path=${MAIN_RS}`), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await page.getByTestId('history-link').click()
-    await expect(page).toHaveURL(/\/repo\/commits\/\?.*path=src%2Fmain\.rs/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/commits\/\?.*path=src%2Fmain\.rs/))
     const rows = page.getByTestId('commit-row')
     await expect(rows).toHaveCount(2, { timeout: 60_000 })
     await expect(rows.nth(0)).toContainText('Document the fold rules')
@@ -131,7 +132,7 @@ test.describe('commits, History and Blame (read fixture)', () => {
     await expect(page.getByTestId('log-status')).toContainText('The first-parent history of src/main.rs')
     // docs/ was added by c2 only.
     await page.goto(`/${DEMO.owner}/${DEMO.name}/commits/main/docs`, { waitUntil: 'domcontentloaded' })
-    await expect(page).toHaveURL(/\/repo\/commits\/\?.*path=docs/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/commits\/\?.*path=docs/))
     await expect(page.getByTestId('commit-row')).toHaveCount(1, { timeout: 60_000 })
     await expect(page.getByTestId('commit-row')).toContainText('Document the fold rules')
     await shot(page, 'f5-hb-01-path-history')
@@ -141,7 +142,7 @@ test.describe('commits, History and Blame (read fixture)', () => {
     const { errors } = collectPageErrors(page)
     const counts = countDapi(page)
     await page.goto(`/${DEMO.owner}/${DEMO.name}/blame/main/${MAIN_RS}#L3`, { waitUntil: 'domcontentloaded' })
-    await expect(page).toHaveURL(/\/repo\/blame\/\?.*path=src%2Fmain\.rs.*#L3$/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/blame\/\?.*path=src%2Fmain\.rs.*#L3$/))
     const table = page.getByTestId('blame-table')
     await expect(table).toBeVisible({ timeout: 60_000 })
     // Lines 1, 2 and 4 are c1's, line 3 is c2's (git blame --first-parent on the seeded history).
@@ -176,7 +177,7 @@ test.describe('commits, History and Blame (read fixture)', () => {
     const copy = page.getByTestId('copy-permalink')
     await expect(copy).toHaveAttribute('data-href', /^https?:\/\/[^/]+\/.*blame\/[0-9a-f]{40}\/src\/main\.rs#L2-L4$/)
     await page.locator('body').press('y')
-    await expect(page).toHaveURL(/\/repo\/blame\/\?.*ref=[0-9a-f]{40}.*#L2-L4$/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/blame\/\?.*ref=[0-9a-f]{40}.*#L2-L4$/))
     await shot(page, 'fg4-blame-permalink')
 
     // A 390 px phone: the commit column is an age gutter, the code keeps the width.
@@ -243,7 +244,7 @@ test.describe('commits paging, History and Blame (showcase repos)', () => {
     await rows.nth(99).locator('a').first().scrollIntoViewIfNeeded()
     const y = await page.evaluate(() => window.scrollY)
     await rows.nth(99).locator('a').first().click()
-    await page.waitForURL(/\/repo\/commit\//)
+    await page.waitForURL(atRoute(/\/repo\/commit\//))
     await page.goBack()
     await expect(rows).toHaveCount(120, { timeout: 60_000 })
     await expect.poll(() => page.evaluate(() => window.scrollY), { timeout: 10_000 }).toBeGreaterThan(y - 400)
@@ -329,7 +330,7 @@ test.describe('LICENSE and languages (showcase repos)', () => {
 
       // Warm: back to the home in the tab, the facts are shown at once and read nothing.
       await page.getByRole('link', { name: /^Issues/ }).first().click()
-      await expect(page).toHaveURL(/\/repo\/issues\//)
+      await expect(page).toHaveURL(atRoute(/\/repo\/issues\//))
       await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
       const warm = countDocumentQueries(page, 'chunk')
       await page.getByRole('link', { name: /^Code$/ }).first().click()

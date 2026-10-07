@@ -1,0 +1,40 @@
+{
+  "name": "devices",
+  "description": "Windows device names, with or without an extension or trailing spaces before it, in any ASCII case, are refused.",
+  "case": "asset_file_name",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "CON",
+      "con.txt",
+      "Nul",
+      "nul.tar.gz",
+      "COM1",
+      "COM0",
+      "lpt9.bin",
+      "LPT0",
+      "COM\u00b9",
+      "LPT\u00b2",
+      "lpt\u00b3.x",
+      "CONIN$",
+      "conout$.log",
+      "AUX .txt"
+    ]
+  },
+  "expected": [
+    "device",
+    "device",
+    "device",
+    "device",
+    "device",
+    "device",
+    "device",
+    "device",
+    "device",
+    "device",
+    "device",
+    "device",
+    "device",
+    "device"
+  ]
+}

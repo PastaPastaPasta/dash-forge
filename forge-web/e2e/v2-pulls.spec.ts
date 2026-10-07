@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { DEMO, E2E_DEVNET, expectPlatformPreAllowed, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { atRoute, DEMO, E2E_DEVNET, expectPlatformPreAllowed, fixtureWriteBlocked, idFile, routeOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * Pull requests, forks and the browser merge engine, live on a devnet (real spend, about
@@ -81,7 +81,7 @@ test('c2. contributor forks the fixture; the fork browses through the parent pac
   expect(await runAxe(page, 'fork dialog')).toEqual([])
   await shot(page, 'c-fork-dialog')
   await dialog.getByRole('button', { name: /sign & fork|finish the fork/i }).click()
-  await page.waitForURL(new RegExp(`name=${FORK}`), { timeout: 240_000 })
+  await page.waitForURL(atRoute(new RegExp(`name=${FORK}`)), { timeout: 240_000 })
   await waitForRepoResolved(page)
   await expect(page.getByTestId('forked-from')).toContainText(DEMO.name, { timeout: 60_000 })
   // README from the parent's Platform chunks, through the fork's platform:// manifests.
@@ -93,7 +93,7 @@ test('c3. contributor opens a PR from the fork, diff shown before submit', async
   const page = await signedIn(browser, 'CONTRIB', demo('pulls'))
   await waitForRepoResolved(page)
   await page.getByRole('link', { name: /new pull request/i }).click()
-  await page.waitForURL(/\/repo\/pulls\/new/)
+  await page.waitForURL(atRoute(/\/repo\/pulls\/new/))
   const head = page.getByLabel('Compare (your branch)')
   await eventually(page, () => expect(page.locator('#pr-head optgroup[label="Your forks"] option', { hasText: FORK }).first()).toBeAttached({ timeout: 45_000 }))
   // Labelled owner-first, `<owner>/<fork>:<branch>` (QW4-030).
@@ -109,8 +109,8 @@ test('c3. contributor opens a PR from the fork, diff shown before submit', async
   expect(await runAxe(page, 'new PR')).toEqual([])
   await shot(page, 'c-new-pr')
   await page.getByRole('button', { name: /create pull request/i }).click()
-  await page.waitForURL(/\/repo\/pull\/\?.*number=\d+/, { timeout: 120_000 })
-  prNumber = Number(new URL(page.url()).searchParams.get('number'))
+  await page.waitForURL(atRoute(/\/repo\/pull\/\?.*number=\d+/), { timeout: 120_000 })
+  prNumber = Number(routeOf(page.url()).searchParams.get('number'))
   expect(prNumber).toBeGreaterThan(0)
   await expect(page.getByRole('heading', { name: new RegExp(PR_TITLE) })).toBeVisible({ timeout: 90_000 })
   await expect(page.getByText(/Objects live in repo/)).toBeVisible()

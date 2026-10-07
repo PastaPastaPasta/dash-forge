@@ -11,7 +11,8 @@
  */
 
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Bell, BookOpen, ChevronDown, Compass, GitFork, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'

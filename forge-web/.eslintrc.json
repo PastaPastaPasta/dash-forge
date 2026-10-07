@@ -24,6 +24,13 @@
       "excludedFiles": ["**/*.test.ts", "**/*.test.tsx", "lib/private/testing.ts"],
       "rules": {
         "no-restricted-imports": ["error", {
+          "paths": [
+            {
+              "name": "next/navigation",
+              "importNames": ["usePathname", "useSearchParams"],
+              "message": "Use hooks/use-route: it reads the page's route also while the address bar shows its short URL (CJ-6)."
+            }
+          ],
           "patterns": [
             {
               "group": ["**/private/testing", "**/private/testing.*"],
