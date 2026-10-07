@@ -176,6 +176,20 @@ describe('submitting public review text', () => {
     expect(submitReviewDraft).toHaveBeenCalledTimes(1)
   })
 
+  it("asks when the public summary repeats the review's own unposted members-only comment", async () => {
+    const own = 'Ship the vendor patch only after the embargo lifts on the ninth.'
+    const comments = [{ localId: 'l1', anchor: { path: 'a.ts', line: 1, side: 1 }, body: own, audience: 'members' }] as ReviewDraft['comments']
+    submitReviewDraft.mockResolvedValue({ reviewId: 'r1', commentIds: ['c1'] })
+    show(draftOf({ summary: `Summary: ${own}`, comments }))
+    act(() => button('Review changes')!.click())
+    await act(async () => button('Submit review')!.click())
+    expect(q('quote-confirm')).not.toBeNull()
+    expect(submitReviewDraft).not.toHaveBeenCalled()
+    await act(async () => q('quote-confirm')!.click())
+    await wait(0)
+    expect(submitReviewDraft).toHaveBeenCalledTimes(1)
+  })
+
   it('does not ask for a members-only pending comment, nor for one already posted', async () => {
     const comments = [
       { localId: 'l1', anchor: { path: 'a.ts', line: 1, side: 1 }, body: SECRET, audience: 'members' },

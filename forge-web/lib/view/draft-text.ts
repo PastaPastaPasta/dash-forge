@@ -127,7 +127,10 @@ export type DraftPersist = boolean | ((text: string) => boolean)
  * `persist`: whether the text may be stored. False (the composer turned members-only), or a
  * predicate that says no for the new text (it quotes members-only text): the text stays in
  * memory, and any stored copy is removed in the same call that sets it, before any render, so
- * no members-only text is at rest (DESIGN §4.1). When it may be stored again, it is.
+ * no members-only text is at rest (DESIGN §4.1). Once refused, the draft stays in memory until
+ * it is emptied (posted or deleted) or the key changes: the answer can flip back to yes without
+ * the text changing (a locked tab forgets the members-only text it compared against), and the
+ * quoting text must not land on disk then.
  */
 export function useDraftText(key: string | null, persist: DraftPersist = true): [string, (text: string) => void, (held: boolean, text: string) => void] {
   const [state, setState] = useState<{ key: string | null; text: string }>(() => ({ key, text: key === null ? '' : readDraft(key) }))
@@ -142,13 +145,23 @@ export function useDraftText(key: string | null, persist: DraftPersist = true): 
   // The latest rule, read by the setter when it is called (never a stale render's).
   const rule = useRef(persist)
   rule.current = persist
-  const allowed = useCallback((text: string): boolean => {
-    const r = rule.current
-    return typeof r === 'function' ? r(text) : r
-  }, [])
+  // Set once this key's text was refused; cleared only when the text is emptied or the key changes.
+  const refused = useRef<{ key: string | null; on: boolean }>({ key, on: false })
+  const allowed = useCallback(
+    (text: string): boolean => {
+      if (refused.current.key !== key) refused.current = { key, on: false }
+      if (text.trim() === '') {
+        refused.current.on = false
+        return true
+      }
+      const r = rule.current
+      if (!(typeof r === 'function' ? r(text) : r)) refused.current.on = true
+      return !refused.current.on
+    },
+    [key],
+  )
   // Whether the current text may be stored: it changes with the audience, or with what the page
-  // shows (members-only text read after the draft was typed). Then drop the stored copy, or
-  // store the text again.
+  // shows (members-only text read after the draft was typed). Then drop the stored copy.
   const keep = allowed(current)
   const latest = useRef(current)
   latest.current = current
@@ -171,4 +184,16 @@ export function useDraftText(key: string | null, persist: DraftPersist = true): 
     [key, allowed],
   )
   return [current, set, hold]
+}
+
+/**
+ * Whether a form's text quoted members-only text (`quotesNow`) at any point since it was last
+ * `empty`: the answer can flip back to no without the text changing (a locked tab forgets the
+ * members-only text it compared against), and a quoting draft must stay in memory then.
+ */
+export function useQuotedUntilEmptied(quotesNow: boolean, empty: boolean): boolean {
+  const [quoted, setQuoted] = useState(false)
+  if (quotesNow && !quoted) setQuoted(true)
+  else if (empty && quoted) setQuoted(false)
+  return quotesNow || (quoted && !empty)
 }

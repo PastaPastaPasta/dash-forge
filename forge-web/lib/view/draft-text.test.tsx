@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownEditor } from '@/components/repo/issue-bits'
-import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, readDraft, useDraftText, writeDraft, type DraftPersist } from './draft-text'
+import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, readDraft, useDraftText, useQuotedUntilEmptied, writeDraft, type DraftPersist } from './draft-text'
 import { quotesMembersText } from './audience'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -145,10 +145,24 @@ describe('useDraftText with a rule decided per text (members-only text quoted)',
     expect(host.querySelector('[data-testid="text"]')?.textContent).toContain(SECRET)
     expect(seenAtRender.some((v) => v.includes('staging database'))).toBe(false)
     expect(setItem.mock.calls.some(([, v]) => String(v).includes('staging database'))).toBe(false)
-    // The quote taken out: kept again.
+    // The quote taken out: still in memory only, until the text is emptied (posted or deleted).
     act(() => setText('A public thought, edited'))
-    expect(readDraft(KEY)).toBe('A public thought, edited')
+    expect(localStorage.length).toBe(0)
+    act(() => setText(''))
+    act(() => setText('A new thought'))
+    expect(readDraft(KEY)).toBe('A new thought')
     setItem.mockRestore()
+  })
+
+  it('keeps a quoting draft off disk when the members-only text is forgotten (the tab locked)', () => {
+    act(() => root.render(<Quoting rule={(t) => !quotesMembersText(t, MEMBERS)} />))
+    act(() => setText(`> ${SECRET}`))
+    expect(localStorage.length).toBe(0)
+    // Locked: the store is cleared, so the same rule now finds nothing to compare against.
+    act(() => root.render(<Quoting rule={(t) => !quotesMembersText(t, [])} />))
+    expect(localStorage.length).toBe(0)
+    act(() => setText(`> ${SECRET}\nand more`))
+    expect(localStorage.length).toBe(0)
   })
 
   it('drops a stored copy that turns out to quote members-only text the page read later', () => {
@@ -158,6 +172,28 @@ describe('useDraftText with a rule decided per text (members-only text quoted)',
     // The members-only comment loaded: the same text is now a quote of it.
     act(() => root.render(<Quoting rule={(t) => !quotesMembersText(t, MEMBERS)} />))
     expect(localStorage.length).toBe(0)
+  })
+})
+
+describe('useQuotedUntilEmptied (the new-PR form)', () => {
+  let seen: boolean[] = []
+  function Form({ quotes, empty }: { quotes: boolean; empty: boolean }): null {
+    seen.push(useQuotedUntilEmptied(quotes, empty))
+    return null
+  }
+  it('stays true from the first quote until the form is emptied, whatever the check says later', () => {
+    seen = []
+    act(() => root.render(<Form quotes={false} empty={false} />))
+    expect(seen.at(-1)).toBe(false)
+    act(() => root.render(<Form quotes empty={false} />))
+    expect(seen.at(-1)).toBe(true)
+    // The tab locked: the check finds nothing now, the text is the same.
+    act(() => root.render(<Form quotes={false} empty={false} />))
+    expect(seen.at(-1)).toBe(true)
+    act(() => root.render(<Form quotes={false} empty />))
+    expect(seen.at(-1)).toBe(false)
+    act(() => root.render(<Form quotes={false} empty={false} />))
+    expect(seen.at(-1)).toBe(false)
   })
 })
 

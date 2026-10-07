@@ -43,6 +43,7 @@ export function savePrDraft(repo: RepoLike, d: PrDraft, opts: { readonly memoryO
   }
 }
 
+/** Remove `repoId`'s PR draft from this tab's sessionStorage, if any. */
 function removeStored(repoId: string): void {
   try {
     window.sessionStorage.removeItem(draftKey(repoId))

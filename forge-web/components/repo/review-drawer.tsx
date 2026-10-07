@@ -120,15 +120,19 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
     }
   }, [network, identity, pullId])
 
+  /** Keep `next` (null: discard it); returns the draft as kept, its memory-only mark set. */
   const update = useCallback(
-    (next: ReviewDraft | null) => {
-      // The flag travels with the draft: the submit's own saves of it respect it too.
-      const d = next === null ? null : withMemoryOnly(next, draftQuotesMembersText(next, texts.current))
+    (next: ReviewDraft | null): ReviewDraft | null => {
+      // The flag travels with the draft: the submit's own saves of it respect it too. Once set it
+      // stays until the draft is discarded or submitted: a locked tab forgets the members-only
+      // text it was compared against, and the quoting draft must not land on disk then.
+      const d = next === null ? null : withMemoryOnly(next, next.memoryOnly === true || draftQuotesMembersText(next, texts.current))
       latest.current = d
       setDraft(d)
-      if (identity === null) return
+      if (identity === null) return d
       if (d === null || draftIsEmpty(d)) void discardReviewDraft(network, identity, pullId)
       else void saveReviewDraft(membersOnly && repo.visibility === 'public' ? { ...d, audience: 'members' } : d, repo)
+      return d
     },
     [identity, network, pullId, repo, membersOnly],
   )
@@ -154,6 +158,7 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
         : {
             ...(({ onLines, elsewhere }) => ({ comments: onLines, elsewhere }))(splitDraftComments(draft, headOid)),
             count: draft?.comments.length ?? 0,
+            membersTexts: draft === null ? [] : draftMembersTexts(draft, membersOnly ? 'members' : 'public'),
             frozen: draft !== null && submitStarted(draft),
             onAdd: (anchor: AnchorInput, body: string, audience?: 'public' | 'members') => {
               const d = ensure()
@@ -166,7 +171,7 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
               if (latest.current !== null) update(removeDraftComment(latest.current, localId))
             },
           },
-    [identity, loaded, draft, headOid, ensure, update],
+    [identity, loaded, draft, headOid, ensure, update, membersOnly],
   )
   return { draft, loaded, pending, update, ensure }
 }
@@ -307,7 +312,7 @@ export function ReviewDrawer({
     if (lineQuotes) return
     // Checked again now (a retry too), against all the members-only text the tab has opened by
     // now: the summary when it is public and not yet posted, and every public comment not yet posted.
-    quoteGate.check(draftPublicTexts(planned, prAudience), membersTexts, () => void send())
+    quoteGate.check(draftPublicTexts(planned, prAudience), membersTexts, () => void send(), { extra: draftMembersTexts(planned, prAudience) })
   }
 
   const send = async (): Promise<void> => {
@@ -322,7 +327,8 @@ export function ReviewDrawer({
       // With the audience the chip shows, never a stale save's: members-only text stays so.
       toSubmit = startSubmit(setDraftAudience(base, textAudience.audience), verdict, summary, Date.now())
       setSummary(toSubmit.summary)
-      update(toSubmit)
+      // What is submitted carries the memory-only mark the save just set.
+      toSubmit = update(toSubmit) ?? toSubmit
     }
     setError(null)
     setLineError(null)

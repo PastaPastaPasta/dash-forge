@@ -78,6 +78,21 @@ describe('public text that repeats members-only text', () => {
     expect(quoteIndex([]).empty).toBe(true)
   })
 
+  it('asks for the address of a link or image in members-only text, not for a bare site', () => {
+    const members = ['Draft advisory is [here](https://docs.example.com/d/1AbCdEf/edit "draft") - do not share', '![diagram](https://img.example.com/x/9f8e7d.png)', 'see [our site](https://example.org/)']
+    expect(quotesMembersText('Background: https://docs.example.com/d/1AbCdEf/edit', members)).toBe(true)
+    expect(quotesMembersText('<https://img.example.com/x/9f8e7d.png>', members)).toBe(true)
+    expect(quotesMembersText('More at https://example.org/ and elsewhere', members)).toBe(false)
+  })
+
+  it('does not ask for a short ordinary remark repeated inside public text', () => {
+    expect(quotesMembersText('Same issue on windows 11 for me', ['Same issue on windows'])).toBe(false)
+    expect(quotesMembersText('It works on linux here, thanks', ['works on linux'])).toBe(false)
+    // A short secret still asks: two content words, or one that looks like a secret.
+    expect(quotesMembersText('creds: pw hunter2-prod', ['pw: hunter2-prod'])).toBe(true)
+    expect(quotesMembersText('try Tr0ub4dor3x', ['Tr0ub4dor3x'])).toBe(true)
+  })
+
   it('checks extra members-only text too (the writer’s own unposted members-only text)', () => {
     expect(quotesMembersText('the vendor will sign it next week, keep quiet', [], { extra: ['The vendor will sign it next week.'] })).toBe(true)
     expect(quotesMembersText('Changes requested: see the review', INDEX, { extra: ['The vendor will sign it next week.'] })).toBe(false)

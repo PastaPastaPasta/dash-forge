@@ -184,8 +184,13 @@ describe('a pending review that quotes members-only text', () => {
     expect(saved.at(-1)?.memoryOnly).toBe(true)
     // The page's draft carries the mark too, so the submit's saves keep it.
     expect(hook!.draft?.memoryOnly).toBe(true)
+    // The quote taken out, or the tab locked (the texts forgotten): the mark stays until the
+    // draft is discarded or submitted, so the quoting draft never lands on disk.
     act(() => hook!.pending!.onEdit(hook!.draft!.comments[0]!.localId, 'Fine by me.'))
-    expect(saved.at(-1)?.memoryOnly).toBeUndefined()
+    expect(saved.at(-1)?.memoryOnly).toBe(true)
+    act(() => root.render(<Host texts={[]} />))
+    act(() => hook!.pending!.onEdit(hook!.draft!.comments[0]!.localId, `> ${SECRET}`))
+    expect(saved.at(-1)?.memoryOnly).toBe(true)
   })
 
   it('takes the mark when the members-only text it quotes is read after it was stored', async () => {

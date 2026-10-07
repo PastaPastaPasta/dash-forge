@@ -117,6 +117,8 @@ export interface PendingReview {
   readonly elsewhere: readonly DraftComment[]
   /** Every pending comment. */
   readonly count: number
+  /** The review's own members-only text, not posted yet: a public text beside it must not repeat it either. */
+  readonly membersTexts: readonly string[]
   /** Frozen: a submit began (only retry or discard). */
   readonly frozen: boolean
   readonly onAdd: (anchor: AnchorInput, body: string, audience?: 'public' | 'members') => void
@@ -666,7 +668,7 @@ function PendingComment({
                     pending.onEdit(draft.localId, editing)
                     setEditing(null)
                   },
-                  { before: draft.body },
+                  { before: draft.body, extra: pending.membersTexts },
                 )
               }
             >
@@ -751,7 +753,7 @@ function Composer({
   const tooLong = composeTooLong(repo, 'comment', { body: body.trim(), ...(anchor ? { path: anchor.path } : {}) })
   const submit = (): void => {
     if (posting || body.trim() === '' || tooLong || !guard.check(cost, 'collab') || !sdk || !signer) return
-    quoteGate.check(publicText(), who?.membersTexts ?? [], () => void send())
+    quoteGate.check(publicText(), who?.membersTexts ?? [], () => void send(), { extra: pending?.membersTexts })
   }
   const send = async (): Promise<void> => {
     if (posting || !sdk || !signer) return
@@ -813,7 +815,7 @@ function Composer({
       pending.onAdd(anchor, body, audience.choice !== null ? audience.audience : undefined)
       setBody('')
       onDone()
-    })
+    }, { extra: pending.membersTexts })
   }
   return (
     <div className="space-y-2 font-sans">

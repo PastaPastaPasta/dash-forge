@@ -22,6 +22,7 @@ import { shortIdentity } from '@/lib/view/format'
 import { preferring, type PullComparison } from '@/lib/view/pull-diff'
 import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/refs'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
+import { useQuotedUntilEmptied } from '@/lib/view/draft-text'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { useLongCompose } from '@/components/repo/long-body'
 import { useMembersTexts, useQuoteGate } from '@/components/repo/audience'
@@ -117,7 +118,12 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   // first (product H8), and a draft that quotes it stays in this page's memory only.
   const membersTexts = useMembersTexts(repo.repoId)
   const quoteGate = useQuoteGate()
-  const quoting = repo.visibility === 'public' && quotesMembersText(`${title}\n${body}`, membersTexts)
+  // Once it quoted, the draft stays in memory until the form is emptied: a locked tab forgets the
+  // members-only text, and the quoting text must not land on disk then.
+  const quoting = useQuotedUntilEmptied(
+    repo.visibility === 'public' && quotesMembersText(`${title}\n${body}`, membersTexts),
+    title.trim() === '' && body.trim() === '',
+  )
 
   // Keep the draft for this tab (a sign-in in between must not lose it). Only a title the author
   // typed is kept: one filled in from a head commit belongs to that head, and a draft restored

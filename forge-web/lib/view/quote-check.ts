@@ -16,7 +16,11 @@
  * - a quoted line (`> …`) of at least {@link QUOTED_MIN} characters, or any line of at least
  *   {@link LINE_MIN}, is in a members-only text, whole words;
  * - a whole members-only text of at least {@link WHOLE_MIN} characters is in it, whole words (a
- *   short secret posted on its own).
+ *   short secret posted on its own), when it carries two content words of {@link WHOLE_CONTENT_MIN}
+ *   characters together, or a word that looks like a secret (letters and digits, 8 or more), so a
+ *   short ordinary remark ("Same issue on windows") does not ask;
+ * - the address of a link or image in a members-only text (with a path) is in it: the canonical
+ *   form keeps a link's text only, and the address is often the confidential part.
  * Runs, lines and texts made only of filler words (thanks, LGTM, "looks good to me") never count,
  * so common replies do not ask. An edit counts only what it adds: a match the text before the edit
  * already had is not asked about again (`before`).
@@ -38,6 +42,8 @@ export const LINE_MIN = 24
 export const WHOLE_MIN = 8
 /** Content characters (letters and digits outside filler words) a match needs. */
 const CONTENT_MIN = 6
+/** Content characters a whole short members-only text needs, across two content words or more. */
+export const WHOLE_CONTENT_MIN = 12
 
 /** Zero-width and other invisible format characters a copy can carry. */
 const INVISIBLE = /[­͏᠎​-‏‪-‮⁠-⁤⁦-⁩﻿]/g
@@ -53,6 +59,8 @@ const REF_LINK = /\[([^\]]+)\]\[[^\]]*\]/g
 const AUTOLINK = /<((?:https?|mailto):[^>\s]+)>/gi
 const TAG = /<\/?[A-Za-z][^>]*>/g
 const WORD = /[\p{L}\p{M}\p{N}]+/gu
+/** A Markdown link's or image's address: `[text](url "title")`, `![alt](<url>)`. */
+const LINK_HREF = /!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g
 
 /**
  * Words that say nothing on their own: a run, a line or a text made only of them (and short
@@ -105,6 +113,38 @@ function meaningful(words: readonly string[]): boolean {
   return content >= CONTENT_MIN
 }
 
+/**
+ * Whether a whole members-only text is worth looking for on its own: two content words with
+ * {@link WHOLE_CONTENT_MIN} characters together, or one that looks like a secret.
+ */
+function wholeWorthy(words: readonly string[]): boolean {
+  let count = 0
+  let chars = 0
+  for (const w of words) {
+    if (FILLER.has(w)) continue
+    if (w.length >= 8 && /\p{L}/u.test(w) && /\p{N}/u.test(w)) return true
+    count += 1
+    chars += w.length
+  }
+  return count >= 2 && chars >= WHOLE_CONTENT_MIN
+}
+
+/** The addresses of `text`'s links and images that name more than a site (a path, a query). */
+function linkAddresses(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(LINK_HREF)) {
+    const href = m[1] ?? ''
+    try {
+      const u = new URL(href)
+      if (u.pathname.replace(/\/+$/, '') !== '' || u.search !== '' || u.hash !== '') out.push(href)
+    } catch {
+      // A relative address: only a path, kept when it says something.
+      if (/[\p{L}\p{N}]/u.test(href)) out.push(href)
+    }
+  }
+  return out
+}
+
 /** Every run of {@link RUN_WORDS} words of `words` that is meaningful. */
 function runsOf(words: readonly string[]): string[] {
   const out: string[] = []
@@ -145,15 +185,16 @@ export class QuoteIndex {
   readonly spans: ReadonlySet<string>
   /** Each text, canonical. */
   readonly texts: readonly string[]
-  /** The texts the reverse check looks for whole: at least {@link WHOLE_MIN} characters, meaningful. */
+  /** The texts the reverse check looks for whole: at least {@link WHOLE_MIN} characters, worth it on their own. */
   readonly whole: readonly string[]
 
+  /** `texts`: members-only texts, as stored (Markdown); their link addresses are looked for too. */
   constructor(texts: readonly string[]) {
     const runs = new Set<string>()
     const spans = new Set<string>()
     const canon = new Set<string>()
     const whole = new Set<string>()
-    for (const t of texts) {
+    for (const t of [...texts, ...texts.flatMap(linkAddresses)]) {
       const words = canonicalLines(t).flatMap((l) => l.words)
       if (words.length === 0) continue
       const c = words.join(' ')
@@ -161,7 +202,7 @@ export class QuoteIndex {
       canon.add(c)
       for (const r of runsOf(words)) runs.add(r)
       for (const s of spansOf(words)) spans.add(s)
-      if (c.length >= WHOLE_MIN && meaningful(words)) whole.add(c)
+      if (c.length >= WHOLE_MIN && meaningful(words) && wholeWorthy(words)) whole.add(c)
     }
     this.runs = runs
     this.spans = spans
@@ -169,6 +210,7 @@ export class QuoteIndex {
     this.whole = [...whole]
   }
 
+  /** Whether there is no members-only text to check against. */
   get empty(): boolean {
     return this.texts.length === 0
   }

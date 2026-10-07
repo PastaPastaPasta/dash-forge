@@ -72,7 +72,7 @@ function type(el: HTMLTextAreaElement, value: string): void {
   el.dispatchEvent(new Event('input', { bubbles: true }))
 }
 function pendingWith(over: Partial<PendingReview> = {}): PendingReview {
-  return { comments: [], elsewhere: [], count: 0, frozen: false, onAdd: vi.fn(), onEdit: vi.fn(), onRemove: vi.fn(), ...over }
+  return { comments: [], elsewhere: [], count: 0, membersTexts: [], frozen: false, onAdd: vi.fn(), onEdit: vi.fn(), onRemove: vi.fn(), ...over }
 }
 
 beforeEach(() => {
@@ -109,6 +109,19 @@ describe('a public diff comment that repeats members-only text', () => {
     act(() => q('quote-cancel')!.click())
     expect(pending.onAdd).not.toHaveBeenCalled()
     act(() => button('Start a review')!.click())
+    act(() => q('quote-confirm')!.click())
+    expect(pending.onAdd).toHaveBeenCalledTimes(1)
+  })
+
+  it("asks before adding a public review comment that repeats the review's own unposted members-only comment", () => {
+    const own = 'Ship the vendor patch only after the embargo lifts on the ninth.'
+    const pending = pendingWith({ count: 1, membersTexts: [own] })
+    show({ pending })
+    act(() => q('line-2')!.click())
+    act(() => type(host.querySelector('textarea')!, `Note: ${own}`))
+    act(() => button('Add review comment')!.click())
+    expect(q('quote-confirm')).not.toBeNull()
+    expect(pending.onAdd).not.toHaveBeenCalled()
     act(() => q('quote-confirm')!.click())
     expect(pending.onAdd).toHaveBeenCalledTimes(1)
   })
