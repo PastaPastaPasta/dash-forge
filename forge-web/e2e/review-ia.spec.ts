@@ -254,7 +254,7 @@ test('i7. the author edits the title; "edited"', async ({ browser }) => {
 test('i8. the short URL opens Files changed; axe clean on every tab', async ({ browser }) => {
   test.skip(prNumber === 0, 'needs the PR from i1')
   const page = await signedIn(browser, 'OWNER', `/${ids.owner}/${REPO}/pull/${prNumber}/files`)
-  await page.waitForURL(/tab=files/, { timeout: 60_000 })
+  await page.waitForURL(atRoute(/tab=files/), { timeout: 60_000 })
   await waitForRepoResolved(page)
   await expect(page.getByTestId('pr-tab-files')).toHaveAttribute('aria-selected', 'true', { timeout: 60_000 })
   await expect(page.getByText('src/greet.rs').first()).toBeVisible({ timeout: 120_000 })

@@ -81,7 +81,8 @@ test.describe('permalinks and line anchors (read fixture)', () => {
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
     const counts = countDapi(page)
     await page.locator('body').press('y')
-    await expect(page).toHaveURL(new RegExp(`ref=${oid}.*#L2$`))
+    // The router's route; the address bar then shows its short form (`/blob/<oid>/…`).
+    await expect(page).toHaveURL(atRoute(new RegExp(`ref=${oid}.*#L2$`)))
     await expect(page.locator('tr[data-selected]')).toHaveCount(1)
     await expect(page.getByText('Line 2 selected')).toBeVisible()
     // The ref switcher now names the pinned commit.
