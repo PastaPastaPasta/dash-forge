@@ -27,7 +27,7 @@ vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: null }) 
 /** The mirror trust set the list reads (null: not read yet). */
 let mirrorTrust: ReadonlySet<string> | null = null
 vi.mock('@/hooks/use-mirror-trust', () => ({ useMirrorTrust: () => mirrorTrust }))
-vi.mock('@/hooks/use-repo-chrome', () => ({ useRepoWriteGeneration: () => 0 }))
+vi.mock('@/hooks/use-repo-chrome', () => ({ useRepoWriteGeneration: () => 0, useViewerRole: () => ({ role: null, known: true, failed: false, retry: () => undefined }) }))
 /** The repo's PR total as `useRepoTotals` reads it (null until its count arrives). */
 let repoTotal: number | null = 203
 vi.mock('@/components/repo/use-repo-totals', () => ({ useRepoTotals: () => repoTotal }))

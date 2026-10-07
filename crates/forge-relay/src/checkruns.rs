@@ -323,6 +323,7 @@ mod tests {
             created_at: Some(created),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: Some(rev),
             fields: BTreeMap::from([
                 ("headOid".into(), FieldValue::bytes(vec![0xab; 20])),

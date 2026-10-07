@@ -368,6 +368,7 @@ mod tests {
             created_at: Some(t),
             created_at_block_height: Some(t / 1000),
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         }

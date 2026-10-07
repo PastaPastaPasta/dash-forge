@@ -99,7 +99,7 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
             comments,
             show_hidden,
         } => view(ctx, repo, *number, *comments, *show_hidden).await,
-        PrCommand::Verify { repo, number } => verify::run(ctx, repo, *number).await,
+        PrCommand::Verify { repo, number } => Box::pin(verify::run(ctx, repo, *number)).await,
         PrCommand::Checkout { repo, number } => checkout(ctx, repo, *number).await,
         PrCommand::Review(a) => review::review(ctx, a).await,
         PrCommand::Comment(a) => review::comment(ctx, a).await,
@@ -3344,6 +3344,11 @@ fn build_merge(
             let author = squash_identity(&authors, author());
             let message = match how.message {
                 Some(m) => m.to_string(),
+                // A members-only PR's title and body are for members: the public squash commit
+                // names only its number (parity: forge-web `membersSquashMessage`).
+                None if view.patch.audience != forge_core::rules::v2::Audience::Public => {
+                    members_squash_message(view.patch.number, &authors, &author_line(&author))
+                }
                 None => squash_message(
                     &view.patch.title,
                     &view.patch.body,
@@ -3409,6 +3414,10 @@ fn merge_commit_message(view: &PatchView, message: Option<&str>) -> String {
         .source_ref_name
         .as_deref()
         .map_or(view.head.as_str(), forge_core::repo::short_branch_name);
+    // A members-only PR's title is for members: the public merge commit names only its number.
+    if view.patch.audience != forge_core::rules::v2::Audience::Public {
+        return format!("Merge pull request #{} from {}", view.patch.number, source);
+    }
     format!(
         "Merge pull request #{} from {}\n\n{}",
         view.patch.number, source, view.patch.title
@@ -3501,6 +3510,23 @@ pub(crate) fn squash_message(
         m.truncate(m.trim_end().len());
     }
     m
+}
+
+/// A members-only PR's squash message: its number (`#N`) and the co-author trailers of the
+/// squashed commits, never its title or body (they are for members; the commit is public).
+/// Parity: forge-web `membersSquashMessage`.
+pub(crate) fn members_squash_message(number: u32, authors: &[String], author: &str) -> String {
+    let own = canonical_ident(author);
+    let co: Vec<String> = authors
+        .iter()
+        .filter(|a| canonical_ident(a) != own)
+        .map(|a| format!("Co-authored-by: {a}"))
+        .collect();
+    if co.is_empty() {
+        format!("#{number}")
+    } else {
+        format!("#{number}\n\n{}", co.join("\n"))
+    }
 }
 
 /// Run `git push` (`argv`) in `dir` for `goal` ("merge failed", "suggestions not applied"),
@@ -4462,6 +4488,7 @@ pub(crate) mod tests {
                 conclusion: conclusion.map(Into::into),
                 reporter: by.into(),
                 created_at: at,
+                updated_at: None,
             };
         let oracle = RoleOracle::new(vec![Membership {
             identity: "m".into(),
@@ -4616,6 +4643,22 @@ pub(crate) mod tests {
             "Add x (#7)\n\nBody\n\nCo-authored-by: A <a@x>\nCo-authored-by: B <b@x>"
         );
         assert_eq!(squash_message("T", "", 1, &[], "Me <m>"), "T (#1)");
+        // a members-only PR: its number and the co-authors only, never its title or body
+        assert_eq!(members_squash_message(4, &[], "Me <m>"), "#4");
+        let mut members = view_with("refs/heads/main", &"2".repeat(40));
+        members.patch.audience = forge_core::rules::v2::Audience::Members;
+        assert_eq!(
+            merge_commit_message(&members, None),
+            "Merge pull request #1 from f"
+        );
+        assert_eq!(
+            merge_commit_message(&view_with("refs/heads/main", &"2".repeat(40)), None),
+            "Merge pull request #1 from f\n\nt"
+        );
+        assert_eq!(
+            members_squash_message(4, &["Me <m>".into(), "Ann <a@x>".into()], "Me <m>"),
+            "#4\n\nCo-authored-by: Ann <a@x>"
+        );
     }
 
     #[test]

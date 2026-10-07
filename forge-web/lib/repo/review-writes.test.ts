@@ -15,6 +15,15 @@ const D = (n: number): string => IDS[n - 1] as string
 
 // RC2 member roles: the claimed role (`r`) is role-claim.test.ts's and rc1-writers.test.ts's.
 vi.mock('./role-claim', async (orig) => ({ ...(await orig<typeof import('./role-claim')>()), roleClaim: async () => ({}) }))
+// Who a new document is for is read from its stored parents (members-writes.test.ts covers it);
+// these fixtures write to public threads.
+vi.mock('./members-writes', async (orig) => ({
+  ...(await orig<typeof import('./members-writes')>()),
+  targetAudience: async () => 'public',
+  childAudience: async () => 'public',
+  storedAudience: async () => ({ audience: 'public', doc: {} }),
+  repoHasMembersKey: async () => false,
+}))
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {

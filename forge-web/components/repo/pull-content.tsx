@@ -57,15 +57,19 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
-import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
+import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
+import { RulesAtMerge } from './rules-at-merge'
+import { deleteNeedsForce, dependentsWarning, type Dependents } from '@/lib/view/branch-dependents'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost, useThreadModeration } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHidden } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
-import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine } from '@/lib/view/pull-actions'
+import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine, unrecordedMerge, unrecordedMergeCandidate } from '@/lib/view/pull-actions'
 import {
+  baseRefReaders,
+  openPullsOnBranch,
   createComment,
   recordPolicyBypass,
   requestRerun,
@@ -85,6 +89,7 @@ import {
   postTargetEvent,
   readViewerPermissions,
   repoContractIds,
+  contentKey,
   repoKey,
   setAssignee,
   setLabel,
@@ -146,7 +151,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
-import { checkMerge } from '@/lib/view/merge-check'
+import { checkMerge, unrecordedMergeLikely } from '@/lib/view/merge-check'
 import { markMerged, recheckPageMerge } from '@/lib/view/merge-recheck'
 import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
@@ -169,7 +174,7 @@ import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
 import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
-import { cn, shortId } from '@/lib/utils'
+import { cn, errorMessage, shortId } from '@/lib/utils'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { threadAuthorIds } from '@/lib/repo/bots'
 
@@ -214,7 +219,8 @@ const OWN_VERDICT: Readonly<Record<OwnReview['verdict'], string>> = { approve: '
 type Pending =
   /** Close or reopen; with `comment`, the composer's text is posted first ("Close with comment", QW2-008). */
   | { kind: 'state'; to: 'close' | 'reopen'; comment?: string }
-  | { kind: 'mark-merged'; bypass: readonly string[] }
+  /** Record a merge done elsewhere: `oid` the head on the base, or the base tip that already makes the PR's changes. */
+  | { kind: 'mark-merged'; bypass: readonly string[]; oid: string }
   | { kind: 'review'; verdict: VerdictInput; body: string }
   | { kind: 'draft'; to: 'draft' | 'ready' }
   | { kind: 'head'; oid: string }
@@ -225,7 +231,7 @@ type Pending =
   | { kind: 'assignees'; change: SetChange }
   | { kind: 'milestone'; title: string | null }
   /** Delete the source branch of a closed PR (QW2-057). */
-  | { kind: 'delete-branch'; label: string; run: () => Promise<void> }
+  | { kind: 'delete-branch'; label: string; run: () => Promise<void>; dependents?: Dependents | null }
   /** Point a closed PR's deleted source branch at its head again (QW3-052). */
   | { kind: 'restore-branch'; label: string; run: () => Promise<void> }
   | { kind: 'define-label'; name: string; color: string; description: string }
@@ -286,7 +292,7 @@ export function PullContent({
       }
       return t
     },
-    [ready, repoKey(home.repo), number, network],
+    [ready, contentKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
   const refresh = useCallback(
@@ -500,6 +506,7 @@ function PullPage({
   // A branch this page just deleted or restored, until a read of it catches up (QW3-053: right
   // after "Delete … after merging" the node may still answer with the old tip).
   const [branchWrite, setBranchWrite] = useState<BranchWrite | null>(null)
+  const [checkingDependents, setCheckingDependents] = useState(false)
   // Once a read shows the write, the read alone speaks again (later changes by others included).
   if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
   const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
@@ -588,8 +595,25 @@ function PullPage({
     checks: requiredChecks,
     codeOwners,
   })
+  // An interrupted merge: the base moved to a commit that already makes this PR's changes, but no
+  // merge was recorded. The merge check (git objects through the comparison's readers, no Platform
+  // reads) runs only for a viewer who could record it.
+  const recordInputs = { pull, canMerge: actions.canMerge }
+  // A cheap look first (a few object reads), and the full check only when the base tip could be
+  // this PR's merge: an ordinary open PR page does no ancestry walk.
+  const unrecordedCheck = useAsync(
+    async () => {
+      const c = cmp!
+      const prPaths = c.truncated || c.upToDate === true || c.fellBack === true ? null : new Set(c.changes.flatMap((x) => (x.oldPath ? [x.path, x.oldPath] : [x.path])))
+      const likely = await unrecordedMergeLikely(c.sides, { tip: pull.baseTipOid, prev: pull.baseTipPrev ?? '', head: pull.headOid, prPaths, tipContainsHead: c.tipContainsHead === true })
+      return likely ? checkMerge(cmp!.sides, { headOid: pull.headOid, mergeOid: pull.baseTipOid, tipBefore: pull.baseTipPrev ?? '' }) : null
+    },
+    [pull.baseTipOid, pull.baseTipPrev ?? '', pull.headOid, comparison.sidesKey],
+    { enabled: cmp !== null && unrecordedMergeCandidate(recordInputs) },
+  )
+  const recordOid = unrecordedMerge(recordInputs, unrecordedCheck.data?.verdict ?? null)
   // "Mark as merged (done elsewhere)" is offered on a ready PR whose head is on the base already.
-  const showMarkMerged = actions.canMarkMerged && !pull.state.draft
+  const showMarkMerged = actions.canMarkMerged && !pull.state.draft && recordOid === null
   const base = shortBranch(pull.mergeBaseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
   // Who may request reviews (the author, or a member down to triage).
@@ -602,7 +626,7 @@ function PullPage({
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
   // The unsent comment survives a reload (never stored for a private repo).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity))
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity, pull.audience ?? 'public'))
   const commentIntent = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -615,8 +639,24 @@ function PullPage({
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
   // The intent whose "Mark as merged" transition landed: its retry writes only the bypass record.
   const markLanded = useRef<string | null>(null)
-  const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
-  const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
+  // Unsaved edits survive a reload (public repos only), bound to the revision they started from:
+  // once the PR or the comment changes, the old edit is dropped, never restored over it.
+  const editDraft = useEditDraft<{ title: string; body: string; rev: number }>(
+    editDraftKey(repo, pull.id, identity),
+    (d) => d.rev === pull.revision,
+    (d) => d.title !== pull.title || d.body !== pull.body,
+  )
+  const editing = editDraft.value
+  const setEditing = (e: { title: string; body: string } | null): void => editDraft.set(e === null ? null : { title: e.title, body: e.body, rev: pull.revision })
+  const commentOf = (id: string) => thread.comments.find((c) => c.id === id)
+  const commentDraft = useEditDraft<{ id: string; body: string; rev: number | null }>(
+    commentEditDraftKey(repo, pull.id, identity),
+    (d) => thread.comments.some((c) => c.id === d.id && (c.revision ?? null) === d.rev),
+    (d) => d.body !== commentOf(d.id)?.body,
+  )
+  const editingComment = commentDraft.value
+  const setEditingComment = (e: { id: string; body: string } | null): void => commentDraft.set(e === null ? null : { id: e.id, body: e.body, rev: commentOf(e.id)?.revision ?? null })
+  const editsDropped = editDraft.dropped || commentDraft.dropped
 
   // Which subtrees this viewer's comment, review or event would create (D-011). Read only once
   // the viewer turns to a write (typing, or a confirm opening); the previews are upper bounds
@@ -642,7 +682,7 @@ function PullPage({
   const confirmEvent = (p: Pending, cost: Cost = eventCost): void => {
     if (guard.check(cost, 'collab')) setPending(p)
   }
-  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid)
+  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid, pull.audience === 'members')
   // The diff's lines, as the inline comments saw them load (re-anchoring a pending review).
   const knownLines = useRef<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
   const refreshRef = useRef(refresh)
@@ -858,8 +898,8 @@ function PullPage({
           bypass: p.bypass,
           landed: markLanded,
           recheck: recheckMembers,
-          merge: () => setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent }),
-          recordBypass: (rules) => recordPolicyBypass(sdk, signer, repo, { target, rules, mergeOid: pull.headOid, intent: `${intent}:bypass` }),
+          merge: () => setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: p.oid, intent }),
+          recordBypass: (rules) => recordPolicyBypass(sdk, signer, repo, { target, rules, mergeOid: p.oid, intent: `${intent}:bypass` }),
           describe: guard.failed,
         })
         refresh((t) => t.pull.state.merged)
@@ -937,7 +977,7 @@ function PullPage({
         const changes: { title?: string; body?: string } = {}
         if (p.title !== pull.title) changes.title = p.title
         if (p.body !== pull.body) changes.body = p.body
-        await updateTarget(sdk, signer, repo, {
+        await editDraft.saving(() => updateTarget(sdk, signer, repo, {
           type: 'patch',
           id: pull.id,
           ...changes,
@@ -949,7 +989,7 @@ function PullPage({
             imported: pull.importedRaw ?? null,
           },
           intent,
-        })
+        }))
         setEditing(null)
         refresh((t) => t.pull.title === p.title && t.pull.body === p.body)
         return
@@ -979,14 +1019,14 @@ function PullPage({
         return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
-        await updateComment(sdk, signer, repo, {
+        await commentDraft.saving(() => updateComment(sdk, signer, repo, {
           id: p.id,
           body: p.body,
           ...(c ? commentEditDrops(c, thread.comments, { isMember, allReadable: totalHidden(thread.hidden) === 0 }) : {}),
           ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
           seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id }, imported: c?.importedRaw ?? null },
           intent,
-        })
+        }))
         setEditingComment(null)
         refresh((t) => t.comments.some((x) => x.id === p.id && x.body === p.body))
         return
@@ -1338,7 +1378,7 @@ function PullPage({
           <MessageSquareDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
           <span className="min-w-0 flex-1">
             You have a pending review ({plural(reviewDraft.draft.comments.length, 'comment')}), not yet submitted.{' '}
-            <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private')}</span>
+            <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private', pull.audience === 'members')}</span>
           </span>
           {tab !== 'files' ? (
             <Button size="sm" variant="outline" onClick={() => setTab('files')}>
@@ -1408,6 +1448,11 @@ function PullPage({
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
                 <div className="px-4 py-3">
+                  {editsDropped && editing === null && editingComment === null ? (
+                    <p role="status" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="edit-draft-dropped">
+                      Your unsaved edit was discarded: it changed on Platform since you started.
+                    </p>
+                  ) : null}
                   {editing ? (
                     <>
                       <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
@@ -1502,11 +1547,47 @@ function PullPage({
                       Restore branch
                     </Button>
                   ) : (
-                    <Button variant="outline" size="sm" onClick={() => setPending({ kind: 'delete-branch', label: closedBranch.label, run: closedBranch.run })} data-testid="delete-branch">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      loading={checkingDependents}
+                      disabled={checkingDependents}
+                      onClick={async () => {
+                        // Open PRs that use the branch, read now (never on page load): the confirm names them.
+                        const src = closedSource
+                        const ref = pull.sourceRefName
+                        let dependents: Dependents | null = null
+                        if (sdk !== null && src !== null && ref !== null) {
+                          setCheckingDependents(true)
+                          dependents = await openPullsOnBranch(sdk, src, ref, { except: src.repoId === repo.repoId ? pull.number : null, network }).catch(
+                            (e: unknown): Dependents => ({ error: errorMessage(e, 'the read failed') }),
+                          )
+                          setCheckingDependents(false)
+                        }
+                        setPending({ kind: 'delete-branch', label: closedBranch.label, run: closedBranch.run, dependents })
+                      }}
+                      data-testid="delete-branch"
+                    >
                       Delete branch
                     </Button>
                   )}
                 </section>
+              ) : null}
+
+              {/* Public repositories only for now: a private repo's config is sealed. */}
+              {merged && repo.visibility === 'public' ? (
+                <RulesAtMerge sdk={sdk} repo={repo} thread={thread} configHistory={() => baseRefReaders(sdk!, repo).configHistory()} pageChecks={checks.data} />
+              ) : null}
+
+              {recordOid !== null && unrecordedCheck.data !== null && !mergeBusy ? (
+                <RecordMergeBox
+                  oid={recordOid}
+                  base={base}
+                  content={unrecordedCheck.data}
+                  bypass={actions.unmetRules}
+                  disabledReason={archived ? ARCHIVED_REASON : guard.disabledReason}
+                  onRecord={() => setPending({ kind: 'mark-merged', bypass: actions.unmetRules, oid: recordOid })}
+                />
               ) : null}
 
               {/* Merge box */}
@@ -1676,7 +1757,7 @@ function PullPage({
                     {showMarkMerged ? (
                       <Button
                         variant="outline"
-                        onClick={() => setPending({ kind: 'mark-merged', bypass: actions.unmetRules })}
+                        onClick={() => setPending({ kind: 'mark-merged', bypass: actions.unmetRules, oid: pull.headOid })}
                         disabled={!signer || guard.disabledReason !== null || archived}
                         title={archived ? ARCHIVED_REASON : 'Records a merge done elsewhere; it moves no code'}
                       >
@@ -1792,6 +1873,7 @@ function PullPage({
               action={
                 identity !== null && open && !writeBlocked ? (
                   <ReviewDrawer
+                    membersOnly={pull.audience === 'members'}
                     repo={repo}
                     pullId={pull.id}
                     headOid={pull.headOid}
@@ -2089,18 +2171,22 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
           }
         : { title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number}`, description: `Records ${move}. ${still}`, label: pending.to === 'close' ? 'Close PR' : 'Reopen PR' }
     }
-    case 'mark-merged':
+    case 'mark-merged': {
+      const oid = pending.oid.slice(0, 9)
+      const record = pending.oid.toLowerCase() !== head.toLowerCase()
+      const what = record ? `Records ${oid}, the commit ${base} is at, as the merge of PR #${number}.` : `Records the merge of ${oid}, already on ${base}, done elsewhere.`
       return pending.bypass.length > 0
         ? {
-            title: `Bypass the branch rules and mark PR #${number} as merged`,
-            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final. These branch rules are not met, so this is a bypass, recorded on the PR as an event nobody can delete: ${pending.bypass.join('; ')}.`,
+            title: record ? `Bypass the branch rules and record the merge of ${oid}` : `Bypass the branch rules and mark PR #${number} as merged`,
+            description: `${what} It moves no code, and it is final. These branch rules are not met, so this is a bypass, recorded on the PR as an event nobody can delete: ${pending.bypass.join('; ')}.`,
             label: 'Sign & record (bypass rules)',
           }
         : {
-            title: `Mark PR #${number} as merged (done elsewhere)`,
-            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final.`,
-            label: 'Sign & mark merged',
+            title: record ? `Record the merge of ${oid}` : `Mark PR #${number} as merged (done elsewhere)`,
+            description: `${what} It moves no code, and it is final.`,
+            label: record ? 'Sign & record merge' : 'Sign & mark merged',
           }
+    }
     case 'review':
       return {
         title: `${VERDICT_TEXT[pending.verdict]} PR #${number}`,
@@ -2145,12 +2231,14 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         description: `Records a ref update that points the branch at this PR's head, ${head.slice(0, 9)}, again. Its commits are still stored in the repo.`,
         label: 'Sign & restore branch',
       }
-    case 'delete-branch':
+    case 'delete-branch': {
+      const warning = pending.dependents == null ? null : dependentsWarning(pending.label, pending.dependents)
       return {
         title: `Delete branch ${pending.label}`,
-        description: 'Records a ref update that deletes the branch. Its commits stay reachable from this PR by their ids, and anyone who has them can push the branch again.',
-        label: 'Sign & delete branch',
+        description: `${warning === null ? '' : `${warning} `}Records a ref update that deletes the branch. Its commits stay reachable from this PR by their ids, and anyone who has them can push the branch again.`,
+        label: deleteNeedsForce(pending.dependents ?? null) ? 'Sign & delete anyway' : 'Sign & delete branch',
       }
+    }
     case 'define-label':
       return { title: `Create label "${pending.name}"`, description: 'Creates the label for this repo and adds it here.', label: 'Sign & create' }
     case 'retarget':
@@ -2401,6 +2489,43 @@ function commitAuthors(commits: readonly { readonly commit: { readonly author: {
     }
   }
   return out
+}
+
+/**
+ * "Record merge of <commit>": the base already makes this PR's changes but no merge was recorded
+ * (a browser merge that stopped after moving the branch, or a merge pushed with git).
+ */
+function RecordMergeBox({
+  oid,
+  base,
+  content,
+  bypass,
+  disabledReason,
+  onRecord,
+}: {
+  oid: string
+  base: string
+  content: MergeContent
+  bypass: readonly string[]
+  disabledReason: string | null
+  onRecord: () => void
+}): JSX.Element {
+  const how = content.verdict === 'squash' ? 'a squash of this pull request' : content.verdict === 'rebase' ? 'a rebase of this pull request' : "a merge holding this pull request's commits"
+  return (
+    <section aria-label="Unrecorded merge" className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="record-merge-box">
+      <GitMerge className={`h-5 w-5 shrink-0 ${STATE_TEXT.done}`} aria-hidden />
+      <div className="min-w-[min(16rem,100%)] flex-1">
+        <p className="font-medium">This pull request is already on {base}</p>
+        <p className="text-anvil-600 dark:text-anvil-300">
+          {base} is at <Oid value={oid} chars={7} copyable={false} />, {how}, but no merge was recorded. A merge may have stopped after moving the branch.
+          {bypass.length > 0 ? ' The branch rules are not met, so recording it is a bypass, recorded on the PR.' : ''}
+        </p>
+      </div>
+      <Button variant="primary" size="sm" onClick={onRecord} disabled={disabledReason !== null} title={disabledReason ?? undefined} data-testid="record-merge">
+        Record merge of {oid.slice(0, 7)}
+      </Button>
+    </section>
+  )
 }
 
 /** What a merged PR's recorded merge commit holds (`merge-content.ts`), next to its state. */

@@ -1,0 +1,97 @@
+{
+  "name": "check_after_merge_missing",
+  "description": "A check run reported after the merge did not count for it: missing, unmet.",
+  "case": "merge_audit",
+  "rules": "v2",
+  "input": {
+    "mergedAt": 10000000,
+    "merger": "maint",
+    "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prAuthor": "auth",
+    "policies": [
+      {
+        "id": "p1",
+        "createdAt": 100,
+        "policy": {
+          "requiredApprovals": 0,
+          "approverRole": 0,
+          "requireChecks": false,
+          "mergeMethods": 0,
+          "requiredChecks": [
+            "build"
+          ]
+        }
+      }
+    ],
+    "protection": [],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "reviews": [],
+    "dismissals": [],
+    "runs": [
+      {
+        "id": "k1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "conclusion": "success",
+        "reporter": "maint",
+        "createdAt": 10000001,
+        "updatedAt": 10000001
+      }
+    ],
+    "runners": [],
+    "bypasses": []
+  },
+  "expected": {
+    "verdict": "unmet",
+    "policy": {
+      "requiredApprovals": 0,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0,
+      "requiredChecks": [
+        "build"
+      ]
+    },
+    "protected": false,
+    "mergerRole": "maintainer",
+    "protectionUnmet": false,
+    "approvals": {
+      "met": true,
+      "have": 0,
+      "need": 0,
+      "blockedBy": []
+    },
+    "checks": {
+      "required": [
+        {
+          "name": "build",
+          "state": "missing",
+          "runId": null
+        }
+      ],
+      "met": false,
+      "untrusted": 0
+    },
+    "checksUnread": false,
+    "bypass": null,
+    "rulesChanged": false
+  }
+}

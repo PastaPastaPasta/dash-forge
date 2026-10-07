@@ -34,7 +34,12 @@ export interface SuggestionComment {
   readonly anchor: AnchorFields
   /** A long body's state: one whose rest could not be read is never applied (its cut closes the block). */
   readonly long?: LongBodyState
+  /** A members-only comment (public repo): committing its suggestion publishes that text. */
+  readonly audience?: 'members'
 }
+
+/** What a committer confirms before a members-only comment's suggestion goes into a public commit. */
+export const MEMBERS_SUGGESTION_CONFIRM = 'This suggestion is members-only. Committing it makes it public.'
 
 /** One suggestion to apply. */
 export interface PlannedSuggestion {
@@ -45,6 +50,8 @@ export interface PlannedSuggestion {
   readonly start: number
   readonly end: number
   readonly text: string
+  /** From a members-only comment: its id is not named in the public commit (no `Forge-Suggestion`). */
+  readonly membersOnly?: true
 }
 
 /** Why a suggestion cannot be applied (the E107 cases of `dg pr suggestion apply`). */
@@ -77,7 +84,17 @@ function check(c: SuggestionComment, head: string): { refused: Refusal } | { pla
   const s = parseSuggestions(c.body)
   if (s.length === 0) return { refused: { kind: 'noBlock' } }
   if (s.length > 1) return { refused: { kind: 'many', n: s.length } }
-  return { plan: { commentId: c.id, reviewer: c.author, path: a.path, start: a.startLine ?? a.line, end: a.line, text: (s[0] as { text: string }).text } }
+  return {
+    plan: {
+      commentId: c.id,
+      reviewer: c.author,
+      path: a.path,
+      start: a.startLine ?? a.line,
+      end: a.line,
+      text: (s[0] as { text: string }).text,
+      ...(c.audience === 'members' ? { membersOnly: true as const } : {}),
+    },
+  }
 }
 
 /** `dg`'s words for a refusal (E107). */
@@ -167,7 +184,8 @@ export function applyAll(plans: readonly PlannedSuggestion[], files: ReadonlyMap
 export function suggestionMessage(plans: readonly PlannedSuggestion[], names: ReadonlyMap<string, string>): string {
   const lines = ['Apply suggestions from code review', '']
   for (const r of [...new Set(plans.map((p) => p.reviewer))].sort()) lines.push(`Co-authored-by: ${names.get(r) ?? r} <${r}@users.forge.invalid>`)
-  for (const p of plans) lines.push(`Forge-Suggestion: ${p.commentId}`)
+  // A members-only comment is not named in the public commit (its id links the commit to it).
+  for (const p of plans) if (p.membersOnly !== true) lines.push(`Forge-Suggestion: ${p.commentId}`)
   return lines.join('\n')
 }
 

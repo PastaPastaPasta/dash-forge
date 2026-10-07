@@ -15,7 +15,9 @@ import { GitBranchPlus, RotateCcw, Trash2 } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, isLive, tipOidOf } from '@/lib/view'
-import { compareRefNames, type ResolvedRef } from '@/lib/repo'
+import { compareRefNames, openPullsOnBranch, repoContractIds, type ResolvedRef } from '@/lib/repo'
+import { deleteNeedsForce, dependentsWarning, type Dependents } from '@/lib/view/branch-dependents'
+import { errorMessage } from '@/lib/utils'
 import { BRANCH_PREFIX, branchNameProblem, createBranch, deleteBranch, deleteBranchBlock, refWriteBlock, shortRef } from '@/lib/repo/ref-admin'
 import { capabilitiesOf } from '@/lib/rules/roles'
 import { collisionReason, refCollision, type Role } from '@/lib/rules/v2'
@@ -254,10 +256,13 @@ export function DeleteBranchButton({
   branch: ResolvedRef
   onDeleted: (tip: string) => void
 }): JSX.Element | null {
-  const { sdk } = useSdk()
+  const { sdk, network } = useSdk(repoContractIds(home.repo))
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const [open, setOpen] = useState(false)
+  // The open PRs that use this branch, read when the delete is asked for (never on page load).
+  const [checking, setChecking] = useState(false)
+  const [dependents, setDependents] = useState<Dependents | null>(null)
   const cost = useMemo(() => previewCreate('refUpdate', {}, EXISTING), [])
   if (!admin.canPush) return null
   const name = shortRef(branch.refName)
@@ -271,11 +276,16 @@ export function DeleteBranchButton({
         size="icon"
         className="text-anvil-500 hover:text-danger-700 dark:text-anvil-400 dark:hover:text-danger-400"
         // A disabled button keeps its reason readable: as the title, and as its accessible name.
-        disabled={block !== null || tip === null}
+        disabled={block !== null || tip === null || checking}
+        loading={checking}
         title={block ?? `Delete ${name}`}
         aria-label={block ?? `Delete branch ${name}`}
-        onClick={() => {
-          if (guard.check(cost, 'core', 'delete a branch')) setOpen(true)
+        onClick={async () => {
+          if (!guard.check(cost, 'core', 'delete a branch') || sdk === null) return
+          setChecking(true)
+          setDependents(await openPullsOnBranch(sdk, home.repo, branch.refName, { network }).catch((e: unknown): Dependents => ({ error: errorMessage(e, 'the read failed') })))
+          setChecking(false)
+          setOpen(true)
         }}
         data-testid="delete-branch"
       >
@@ -286,9 +296,14 @@ export function DeleteBranchButton({
           open={open}
           onClose={() => setOpen(false)}
           title={`Delete branch ${name}?`}
-          description={`${name} points at ${tip.slice(0, 7)}. Its commits stay stored: you can restore it from this page until you leave it, or push it again with git.`}
+          description={[
+            dependents === null ? null : dependentsWarning(name, dependents),
+            `${name} points at ${tip.slice(0, 7)}. Its commits stay stored: you can restore it from this page until you leave it, or push it again with git.`,
+          ]
+            .filter((x) => x !== null)
+            .join(' ')}
           cost={cost}
-          confirmLabel="Delete branch"
+          confirmLabel={deleteNeedsForce(dependents) ? 'Delete anyway' : 'Delete branch'}
           toast={{ running: `Deleting ${name}…`, ...namedAction(`Branch ${name} deleted`) }}
           onConfirm={async (intent) => {
             if (!sdk || !signer) throw new Error('sign in to continue')

@@ -28,7 +28,7 @@ import type { ForgeIds } from '../deployments'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isGitRefName, type EventKind } from '../rules'
-import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
+import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, heldKeysText, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
@@ -56,6 +56,7 @@ import { contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
+import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, membersWriter, noteAudience, sealMembersContent, targetAudience, type MembersWriter } from './members-writes'
 import { invalidateRepoFeed } from './issues'
 import { refuseIfBanned } from './bans'
 import { readNewestManifestOfKind } from './packs'
@@ -64,7 +65,7 @@ import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
-import { WRITER_ROLE_CODE, grantableRoles } from '../rules/roles'
+import { WRITER_ROLE_CODE, grantableRoles, holdsMembersKey } from '../rules/roles'
 import { repoSource } from './source'
 import { MAX_PATTERN_CHARS } from './settings'
 import { starShape } from './star-shape'
@@ -231,15 +232,23 @@ const CONTENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
  * carries `enc` and no content field; an event without a value has nothing to seal). Every
  * private write goes through here.
  */
-export function assertNoPlaintext(repo: RepoRef, documentType: string, data: Readonly<Record<string, unknown>>): void {
-  if (repo.visibility !== 'private') return
+export function assertNoPlaintext(
+  repo: RepoRef,
+  documentType: string,
+  data: Readonly<Record<string, unknown>>,
+  /** A public repo's members-only write: sealed, with no content field beside `enc` either. */
+  membersOnly = false,
+): void {
+  const sealed = data['enc'] !== undefined && data['enc'] !== null
+  if (repo.visibility !== 'private' && !membersOnly && !sealed) return
+  const where = repo.visibility === 'private' ? 'a private repo' : 'members-only content'
   const fields = CONTENT_FIELDS[documentType] ?? []
   const leaked = fields.filter((f) => data[f] !== undefined && data[f] !== null && data[f] !== '')
   if (leaked.length > 0) {
-    throw new Error(`refusing to write ${leaked.join(', ')} in plaintext to a private repo`)
+    throw new Error(`refusing to write ${leaked.join(', ')} in plaintext to ${where}`)
   }
-  if (fields.length > 0 && data['enc'] === undefined && documentType !== DOC.event) {
-    throw new Error(`refusing to write an unencrypted ${documentType} to a private repo`)
+  if ((repo.visibility === 'private' || membersOnly) && fields.length > 0 && !sealed && documentType !== DOC.event) {
+    throw new Error(`refusing to write an unencrypted ${documentType} to ${where}`)
   }
 }
 
@@ -286,6 +295,7 @@ export async function writeRepoDoc(
    * cache compares this instead of `data`, which is encrypted afresh on every attempt.
    */
   sealedContentKey?: string,
+  options: WriteOptions = {},
 ): Promise<WriteResult> {
   // What the action says, before sealing: the retry cache compares this (sealed fields are
   // encrypted afresh on every attempt, so the sealed data never matches itself).
@@ -296,14 +306,30 @@ export async function writeRepoDoc(
   // The claimed role (`r`) of a gated type, and the refusal of a write the signer's role cannot
   // make, before anything is sealed or signed. `r` is plaintext: it goes on beside `enc`.
   const claim = await roleClaim(sdk, auth, repo, documentType, data)
-  const sealedType = repo.visibility === 'private' ? sealedTypeOf(documentType, data) : null
+  // Who it is for (DESIGN §3.3): a private repo's everything is members-only; in a public repo
+  // what the caller settled (`audience`), and an event's value follows its target, read now.
+  const audience = await writeAudience(sdk, repo, documentType, data, options.audience)
+  const sealedType = audience === 'public' ? null : sealedTypeOf(documentType, data)
   if (sealedType !== null) {
-    contentKey = contentHash(documentType, scoped(repo, data))
-    const w = writer ?? (await privateWriter(sdk, auth, repo))
-    data = await sealForRepo(sdk, auth, repo, sealedType, data, w)
-    intent = sealedIntent(intent, w.keys)
+    // The retry cache compares what the action says, kept in this browser: keyed under the
+    // epoch's key (as forge-core's journal is), never a plain hash of sealed text, which would be
+    // an equality oracle at rest.
+    const said = contentHash(documentType, scoped(repo, data))
+    if (repo.visibility === 'private') {
+      const w = writer ?? (await privateWriter(sdk, auth, repo))
+      contentKey = await keyedContentKey(w.keys, said)
+      data = await sealForRepo(sdk, auth, repo, sealedType, data, w)
+      // D14: every sealed write by a member carries `asMember`.
+      if (w.isMember === true) data = withMemberProof(documentType, data, auth.identityId)
+      intent = sealedIntent(intent, w.keys)
+    } else {
+      const w = options.membersWriter ?? (await membersWriter(sdk, auth, repo))
+      contentKey = await keyedContentKey(w.keys, said)
+      data = await sealMembersContent(auth, sealedType, data, w)
+      intent = sealedIntent(intent, w.keys)
+    }
   }
-  assertNoPlaintext(repo, documentType, data)
+  assertNoPlaintext(repo, documentType, data, sealedType !== null && repo.visibility === 'public')
   let result: WriteResult | undefined
   try {
     const signed = data
@@ -324,8 +350,81 @@ export async function writeRepoDoc(
     // behind rather than cache the old total for the new write generation (QW-064).
     if (result?.confirmed && (documentType === DOC.issue || documentType === DOC.patch)) noteTargetCreated(repo, documentType === DOC.issue ? 'issue' : 'patch')
     if (result?.confirmed && reviewed !== '') void noteParticipation(auth.network, auth.identityId, reviewed, 'reviewed')
+    // A follow-up write on it (a label right after the create) must not wait on a node that
+    // does not show it yet to learn who it is for.
+    if (result?.confirmed && repo.visibility === 'public' && (documentType === DOC.issue || documentType === DOC.patch || documentType === DOC.comment)) {
+      noteAudience(repo, result.documentId, audience)
+    }
     afterWrite(repo, auth.network, documentType)
   }
+}
+
+/** How {@link writeRepoDoc} writes a public repo's content. */
+export interface WriteOptions {
+  /**
+   * Who an issue, comment or review of a public repo is for, as its writer settled it
+   * ({@link childAudience}; default public). An event's value always follows its target.
+   */
+  readonly audience?: Audience
+  /** The action's members key (one fresh read for a review and its comments, a renumbered issue). */
+  readonly membersWriter?: MembersWriter
+}
+
+/** The member types whose writes carry the signer's `asMember` proof (forge-core `MEMBER_PROOF_TYPES`). */
+const MEMBER_PROOF_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
+
+/** `data` with the signer's `asMember` (D14), unless its type carries none or it is a non-member's verdict (4/5). */
+function withMemberProof(documentType: string, data: Record<string, unknown>, signer: string): Record<string, unknown> {
+  if (!MEMBER_PROOF_TYPES.has(documentType)) return data
+  const verdict = data['verdict']
+  if (verdict === OUTSIDER_VERDICT_INT.approve || verdict === OUTSIDER_VERDICT_INT.requestChanges) return data
+  return { ...data, asMember: decodeIdentifier(signer) }
+}
+
+/**
+ * The audience a `documentType` write of `repo` with `data` takes, safe by default: members-only
+ * in a private repo; in a public one what the caller settled (`requested`), else what its parents
+ * say (DESIGN §3.3), read from the stored documents and failing closed: a comment the narrowest
+ * of its target, the comment it replies to and that thread's root; a review its PR's; an event's
+ * value its target's. An issue or PR has no parent (public unless requested). A public repo with
+ * no members key reads nothing ({@link childAudience} / {@link targetAudience} answer at once).
+ */
+async function writeAudience(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  documentType: string,
+  data: Readonly<Record<string, unknown>>,
+  requested: Audience | undefined,
+): Promise<Audience> {
+  if (repo.visibility === 'private') return 'members'
+  const idOf = (field: string): string => {
+    const v = data[field]
+    return v instanceof Uint8Array ? base58Encode(v) : asIdentifierString(v)
+  }
+  const named = (field: string, what: string): string => {
+    const id = idOf(field)
+    if (id === '') throw new PrivateWriteError(`this ${what} names no ${field}, so who can read it is unknown; nothing was written`)
+    return id
+  }
+  if (documentType === DOC.event || documentType === DOC.authorEvent) {
+    const value = data['value']
+    if (typeof value !== 'string' || value === '') return 'public'
+    const target = await targetAudience(sdk, repo, named('targetId', 'event'))
+    // An author event has no `enc` (consensus): its value would be public under a members-only target.
+    if (documentType === DOC.authorEvent && target !== 'public') {
+      throw new PrivateWriteError("this is members-only, and an author's change with a value can't be sealed yet; ask a member to make it; nothing was written")
+    }
+    return target
+  }
+  // A comment or review is always checked against its parents, even when the caller asked for
+  // an audience: a requested "public" under a members-only parent is refused, never written.
+  const asked = requested !== undefined ? { requested } : {}
+  if (documentType === DOC.comment) {
+    const replyTo = idOf('replyTo')
+    return childAudience(sdk, repo, { targetId: named('targetId', 'comment'), ...(replyTo !== '' ? { replyTo } : {}), ...asked })
+  }
+  if (documentType === DOC.review) return childAudience(sdk, repo, { targetId: named('patchId', 'review'), ...asked })
+  return requested ?? 'public'
 }
 
 /** A write that found its unique slot already held by the signer: success, nothing spent. */
@@ -379,6 +478,8 @@ function isDenseRefusal(e: unknown): boolean {
 /** A created issue: the write result plus the allocated issue number. */
 export interface CreateIssueResult extends WriteResult {
   readonly number: number
+  /** Who it was written for (a follow-up write on it, a label, takes this instead of a lookup). */
+  readonly audience?: Audience
 }
 
 /**
@@ -391,17 +492,19 @@ export async function createIssue(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { title: string; body: string; intent?: string },
+  input: { title: string; body: string; intent?: string; audience?: Audience },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
   // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
+  // Who it is for: an issue has no parent (public by default; members-only on request).
+  const audience = audienceFor(repo, input.audience, null)
   const data: Record<string, unknown> = { title: input.title }
   // A body longer than its field: its full text stored first (forge-v2.md §6.3), once for
   // every renumbered attempt.
-  const body = await longBodyField(sdk, auth, repo, 'issue', input.body, { title: input.title }, input.intent)
+  const body = await longBodyField(sdk, auth, repo, 'issue', input.body, { title: input.title }, input.intent, audience)
   if (body.length > 0) data['body'] = body
-  return createNumbered(sdk, auth, repo, 'issue', data, input.intent, onRetry)
+  return createNumbered(sdk, auth, repo, 'issue', data, input.intent, onRetry, audience)
 }
 
 /** A PR to open (forge-core `PatchInput`). */
@@ -500,17 +603,25 @@ async function createNumbered(
   fields: Record<string, unknown>,
   intentBase: string | undefined,
   onRetry?: (taken: number, next: number) => void,
+  audience: Audience = repo.visibility === 'private' ? 'members' : 'public',
 ): Promise<CreateIssueResult> {
   const noun = type === 'issue' ? 'issue' : 'PR'
-  // A private repo: refuse over-long text before numbering, and seal every renumbered retry
-  // under the one writer of this action (the AD binds each new number).
+  // A private repo, or members-only content: refuse over-long text before numbering, and seal
+  // every renumbered retry under the one writer of this action (the AD binds each new number).
   let writer: PrivateWriter | undefined
+  let members: MembersWriter | undefined
   if (repo.visibility === 'private') {
     const { used, limit } = sealedTextUse(type, fields)
     if (limit !== null && used > limit) {
       throw new PrivateWriteError(`the text is too long for a private repo: an encrypted ${type} holds at most ${limit} bytes of text (this one has ${used})`)
     }
     writer = await privateWriter(sdk, auth, repo)
+  } else if (audience === 'members') {
+    const { used } = sealedTextUse(type, fields)
+    if (used > MEMBERS_TEXT_LIMIT[type]) {
+      throw new PrivateWriteError(`the text is too long: a members-only ${type} holds at most ${MEMBERS_TEXT_LIMIT[type]} bytes of text (this one has ${used})`)
+    }
+    members = await membersWriter(sdk, auth, repo)
   }
   const next = (): Promise<number | null> => nextNumber(sdk, repo)
   // A retry of this action first finishes the number its last attempt signed: once that
@@ -524,9 +635,12 @@ async function createNumbered(
       // Each number is its own write: a renumbered retry must not reuse the earlier bytes.
       const intent = intentBase ? `${intentBase}#${number}` : undefined
       writeTriedNumber(triedKey, number)
-      const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, tk: type === 'issue' ? 0 : 1, ...fields }, intent, writer)
+      const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, tk: type === 'issue' ? 0 : 1, ...fields }, intent, writer, undefined, {
+        audience,
+        ...(members ? { membersWriter: members } : {}),
+      })
       writeTriedNumber(triedKey, null)
-      return { ...result, number }
+      return { ...result, number, audience }
     } catch (e) {
       // Refused for good (not a numbering race, which is renumbered below): nothing under this
       // number is pending, so the action does not pin it any more. After a SupersededWriteError
@@ -609,16 +723,19 @@ export async function createComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext },
+  input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext; audience?: Audience },
 ): Promise<WriteResult> {
   // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
+  // Who it is for (DESIGN §3.3): the narrowest of the issue or PR, the comment it replies to and
+  // that thread's root, unless the writer asked for a narrower one; read before anything is stored.
+  const audience = await childAudience(sdk, repo, { targetId: input.targetId, ...(input.replyTo ? { replyTo: input.replyTo } : {}), ...(input.audience ? { requested: input.audience } : {}) })
   // A body longer than its field: its full text stored first (forge-v2.md §6.3).
-  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, {}, input.intent)
+  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, {}, input.intent, audience)
   const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
-  return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, ...commentProof(auth.identityId, input.post) }, input.intent)
+  return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, ...commentProof(auth.identityId, input.post) }, input.intent, undefined, undefined, { audience })
 }
 
 /**
@@ -708,21 +825,23 @@ export async function createReview(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext },
+  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext; audience?: Audience },
 ): Promise<WriteResult> {
   // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
   if (lockedOut(post)) throw new Error(LOCKED_REASON)
+  // Who its text is for (its verdict is always public, D15): the PR's, unless asked narrower.
+  const audience = await childAudience(sdk, repo, { targetId: input.patchId, ...(input.audience ? { requested: input.audience } : {}) })
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),
     ...reviewVerdictFields(input.verdict, auth.identityId, post),
     commitOid: hexToBytes(input.commitOid),
   }
   // A body longer than its field: its full text stored first (forge-v2.md §6.3).
-  if (input.body && input.body.length > 0) data['body'] = await longBodyField(sdk, auth, repo, 'review', input.body, {}, input.intent)
-  return writeRepoDoc(sdk, auth, repo, DOC.review, data, input.intent)
+  if (input.body && input.body.length > 0) data['body'] = await longBodyField(sdk, auth, repo, 'review', input.body, {}, input.intent, audience)
+  return writeRepoDoc(sdk, auth, repo, DOC.review, data, input.intent, undefined, undefined, { audience })
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,9 +1149,9 @@ export class MemberRoleTakenError extends Error {
   }
 }
 
-/** Refuse a role the owner cannot grant on `repo` (a reader on a public repo: everyone can read it). */
+/** Refuse a role the owner cannot grant on `repo` ({@link grantableRoles}). */
 function assertGrantable(repo: RepoRef, role: Role): void {
-  if (!grantableRoles(repo.visibility).includes(role)) throw new Error('a reader role is only for private repos: everyone can read a public one')
+  if (!grantableRoles(repo.visibility).includes(role)) throw new Error(`the ${role} role can't be granted on this repo`)
 }
 
 /**
@@ -1062,37 +1181,48 @@ export class PrivateMembershipError extends Error {
 }
 
 /**
- * A public repo with members-only content turned on: its membership changes must share and
- * rotate the members key (`private-repos.md` §17), which this web app does not do yet (stream
- * 1F-web). Until it does, it refuses them rather than add a member who gets no key or remove one
- * who keeps reading.
+ * A public repo with members-only content: its membership changes share and rotate the members
+ * key (`private-repos.md` §17, DESIGN §4.1 "Lane membership"), which needs the owner's encryption
+ * key unlocked in this tab. Without it nothing is written: an add would leave a member with no
+ * key, a removal a removed member reading new members-only content.
  */
 export class MembersKeyMembershipError extends Error {
   constructor() {
-    super('This repo has members-only content turned on. Change its members with dg for now.')
+    super("This repo has members-only content, so adding or removing a member shares or changes its key. Unlock your encryption key in this tab to manage members.")
     this.name = 'MembersKeyMembershipError'
   }
 }
 
-/** Whether a stored `enc` holds bytes (any encoding the SDK returns). */
-function hasBytes(v: unknown): boolean {
-  if (v === null || v === undefined) return false
-  if (typeof v === 'string') return v.length > 0
-  const n = (v as { length?: unknown }).length
-  return typeof n === 'number' && n > 0
+export { hasMembersKey }
+
+/**
+ * The key-aware context of a membership change of public `repo` (stream 1F), or null when it has
+ * no members key (a bare document write, as always). With a key and no unlocked encryption key
+ * (`ops`), refused before anything is written ({@link MembersKeyMembershipError}).
+ */
+async function membersKeyContext(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  ops: EncryptionOps | null | undefined,
+): Promise<{ readonly c: import('./private-members').PrivateWriteContext; readonly flows: typeof import('./private-members') } | null> {
+  if (repo.visibility !== 'public' || !(await hasMembersKey(sdk, repo))) return null
+  if (ops === null || ops === undefined) throw new MembersKeyMembershipError()
+  // Loaded on use: `private-members.ts` imports this module.
+  const flows = await import('./private-members')
+  return { c: { sdk, auth, repo, network: auth.network, ops }, flows }
+}
+
+/** What a key-aware membership change returns in place of its several writes. */
+function keyedResult(keyShared = true): MembershipResult {
+  return { documentId: '', confirmed: true, cost: previewCredits(0), actualCredits: null, keyShared }
 }
 
 /**
- * Whether `repo` has a members key: every private repo, and a public one with any sealed `config`
- * (the members-key anchor, even one that does not resolve: the check fails toward refusing). The
- * same definition `dg` uses (`keyring::has_members_key`).
+ * A membership change's outcome. `keyShared` false: a public repo with members-only content added
+ * someone with no encryption key yet, who can't read members-only content until they add one and
+ * a maintainer runs the repair check.
  */
-export async function hasMembersKey(sdk: EvoSDK, repo: RepoRef): Promise<boolean> {
-  if (repo.visibility === 'private') return true
-  const rows = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'asc']] }))
-  return rows.some((d) => hasBytes(d['enc']))
-}
-
 /**
  * A repo with environment snapshots (kind 8): a maintainer's removal, demotion or promotion
  * changes whose snapshots count, which `dg` handles (it saves the affected environments again
@@ -1114,9 +1244,8 @@ async function refuseMaintainerChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef
   if ((await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) !== null) throw new EnvironmentsMembershipError(change)
 }
 
-/** Refuse a public repo's membership change while it has a members key ({@link MembersKeyMembershipError}). */
-async function refuseWithMembersKey(sdk: EvoSDK, repo: RepoRef): Promise<void> {
-  if (repo.visibility === 'public' && (await hasMembersKey(sdk, repo))) throw new MembersKeyMembershipError()
+export interface MembershipResult extends WriteResult {
+  readonly keyShared?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,7 +1322,10 @@ export function membershipData(repo: RepoRef, memberId: string, extra: Record<st
  * Grant `memberId` a role on a public repo: the owner creates a `maintainer` or `writer`
  * document (consensus refuses anyone else). Idempotent: an existing membership is success.
  * Refused on a private repo ({@link PrivateMembershipError}), and while the member has not
- * accepted ({@link ConsentMissingError}).
+ * accepted ({@link ConsentMissingError}). A public repo with members-only content goes through
+ * the key-aware add (`addPrivateMember`: the document, then the key shared with them; one with
+ * no encryption key yet is added and shared with by a later repair), with the owner's unlocked
+ * encryption `ops` ({@link MembersKeyMembershipError} without them).
  */
 export async function grantMember(
   sdk: EvoSDK,
@@ -1202,11 +1334,14 @@ export async function grantMember(
   memberId: string,
   role: Role,
   intent?: string,
-): Promise<WriteResult> {
+  ops?: EncryptionOps | null,
+): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('add')
-  await refuseWithMembersKey(sdk, repo)
   if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
-  return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
+  const keyed = await membersKeyContext(sdk, auth, repo, ops)
+  if (keyed === null) return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
+  const added = await keyed.flows.addPrivateMember(keyed.c, memberId, role, intent ?? `members:add:${memberId}:${role}`)
+  return keyedResult(added.shared)
 }
 
 /**
@@ -1251,7 +1386,10 @@ export async function grantMembershipDoc(
 
 /**
  * Revoke a role on a public repo: the owner deletes the membership document. No-op when there
- * is none. Refused on a private repo ({@link PrivateMembershipError}).
+ * is none. Refused on a private repo ({@link PrivateMembershipError}). A public repo with
+ * members-only content goes through the key-aware removal (`removePrivateMember`: a maintainer's
+ * epochs re-anchored first, then the delete, then the key rotated so they cannot read what is
+ * written after), with the owner's unlocked encryption `ops`.
  */
 export async function revokeMember(
   sdk: EvoSDK,
@@ -1259,11 +1397,15 @@ export async function revokeMember(
   repo: RepoRef,
   memberId: string,
   role: Role,
+  intent?: string,
+  ops?: EncryptionOps | null,
 ): Promise<DeleteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  await refuseWithMembersKey(sdk, repo)
   if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
-  return revokeMembershipDoc(sdk, auth, repo, memberId, role)
+  const keyed = await membersKeyContext(sdk, auth, repo, ops)
+  if (keyed === null) return revokeMembershipDoc(sdk, auth, repo, memberId, role)
+  await keyed.flows.removePrivateMember(keyed.c, memberId, role, intent ?? `members:remove:${memberId}:${role}`)
+  return { deleted: true, actualCredits: null }
 }
 
 /**
@@ -1273,6 +1415,13 @@ export async function revokeMember(
  * grantable here, the contract has it, their consent is present, and they hold no other document
  * of the new role's type. Refused on a private repo (there a removal rotates the key: remove and
  * add again through the private-repo flow).
+ *
+ * A public repo with members-only content (stream 1F, with the owner's unlocked `ops`): a change
+ * between roles that hold the members key keeps it (`holdsMembersKey`; parity: `dg collab add`
+ * `add_plan`); one to a role that does not rotates it away from them; a maintainer leaving that
+ * role goes through the key-aware removal of it (their epochs are re-anchored, then the key
+ * rotates: what they handed out as a maintainer stops counting); a new maintainer through the
+ * key-aware add (its anchor checks).
  */
 export async function changeMemberRole(
   sdk: EvoSDK,
@@ -1282,11 +1431,12 @@ export async function changeMemberRole(
   from: Role,
   to: Role,
   intent?: string,
-): Promise<WriteResult> {
+  ops?: EncryptionOps | null,
+): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  await refuseWithMembersKey(sdk, repo)
   if (from === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
   else if (to === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
+  const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
   if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
   if (from === to) throw new Error(`they are already a ${to}`)
@@ -1294,7 +1444,11 @@ export async function changeMemberRole(
   await writerRoleData(sdk, repo, to)
   if (memberDocOf(from) !== memberDocOf(to)) {
     const other = await findMembership(sdk, repo, to, memberId)
-    if (other !== null) throw new MemberRoleTakenError(memberId, other.role)
+    // On a repo with members-only content a maintainer's demotion and a promotion to maintainer
+    // both write the new role first: one that stands already is an interrupted change resuming,
+    // and goes on (to the removal of the maintainer role, or of the writer document).
+    const resuming = keyed !== null && (from === 'maintainer' || to === 'maintainer') && other?.role === to
+    if (other !== null && !resuming) throw new MemberRoleTakenError(memberId, other.role)
   }
   if ((await findConsent(sdk, repo, memberId)) === null) throw new ConsentMissingError(memberId)
   // The document being replaced must still hold `from` (another tab may have changed it already).
@@ -1302,7 +1456,26 @@ export async function changeMemberRole(
   if (current === null || current.role !== from) {
     throw new Error(`they are no longer a ${from} here (their role changed meanwhile); reload the members and try again`)
   }
+  if (keyed !== null && (from === 'maintainer' || to === 'maintainer')) {
+    const base = intent ?? `members:role:${memberId}:${from}:${to}`
+    if (to === 'maintainer') {
+      // The new maintainer document through the key-aware add (its anchor checks), then the old
+      // writer document goes: they stay a maintainer, so the key does not change.
+      const added = await keyed.flows.addPrivateMember(keyed.c, memberId, to, `${base}:add`)
+      await revokeMembershipDoc(sdk, auth, repo, memberId, from)
+      return keyedResult(added.shared)
+    }
+    // The new role first, so they never stop being a member; then, once the member list shows
+    // it (the removal plans its rotation from that list, which must still hold them), the
+    // maintainer role goes through the key-aware removal (re-anchors, then a rotation they are
+    // part of).
+    await grantMembershipDoc(sdk, auth, repo, memberId, to, `${base}:add`)
+    await keyed.flows.waitForMembers(keyed.c, (rows) => keyed.flows.holds(rows, memberId, to))
+    await keyed.flows.removePrivateMember(keyed.c, memberId, from, `${base}:remove`)
+    return keyedResult()
+  }
   await revokeMembershipDoc(sdk, auth, repo, memberId, from)
+  let granted: WriteResult
   try {
     // A node a block behind may still list the deleted document: wait until it is gone before the
     // add, which would otherwise read it as a membership they already hold.
@@ -1312,11 +1485,31 @@ export async function changeMemberRole(
         return held === null || held.id !== current.id ? true : null
       }, CONSENT_LAG_RETRIES + 2)
     }
-    return await grantMembershipDoc(sdk, auth, repo, memberId, to, intent)
+    granted = await grantMembershipDoc(sdk, auth, repo, memberId, to, intent)
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e)
+    // A public repo with members-only content: they are no member now, yet hold its current key.
+    // It is rotated away from them at once; never left with them silently.
+    if (keyed !== null && holdsMembersKey(from, repo.visibility)) {
+      const rotated = await keyed.flows
+        .rotateRepoKey(keyed.c, [memberId], `${intent ?? `members:role:${memberId}`}:rotate-after-failed-add`)
+        .then(() => 'the members-only key was changed so they cannot read what is posted next')
+        .catch((r: unknown) => `a key rotation is pending: they still hold the members-only key until a maintainer runs Repair (${r instanceof Error ? r.message : String(r)})`)
+      throw new Error(`their ${from} role was removed, but adding them as ${to} failed (${reason}); ${rotated}. Add them again as ${to}`)
+    }
     throw new Error(`their ${from} role was removed, but adding them as ${to} failed (${reason}); add them again as ${to}`)
   }
+  if (keyed !== null) {
+    const base = intent ?? `members:role:${memberId}`
+    const held = holdsMembersKey(from, repo.visibility)
+    const holdsNow = holdsMembersKey(to, repo.visibility)
+    // Between roles that hold the members key, they keep it; to one that does not, it rotates away
+    // from them; to one that does from one that did not, it is shared with them (the repair
+    // check's wrap). Neither happens while readers are in the key (`READERS_IN_MEMBERS_KEY`).
+    if (held && !holdsNow) await keyed.flows.rotateRepoKey(keyed.c, [memberId], `${base}:rotate`)
+    if (!held && holdsNow) await keyed.flows.runRepair(keyed.c, `${base}:share`)
+  }
+  return granted
 }
 
 /**

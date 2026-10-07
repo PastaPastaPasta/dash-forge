@@ -12,8 +12,10 @@ import { useState } from 'react'
 import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
+import type { PrivateSession } from '@/lib/repo/private-session'
 import { ConsentMissingError, changeMemberRole, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
-import { roleChangeCost } from '@/lib/repo/private-members'
+import { addMemberCost, planRotation, removalCost, removalEffect, roleChangeCost } from '@/lib/repo/private-members'
+import { usePrivateWrite } from '@/hooks/use-private-write'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
@@ -65,6 +67,25 @@ export function SettingsContent({ home, reload }: { home: RepoHome; reload: () =
   return <RepoSettings home={home} repo={home.repo} reload={reload} />
 }
 
+/** The cost of a key-aware removal from a public repo with members-only content, when this tab can plan its rotation. */
+function keyedRemovalCost(
+  session: PrivateSession | null,
+  self: string | null,
+  member: string,
+  role: MemberRole,
+  coreId: string,
+  heldKeyId: number | null,
+): ReturnType<typeof removalCost> | null {
+  if (session === null || self === null || heldKeyId === null) return null
+  try {
+    const effect = removalEffect(session.members, member, role)
+    const plan = effect === 'none' ? null : planRotation(session, self, effect === 'rotate-exclude' ? [member] : [], coreId, heldKeyId)
+    return removalCost(session, self, member, role, plan)
+  } catch {
+    return null
+  }
+}
+
 /**
  * The repo's members (its current `maintainer` / `writer` documents — the
  * ACL consensus enforces), and the ids a CLI or SDK user needs. The owner adds a member by
@@ -80,6 +101,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   // The encryption key is in this browser, but this tab resumed with the signing key only: the
   // page's one unlock sits under Collaborators (Storage points to it).
   const locked = home.private?.access === 'locked'
+  // A public repo with members-only content (stream 1F): adding, removing and changing members
+  // shares or changes its key, through the key-aware flows with this tab's encryption key.
+  const keyed = home.repo.visibility === 'public' && home.lane !== undefined && home.lane.access !== 'none'
+  const laneSession = home.lane?.access === 'member' ? home.lane.session : null
+  const write = usePrivateWrite(repo)
+  const ops = write.context?.ops ?? null
   const members = useAsync<Membership[]>(
     () => readMembershipsCached(sdk!, repo, network),
     [ready, repo.repoId, network],
@@ -88,6 +115,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const memberRows = members.data ?? []
   // The identity the owner tried to add before they accepted: the invite is pending on them.
   const [awaiting, setAwaiting] = useState<string | null>(null)
+  // A member added to a repo with members-only content before they have an encryption key.
+  const [noKeyYet, setNoKeyYet] = useState<string | null>(null)
   const [memberId, setMemberId] = useState('')
   const [role, setRole] = useState<MemberRole>('writer')
   const [action, setAction] = useState<MemberAction | null>(null)
@@ -109,7 +138,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     if (action.kind === 'change') {
       try {
-        await changeMemberRole(sdk, signer, repo, action.member, action.role, action.to, intent)
+        const changed = await changeMemberRole(sdk, signer, repo, action.member, action.role, action.to, intent, ops)
+        setNoKeyYet(changed.keyShared === false ? action.member : null)
       } catch (e) {
         if (!(e instanceof ConsentMissingError)) throw e
         // Nothing was signed: their consent is gone, so the change waits on them accepting again.
@@ -120,7 +150,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       setChanging(null)
     } else if (action.kind === 'grant') {
       try {
-        await grantMember(sdk, signer, repo, action.member, action.role, intent)
+        const granted = await grantMember(sdk, signer, repo, action.member, action.role, intent, ops)
+        setNoKeyYet(granted.keyShared === false ? action.member : null)
       } catch (e) {
         if (!(e instanceof ConsentMissingError)) throw e
         // Nothing was signed: show the invitation as pending on them instead of an error.
@@ -132,8 +163,10 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       setAwaiting(null)
       setMemberId('')
     } else {
-      await revokeMember(sdk, signer, repo, action.member, action.role)
+      await revokeMember(sdk, signer, repo, action.member, action.role, intent, ops)
     }
+    // The members key changed hands: re-read the repo's key state (the page stays up meanwhile).
+    if (keyed) write.done()
     // The write landed, but the node the next read hits may be a block behind: re-read until
     // the change shows (then it is what the cache holds), else keep the last answer.
     const done = action
@@ -264,6 +297,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                 if (guard.check(previewCreate(memberDocOf(r)))) setAction({ kind: 'grant', member: id, role: r })
               }}
             />
+            {noKeyYet !== null ? (
+              <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400" data-testid="member-key-not-shared">
+                {shortId(noKeyYet)} has no encryption key yet, so they can&apos;t read members-only content. Once they add one, run Repair on the
+                repo page to share the key with them.
+              </p>
+            ) : null}
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
               People join only after accepting your invitation. Only maintainers&apos; and writers&apos; approvals count toward merging.
             </p>
@@ -292,19 +331,25 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
             action?.kind === 'grant'
-              ? `Adds ${shortId(action.member)} as ${ROLE_NOUN[action.role]}.`
+              ? `Adds ${shortId(action.member)} as ${ROLE_NOUN[action.role]}.${keyed ? ' They get the key to members-only content too, so they can read it.' : ''}`
               : action?.kind === 'change'
                 ? `Makes ${shortId(action.member)} ${ROLE_NOUN[action.to]} instead of ${ROLE_NOUN[action.role]}. They don't need to accept again.`
-                : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
+                : keyed
+                  ? `Removes them from this repo and changes the key to its members-only content: they won't be able to read members-only issues and comments posted after this. What they could already read stays readable to them.`
+                  : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
           cost={
             action === null
               ? previewCreate('writer')
               : action.kind === 'revoke'
-                ? previewDelete(memberDocOf(action.role))
+                ? keyed
+                  ? keyedRemovalCost(laneSession, identity, action.member, action.role, repo.forge.core, ops?.keyId ?? null) ?? previewDelete(memberDocOf(action.role))
+                  : previewDelete(memberDocOf(action.role))
                 : action.kind === 'change'
                   ? roleChangeCost(action.role, action.to)
-                  : previewCreate(memberDocOf(action.role))
+                  : keyed
+                    ? addMemberCost(action.role)
+                    : previewCreate(memberDocOf(action.role))
           }
           confirmLabel={action?.kind === 'grant' ? 'Sign & add' : action?.kind === 'change' ? 'Sign & change' : 'Sign & remove'}
           onConfirm={runAction}

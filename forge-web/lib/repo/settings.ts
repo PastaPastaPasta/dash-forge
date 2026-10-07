@@ -325,20 +325,28 @@ export function toPolicy(doc: PlainDocument): Policy {
 // Reads and writes
 // ---------------------------------------------------------------------------------------------
 
+/** `policy` documents as `{ createdAt, id, policy }`, in the order given. */
+export function policyDocs(docs: readonly PlainDocument[]): { createdAt: number; id: string; policy: Policy }[] {
+  return docs.map((d) => ({
+    createdAt: typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0,
+    id: typeof d['$id'] === 'string' ? d['$id'] : '',
+    policy: toPolicy(d),
+  }))
+}
+
 /** The policy in force among `policy` documents (newest by `($createdAt, $id)`), or null. */
 export function policyFromDocs(docs: readonly PlainDocument[]): Policy | null {
-  return newestPolicy(
-    docs.map((d) => ({
-      createdAt: typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0,
-      id: typeof d['$id'] === 'string' ? d['$id'] : '',
-      policy: toPolicy(d),
-    })),
-  )
+  return newestPolicy(policyDocs(docs))
+}
+
+/** Every branch policy `repo` ever had, oldest first (`policy` documents are append-only). */
+export async function readPolicyHistory(sdk: EvoSDK, repo: RepoRef): Promise<{ createdAt: number; id: string; policy: Policy }[]> {
+  return policyDocs(await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.policy, { orderBy: [['$createdAt', 'asc']] })))
 }
 
 /** The branch policy in force for `repo` (newest `policy`), or null. */
 export async function readPolicy(sdk: EvoSDK, repo: RepoRef): Promise<Policy | null> {
-  return policyFromDocs(await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.policy, { orderBy: [['$createdAt', 'asc']] })))
+  return newestPolicy(await readPolicyHistory(sdk, repo))
 }
 
 /** Thrown for a config write the web cannot make in a private repo (its config is sealed). */
