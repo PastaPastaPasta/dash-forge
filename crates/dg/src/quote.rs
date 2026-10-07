@@ -176,39 +176,55 @@ const MERGE_PACK_BYTES: u64 = 4096;
 /// The objects that pack is priced at (its browse index grows with them).
 const MERGE_PACK_OBJECTS: u64 = 16;
 
+/// What a push of one branch to a new commit writes: its ref update, its history index when
+/// the branch is the default one, and the pack and browse index of its new objects when it
+/// uploads one.
+fn branch_push(p: MergePush) -> u64 {
+    let history = if p.history_index {
+        2 * push_fees::history_index(HISTORY_PART_BYTES, false, 1, p.platform_bytes, false)
+    } else {
+        0
+    };
+    let pack = if p.uploads_pack {
+        push_fees::estimate_push(&push_fees::PushShape {
+            pack_bytes: MERGE_PACK_BYTES,
+            objects: MERGE_PACK_OBJECTS,
+            index_objects: MERGE_PACK_OBJECTS,
+            refs: 0,
+            external_targets: 0,
+            platform_bytes: p.platform_bytes,
+            sealed: false,
+        })
+        .total()
+    } else {
+        0
+    };
+    push_fees::estimate_ref_updates(1) + history + pack
+}
+
 /// What `dg pr merge` writes on Platform: the merge `transition`; unless it only records a
 /// merge (`push` is `None`), the push of the base branch (its ref update, and its history
 /// index); and the source branch's delete when asked. New objects' pack comes on top (a
 /// fast-forward stores none; `git push` prices it as it runs).
 pub fn merge(push: Option<MergePush>, deletes_source: bool) -> u64 {
-    let push = push.map_or(0, |p| {
-        let history = if p.history_index {
-            2 * push_fees::history_index(HISTORY_PART_BYTES, false, 1, p.platform_bytes, false)
-        } else {
-            0
-        };
-        let pack = if p.uploads_pack {
-            push_fees::estimate_push(&push_fees::PushShape {
-                pack_bytes: MERGE_PACK_BYTES,
-                objects: MERGE_PACK_OBJECTS,
-                index_objects: MERGE_PACK_OBJECTS,
-                refs: 0,
-                external_targets: 0,
-                platform_bytes: p.platform_bytes,
-                sealed: false,
-            })
-            .total()
-        } else {
-            0
-        };
-        push_fees::estimate_ref_updates(1) + history + pack
-    });
+    let push = push.map_or(0, branch_push);
     let delete = if deletes_source {
         push_fees::estimate_ref_updates(1)
     } else {
         0
     };
     TRANSITION + push + delete
+}
+
+/// What `dg pr revert` writes: a new branch holding one new commit (its ref update, and the
+/// commit's pack, stored on Platform when `platform_bytes`), and a pull request carrying
+/// `text_bytes` of title, body and ref names.
+pub fn revert(platform_bytes: bool, text_bytes: u64) -> u64 {
+    branch_push(MergePush {
+        history_index: false,
+        platform_bytes,
+        uploads_pack: true,
+    }) + target_create(text_bytes)
 }
 
 #[cfg(test)]

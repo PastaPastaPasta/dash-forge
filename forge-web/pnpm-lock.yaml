@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@dashevo/evo-sdk':
-        specifier: 5.0.0-beta.1
-        version: 5.0.0-beta.1
+        specifier: 5.0.0-beta.2
+        version: 5.0.0-beta.2
       '@dashevo/wasm-sdk':
-        specifier: 5.0.0-beta.1
-        version: 5.0.0-beta.1
+        specifier: 5.0.0-beta.2
+        version: 5.0.0-beta.2
       '@noble/curves':
         specifier: ^2.4.0
         version: 2.4.0
@@ -172,12 +172,12 @@ packages:
     resolution: {integrity: sha512-Vd/9EVDiu6PPJt9yAh6roZP6El1xHrdvIVGjyBsHR0RYwNHgL7FJPyIIW4fANJNG6FtyZfvlRPpFI4ZM/lubvw==}
     engines: {node: '>=18'}
 
-  '@dashevo/evo-sdk@5.0.0-beta.1':
-    resolution: {integrity: sha512-r4bQcYvTuSUoWDzdYPE/fl19ddVst6PQRdNPnoUWEyUWmg4puBdTvshpq2vFP0hfUp/Bsyw/fyDdjj4+ixnEeg==}
+  '@dashevo/evo-sdk@5.0.0-beta.2':
+    resolution: {integrity: sha512-WlD+KMAZcGA6qroV0tzA0smWZz1+LIT5lVsxG3ifk/Vql0qjJkTOG+V2FAuSH0jYVR+hbI9Idc7y47MnRV1tRw==}
     engines: {node: '>=18.18'}
 
-  '@dashevo/wasm-sdk@5.0.0-beta.1':
-    resolution: {integrity: sha512-n3lLcXiKUL1vHQZHfQXm5Z1hH5nIYH1YyAlpxIyL/SdlSDcEpxRKe4tkiTKHChqzcVtBH1vyTIZ+zQICSL7ZJA==}
+  '@dashevo/wasm-sdk@5.0.0-beta.2':
+    resolution: {integrity: sha512-qZXC4B7B17dpwORcOIUC5ubUSPxv5eIpCfRseBHIAQi7qgmgWs/GBG2bYzqKAcVAXYPoapkmjkWP5e48W0F59Q==}
     engines: {node: '>=18.18'}
 
   '@emnapi/core@1.10.0':
@@ -2699,11 +2699,11 @@ snapshots:
 
   '@csstools/css-tokenizer@3.0.4': {}
 
-  '@dashevo/evo-sdk@5.0.0-beta.1':
+  '@dashevo/evo-sdk@5.0.0-beta.2':
     dependencies:
-      '@dashevo/wasm-sdk': 5.0.0-beta.1
+      '@dashevo/wasm-sdk': 5.0.0-beta.2
 
-  '@dashevo/wasm-sdk@5.0.0-beta.1': {}
+  '@dashevo/wasm-sdk@5.0.0-beta.2': {}
 
   '@emnapi/core@1.10.0':
     dependencies:
