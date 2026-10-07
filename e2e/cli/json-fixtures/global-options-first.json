@@ -1,0 +1,28 @@
+{
+  "source": "mapping: global options before the command words",
+  "command": "issue view",
+  "args": [
+    "--network",
+    "devnet",
+    "--devnet-name",
+    "sakura",
+    "--json",
+    "issue",
+    "view",
+    "o/r",
+    "3"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "number": 3,
+    "author": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "id": "I",
+    "readable": true,
+    "state": "open",
+    "open": true,
+    "labels": [],
+    "assignees": [],
+    "schemaVersion": 1
+  }
+}

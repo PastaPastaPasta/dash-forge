@@ -1904,6 +1904,13 @@ mod tests {
 
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PlanningSupersededInput {
+        copies: Vec<v2::PackCopyRow>,
+        kind: u64,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct ApprovalsInput {
         reviews: Vec<v2::Review>,
         memberships: Vec<v2::Membership>,
@@ -2819,6 +2826,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per vector case
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2834,6 +2842,13 @@ mod tests {
                 let inp: V2PackListInput = input(v);
                 let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());
                 assert_eq!(got, expected::<Vec<v2::V2Pack>>(v), "vector `{ctx}`");
+            }
+            "planning_superseded" => {
+                let inp: PlanningSupersededInput = input(v);
+                let got: Vec<String> = v2::planning_superseded(&inp.copies, inp.kind)
+                    .into_iter()
+                    .collect();
+                assert_eq!(got, expected::<Vec<String>>(v), "vector `{ctx}`");
             }
             "approvals" => run_approvals_case(v),
             "well_formed" | "content_well_formed" => {

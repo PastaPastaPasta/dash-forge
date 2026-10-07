@@ -1,0 +1,101 @@
+{
+  "name": "superseded_pack_keeps_packref",
+  "description": "C1 verified and supersedes P1: P1 is superseded but keeps packRef 0, P2 keeps 1 and C1 takes 2.",
+  "case": "v2_pack_list",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "a",
+        "packHash": "P1",
+        "kind": 0,
+        "createdAt": 10,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer",
+        "verified": true
+      },
+      {
+        "id": "b",
+        "packHash": "P2",
+        "kind": 0,
+        "createdAt": 20,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "writer",
+        "verified": true
+      },
+      {
+        "id": "c",
+        "packHash": "C1",
+        "kind": 0,
+        "createdAt": 30,
+        "sizeBytes": 100,
+        "objectCount": 5,
+        "chunkCount": 1,
+        "ownerRole": "maintainer",
+        "verified": true,
+        "supersedes": [
+          "P1"
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "packRef": 0,
+      "packHash": "P1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 10,
+        "id": "a"
+      },
+      "copies": [
+        "a"
+      ],
+      "superseded": true
+    },
+    {
+      "packRef": 1,
+      "packHash": "P2",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [],
+      "first": {
+        "createdAt": 20,
+        "id": "b"
+      },
+      "copies": [
+        "b"
+      ],
+      "superseded": false
+    },
+    {
+      "packRef": 2,
+      "packHash": "C1",
+      "kind": 0,
+      "sizeBytes": 100,
+      "objectCount": 5,
+      "chunkCount": 1,
+      "supersedes": [
+        "P1"
+      ],
+      "first": {
+        "createdAt": 30,
+        "id": "c"
+      },
+      "copies": [
+        "c"
+      ],
+      "superseded": false
+    }
+  ]
+}

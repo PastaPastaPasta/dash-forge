@@ -1,0 +1,19 @@
+{
+  "source": "negative: dg never prints submitted",
+  "command": "pr review",
+  "args": [
+    "--json",
+    "pr",
+    "review",
+    "o/r",
+    "5",
+    "--approve"
+  ],
+  "exit": 0,
+  "expect": "invalid",
+  "stdout": {
+    "schemaVersion": 1,
+    "status": "submitted",
+    "pr": 5
+  }
+}

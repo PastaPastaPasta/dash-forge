@@ -27,10 +27,11 @@ impl Default for HttpsBackend {
 }
 
 impl HttpsBackend {
-    /// Build a backend with a fresh HTTP client.
+    /// Build a backend with a fresh HTTP client that has the storage connect and idle-read
+    /// timeouts ([`crate::storage::http_client`]).
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: crate::storage::http_client(),
         }
     }
 
@@ -100,6 +101,10 @@ impl PackBackend for HttpsBackend {
 
     async fn get(&self, uri: &Uri, range: Option<ByteRange>) -> Result<Vec<u8>> {
         http_get(&self.client, &uri.0, range).await
+    }
+
+    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
+        http_get_capped(&self.client, &uri.0, None, Some(max_bytes)).await
     }
 
     async fn probe(&self, uri: &Uri) -> Result<Health> {
@@ -183,7 +188,13 @@ pub(crate) async fn read_body_watched(
     if let Some(len) = resp.content_length() {
         too_big(len)?;
     }
-    let mut out = Vec::new();
+    // Sized once from the declared length (never past the cap), and each chunk is checked
+    // before it is kept, so the buffer never grows past `max_bytes`.
+    let presize = match (resp.content_length(), max_bytes) {
+        (Some(len), Some(m)) => usize::try_from(len.min(m)).unwrap_or(0),
+        _ => 0,
+    };
+    let mut out = Vec::with_capacity(presize);
     while let Some(chunk) = resp
         .chunk()
         .await
@@ -194,8 +205,8 @@ pub(crate) async fn read_body_watched(
                 f.store(true, Ordering::Relaxed);
             }
         }
+        too_big(out.len() as u64 + chunk.len() as u64)?;
         out.extend_from_slice(&chunk);
-        too_big(out.len() as u64)?;
     }
     Ok(out)
 }

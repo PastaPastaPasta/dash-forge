@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-view.schema.json",
+  "title": "dg pr view --json",
+  "description": "A pull request: its state, head, reviews, threads and comments.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "number": {
+      "type": "integer"
+    },
+    "id": {
+      "type": "string"
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "body": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "bodyIncomplete": {},
+    "author": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "integer"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "open",
+        "closed",
+        "merged"
+      ]
+    },
+    "draft": {
+      "type": "boolean"
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assignees": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "retargetedTo": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "baseRef": {
+      "type": "string"
+    },
+    "baseRefName": {
+      "type": "string"
+    },
+    "baseTip": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "headOid": {
+      "type": "string"
+    },
+    "initialHeadOid": {
+      "type": "string"
+    },
+    "headOnBase": {
+      "type": "boolean"
+    },
+    "headUpdates": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "resolvedThreads": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "milestone": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sourceRepoId": {
+      "type": "string"
+    },
+    "sourceRepo": {},
+    "sourceRefName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "approvedBy": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "changesRequestedBy": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reviewers": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "requestedReviewers": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "dismissedReviews": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "sinceYourReview": {},
+    "policy": {
+      "$ref": "common.schema.json#/$defs/policy"
+    },
+    "approvals": {},
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "generalComments": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "hiddenComments": {},
+    "hiddenReviews": {},
+    "moderation": {},
+    "hiddenEventValues": {},
+    "plaintextEventValues": {},
+    "audience": {
+      "$ref": "common.schema.json#/$defs/audience"
+    },
+    "readable": {
+      "type": "boolean"
+    },
+    "why": {
+      "type": "string"
+    },
+    "membersOnlyComments": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "membersOnlyHidden": {
+      "type": "integer"
+    },
+    "membersOnlyReviewsHidden": {
+      "type": "integer"
+    },
+    "mergeContent": {}
+  },
+  "required": [
+    "schemaVersion",
+    "number",
+    "id",
+    "author",
+    "state",
+    "labels",
+    "assignees",
+    "readable"
+  ],
+  "additionalProperties": true
+}

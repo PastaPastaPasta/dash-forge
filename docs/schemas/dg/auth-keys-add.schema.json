@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-keys-add.schema.json",
+  "title": "dg auth keys add --json",
+  "description": "A key added to the identity (a limited key, a browser key or an encryption key).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "added",
+        "exists"
+      ]
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "keyId": {
+      "type": "integer"
+    },
+    "purpose": {
+      "type": "string"
+    },
+    "derived": {
+      "type": "boolean"
+    },
+    "budgetCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "expiresAt": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "replacedKeyId": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "encryptionKeyId": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "encryptionKeyIds": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "storedAt": {
+      "type": "string"
+    },
+    "reply": {},
+    "warning": {},
+    "unknownGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "uncheckedGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "keyId"
+  ],
+  "additionalProperties": true
+}

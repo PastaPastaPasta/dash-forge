@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# dg-json-capture — runs dg (E2E_DG_REAL) and, for a run with --json, keeps what it printed on
+# stdout, its arguments and its exit code in E2E_JSON_DIR, for json_check.py to check against
+# docs/schemas/dg/. The harness points DG at this script (lib.sh), so every scenario's
+# `dg … --json` is captured however it calls dg. stdout is passed on unchanged, once dg has
+# finished; stderr and stdin are dg's own. A run without --json is dg itself (exec).
+set -u
+real="${E2E_DG_REAL:?E2E_DG_REAL names the dg binary}"
+json=0
+for a in "$@"; do
+  [[ "$a" == -- ]] && break # what follows is another command's (dg env run … -- cmd --json)
+  [[ "$a" == --json ]] && { json=1; break; }
+done
+if [[ $json -eq 0 || -z "${E2E_JSON_DIR:-}" ]]; then
+  exec "$real" "$@"
+fi
+mkdir -p "$E2E_JSON_DIR" 2>/dev/null
+base="$(mktemp "${E2E_JSON_DIR}/dg.XXXXXX" 2>/dev/null)" || exec "$real" "$@"
+printf '%s\0' "$@" >"${base}.args"
+"$real" "$@" >"${base}.out"
+rc=$?
+cat "${base}.out"
+printf '%s\n' "$rc" >"${base}.rc"
+rm -f "$base"
+exit "$rc"

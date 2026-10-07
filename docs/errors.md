@@ -13,8 +13,10 @@ error: push rejected: you are not a writer of alice/project            [E601]
 The helper prints the same block with each line prefixed `dash: `, because git shows the helper's stderr verbatim. With `--json`, `dg` prints the error on **stdout** instead:
 
 ```json
-{ "error": { "code": "E601", "message": "…", "cause": "…", "fix": ["…"], "note": null, "docs": "…#e601", "exitCode": 6 } }
+{ "error": { "code": "E601", "message": "…", "cause": "…", "fix": ["…"], "note": null, "docs": "…#e601", "exitCode": 6 }, "schemaVersion": 1 }
 ```
+
+A command that finished part of its work adds that part's fields beside `error` (for example `steps`). The shape is [`docs/schemas/dg/error.schema.json`](schemas/dg/error.schema.json).
 
 Codes never change meaning once shipped, so scripts can match on them. A code that no longer occurs is marked **retired** below and its number is never reused. The code's first digit is the process exit code:
 

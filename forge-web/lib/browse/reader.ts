@@ -29,6 +29,11 @@ import {
   PACK_TYPE,
   gitOidHex,
   baseMaxBytes,
+  BuildBudget,
+  BuildBudgetError,
+  buildMaxBytes,
+  DELTA_DEPTH_MAX,
+  DeltaChainError,
   deltaMaxBytes,
   inflateDelta,
   inflatePrefix,
@@ -422,18 +427,123 @@ function zlibMaxBytes(size: number): number {
 }
 
 /**
- * Delta-chain steps {@link BrowseReader.objectType} follows: git caps `pack.depth` at 4095, so
- * a longer chain (or a cycle of REF deltas) is a hostile pack, not a real one.
+ * Pack entries one copy of a read may decode, over every chain it walks: each REF base in it is
+ * a read of its own, which may try a few copies of its pack in turn.
  */
-const DELTA_WALK_MAX = 4095
+const DELTA_STEPS_MAX = 4 * DELTA_DEPTH_MAX
 
-/** A read's limits, fixed when it starts: the object's, and every delta base's at any depth. */
+/**
+ * The most copies of a pack one read decodes. Any writer may post a copy of a pack, but they are
+ * tried in `orderPackCopies` order (maintainers' first, then each role's oldest first), one per
+ * uploader, so the honest copy that was uploaded first comes ahead of any posted after it; past a
+ * few, more copies only multiply what a read of a bad object costs. A copy that served no bytes
+ * (a mirror that is down) is not counted: it cost nothing to decode.
+ */
+export const PACK_COPIES_TRIED = 4
+
+/** The most copies of a pack one read asks for, counting those that served nothing. */
+export const PACK_COPIES_ASKED = 8
+
+/**
+ * The pack entries one copy of a read is decoding, from the object down to the base it has
+ * reached. An entry met again is a cycle (OFS bases only ever move back, but a REF base can name
+ * any object, the delta itself included), a chain past {@link DELTA_DEPTH_MAX} is a hostile pack,
+ * and so is a copy past {@link DELTA_STEPS_MAX} steps or its {@link BuildBudget}: each fails it
+ * before another base is fetched.
+ */
+class DeltaChain {
+  /** Entries in progress, per object index (a fresher reader's pack numbering is its own). */
+  private readonly on = new Map<object, Set<string>>()
+  private depth = 0
+  private steps = 0
+
+  constructor(readonly budget: BuildBudget) {}
+
+  /** Count one pack entry decoded (a span read counts each entry of its chain). */
+  step(): void {
+    if (++this.steps > DELTA_STEPS_MAX) throw new DeltaChainError(`reading this object took over ${DELTA_STEPS_MAX} delta steps`)
+  }
+
+  async through<T>(index: object, at: string, decode: () => Promise<T>): Promise<T> {
+    let entries = this.on.get(index)
+    if (entries === undefined) this.on.set(index, (entries = new Set()))
+    if (entries.has(at)) throw new DeltaChainError(`delta chain loops back to pack entry ${at}`)
+    // `depth` deltas are in progress above this entry: it may be the root of the deepest chain.
+    if (this.depth > DELTA_DEPTH_MAX) throw new DeltaChainError(`delta chain is over ${DELTA_DEPTH_MAX} deep`)
+    this.step()
+    entries.add(at)
+    this.depth += 1
+    try {
+      return await decode()
+    } finally {
+      entries.delete(at)
+      this.depth -= 1
+    }
+  }
+}
+
+/**
+ * Failures that came from the path a read took, not from what it read ({@link dependsOnPath}).
+ * Shared by every read: an error marked here is only ever remembered less, so the worst a
+ * mark costs another read is reading something again.
+ */
+const pathFailures = new WeakSet<object>()
+
+/**
+ * Whether `e` says as much about the path that reached an entry as about the entry: a chain too
+ * deep, looping back or too long, a read past its budget, or a failure of an object one of whose
+ * copies failed so. The same entry reached another way may read.
+ */
+function dependsOnPath(e: unknown): boolean {
+  return e instanceof DeltaChainError || e instanceof BuildBudgetError || (typeof e === 'object' && e !== null && pathFailures.has(e))
+}
+
+/**
+ * What one read failed to read, per object index (a fresher reader's pack numbering is its
+ * own): REF bases by oid, pack entries by address and copy. Asked for again (another copy's walk
+ * reaches them too), they fail at once rather than be read again. Only what the object itself
+ * decides is kept (bytes that are wrong, a size over the read's limit, nothing answering), never
+ * a failure that {@link dependsOnPath}.
+ */
+class FailedReads {
+  private readonly byIndex = new Map<object, Map<string, unknown>>()
+
+  /** Throws what `key` failed with before, if it did. */
+  check(index: object, key: string): void {
+    const failed = this.byIndex.get(index)
+    if (failed?.has(key) === true) throw failed.get(key)
+  }
+
+  note(index: object, key: string, e: unknown): void {
+    if (dependsOnPath(e)) return
+    let failed = this.byIndex.get(index)
+    if (failed === undefined) this.byIndex.set(index, (failed = new Map()))
+    failed.set(key, e)
+  }
+}
+
+/**
+ * A read's limits, fixed when it starts: the object's, every delta base's at any depth, and all
+ * it builds; and what it failed to read. `chain` is the copy being read, which its REF bases'
+ * reads join; each copy of the object itself starts a chain of its own ({@link Attempt}).
+ */
 interface Limits {
   readonly item: number
   readonly base: number
+  readonly total: number
+  readonly failed: FailedReads
+  readonly chain?: DeltaChain
 }
 
-const limitsFor = (maxBytes: number): Limits => ({ item: maxBytes, base: baseMaxBytes(maxBytes) })
+/** {@link Limits} while one copy of the object is read. */
+type Attempt = Limits & { readonly chain: DeltaChain }
+
+const limitsFor = (maxBytes: number): Limits => ({
+  item: maxBytes,
+  base: baseMaxBytes(maxBytes),
+  total: buildMaxBytes(maxBytes),
+  failed: new FailedReads(),
+})
 
 /** Per-reader object-memo budget — readers live for the session (cached browse context). */
 const OBJECT_CACHE_BUDGET_BYTES = 8 * 1024 * 1024
@@ -634,7 +744,7 @@ export class BrowseReader {
     let e: PackEntry = entry
     // A base seen before is a cycle (a hostile pack): fail at once, not after the whole budget.
     const seen = new Set<string>()
-    for (let step = 0; step <= DELTA_WALK_MAX; step++) {
+    for (let step = 0; step <= DELTA_DEPTH_MAX; step++) {
       const at = offsetKey(e.packRef, e.offset)
       if (seen.has(at)) throw new Error(`delta chain of ${oidHex} loops back to pack ${e.packRef} offset ${e.offset}`)
       seen.add(at)
@@ -656,7 +766,7 @@ export class BrowseReader {
         return objTypeFromCode(h.type)
       }
     }
-    throw new Error(`delta chain of ${oidHex} is over ${DELTA_WALK_MAX} deep`)
+    throw new Error(`delta chain of ${oidHex} is over ${DELTA_DEPTH_MAX} deep`)
   }
 
   /**
@@ -740,6 +850,7 @@ export class BrowseReader {
       this.noteHeld(oidHex)
       return obj
     }
+    limits.failed.check(this.index, oidKey)
 
     const entry = await this.locate(oidHex, commit)
     if (entry === null) {
@@ -752,7 +863,13 @@ export class BrowseReader {
       throw this.missing(oidHex)
     }
 
-    const obj = await this.readVerified(entry, oidKey, limits)
+    let obj: GitObject
+    try {
+      obj = await this.readVerified(entry, oidKey, limits)
+    } catch (e) {
+      limits.failed.note(this.index, oidKey, e)
+      throw e
+    }
     this.objectsByOid.set(oidKey, obj)
     this.noteRead(entry.packRef)
     if (obj.type === 'commit') await this.afterCommit?.(entry)
@@ -800,22 +917,33 @@ export class BrowseReader {
   /**
    * Reconstruct `entry` and check its oid, trying the pack's copies in order: a copy whose
    * bytes do not reconstruct the object (a hostile or corrupt writer copy) is skipped for the
-   * next one (`forge-v2.md` §4 "read the first copy that verifies"). A single-copy pack
-   * behaves exactly as before. Reported `failed` only when some copy's bytes arrived and were
-   * wrong; any other failure throws with no verdict ({@link ReadFailure}).
+   * next one (`forge-v2.md` §4 "read the first copy that verifies"): the copy that served last,
+   * then the others in order, until {@link PACK_COPIES_TRIED} of them served bytes or
+   * {@link PACK_COPIES_ASKED} were asked. A single-copy pack behaves exactly as before. Reported
+   * `failed` only when some copy's bytes arrived and were wrong; any other failure throws with
+   * no verdict ({@link ReadFailure}).
+   *
+   * Each copy of an object read for its own sake gets the read's whole budget and steps: what a
+   * bad copy spent must not fail the honest one. A REF base's read shares its reader's copy's.
    */
   private async readVerified(entry: LocatorEntry, oidKey: string, limits: Limits): Promise<GitObject> {
     const copies = Math.max(1, this.packs.copyCount?.(entry.packRef) ?? 1)
     const start = this.copyOf.get(entry.packRef) ?? 0
+    const order = [start, ...Array.from({ length: copies }, (_, c) => c).filter((c) => c !== start)].slice(0, PACK_COPIES_ASKED)
     // The last error of each kind ({@link ReadFailure}) over the copies tried.
     const failed: Partial<Record<ReadFailure, unknown>> = {}
     let tooLarge: ObjectTooLargeError | null = null
-    for (let i = 0; i < copies; i++) {
-      const copy = (start + i) % copies
+    let onPath = false
+    let served = 0
+    for (const [i, copy] of order.entries()) {
+      if (served >= PACK_COPIES_TRIED) break
+      const attempt: Attempt = { ...limits, chain: limits.chain ?? new DeltaChain(new BuildBudget(limits.total)) }
       let obj: GitObject
       try {
-        obj = i === 0 ? await this.reconstruct(entry, limits) : await this.reconstructFrom(entry, copy, limits)
+        obj = i === 0 ? await this.reconstruct(entry, attempt) : await this.reconstructFrom(entry, copy, attempt)
       } catch (e) {
+        onPath ||= dependsOnPath(e)
+        if (readFailure(e) !== 'transport') served += 1
         // Over the caller's limit in this copy: another copy may be the honest one (a
         // tampered header must not hide it), and if every copy says so, that is the answer.
         if (e instanceof ObjectTooLargeError) tooLarge = e
@@ -832,23 +960,29 @@ export class BrowseReader {
         this.opts.onObject?.('verified')
         return obj
       }
+      served += 1
       failed.content = new Error(`oid mismatch: wanted ${oidKey}, reconstructed ${got}`)
     }
-    if (tooLarge !== null) throw tooLarge
+    // Some copy failed on the path it was read by: on another, the object may read.
+    const fail = (e: unknown): unknown => {
+      if (onPath && typeof e === 'object' && e !== null) pathFailures.add(e)
+      return e
+    }
+    if (tooLarge !== null) throw fail(tooLarge)
     // Only bytes that arrived and were wrong are a content failure (L-10).
     if ('content' in failed) {
       this.opts.onObject?.('failed')
-      throw failed.content
+      throw fail(failed.content)
     }
     if ('transport' in failed) {
       this.opts.onUnreachable?.()
-      throw failed.transport
+      throw fail(failed.transport)
     }
-    throw failed.other
+    throw fail(failed.other)
   }
 
   /** The default path: memoized decode through the pack's current copy. */
-  private reconstruct(entry: LocatorEntry, limits: Limits): Promise<GitObject> {
+  private reconstruct(entry: LocatorEntry, limits: Attempt): Promise<GitObject> {
     return singleReadAdvised(entry) ? this.readSpan(entry, limits) : this.decodeEntry(entry, limits.item, limits)
   }
 
@@ -857,13 +991,15 @@ export class BrowseReader {
    * entries came from another copy). REF_DELTA bases are other objects and go through
    * {@link readObject}, which verifies them on their own.
    */
-  private async reconstructFrom(entry: LocatorEntry, copy: number, limits: Limits): Promise<GitObject> {
+  private async reconstructFrom(entry: LocatorEntry, copy: number, limits: Attempt): Promise<GitObject> {
     if (singleReadAdvised(entry)) {
       const end = entry.offset + entry.length
       const slice = await this.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
-      return reconstructFromSpan(entry, slice, limits.item, limits.base)
+      return reconstructFromSpan(entry, slice, limits.item, limits.base, limits.chain.budget, () => limits.chain.step())
     }
-    const walk = async (e: PackEntry, limit: number): Promise<GitObject> => {
+    const budget = limits.chain.budget
+    const walk = (e: PackEntry, limit: number): Promise<GitObject> => limits.chain.through(this.index, offsetKey(e.packRef, e.offset), () => walkEntry(e, limit))
+    const walkEntry = async (e: PackEntry, limit: number): Promise<GitObject> => {
       const self = await this.fetchEntry(e, limit, copy)
       const h = parseObjHeader(self, 0)
       switch (h.type) {
@@ -871,15 +1007,15 @@ export class BrowseReader {
         case PACK_TYPE.TREE:
         case PACK_TYPE.BLOB:
         case PACK_TYPE.TAG:
-          return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size, limit) }
+          return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size, limit, budget) }
         case PACK_TYPE.OFS_DELTA: {
           const [rel, dpos] = parseOfsBase(self, h.after)
           const base = await walk(this.entryAt(e, rel), limits.base)
-          return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, limit) }
+          return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, limit, budget) }
         }
         case PACK_TYPE.REF_DELTA: {
-          const base = await this.readBounded(bytesToHex(self.subarray(h.after, h.after + 20)), { item: limits.base, base: limits.base })
-          return { type: base.type, bytes: inflateDelta(base.bytes, self, h.after + 20, h.size, limit) }
+          const base = await this.readBounded(bytesToHex(self.subarray(h.after, h.after + 20)), { ...limits, item: limits.base })
+          return { type: base.type, bytes: inflateDelta(base.bytes, self, h.after + 20, h.size, limit, budget) }
         }
         default:
           throw new Error(`unknown pack object type ${h.type}`)
@@ -889,11 +1025,11 @@ export class BrowseReader {
   }
 
   /** Single contiguous span read (blob path): one ranged fetch, then reconstruct. */
-  private async readSpan(entry: LocatorEntry, limits: Limits): Promise<GitObject> {
+  private async readSpan(entry: LocatorEntry, limits: Attempt): Promise<GitObject> {
     const end = entry.offset + entry.length
     const start = end - entry.deltaChainSpan
     const slice = await this.fetchRange(entry.packRef, start, end, this.copyOf.get(entry.packRef))
-    return reconstructFromSpan(entry, slice, limits.item, limits.base)
+    return reconstructFromSpan(entry, slice, limits.item, limits.base, limits.chain.budget, () => limits.chain.step())
   }
 
   /**
@@ -901,46 +1037,61 @@ export class BrowseReader {
    * bytes, resolve its immediate base individually (OFS by offset via the locator's offset
    * index, REF by OID), and apply. Avoids the single-span over-fetch (root tree 212×).
    */
-  private async decodeEntry(entry: PackEntry, maxBytes: number, limits: Limits): Promise<GitObject> {
+  private async decodeEntry(entry: PackEntry, maxBytes: number, limits: Attempt): Promise<GitObject> {
     // Keyed by the copy too: bytes decoded from one writer's copy must not stand in for
     // another's once a bad copy has been skipped.
     const addrKey = `${offsetKey(entry.packRef, entry.offset)}:${this.copyOf.get(entry.packRef) ?? 0}`
     const cached = this.objectsByAddr.get(addrKey)
     if (cached !== undefined) return withinLimit(cached, maxBytes)
-    const obj = await this.decodeEntryUncached(entry, maxBytes, limits)
+    limits.failed.check(this.index, addrKey)
+    let obj: GitObject
+    try {
+      obj = await limits.chain.through(this.index, offsetKey(entry.packRef, entry.offset), () => this.decodeEntryUncached(entry, maxBytes, limits))
+    } catch (e) {
+      limits.failed.note(this.index, addrKey, e)
+      throw e
+    }
     this.objectsByAddr.set(addrKey, obj)
     return obj
   }
 
   /** `maxBytes` bounds this entry and `limits.base` its delta bases, at any depth. */
-  private async decodeEntryUncached(entry: PackEntry, maxBytes: number, limits: Limits): Promise<GitObject> {
+  private async decodeEntryUncached(entry: PackEntry, maxBytes: number, limits: Attempt): Promise<GitObject> {
     const packRef = entry.packRef
     const self = await this.fetchEntry(entry, maxBytes, this.copyOf.get(packRef))
     const h = parseObjHeader(self, 0)
+    const budget = limits.chain.budget
 
     switch (h.type) {
       case PACK_TYPE.COMMIT:
       case PACK_TYPE.TREE:
       case PACK_TYPE.BLOB:
       case PACK_TYPE.TAG:
-        return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size, maxBytes) }
+        return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size, maxBytes, budget) }
       case PACK_TYPE.OFS_DELTA: {
         const [rel, dpos] = parseOfsBase(self, h.after)
         // An OFS base is always in the referencing object's own pack.
         const base = await this.decodeEntry(this.entryAt(entry, rel), limits.base, limits)
-        return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, maxBytes) }
+        return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, maxBytes, budget) }
       }
       case PACK_TYPE.REF_DELTA: {
         const oidHex = bytesToHex(self.subarray(h.after, h.after + 20))
         const base = await this.decodeByOid(oidHex, limits)
-        return { type: base.type, bytes: inflateDelta(base.bytes, self, h.after + 20, h.size, maxBytes) }
+        return { type: base.type, bytes: inflateDelta(base.bytes, self, h.after + 20, h.size, maxBytes, budget) }
       }
       default:
         throw new Error(`unknown pack object type ${h.type}`)
     }
   }
 
-  private async decodeByOid(oidHex: string, limits: Limits): Promise<GitObject> {
+  /**
+   * A REF base on the current copy's path: decoded through its own pack's current copy, under this
+   * copy's budget, with no fallback to that pack's other copies. Packs Forge stores have no REF
+   * deltas (every base is an earlier OFS entry), so only a pack that does not conform reaches
+   * here; if it fails, {@link readVerified} still tries the object's other copies, whose REF
+   * bases are read for their own sake ({@link readBounded}).
+   */
+  private async decodeByOid(oidHex: string, limits: Attempt): Promise<GitObject> {
     const e = await this.locate(oidHex)
     // A base this reader does not index: the same "missing object" as a direct read of it.
     if (e === null) throw this.missing(oidHex)

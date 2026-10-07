@@ -1,0 +1,20 @@
+{
+  "source": "emitter: crates/dg/src/pr/review.rs discard of an unreadable draft",
+  "command": "pr review",
+  "args": [
+    "--json",
+    "pr",
+    "review",
+    "o/r",
+    "5",
+    "--discard"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "discarded",
+    "pr": 5,
+    "discarded": null,
+    "schemaVersion": 1
+  }
+}
