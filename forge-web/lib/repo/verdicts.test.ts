@@ -116,6 +116,7 @@ describe('proved verdict count (RC1 R-16)', () => {
     expect(seen.counts).toEqual([verdictsQuery(REPO_REF, PATCH, HEAD)])
     expect(seen.sums).toHaveLength(0)
     // The plain reads are the DPNS names and the base ref's history (the repo chrome's, in the app).
+    // Never the repo's bans: the page applies them when they land, so nothing on it waits on them.
     expect(seen.queries.map((q) => q.documentTypeName).sort()).toEqual(['config', 'domain', 'protectedRefUpdate', 'refUpdate'])
     expect(thread?.verdicts).toEqual({ headOid: HEAD, approvals: 2, changesRequested: 1 })
     // The fold, which gates the merge, counts each reviewer once.

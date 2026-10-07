@@ -1,0 +1,67 @@
+{
+  "name": "last_match_wins",
+  "description": "The last matching rule decides a path's owners: docs/ belongs to the writer, not to the catch-all's maintainer.",
+  "case": "code_owner_review",
+  "rules": "v2",
+  "input": {
+    "file": "* @alice\n/docs/ @wri\n",
+    "paths": [
+      "docs/x.md",
+      "src/a.rs"
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "A",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "A",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "W",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "T",
+        "role": "triage",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "prAuthor": "P",
+    "policy": {
+      "requiredApprovals": 0,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0,
+      "requireCodeOwners": true
+    },
+    "resolved": {
+      "@alice": "A",
+      "@wri": "W",
+      "@tri": "T",
+      "@bob": null
+    }
+  },
+  "expected": {
+    "met": false,
+    "unreadable": false,
+    "pending": [
+      {
+        "path": "docs/x.md",
+        "owners": [
+          "@wri"
+        ],
+        "approvable": true
+      }
+    ]
+  }
+}

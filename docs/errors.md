@@ -444,6 +444,14 @@ Two common ones:
 
 **What to do:** `dg env history --env <name>` shows what each changed; a maintainer keeps one with `dg env edit --env <name> --keep <id>` (or `set`, `unset`, `import` with `--keep`). See [Environments](guides/environments.md#when-two-people-change-it-at-once).
 
+## E610
+
+**Banned from this repository.** A maintainer of the repository banned your identity. Forge apps hide a banned identity's issues, pull requests, comments and reviews in that repository (each with a way to show it), and refuse its new issues, pull requests, comments and reviews there before signing. The `cause:` line names who banned you and the reason they gave.
+
+**What to do:** ask a maintainer of the repository to lift the ban. Only the maintainer who wrote a ban can lift it, and a ban stops counting once its writer is no longer a maintainer.
+
+*Protocol detail:* a ban is a forge-collab `ban` document that only a maintainer can write. Platform does not stop a banned identity from writing; Forge apps do.
+
 ## E701
 
 **Dash Platform unreachable.** No DAPI node answered, or the quorum service could not be reached. Nodes that fail are skipped for about a minute, so an immediate retry often reaches the same dead nodes.

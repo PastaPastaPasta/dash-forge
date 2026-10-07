@@ -1093,6 +1093,7 @@ async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
 
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str, members: bool) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "issue not created").await?;
+    s.refuse_if_banned("issue not created").await?;
     // One `Collab` for the command: the audience it asks for applies to every write it makes.
     let collab = s.collab();
     let audience = crate::audience::requested(&collab, &s.repo, members, None, None).await?;
@@ -1307,6 +1308,7 @@ async fn edit(
 
 async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str, members: bool) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "comment not posted").await?;
+    s.refuse_if_banned("comment not posted").await?;
     let target = target(&s, repo, number).await?;
     refuse_if_locked(&s, number, &target.id).await?;
     let price = ctx.usd_price();

@@ -1,0 +1,57 @@
+{
+  "name": "owner_ban_outranks",
+  "description": "Of two standing bans of one identity, the owner's decides even when a maintainer's came first.",
+  "case": "bans",
+  "rules": "v2",
+  "input": {
+    "owner": "own",
+    "maintainers": [
+      "m1"
+    ],
+    "bans": [
+      {
+        "id": "b1",
+        "identity": "s",
+        "by": "m1",
+        "reason": 2,
+        "createdAt": 10
+      },
+      {
+        "id": "b2",
+        "identity": "s",
+        "by": "own",
+        "reason": 0,
+        "createdAt": 20
+      }
+    ],
+    "threadAuthor": "x",
+    "comments": [
+      {
+        "id": "c1",
+        "author": "s"
+      }
+    ]
+  },
+  "expected": {
+    "banned": {
+      "s": "b2"
+    },
+    "reasons": {
+      "s": null
+    },
+    "hidden": {
+      "thread": null,
+      "items": {
+        "c1": {
+          "by": "own",
+          "reason": null,
+          "at": 20,
+          "eventId": "b2",
+          "via": "ban",
+          "banReason": 0
+        }
+      },
+      "counted": []
+    }
+  }
+}

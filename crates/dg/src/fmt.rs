@@ -341,6 +341,12 @@ pub fn hidden_line(
 /// the words [`hidden_line`] and a listed hidden issue or PR share.
 #[must_use]
 pub fn hidden_by(h: &forge_core::rules::v2::Hidden, who: &dyn Fn(&str) -> String) -> String {
+    if h.via == forge_core::rules::v2::HiddenVia::Ban {
+        let reason = forge_core::rules::bans::ban_reason_label(h.ban_reason)
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default();
+        return format!("hidden: banned by a maintainer, {}{reason}", who(&h.by));
+    }
     let reason = h
         .reason
         .as_deref()
@@ -362,14 +368,21 @@ pub fn hidden_row_mark(h: &forge_core::rules::v2::Hidden, who: &dyn Fn(&str) -> 
 }
 
 /// `dg issue list` / `dg pr list --json`: `row` with its `hiddenBy`, the row's whole-thread hide
-/// (`{by, reason, at, eventId}`, or null when it has none). Not `hidden`: the list's top-level
+/// (`{by, reason, at, eventId, via, banReason}`, or null when it has none; `via` `ban` for a
+/// banned author). Not `hidden`: the list's top-level
 /// `hidden` counts malformed documents.
 #[must_use]
 pub fn with_hidden_by(mut row: Value, h: Option<&forge_core::rules::v2::Hidden>) -> Value {
-    row["hiddenBy"] = h.map_or(
-        Value::Null,
-        |h| json!({ "by": h.by, "reason": h.reason, "at": h.at, "eventId": h.event_id }),
-    );
+    row["hiddenBy"] = h.map_or(Value::Null, |h| {
+        json!({
+            "by": h.by,
+            "reason": h.reason,
+            "at": h.at,
+            "eventId": h.event_id,
+            "via": h.via,
+            "banReason": forge_core::rules::bans::ban_reason_label(h.ban_reason),
+        })
+    });
     row
 }
 
@@ -630,7 +643,7 @@ mod tests {
             with_hidden_by(json!({ "number": 1 }), Some(a)),
             json!({
                 "number": 1,
-                "hiddenBy": { "by": "alice", "reason": "spam", "at": 1, "eventId": "e1" }
+                "hiddenBy": { "by": "alice", "reason": "spam", "at": 1, "eventId": "e1", "via": "item", "banReason": null }
             })
         );
         assert_eq!(

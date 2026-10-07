@@ -1586,6 +1586,7 @@ mod tests {
                     .iter()
                     .map(|s| platform::encode_identifier(id(s)))
                     .collect(),
+                require_code_owners: false,
             };
             let props = policy_props(&policy);
             assert_eq!(props.is_ok(), case["expect"] == "ok", "{name}");

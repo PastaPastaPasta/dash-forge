@@ -132,9 +132,10 @@ describe('the lock bit is in the thread read (no request of its own)', () => {
     expect(locked.seen.queries.filter((q) => q.documentTypeName === 'transition')).toHaveLength(0)
     expect(asked(locked.seen)).toEqual(asked(open.seen))
     // The page's whole budget: the composite, the names (one DPNS read), the base ref's history
-    // and config, and the verdict count.
+    // and config, and the verdict count. Not the repo's bans: the page reads them beside the thread.
     expect(requests(locked.seen)).toBe(6)
     expect(requests(open.seen)).toBe(6)
+    expect(open.seen.queries.some((q) => q.documentTypeName === 'ban')).toBe(false)
   })
 
   it("the issue page's load: the same requests locked as unlocked", async () => {
@@ -151,6 +152,8 @@ describe('the lock bit is in the thread read (no request of its own)', () => {
     expect([open.locked, locked.locked]).toEqual([false, true])
     expect(locked.seen.queries.filter((q) => q.documentTypeName === 'transition')).toHaveLength(0)
     expect(asked(locked.seen)).toEqual(asked(open.seen))
+    // The repo's bans are the page's own read, beside the thread: the issue never waits on them.
+    expect(open.seen.queries.some((q) => q.documentTypeName === 'ban')).toBe(false)
   })
 })
 

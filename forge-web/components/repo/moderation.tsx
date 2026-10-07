@@ -6,12 +6,15 @@
  * public on Platform anyway), and the banner of a hidden issue or PR.
  */
 
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ChevronDown, Eye, EyeOff } from 'lucide-react'
 
 import { Author } from '@/components/author'
 import { useDismiss } from '@/components/repo/target-rail'
-import { HIDE_REASONS, type Hidden, type HideBlock, type HideReason } from '@/lib/rules/moderation'
+import { HIDE_REASONS, type Hidden, type HiddenItems, type HideBlock, type HideReason } from '@/lib/rules/moderation'
+import { banHidden, banReasonLabel } from '@/lib/rules/bans'
+import { readBans, readStandingBans } from '@/lib/repo/bans'
+import { foldModeration, withBans, type ModerationInput } from '@/lib/repo/moderation-fold'
 import { timeAgo } from '@/lib/view'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -44,6 +47,12 @@ const BLOCKED_NOTE: Readonly<Record<HideBlock, string | null>> = {
 /** "as spam", or '' for a hide with no reason. */
 export function reasonWords(reason: HideReason | null): string {
   return reason === null ? '' : ` as ${HIDE_REASON_LABEL[reason].toLowerCase()}`
+}
+
+/** A ban's reason, " (spam)", or '' for none. */
+export function banWords(hidden: Hidden): string {
+  const r = banReasonLabel(hidden.banReason)
+  return r === null ? '' : ` (${r})`
 }
 
 /**
@@ -149,12 +158,20 @@ export function HiddenRow({
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-dashed border-anvil-300 px-4 py-2 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="hidden-item" data-via={hidden.via}>
       <EyeOff className="h-3.5 w-3.5 shrink-0 text-anvil-500" aria-hidden />
-      <span>
-        {hidden.via === 'review' ? `A ${what} in a hidden review` : `A ${what}`} by <Author identityId={author} link={false} className="align-middle" /> was hidden by{' '}
-        <Author identityId={hidden.by} link={false} className="align-middle" />
-        {reasonWords(hidden.reason)}
-        <span className="whitespace-nowrap"> · {timeAgo(hidden.at)}</span>
-      </span>
+      {hidden.via === 'ban' ? (
+        <span>
+          Hidden: <Author identityId={author} link={false} className="align-middle" /> was banned by a maintainer,{' '}
+          <Author identityId={hidden.by} link={false} className="align-middle" />
+          {banWords(hidden)}
+        </span>
+      ) : (
+        <span>
+          {hidden.via === 'review' ? `A ${what} in a hidden review` : `A ${what}`} by <Author identityId={author} link={false} className="align-middle" /> was hidden by{' '}
+          <Author identityId={hidden.by} link={false} className="align-middle" />
+          {reasonWords(hidden.reason)}
+          <span className="whitespace-nowrap"> · {timeAgo(hidden.at)}</span>
+        </span>
+      )}
       {note}
       <span className="ml-auto flex items-center gap-3">
         {actions}
@@ -172,8 +189,9 @@ export function RevealedNote({ hidden, onCollapse }: { hidden: Hidden; onCollaps
     <div className="flex items-center gap-2 px-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="revealed-hidden">
       <EyeOff className="h-3 w-3" aria-hidden />
       <span>
-        Hidden by <Author identityId={hidden.by} link={false} className="align-middle" />
-        {reasonWords(hidden.reason)}
+        {hidden.via === 'ban' ? 'Hidden: banned by a maintainer, ' : 'Hidden by '}
+        <Author identityId={hidden.by} link={false} className="align-middle" />
+        {hidden.via === 'ban' ? banWords(hidden) : reasonWords(hidden.reason)}
       </span>
       <button type="button" onClick={onCollapse} className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400">
         Collapse
@@ -187,10 +205,17 @@ export function HiddenBanner({ hidden, noun, revealed, onReveal }: { hidden: Hid
   return (
     <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-caution/40 bg-caution/5 px-4 py-3 text-dense text-anvil-700 dark:text-anvil-200" data-testid="hidden-thread">
       <EyeOff className="h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
-      <span>
-        This {noun} was hidden by a maintainer, <Author identityId={hidden.by} link={false} className="align-middle" />
-        {reasonWords(hidden.reason)} · {timeAgo(hidden.at)}. It stays on Platform and keeps its number; lists leave it out.
-      </span>
+      {hidden.via === 'ban' ? (
+        <span>
+          This {noun} is hidden: its author was banned by a maintainer, <Author identityId={hidden.by} link={false} className="align-middle" />
+          {banWords(hidden)}. It stays on Platform and keeps its number; lists leave it out.
+        </span>
+      ) : (
+        <span>
+          This {noun} was hidden by a maintainer, <Author identityId={hidden.by} link={false} className="align-middle" />
+          {reasonWords(hidden.reason)} · {timeAgo(hidden.at)}. It stays on Platform and keeps its number; lists leave it out.
+        </span>
+      )}
       {!revealed ? (
         <button type="button" onClick={onReveal} className="hit-area ml-auto font-medium text-forge-700 hover:underline dark:text-forge-400" data-testid="reveal-thread">
           Show it anyway
@@ -311,6 +336,23 @@ export function hideConfirm(
 const NO_IDS: ReadonlyMap<string, Hidden> = new Map()
 
 /**
+ * A thread's collapses (`hides`, read with it from `input`) with the repo's maintainer bans applied
+ * (UPDATE-1). The thread read never reads the bans, so nothing on the page waits on them: until
+ * they land, or when their read fails (`readBans` answers none), the page shows the hides alone.
+ */
+export function useThreadModeration(
+  sdk: EvoSDK | null,
+  ready: boolean,
+  repo: RepoRef,
+  input: ModerationInput | undefined,
+  hides: HiddenItems | undefined,
+): HiddenItems | undefined {
+  const bans = useAsync(() => readBans(sdk!, repo), [ready, repoKey(repo)], { enabled: ready && sdk !== null })
+  const raw = bans.data
+  return useMemo(() => (input === undefined || raw == null || raw.length === 0 ? hides : foldModeration(withBans(input, raw))), [input, hides, raw])
+}
+
+/**
  * The list page's rows whose thread a maintainer hid (RC2 MOD), with who hid each and why, read
  * once per distinct set of rows with hides: none read for a page without any.
  */
@@ -318,9 +360,18 @@ export function useHiddenThreads(sdk: EvoSDK | null, ready: boolean, repo: RepoR
   const withHides = (rows ?? []).filter((r) => (r.threadHides?.length ?? 0) > 0)
   const key = withHides.map((r) => `${r.id}:${r.threadHides?.length ?? 0}`).join(',')
   const read = useAsync(() => hiddenThreadIds(sdk!, repo, network, withHides), [ready, repoKey(repo), key], { enabled: ready && sdk !== null && key !== '' })
-  if (key === '') return NO_IDS
+  // The repo's bans (UPDATE-1): one read per repo, shared with its other pages for a while.
+  const bans = useAsync(() => readStandingBans(sdk!, repo, network), [ready, repoKey(repo), network], { enabled: ready && sdk !== null && rows !== undefined })
   // Until the read lands: every hide counts (the registration's default), so no hidden row flashes in.
-  return read.data ?? hiddenRowIds(withHides, repo.ownerId, [], true)
+  const hides = key === '' ? NO_IDS : (read.data ?? hiddenRowIds(withHides, repo.ownerId, [], true))
+  const banned = bans.data
+  if (banned === null || banned.size === 0) return hides
+  const out = new Map(hides)
+  for (const r of rows ?? []) {
+    const b = banned.get(r.author)
+    if (b !== undefined && !out.has(r.id)) out.set(r.id, banHidden(b))
+  }
+  return out
 }
 
 /**
@@ -333,8 +384,9 @@ export function HiddenRowMark({ hidden }: { hidden: Hidden | undefined }): JSX.E
     <span className="inline-flex items-center gap-1 rounded-full border border-anvil-300 px-2 py-0.5 text-[11px] text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="row-hidden">
       <EyeOff className="h-3 w-3 shrink-0" aria-hidden />
       <span>
-        Hidden by <Author identityId={hidden.by} link={false} className="align-middle" />
-        {reasonWords(hidden.reason)}
+        {hidden.via === 'ban' ? 'Author banned by ' : 'Hidden by '}
+        <Author identityId={hidden.by} link={false} className="align-middle" />
+        {hidden.via === 'ban' ? banWords(hidden) : reasonWords(hidden.reason)}
       </span>
     </span>
   )

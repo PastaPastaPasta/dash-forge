@@ -725,7 +725,7 @@ export function Timeline({
                     // An inline comment hidden on its own (one hidden with its review shows once the review is shown)
                     const own = moderation?.items[c.id]
                     const ownActions = moderate?.({ kind: 'comment', id: c.id })
-                    if (own?.via === 'item' && !revealed.has(c.id)) {
+                    if (own !== undefined && own.via !== 'review' && !revealed.has(c.id)) {
                       return <HiddenRow key={c.id} hidden={own} what="comment" author={c.author} onShow={() => reveal(c.id, true)} actions={ownActions} />
                     }
                     const slot = renderComment?.({ kind: 'comment', at: c.createdAt, comment: c }) ?? {}

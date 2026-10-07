@@ -120,6 +120,8 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg repo activity` | [`repo-activity.schema.json`](dg/repo-activity.schema.json) |
 | `dg repo archive` | [`repo-archive.schema.json`](dg/repo-archive.schema.json) |
 | `dg repo backend set` | [`repo-backend-set.schema.json`](dg/repo-backend-set.schema.json) |
+| `dg repo ban` | [`repo-ban.schema.json`](dg/repo-ban.schema.json) |
+| `dg repo bans` | [`repo-bans.schema.json`](dg/repo-bans.schema.json) |
 | `dg repo clone` | [`repo-clone.schema.json`](dg/repo-clone.schema.json) |
 | `dg repo create` | [`repo-create.schema.json`](dg/repo-create.schema.json) |
 | `dg repo edit` | [`repo-edit.schema.json`](dg/repo-edit.schema.json) |
@@ -141,6 +143,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg repo sync` | [`repo-sync.schema.json`](dg/repo-sync.schema.json) |
 | `dg repo topic` | [`repo-topic.schema.json`](dg/repo-topic.schema.json) |
 | `dg repo unarchive` | [`repo-unarchive.schema.json`](dg/repo-unarchive.schema.json) |
+| `dg repo unban` | [`repo-unban.schema.json`](dg/repo-unban.schema.json) |
 | `dg repo unstar` | [`repo-unstar.schema.json`](dg/repo-unstar.schema.json) |
 | `dg repo unwatch` | [`repo-unwatch.schema.json`](dg/repo-unwatch.schema.json) |
 | `dg repo view` | [`repo-view.schema.json`](dg/repo-view.schema.json) |

@@ -1,0 +1,37 @@
+{
+  "name": "former_maintainer_ban_ignored",
+  "description": "A ban written by someone who is no longer a maintainer does not count.",
+  "case": "bans",
+  "rules": "v2",
+  "input": {
+    "owner": "own",
+    "maintainers": [
+      "m1"
+    ],
+    "bans": [
+      {
+        "id": "b1",
+        "identity": "s",
+        "by": "gone",
+        "reason": 1,
+        "createdAt": 10
+      }
+    ],
+    "threadAuthor": "s",
+    "comments": [
+      {
+        "id": "c1",
+        "author": "s"
+      }
+    ]
+  },
+  "expected": {
+    "banned": {},
+    "reasons": {},
+    "hidden": {
+      "thread": null,
+      "items": {},
+      "counted": []
+    }
+  }
+}

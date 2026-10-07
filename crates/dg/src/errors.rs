@@ -178,6 +178,9 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         }
         Command::Repo(Rp::Archive { repo }) => ("repository not archived", Some(repo)),
         Command::Repo(Rp::Unarchive { repo }) => ("repository not unarchived", Some(repo)),
+        Command::Repo(Rp::Ban { repo, .. }) => ("nobody banned", Some(repo)),
+        Command::Repo(Rp::Unban { repo, .. }) => ("ban not lifted", Some(repo)),
+        Command::Repo(Rp::Bans { repo }) => ("could not read the bans", Some(repo)),
         Command::Issue(I::List(a)) => ("could not read issues", Some(&a.repo)),
         Command::Issue(I::View { repo, .. }) => ("could not read issues", Some(repo)),
         Command::Issue(I::Assign { repo, .. } | I::Unassign { repo, .. }) => {

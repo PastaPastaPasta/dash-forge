@@ -63,7 +63,7 @@ import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftText, useEd
 import { EditBase } from './edit-base'
 import { RulesAtMerge } from './rules-at-merge'
 import { deleteNeedsForce, dependentsWarning, type Dependents } from '@/lib/view/branch-dependents'
-import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
+import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost, useThreadModeration } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHidden } from '@/lib/view/issues-view'
@@ -144,7 +144,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
-import { CodeOwnersProvider } from '@/components/repo/code-owners'
+import { CodeOwnersProvider, codeOwnerChangesIncomplete, useCodeOwnerStatus } from '@/components/repo/code-owners'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
 import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/view/upstream'
@@ -580,6 +580,18 @@ function PullPage({
       : checks.data === null || !membersKnown
         ? ('unknown' as const)
         : checksState(checks.data.rows, pull.headOid, roleOracle, checks.data.runners, policyNow)
+  const codeOwners = useCodeOwnerStatus({
+    repo,
+    policy: open ? policyNow : null,
+    reader: cmp?.sides.base ?? null,
+    readerKey: comparison.sidesKey,
+    baseOid: comparison.spec.baseTipOid || cmp?.comparedBaseOid || '',
+    changes: cmp?.changes ?? null,
+    changesFailed: codeOwnerChangesIncomplete(comparison.error, cmp),
+    approvals: thread.approvals,
+    members: thread.members,
+    author: pull.author,
+  })
   const actions = pullActions({
     pull,
     viewer,
@@ -588,6 +600,7 @@ function PullPage({
     policy: rules.status,
     maintainersOnly: policyNow?.approverRole === 1,
     checks: requiredChecks,
+    codeOwners,
   })
   // An interrupted merge: the base moved to a commit that already makes this PR's changes, but no
   // merge was recorded. The merge check (git objects through the comparison's readers, no Platform
@@ -615,7 +628,7 @@ function PullPage({
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
   // RC2 MOD: maintainers hide; readers see collapsed rows, and a hidden PR opens behind a banner.
   const canModerate = canMember && holdings.data?.maintain === true
-  const moderation = thread.moderation
+  const moderation = useThreadModeration(sdk, ready, repo, thread.moderationInput, thread.moderation)
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
@@ -827,9 +840,9 @@ function PullPage({
       // A public comment's edit is public text: it asks first when it repeats members-only text.
       onEdit: (c, body) => quoteCheck(publicTextOf(body, c.audience, pullAudience), membersTexts, () => setPending({ kind: 'edit-comment', id: c.id, body }), { before: c.body }),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
-      ...(thread.moderation ? { hidden: thread.moderation } : {}),
+      ...(moderation ? { hidden: moderation } : {}),
     }),
-    [canResolve, resolvedKey, identity, setPending, thread.moderation, quoteCheck, membersTexts, pullAudience],
+    [canResolve, resolvedKey, identity, setPending, moderation, quoteCheck, membersTexts, pullAudience],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)

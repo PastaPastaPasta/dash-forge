@@ -58,6 +58,7 @@ import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, membersWriter, noteAudience, sealMembersContent, targetAudience, type MembersWriter } from './members-writes'
 import { invalidateRepoFeed } from './issues'
+import { refuseIfBanned } from './bans'
 import { readNewestManifestOfKind } from './packs'
 import { PACK_KIND } from '../constants'
 import { longBodyField } from './long-body'
@@ -494,6 +495,8 @@ export async function createIssue(
   input: { title: string; body: string; intent?: string; audience?: Audience },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // Who it is for: an issue has no parent (public by default; members-only on request).
   const audience = audienceFor(repo, input.audience, null)
   const data: Record<string, unknown> = { title: input.title }
@@ -557,6 +560,8 @@ export async function createPatch(
   input: PatchInput & { intent?: string },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A body longer than its field: its full text stored first (forge-v2.md §6.3).
   const others = { title: input.title, baseRefName: input.baseRefName, sourceRefName: input.sourceRefName }
   const body = await longBodyField(sdk, auth, repo, 'patch', input.body, others, input.intent)
@@ -720,6 +725,8 @@ export async function createComment(
   repo: RepoRef,
   input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext; audience?: Audience },
 ): Promise<WriteResult> {
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   // Who it is for (DESIGN §3.3): the narrowest of the issue or PR, the comment it replies to and
   // that thread's root, unless the writer asked for a narrower one; read before anything is stored.
@@ -820,6 +827,8 @@ export async function createReview(
   repo: RepoRef,
   input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext; audience?: Audience },
 ): Promise<WriteResult> {
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
   if (lockedOut(post)) throw new Error(LOCKED_REASON)

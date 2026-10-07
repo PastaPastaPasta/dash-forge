@@ -22,7 +22,21 @@ import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useSdk } from '@/hooks/use-sdk'
 import { readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
-import { codeOwnerRequests, decidingRules, ownerKind, ownersOfPaths, RoleOracle, tokenIdentity, type OwnerRequests, type SkipReason } from '@/lib/rules/v2'
+import {
+  codeOwnerRequests,
+  codeOwnerReview,
+  decidingRules,
+  ownerKind,
+  ownersOfPaths,
+  RoleOracle,
+  tokenIdentity,
+  type Approvals,
+  type CodeOwnerStatus,
+  type Membership,
+  type OwnerRequests,
+  type Policy,
+  type SkipReason,
+} from '@/lib/rules/v2'
 import { changedPaths, readCodeOwners, type CodeOwnersFile } from '@/lib/view/codeowners'
 import type { FileChange } from '@/lib/view/commit-log'
 import { resolveDpnsIds, sameDpnsName } from '@/lib/view/dpns'
@@ -199,6 +213,100 @@ export function useOwnerRequests({
     loading: file.loading || (waitingForChanges && changesFailed === null) || (tokens.length > 0 && requests.data === null && requests.error === null),
     error: file.error ?? (waitingForChanges && changesFailed !== null ? `the changed files could not be listed: ${changesFailed}` : null) ?? requests.error,
   }
+}
+
+/**
+ * Whether a PR's changed-file listing cannot be trusted complete for the code owner rule: it failed,
+ * was cut short (`truncated`), fell back to the head's first parent (no merge base), or was stopped.
+ */
+export function codeOwnerChangesIncomplete(
+  error: string | null,
+  cmp: { readonly truncated?: boolean; readonly fellBack?: true; readonly searchStopped?: true } | null,
+): boolean {
+  return error !== null || cmp?.truncated === true || cmp?.fellBack === true || cmp?.searchStopped === true
+}
+
+/**
+ * Where an open PR stands against its policy's `requireCodeOwners` (the shared `codeOwnerReview`):
+ * null when the policy does not require it; `'unknown'` until the base's code owners file and the
+ * changed files are read (the merge box then stays closed, as for unread checks). It reads only
+ * what the PR page holds already (the base through the diff's reader, the changed files), plus one
+ * DPNS read for the owners' names. A file that cannot be read is unreadable: the rule fails closed.
+ */
+export function useCodeOwnerStatus({
+  repo,
+  policy,
+  reader,
+  readerKey,
+  baseOid,
+  changes,
+  changesFailed,
+  approvals,
+  members,
+  author,
+}: {
+  repo: RepoRef
+  policy: Policy | null
+  reader: ObjectReader | null
+  readerKey: string
+  baseOid: string
+  changes: readonly FileChange[] | null
+  /**
+   * The changed files cannot be trusted complete: the listing failed, was cut short (`truncated`),
+   * fell back to the head's first parent (no merge base), or was stopped. The rule then fails closed.
+   */
+  changesFailed: boolean
+  approvals: Approvals | null
+  members: readonly Membership[]
+  author: string
+}): CodeOwnerStatus | 'unknown' | null {
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const on = policy?.requireCodeOwners === true
+  const file = useCodeOwners(on ? reader : null, baseOid, readerKey)
+  const paths = useMemo(() => (changes === null ? null : changedPaths(changes)), [changes])
+  const names = useMemo(() => (file.data == null || paths === null ? [] : ownersOfPaths(file.data.owners, paths).filter((t) => ownerKind(t) === 'name')), [file.data, paths])
+  const resolved = useAsync(() => resolveDpnsIds(sdk!, names, network), [names.join('\n'), network], { enabled: on && ready && sdk !== null && names.length > 0 })
+  if (!on || policy === null) return null
+  return codeOwnerVerdict({
+    policy,
+    file: file.error !== null ? 'failed' : !file.settled ? 'reading' : (file.data ?? null),
+    paths,
+    changesFailed,
+    approvals,
+    members,
+    author,
+    names,
+    resolved: resolved.error !== null ? 'failed' : resolved.data,
+  })
+}
+
+/**
+ * {@link useCodeOwnerStatus}'s decision from what it read (pure, for tests): unreadable when the
+ * file, the changed files or the owners' names could not be read; `'unknown'` while any is still
+ * being read; else the shared rule.
+ */
+export function codeOwnerVerdict(i: {
+  readonly policy: Policy
+  readonly file: CodeOwnersFile | null | 'reading' | 'failed'
+  readonly paths: readonly string[] | null
+  readonly changesFailed: boolean
+  readonly approvals: Approvals | null
+  readonly members: readonly Membership[]
+  readonly author: string
+  readonly names: readonly string[]
+  readonly resolved: ReadonlyMap<string, string | null> | null | 'failed'
+}): CodeOwnerStatus | 'unknown' {
+  if (i.file === 'failed' || i.changesFailed || i.resolved === 'failed') return { met: false, unreadable: true, pending: [] }
+  if (i.file === 'reading' || i.paths === null || i.approvals === null || (i.names.length > 0 && i.resolved === null)) return 'unknown'
+  return codeOwnerReview(
+    i.file === null ? { kind: 'absent' } : { kind: 'parsed', owners: i.file.owners },
+    i.paths,
+    i.approvals,
+    new RoleOracle(i.members),
+    i.policy,
+    i.resolved ?? new Map(),
+    i.author,
+  )
 }
 
 const SKIP_WHY: Readonly<Record<SkipReason, string>> = {

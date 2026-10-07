@@ -55,12 +55,31 @@
 //! ask: as on GitHub, where a code owner must have write access, only a current maintainer or
 //! role-1 writer ([`RoleOracle::current_approver`]), never the PR's author, each identity once,
 //! at most [`MAX_OWNER_REQUESTS`].
+//!
+//! # The merge rule (`policy.requireCodeOwners`, UPDATE-1)
+//!
+//! [`code_owner_review`]: with the branch policy's `requireCodeOwners` on, every changed path
+//! (the same paths the requests read) that has owners needs an approval from one of them. An
+//! owner's approval counts by the rules [`super::review::meets_policy`] uses: the reviewer's
+//! standing verdict on the PR's current head is approve ([`super::v2::count_approvals`]: not
+//! dismissed, not the PR's author, an approver when they reviewed) and their current role counts
+//! toward the policy ([`super::review::counts_for`]: a maintainer, or with `approverRole` 0 a
+//! role-1 writer). A path with no owners is unconstrained. The rule fails closed:
+//!
+//! * a code owners file that cannot be read (storage or git failed) blocks the merge;
+//! * a path whose owners include nobody who could approve (only teams, e-mail, roles, names
+//!   DPNS does not resolve, non-members, or the PR's author) stays pending, marked not
+//!   approvable, until the file is fixed or a maintainer bypasses the policy.
+//!
+//! No code owners file at the base tip (or one too large or binary to read, as GitHub ignores
+//! it) means no path has owners: the rule is met.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::v2::RoleOracle;
+use super::review::{counts_for, Policy};
+use super::v2::{Approvals, RoleOracle};
 
 /// Where a repository's code owners file is looked for, in order: the first that exists wins.
 /// `.forge/` first (Forge's own directory, as for issue templates), then GitHub's three places,
@@ -155,7 +174,7 @@ fn section_header(line: &str) -> Option<(String, Vec<String>)> {
         return None;
     }
     let mut rest = &inner[close + 1..];
-    // `[Name][2]`: the approvals count GitLab reads (Forge has no code owner approval rule).
+    // `[Name][2]`: the approvals count GitLab reads (Forge asks one owner per path, so it is read past).
     if let Some(count) = rest.strip_prefix('[') {
         let end = count.find(']')?;
         if end == 0 || !count[..end].bytes().all(|b| b.is_ascii_digit()) {
@@ -583,6 +602,111 @@ pub fn code_owner_requests(
     out
 }
 
+/// The code owners file a merge is judged against ([`code_owner_review`]).
+#[derive(Debug, Clone, Copy)]
+pub enum OwnersFile<'a> {
+    /// No code owners file at the base tip (or one too large or binary to read): nothing is owned.
+    Absent,
+    /// The file could not be read: the rule fails closed.
+    Unreadable,
+    /// The parsed file.
+    Parsed(&'a CodeOwners),
+}
+
+/// A changed path still waiting for one of its code owners' approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingFile {
+    /// The path.
+    pub path: String,
+    /// Its owner tokens as written ([`CodeOwners::owners_of`]).
+    pub owners: Vec<String>,
+    /// Some owner could approve it: a resolved identity, not the PR's author, whose current
+    /// role counts toward the policy. `false`: only fixing the code owners file or a
+    /// maintainer's bypass lets the PR merge.
+    pub approvable: bool,
+}
+
+/// Where a PR stands against `requireCodeOwners`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodeOwnerStatus {
+    /// Every owned path has an owner's approval (or the rule is off, or nothing is owned).
+    pub met: bool,
+    /// The code owners file could not be read (`met` is then false).
+    pub unreadable: bool,
+    /// The owned paths without an owner's approval, in code-point order.
+    pub pending: Vec<PendingFile>,
+}
+
+/// Judge a PR against its branch policy's `requireCodeOwners` (the module docs' merge rule).
+/// `paths` are the PR's changed paths (`git diff --name-only --no-renames` from the merge base);
+/// `approvals` the PR's counted approvals ([`super::v2::count_approvals`]); `resolved` maps each
+/// name token to the identity DPNS resolved it to (absent or `None`: unresolved).
+#[must_use]
+pub fn code_owner_review(
+    file: OwnersFile<'_>,
+    paths: &[String],
+    approvals: &Approvals,
+    oracle: &RoleOracle,
+    policy: &Policy,
+    resolved: &BTreeMap<String, Option<String>>,
+    author: &str,
+) -> CodeOwnerStatus {
+    let met = CodeOwnerStatus {
+        met: true,
+        ..CodeOwnerStatus::default()
+    };
+    if !policy.require_code_owners {
+        return met;
+    }
+    let owners = match file {
+        OwnersFile::Absent => return met,
+        OwnersFile::Unreadable => {
+            return CodeOwnerStatus {
+                met: false,
+                unreadable: true,
+                pending: Vec::new(),
+            }
+        }
+        OwnersFile::Parsed(o) => o,
+    };
+    let identity_of = |token: &str| -> Option<String> {
+        match owner_kind(token) {
+            OwnerKind::Identity => token_identity(token).map(str::to_owned),
+            OwnerKind::Name => resolved.get(token).cloned().flatten(),
+            _ => None,
+        }
+    };
+    let mut pending = Vec::new();
+    for path in paths.iter().collect::<BTreeSet<_>>() {
+        let tokens = owners.owners_of(path);
+        if tokens.is_empty() {
+            continue;
+        }
+        let ids: Vec<String> = tokens.iter().filter_map(|t| identity_of(t)).collect();
+        let approved = ids
+            .iter()
+            .any(|id| approvals.approvers.contains(id) && counts_for(oracle, policy, id));
+        if approved {
+            continue;
+        }
+        let approvable = ids
+            .iter()
+            .any(|id| id != author && counts_for(oracle, policy, id));
+        pending.push(PendingFile {
+            path: path.clone(),
+            owners: tokens,
+            approvable,
+        });
+    }
+    CodeOwnerStatus {
+        met: pending.is_empty(),
+        unreadable: false,
+        pending,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,6 +794,90 @@ README.md @readme
             ]
         );
         assert_eq!(co.owners_of("ok"), ["@c"]);
+    }
+
+    #[test]
+    fn code_owner_review_needs_an_owner_per_owned_path() {
+        use crate::rules::v2::{Membership, Role};
+        let member = |identity: &str, role| Membership {
+            identity: identity.into(),
+            role,
+            created_at: 1,
+        };
+        let oracle = RoleOracle::new(vec![
+            member("A", Role::Maintainer),
+            member("W", Role::Writer),
+            member("T", Role::Triage),
+        ]);
+        let co = parse_code_owners("/src/ @alice\n/docs/ @wri\n/ops/ @team/x @tri\n");
+        let resolved: BTreeMap<String, Option<String>> = [
+            ("@alice".to_string(), Some("A".to_string())),
+            ("@wri".to_string(), Some("W".to_string())),
+            ("@tri".to_string(), Some("T".to_string())),
+        ]
+        .into();
+        let paths: Vec<String> = ["src/a.rs", "docs/x.md", "ops/run.sh", "README.md"]
+            .map(String::from)
+            .into();
+        let mut policy = Policy {
+            require_code_owners: true,
+            ..Policy::default()
+        };
+        let approvals = Approvals {
+            approvers: ["A".to_string()].into(),
+            changes_requested: BTreeSet::new(),
+        };
+        let got = code_owner_review(
+            OwnersFile::Parsed(&co),
+            &paths,
+            &approvals,
+            &oracle,
+            &policy,
+            &resolved,
+            "P",
+        );
+        assert!(!got.met);
+        let pending: Vec<(&str, bool)> = got
+            .pending
+            .iter()
+            .map(|p| (p.path.as_str(), p.approvable))
+            .collect();
+        assert_eq!(pending, [("docs/x.md", true), ("ops/run.sh", false)]);
+        // Maintainers-only: the writer owner can no longer approve.
+        policy.approver_role = 1;
+        let got = code_owner_review(
+            OwnersFile::Parsed(&co),
+            &paths,
+            &approvals,
+            &oracle,
+            &policy,
+            &resolved,
+            "P",
+        );
+        assert!(!got.pending[0].approvable);
+        let off = Policy::default();
+        let none = |f| code_owner_review(f, &paths, &approvals, &oracle, &off, &resolved, "P");
+        assert!(none(OwnersFile::Unreadable).met);
+        let unread = code_owner_review(
+            OwnersFile::Unreadable,
+            &paths,
+            &approvals,
+            &oracle,
+            &policy,
+            &resolved,
+            "P",
+        );
+        assert!(!unread.met && unread.unreadable);
+        let absent = code_owner_review(
+            OwnersFile::Absent,
+            &paths,
+            &approvals,
+            &oracle,
+            &policy,
+            &resolved,
+            "P",
+        );
+        assert!(absent.met);
     }
 
     #[test]

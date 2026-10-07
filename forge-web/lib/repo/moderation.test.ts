@@ -43,7 +43,7 @@ import type { Event } from '../rules'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { hideData, hiddenRowIds, hiddenThreadIds, setHidden, threadHidesOf, threadModeration } from './moderation'
-import { moderationBlocked, moderationInput } from './moderation-fold'
+import { foldModeration, moderationBlocked, moderationInput, withBans } from './moderation-fold'
 
 const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const BOB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
@@ -115,6 +115,27 @@ describe('what readers collapse', () => {
     ]
     expect([...(await hiddenThreadIds(sdk, REPO, 'devnet', rows)).keys()]).toEqual([ISSUE])
     expect([...(await hiddenThreadIds(sdk, REPO, 'devnet', [{ id: ISSUE, author: ALICE, threadHides: threadHidesOf(events) }])).keys()]).toEqual([])
+  })
+})
+
+describe('bans applied after the thread read', () => {
+  const members = [{ identity: CAROL, role: 'maintainer' as const, createdAt: 1 }]
+  const input = (membersUnread = false) =>
+    moderationInput({ events: [hide('e1', CAROL, COMMENT, 10)], thread: { id: ISSUE, author: BOB }, owner: ALICE, members, proved: false, comments: [{ id: COMMENT, author: BOB }, { id: 'c2', author: BOB }], membersUnread })
+  const ban = (by: string) => ({ id: 'b1', identity: BOB, by, reason: 1, createdAt: 5 })
+
+  it("collapses a banned author's thread and comments, and keeps a maintainer's hide", () => {
+    const m = foldModeration(withBans(input(), [ban(CAROL)]))
+    expect(m.thread).toMatchObject({ by: CAROL, via: 'ban', banReason: 1 })
+    expect(m.items[COMMENT]).toMatchObject({ via: 'item' })
+    expect(m.items['c2']).toMatchObject({ via: 'ban' })
+  })
+
+  it('judges the bans with the members the thread was read with, and applies none without them', () => {
+    // A writer's ban never counts.
+    expect(withBans(input(), [ban(BOB)])).toEqual(input())
+    expect(withBans(input(true), [ban(CAROL)])).toEqual(input(true))
+    expect(withBans(input(), [])).toEqual(input())
   })
 })
 

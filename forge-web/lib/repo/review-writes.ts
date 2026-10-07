@@ -44,6 +44,8 @@ import { bodyRoom, longBodyField } from './long-body'
 import { refitLongBodyField } from '../rules/long-body'
 import { bypassValue } from '../view/pull-actions'
 import { repoSource } from './source'
+import { contractHasProperty } from './contract-shape'
+import { refuseIfBanned } from './bans'
 import { admitAll, gateFor } from './private-content'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
 import type { PrivateSession } from './private-session'
@@ -546,6 +548,8 @@ export async function submitReviewDraft(
   reads?: SubmitReads,
 ): Promise<SubmittedReview> {
   if (draft.identity !== auth.identityId) throw new Error('this pending review belongs to another identity')
+  // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A private repo: the reconcile reads the draft's landed comments decrypted, which needs the
   // reader's session (without it none would match and each would be posted again).
   if (repo.visibility === 'private' && repo.session === undefined) throw new Error("a private repo's review is submitted by a member reading it with their key")
@@ -668,6 +672,8 @@ export function policyData(policy: Policy): Record<string, unknown> {
     mergeMethods: methods,
     ...(checks.length > 0 ? { requiredChecks: [...checks] } : {}),
     ...(sources.length > 0 ? { requiredCheckSources: sources.map((id) => decodeIdentifier(id)) } : {}),
+    // Written only when on: off is the same as absent, and a contract without the field takes it.
+    ...(policy.requireCodeOwners === true ? { requireCodeOwners: true } : {}),
   }
 }
 
@@ -684,6 +690,9 @@ export async function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, pol
     if (gone.length > 0) {
       throw new Error(`a required check's pinned source (${gone.join(', ')}) is no longer a runner or maintainer of this repo; pick another source for that check, or stop pinning sources, before saving`)
     }
+  }
+  if (policy.requireCodeOwners === true && !(await contractHasProperty(sdk, repo.forge.community, DOC.policy, 'requireCodeOwners'))) {
+    throw new Error("This network's Forge doesn't support requiring code owner approval yet.")
   }
   return write(sdk, auth, repo, DOC.policy, data, intent)
 }

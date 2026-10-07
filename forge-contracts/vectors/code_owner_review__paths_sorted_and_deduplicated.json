@@ -1,0 +1,67 @@
+{
+  "name": "paths_sorted_and_deduplicated",
+  "description": "Pending paths are listed once each, in code-point order.",
+  "case": "code_owner_review",
+  "rules": "v2",
+  "input": {
+    "file": "* @alice\n",
+    "paths": [
+      "b.rs",
+      "a.rs",
+      "b.rs"
+    ],
+    "reviews": [],
+    "memberships": [
+      {
+        "identity": "A",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "W",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "T",
+        "role": "triage",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "prAuthor": "P",
+    "policy": {
+      "requiredApprovals": 0,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0,
+      "requireCodeOwners": true
+    },
+    "resolved": {
+      "@alice": "A",
+      "@wri": "W",
+      "@tri": "T",
+      "@bob": null
+    }
+  },
+  "expected": {
+    "met": false,
+    "unreadable": false,
+    "pending": [
+      {
+        "path": "a.rs",
+        "owners": [
+          "@alice"
+        ],
+        "approvable": true
+      },
+      {
+        "path": "b.rs",
+        "owners": [
+          "@alice"
+        ],
+        "approvable": true
+      }
+    ]
+  }
+}

@@ -220,17 +220,29 @@ impl Collab<'_> {
     /// The rows of a list page whose whole thread a maintainer hid ([`hidden_threads_of`]), from
     /// each row's events as the list already read them. Reads nothing when no row holds a hide or
     /// unhide of its thread; otherwise [`Self::hiders`] once for the page (no request where the
-    /// contract proves hides, else one read of the maintainers). Never an error.
+    /// contract proves hides, else one read of the maintainers). A row whose author is banned
+    /// collapses too: one read of the repo's bans (and of the maintainers when there is one).
+    /// Never an error.
     pub async fn hidden_threads(
         &self,
         repo: &RepoRef,
         rows: &[(Target, &[Event])],
     ) -> BTreeMap<String, Hidden> {
-        if !rows.iter().any(|(_, events)| has_thread_hides(events)) {
-            return BTreeMap::new();
+        let bans = self.standing_bans(repo).await;
+        let mut out = if rows.iter().any(|(_, events)| has_thread_hides(events)) {
+            let hiders = self.hiders(repo).await;
+            hidden_threads_of(rows, &hiders)
+        } else {
+            BTreeMap::new()
+        };
+        // A banned identity's issue or PR collapses too (UPDATE-1 `ban`).
+        for (target, _) in rows {
+            if let Some(b) = bans.get(&target.author) {
+                out.entry(target.id.clone())
+                    .or_insert_with(|| crate::rules::bans::ban_hidden(b));
+            }
         }
-        let hiders = self.hiders(repo).await;
-        hidden_threads_of(rows, &hiders)
+        out
     }
 
     /// What a reader collapses in `target` ([`hidden_items`]), from its log, comments and reviews
@@ -248,12 +260,22 @@ impl Collab<'_> {
             .events
             .iter()
             .any(|e| matches!(e.kind, EventKind::Hide | EventKind::Unhide));
-        if !has_hides {
-            return Ok(HiddenItems::default());
-        }
-        let scope = self.hide_scope(repo, target).await;
         let (comments, reviews) = thread_items(comments, reviews);
-        Ok(hidden_items(&log.events, &scope, &comments, &reviews))
+        let hidden = if has_hides {
+            let scope = self.hide_scope(repo, target).await;
+            hidden_items(&log.events, &scope, &comments, &reviews)
+        } else {
+            HiddenItems::default()
+        };
+        // A banned identity's thread, comments and reviews collapse too (UPDATE-1 `ban`).
+        let bans = self.standing_bans(repo).await;
+        Ok(crate::rules::bans::apply_bans(
+            hidden,
+            &bans,
+            &target.author,
+            &comments,
+            &reviews,
+        ))
     }
 }
 

@@ -76,6 +76,11 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Policy(cmd) => crate::repo_settings::policy(ctx, cmd).await,
         RepoCommand::Archive { repo } => crate::repo_settings::archive(ctx, repo, true).await,
         RepoCommand::Unarchive { repo } => crate::repo_settings::archive(ctx, repo, false).await,
+        RepoCommand::Ban { repo, who, reason } => {
+            crate::bans::ban(ctx, repo, who, reason.as_deref()).await
+        }
+        RepoCommand::Unban { repo, who } => crate::bans::unban(ctx, repo, who).await,
+        RepoCommand::Bans { repo } => crate::bans::list(ctx, repo).await,
     }
 }
 

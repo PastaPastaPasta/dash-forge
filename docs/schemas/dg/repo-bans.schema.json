@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-bans.schema.json",
+  "title": "dg repo bans --json",
+  "description": "Every ban of the repository: who wrote it, whether it counts, and the one that decides.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "bans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "integer"
+          },
+          "documentId": {
+            "type": "string"
+          },
+          "counts": {
+            "type": "boolean"
+          },
+          "decides": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "identityId",
+          "by",
+          "createdAt",
+          "documentId",
+          "counts",
+          "decides"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "bans"
+  ],
+  "additionalProperties": true
+}

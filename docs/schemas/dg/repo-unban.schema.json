@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-unban.schema.json",
+  "title": "dg repo unban --json",
+  "description": "Your ban of an identity lifted; `none` when you have no ban of it.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "lifted",
+        "none"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "documentId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repo",
+    "identityId"
+  ],
+  "additionalProperties": true
+}

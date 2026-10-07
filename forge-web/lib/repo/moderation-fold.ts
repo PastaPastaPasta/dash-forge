@@ -6,6 +6,7 @@
  */
 
 import type { Event } from '../rules'
+import { applyBans, standingBans, type Ban } from '../rules/bans'
 import { hiddenItems, hideBlocked, isModerationKind, NOTHING_HIDDEN, type HiddenItems, type HideBlock, type HideScope, type Membership, type ThreadItem } from '../rules/v2'
 
 /** forge-community `event.asMaintainer` (RC2 MOD): the writer's maintainer document, proved. */
@@ -22,6 +23,13 @@ export interface ModerationInput {
   readonly scope: HideScope
   readonly comments: readonly ThreadItem[]
   readonly reviews: readonly ThreadItem[]
+  /** The repo's standing bans (UPDATE-1): a banned identity's thread, comments and reviews collapse too. */
+  readonly bans?: ReadonlyMap<string, Ban>
+  /**
+   * The members could not be read: {@link withBans} applies no ban, since judging without them
+   * would drop every maintainer's ban.
+   */
+  readonly membersUnread?: true
 }
 
 /**
@@ -36,8 +44,12 @@ export function moderationInput(input: {
   readonly proved: boolean
   readonly comments: readonly { readonly id: string; readonly author: string; readonly reviewId?: string | null }[]
   readonly reviews?: readonly { readonly id: string; readonly reviewer: string }[]
+  readonly bans?: ReadonlyMap<string, Ban>
+  readonly membersUnread?: boolean
 }): ModerationInput {
   return {
+    ...(input.bans !== undefined && input.bans.size > 0 ? { bans: input.bans } : {}),
+    ...(input.membersUnread === true ? { membersUnread: true as const } : {}),
     events: input.events,
     scope: {
       threadId: input.thread.id,
@@ -53,7 +65,19 @@ export function moderationInput(input: {
 
 /** What readers collapse in one thread ({@link hiddenItems}); nothing to fold without a hide. */
 export function foldModeration(m: ModerationInput): HiddenItems {
-  return hasHides(m.events) ? hiddenItems(m.events, m.scope, m.comments, m.reviews) : NOTHING_HIDDEN
+  const hidden = hasHides(m.events) ? hiddenItems(m.events, m.scope, m.comments, m.reviews) : NOTHING_HIDDEN
+  return m.bans === undefined ? hidden : applyBans(hidden, m.bans, m.scope.threadAuthor, m.comments, m.reviews)
+}
+
+/**
+ * `m` with the repo's ban documents `bans` applied, judged against the owner and maintainers `m`
+ * was read with (`standingBans`). Unchanged when its members could not be read. The page applies
+ * the bans once they land: a thread read never waits on them.
+ */
+export function withBans(m: ModerationInput, bans: readonly Ban[]): ModerationInput {
+  if (m.membersUnread === true || bans.length === 0) return m
+  const standing = standingBans(bans, { owner: m.scope.owner, maintainers: m.scope.maintainers ?? [] })
+  return standing.size === 0 ? m : { ...m, bans: standing }
 }
 
 /** {@link moderationInput} folded: what readers collapse in one thread. */

@@ -163,6 +163,11 @@ export interface Policy {
   readonly requiredChecks?: readonly string[]
   /** Each required check's source, a runner or maintainer id (base58), paired by position; empty: any. */
   readonly requiredCheckSources?: readonly string[]
+  /**
+   * `requireCodeOwners` (UPDATE-1; absent on a version-1 policy: off): every changed file with code
+   * owners needs one of its owners' approval (`codeOwnerReview`).
+   */
+  readonly requireCodeOwners?: boolean
 }
 
 export interface PolicyStatus {
@@ -185,11 +190,18 @@ export interface PolicyStatus {
  * policy requires approvals, a standing request for changes from a reviewer whose approval would
  * count blocks it (`blockedBy`). Parity: forge-core `meets_policy`.
  */
+/**
+ * Whether `identity`'s verdict counts toward `policy` now: a current maintainer, or with
+ * `approverRole` 0 a current role-1 writer (never triage or a reader). {@link meetsPolicy} and the
+ * code owner rule judge approvers alike. Parity: forge-core `counts_for`.
+ */
+export function countsFor(oracle: RoleOracle, policy: Policy, identity: string): boolean {
+  const role = oracle.currentRole(identity)
+  return role === 'maintainer' || (role === 'writer' && (policy.approverRole ?? 0) === 0)
+}
+
 export function meetsPolicy(approvals: Approvals, oracle: RoleOracle, policy: Policy): PolicyStatus {
-  const counts = (id: string): boolean => {
-    const role = oracle.currentRole(id)
-    return role === 'maintainer' || (role === 'writer' && (policy.approverRole ?? 0) === 0)
-  }
+  const counts = (id: string): boolean => countsFor(oracle, policy, id)
   const have = approvals.approvers.filter(counts).length
   const blockedBy = policy.requiredApprovals === 0 ? [] : approvals.changesRequested.filter(counts)
   return { met: have >= policy.requiredApprovals && blockedBy.length === 0, have, need: policy.requiredApprovals, blockedBy }

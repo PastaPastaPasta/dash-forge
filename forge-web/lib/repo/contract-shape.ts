@@ -53,6 +53,11 @@ export async function contractHasIndex(sdk: EvoSDK, contractId: string, document
   return (await shapeOf(sdk, contractId)).get(documentType)?.indexes.has(index) ?? false
 }
 
+/** Whether contract `contractId` declares the document type `documentType`. */
+export async function contractHasType(sdk: EvoSDK, contractId: string, documentType: string): Promise<boolean> {
+  return (await shapeOf(sdk, contractId)).has(documentType)
+}
+
 /** Forget every cached shape (tests). */
 export function resetContractShapes(): void {
   shapes.clear()

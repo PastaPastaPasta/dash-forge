@@ -1273,8 +1273,13 @@ pub fn policy_from_doc(d: &FetchedDocument) -> Policy {
                 .collect(),
             _ => Vec::new(),
         },
+        // UPDATE-1; a version-1 policy has none: off.
+        require_code_owners: d.field_bool(POLICY_REQUIRE_CODE_OWNERS),
     }
 }
+
+/// `policy.requireCodeOwners` (UPDATE-1 `policy_code_owners`).
+pub const POLICY_REQUIRE_CODE_OWNERS: &str = "requireCodeOwners";
 
 /// What an edit or a delete checks on the stored document before any signing work: it belongs
 /// to `repo` (its `repoId`: a document of another repo named through this one is refused), and
@@ -2014,6 +2019,14 @@ pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
         p.insert(
             "requiredCheckSources".to_string(),
             FieldValue::List(source_ids),
+        );
+    }
+    // Written only when on: off is the same as absent, and a contract without the field takes
+    // a policy that does not name it ([`Collab::set_policy`] refuses it on before signing).
+    if policy.require_code_owners {
+        p.insert(
+            POLICY_REQUIRE_CODE_OWNERS.to_string(),
+            FieldValue::boolean(true),
         );
     }
     Ok(p)
@@ -6472,6 +6485,13 @@ impl<'a> Collab<'a> {
         self.require_role(repo, Role::Maintainer, "set the branch policy")
             .await?;
         let community = self.community_contract(repo).await?;
+        if policy.require_code_owners
+            && !community.has_property(DOC_POLICY, POLICY_REQUIRE_CODE_OWNERS)
+        {
+            return Err(Error::Config(
+                "this network's Forge doesn't support requiring code owner approval yet".into(),
+            ));
+        }
         self.write(repo, &community, DOC_POLICY, props).await
     }
 

@@ -139,6 +139,7 @@ export function samePolicy(a: Policy, b: Policy): boolean {
     (a.approverRole ?? 0) === (b.approverRole ?? 0) &&
     (a.requireChecks ?? false) === (b.requireChecks ?? false) &&
     (a.mergeMethods ?? 0) === (b.mergeMethods ?? 0) &&
+    (a.requireCodeOwners ?? false) === (b.requireCodeOwners ?? false) &&
     sameRequiredChecks(a, b)
   )
 }

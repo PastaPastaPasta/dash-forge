@@ -479,6 +479,7 @@ export async function loadIssueOrMembersOnly(sdk: EvoSDK, repo: RepoRef, number:
   )
   // RC2 MOD: the contract's proof is read only when the issue has a hide, beside the members (a
   // failed read counts the owner's and current maintainers' hides alone, the stricter rule).
+  // The repo's bans are not read here: the page applies them when they land (`withBans`).
   const [members, proved] = await Promise.all([
     memberships ?? readMembershipsCached(sdk, repo, network),
     hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false),
@@ -773,7 +774,9 @@ export async function loadPullOrMembersOnly(
   const readable = new Map(reviews.map((r) => [r.id, r]))
   const countedReviews = readReviews.counted.map((r) => readable.get(r.id) ?? r)
   const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, countedReviews, review, pull.author), verdictsRead, proved])
-  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews })
+  // The repo's bans are not read here: the page applies them when they land (`withBans`), so
+  // nothing on it, the diff included, waits on that read.
+  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews, membersUnread: members === null })
   return {
     moderation: foldModeration(modInput),
     moderationInput: modInput,

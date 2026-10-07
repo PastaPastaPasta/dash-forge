@@ -560,3 +560,15 @@ describe('prLinkedIssues — never the PR itself (QW2-054)', () => {
     expect(prLinkedIssues('Fixes #3 and resolves #2', 3)).toEqual([2])
   })
 })
+
+describe('code owner rules (requireCodeOwners)', () => {
+  it('names each file still waiting for an owner, and waits while unread', async () => {
+    const { codeOwnerRules, unmetRules } = await import('./pull-actions')
+    expect(codeOwnerRules(null)).toEqual([])
+    expect(codeOwnerRules({ met: true, unreadable: false, pending: [] })).toEqual([])
+    expect(codeOwnerRules('unknown')).toEqual(['code owner approval: not read yet'])
+    expect(codeOwnerRules({ met: false, unreadable: true, pending: [] })).toEqual(['code owner approval: the code owners or the changed files could not be read'])
+    const pending = { met: false, unreadable: false, pending: [{ path: 'src/a.rs', owners: ['@alice'], approvable: true }, { path: 'ops/x', owners: ['@org/t'], approvable: false }] }
+    expect(unmetRules(null, null, false, pending)).toEqual(['code owner approval: src/a.rs (@alice)', 'code owner approval: ops/x (@org/t; none of them can approve)'])
+  })
+})
