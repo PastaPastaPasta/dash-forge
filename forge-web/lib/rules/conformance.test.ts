@@ -43,6 +43,7 @@ import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLon
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
 import { avatarSpec, botOperator, checkProfile, type BotClaim, type ProfileInput } from './profile'
 import { backlinkFile, readBacklink } from './mirror-backlink'
+import { checkMirrorUris, mirrorReadOrder, type MirrorReadInput } from './pack-mirror'
 import { readPubkeyEntry, verifyCommitSignature, verifyTagSignature, type Signer } from './signature'
 import { HandoffError, RECOVERY_PHRASE_WARNING, handoffRequest, openHandoffReply } from '../auth/key-handoff'
 import { planRefs, syncDecision } from '../repo/fork'
@@ -749,6 +750,16 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['file', 'repoId'])
       const inp = v.input as { readonly file: string; readonly repoId: string }
       expect(readBacklink(inp.file, inp.repoId)).toEqual(v.expected)
+      break
+    }
+    case 'pack_mirror_uris': {
+      onlyKeys(v, ['uris'], {})
+      expect(checkMirrorUris((v.input as { readonly uris: readonly string[] }).uris)).toEqual(v.expected)
+      break
+    }
+    case 'pack_mirror_order': {
+      onlyKeys(v, ['packHash', 'listed', 'visibility', 'mirrors'], { mirrors: ['id', 'ownerRole', 'createdAt', 'packHash', 'kind', 'uris'] })
+      expect({ uris: mirrorReadOrder(v.input as MirrorReadInput) }).toEqual(v.expected)
       break
     }
     case 'mirror_backlink_file': {

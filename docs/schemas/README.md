@@ -154,6 +154,9 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg storage add` | [`storage-add.schema.json`](dg/storage-add.schema.json) |
 | `dg storage advertise` | [`storage-advertise.schema.json`](dg/storage-advertise.schema.json) |
 | `dg storage list` | [`storage-list.schema.json`](dg/storage-list.schema.json) |
+| `dg storage mirror add` | [`storage-mirror-add.schema.json`](dg/storage-mirror-add.schema.json) |
+| `dg storage mirror list` | [`storage-mirror-list.schema.json`](dg/storage-mirror-list.schema.json) |
+| `dg storage mirror remove` | [`storage-mirror-remove.schema.json`](dg/storage-mirror-remove.schema.json) |
 | `dg storage remove` | [`storage-remove.schema.json`](dg/storage-remove.schema.json) |
 | `dg storage status` | [`storage-status.schema.json`](dg/storage-status.schema.json) |
 | `dg storage test` | [`storage-test.schema.json`](dg/storage-test.schema.json) |

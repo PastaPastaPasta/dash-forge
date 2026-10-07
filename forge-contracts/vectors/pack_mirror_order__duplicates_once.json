@@ -1,0 +1,42 @@
+{
+  "name": "duplicates_once",
+  "description": "An address several records name is tried once, in its first place.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "s1",
+        "ownerRole": null,
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://shared.example/p",
+          "https://s.example/p"
+        ]
+      },
+      {
+        "id": "m1",
+        "ownerRole": "maintainer",
+        "createdAt": 2,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://shared.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://shared.example/p",
+      "https://s.example/p"
+    ]
+  }
+}

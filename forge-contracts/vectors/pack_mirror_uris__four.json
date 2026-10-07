@@ -1,0 +1,17 @@
+{
+  "name": "four",
+  "description": "Four addresses is the most one record holds.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://m0.example.com/p",
+      "https://m1.example.com/p",
+      "https://m2.example.com/p",
+      "https://m3.example.com/p"
+    ]
+  },
+  "expected": {
+    "kind": 1
+  }
+}

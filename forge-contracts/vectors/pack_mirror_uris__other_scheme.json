@@ -1,0 +1,15 @@
+{
+  "name": "other_scheme",
+  "description": "Only https and ipfs addresses.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "s3://bucket/key"
+    ]
+  },
+  "expected": {
+    "problem": "address",
+    "index": 0
+  }
+}

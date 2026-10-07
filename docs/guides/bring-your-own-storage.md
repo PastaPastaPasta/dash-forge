@@ -509,9 +509,26 @@ The command looks for the pack's exact bytes in two places:
 - `.git/dash/packs/<sha256>.pack`: `git-remote-dash` keeps a copy there of every pack it stores on external storage only. This covers the pusher's own clone, including a push that was interrupted before its refs landed.
 - `.git/objects/pack/pack-*.pack`: any clone that fetched the pack holds its exact bytes.
 
-It verifies the SHA-256, uploads to the targets (at least `dash.replicas` must confirm), and reports which recorded copies are readable again. Copies it stored at **new** locations can't be added to the immutable manifest, and the forge-v2 contracts have no document type to announce them yet, so they are only printed. Re-upload through the pack's original profile to make the recorded copy readable again.
+It verifies the SHA-256, uploads to the targets (at least `dash.replicas` must confirm), and reports which recorded copies are readable again. Copies it stored at **new** locations can't be added to the immutable manifest, so they are only printed. Re-upload through the pack's original profile to make the recorded copy readable again, or record the new location as a mirror (next section).
 
 Plain `dg reseed --profile <name>` (without `--from-local`) re-uploads packs that are still readable to an additional target. It downloads them first, so it can't restore a pack whose copies are all gone. It is for maintainers and writers only, because the new copy is recorded as your own pack manifest, and it refuses anyone else before uploading. For a pack you already recorded, it reports whether the upload re-created an address a recorded copy names; if not, the copy is not recorded, and `dg repack --profile <name>` is the way to record your packs at a new address.
+
+## Mirroring a pack
+
+Anyone can record another copy of a public repository's pack, at their own storage, so readers have somewhere else to go when every copy the repository's manifests name is gone:
+
+```sh
+dg storage status <owner>/<repo>                                  # the packs, by hash
+dg storage mirror add <owner>/<repo> <pack sha256> https://mirror.example/packs/<sha256>.pack
+dg storage mirror add <owner>/<repo> <pack sha256> ipfs://<CID>   # or up to 4 IPFS CIDs
+dg storage mirror list <owner>/<repo>                             # every mirror of its packs
+dg storage mirror list --mine                                     # the mirrors you recorded
+dg storage mirror remove <record id>                              # delete one of yours
+```
+
+A mirror holds up to 4 addresses, all public `https://` URLs (no user name or password, not on a private network) or all bare `ipfs://<CID>`s. Before paying for the record, `dg` checks the addresses against the contract's rules and that they serve the pack's exact bytes (`--no-verify` skips the download). A mirror is only for a pack the repository lists, and only for a public repository: a private repository's packs are sealed to its members. You hold one mirror per pack: to change its addresses, remove it and add a new one.
+
+**How readers use them.** `dg`, `git clone`/`git fetch` and the web app read the recorded mirrors only after every copy the manifests name has failed, never on a healthy read. They try members' mirrors first (maintainers, then other members), then everyone else's, each oldest first, at most 8 addresses for one pack, and at most 2 from any one non-member's mirror; an `ipfs://` address is read through your IPFS gateways. Bytes that don't hash to the pack are discarded, so a wrong or hostile mirror can only fail to serve. When a mirror serves a pack, `git clone` and `git fetch` print a warning and the web app's storage row says so: the repository is surviving on a record its writer may delete, and a maintainer or writer should restore the copies (`dg reseed`). A push never counts a mirror as a stored copy: it stores the pack, and its browse index, again. `dg repo reindex` reads only the index's recorded copies to decide which packs it lacks. A mirror record costs about 0.00075 DASH; deleting your own refunds part of it.
 
 ## Troubleshooting
 

@@ -1,0 +1,15 @@
+{
+  "name": "mixed_kinds",
+  "description": "https and ipfs addresses cannot share a record: a writer holds one record per pack.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://m.example.com/p",
+      "ipfs://bafyabc"
+    ]
+  },
+  "expected": {
+    "problem": "mixedKinds"
+  }
+}

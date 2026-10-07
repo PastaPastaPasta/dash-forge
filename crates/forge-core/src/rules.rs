@@ -53,6 +53,7 @@ pub mod long_body;
 pub mod merge_check;
 pub mod mirror;
 pub mod moderation;
+pub mod pack_mirror;
 pub mod parity;
 pub mod profile;
 pub mod provenance;
@@ -2784,6 +2785,25 @@ mod tests {
         assert_eq!(got, v.expected, "vector `{ctx}`");
     }
 
+    /// `pack_mirror_uris` and `pack_mirror_order`: the pack mirror rules ([`super::pack_mirror`]).
+    fn run_pack_mirror_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct UrisInput {
+            uris: Vec<String>,
+        }
+        let ctx = &v.name;
+        let got = if v.case == "pack_mirror_uris" {
+            let inp: UrisInput = input(v);
+            serde_json::to_value(super::pack_mirror::check_mirror_uris(&inp.uris))
+                .expect("serialises")
+        } else {
+            let inp: super::pack_mirror::MirrorReadInput = input(v);
+            serde_json::json!({ "uris": super::pack_mirror::mirror_read_order(&inp) })
+        };
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+    }
+
     /// `profile_input` and `avatar_config`: the profile rules ([`super::profile`]).
     fn run_profile_case(v: &Vector) {
         #[derive(Deserialize, Serialize)]
@@ -2973,6 +2993,7 @@ mod tests {
             "profile_input" | "avatar_config" | "profile_bot" => run_profile_case(v),
             "closed_by_pr" => run_closed_by_pr_case(v),
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
+            "pack_mirror_uris" | "pack_mirror_order" => run_pack_mirror_case(v),
             "pubkey_entry" | "commit_signature" | "tag_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),
             "webhook_url" => run_webhook_url_case(v),

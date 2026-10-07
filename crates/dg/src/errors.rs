@@ -262,6 +262,12 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("storage command failed", Some(repo))
         }
         Command::Storage(S::Add(_)) => ("storage profile not added", None),
+        Command::Storage(S::Mirror(crate::StorageMirrorCommand::Add { repo, .. })) => {
+            ("mirror not recorded", Some(repo))
+        }
+        Command::Storage(S::Mirror(crate::StorageMirrorCommand::Remove { .. })) => {
+            ("mirror not removed", None)
+        }
         Command::Storage(_) => ("storage command failed", None),
         Command::Webhook(w) => w.context(),
         Command::Env(e) => e.context(),

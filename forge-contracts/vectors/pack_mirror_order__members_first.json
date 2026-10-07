@@ -1,0 +1,52 @@
+{
+  "name": "members_first",
+  "description": "Maintainers' records, then other members', then everyone else's, whatever order they were written in.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "s1",
+        "ownerRole": null,
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://stranger.example/p"
+        ]
+      },
+      {
+        "id": "w1",
+        "ownerRole": "writer",
+        "createdAt": 2,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://writer.example/p"
+        ]
+      },
+      {
+        "id": "m1",
+        "ownerRole": "maintainer",
+        "createdAt": 3,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://maint.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://maint.example/p",
+      "https://writer.example/p",
+      "https://stranger.example/p"
+    ]
+  }
+}
