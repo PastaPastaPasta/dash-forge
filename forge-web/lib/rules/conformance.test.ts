@@ -37,6 +37,7 @@ import {
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import { refUpdateType } from '../repo/push'
 import { releaseProvenance, type ProvenanceInput } from './releaseProvenance'
+import { auditMerge, type MergeAuditInput } from './merge-audit'
 import { refHistory } from './refHistory'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { encodeTlv } from '../private/tlv'
@@ -50,6 +51,7 @@ import { readPubkeyEntry, verifyCommitSignature, verifyTagSignature, type Signer
 import { HandoffError, RECOVERY_PHRASE_WARNING, handoffRequest, openHandoffReply } from '../auth/key-handoff'
 import { planRefs, syncDecision } from '../repo/fork'
 import { webhookUrlSecret } from '../repo/webhooks'
+import { assetNameProblem, assetNamesProblem } from './asset-name'
 import { matchesText, mentions } from '../repo/issue-index'
 import { parseSearchText, unresolvedQualifiers } from '../view/issue-query'
 import { parsePullSearch, unresolvedPullQualifiers } from '../view/pull-query'
@@ -647,6 +649,11 @@ function runCaseV2(v: Vector): void {
       expect(v2.mergeContent(v.input as v2.MergeFacts)).toEqual(v.expected)
       break
     }
+    case 'merge_audit': {
+      onlyKeys(v, ['mergedAt', 'merger', 'mergeOid', 'mergeHead', 'prAuthor', 'policies', 'protection', 'memberships', 'reviews', 'dismissals', 'runs', 'runners', 'bypasses'])
+      expect(auditMerge(v.input as MergeAuditInput)).toEqual(v.expected)
+      break
+    }
     case 'ref_name_hashes': {
       onlyKeys(v, ['doc', 'refKey'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly refKey?: string }
@@ -679,6 +686,16 @@ function runCaseV2(v: Vector): void {
     case 'webhook_url': {
       onlyKeys(v, ['url'])
       expect(webhookUrlSecret((v.input as { readonly url: string }).url)).toEqual(v.expected)
+      break
+    }
+    case 'asset_file_name': {
+      onlyKeys(v, ['names'])
+      expect((v.input as { readonly names: readonly string[] }).names.map((n) => assetNameProblem(n))).toEqual(v.expected)
+      break
+    }
+    case 'asset_file_names': {
+      onlyKeys(v, ['names'])
+      expect(assetNamesProblem((v.input as { readonly names: readonly string[] }).names)).toEqual(v.expected)
       break
     }
     case 'repo_name': {

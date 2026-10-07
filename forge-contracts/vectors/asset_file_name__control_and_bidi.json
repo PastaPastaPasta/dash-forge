@@ -1,0 +1,46 @@
+{
+  "name": "control_and_bidi",
+  "description": "Control characters (C0, DEL, C1), line and paragraph separators and text-direction marks are refused, before a device or dotfile check.",
+  "case": "asset_file_name",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "a\u0000b",
+      "a\nb",
+      "a\tb",
+      "a\u007fb",
+      "a\u0085b",
+      "a\u009bb",
+      "a\u2028b",
+      "a\u2029b",
+      "CON.a\u2028b",
+      ".a\u2029",
+      "evil\u202egpj.exe",
+      "a\u202ab",
+      "a\u200eb",
+      "a\u200fb",
+      "a\u061cb",
+      "a\u2066b",
+      "a\u2069b"
+    ]
+  },
+  "expected": [
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control",
+    "control"
+  ]
+}

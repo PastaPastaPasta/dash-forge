@@ -35,12 +35,14 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import type { MembersOnlyCount } from './members-only-counts'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { IncompleteReadError } from '../sdk'
 import type { RepoRef } from './contract'
 import { compareRows, eventFiltered, rowMatches, selectionFiltered, type RowFilters } from './issue-index'
 import { baseRefReaders, countsSettled, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
+import { MEMBERS_ONLY_ROW } from './private-content'
 import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE, statusOfCode } from '../rules/transition'
 import { linkedIssues } from '../rules/review'
 import type { Event } from '../rules'
@@ -53,6 +55,7 @@ import {
   candidatesCheaper,
   feedOf,
   indexCache,
+  membersOnlyOfIndex,
   intersect,
   logsVerified,
   matchingOf,
@@ -113,6 +116,8 @@ function readersOf(sdk: EvoSDK, index: PullIndex): BaseRefReaders {
  * keeps its proved state, unverified.
  */
 const indexOf = indexCache<PullRow>('patch', async (sdk, index, doc, log, code) => {
+  // A members-only PR this reader cannot open: what is public about it, no base history to read.
+  if (doc[MEMBERS_ONLY_ROW] === true) return { ...incompletePullView(doc, code), stateComplete: true, threadHides: threadHidesOf(log.events) }
   const base = readersOf(sdk, index)
   const view = await readPull(sdk, index.repo, doc, log, base.configHistory, base.refUpdates, { code }).catch((e: unknown) => {
     if (!(e instanceof IncompleteReadError)) throw e
@@ -165,6 +170,8 @@ export interface PullListPage {
   readonly labels: readonly LabelDef[]
   readonly hidden: number
   readonly hiddenBy: HiddenCounts
+  /** How many PRs are members-only, by state (closed: merged too), once every PR was read (else null). */
+  readonly membersOnly?: MembersOnlyCount | null
 }
 
 const NO_COUNTS: PullCounts = { open: null, merged: null, closed: null }
@@ -334,6 +341,7 @@ export async function queryPulls(
     labels: index.labels,
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
+    membersOnly: membersOnlyOfIndex(index, 'patch'),
   }
 }
 
@@ -395,4 +403,49 @@ export async function pullsLinking(
 export async function pullMilestoneItems(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<{ open: boolean; milestone: string | null }[] | null> {
   const rows = await rowsWithEvent(sdk, await indexOf(sdk, repo, network), 'milestoneSet')
   return rows?.map((r) => ({ open: r.state.open, milestone: r.review.milestone })) ?? null
+}
+
+/** An open PR that uses a branch (see {@link openPullsOnBranch}). */
+export interface PullOnBranch {
+  readonly number: number
+  readonly title: string
+  /** `base`: it merges into the branch; `head`: its commits come from it. */
+  readonly uses: 'base' | 'head'
+}
+
+/** How many chunks of PRs (100 each, newest first) the branch-delete check looks through at most. */
+const ON_BRANCH_CHUNKS = 5
+
+/**
+ * The open PRs of `repo` that use the branch `refName` (`refs/heads/…`): as their base (the
+ * newest retarget's, so the member events are read) or, opened from this repo, as their head.
+ * Read when a branch is about to be deleted, never on a page load, from the pull index the PR
+ * list shares, through the newest {@link ON_BRANCH_CHUNKS} chunks; `searched` says when the
+ * answer covers only those. `except` leaves one PR out (the PR whose page deletes its branch).
+ */
+export async function openPullsOnBranch(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  refName: string,
+  { except = null, network = DEFAULT_NETWORK }: { readonly except?: number | null; readonly network?: Network } = {},
+): Promise<{ readonly pulls: readonly PullOnBranch[]; readonly searched: number | null }> {
+  const index = await indexOf(sdk, repo, network)
+  const sameRepo = (r: PullRow): boolean => r.sourceId === '' || r.sourceId === repo.repoId
+  const usesOf = (r: PullRow): PullOnBranch['uses'] | null =>
+    r.mergeBaseRefName === refName ? 'base' : sameRepo(r) && r.sourceRefName === refName ? 'head' : null
+  const selected = await selectRows(sdk, index, {
+    candidates: null,
+    matches: (r) => r.state.open && r.number !== except && usesOf(r) !== null,
+    cmp: compareRows('newest'),
+    direction: 'desc',
+    want: 50,
+    walkAll: true,
+    partial: true,
+    needLogs: true,
+    maxChunks: ON_BRANCH_CHUNKS,
+  })
+  return {
+    pulls: selected.rows.map((r) => ({ number: r.number, title: r.title, uses: usesOf(r) ?? 'base' })),
+    searched: selected.complete ? null : selected.searched,
+  }
 }

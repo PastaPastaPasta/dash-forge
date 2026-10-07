@@ -14,7 +14,7 @@
  * write Platform has shown; an unconfirmed one says so and keeps the dialog open.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { newIntent, type CostPreview as Cost } from '@/lib/sdk'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -31,10 +31,19 @@ export interface ConfirmDialogProps {
   onClose: () => void
   title: string
   description?: string
-  /** The pre-sign cost, or null for a free action. A negative cost is a refund. */
-  cost: Cost | null
+  /**
+   * The pre-sign cost, or null for a free action. A negative cost is a refund. `'pending'`: not
+   * known yet (what it depends on is still being read): no cost is shown, and Confirm waits.
+   */
+  cost: Cost | null | 'pending'
   refund?: boolean
   confirmLabel: string
+  /** The dismiss button's words (default "Cancel"). */
+  cancelLabel?: string
+  /** More of the question under the description (paragraphs, a list), above the cost. */
+  children?: ReactNode
+  /** Why the action cannot run yet (no key in this browser, a locked tab): shown, and Confirm is disabled. */
+  blocked?: ReactNode
   /** The write to run on confirm, with this action's intent token. Throw to show the error. */
   onConfirm: (intent: string) => Promise<void>
   /** A short success note shown briefly before auto-close. */
@@ -45,8 +54,6 @@ export interface ConfirmDialogProps {
    * an action of one write ends under that write's own title.
    */
   toast?: SpendActionLabels
-  /** More for the person to weigh before signing (shown above the cost). */
-  children?: React.ReactNode
 }
 
 export function ConfirmDialog({
@@ -54,10 +61,12 @@ export function ConfirmDialog({
   onClose,
   title,
   description,
-  children,
-  cost,
+  cost: costIn,
   refund,
   confirmLabel,
+  cancelLabel = 'Cancel',
+  children,
+  blocked,
   onConfirm,
   successNote,
   toast,
@@ -69,6 +78,8 @@ export function ConfirmDialog({
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
   const [intent, setIntent] = useState(newIntent)
+  const costPending = costIn === 'pending'
+  const cost = costPending ? null : costIn
   const isRefund = refund || (cost !== null && cost.credits < 0)
 
   useEffect(() => {
@@ -81,7 +92,7 @@ export function ConfirmDialog({
       : ({ ok: true } as const)
 
   const run = async (): Promise<void> => {
-    if (pending) return
+    if (pending || costPending) return
     if (!check.ok) {
       openTopUp({ blocker: check.blocker, shortfall: check.shortfall })
       return
@@ -119,9 +130,9 @@ export function ConfirmDialog({
       footer={
         <>
           <Button variant="ghost" onClick={close} disabled={pending}>
-            Cancel
+            {cancelLabel}
           </Button>
-          <Button variant={isRefund ? 'danger' : 'primary'} onClick={run} loading={pending} disabled={done || pending}>
+          <Button variant={isRefund ? 'danger' : 'primary'} onClick={run} loading={pending} disabled={done || pending || costPending || (blocked !== undefined && blocked !== null)}>
             {done ? 'Done' : check.ok ? confirmLabel : 'Top up to continue'}
           </Button>
         </>
@@ -129,7 +140,7 @@ export function ConfirmDialog({
     >
       <div className="space-y-3">
         {children}
-        {cost ? (
+        {costPending ? null : cost ? (
           <CostPreview cost={cost} refund={isRefund} />
         ) : (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">This action is free: no credits are spent.</p>
@@ -142,6 +153,8 @@ export function ConfirmDialog({
               : `Not enough credits: Platform needs ${creditsAsDash(cost?.admit.balance ?? 0)} DASH available to accept this write, ${creditsAsDash(Number(check.shortfall))} DASH more than your balance.`}
           </div>
         ) : null}
+
+        {blocked ?? null}
 
         {done ? <p className="text-dense text-verify-700 dark:text-verify-400">{successNote ?? 'Confirmed on Platform'}</p> : null}
 

@@ -6,8 +6,8 @@
  * `(owner, name)` address.
  */
 
+import { useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
 import { Archive, Code2, GitFork, GitPullRequest, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
@@ -17,15 +17,25 @@ import { StarButton } from '@/components/repo/star-button'
 import { WatchButton } from '@/components/repo/watch-button'
 import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
+import { usePathname, useShortAddressBar } from '@/hooks/use-route'
 import { cn, shortId } from '@/lib/utils'
 import { TabStrip } from '@/components/ui/tab-strip'
 import { bareRoute, ownerLabel } from '@/lib/page-title'
 import { LookalikeNote } from '@/components/lookalike-note'
-import { useDpnsName } from '@/hooks/use-dpns-name'
+import { useSettledDpnsName } from '@/hooks/use-dpns-name'
 import { ForkButton } from '@/components/repo/fork-button'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
 import { CodeSearchBox } from '@/components/repo/code-search-box'
+import { MembersChip } from '@/components/repo/audience'
+import { membersOnlyOf, onMembersOnlyCounts } from '@/lib/repo/members-only-counts'
 import { MovedBanner } from '@/components/repo/moved-banner'
+
+/** How many of the repo's open issues and PRs are members-only, once a list has read them all. */
+function useMembersOnlyOpen(repo: RepoHome['repo']): { issues: number | null; pulls: number | null } {
+  const issues = useSyncExternalStore(onMembersOnlyCounts, () => membersOnlyOf(repo, 'issue')?.open ?? null, () => null)
+  const pulls = useSyncExternalStore(onMembersOnlyCounts, () => membersOnlyOf(repo, 'patch')?.open ?? null, () => null)
+  return { issues, pulls }
+}
 
 /**
  * "forked from owner/name", linking to the parent, and GitHub's Contribute: the parent's New pull
@@ -89,10 +99,14 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   const current = activeRepoTab(pathname)
   const refParam = useParam('ref')
   const counts = useTargetCounts(home.repo)
+  const membersOnly = useMembersOnlyOpen(home.repo)
   const { role } = useViewerRole(home.repo)
   const TitleTag = VIEWS_WITH_OWN_H1.includes(pathname) ? 'div' : 'h1'
   // The owner pill reads the same name: no extra request. Look-alikes of known names (TS-24).
-  const ownerName = useDpnsName(home.repo.ownerId)
+  const ownerLookup = useSettledDpnsName(home.repo.ownerId)
+  const ownerName = ownerLookup ?? undefined
+  // The address bar shows the page's short URL, by the owner's name once read (CJ-6).
+  useShortAddressBar(home.repo.visibility, ownerLookup)
   const repoName = home.repo.name || addr.name
   const lookalikes = [
     ownerName ? { kind: 'owner' as const, name: ownerName, identity: home.repo.ownerId } : null,
@@ -101,8 +115,8 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   ]
   const tabs = [
     { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true, count: null },
-    { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues },
-    { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, count: counts.pulls },
+    { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues, membersOnly: membersOnly.issues },
+    { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, count: counts.pulls, membersOnly: membersOnly.pulls },
     { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, count: null },
     ...(role === 'maintainer'
       ? [{ key: 'settings', label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, count: null }]
@@ -129,6 +143,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
             </Link>
           </TitleTag>
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
+          <MembersChip home={home} />
           <BackendBadge backend={home.backend} />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -178,6 +193,11 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
               {tab.count !== null ? (
                 <span className="rounded-full bg-anvil-100 px-1.5 text-[11px] tabular-nums text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">
                   {tab.count}
+                </span>
+              ) : null}
+              {tab.count !== null && 'membersOnly' in tab && tab.membersOnly !== null && tab.membersOnly > 0 ? (
+                <span className="text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="members-only-share">
+                  ({tab.membersOnly} members-only)
                 </span>
               ) : null}
             </Link>

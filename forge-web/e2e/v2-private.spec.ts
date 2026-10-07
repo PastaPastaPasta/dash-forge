@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test'
-import { E2E_DEVNET, PASSPHRASE, deployment, idFile, idOrEmpty, nodeSdk, stateFile, unlock, waitForRepoResolved } from './helpers'
+import { deployment, E2E_DEVNET, idFile, idOrEmpty, nodeSdk, PASSPHRASE, stateFile, unlock, waitForRepoResolved } from './helpers'
 
 const RUN = Date.now().toString(36)
 const NAME = `forge-v2-private-${RUN}`
@@ -189,9 +189,11 @@ test('3. OWNER browses the decrypted tree and file; opens an issue and comments 
   await expect(page.getByTestId('sealed-limit')).toContainText('bytes')
   await shot(page, '05-issue-compose')
   await page.getByRole('button', { name: /^submit issue$/i }).click()
-  await page.waitForURL(/number=1/, { timeout: 300_000 })
+  // A private repo's address bar keeps the canonical route: its links carry per-tab tokens.
+  await page.waitForURL(/\/repo\/issue\/?\?.*number=1(&|$)/, { timeout: 300_000 })
   await waitForRepoResolved(page, 120_000)
   await expect(page.getByText(SECRET.body)).toBeVisible({ timeout: 120_000 })
+  expect(page.url(), 'a private repo never shows a short URL').toMatch(/\/repo\/issue\/?\?.*number=1(&|$)/)
   await page.locator('#comment-body').fill(SECRET.comment)
   await page.getByRole('button', { name: /^comment$/i }).click()
   // Posted once the composer clears and the comment shows in the thread (not in the textarea).

@@ -1161,7 +1161,9 @@ pub enum PrCommand {
     /// Check that a merged pull request's recorded merge contains its commits. Writes nothing.
     ///
     /// Fetches the base branch and the PR head, then says whether the merge commit contains the
-    /// PR's commits, is a squash or a rebase of them, or does not contain them.
+    /// PR's commits, is a squash or a rebase of them, or does not contain them. Then lists the
+    /// branch rules in force when it was merged (protection, approvals, required checks) and
+    /// whether the merge met them, or a maintainer recorded a bypass.
     Verify {
         /// The repository (`owner/name`).
         repo: String,
@@ -1645,12 +1647,16 @@ pub enum ReleaseCommand {
         #[arg(long)]
         asset: Option<String>,
         /// A directory to save the assets in, by name (default: the current directory), or a
-        /// file name for a single asset. `-o` works too.
+        /// file name for a single asset. An existing file is kept unless --force. `-o` works too.
         #[arg(long, short = 'O', short_alias = 'o', conflicts_with = "dir")]
         output: Option<PathBuf>,
         /// A directory to save the assets in, made if it does not exist (gh's `-D/--dir`).
         #[arg(long, short = 'D')]
         dir: Option<PathBuf>,
+        /// Replace a file that already exists (a symlink there is replaced, not followed).
+        /// Without it, an existing file is refused. `--clobber` works too.
+        #[arg(long, alias = "clobber")]
+        force: bool,
     },
     /// Unpublish a live release (maintainers only).
     ///

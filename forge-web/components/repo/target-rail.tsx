@@ -18,6 +18,7 @@ import { isIdentityId, shortId } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { useEscapeLayer } from '@/components/ui/dialog'
 import { CheckMark, LabelChip } from '@/components/repo/issue-bits'
 import { cn } from '@/lib/utils'
 import type { Milestone } from '@/lib/rules/parity'
@@ -71,27 +72,21 @@ export function stateToggleLabel(open: boolean, withComment: boolean, noun: 'iss
   return open ? `Close ${noun}` : `Reopen ${noun}`
 }
 
-/** Close a popover on Escape and on a pointer press outside `ref` while it is open. */
+/**
+ * Close a popover on Escape and on a pointer press outside `ref` while it is open. Its Escape is
+ * an escape layer: it never takes the Escape of a dialog opened over it.
+ */
 export function useDismiss(open: boolean, ref: RefObject<HTMLElement>, onDismiss: () => void): void {
   const dismiss = useRef(onDismiss)
   dismiss.current = onDismiss
+  useEscapeLayer(open, onDismiss, ref)
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && !e.defaultPrevented) {
-        e.preventDefault()
-        dismiss.current()
-      }
-    }
     const onPointer = (e: PointerEvent): void => {
       if (ref.current !== null && e.target instanceof Node && !ref.current.contains(e.target)) dismiss.current()
     }
-    document.addEventListener('keydown', onKey)
     document.addEventListener('pointerdown', onPointer)
-    return () => {
-      document.removeEventListener('keydown', onKey)
-      document.removeEventListener('pointerdown', onPointer)
-    }
+    return () => document.removeEventListener('pointerdown', onPointer)
   }, [open, ref])
 }
 

@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, MessageSquareDashed } from 'lucide-react'
 
 import {
+  createComment,
   discardReviewDraft,
   loadReviewDraft,
   saveReviewDraft,
@@ -23,19 +24,30 @@ import {
   type ReviewDraft,
   type VerdictInput,
 } from '@/lib/repo'
-import { newIntent } from '@/lib/sdk'
+import { SupersededWriteError, newIntent, sumPreviews } from '@/lib/sdk'
+import type { RepoHome } from '@/lib/view'
+import type { Membership } from '@/lib/rules/v2'
+import { QUOTE_CONFIRM, publicLineQuestion, quotesMembersText, submitSummary, type MembersTexts } from '@/lib/view/audience'
+import { AudienceChip, AudienceWarnings, useAudienceWarnings, useComposerAudience, useQuoteGate, warningName } from '@/components/repo/audience'
+import { composeCost } from '@/components/repo/private-compose'
+import { Field, Input } from '@/components/ui/input'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { plural } from '@/lib/view/format'
 import {
   addDraftComment,
-  draftCost,
+  draftAudienceCounts,
   draftIsEmpty,
+  draftMembersTexts,
+  draftPublicTexts,
+  draftQuotesMembersText,
+  withMemoryOnly,
   draftWhereabouts,
   editDraftComment,
   newReviewDraft,
   partialSubmitMessage,
   reanchorDraft,
   removeDraftComment,
+  setDraftAudience,
   setDraftVerdict,
   splitDraftComments,
   startSubmit,
@@ -52,6 +64,8 @@ import type { PendingReview } from '@/components/repo/inline-comments'
 import { cn } from '@/lib/utils'
 import { spendAction } from '@/lib/spend-toast'
 
+const NO_TEXTS: MembersTexts = []
+
 const VERDICTS: readonly { value: VerdictInput; label: string; help: string }[] = [
   { value: 'comment', label: 'Comment', help: 'General feedback without an explicit verdict.' },
   { value: 'approve', label: 'Approve', help: 'Approve merging these changes (counts when you are a maintainer or writer).' },
@@ -65,9 +79,12 @@ export const VERDICT_WORDS: Readonly<Record<VerdictInput, string>> = { comment: 
  * The viewer's pending review on a PR: loaded, edited and submitted in this browser. Nothing is
  * offered until the stored draft has loaded (adding a comment earlier would start a second
  * draft over it), and every change reads the latest draft, never a render's stale copy.
+ * `membersOnly`: the PR is members-only, so its pending review never goes to disk.
+ * `membersTexts`: members-only text the tab has opened in the repo; a draft whose public text
+ * quotes it is marked memory-only (`ReviewDraft.memoryOnly`), so every later save of it, the
+ * submit's included, keeps it off disk too.
  */
-/** `membersOnly`: the PR is members-only, so its pending review never goes to disk. */
-export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, membersOnly = false): {
+export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, membersOnly = false, membersTexts: MembersTexts = NO_TEXTS): {
   draft: ReviewDraft | null
   loaded: boolean
   pending: PendingReview | undefined
@@ -80,6 +97,8 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
   const [draft, setDraft] = useState<ReviewDraft | null>(null)
   const [loaded, setLoaded] = useState(false)
   const latest = useRef<ReviewDraft | null>(null)
+  const texts = useRef(membersTexts)
+  texts.current = membersTexts
   useEffect(() => {
     let live = true
     setLoaded(false)
@@ -101,16 +120,27 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
     }
   }, [network, identity, pullId])
 
+  /** Keep `next` (null: discard it); returns the draft as kept, its memory-only mark set. */
   const update = useCallback(
-    (d: ReviewDraft | null) => {
+    (next: ReviewDraft | null): ReviewDraft | null => {
+      // The flag travels with the draft: the submit's own saves of it respect it too. Once set it
+      // stays until the draft is discarded or submitted: a locked tab forgets the members-only
+      // text it was compared against, and the quoting draft must not land on disk then.
+      const d = next === null ? null : withMemoryOnly(next, next.memoryOnly === true || draftQuotesMembersText(next, texts.current))
       latest.current = d
       setDraft(d)
-      if (identity === null) return
+      if (identity === null) return d
       if (d === null || draftIsEmpty(d)) void discardReviewDraft(network, identity, pullId)
       else void saveReviewDraft(membersOnly && repo.visibility === 'public' ? { ...d, audience: 'members' } : d, repo)
+      return d
     },
     [identity, network, pullId, repo, membersOnly],
   )
+  // Members-only text read after the draft was stored: a draft that quotes it leaves disk.
+  const quotes = draft !== null && !draftIsEmpty(draft) && draft.memoryOnly !== true && draftQuotesMembersText(draft, membersTexts)
+  useEffect(() => {
+    if (quotes && latest.current !== null) update(latest.current)
+  }, [quotes, update])
 
   const ensure = useCallback(
     (): ReviewDraft | null =>
@@ -128,10 +158,11 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
         : {
             ...(({ onLines, elsewhere }) => ({ comments: onLines, elsewhere }))(splitDraftComments(draft, headOid)),
             count: draft?.comments.length ?? 0,
+            membersTexts: draft === null ? [] : draftMembersTexts(draft, membersOnly ? 'members' : 'public'),
             frozen: draft !== null && submitStarted(draft),
-            onAdd: (anchor: AnchorInput, body: string) => {
+            onAdd: (anchor: AnchorInput, body: string, audience?: 'public' | 'members') => {
               const d = ensure()
-              if (d !== null) update(addDraftComment(d, newIntent(), anchor, body))
+              if (d !== null) update(addDraftComment(d, newIntent(), anchor, body, audience))
             },
             onEdit: (localId, body) => {
               if (latest.current !== null) update(editDraftComment(latest.current, localId, body))
@@ -140,12 +171,16 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string, m
               if (latest.current !== null) update(removeDraftComment(latest.current, localId))
             },
           },
-    [identity, loaded, draft, headOid, ensure, update],
+    [identity, loaded, draft, headOid, ensure, update, membersOnly],
   )
   return { draft, loaded, pending, update, ensure }
 }
 
 export function ReviewDrawer({
+  home,
+  members = null,
+  maintainer = false,
+  author,
   repo,
   pullId,
   headOid,
@@ -159,9 +194,20 @@ export function ReviewDrawer({
   lineExists,
   onSubmitted,
   membersOnly = false,
+  membersTexts = [],
 }: {
+  /** The repo page (the audience chip reads the viewer's members access from it). */
+  home: RepoHome
+  /** The repo's members (the chip's count, who can read members-only text). */
+  members?: readonly Membership[] | null
+  /** The viewer may turn members-only content on. */
+  maintainer?: boolean
+  /** Who opened the PR: a members-only "Request changes" they can't read asks for one public line. */
+  author: string
   /** The PR is members-only: its pending review lives in this tab only. */
   membersOnly?: boolean
+  /** Members-only text the tab has opened in the repo: public review text that repeats it asks first (product H8). */
+  membersTexts?: MembersTexts
   repo: RepoRef
   pullId: string
   headOid: string
@@ -188,6 +234,14 @@ export function ReviewDrawer({
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const [open, setOpen] = useState(false)
+  // Who the review's own text is for (its verdict is always public, D15): the PR's, or Members.
+  const prAudience = membersOnly ? 'members' : 'public'
+  // It starts on the draft's audience: a members-only draft stays members-only (and off disk)
+  // until the writer picks Public.
+  const draftAudience = draft === null ? undefined : draft.audience === 'members' ? ('members' as const) : ('public' as const)
+  const textAudience = useComposerAudience(home, { parent: prAudience, members, maintainer, start: draftAudience })
+  // A members-only "Request changes" the author can't read: one public line beside it (product H8).
+  const [publicLine, setPublicLine] = useState('')
   const [summary, setSummary] = useState(draft?.summary ?? '')
   const [chosen, setVerdict] = useState<VerdictInput>(draft?.verdict ?? 'comment')
   // A draft saved with a verdict before the viewer's authorship was known still submits as a comment.
@@ -195,6 +249,11 @@ export function ReviewDrawer({
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  // Why the public line beside a submitted review was not posted (the review itself was).
+  const [lineError, setLineError] = useState<string | null>(null)
+  // Public text that repeats members-only text asks first (product H8).
+  const quoteGate = useQuoteGate()
+  const warnings = useAudienceWarnings(textAudience, summary, { author, kind: 'pull' })
   // Follow the draft being shown: another draft (loaded, or another identity's), or none at all
   // (discarded, submitted, or signed out) resets the fields, so one draft's words never land in
   // another.
@@ -206,16 +265,19 @@ export function ReviewDrawer({
   // The summary and verdict are part of the draft: kept in this browser as they change (shortly
   // after typing stops), so closing the panel or reloading the page loses neither.
   const frozen = draft !== null && submitStarted(draft)
+  // Members-only text is never kept on disk: the draft says so before its summary is saved.
+  const textChoice = textAudience.audience
   useEffect(() => {
     if (!loaded || frozen || progress !== null) return
-    const same = draft === null ? summary === '' && verdict === 'comment' : draft.summary === summary && draft.verdict === verdict
+    const sameAudience = (draft?.audience === 'members') === (textChoice === 'members')
+    const same = draft === null ? summary === '' && verdict === 'comment' : draft.summary === summary && draft.verdict === verdict && sameAudience
     if (same) return
     const t = setTimeout(() => {
       const d = ensure()
-      if (d !== null && !submitStarted(d)) update(setDraftVerdict(d, verdict, summary))
-    }, 250)
+      if (d !== null && !submitStarted(d)) update(setDraftAudience(setDraftVerdict(d, verdict, summary), textChoice))
+    }, sameAudience ? 250 : 0)
     return () => clearTimeout(t)
-  }, [summary, verdict, draft, loaded, frozen, progress, ensure, update])
+  }, [summary, verdict, textChoice, draft, loaded, frozen, progress, ensure, update])
 
   const count = draft?.comments.length ?? 0
   const headMoved = draft !== null && draft.headOid !== headOid && !frozen
@@ -223,16 +285,38 @@ export function ReviewDrawer({
     identity === null
       ? null
       : draft ?? newReviewDraft({ draftId: 'preview', network, identity, repoId: repo.repoId, prId: pullId, headOid, private: repo.visibility === 'private', membersOnly, now: 0 })
-  const planned = working === null ? null : frozen ? working : { ...working, summary, verdict }
-  const { documents, cost } = planned === null ? { documents: 0, cost: null } : draftCost(planned)
+  const planned = working === null ? null : frozen ? working : setDraftAudience({ ...working, summary, verdict }, textAudience.audience)
+  // What a submit writes, each document priced for its audience (members-only text is stored encrypted).
+  const toWrite = planned === null ? [] : [
+    ...(planned.reviewId === undefined ? [composeCost(repo, 'review', { body: planned.summary }, {}, planned.audience === 'members' ? 'members' : prAudience)] : []),
+    ...planned.comments.filter((c) => c.landedId === undefined).map((c) => composeCost(repo, 'comment', { body: c.body, path: c.anchor.path }, {}, c.audience === 'members' ? 'members' : prAudience)),
+  ]
+  const documents = toWrite.length
+  const cost = planned === null ? null : sumPreviews(toWrite)
+  const summaryLine = planned === null || repo.visibility !== 'public' ? null : submitSummary(draftAudienceCounts(planned, prAudience))
+  const question =
+    planned === null
+      ? null
+      : publicLineQuestion({ verdict, audience: planned.audience === 'members' || prAudience === 'members' ? 'members' : 'public', prMembersOnly: membersOnly, author, authorName: warningName(network, author), holders: textAudience.holders })
+  // The public line is public text: one that repeats members-only text, the review's own unposted
+  // members-only text included, is not posted.
+  const lineQuotes = question !== null && planned !== null && quotesMembersText(publicLine, membersTexts, { extra: draftMembersTexts(planned, prAudience) })
 
-  const submit = async (): Promise<void> => {
+  const submit = (): void => {
     if (!sdk || !signer || identity === null || planned === null) return
     if (cost === null || !guard.check(cost, 'collab')) return
     if (!frozen && verdict === 'comment' && summary.trim() === '' && count === 0) {
       setError('Write a summary or add a comment first.')
       return
     }
+    if (lineQuotes) return
+    // Checked again now (a retry too), against all the members-only text the tab has opened by
+    // now: the summary when it is public and not yet posted, and every public comment not yet posted.
+    quoteGate.check(draftPublicTexts(planned, prAudience), membersTexts, () => void send(), { extra: draftMembersTexts(planned, prAudience) })
+  }
+
+  const send = async (): Promise<void> => {
+    if (!sdk || !signer || identity === null || planned === null) return
     // The draft as it will be written, frozen before anything is: its attempt on record, the
     // chosen verdict and the trimmed summary. The page then offers no edits (pending.frozen) and
     // the auto-save stands down, so nothing re-saves an editable draft over the submit's.
@@ -240,20 +324,37 @@ export function ReviewDrawer({
     if (!frozen) {
       const base = ensure()
       if (base === null) return
-      toSubmit = startSubmit(base, verdict, summary, Date.now())
+      // With the audience the chip shows, never a stale save's: members-only text stays so.
+      toSubmit = startSubmit(setDraftAudience(base, textAudience.audience), verdict, summary, Date.now())
       setSummary(toSubmit.summary)
-      update(toSubmit)
+      // What is submitted carries the memory-only mark the save just set.
+      toSubmit = update(toSubmit) ?? toSubmit
     }
     setError(null)
+    setLineError(null)
     setProgress({ done: 0, total: documents })
     try {
       // The review and its inline comments are one action: one toast with their total (QW3-039).
-      const r = await spendAction({ running: 'Submitting the review…', done: 'Review submitted', failed: 'Review submitted part-way' }, (tag) =>
-        submitReviewDraft(sdk, tag(signer), repo, toSubmit, { isMember, locked }, (p) => setProgress(p)),
-      )
+      const line = question !== null ? publicLine.trim() : ''
+      const { submitted: r, lineFailed } = await spendAction({ running: 'Submitting the review…', done: 'Review submitted', failed: 'Review submitted part-way' }, async (tag) => {
+        const submitted = await submitReviewDraft(sdk, tag(signer), repo, toSubmit, { isMember, locked }, (p) => setProgress(p))
+        // The one public line the author can read, after the members-only review. The review is
+        // on Platform by now: a failed line is said apart, and never holds the submitted draft.
+        const lineFailed =
+          line === ''
+            ? null
+            : await createComment(sdk, tag(signer), repo, { targetId: pullId, body: line, intent: `review:${toSubmit.draftId}:public-line`, post: { isMember, locked }, audience: 'public' }).then(
+                () => null,
+                (e: unknown) => (e instanceof SupersededWriteError ? null : guard.failed(e)),
+              )
+        return { submitted, lineFailed }
+      })
+      setPublicLine('')
+      textAudience.reset()
       update(null)
-      setOpen(false)
       setProgress(null)
+      if (lineFailed === null) setOpen(false)
+      else setLineError(`Your review is submitted, but its public line wasn't posted: ${lineFailed} Post it as a comment on the pull request: ${line}`)
       onSubmitted(r)
     } catch (e) {
       // What landed is saved in the draft (IndexedDB or memory): read it back to say so.
@@ -273,7 +374,16 @@ export function ReviewDrawer({
 
   return (
     <div className="relative" data-testid="review-drawer">
-      <Button variant={count > 0 ? 'primary' : 'outline'} size="sm" onClick={() => setOpen((o) => !o)} aria-expanded={open} disabled={identity === null || !loaded}>
+      <Button
+        variant={count > 0 ? 'primary' : 'outline'}
+        size="sm"
+        onClick={() => {
+          setOpen((o) => !o)
+          setLineError(null)
+        }}
+        aria-expanded={open}
+        disabled={identity === null || !loaded}
+      >
         <MessageSquareDashed className="h-3.5 w-3.5" aria-hidden />
         Review changes
         {count > 0 ? (
@@ -290,7 +400,7 @@ export function ReviewDrawer({
         >
           <h3 className="text-dense font-semibold">Finish your review</h3>
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="draft-whereabouts">
-            {draftWhereabouts(repo.visibility === 'private', membersOnly)} Nothing is on Platform until you submit.
+            {draftWhereabouts(repo.visibility === 'private', membersOnly || (planned !== null && (planned.audience === 'members' || planned.comments.some((c) => c.audience === 'members'))))} Nothing is on Platform until you submit.
           </p>
           {headMoved && draft ? (
             <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" data-testid="draft-head-moved">
@@ -311,6 +421,12 @@ export function ReviewDrawer({
           ) : (
             <>
               <MarkdownEditor id="review-summary" label="Review summary" value={summary} onChange={setSummary} placeholder="Leave a summary (optional)" />
+              <AudienceWarnings warnings={warnings} />
+              {textAudience.choice !== null ? (
+                <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+                  <span>Review text:</span> <AudienceChip home={home} state={textAudience} testId="review-audience-chip" />
+                </div>
+              ) : null}
               <fieldset className="space-y-1.5">
                 <legend className="sr-only">Verdict</legend>
                 {VERDICTS.filter((v) => !isAuthor || v.value === 'comment').map((v) => (
@@ -340,10 +456,29 @@ export function ReviewDrawer({
                     {anchorLabel({ path: c.anchor.path, line: c.anchor.line ?? null, startLine: c.anchor.startLine ?? null, side: c.anchor.side ?? null, commitOid: c.anchor.commitOid ?? '' })}
                   </span>
                   <span className="truncate text-anvil-600 dark:text-anvil-300">{c.body.split('\n')[0]}</span>
+                  {c.audience === 'members' || membersOnly ? <span className="shrink-0 text-anvil-500 dark:text-anvil-400">members-only</span> : null}
                   {c.landedId ? <span>landed</span> : null}
                 </li>
               ))}
             </ul>
+          ) : null}
+          {question !== null && !frozen ? (
+            <div className="space-y-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2" data-testid="public-line-question">
+              <p className="text-dense text-anvil-800 dark:text-anvil-100">{question}</p>
+              <Field label="Public line (optional)" htmlFor="review-public-line">
+                <Input id="review-public-line" value={publicLine} onChange={(e) => setPublicLine(e.target.value)} maxLength={500} />
+              </Field>
+              {lineQuotes ? (
+                <p className="text-[12px] text-caution-700 dark:text-caution-400" role="alert" data-testid="public-line-quotes">
+                  {QUOTE_CONFIRM} Take the quoted text out of the public line to submit.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {summaryLine !== null ? (
+            <p className="text-dense font-medium" data-testid="review-submit-summary">
+              {summaryLine}
+            </p>
           ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
             <span className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="review-documents">
@@ -364,7 +499,7 @@ export function ReviewDrawer({
                   {frozen ? 'Discard the rest' : 'Discard'}
                 </Button>
               ) : null}
-              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null}>
+              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null || lineQuotes}>
                 {frozen || error ? 'Retry' : 'Submit review'}
               </Button>
             </div>
@@ -379,8 +514,14 @@ export function ReviewDrawer({
               {error}
             </p>
           ) : null}
+          {lineError ? (
+            <p role="alert" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-800 dark:text-anvil-100" data-testid="review-line-error">
+              {lineError}
+            </p>
+          ) : null}
         </section>
       ) : null}
+      {quoteGate.dialog}
     </div>
   )
 }

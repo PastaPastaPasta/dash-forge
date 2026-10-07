@@ -19,7 +19,13 @@
  * A static host answers a short URL with `404.html`, whose inline {@link SHORT_URL_SHIM}
  * rewrites it to the canonical route. A ref containing `/` travels as one `%2F`-encoded
  * segment, so `/tree/feature%2Fx/src` is unambiguous without knowing the repo's refs.
+ *
+ * Once a public repo's page has loaded, the address bar shows its short URL too
+ * ({@link shortRouteFor}, `hooks/use-route.ts`).
  */
+
+import { base58Decode } from './auth/base58'
+import { bareRoute } from './page-title'
 
 /**
  * First path segments that are the app's own routes or static files, never an owner. Every
@@ -167,13 +173,40 @@ export function hasShortUrl(repo: { readonly owner: string; readonly name: strin
 /** The base path this build is served under (`NEXT_PUBLIC_BASE_PATH`, e.g. `/dash-forge`). */
 export const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '')
 
+/** Whether `s` is an identity id (32 bytes of base58), as the repo pages read an owner. */
+function isIdentifier(s: string): boolean {
+  try {
+    return base58Decode(s).length === 32
+  } catch {
+    return false
+  }
+}
+
+/**
+ * How a short URL may write an owner whose DPNS name is `ownerName`, best first: the label
+ * (`alice` for `alice.dash`), then the full name. Never a label that is itself an identity id:
+ * the pages read such an owner as that id, so the link would open another identity's repo.
+ */
+function ownerNameForms(ownerName: string | null | undefined): string[] {
+  if (!ownerName) return []
+  const label = ownerName.toLowerCase().endsWith('.dash') ? ownerName.slice(0, -'.dash'.length) : undefined
+  return [label, ownerName].filter((o): o is string => o !== undefined && o !== '' && !isIdentifier(o))
+}
+
 /**
  * The link Copy link copies (L-55), absolute for the current origin in a browser: the short URL,
  * keeping a `?repo=` pin as its query string (the shim carries the query through, so the link
  * still opens that exact repo); the canonical query route when the owner or name has no short
- * form.
+ * form. With `ownerName`, the owner's DPNS name, the owner is written by name, as the address bar
+ * writes it ({@link shortRouteFor}).
  */
-export function shortRepoUrl(repo: { readonly owner: string; readonly name: string; readonly repoId?: string }, target?: ShortTarget): string {
+export function shortRepoUrl(
+  repo: { readonly owner: string; readonly name: string; readonly repoId?: string },
+  target?: ShortTarget,
+  ownerName?: string | null,
+): string {
+  const named = ownerNameForms(ownerName).find((owner) => hasShortPath({ owner, name: repo.name }))
+  if (named !== undefined) repo = { ...repo, owner: named }
   const pin = repo.repoId ? `?repo=${encodeURIComponent(repo.repoId)}` : ''
   const path = BASE_PATH + (hasShortPath(repo) ? `${shortRepoPath(repo, target)}${pin}` : canonicalPath(repo, target))
   return typeof window === 'undefined' ? path : `${window.location.origin}${path}`
@@ -298,4 +331,205 @@ export function shortUrlShimScript(base: string = BASE_PATH): string {
   return `(function(){var expand=${SHORT_URL_EXPAND_SOURCE};var to=expand(location.pathname,${JSON.stringify(
     base,
   )},${JSON.stringify(RESERVED_SEGMENTS)});if(to){document.documentElement.setAttribute('data-short-url','1');location.replace(to+(location.search?'&'+location.search.slice(1):'')+location.hash);}})();`
+}
+
+/**
+ * {@link SHORT_URL_EXPAND_SOURCE} in TypeScript, for the app itself: the address bar keeps a short
+ * URL, so the router can hand one back after Back or Forward (`hooks/use-route.ts`). The page's
+ * CSP refuses `eval`, so the shim's string cannot run here; the tests run both over the same
+ * paths and require the same answer.
+ */
+export function expandShortPath(pathname: string, base: string, reserved: readonly string[] = RESERVED_SEGMENTS): string | null {
+  let p = pathname
+  if (base) {
+    if (p !== base && !p.startsWith(`${base}/`)) return null
+    p = p.slice(base.length)
+  }
+  const parts = p.split('/').filter((s) => s !== '')
+  if (parts.length < 2) return null
+  const dec = (s: string): string | null => {
+    try {
+      return decodeURIComponent(s)
+    } catch {
+      return null
+    }
+  }
+  const owner = dec(parts[0]!)
+  const name = dec(parts[1]!)
+  if (owner === null || name === null) return null
+  const host = owner.toLowerCase()
+  if ((host === 'github.com' || host === 'gh') && parts.length >= 3) {
+    const ghRepo = dec(parts[2]!)
+    if (ghRepo === null || !GITHUB_SEGMENT.test(name) || !GITHUB_SEGMENT.test(ghRepo)) return null
+    const ghRest = parts.slice(3).join('/')
+    return `${base}/github.com/?owner=${encodeURIComponent(name)}&name=${encodeURIComponent(ghRepo.replace(/\.git$/, ''))}${ghRest ? `&rest=${encodeURIComponent(ghRest)}` : ''}`
+  }
+  if (reserved.includes(owner.toLowerCase())) return null
+  if (!OWNER_SEGMENT.test(owner) || !NAME_SEGMENT.test(name)) return null
+  const q = (route: string, extra: readonly string[]): string => {
+    let s = `owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(name)}`
+    for (let i = 0; i < extra.length; i += 2) if (extra[i + 1] !== '') s += `&${extra[i]}=${encodeURIComponent(extra[i + 1]!)}`
+    return `${base}${route}?${s}`
+  }
+  const rest = parts.slice(2)
+  const kind = rest[0]
+  const arg = rest.length > 1 ? dec(rest[1]!) : ''
+  if (arg === null) return null
+  const tail: string[] = []
+  for (const s of rest.slice(2)) {
+    const d = dec(s)
+    if (d === null) return null
+    tail.push(d)
+  }
+  const number = /^[1-9][0-9]{0,9}$/.test(arg) ? arg : null
+  if (rest.length === 0) return q('/repo/', [])
+  if (kind === 'releases' && arg === 'tag' && tail.length === 1) return q('/repo/release/', ['tag', tail[0]!])
+  const ref = arg === 'HEAD' ? '' : arg
+  if ((kind === 'tree' || kind === 'blob' || kind === 'blame') && rest.length >= 2) return q(`/repo/${kind}/`, ['ref', ref, 'path', tail.join('/')])
+  if (kind === 'commits' && tail.length > 0) return q('/repo/commits/', ['ref', ref, 'path', tail.join('/')])
+  if (kind === 'compare' && rest.length >= 2) {
+    const spec = [arg, ...tail].join('/')
+    const dots = spec.indexOf('...')
+    const two = spec.indexOf('..')
+    const cut = dots >= 0 ? dots : two
+    const len = dots >= 0 ? 3 : 2
+    const cmpBase = cut >= 0 ? spec.slice(0, cut) : ''
+    const cmpHead = cut >= 0 ? spec.slice(cut + len) : spec
+    if (cmpHead === '' || (cut >= 0 && cmpBase === '')) return null
+    return q('/repo/compare/', ['base', cmpBase, 'head', cmpHead])
+  }
+  if ((kind === 'pull' || kind === 'pulls') && number && tail.length === 1 && /^(files|commits|checks)$/.test(tail[0]!)) {
+    return q('/repo/pull/', ['number', number, 'tab', tail[0]!])
+  }
+  if (tail.length > 0) return null
+  if (kind === 'commits') return q('/repo/commits/', ['ref', ref])
+  if (kind === 'issues' && rest.length === 1) return q('/repo/issues/', [])
+  if (kind === 'issues' && arg === 'new') return q('/repo/issues/', ['new', '1'])
+  if (kind === 'issues' && number) return q('/repo/issue/', ['number', number])
+  if (kind === 'pulls' && rest.length === 1) return q('/repo/pulls/', [])
+  if ((kind === 'pull' || kind === 'pulls') && number) return q('/repo/pull/', ['number', number])
+  if (kind === 'releases' && rest.length === 1) return q('/repo/releases/', [])
+  if (kind === 'releases') return q('/repo/release/', ['tag', arg])
+  if ((kind === 'branches' || kind === 'tags' || kind === 'stargazers' || kind === 'compare' || kind === 'labels' || kind === 'milestones') && rest.length === 1) {
+    return q(`/repo/${kind}/`, [])
+  }
+  if (kind === 'commit' && /^[0-9a-fA-F]{4,40}$/.test(arg)) return q('/repo/commit/', ['oid', arg.toLowerCase()])
+  return null
+}
+
+/**
+ * The repo route a short path and its query open, as the router reads routes (no base path):
+ * what the 404.html shim would load. Null when `pathname` is not a short repo path.
+ */
+export function canonicalOfShort(pathname: string, search: string): string | null {
+  const to = expandShortPath(pathname, '')
+  if (to === null || !to.startsWith('/repo/')) return null
+  return search ? `${to}&${search}` : to
+}
+
+/** The {@link ShortTarget} a canonical repo route names, and the params its short path carries. */
+function targetOf(route: string, q: URLSearchParams): { readonly target: ShortTarget; readonly carries: readonly string[] } | null {
+  const ref = q.get('ref') ?? ''
+  const path = q.get('path') ?? undefined
+  const number = Number(q.get('number') ?? '')
+  switch (route) {
+    case '/repo':
+      return { target: { kind: 'home' }, carries: [] }
+    case '/repo/tree':
+    case '/repo/blob':
+    case '/repo/blame':
+      // No ref is the default branch: GitHub's `HEAD`, which the shim reads as no ref.
+      return { target: { kind: route.slice('/repo/'.length) as 'tree' | 'blob' | 'blame', ref: ref || 'HEAD', path }, carries: ['ref', 'path'] }
+    case '/repo/commits':
+      return { target: { kind: 'commits', ref: ref || undefined, path }, carries: ['ref', 'path'] }
+    case '/repo/issues':
+      return q.get('new') === '1' ? { target: { kind: 'newIssue' }, carries: ['new'] } : { target: { kind: 'issues' }, carries: [] }
+    case '/repo/issue':
+      return Number.isSafeInteger(number) && number > 0 ? { target: { kind: 'issue', number }, carries: ['number'] } : null
+    case '/repo/pull': {
+      if (!Number.isSafeInteger(number) || number <= 0) return null
+      const tab = q.get('tab')
+      return tab === 'files' || tab === 'commits' || tab === 'checks'
+        ? { target: { kind: 'pull', number, tab }, carries: ['number', 'tab'] }
+        : { target: { kind: 'pull', number }, carries: ['number'] }
+    }
+    case '/repo/pulls':
+    case '/repo/releases':
+    case '/repo/branches':
+    case '/repo/tags':
+    case '/repo/stargazers':
+    case '/repo/labels':
+    case '/repo/milestones':
+      return { target: { kind: route.slice('/repo/'.length) as 'pulls' }, carries: [] }
+    case '/repo/release': {
+      const tag = q.get('tag')
+      return tag ? { target: { kind: 'release', tag }, carries: ['tag'] } : null
+    }
+    case '/repo/commit': {
+      const oid = q.get('oid')
+      return oid ? { target: { kind: 'commit', oid }, carries: ['oid'] } : null
+    }
+    case '/repo/compare': {
+      const head = q.get('head')
+      return head ? { target: { kind: 'compare', base: q.get('base') ?? undefined, head }, carries: ['base', 'head'] } : null
+    }
+    default:
+      return null
+  }
+}
+
+/** A query's params, in a fixed order (to compare two queries that list them differently). */
+const sortedParams = (q: URLSearchParams): string => JSON.stringify([...q].sort(([a, x], [b, y]) => (a === b ? (x < y ? -1 : x > y ? 1 : 0) : a < b ? -1 : 1)))
+
+/**
+ * The short URL (path and query, no base path) for the canonical repo route `pathname?search`: the
+ * address bar shows it once the page has loaded (CJ-6). The owner is written by `ownerName`, their
+ * DPNS name, when the page has read it (`alice` for `alice.dash`), else as the route writes it.
+ * Every param the short path does not carry stays in its query (`?q=`, `?repo=`, `?page=`), as the
+ * shim carries the query through.
+ *
+ * Null when this build hands out no short URLs, the route has no short form, or the shim would not
+ * open exactly this route again: `expand(short(route))` must give back every param.
+ */
+export function shortRouteFor(pathname: string, search: string, ownerName?: string | null): string | null {
+  if (!SHORT_URLS) return null
+  for (const owner of ownerNameForms(ownerName)) {
+    const short = shortRouteWith(pathname, search, owner)
+    if (short !== null) return short
+  }
+  return shortRouteWith(pathname, search, undefined)
+}
+
+/**
+ * Whether two routes (`pathname?search`, no base path) are the same page: the same pathname, give
+ * or take its trailing slash, and the same params in any order.
+ */
+export function sameRoute(a: string, b: string): boolean {
+  const key = (route: string): string => {
+    const at = route.indexOf('?')
+    return at < 0 ? `${bareRoute(route)}?[]` : `${bareRoute(route.slice(0, at))}?${sortedParams(new URLSearchParams(route.slice(at + 1)))}`
+  }
+  return key(a) === key(b)
+}
+
+/** {@link shortRouteFor} with the owner written as `owner` (the route's own when undefined). */
+function shortRouteWith(pathname: string, search: string, owner: string | undefined): string | null {
+  const params = new URLSearchParams(search)
+  const repo = { owner: owner ?? params.get('owner') ?? '', name: params.get('name') ?? '' }
+  if (!hasShortPath(repo)) return null
+  const found = targetOf(bareRoute(pathname), params)
+  if (found === null) return null
+  const carried = new Set(['owner', 'name', ...found.carries])
+  const rest = new URLSearchParams()
+  for (const [k, v] of params) if (!carried.has(k)) rest.append(k, v)
+  // The path as a browser keeps it (it drops `.` and `..` segments, and encodes what is left).
+  const path = new URL(shortRepoPath(repo, found.target), 'http://n').pathname
+  const query = rest.toString()
+  const back = canonicalOfShort(path, query)
+  if (back === null) return null
+  const want = new URLSearchParams(params)
+  want.set('owner', repo.owner)
+  const [backPath, backSearch = ''] = back.split('?') as [string, string?]
+  if (bareRoute(backPath) !== bareRoute(pathname) || sortedParams(new URLSearchParams(backSearch)) !== sortedParams(want)) return null
+  return query ? `${path}?${query}` : path
 }

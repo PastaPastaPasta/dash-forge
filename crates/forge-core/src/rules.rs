@@ -46,9 +46,11 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod asset_name;
 pub mod ci_rerun;
 pub mod codeowners;
 pub mod long_body;
+pub mod merge_audit;
 pub mod merge_check;
 pub mod mirror;
 pub mod moderation;
@@ -2884,6 +2886,17 @@ mod tests {
         );
     }
 
+    fn run_merge_audit_case(v: &Vector) {
+        use super::merge_audit;
+        let got = merge_audit::audit_merge(&input::<merge_audit::MergeAuditInput>(v));
+        assert_eq!(
+            got,
+            expected::<merge_audit::MergeAudit>(v),
+            "vector `{}`",
+            v.name
+        );
+    }
+
     #[allow(clippy::too_many_lines)] // one arm per vector case
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
@@ -2947,6 +2960,7 @@ mod tests {
             }
             "ref_collision" => run_ref_collision_case(v),
             "merge_content" => run_merge_content_case(v),
+            "merge_audit" => run_merge_audit_case(v),
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);
                 let key: Option<[u8; 32]> = inp.ref_key.as_deref().map(|k| {
@@ -2965,6 +2979,7 @@ mod tests {
             "pubkey_entry" | "commit_signature" | "tag_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),
             "webhook_url" => run_webhook_url_case(v),
+            "asset_file_name" | "asset_file_names" => run_asset_file_name_case(v),
             "role_oracle" => run_role_oracle(v),
             "code_owners" | "code_owner_requests" => run_code_owners_case(v),
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
@@ -3144,6 +3159,38 @@ mod tests {
             }
             Some(UrlSecret::PathToken) => serde_json::json!({ "secret": "pathToken" }),
             None => serde_json::json!({ "secret": null }),
+        };
+        assert_eq!(got, v.expected, "vector `{}`", v.name);
+    }
+
+    /// `asset_file_name`: each name's problem code (or null); `asset_file_names`: the first
+    /// problem of one release's names, `{name, problem}` or `{name, sameFileAs}` (or null).
+    fn run_asset_file_name_case(v: &Vector) {
+        use super::asset_name::{
+            asset_name_problem, asset_names_problem, AssetNameProblem, AssetNamesProblem,
+        };
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            names: Vec<String>,
+        }
+        let inp: Input = input(v);
+        let got = if v.case == "asset_file_name" {
+            inp.names
+                .iter()
+                .map(|n| asset_name_problem(n).map(AssetNameProblem::code))
+                .collect::<Vec<_>>()
+                .into()
+        } else {
+            match asset_names_problem(inp.names.iter().map(String::as_str)) {
+                None => serde_json::Value::Null,
+                Some(AssetNamesProblem::Name(name, p)) => {
+                    serde_json::json!({ "name": name, "problem": p.code() })
+                }
+                Some(AssetNamesProblem::SameFile { name, first }) => {
+                    serde_json::json!({ "name": name, "sameFileAs": first })
+                }
+            }
         };
         assert_eq!(got, v.expected, "vector `{}`", v.name);
     }

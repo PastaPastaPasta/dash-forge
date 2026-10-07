@@ -421,6 +421,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: Some(10),
             updated_at_block_height: None,
+            updated_at: None,
             fields: props,
             revision: None,
         }

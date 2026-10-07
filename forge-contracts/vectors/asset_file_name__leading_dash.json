@@ -1,0 +1,22 @@
+{
+  "name": "leading_dash",
+  "description": "A leading dash, read as an option, is refused.",
+  "case": "asset_file_name",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "-rf",
+      "--output=x",
+      "-",
+      "-.txt",
+      "-x."
+    ]
+  },
+  "expected": [
+    "leadingDash",
+    "leadingDash",
+    "leadingDash",
+    "leadingDash",
+    "leadingDash"
+  ]
+}

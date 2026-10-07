@@ -1364,6 +1364,7 @@ fn a_reseal_edit_is_the_create_transform() {
             created_at: Some(1),
             created_at_block_height: Some(10),
             updated_at_block_height: None,
+            updated_at: None,
             fields: stored,
             revision: Some(1),
         };

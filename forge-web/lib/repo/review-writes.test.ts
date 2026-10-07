@@ -62,7 +62,7 @@ vi.mock('./private-writes', async (importOriginal) => {
   }
 })
 
-import { resetMemoryStores } from '../idb'
+import { idbEntries, resetMemoryStores } from '../idb'
 import { decodeIdentifier } from '../auth/base58'
 import { clearSignedWrites, lockVault } from '../auth/vault'
 import type { RepoRef } from './contract'
@@ -351,6 +351,17 @@ describe('pending review submit', () => {
     expect(writes.map((w) => w.documentType)).toEqual(['review', 'comment', 'comment', 'comment'])
     expect(out.commentIds).toEqual([D(2), D(3), D(4)])
     expect(await loadReviewDraft('devnet', BOB, PR)).toBeUndefined()
+  })
+
+  it('keeps a memory-only draft (its public text quotes members-only text) off disk through every save a submit makes', async () => {
+    const quoting: ReviewDraft = { ...draft(), summary: 'QUOTED-MEMBERS-TEXT', memoryOnly: true }
+    await saveReviewDraft(quoting, REPO)
+    failAt = 2 // the review and comment 1 land (each saved), comment 2 fails
+    await expect(submitReviewDraft(sdk, auth(BOB), REPO, quoting, MEMBER, undefined, NO_CHAIN)).rejects.toThrow('network dropped')
+    expect(JSON.stringify(await idbEntries('journal'))).not.toContain('QUOTED-MEMBERS-TEXT')
+    const saved = await loadReviewDraft('devnet', BOB, PR)
+    expect(saved?.memoryOnly).toBe(true)
+    expect(saved?.reviewId).toBe(D(1))
   })
 
   it('adopts writes that landed without their save instead of posting them twice', async () => {

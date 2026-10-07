@@ -452,6 +452,10 @@ A PR shows as merged only when **both** are true: the `merge` event exists (cons
 
 **Checking a merge.** Platform cannot read git, so a member could record a merge that does not contain the PR. Readers check it: the web labels a merged PR's merge commit as containing the PR, as a squash or a rebase of it, or, in red, as not containing its commits. `dg pr verify <repo> <n>` fetches the base and the PR head and says the same; `dg pr view` says it when the current repository already has the commits.
 
+**Branch rules at merge.** Branch rules are applied by Forge apps, not by Platform, so a maintainer could weaken the rules, merge, and restore them. A merged PR shows **Branch rules at merge**: open it to see the rules in force when the PR was merged (whether the base branch was protected, the required approvals, the required checks), whether the merge met each one, who merged it, and any bypass a maintainer recorded. It also warns when the rules changed less than an hour before the merge. `dg pr verify` prints the same. Reviews and check runs can be deleted, and a removed member's approval stops counting, so "did not meet the branch rules" means "not met by what is on Platform now", not proof of a bypass. Private repositories are not checked by `dg pr verify` yet.
+
+**Recording an interrupted merge.** A browser merge moves the base branch, then records the merge. If it stops in between, the base already holds the PR but the PR stays open. Maintainers and writers who could merge it then see **Record merge of `<commit>`** on the PR: it records the merge of the base branch's current commit, after checking that the commit contains the PR or is a squash or rebase of it. It moves no code. The same rules apply as for `dg pr merge --event-only`: a writer can't record a merge into a protected branch, and a maintainer recording one past unmet branch rules records a bypass.
+
 **Close without merging:** `dg pr close` / `dg pr reopen`. The author can close and reopen their own PR, as with issues.
 
 ### Code owners
@@ -492,7 +496,7 @@ git tag v1.0.0 && git push dash://<owner>/<repo> v1.0.0
 dg release create <owner>/<repo> --tag v1.0.0 --name "1.0.0" --notes "First stable release" \
   --asset ./dist/app-linux.tar.gz --asset ./dist/app-macos.tar.gz [--storage <profiles>]
 dg release list   <owner>/<repo>
-dg release download <owner>/<repo> v1.0.0 [--asset <name>] [-O/--output <dir | file>]
+dg release download <owner>/<repo> v1.0.0 [--asset <name>] [-O/--output <dir | file>] [--force]
 dg release unpublish <owner>/<repo> v1.0.0
 dg release verify <owner>/<repo> v1.0.0     # has the tag or any asset changed since it was published?
 ```
@@ -501,7 +505,7 @@ The tag must exist in the repository first (push it, as above, or publish from t
 
 `--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)).
 
-`dg release download` fetches every asset of the release, or only `--asset <name>`, and saves each under its own name in the current directory or in the `--output` directory (`-O`, `-o`, and `gh`'s `-D`/`--dir` work too). `--output <file>` names the file for a single asset. It never replaces a file of the same name that is already there. It accepts only bytes that hash to the recorded SHA-256. It needs no identity, and no credentials when the storage has a public URL.
+`dg release download` fetches every asset of the release, or only `--asset <name>`, and saves each under its own name in the current directory or in the `--output` directory (`-O`, `-o`, and `gh`'s `-D`/`--dir` work too). `--output <file>` names the file for a single asset. It never replaces a file that is already there unless you pass `--force` (`--clobber` works too); a symlink there is replaced, never written through. A file that already holds the asset's bytes is kept and counted as downloaded. An asset is saved under its own name only when that is a plain file name. A name that is a path, starts with a dot (`.git`, `.npmrc`) or a dash, holds `:`, `<`, `>`, `"`, `|`, `?`, `*` or control characters, ends in a dot or space, is over 255 bytes, or is a Windows device name such as `CON` or `nul.txt` is skipped with a warning, and so is one that saves as the same file as an earlier asset (`README.txt` and `readme.TXT`). `--asset <name> --output <file>` downloads such an asset to a file you choose. `dg release create` and the web app refuse to publish a file with such a name, or one whose name differs only in case from another asset of the release. A directory given with `--output` or `-D` is made only once an asset is verified. It accepts only bytes that hash to the recorded SHA-256. It needs no identity, and no credentials when the storage has a public URL.
 
 `dg release list` always names who published each release. Every publish, edit or unpublish is a fresh revision that needs a *current* maintainer to sign it, so a maintainer who is later removed can no longer touch the releases they published — not edit them, and not unpublish them either. Only a maintainer still on the repo can do that.
 

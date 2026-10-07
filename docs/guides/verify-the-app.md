@@ -157,7 +157,7 @@ Also:
 - **Public gateways are not checked.** A gateway you do not run could serve different bytes under the right CID. Pin the CAR on your own node, or rebuild and serve `site.tar` yourself.
 - **The build's network is fixed.** A release built for devnet sakura reads sakura. Proofs from Platform are still checked in the browser against the quorum keys, whatever the build ([Check that Forge isn't lying to you](verify-forge.md)).
 - **A new release changes the CID.** Every release build embeds its commit (the footer), so no two commits share a CID.
-- **Short links are for ordinary hosts.** A short URL such as `/<owner>/<name>/issues/12` opens through the build's `404.html`, which IPFS gateways do not serve for a missing path. So the IPFS build's **Copy link** and permalinks give the canonical routes (`/repo/?owner=…&name=…`) instead, which open from any gateway.
+- **Short links are for ordinary hosts.** A short URL such as `/<owner>/<name>/issues/12` opens through the build's `404.html`, which IPFS gateways do not serve for a missing path. So the IPFS build's **Copy link**, permalinks and address bar give the canonical routes (`/repo/?owner=…&name=…`) instead, which open from any gateway.
 
 ---
 

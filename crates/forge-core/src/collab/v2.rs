@@ -965,6 +965,7 @@ fn check_run_rows(docs: &[FetchedDocument], head_oid: &str) -> Vec<CheckRunRow> 
             conclusion: d.field_str("conclusion"),
             reporter: d.owner_id.clone(),
             created_at: d.created_at.unwrap_or_default(),
+            updated_at: d.updated_at,
         })
         .collect()
 }
@@ -4600,6 +4601,128 @@ impl<'a> Collab<'a> {
             .iter()
             .max_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))
             .map(policy_from_doc))
+    }
+
+    /// Every `policy` of `repo`, oldest first (append-only: the policy timeline).
+    pub async fn policy_history(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<Vec<rules::merge_audit::PolicyDoc>> {
+        let community = self.community_contract(repo).await?;
+        let docs = self
+            .client
+            .query_all_documents(
+                &community,
+                DOC_POLICY,
+                &[Self::repo_filter(repo)?],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        Ok(docs
+            .iter()
+            .map(|d| rules::merge_audit::PolicyDoc {
+                id: d.id.clone(),
+                created_at: d.created_at.unwrap_or(0),
+                policy: policy_from_doc(d),
+            })
+            .collect())
+    }
+
+    /// The branch rules at `view`'s merge ([`rules::merge_audit::audit_merge`]): the policy and
+    /// config timelines, the PR's reviews, the members, and (only when the policy then required
+    /// checks) the runs on the merged head. `None` when the PR is not merged or its merge names
+    /// no commit, and for a private repository (its config is sealed; not audited yet).
+    pub async fn merge_audit(
+        &self,
+        repo: &RepoRef,
+        view: &PatchView,
+    ) -> Result<Option<rules::merge_audit::MergeAudit>> {
+        use rules::merge_audit::{audit_merge, BypassEvent, DismissalAt, ProtectionDoc};
+        if repo.visibility == Visibility::Private || !view.state.merged {
+            return Ok(None);
+        }
+        let Some(merge) = merge_transition(&view.log.transitions) else {
+            return Ok(None);
+        };
+        let Some(merge_oid) = merge.oid.clone() else {
+            return Ok(None);
+        };
+        let merge_head =
+            rules::merge_check::head_at(&view.review, &view.patch.head_oid, merge.created_at);
+        let core = self.core_contract(repo).await?;
+        let scope = repo.scope()?;
+        let (policies, configs, oracle, reviews) = futures::try_join!(
+            self.policy_history(repo),
+            crate::refs::read_config_history(self.client, &core, &scope),
+            self.member_oracle(repo),
+            self.reviews(repo, &view.patch.document_id),
+        )?;
+        let base = &view.merge_base.ref_name;
+        let mut input = rules::merge_audit::MergeAuditInput {
+            merged_at: merge.created_at,
+            merger: merge.actor.clone(),
+            merge_oid: merge_oid.to_ascii_lowercase(),
+            merge_head: merge_head.clone(),
+            pr_author: view.patch.author.clone(),
+            policies,
+            protection: configs
+                .iter()
+                .map(|c| ProtectionDoc {
+                    id: c.id.clone(),
+                    created_at: c.created_at,
+                    protected: !base.is_empty()
+                        && rules::matches_protected(base, &c.protected_patterns),
+                })
+                .collect(),
+            memberships: oracle.memberships,
+            reviews: reviews
+                .iter()
+                .map(|r| RuleReview {
+                    id: r.document_id.clone(),
+                    reviewer: r.reviewer.clone(),
+                    verdict: r.verdict.code(),
+                    commit_oid: r.commit_oid.clone(),
+                    created_at: r.created_at,
+                })
+                .collect(),
+            dismissals: view
+                .review
+                .dismissed_reviews
+                .iter()
+                .map(|d| DismissalAt {
+                    review_id: d.review_id.clone(),
+                    created_at: d.created_at,
+                })
+                .collect(),
+            runs: None,
+            runners: BTreeSet::new(),
+            bypasses: view
+                .log
+                .events
+                .iter()
+                .filter(|e| e.kind == EventKind::PolicyBypass)
+                .map(|e| BypassEvent {
+                    id: e.id.clone(),
+                    actor: e.actor.clone(),
+                    created_at: e.created_at,
+                    oid: e.oid.clone().unwrap_or_default().to_ascii_lowercase(),
+                    value: e.value.clone().unwrap_or_default(),
+                })
+                .collect(),
+        };
+        let first = audit_merge(&input);
+        if !first.checks_unread {
+            return Ok(Some(first));
+        }
+        let docs = self.check_run_docs(repo, &merge_head).await?;
+        let rows = check_run_rows(&docs, &merge_head);
+        input.runners = if rows.is_empty() {
+            BTreeSet::new()
+        } else {
+            self.runner_ids(repo).await?
+        };
+        input.runs = Some(rows);
+        Ok(Some(audit_merge(&input)))
     }
 
     /// The open-or-closed PRs whose head branch is `source_ref_name` in `source_repo_id` (the
@@ -8310,6 +8433,7 @@ mod mixed_read_tests {
             created_at: Some(7),
             created_at_block_height: Some(9),
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: fields
                 .into_iter()
@@ -8603,6 +8727,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: Some(10),
             updated_at_block_height: None,
+            updated_at: None,
             fields: [(
                 "repoId".to_string(),
                 FieldValue::identifier(platform::decode_identifier(repo_id).unwrap()),
@@ -8760,6 +8885,7 @@ mod tests {
             created_at: Some(u64::from(n)),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         }
@@ -9268,6 +9394,7 @@ mod tests {
             created_at: Some(5),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: Some(1),
             fields,
         };
@@ -9639,6 +9766,7 @@ mod tests {
             created_at: Some(5),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: p,
         };
@@ -9658,6 +9786,7 @@ mod tests {
             created_at: Some(5),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([
                 ("targetId".into(), FieldValue::identifier([3; 32])),
@@ -9772,6 +9901,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         };
@@ -9807,6 +9937,7 @@ mod tests {
             created_at: Some(9),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([
                 ("tagName".into(), FieldValue::text("v1")),
@@ -9839,6 +9970,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([("tagName".into(), FieldValue::text("v2"))]),
         };
@@ -10113,6 +10245,7 @@ mod tests {
                 created_at: Some(at),
                 created_at_block_height: None,
                 updated_at_block_height: None,
+                updated_at: None,
                 revision: None,
                 fields,
             }
@@ -10463,6 +10596,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: fields
                 .iter()
@@ -10620,6 +10754,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         };
@@ -10654,6 +10789,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields,
         };

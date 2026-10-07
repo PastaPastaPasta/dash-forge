@@ -32,6 +32,7 @@ use anyhow::Result;
 
 use forge_core::collab::v2::TargetKind;
 use forge_core::collab::{CommentAnchor, ReleaseAsset};
+use forge_core::rules::asset_name::derived_asset_name;
 use forge_core::rules::v2::CloseReason;
 
 use crate::github::iso8601_to_unix;
@@ -611,17 +612,18 @@ fn release(r: &GlRelease) -> SrcRelease {
         .links
         .iter()
         .filter(|l| !l.url.is_empty())
-        .map(|l| ReleaseAsset {
-            name: model::clip(&l.name, 200, 200),
-            // GitLab records neither a digest nor a size for a release link.
-            sha256: String::new(),
-            size_bytes: 0,
-            uris: vec![model::clip(
-                l.direct_asset_url.as_deref().unwrap_or(&l.url),
-                300,
-                300,
-            )],
-            uri: None,
+        .map(|l| {
+            let url = model::clip(l.direct_asset_url.as_deref().unwrap_or(&l.url), 300, 300);
+            ReleaseAsset {
+                // A link's label is free text: a download saves under the name, so it must be a
+                // plain file name (else one from the URL).
+                name: derived_asset_name(&model::clip(&l.name, 200, 200), &url),
+                // GitLab records neither a digest nor a size for a release link.
+                sha256: String::new(),
+                size_bytes: 0,
+                uris: vec![url],
+                uri: None,
+            }
         })
         .collect();
     let url = r.links.self_url.clone().unwrap_or_default();

@@ -1,0 +1,84 @@
+{
+  "name": "bypass_recorded",
+  "description": "Rules unmet, and the maintainer who merged recorded a bypass naming the merge commit: bypassed.",
+  "case": "merge_audit",
+  "rules": "v2",
+  "input": {
+    "mergedAt": 10000000,
+    "merger": "maint",
+    "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prAuthor": "auth",
+    "policies": [
+      {
+        "id": "p1",
+        "createdAt": 100,
+        "policy": {
+          "requiredApprovals": 1,
+          "approverRole": 0,
+          "requireChecks": false,
+          "mergeMethods": 0
+        }
+      }
+    ],
+    "protection": [],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "reviews": [],
+    "dismissals": [],
+    "runs": [],
+    "runners": [],
+    "bypasses": [
+      {
+        "id": "e1",
+        "actor": "maint",
+        "createdAt": 10000100,
+        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "value": "required approvals: 0 of 1"
+      }
+    ]
+  },
+  "expected": {
+    "verdict": "bypassed",
+    "policy": {
+      "requiredApprovals": 1,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0
+    },
+    "protected": false,
+    "mergerRole": "maintainer",
+    "protectionUnmet": false,
+    "approvals": {
+      "met": false,
+      "have": 0,
+      "need": 1,
+      "blockedBy": []
+    },
+    "checks": null,
+    "checksUnread": false,
+    "bypass": {
+      "id": "e1",
+      "actor": "maint",
+      "createdAt": 10000100,
+      "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "value": "required approvals: 0 of 1"
+    },
+    "rulesChanged": false
+  }
+}

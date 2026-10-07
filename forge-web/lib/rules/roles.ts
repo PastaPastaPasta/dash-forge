@@ -99,7 +99,7 @@ export const ROLE_SUMMARY: Readonly<Record<Role, string>> = {
   maintainer: 'Everything a writer can, plus protected branches, settings, releases and moderation.',
   writer: 'Push, merge, review with a counted approval, and manage issues and pull requests.',
   triage: 'Close, reopen and lock, label, assign, set milestones, request reviews and resolve threads. Cannot push or merge; approvals are not counted.',
-  reader: 'Reads everything members can, including members-only content (receives the key). Can comment, review, and open issues and pull requests, but changes nothing as a member; approvals are not counted.',
+  reader: "Reads members-only content and can comment, review and open issues. Can't push, merge or triage, and their approvals don't count.",
 }
 
 /** What a role may do as a member (an author keeps its author abilities whatever its role). */

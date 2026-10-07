@@ -30,6 +30,7 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import type { MembersOnlyCount } from './members-only-counts'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import type { RepoRef } from './contract'
@@ -49,6 +50,7 @@ import {
   feedOf,
   hydrate,
   indexCache,
+  membersOnlyOfIndex,
   intersect,
   logsVerified,
   matchingOf,
@@ -218,6 +220,8 @@ export interface IssueListPage {
   readonly hidden: number
   /** `hidden` by reason (private repos: shown to maintainers). */
   readonly hiddenBy: HiddenCounts
+  /** How many issues are members-only, by state, once every issue was read (else null): the tabs label it. */
+  readonly membersOnly?: MembersOnlyCount | null
   /** `reason:` was not applied: the repo has more issue closes than a list reads (QW4-028). */
   readonly reasonUnapplied?: boolean
 }
@@ -447,6 +451,7 @@ export async function queryIssues(
     labels: index.labels,
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
+    membersOnly: membersOnlyOfIndex(index, 'issue'),
     ...(q.reason != null && reasoned === null ? { reasonUnapplied: true } : {}),
   }
 }

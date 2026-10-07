@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 import { dashRange, PUSH_COST_DASH } from '../lib/sdk/cost'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { collectPageErrors, DEMO, E2E_DEVNET, EMPTY, readErrorBanner, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved } from './helpers'
+import { atRoute, collectPageErrors, DEMO, E2E_DEVNET, EMPTY, readErrorBanner, routeOf, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -119,7 +119,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expect(nav.getByRole('link', { name: /Settings|Commits/ })).toHaveCount(0)
     await expect(nav.getByRole('link', { name: 'Code' })).toHaveAttribute('aria-current', 'page')
     await page.getByTestId('commit-count').click()
-    await expect(page).toHaveURL(/\/repo\/commits\//)
+    await expect(page).toHaveURL(atRoute(/\/repo\/commits\//))
     await expect(nav.getByRole('link', { name: 'Code' })).toHaveAttribute('aria-current', 'page')
   })
 
@@ -144,7 +144,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
 
     // Pull requests: the list opens on its Open filter; count its rows.
     await nav.getByRole('link', { name: /^Pull requests/ }).click()
-    await expect(page).toHaveURL(/\/repo\/pulls/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/pulls/))
     const rows = page.locator('main a[href*="/repo/pull?"], main a[href*="/repo/pull/?"]')
     await expect(rows.first().or(page.getByText('No pull requests'))).toBeVisible({ timeout: 60_000 })
     expect(await tabCount(/^Pull requests/)).toBe(await rows.count())
@@ -214,16 +214,16 @@ test.describe('repo home launch UX (moutai fixture)', () => {
 
   test('b-6. short URLs through the 404 shim', async ({ page }) => {
     await page.goto(`/${OWNER}/${NAME}`, { waitUntil: 'domcontentloaded' })
-    await page.waitForURL(/\/repo\/\?owner=/)
-    expect(new URL(page.url()).searchParams.get('name')).toBe(NAME)
+    await page.waitForURL(atRoute(/\/repo\/\?owner=/))
+    expect(routeOf(page.url()).searchParams.get('name')).toBe(NAME)
     await expectLanded(page, page.getByRole('link', { name: 'README.md', exact: true }).first())
     // The header copies the short form.
     await expect(page.getByTestId('copy-link').first()).toHaveAttribute('data-href', new RegExp(`/${OWNER}/${NAME}$`))
 
     await page.goto(`/${OWNER}/${NAME}/issues/1`, { waitUntil: 'domcontentloaded' })
-    await page.waitForURL(/\/repo\/issue\/\?owner=.*&number=1/)
+    await page.waitForURL(atRoute(/\/repo\/issue\/\?owner=.*&number=1/))
     await page.goto(`/${OWNER}/${NAME}/tree/main/src`, { waitUntil: 'domcontentloaded' })
-    await page.waitForURL(/\/repo\/tree\/\?owner=.*&ref=main&path=src/)
+    await page.waitForURL(atRoute(/\/repo\/tree\/\?owner=.*&ref=main&path=src/))
     await expectLanded(page, page.getByRole('link', { name: 'main.rs' }).first())
     // A reserved first segment is a real 404, not a repo.
     await page.goto('/settings/nope', { waitUntil: 'domcontentloaded' })

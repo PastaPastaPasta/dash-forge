@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { atRoute, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 
 /**
  * FG-2 (dash showcase QA ledger): GitHub-fidelity Markdown on the dash mirror imported on
@@ -36,7 +36,7 @@ test.describe('markdown fidelity (dash showcase mirror)', () => {
     }
     await shot(page, 'fg2-01-dash-readme')
     await doc.click()
-    await expect(page).toHaveURL(/\/repo\/tree\/.*path=doc/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/tree\/.*path=doc/))
     await expect(page.getByText('build-unix.md').first()).toBeVisible({ timeout: 60_000 })
   })
 
@@ -66,7 +66,7 @@ test.describe('markdown fidelity (dash showcase mirror)', () => {
     await shot(page, 'fg2-03-issue-7512')
     // #N resolves to whichever of issue or PR exists, or to the source when not mirrored.
     await own.click()
-    await expect(page).toHaveURL(/\/repo\/(issue|pull|number)\//, { timeout: 60_000 })
+    await expect(page).toHaveURL(atRoute(/\/repo\/(issue|pull|number)\//), { timeout: 60_000 })
     await expect(page.getByText(/not in this repo|Open #\d+ on github\.com|#\d+/).first()).toBeVisible({ timeout: 60_000 })
     await shot(page, 'fg2-03b-number-resolved')
   })

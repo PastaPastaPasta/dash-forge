@@ -9,7 +9,8 @@
 
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { usePathname } from '@/hooks/use-route'
 import { Search } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { buttonClass } from '@/components/ui/button'

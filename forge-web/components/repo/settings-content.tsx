@@ -17,6 +17,7 @@ import { ConsentMissingError, changeMemberRole, grantMember, invalidateMembers, 
 import { addMemberCost, planRotation, removalCost, removalEffect, roleChangeCost } from '@/lib/repo/private-members'
 import { usePrivateWrite } from '@/hooks/use-private-write'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
+import { MembersContentSetting, RemovalReads, useMembersKeyBlock } from '@/components/repo/audience'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
@@ -134,6 +135,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   // Whether the typed identity accepted, read before Add prices anything (QW4-036).
   const typed = memberId.trim() !== '' && idError === null ? memberId.trim() : null
   const consent = useInviteAccepted(repo, isOwner && repo.visibility !== 'private' ? typed : null)
+  // A key-aware change needs this tab's encryption key: offer the unlock instead of failing on it.
+  const keyBlock = useMembersKeyBlock(keyed && action !== null, network)
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     if (action.kind === 'change') {
@@ -193,6 +196,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       <BranchSettings home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
 
       <Section id="collaborators" title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
+        <div className="mb-4">
+          <MembersContentSetting home={home} maintainer={viewerRole === 'maintainer'} />
+        </div>
         {home.private?.access === 'member' ? (
           <PrivateMembers home={home} session={home.private.session} />
         ) : (
@@ -335,7 +341,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               : action?.kind === 'change'
                 ? `Makes ${shortId(action.member)} ${ROLE_NOUN[action.to]} instead of ${ROLE_NOUN[action.role]}. They don't need to accept again.`
                 : keyed
-                  ? `Removes them from this repo and changes the key to its members-only content: they won't be able to read members-only issues and comments posted after this. What they could already read stays readable to them.`
+                  ? 'Removes them from this repo and changes the key to its members-only content.'
                   : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
           cost={
@@ -352,10 +358,15 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     : previewCreate(memberDocOf(action.role))
           }
           confirmLabel={action?.kind === 'grant' ? 'Sign & add' : action?.kind === 'change' ? 'Sign & change' : 'Sign & remove'}
+          blocked={keyBlock}
           onConfirm={runAction}
         >
-          {/* What they could read in the repo's environments, to rotate at its source. A
+          {/* What they could read: members-only discussion and the repo's environments, to rotate
+              at its source. Nothing is listed when they keep a role that holds the key. A
               maintainer's removal is refused while the repo has environments (dg handles it). */}
+          {action?.kind === 'revoke' && keyed && removalEffect(memberRows, action.member, action.role) !== 'none'
+            ? <RemovalReads lane={keyed} />
+            : null}
           {action?.kind === 'revoke' && action.role !== 'maintainer' ? <EnvironmentsRemoval
                   home={home}
                   member={action.member}
