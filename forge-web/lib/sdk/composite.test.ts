@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { queryComposite, type CompositeQuery } from './composite'
 import { setStaleContractHandler } from './query'
 
-const CORE = 'EfLLbzVBngukybqgraA7VXtLZ5PpU54eiaB9Dcxqbkkz'
-const COLLAB = '6scu1j9FQkt3EYr9yoAfEL1SUaYX7F7mnaUFYiRLgjgb'
+const CORE = 'BKt2Lk6RwUchcdytHT8Sn1ZzYvu8vD4JFEh5G9LHFzRo'
+const COLLAB = 'BTEsn5BmsSWF8ahQLJjohy392vnpD2NgPnTjAVEUCWKh'
 
 // What a composite read rejected with in Chromium, holding version 1 of forge-collab while a
 // sub-query read an issue written under version 2 (UPDATE-1): a wasm-bindgen object, not an Error.
