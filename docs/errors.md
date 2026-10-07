@@ -193,7 +193,7 @@ Two cases have their own message:
 - "the key stored on this computer holds no encryption key": your identity usually has one (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), but the key source in use does not hold its private half: a limited key stored by an older `dg`, or with `--signing-only`, is a signing key only.
 - "`<member>` has no encryption key" (`dg collab add` to a private repository): the member you named has no enabled `ENCRYPTION` key on their identity.
 
-**What to do:** for the first, sign in again, replacing the key in use (`dg auth status` shows its id, and its `Private:` line prints the command): `dg auth login <identity file> --replace <key id>`, or `dg auth login --mnemonic --replace <key id>` with the 12-word recovery phrase if you have no identity file (a `dg auth new` identity). It registers a new limited key, stores your encryption key beside it and disables the old key; the master key is used once and not stored. For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery phrase (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+**What to do:** for the first, sign in again, replacing the key in use (`dg auth status` shows its id, and its `Private:` line prints the command): `dg auth login <identity file> --replace <key id>`, or `dg auth login --mnemonic --replace <key id>` with the 12-word recovery phrase if you have no identity file (a `dg auth new` identity). It registers a new limited key, stores your encryption key beside it and disables the old key; the master key is used once and not stored. For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery phrase (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Private repos → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
 
 ## E307
 
@@ -231,21 +231,23 @@ Two cases have their own message:
 
 ## E311
 
-**No key has been shared with you yet.** You're a member of this public repository and it has members-only content, but no maintainer has shared its key with your encryption key. This happens when you were added by an older Forge build that did not share the key. You can still read everything public, and the members-only items show as placeholders.
+**You're a member, but no key has been shared with you yet.** This public repository has members-only content, and no maintainer has shared its key with your encryption key. This happens when you were added by an older Forge build that did not share the key. You can still read everything public, and the members-only items show as placeholders.
 
-**What to do:** a maintainer's client shares it the next time they open the repo; from the command line a maintainer runs `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, add one first: `dg auth keys add --encryption`.
+**What to do:** ask a maintainer to share it: **Repair** on the repo page, or `dg repo keys repair <owner>/<repo>`. Nothing shares it automatically. If your identity has no encryption key yet, add one first: `dg auth keys add --encryption`.
 
 ## E312
 
 **Members-only content is not turned on.** You asked for members-only content (an issue, comment or review only members can read) in a public repository where no maintainer has turned it on.
 
-**What to do:** a maintainer runs `dg repo members enable <owner>/<repo>`, which sets up a key for the current members (the command shows the cost first). Until then, post it publicly or ask a maintainer.
+**What to do:** a maintainer runs `dg repo members enable <owner>/<repo>`, which sets up a key for the current members (the command shows the cost first). Until then, post it publicly or ask a maintainer. See [Turn on members-only content](security/audiences.md#turn-on-members-only-content).
 
 ## E313
 
 **Members-only.** This issue or pull request is members-only: only members of the repository can read it. Everyone can see that it exists, its number, who opened it and when; nothing else.
 
-**What to do:** ask the repository's owner to add you as a member (`dg collab accept <owner>/<repo>` first, your consent). If you are a member already, see [E311](#e311).
+**What to do:** ask the repository's owner to add you as a member (`dg collab accept <owner>/<repo>` first, your consent). If you are a member already, see [E311](#e311). If your key is protected by a passphrase and there is no terminal to ask for it, set `DASH_FORGE_PASSPHRASE` and try again. [Who can read what](security/audiences.md) explains members-only content.
+
+`dg issue view` and `dg pr view` don't stop with E313: they show such an item as a row (`#3 · members-only issue by @alice · open`) and exit 0. E313 comes from commands that need its content, such as commenting on it or checking it out.
 
 ## E401
 
