@@ -30,7 +30,7 @@ export const TESTNET = {
 // with a ChainAssetLockProof once Platform's chain-locked Core height reaches
 // the asset-lock tx's block.
 export const DEVNETS = {
-  // sakura: drive/dapi 5.0.0-beta.1 (protocol 14), the replacement for bonsia (gone). Its chain
+  // sakura: drive/dapi 5.0.0-beta.2 (protocol 14; Platform reset 2026-10-06), the replacement for bonsia (gone). Its chain
   // id is `dash-devnet-sakura`, with no generation suffix (bonsia's was `dash-devnet-bonsia-g1`),
   // so it is recorded here, never derived from the name.
   sakura: {
