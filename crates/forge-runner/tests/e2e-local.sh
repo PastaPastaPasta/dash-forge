@@ -34,6 +34,10 @@
 #  12. Path filters: a PR that changes no file a workflow's `paths` selects gets `skipped` for each
 #      of its checks the branch policy requires and nothing for the rest; when the policy can't be
 #      read, every one of its checks is reported.
+#  13. A push whose `paths` filter leaves out a workflow: a job whose check the branch policy
+#      requires runs for real (its unrequired jobs do not, and nothing is reported skipped); with
+#      no policy requiring it, nothing runs; under a policy requiring every check, or one that
+#      can't be read, every filtered job runs.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -441,6 +445,57 @@ check "…saying why" test "$(q "'PR #4 changes no file' in rs[0]['summary']")" 
 "$RUNNER" -c "$W/runner.toml" run e2e/app --pr 4 >>"$W/runner.log" 2>&1
 rm -f "$FAKE_POLICY_FAILS"
 check "an unreadable policy reports every filtered check" test "$(q "sorted(r['name'] for r in rs)")" = "['paths / other (pull_request)', 'paths / req (pull_request)']"
+
+echo "== 13. a push whose paths filter leaves out a required check runs that job for real"
+echo '{"repo":"e2e/app","policy":{"requiredChecks":["pp / req"]}}' >"$FAKE_POLICY"
+git -C "$R" switch -q -c pfilt main
+git -C "$R" rm -rq --ignore-unmatch .forge
+mkdir -p "$R/.forge/workflows" "$R/docs"
+cat >"$R/.forge/workflows/pp.yml" <<'EOF'
+name: pp
+on:
+  push:
+    paths: ['src/**']
+jobs:
+  req:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo required-ran
+  other:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo other-ran
+EOF
+echo start >"$R/docs/p.md"
+git -C "$R" add -A; git -C "$R" commit -qm "pfilt: start"
+poll
+# A docs-only push: the filter leaves the workflow out.
+echo more >>"$R/docs/p.md"; git -C "$R" add -A; git -C "$R" commit -qm "pfilt: docs"
+HP=$(git -C "$R" rev-parse pfilt)
+: >"$FAKE_DG_LOG"; poll
+check "the required check runs for real on the push" test "$(q "[(r['name'], r['conclusion']) for r in rs if r['sha']=='$HP' and r['status']=='completed']")" = "[('pp / req', 'success')]"
+check "…the unrequired one does not, and nothing is skipped" test "$(q "sorted(set(r['name'] for r in rs if r['sha']=='$HP'))")" = "['pp / req']"
+check "…and the log says why" grep -q "pp.yml runs although its \`paths\` filter leaves this push out: the branch policy requires \"pp / req\"" "$W/runner.log"
+# No policy requires it: the filtered workflow costs nothing.
+echo '{"repo":"e2e/app","policy":null}' >"$FAKE_POLICY"
+echo again >>"$R/docs/p.md"; git -C "$R" add -A; git -C "$R" commit -qm "pfilt: docs again"
+HP2=$(git -C "$R" rev-parse pfilt)
+: >"$FAKE_DG_LOG"; poll
+check "without a policy requiring it, a filtered push workflow runs nothing" test "$(q "[r['name'] for r in rs if r['sha']=='$HP2']")" = "[]"
+# A policy that requires every check: nothing else reports on this push, so every filtered job runs.
+echo '{"repo":"e2e/app","policy":{"requireChecks":true,"requiredChecks":[]}}' >"$FAKE_POLICY"
+echo all >>"$R/docs/p.md"; git -C "$R" add -A; git -C "$R" commit -qm "pfilt: require all"
+HP3=$(git -C "$R" rev-parse pfilt)
+: >"$FAKE_DG_LOG"; poll
+check "under a policy requiring every check, every filtered job runs" test "$(q "sorted(r['name'] for r in rs if r['sha']=='$HP3' and r['status']=='completed')")" = "['pp / other', 'pp / req']"
+# The policy can't be read: every filtered job runs, and the log says why.
+touch "$FAKE_POLICY_FAILS"
+echo unread >>"$R/docs/p.md"; git -C "$R" add -A; git -C "$R" commit -qm "pfilt: policy unread"
+HP4=$(git -C "$R" rev-parse pfilt)
+: >"$FAKE_DG_LOG"; poll
+rm -f "$FAKE_POLICY_FAILS"
+check "when the policy can't be read, every filtered job runs" test "$(q "sorted(r['name'] for r in rs if r['sha']=='$HP4' and r['status']=='completed')")" = "['pp / other', 'pp / req']"
+check "…and the log says the policy could not be read" grep -q "leaves this push out: the branch policy could not be read" "$W/runner.log"
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 
