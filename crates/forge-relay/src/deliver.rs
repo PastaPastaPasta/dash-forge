@@ -219,11 +219,11 @@ impl Deliverer {
         tokio::sync::OwnedSemaphorePermit,
     )> {
         let ip = target.ip_key();
-        let host = target.url.host_str().unwrap_or_default();
+        let host = target.url().host_str().unwrap_or_default();
         let tenant = self.pool(&format!("{ip}|{host}"), MAX_IN_FLIGHT_PER_DEST);
         let address = self.pool(&format!("{ip}|*"), MAX_IN_FLIGHT_PER_IP);
         let busy =
-            || RelayError::DestinationBusy(format!("{} busy", ssrf::redact(target.url.as_str())));
+            || RelayError::DestinationBusy(format!("{} busy", ssrf::redact(target.url().as_str())));
         tokio::time::timeout(SLOT_WAIT, async {
             let a = tenant.acquire_owned().await;
             let b = address.acquire_owned().await;
@@ -240,7 +240,7 @@ impl Deliverer {
     /// Redirects are off (a 30x to an internal host would bypass the check), and so are
     /// proxies from the environment (a proxy would resolve the host itself).
     fn client_for(&self, target: &ssrf::ValidatedTarget) -> Result<reqwest::Client> {
-        let key = format!("{}|{:?}", target.host, target.pinned_addrs);
+        let key = format!("{}|{:?}", target.host(), target.pinned_addrs());
         let mut cache = self
             .clients
             .lock()
@@ -252,8 +252,8 @@ impl Deliverer {
             .timeout(self.config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy();
-        if let Some(addrs) = &target.pinned_addrs {
-            builder = builder.resolve_to_addrs(&target.host, addrs);
+        if let Some(addrs) = target.pinned_addrs() {
+            builder = builder.resolve_to_addrs(target.host(), addrs);
         }
         let client = builder
             .build()
@@ -341,7 +341,7 @@ impl Deliverer {
             };
             sent = true;
             match http
-                .post(target.url.clone())
+                .post(target.url().clone())
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "dash-forge-relay")
                 .header("X-GitHub-Event", event.event)
@@ -1088,16 +1088,59 @@ mod tests {
         assert!(err.to_string().contains("cap"), "{err}");
     }
 
+    /// The request goes to the URL the guard validated, parsed once: for a URL a hand-rolled
+    /// parser would split differently, the guard and the connection agree on the host.
+    #[tokio::test]
+    async fn the_request_goes_to_the_url_that_was_validated() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = srv.local_addr().unwrap().port();
+        let head = Arc::new(Mutex::new(String::new()));
+        let seen = Arc::clone(&head);
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = srv.accept().await.unwrap();
+                let mut buf = vec![0u8; 65536];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                *seen.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let reply = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = s.write_all(reply.as_bytes()).await;
+            }
+        });
+        // The WHATWG host is 127.0.0.1 (a backslash ends the authority); the `@` suffix is path.
+        let url = format!("http://127.0.0.1:{port}\\@unresolvable.invalid/hook");
+
+        let refused = Deliverer::new(DeliverConfig::default())
+            .deliver(&url, b"s", "h", &push(1))
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("ssrf guard"), "{refused}");
+        assert!(head.lock().unwrap().is_empty(), "nothing was sent");
+
+        let receipt = Deliverer::new(quick())
+            .deliver(&url, b"s", "h", &push(1))
+            .await
+            .unwrap();
+        assert_eq!(receipt.status, 200);
+        let head = head.lock().unwrap().to_ascii_lowercase();
+        assert!(
+            head.starts_with("post /@unresolvable.invalid/hook http/1.1\r\n"),
+            "{head}"
+        );
+        assert!(
+            head.contains(&format!("\r\nhost: 127.0.0.1:{port}\r\n")),
+            "{head}"
+        );
+    }
+
     #[tokio::test]
     async fn tenants_sharing_an_address_each_get_their_own_slots() {
         let d = Deliverer::new(DeliverConfig {
             allow_private: true,
             ..DeliverConfig::default()
         });
-        let target = |url: &str| ssrf::ValidatedTarget {
-            url: reqwest::Url::parse(url).unwrap(),
-            host: String::new(),
-            pinned_addrs: Some(vec!["192.0.2.1:443".parse().unwrap()]),
+        let target = |url: &str| {
+            ssrf::ValidatedTarget::pinned_for_test(url, vec!["192.0.2.1:443".parse().unwrap()])
         };
         let (a, b) = (target("https://a.example/h"), target("https://b.example/h"));
         // Tenant a takes all of its slots...
