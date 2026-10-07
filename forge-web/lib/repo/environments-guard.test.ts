@@ -31,12 +31,21 @@ vi.mock('../sdk', async (importOriginal) => {
   }
 })
 
+// A missing consent is read once, not re-read 1.5 s apart.
+vi.mock('../view/retry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../view/retry')>()),
+  retryWhileMissing: <T>(read: () => Promise<T | null>) => read(),
+}))
+
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
+import type { EncryptionOps } from '../auth/encryption-key'
+import { addPrivateMember, removePrivateMember, type PrivateWriteContext } from './private-members'
 import { EnvironmentsMembershipError, changeMemberRole, grantMember, revokeMember } from './writes'
 
 const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const BOB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
+const CAROL = '6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC'
 const FORGE = {
   core: 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1',
   collab: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS',
@@ -83,5 +92,38 @@ describe('maintainer changes in a repo with environments', () => {
   it('lets a maintainer change through when the repo has no environments', async () => {
     await revokeMember(sdk, auth, REPO, BOB, 'maintainer').catch((e: unknown) => expect(e).not.toBeInstanceOf(EnvironmentsMembershipError))
     expect(kindsAsked).toContain(8)
+  })
+})
+
+/**
+ * A private repo's membership goes through `private-members.ts` alone (`writes.ts` refuses it), so
+ * those flows hold the same guard, ahead of the consent check and of any paid re-anchor.
+ */
+describe('maintainer changes in a private repo with environments', () => {
+  const PRIVATE: RepoRef = { ...REPO, visibility: 'private' }
+  const c: PrivateWriteContext = { sdk, auth, repo: PRIVATE, network: 'devnet', ops: {} as unknown as EncryptionOps }
+  const by = (owner: string, createdAt: number) => ({ ...snapshot, $id: `m-${owner}`, $ownerId: owner, $createdAt: createdAt })
+
+  // The guard refuses on any environment snapshot; these are the two cases it exists for.
+  it("refuses promoting a writer whose dormant snapshot is newer than an environment's head", async () => {
+    // Bob saved as a writer (it does not count); as a maintainer it would supersede Alice's head.
+    envSnapshots = [by(BOB, 2), by(ALICE, 1)]
+    await expect(addPrivateMember(c, BOB, 'maintainer', 'members:add')).rejects.toThrow('This repo has environments. Make maintainers with dg for now.')
+    expect(kindsAsked).toEqual([8])
+    expect(created).toEqual([])
+  })
+
+  it("refuses removing the maintainer who wrote an environment's head before anything is re-anchored", async () => {
+    envSnapshots = [by(CAROL, 1)]
+    await expect(removePrivateMember(c, CAROL, 'maintainer', 'members:remove')).rejects.toBeInstanceOf(EnvironmentsMembershipError)
+    expect(kindsAsked).toEqual([8])
+    expect(created).toEqual([])
+  })
+
+  it('does not look for environments when no maintainer role changes', async () => {
+    envSnapshots = [by(ALICE, 1)]
+    await addPrivateMember(c, BOB, 'writer', 'members:add').catch((e: unknown) => expect(e).not.toBeInstanceOf(EnvironmentsMembershipError))
+    await removePrivateMember(c, BOB, 'writer', 'members:remove').catch((e: unknown) => expect(e).not.toBeInstanceOf(EnvironmentsMembershipError))
+    expect(kindsAsked).not.toContain(8)
   })
 })

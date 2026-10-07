@@ -28,3 +28,20 @@ export function recordMembersKey(repoId: string, has: boolean): void {
 export function noteMembersKey(repoId: string): void {
   recordMembersKey(repoId, true)
 }
+
+/**
+ * Record what a public repo's complete config timeline says about its members key: one with a
+ * sealed config (its members-key anchor) has one. Every page reads the timeline, so the content
+ * gate learns this without a read of its own.
+ */
+export function recordConfigTimeline(repoId: string, rows: readonly Record<string, unknown>[]): void {
+  recordMembersKey(repoId, rows.some((d) => sealedBytes(d['enc'])))
+}
+
+/** Whether a stored `enc` holds bytes (any encoding the SDK returns). */
+function sealedBytes(v: unknown): boolean {
+  if (v === null || v === undefined) return false
+  if (typeof v === 'string') return v.length > 0
+  const n = (v as { length?: unknown }).length
+  return typeof n === 'number' && n > 0
+}

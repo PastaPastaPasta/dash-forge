@@ -188,12 +188,14 @@ export {
   type RowFilters,
 } from './issue-index'
 export {
+  openPullsOnBranch,
   pullMilestoneItems,
   pullsLinking,
   queryPulls,
   type LinkingPulls,
   type PullCounts,
   type PullListPage,
+  type PullOnBranch,
   type PullRow,
   type PullSelection,
   type PullStateFilter,

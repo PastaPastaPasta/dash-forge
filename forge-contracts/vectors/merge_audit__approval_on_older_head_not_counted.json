@@ -1,0 +1,78 @@
+{
+  "name": "approval_on_older_head_not_counted",
+  "description": "An approval of an older head than the one merged does not count.",
+  "case": "merge_audit",
+  "rules": "v2",
+  "input": {
+    "mergedAt": 10000000,
+    "merger": "maint",
+    "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prAuthor": "auth",
+    "policies": [
+      {
+        "id": "p1",
+        "createdAt": 100,
+        "policy": {
+          "requiredApprovals": 1,
+          "approverRole": 0,
+          "requireChecks": false,
+          "mergeMethods": 0
+        }
+      }
+    ],
+    "protection": [],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint2",
+        "verdict": 1,
+        "commitOid": "cccccccccccccccccccccccccccccccccccccccc",
+        "createdAt": 5000000
+      }
+    ],
+    "dismissals": [],
+    "runs": [],
+    "runners": [],
+    "bypasses": []
+  },
+  "expected": {
+    "verdict": "unmet",
+    "policy": {
+      "requiredApprovals": 1,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0
+    },
+    "protected": false,
+    "mergerRole": "maintainer",
+    "protectionUnmet": false,
+    "approvals": {
+      "met": false,
+      "have": 0,
+      "need": 1,
+      "blockedBy": []
+    },
+    "checks": null,
+    "checksUnread": false,
+    "bypass": null,
+    "rulesChanged": false
+  }
+}

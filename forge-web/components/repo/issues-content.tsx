@@ -17,7 +17,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { HiddenRowMark, HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -47,6 +47,7 @@ import {
 import { createIssue, issueFirsts, queryIssues, readLabels, contentKey, repoContractIds, repoKey, rowFiltersOf, setLabel, type IssueListPage, type IssueSelection } from '@/lib/repo'
 import { SupersededWriteError, UnconfirmedWriteError, previewCreate, sumPreviews } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { AudienceChip, AudienceWarnings, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate } from '@/components/repo/audience'
 import { useRepoWriteGeneration, useViewerRole } from '@/hooks/use-repo-chrome'
 import { toast } from '@/hooks/use-toasts'
 import { useIntent } from '@/hooks/use-intent'
@@ -86,6 +87,7 @@ import {
   budgetEmptyTitle,
   readingLabel,
   tabCount,
+  MembersOnlyShare,
   useAutoReadOn,
   useListQuery,
   useReadProgress,
@@ -96,6 +98,7 @@ import { IssueFormFields } from '@/components/repo/issue-form'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
 import { TriageNav } from '@/components/repo/triage-nav'
+import { BulkBar, BulkRowCheckbox, useBulkAllowed, useBulkHold, useBulkSelection } from '@/components/repo/bulk-actions'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { useLongCompose } from '@/components/repo/long-body'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -103,6 +106,8 @@ import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
 import { applyTemplate, type IssueTemplate } from '@/lib/view/issue-templates'
 import { formBody, initialFormValues, missingAnswers, type FormValue } from '@/lib/view/issue-forms'
 import { capabilitiesOf, whoCan } from '@/lib/rules/roles'
+import { newIssueDraftKey, useDraftState } from '@/lib/view/draft-text'
+import { quotesMembersText } from '@/lib/view/audience'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
 const ISSUE_GRAMMAR: ListGrammar<IssueListQuery> = { text: searchText, parse: parseSearchText, unresolved: unresolvedQualifiers, submitBase: searchSubmitBase }
@@ -151,7 +156,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const [pinsAsked, setPinsAsked] = useState(false)
   // Read by the list's read itself: asking re-reads with the list kept on screen, not reset.
   const pinsAskedRef = useRef(false)
-  const { data, loading, error, reload } = useAsync<IssueListPage>(
+  // While a bulk batch runs, the list keeps its rows (each close re-reads it).
+  const bulkHold = useBulkHold<IssueListPage>()
+  const { data: freshData, loading, error, reload } = useAsync<IssueListPage>(
     async (signal) => {
       const me = identity ?? ''
       const who = (v: string | null): string | null => (v === 'me' ? me : v)
@@ -175,6 +182,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 
+  const data = bulkHold.keep(freshData)
   // A sparse tab finding its older rows through the state scan reads on by itself (QW3-002).
   useAutoReadOn(data?.searchedOf, loading, reload)
 
@@ -191,6 +199,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const hiddenIds = useHiddenThreads(sdk, ready, home.repo, network, data?.rows)
   const rows = (data?.rows ?? []).filter((r) => showHidden || !hiddenIds.has(r.id))
   const hiddenOnPage = (data?.rows ?? []).filter((r) => hiddenIds.has(r.id)).length
+  // Bulk close and label (members who may close and label; nothing read until they act).
+  const bulkAllowed = useBulkAllowed(home)
+  const bulkRows = useMemo(() => rows.map((r) => ({ id: r.id, number: r.number, title: r.title, author: r.author, open: r.state.open, merged: false, labels: r.state.labels })), [rows])
+  const bulk = useBulkSelection(bulkRows)
   const empty = data !== null && data.rows.length === 0
   const filtered = hasFilters(query)
   const lastPage = empty ? pastLastPage(query.page, data?.matching ?? null, ISSUE_PAGE_SIZE) : null
@@ -269,12 +281,13 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
+          {bulkAllowed ? <BulkBar kind="issue" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} onBusy={bulkHold.setBusy} /> : null}
           <StateTabs label="Issue state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
-              <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open
+              <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open<MembersOnlyShare n={data?.membersOnly?.open} />
             </StateTab>
             <StateTab active={query.state === 'closed'} onClick={() => change({ state: 'closed' })}>
-              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.closedCount)}Closed
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.closedCount)}Closed<MembersOnlyShare n={data?.membersOnly?.closed} />
             </StateTab>
             <StateTab active={query.state === 'all'} onClick={() => change({ state: 'all' })}>
               All
@@ -340,6 +353,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           <ul aria-label="Issues" aria-busy={loading}>
             {rows.map((issue) => (
               <li key={issue.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="issue-row" data-number={issue.number}>
+                {bulkAllowed ? <BulkRowCheckbox kind="issue" number={issue.number} checked={bulk.selected.has(issue.id)} onChange={(on) => bulk.toggle(issue.id, on)} /> : null}
                 {issue.state.open ? (
                   <><CircleDot className={`mt-0.5 h-4 w-4 shrink-0 ${STATE_TEXT.open}`} aria-hidden /><span className="sr-only">Open</span></>
                 ) : closedSkipped(reasons.data?.get(issue.id)) ? (
@@ -349,7 +363,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <RowLink href={repoHref('/repo/issue', addr, { number: String(issue.number) })} title={issue.title} />
+                    <RowLink href={repoHref('/repo/issue', addr, { number: String(issue.number) })} title={issue.title} {...(issue.audience ? { audience: issue.audience } : {})} {...(issue.membersOnly ? { membersOnly: true } : {})} />
                     {issue.state.labels.map((l) => (
                       <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />
                     ))}
@@ -367,7 +381,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 </div>
                 <div className="flex shrink-0 items-center gap-3 pt-0.5">
                   <AssigneeAvatars ids={issue.state.assignees} />
-                  <CommentCount n={issue.comments} />
+                  <CommentCount n={issue.comments} membersOnly={issue.membersOnly || issue.audience === 'members' ? issue.comments ?? 0 : 0} />
                 </div>
               </li>
             ))}
@@ -380,7 +394,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
       <Pager label="Issue pages" page={query.page} hasNext={data?.hasNext ?? false} matching={data?.matching ?? null} pageSize={ISSUE_PAGE_SIZE} onPage={(page) => change({ page })} />
 
-      <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} home={home} by={data?.hiddenBy} />
+      <HiddenNote hidden={data?.hidden ?? 0} what="issue" home={home} by={data?.hiddenBy} />
 
       <ComposeIssueDialog
         // A new prefill (another /issues/new?title=… link) starts the form afresh.
@@ -427,7 +441,38 @@ function ComposeIssueDialog({
   // another template is picked, so arrowing through the picker loses nothing (QW4-037).
   const [answersByFile, setAnswersByFile] = useState<Readonly<Record<string, Record<string, FormValue>>>>({})
   const chooser = useIssueChooser(home, open)
-  const canLabel = capabilitiesOf(useViewerRole(repo).role).canLabel
+  const viewerRole = useViewerRole(repo).role
+  const canLabel = capabilitiesOf(viewerRole).canLabel
+  // Who it is for (DESIGN §10): public, or Members when a member picks it.
+  const audience = useComposerAudience(home, { maintainer: viewerRole === 'maintainer' })
+  // A public issue that repeats members-only text this tab opened in the repo asks first (product H8).
+  const membersTexts = useMembersTexts(repo.repoId)
+  const quoteGate = useQuoteGate()
+  // The unsent issue survives a reload (per identity, public repos only; nothing is kept while a
+  // submit's outcome is unknown). Kept only while the form is open, and restored when it opens
+  // empty (a link's prefill wins). Never kept while members-only, nor once it quotes members-only
+  // text (decided for each new value, before it is stored).
+  const [kept, keep, holdKept] = useDraftState<{ title: string; body: string }>(
+    newIssueDraftKey(repo, identity),
+    () => true,
+    (d) => audience.audience === 'public' && !quotesMembersText(`${d.title}\n${d.body}`, membersTexts),
+  )
+  const seeded = useRef(false)
+  useEffect(() => {
+    if (!open) {
+      seeded.current = false
+      return
+    }
+    if (!seeded.current) {
+      seeded.current = true
+      if (title === '' && body === '' && kept !== null) {
+        setTitle(kept.title)
+        setBody(kept.body)
+        return
+      }
+    }
+    if (!pending) keep(title.trim() === '' && body.trim() === '' ? null : { title, body })
+  }, [open, title, body]) // eslint-disable-line react-hooks/exhaustive-deps
   // The repo's labels, read only when a template asks for some and the author may apply them.
   const wantsLabels = open && canLabel && (template?.labels.length ?? 0) > 0
   const labelDefs = useAsync(() => readLabels(sdk!, repo), [repoKey(repo), wantsLabels ? 1 : 0], { enabled: wantsLabels && sdk !== null })
@@ -456,8 +501,10 @@ function ComposeIssueDialog({
   }, [wantsLabels, labelDefs.data, template])
   // Submit waits for them, so a member's issue never opens without its template's labels.
   const labelsLoading = wantsLabels && labelDefs.data === null && labelDefs.error === null
-  const cost = sumPreviews([composeCost(repo, 'issue', { title: title.trim(), body: issueBody }, first), ...labelsToApply.map(() => previewCreate('event'))])
+  const cost = sumPreviews([composeCost(repo, 'issue', { title: title.trim(), body: issueBody }, first, audience.audience), ...labelsToApply.map(() => previewCreate('event'))])
   const bodyBytes = utf8Length(issueBody)
+  // Who can't read a members-only issue it names (product H8): @mentions outside the members.
+  const warnings = useAudienceWarnings(audience, `${title}\n${issueBody}`, null)
   // A body over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
   const longBody = useLongCompose(repo, 'issue', issueBody, { title: title.trim() })
   const bodyTooLong = longBody.long ? longBody.problem !== null : bodyBytes > BODY_MAX
@@ -491,27 +538,39 @@ function ComposeIssueDialog({
     if (failed > 0) toast({ title: `The template's labels were not all applied`, tone: 'warn', detail: 'Add them from the issue’s Labels menu.' })
   }
 
-  const submit = async (): Promise<void> => {
+  const submit = (): void => {
     if (pending || bodyTooLong || missing.length > 0 || needsTemplate || labelsLoading || !guard.check(cost, 'collab', 'open an issue')) return
     if (!sdk || !signer || title.trim() === '') return
+    // Checked at submit, against all the members-only text the tab has opened by now (text pasted
+    // while the members session was still loading included).
+    quoteGate.check(audience.audience === 'public' ? `${title}\n${issueBody}` : null, membersTexts, () => void send())
+  }
+
+  const send = async (): Promise<void> => {
+    if (pending || !sdk || !signer) return
     setPending(true)
     setError(null)
     setNote(null)
+    // Until the outcome is known, a reload must not bring the issue back to be posted again.
+    holdKept(true, null)
     try {
-      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body: issueBody, intent: draft.intent }, (taken, next) =>
+      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body: issueBody, intent: draft.intent, ...(audience.choice !== null ? { audience: audience.audience } : {}) }, (taken, next) =>
         setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
       )
       await applyLabels(created, labelsToApply)
+      holdKept(false, null)
       setTitle('')
       setBody('')
       setTemplate(null)
       setAnswersByFile({})
       draft.renew()
+      audience.reset()
       onCreated(created.number)
       onClose()
     } catch (e) {
       if (e instanceof SupersededWriteError) {
         // The earlier version was posted: this draft is done (never post it a second time).
+        holdKept(false, null)
         setTitle('')
         setBody('')
         setTemplate(null)
@@ -520,6 +579,8 @@ function ComposeIssueDialog({
         onClose()
         return
       }
+      // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays held.)
+      if (!(e instanceof UnconfirmedWriteError)) holdKept(false, { title, body })
       setError(guard.failed(e))
     } finally {
       setPending(false)
@@ -527,6 +588,7 @@ function ComposeIssueDialog({
   }
 
   return (
+    <>
     <Dialog
       open={open}
       onClose={onClose}
@@ -535,6 +597,7 @@ function ComposeIssueDialog({
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>
+          <AudienceChip home={home} state={audience} />
           <Button
             variant="primary"
             onClick={submit}
@@ -572,6 +635,7 @@ function ComposeIssueDialog({
         )}
         <SealedLimit repo={repo} kind="issue" text={title.trim() + issueBody} long={longBody} />
         <BodyCounter repo={repo} text={issueBody} field="description" long={longBody} />
+        <AudienceWarnings warnings={warnings} />
         {needsTemplate ? <p className="text-[12px] text-anvil-600 dark:text-anvil-400">This repository asks for a template: pick one above.</p> : null}
         {template !== null && template.labels.length > 0 ? (
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="template-labels">
@@ -593,5 +657,7 @@ function ComposeIssueDialog({
         ) : null}
       </div>
     </Dialog>
+    {quoteGate.dialog}
+    </>
   )
 }

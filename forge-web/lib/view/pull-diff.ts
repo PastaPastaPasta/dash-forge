@@ -73,6 +73,11 @@ export interface PullComparison extends TreeDiff {
    * is made up from the head's parent.
    */
   readonly upToDate?: true
+  /**
+   * The base branch's current tip already contains the head (the merge-base walk found the head
+   * itself): set however the comparison then went (an open PR's head merged elsewhere).
+   */
+  readonly tipContainsHead?: true
 }
 
 /**
@@ -225,13 +230,14 @@ export async function loadPullComparison(
           : failed.length > 0
             ? `Compared against the base branch's current tip${why}.`
             : null
-    return compare(mergeBase, note)
+    const result = await compare(mergeBase, note)
+    return tipContainsHead ? { ...result, tipContainsHead: true } : result
   }
 
   // A PR not yet merged whose base branch has its head (the New PR form comparing a branch the base
   // is ahead of): there is nothing to compare. Only a merged or imported PR falls back to a diff.
   if (tipContainsHead && !input.merged && !input.imported && cancelled === null) {
-    return { changes: [], truncated: false, comparedBaseOid: headOid, comparisonNote: null, sides, upToDate: true }
+    return { changes: [], truncated: false, comparedBaseOid: headOid, comparisonNote: null, sides, upToDate: true, tipContainsHead: true }
   }
 
   const why =

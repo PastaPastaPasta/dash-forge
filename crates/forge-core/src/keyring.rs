@@ -2922,6 +2922,7 @@ mod tests {
             created_at: Some(10),
             created_at_block_height: Some(5),
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: kind_fields
                 .into_iter()

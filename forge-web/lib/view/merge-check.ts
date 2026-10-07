@@ -74,3 +74,57 @@ export async function mergeFacts(sides: DiffSides, input: MergeCheckInput, searc
 export async function checkMerge(sides: DiffSides, input: MergeCheckInput, search: MergeBaseOptions = {}): Promise<MergeContent> {
   return mergeContent(await mergeFacts(sides, input, search))
 }
+
+/** How far back from the base tip {@link unrecordedMergeLikely} walks to find the tip before it. */
+const RECORD_WALK = 50
+
+/**
+ * A cheap first look before the full merge check of an open PR's base tip ("Record merge of …"):
+ * whether the tip could be this PR's unrecorded merge.
+ *
+ * - `tipContainsHead` (the comparison's own merge-base walk found the head in the tip): yes, the
+ *   full check will say it contains the PR.
+ * - Else, along first parents from the tip back to `prev` (the base's tip before), both
+ *   included, at most {@link RECORD_WALK} commits: yes when one of them is the head or has it as a
+ *   parent (a merge commit, perhaps followed by other merges or pushes).
+ * - Else a squash or a rebase can only change paths the PR changes: yes when the change from
+ *   `prev` to the tip does (`prPaths`; null when the PR's own list is unknown, then yes).
+ *
+ * No when `prev` is not reached within the walk: a base that moved more than that since is not
+ * offered (record the merge with `dg pr merge --event-only`).
+ */
+export async function unrecordedMergeLikely(
+  sides: DiffSides,
+  input: {
+    readonly tip: string
+    readonly prev: string
+    readonly head: string
+    readonly prPaths: ReadonlySet<string> | null
+    readonly tipContainsHead?: boolean
+  },
+): Promise<boolean> {
+  const { tip, prev, head, prPaths } = input
+  if (input.tipContainsHead === true) return true
+  try {
+    const top = await readCommit(sides.base, tip)
+    let at = tip
+    let commit = top
+    // From the tip back to the tip before it, both included.
+    for (let i = 0; ; i++) {
+      if (at === head || commit.parents.includes(head)) return true
+      if (at === prev) break
+      const parent = commit.parents[0]
+      if (parent === undefined || i >= RECORD_WALK) return false
+      at = parent
+      commit = await readCommit(sides.base, at)
+    }
+    if (prPaths === null) return true
+    const before = commit
+    const base: DiffSides = { base: sides.base, head: sides.base }
+    const diff = await diffTrees(base, before.tree, top.tree)
+    if (diff.truncated) return true
+    return diff.changes.length > 0 && diff.changes.every((c) => prPaths.has(c.path))
+  } catch {
+    return false
+  }
+}

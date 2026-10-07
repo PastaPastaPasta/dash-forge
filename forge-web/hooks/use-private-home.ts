@@ -17,10 +17,9 @@
  * the vault locks or the encryption key changes).
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useAuth } from '@/contexts/auth-context'
-import { base58Encode } from '@/lib/auth/base58'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { encryptionOps } from '@/lib/auth/encryption-key'
@@ -33,6 +32,11 @@ import {
   sessionUnwrapper,
 } from '@/lib/repo/private-session'
 import { hasMembersKey } from '@/lib/repo/writes'
+import { repoHasMembersKey } from '@/lib/repo/members-writes'
+import { membersAccessOf } from '@/lib/repo/members-access'
+import { DOC } from '@/lib/repo/contract'
+import { repoSource } from '@/lib/repo/source'
+import { queryDocuments } from '@/lib/sdk'
 import { loadPrivateHome, withMembersSession, type RepoHome } from '@/lib/view'
 import { forgetPrivateNav, sealRepoUrls } from '@/lib/view/private-nav'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -100,22 +104,32 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
   // Re-derive when the plain home is re-read (revalidation, Retry); the session itself is re-read
   // once its view-session TTL runs out, so new pushes and rotations show up.
   const revision = useRevision(home)
-  /** A public repo's home for this viewer: with their members-key session when they hold one. */
+  /**
+   * A public repo's home for this viewer: with their members-key session when they hold one (a
+   * current member, or a member removed since who holds earlier key shares: `former`).
+   */
   const membersHome = async (base: RepoHome, generation: number): Promise<RepoHome> => {
     if (identity === null) return base
     const members = await readMembershipsCached(sdk!, base.repo, network)
-    if (!members.some((m) => m.identity === identity)) return base
-    if (!(await hasMembersKey(sdk!, base.repo))) return { ...base, lane: { access: 'none' } }
-    const ops = await encryptionOps(sdk!, network, identity, base.repo.forge.collab)
-    if (ops === null) return { ...base, lane: { access: 'no-key' } }
-    if (controller.unlockScope() === 'signing') return { ...base, lane: { access: 'locked' } }
-    const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
-    if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read members-only content')
-    // E311: a member nobody has shared the key with yet (added by an older client). No key, no
-    // wrap to them: a maintainer's Repair (the repair check) shares it.
-    const mine = session.wraps.some((w) => base58Encode(w.row.memberId) === identity)
-    if (session.resolution.keys.size === 0 && !mine) return { ...base, lane: { access: 'no-key-shared' } }
-    const out = withMembersSession(base, session)
+    const isMember = members.some((m) => m.identity === identity)
+    const lane = await membersAccessOf({
+      identity,
+      isMember,
+      // A non-member's answer comes from the page's own config read (no read of its own).
+      hasMembersKey: () => (isMember ? hasMembersKey(sdk!, base.repo) : repoHasMembersKey(sdk!, base.repo)),
+      ops: () => encryptionOps(sdk!, network, identity, base.repo.forge.collab),
+      locked: () => controller.unlockScope() === 'signing',
+      holdsShare: async () =>
+        (await queryDocuments(sdk!, repoSource(base.repo).repoQuery(DOC.repoKey, { where: [['memberId', '==', identity]], orderBy: [['memberId', 'asc']], limit: 1 }))).length > 0,
+      session: async (ops) => {
+        const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
+        if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read members-only content')
+        return session
+      },
+    })
+    if (lane === null) return base
+    if (lane.access !== 'member' && lane.access !== 'former') return { ...base, lane }
+    const out = withMembersSession(base, lane.session, lane.access)
     warm.set(key, out)
     return out
   }
@@ -151,17 +165,21 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
         const hit = warm.get(key)
         if (hit === undefined) return undefined
         if (hit.private?.access === 'member') return hit.private.session.closed ? undefined : hit
-        return hit.lane?.access === 'member' && !hit.lane.session.closed ? hit : undefined
+        return (hit.lane?.access === 'member' || hit.lane?.access === 'former') && !hit.lane.session.closed ? hit : undefined
       },
     },
   )
   reloadRef.current = state.reload
+  // A public repo read for a signed-in viewer before their members access is known: marked, so
+  // members-only placeholders wait rather than speak to an outsider (one object per home).
+  const laneUnknown = !isPrivate && home !== null && identity !== null && state.error === null && (state.data === null || state.data.repo.repoId !== home.repo.repoId)
+  const loadingHome = useMemo<RepoHome | null>(() => (laneUnknown && home !== null ? { ...home, laneLoading: true } : null), [laneUnknown, home])
   if (home === null) return null
   // A public repo renders at once; once a member's members-key session is ready the page re-reads
   // its discussion through it (`contentKey`). A failed lookup leaves the public view as it is.
   if (!isPrivate) {
     const data = state.data
-    const fresh = data !== null && state.error === null && data.repo.repoId === home.repo.repoId ? data : home
+    const fresh = data !== null && state.error === null && data.repo.repoId === home.repo.repoId ? data : loadingHome ?? home
     return { home: fresh, pending: false, error: null, retry: state.reload }
   }
   if (state.error !== null) return { home, pending: false, error: state.error, retry: state.reload }

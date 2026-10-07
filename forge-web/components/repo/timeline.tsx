@@ -12,7 +12,10 @@ import { Byline, Time } from '@/components/repo/byline'
 import { importedVerdictOf, searchableBody, trustedOrigin, type Origin } from '@/lib/repo/provenance'
 import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, EyeOff, GitBranch, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import { STATE_TEXT } from '@/lib/design/state'
-import type { CommentView, TimelineItem } from '@/lib/view'
+import type { CommentView, MembersOnlyEntry, TimelineItem } from '@/lib/view'
+import type { MembersAccess } from '@/lib/view/repo-view'
+import { MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyRow, MembersOnlySummary, VisibleToMembers, summarizesMembersOnly } from '@/components/repo/audience'
+import { cn } from '@/lib/utils'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
@@ -268,6 +271,8 @@ type ExtraRow =
   | { readonly kind: 'ref'; readonly at: number; readonly ref: CrossRefItem }
   | { readonly kind: 'dup'; readonly at: number; readonly dup: DuplicateRefItem }
   | { readonly kind: 'branch'; readonly at: number; readonly branch: BranchEventItem }
+  /** A members-only comment or review this reader cannot open (D14); `all`: a locked member's one line for every one. */
+  | { readonly kind: 'members'; readonly at: number; readonly entry: MembersOnlyEntry; readonly all?: readonly MembersOnlyEntry[] }
 
 function crossRefIcon(state: CrossRefItem['state']): JSX.Element {
   switch (state) {
@@ -353,6 +358,16 @@ export function sourcePhrase(phrase: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
+/**
+ * The rows of the placeholders (`entries`, D14): one each, or with `summarize` (a member who
+ * can't read yet) one line for all of them at the first one's place.
+ */
+function membersOnlyRows(entries: readonly MembersOnlyEntry[], summarize: boolean): ExtraRow[] {
+  if (entries.length === 0) return []
+  if (summarize) return [{ kind: 'members', at: entries[0]!.item.createdAt, entry: entries[0]!, all: entries }]
+  return entries.map((entry): ExtraRow => ({ kind: 'members', at: entry.item.createdAt, entry }))
+}
+
 /** A timeline item's stable key. */
 function itemKey(item: TimelineItem): string {
   switch (item.kind) {
@@ -389,10 +404,11 @@ function ReviewComment({
   const mirrored = origin !== null ? mirroredCommentText(c.body, c.anchor) : null
   const file = c.anchor ? anchorLabel(c.anchor) : mirrored?.file ?? null
   return (
-    <div className="overflow-hidden rounded-md border border-anvil-200 dark:border-anvil-800" data-testid="review-comment">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-3 py-1.5 text-[12px] dark:border-anvil-800 dark:bg-anvil-900">
+    <div className={cn('overflow-hidden rounded-md border border-anvil-200 dark:border-anvil-800', c.audience === 'members' && MEMBERS_CARD)} data-testid="review-comment" data-audience={c.audience ?? 'public'}>
+      <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-3 py-1.5 text-[12px] dark:border-anvil-800 dark:bg-anvil-900', c.audience === 'members' && MEMBERS_CARD_HEADER)}>
         {file !== null ? <span className="break-all font-mono text-anvil-700 dark:text-anvil-300">{file}</span> : null}
         {origin !== null ? <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} /> : null}
+        {c.audience === 'members' ? <VisibleToMembers /> : null}
         {slot.header}
       </div>
       {slot.body ?? (
@@ -446,6 +462,8 @@ export function Timeline({
   imported = null,
   moderation,
   moderate,
+  membersOnly = [],
+  lane,
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
@@ -483,6 +501,10 @@ export function Timeline({
   moderation?: HiddenItems
   /** A maintainer's Hide / Unhide for a comment or review (omit: the viewer is no maintainer). */
   moderate?: (item: { readonly kind: 'comment' | 'review'; readonly id: string }) => ReactNode
+  /** Members-only comments and reviews this reader cannot open, placed by time (DESIGN D14). */
+  membersOnly?: readonly MembersOnlyEntry[]
+  /** The viewer's members access: a member who can't read yet sees one line for all of them. */
+  lane?: MembersAccess
 }): JSX.Element {
   // A hide or unhide the reader rule did not count (a writer's without the contract's proof, a
   // refId of another thread) is noise anyone could write, not the moderation record: left out.
@@ -517,6 +539,7 @@ export function Timeline({
     ...crossRefs.map((ref): ExtraRow => ({ kind: 'ref', at: ref.at, ref })),
     ...duplicateRefs.map((dup): ExtraRow => ({ kind: 'dup', at: dup.at, dup })),
     ...branchEvents.map((branch): ExtraRow => ({ kind: 'branch', at: branch.at, branch })),
+    ...membersOnlyRows(membersOnly, summarizesMembersOnly(lane)),
   ].sort((a, b) => a.at - b.at)
   const merged: ({ kind: 'item'; item: TimelineItem; i: number; at: number } | ExtraRow)[] = items.map((item, i) => ({ kind: 'item', item, i, at: item.at }))
   for (const extra of extras) {
@@ -583,6 +606,14 @@ export function Timeline({
           </p>
         </div>,
       )
+    } else if (row.kind === 'members') {
+      rows.push(
+        row.all !== undefined ? (
+          <MembersOnlySummary key={`m-${row.entry.item.id}`} entries={row.all} lane={lane} />
+        ) : (
+          <MembersOnlyRow key={`m-${row.entry.item.id}`} entry={row.entry} />
+        ),
+      )
     } else rows.push(renderItem(row.item, row.i))
   })
   return <div className="space-y-3">{rows}</div>
@@ -600,8 +631,8 @@ export function Timeline({
           return (
             <div key={`c-${cid}-${i}`} className="space-y-1">
             {shownHidden ? <RevealedNote hidden={shownHidden} onCollapse={() => reveal(cid, false)} /> : null}
-            <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="timeline-comment">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
+            <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', item.comment.audience === 'members' && MEMBERS_CARD)} data-testid="timeline-comment" data-audience={item.comment.audience ?? 'public'}>
+              <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', item.comment.audience === 'members' && MEMBERS_CARD_HEADER)}>
                 <Byline
                   author={item.comment.author}
                   createdAt={item.comment.createdAt}
@@ -609,6 +640,7 @@ export function Timeline({
                   verb={commentVerb(item)}
                 />
                 <EditedMarker createdAt={item.comment.createdAt} updatedAt={item.comment.updatedAt} />
+                {item.comment.audience === 'members' ? <VisibleToMembers /> : null}
                 {slot.header}
                 {actions ? <span className={slot.header ? '' : 'ml-auto'}>{actions}</span> : null}
               </div>
@@ -657,8 +689,8 @@ export function Timeline({
           return (
             <div key={`r-${review.id}-${i}`} className="space-y-1">
             {shownHidden ? <RevealedNote hidden={shownHidden} onCollapse={() => reveal(review.id, false)} /> : null}
-            <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-              <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 coarse:gap-y-3 coarse:py-3 dark:border-anvil-800 dark:bg-anvil-900">
+            <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', review.audience === 'members' && MEMBERS_CARD)} data-testid="timeline-review" data-audience={review.audience ?? 'public'}>
+              <div className={cn('flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 coarse:gap-y-3 coarse:py-3 dark:border-anvil-800 dark:bg-anvil-900', review.audience === 'members' && MEMBERS_CARD_HEADER)}>
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">
                   {verdictIcon(review.verdict)}
                 </span>
@@ -677,6 +709,7 @@ export function Timeline({
                 {review.commitOid ? (
                   <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">on <Oid value={review.commitOid} chars={9} /></span>
                 ) : null}
+                {review.audience === 'members' ? <VisibleToMembers what="review" /> : null}
                 {actions ? <span className="ml-auto">{actions}</span> : null}
               </div>
               {/* A mirrored review with no text of its own: its header already says who and when. */}

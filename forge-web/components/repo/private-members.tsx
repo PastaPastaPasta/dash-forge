@@ -21,7 +21,7 @@ import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
 import { ConsentMissingError, repoContractIds } from '@/lib/repo'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
-import { ROLE_NOUN, membershipTitle } from '@/lib/rules/roles'
+import { ROLE_NOUN, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { decodeIdentifier } from '@/lib/auth'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
@@ -53,6 +53,7 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { EnvironmentsRemoval } from '@/components/repo/environments-content'
 import { shortId } from '@/lib/utils'
 
 /** The spec's removal warning, verbatim, with the member's name. */
@@ -311,7 +312,15 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
             write.done()
           }
         }}
-      />
+      >
+        {/* What they could read in the repo's environments (every member holds the repo key). */}
+        {removing !== null && removing.role !== 'maintainer' ? <EnvironmentsRemoval
+            home={home}
+            member={removing.member}
+            heldMembersKey={holdsMembersKey(removing.role, 'private')}
+            staysMaintainer={removalEffect(session.members, removing.member, removing.role) === 'none'}
+          /> : null}
+      </ConfirmDialog>
       {removing?.role === 'maintainer' ? <VanishingNote session={session} leaving={removing.member} /> : null}
       {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{removalPlan.error}</p> : null}
       {removing !== null && removalPlan.plan !== null && removalPlan.plan.unreachable.length > 0 ? (

@@ -990,6 +990,7 @@ mod builders {
                 created_at: Some(1),
                 created_at_block_height: None,
                 updated_at_block_height: None,
+                updated_at: None,
                 fields: doc.clone(),
                 revision: Some(1),
             });

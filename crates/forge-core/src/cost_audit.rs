@@ -1163,6 +1163,7 @@ mod tests {
             created_at: Some(0),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             fields: BTreeMap::new(),
             revision: None,
         }

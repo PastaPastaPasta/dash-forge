@@ -321,6 +321,24 @@ export async function readNewestManifestsOfKind(sdk: EvoSDK, repo: RepoRef, kind
   return documents.map(toManifest)
 }
 
+/**
+ * Every manifest of one `kind`, by any writer, newest first (`(kind, $createdAt desc)`, paged to
+ * the end): the environment snapshots (kind 8), which a reader resolves as a whole chain.
+ */
+export async function readManifestsOfKind(sdk: EvoSDK, repo: RepoRef, kind: PackKind): Promise<PackManifest[]> {
+  const documents = await queryAllDocuments(
+    sdk,
+    repoSource(repo).repoQuery(DOC.packManifest, {
+      where: [['kind', '==', kind]],
+      orderBy: [
+        ['kind', 'asc'],
+        ['$createdAt', 'desc'],
+      ],
+    }),
+  )
+  return documents.map(toManifest)
+}
+
 /** The current objectLocator manifest (kind 1) — the size-independent object index. */
 export function readNewestLocatorManifest(sdk: EvoSDK, repo: RepoRef): Promise<PackManifest | null> {
   return readNewestManifestOfKind(sdk, repo, PACK_KIND.OBJECT_LOCATOR)

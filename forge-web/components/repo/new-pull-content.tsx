@@ -12,7 +12,7 @@
  * repo's in page memory only).
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
@@ -22,8 +22,11 @@ import { shortIdentity } from '@/lib/view/format'
 import { preferring, type PullComparison } from '@/lib/view/pull-diff'
 import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/refs'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
+import { useQuotedUntilEmptied } from '@/lib/view/draft-text'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { useLongCompose } from '@/components/repo/long-body'
+import { useMembersTexts, useQuoteGate } from '@/components/repo/audience'
+import { quotesMembersText } from '@/lib/view/audience'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -111,13 +114,26 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     setPullTemplate(t)
   }
 
+  // Members-only text this tab opened in the repo: a PR (always public here) that repeats it asks
+  // first (product H8), and a draft that quotes it stays in this page's memory only.
+  const membersTexts = useMembersTexts(repo.repoId)
+  const quoteGate = useQuoteGate()
+  // Once it quoted, the draft stays in memory until the form is emptied: a locked tab forgets the
+  // members-only text, and the quoting text must not land on disk then.
+  const quoting = useQuotedUntilEmptied(
+    repo.visibility === 'public' && quotesMembersText(`${title}\n${body}`, membersTexts),
+    title.trim() === '' && body.trim() === '',
+  )
+
   // Keep the draft for this tab (a sign-in in between must not lose it). Only a title the author
   // typed is kept: one filled in from a head commit belongs to that head, and a draft restored
   // later (another branch, a new push) must take its own head's subject (L-16).
-  useEffect(
-    () => savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }),
-    [repo, title, titleTouched, body, headKey, base],
-  )
+  // Not while the PR is being opened, nor after a submit whose outcome is unknown: a reload must
+  // not bring the draft back to be opened a second time.
+  const draftHeld = useRef(false)
+  useEffect(() => {
+    if (!draftHeld.current) savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting })
+  }, [repo, title, titleTouched, body, headKey, base, quoting])
 
   const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null), home.defaultBranch), [home.branches, home.defaultBranch])
   // A fork the link's (or the kept draft's) head names, e.g. a fork's Contribute link: listed even
@@ -198,7 +214,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     // The head picked keeps its repo (this fork, or a fork of it), never silently swapped.
     const headRepo = intoParent ? (head?.repo ?? repo) : to
     const href = intoParent ? contributeHref(to, headRepo, branch) : repoHref('/repo/pulls/new', { owner: to.ownerId, name: to.name }, { head: branch })
-    savePrDraft(to, { title: titleTouched ? title : '', body, head: `${headRepo.repoId}:refs/heads/${branch}`, base: '' })
+    savePrDraft(to, { title: titleTouched ? title : '', body, head: `${headRepo.repoId}:refs/heads/${branch}`, base: '' }, { memoryOnly: quoting })
     router.push(href)
   }
   const baseRef = branches.find((b) => b.refName === base)
@@ -291,13 +307,22 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     }
   }
 
-  const submit = async (): Promise<void> => {
+  const submit = (): void => {
     if (pending || blocked || owners.loading || input === null) return
     if (!guard.check(cost, 'collab', 'open a pull request')) return
     if (!sdk || !signer) return
+    // Checked at submit, against all the members-only text the tab has opened by now.
+    quoteGate.check(repo.visibility === 'public' ? `${input.title}\n${input.body}` : null, membersTexts, () => void send())
+  }
+
+  const send = async (): Promise<void> => {
+    if (pending || input === null || !sdk || !signer) return
     setPending(true)
     setError(null)
     setNote(null)
+    // Until the outcome is known, a reload must not bring the PR back to be opened twice.
+    draftHeld.current = true
+    dropPrDraft(repo)
     try {
       // The PR, its draft mark and its code owners' review requests are one action: one toast
       // with their total (QW3-039).
@@ -331,6 +356,11 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         draftIntent.renew()
         router.push(repoHref('/repo/pulls', addr))
         return
+      }
+      // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays dropped.)
+      if (!(e instanceof UnconfirmedWriteError)) {
+        draftHeld.current = false
+        savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting })
       }
       setError(guard.failed(e))
       setPending(false)
@@ -544,6 +574,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           onError={setComparisonError}
         />
       ) : null}
+      {quoteGate.dialog}
     </div>
   )
 }
