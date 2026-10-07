@@ -32,6 +32,7 @@ function toConfigDoc(doc: PlainDocument): ConfigDoc {
     id: typeof doc['$id'] === 'string' ? doc['$id'] : '',
     createdAt: typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : 0,
     protectedPatterns: stringArray(doc, 'protectedPatterns') ?? [],
+    ...(typeof doc['$ownerId'] === 'string' ? { author: doc['$ownerId'] } : {}),
   }
 }
 

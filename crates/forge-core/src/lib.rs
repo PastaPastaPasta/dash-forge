@@ -64,6 +64,7 @@ pub mod members;
 pub mod mirror;
 pub mod network;
 pub mod pack;
+pub mod pack_mirror;
 pub mod platform;
 pub mod private;
 pub mod profile;

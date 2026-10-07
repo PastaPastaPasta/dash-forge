@@ -212,3 +212,23 @@ describe('RefListContent branch administration', () => {
     expect(deletes()).toEqual([])
   })
 })
+
+describe('RefListContent Activity links', () => {
+  const links = (): HTMLAnchorElement[] => [...el.querySelectorAll<HTMLAnchorElement>('[data-testid="ref-activity-link"]')]
+
+  it('links each public branch and tag to its activity', async () => {
+    await act(async () => root.render(<RefListContent home={home(TAG_A, ['dev'])} addr={addr} kind="branches" />))
+    await settle()
+    expect(links().map((a) => a.getAttribute('href'))).toEqual([expect.stringContaining('branch=main'), expect.stringContaining('branch=dev')])
+    await act(async () => root.render(<RefListContent home={home(TAG_A)} addr={addr} kind="tags" />))
+    await settle()
+    expect(links().map((a) => a.getAttribute('href'))).toEqual([expect.stringContaining('tag=v1')])
+  })
+
+  it('has none on a private repo (its ref names are sealed and would sit in the address)', async () => {
+    const priv = { ...home(TAG_A, ['dev']), repo: { repoId: 'r', visibility: 'private' } } as unknown as RepoHome
+    await act(async () => root.render(<RefListContent home={priv} addr={addr} kind="branches" />))
+    await settle()
+    expect(links()).toEqual([])
+  })
+})

@@ -515,6 +515,15 @@ The tag must exist in the repository first (push it, as above, or publish from t
 
 **Releases are never deleted.** Releases are listed by version (highest first), and the latest is the highest that is neither a pre-release nor yanked. Every revision a release ever had — including an unpublish — stays on chain, so a tag's publication history can always be reconstructed.
 
+**Branch and tag activity.** The **Activity** link beside each branch and tag (on the Branches and Tags pages) lists everything that ever happened to it, newest first: who created it, each push with the commits before and after, deletions, and every change to its protection. A push that replaced the branch's history instead of adding to it carries a red **force-pushed** badge; a moved tag carries **moved**; two pushes that raced from the same starting point, leaving two tips until a later push settles them, carry **diverged**. **Protection lifted** and **protection restored** mark when a settings change stopped and resumed protecting it, so a force-push in between is easy to spot. From the CLI:
+
+```sh
+dg repo activity <owner>/<repo> main          # a branch
+dg repo activity <owner>/<repo> v1.0 --tag    # a tag
+```
+
+Run it inside a clone to tell force-pushes from ordinary pushes with your local git; elsewhere a push whose commits it cannot compare reads "updated". The web's Activity page covers public repositories only for now; `dg repo activity` works for private ones too.
+
 **Provenance: is this still what was published?** A tag can be moved after its release is published, by a maintainer, or by any writer when tags are not protected (new repositories protect them). Every move stays on chain, so each release's page has a **Provenance** card:
 
 - what the tag pointed at when the release was first published, and who pushed it;

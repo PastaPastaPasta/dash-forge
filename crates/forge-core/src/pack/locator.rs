@@ -261,33 +261,28 @@ impl ObjectLocator {
 
     /// Look up an object: read the fanout, take the one 1/256 slice for the OID's
     /// first byte, and binary-search it. This is the `O(1/256)` browse-plane lookup.
+    ///
+    /// A merged locator can hold one row per pack that stores this OID ([`Self::merge`]), and a
+    /// parsed one any number of them. They are adjacent and ordered by `packRef`, so the search
+    /// finds the first row not below the OID: the lowest-`packRef` copy, in `O(log rows)` however
+    /// many copies there are.
     pub fn lookup(&self, oid: &[u8]) -> Option<LocatorEntry> {
         if oid.len() != OID_LEN {
             return None;
         }
         let b = oid[0] as usize;
         let mut lo = if b == 0 { 0 } else { self.fanout(b - 1) };
-        let mut hi = self.fanout(b);
+        let end = self.fanout(b);
+        let mut hi = end;
         while lo < hi {
             let mid = usize::midpoint(lo, hi);
-            let row = self.row(mid);
-            match row[..OID_LEN].cmp(oid) {
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
-                std::cmp::Ordering::Equal => {
-                    // A merged locator can hold one row per pack that stores this OID
-                    // ([`Self::merge`]). They are adjacent and ordered by `packRef`, so
-                    // walking back to the first makes the answer the lowest-`packRef` copy
-                    // regardless of where the binary search landed.
-                    let mut at = mid;
-                    while at > 0 && self.row(at - 1)[..OID_LEN] == *oid {
-                        at -= 1;
-                    }
-                    return Some(decode_row(self.row(at)));
-                }
+            if self.row(mid)[..OID_LEN] < *oid {
+                lo = mid + 1;
+            } else {
+                hi = mid;
             }
         }
-        None
+        (lo < end && self.row(lo)[..OID_LEN] == *oid).then(|| decode_row(self.row(lo)))
     }
 
     fn fanout(&self, byte: usize) -> usize {
@@ -447,6 +442,27 @@ mod tests {
         assert_eq!(parsed.lookup(&[255; OID_LEN]).unwrap().pack_ref, 1);
         assert!(parsed.lookup(&[8; OID_LEN]).is_none());
         assert!(ObjectLocator::parse(&built.as_bytes()[..=FANOUT_LEN]).is_err());
+    }
+
+    #[test]
+    fn lookup_finds_the_lowest_pack_ref_among_many_copies() {
+        let (dup, absent, after) = ([4u8; OID_LEN], [3u8; OID_LEN], [5u8; OID_LEN]);
+        let mut rows = vec![row([0; OID_LEN], 0, 0), row(after, 7, 0)];
+        // One copy per pack, and the same (oid, packRef) row many times over: parse admits both.
+        rows.extend((2..3000).map(|p| row(dup, p, 0)));
+        rows.extend((0..3000).map(|_| row(dup, 1, 0)));
+        rows.sort_unstable();
+        let built = ObjectLocator::from_sorted_rows(&rows);
+        let parsed = ObjectLocator::parse(built.as_bytes()).unwrap();
+        assert_eq!(parsed.lookup(&dup).unwrap().pack_ref, 1);
+        assert_eq!(parsed.lookup(&after).unwrap().pack_ref, 7);
+        assert!(parsed.lookup(&absent).is_none());
+        // Every oid with the duplicated one's first byte, just below and just above it.
+        let (mut below, mut above) = (dup, dup);
+        below[OID_LEN - 1] -= 1;
+        above[OID_LEN - 1] += 1;
+        assert!(parsed.lookup(&below).is_none());
+        assert!(parsed.lookup(&above).is_none());
     }
 
     #[test]

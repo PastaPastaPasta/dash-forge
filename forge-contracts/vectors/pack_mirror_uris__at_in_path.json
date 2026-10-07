@@ -1,0 +1,14 @@
+{
+  "name": "at_in_path",
+  "description": "An @ after the host is part of the path, not credentials.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://m.example.com/@scope/p"
+    ]
+  },
+  "expected": {
+    "kind": 1
+  }
+}

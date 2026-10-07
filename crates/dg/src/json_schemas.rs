@@ -368,6 +368,24 @@ fn reindex_and_key_repairs_match() {
     );
 }
 
+/// `dg storage mirror list --json`: each record as `mirror_json` prints it.
+#[test]
+fn a_mirror_list_matches_its_schema() {
+    let m = forge_core::pack_mirror::PackMirror {
+        id: "Doc1".into(),
+        owner_id: "Owner1".into(),
+        repo_id: "Repo1".into(),
+        pack_hash: "ab".repeat(32),
+        kind: 1,
+        uris: vec!["https://mirror.example/p.pack".into()],
+        created_at: 1_700_000_000_000,
+    };
+    assert_valid(
+        "storage mirror list",
+        &json!({ "mirrors": [crate::pack_mirror::mirror_json(&m)] }),
+    );
+}
+
 /// The case files `e2e/cli/json_check.py --cases` checks, through this validator: both must give
 /// each case its expected verdict.
 #[test]

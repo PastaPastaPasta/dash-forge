@@ -44,6 +44,7 @@ export {
   type TagMove,
   type TagVerdict,
 } from './releaseProvenance'
+export { refHistory, type Contains, type RefEvent, type RefEventKind } from './refHistory'
 export { overlayTree } from './overlay'
 // FORGE_RULES_V2: the forge-v2 membership, event-fold, pack and numbering rules
 export * as v2 from './v2'

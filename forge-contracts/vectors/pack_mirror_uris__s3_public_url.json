@@ -1,0 +1,14 @@
+{
+  "name": "s3_public_url",
+  "description": "A bucket's public URL is an https address.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://bucket.s3.us-east-1.amazonaws.com/forge/ab/abcd"
+    ]
+  },
+  "expected": {
+    "kind": 1
+  }
+}

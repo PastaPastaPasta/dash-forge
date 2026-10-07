@@ -1,0 +1,15 @@
+{
+  "name": "whitespace",
+  "description": "Whitespace anywhere is refused.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://m.example.com/a b"
+    ]
+  },
+  "expected": {
+    "problem": "address",
+    "index": 0
+  }
+}

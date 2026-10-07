@@ -1,0 +1,44 @@
+{
+  "name": "address_of_another_kind_skipped",
+  "description": "An address that does not fit its record's kind is skipped, and so is an ipfs address with a path.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "m1",
+        "ownerRole": "maintainer",
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "ipfs://bafyabc",
+          "https://maint.example/p"
+        ]
+      },
+      {
+        "id": "w1",
+        "ownerRole": "writer",
+        "createdAt": 2,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 2,
+        "uris": [
+          "https://writer.example/p",
+          "ipfs://bafydef/x",
+          "ipfs://bafyghi"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://maint.example/p",
+      "ipfs://bafyghi"
+    ]
+  }
+}

@@ -224,6 +224,14 @@ cmd('repo unwatch', 'The watch removed.', WATCH, ['status', 'repo'])
 cmd('repo topic', 'The repository\'s topics (and what changed).', {
     'repo': S, 'topics': SA, 'added': SA, 'removed': SA, 'cost': COST,
 }, ['repo', 'topics'])
+cmd('repo activity', 'One branch\'s or tag\'s activity, newest first.', {
+    'repo': S, 'ref': S,
+    'events': A(O({
+        'kind': E('created', 'pushed', 'forcePushed', 'updated', 'moved', 'deleted', 'diverged',
+                  'protectionAdded', 'protectionLifted', 'protectionRestored'),
+        'id': S, 'at': I, 'by': nl(S), 'from': nl(S), 'to': nl(S),
+    }, ['kind', 'id', 'at'])),
+}, ['repo', 'ref', 'events'])
 cmd('repo view', 'A repository: its refs, packs and members.', {
     'repoId': S, 'ownerId': S, 'name': S, 'description': nl(S), 'visibility': E('public', 'private'),
     'archived': D('Whether the repository is archived; null when its config could not be read.', nl(B)),
@@ -554,6 +562,19 @@ cmd('storage use', 'Which storage profiles pushes use.', {
 cmd('storage advertise', 'The storage the repository advertises to forks and mirrors.', {
     'status': E('advertised', 'unchanged'), 'mode': ANY, 'uris': SA, 'configDocId': nl(S),
 }, ['status'])
+PACK_MIRROR = O({
+    'documentId': S, 'by': D('Its writer\'s identity id.', S), 'repoId': S, 'packHash': S,
+    'kind': D('1: https addresses; 2: IPFS addresses.', I), 'uris': SA, 'createdAt': I,
+}, ['documentId', 'by', 'repoId', 'packHash', 'kind', 'uris', 'createdAt'])
+cmd('storage mirror add', 'A pack mirror recorded.', {
+    'status': E('recorded'), 'repo': S, 'packHash': S, 'uris': SA, 'documentId': S, 'cost': COST,
+}, ['status', 'packHash', 'uris', 'documentId', 'cost'])
+cmd('storage mirror list', 'The pack mirrors recorded for a repository, or by you (`--mine`).', {
+    'mirrors': A(PACK_MIRROR),
+}, ['mirrors'])
+cmd('storage mirror remove', 'A pack mirror record deleted.', {
+    'status': E('removed'), 'documentId': S, 'type': E('packMirror'),
+}, ['status', 'documentId'])
 
 # -- webhooks, CI -----------------------------------------------------------------------------
 cmd('webhook add', 'A webhook registered with a relay.', {
