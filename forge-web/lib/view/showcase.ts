@@ -27,11 +27,10 @@ export interface ShowcaseEntry {
  */
 export const SHOWCASE: Readonly<Record<string, readonly ShowcaseEntry[]>> = {
   'devnet-sakura': [
-    // The mirrors of github.com/dashpay/dash and github.com/dashpay/dips.
-    { owner: 'H3xi5biFj6wbxmpbdhHx1D2D3ofKJJ7anDG58ixhqvry', name: 'dash', repoId: '33jeZmQ2afzJAn8zVoFpY8GUWFkkfte2aSiptQcN4ZfC' },
-    { owner: 'BCrANpjYupbP3hJEfF9tNvz546Dhif8sFZWwwpeBpTyq', name: 'dips', repoId: '7n5izMV9aMjAGaPi9dvqyp4aae5Lsf6GkGocVBhutZdt' },
+    // The mirrors of github.com/dashpay/dash and github.com/dashpay/dips go first once they are
+    // re-imported: sakura's Platform reset to 5.0.0-beta.2 (2026-10-06) took the old ones.
     // The seeded demo: code, issues and pull requests (forge-contracts/scripts/seed-v2-fixture.mjs).
-    { owner: 'G6D3ejKxgcc4yRSRyuLoPg9RGa7XWPwB9kBzU29hgEQH', name: 'forge-v2-demo', repoId: '8KBVQ41HTueY1nuGhpAGNUEy9BQSAgCHV9Z34VUw9ZuP' },
+    { owner: 'Amc7FjA3CJLae4stwztokTumqCX8KfDCkA3zNwVVYRZB', name: 'forge-v2-demo', repoId: 'J7cPnrdgQ2kHwXUeK4VcK5PsYmG4fntfKpFDCHSZxgo1' },
   ],
 }
 

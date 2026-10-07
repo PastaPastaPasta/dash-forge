@@ -1,6 +1,6 @@
 /**
  * Live, read-only: forge-web's own connection (trusted quorum keys, the DAPI fetch gate) reads
- * devnet sakura (Platform v5.0.0-beta.1). Nothing is written. The chain id it must report is the
+ * devnet sakura (Platform v5.0.0-beta.2). Nothing is written. The chain id it must report is the
  * one `forge-contracts/deployments/devnet-sakura.json` records (sakura's has no `-g1` suffix).
  *
  *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura pnpm vitest run lib/sdk/sakura.live.test.ts
