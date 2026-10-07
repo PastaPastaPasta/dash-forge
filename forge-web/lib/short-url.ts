@@ -24,6 +24,7 @@
  * ({@link shortRouteFor}, `hooks/use-route.ts`).
  */
 
+import { base58Decode } from './auth/base58'
 import { bareRoute } from './page-title'
 
 /**
@@ -172,13 +173,40 @@ export function hasShortUrl(repo: { readonly owner: string; readonly name: strin
 /** The base path this build is served under (`NEXT_PUBLIC_BASE_PATH`, e.g. `/dash-forge`). */
 export const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '')
 
+/** Whether `s` is an identity id (32 bytes of base58), as the repo pages read an owner. */
+function isIdentifier(s: string): boolean {
+  try {
+    return base58Decode(s).length === 32
+  } catch {
+    return false
+  }
+}
+
+/**
+ * How a short URL may write an owner whose DPNS name is `ownerName`, best first: the label
+ * (`alice` for `alice.dash`), then the full name. Never a label that is itself an identity id:
+ * the pages read such an owner as that id, so the link would open another identity's repo.
+ */
+function ownerNameForms(ownerName: string | null | undefined): string[] {
+  if (!ownerName) return []
+  const label = ownerName.toLowerCase().endsWith('.dash') ? ownerName.slice(0, -'.dash'.length) : undefined
+  return [label, ownerName].filter((o): o is string => o !== undefined && o !== '' && !isIdentifier(o))
+}
+
 /**
  * The link Copy link copies (L-55), absolute for the current origin in a browser: the short URL,
  * keeping a `?repo=` pin as its query string (the shim carries the query through, so the link
  * still opens that exact repo); the canonical query route when the owner or name has no short
- * form.
+ * form. With `ownerName`, the owner's DPNS name, the owner is written by name, as the address bar
+ * writes it ({@link shortRouteFor}).
  */
-export function shortRepoUrl(repo: { readonly owner: string; readonly name: string; readonly repoId?: string }, target?: ShortTarget): string {
+export function shortRepoUrl(
+  repo: { readonly owner: string; readonly name: string; readonly repoId?: string },
+  target?: ShortTarget,
+  ownerName?: string | null,
+): string {
+  const named = ownerNameForms(ownerName).find((owner) => hasShortPath({ owner, name: repo.name }))
+  if (named !== undefined) repo = { ...repo, owner: named }
   const pin = repo.repoId ? `?repo=${encodeURIComponent(repo.repoId)}` : ''
   const path = BASE_PATH + (hasShortPath(repo) ? `${shortRepoPath(repo, target)}${pin}` : canonicalPath(repo, target))
   return typeof window === 'undefined' ? path : `${window.location.origin}${path}`
@@ -463,14 +491,25 @@ const sortedParams = (q: URLSearchParams): string => JSON.stringify([...q].sort(
  * Null when this build hands out no short URLs, the route has no short form, or the shim would not
  * open exactly this route again: `expand(short(route))` must give back every param.
  */
-export function shortRouteFor(pathname: string, search: string, ownerName?: string): string | null {
+export function shortRouteFor(pathname: string, search: string, ownerName?: string | null): string | null {
   if (!SHORT_URLS) return null
-  const label = ownerName?.toLowerCase().endsWith('.dash') ? ownerName.slice(0, -'.dash'.length) : undefined
-  for (const owner of [label, ownerName]) {
-    const short = owner ? shortRouteWith(pathname, search, owner) : null
+  for (const owner of ownerNameForms(ownerName)) {
+    const short = shortRouteWith(pathname, search, owner)
     if (short !== null) return short
   }
   return shortRouteWith(pathname, search, undefined)
+}
+
+/**
+ * Whether two routes (`pathname?search`, no base path) are the same page: the same pathname, give
+ * or take its trailing slash, and the same params in any order.
+ */
+export function sameRoute(a: string, b: string): boolean {
+  const key = (route: string): string => {
+    const at = route.indexOf('?')
+    return at < 0 ? `${bareRoute(route)}?[]` : `${bareRoute(route.slice(0, at))}?${sortedParams(new URLSearchParams(route.slice(at + 1)))}`
+  }
+  return key(a) === key(b)
 }
 
 /** {@link shortRouteFor} with the owner written as `owner` (the route's own when undefined). */

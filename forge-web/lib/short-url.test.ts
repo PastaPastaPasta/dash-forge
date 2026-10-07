@@ -13,6 +13,7 @@ import {
   expandShortPath,
   hasShortUrl,
   RESERVED_SEGMENTS,
+  sameRoute,
   SHORT_URL_EXPAND_SOURCE,
   shortRepoPath,
   shortRepoUrl,
@@ -420,5 +421,42 @@ describe('shortRouteFor: the address bar’s short URL (CJ-6)', () => {
     // A label that is one of the app's routes keeps its full name; a name with no short form, the id.
     expect(roundTrip(`/repo/?owner=${id}&name=project`, 'explore.dash')).toBe('/explore.dash/project')
     expect(roundTrip(`/repo/?owner=${id}&name=project`, '-bad.dash')).toBe(`/${id}/project`)
+  })
+
+  it('never writes the owner as a label that is itself an identity id (it would open that identity)', () => {
+    const id = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
+    const other = '9qy5ZgYUH5ZrZzS2MuSDThCGaZrz9qiDLE9ZyLGFNRWr'
+    // The full name opens by name; the bare label would be read as the id `other`.
+    expect(roundTrip(`/repo/?owner=${id}&name=project`, `${other}.dash`)).toBe(`/${other}.dash/project`)
+    expect(roundTrip(`/repo/?owner=${id}&name=project`, other)).toBe(`/${id}/project`)
+  })
+})
+
+describe('Copy link writes the owner as the address bar does', () => {
+  const id = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
+
+  it('by DPNS name once read, else by the route’s owner', () => {
+    expect(shortRepoUrl({ owner: id, name: 'project' }, { kind: 'issue', number: 7 }, 'alice.dash')).toBe('/alice/project/issues/7')
+    expect(shortRepoUrl({ owner: id, name: 'project', repoId: 'R1' }, undefined, 'alice.dash')).toBe('/alice/project?repo=R1')
+    expect(shortRepoUrl({ owner: id, name: 'project' }, undefined, 'explore.dash')).toBe('/explore.dash/project')
+    expect(shortRepoUrl({ owner: id, name: 'project' }, undefined, null)).toBe(`/${id}/project`)
+    expect(shortRepoUrl({ owner: id, name: 'project' }, undefined, '9qy5ZgYUH5ZrZzS2MuSDThCGaZrz9qiDLE9ZyLGFNRWr')).toBe(`/${id}/project`)
+    // A name with no short form changes nothing: the id's short URL, or the canonical route.
+    expect(shortRepoUrl({ owner: id, name: '.hidden' }, undefined, 'alice.dash')).toBe(`/repo/?owner=${id}&name=.hidden`)
+  })
+
+  it('and the bar’s short URL for the same page agrees', () => {
+    expect(shortRouteFor('/repo/issue/', `owner=${id}&name=project&number=7`, 'alice.dash')).toBe(
+      shortRepoUrl({ owner: id, name: 'project' }, { kind: 'issue', number: 7 }, 'alice.dash'),
+    )
+  })
+})
+
+describe('sameRoute', () => {
+  it('is the same page: a trailing slash and the order of params do not matter', () => {
+    expect(sameRoute('/repo/issues/?owner=a&name=p&q=x', '/repo/issues?q=x&name=p&owner=a')).toBe(true)
+    expect(sameRoute('/repo/', '/repo')).toBe(true)
+    expect(sameRoute('/repo/issues/?owner=a&name=p', '/repo/issues/?owner=a&name=p&q=x')).toBe(false)
+    expect(sameRoute('/repo/issues/?owner=a&name=p', '/repo/pulls/?owner=a&name=p')).toBe(false)
   })
 })
