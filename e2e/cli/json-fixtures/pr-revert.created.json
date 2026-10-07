@@ -1,0 +1,40 @@
+{
+  "source": "emitter: crates/dg/src/pr/revert.rs",
+  "command": "pr revert",
+  "args": [
+    "--yes",
+    "--json",
+    "pr",
+    "revert",
+    "o/r",
+    "6"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "created",
+    "pr": 6,
+    "number": 9,
+    "documentId": "D",
+    "title": "Revert \"x\"",
+    "baseRef": "refs/heads/main",
+    "headRef": "refs/heads/revert-6",
+    "revertCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "landed": "squash",
+    "cost": {
+      "credits": 45300000,
+      "dash": 0.000453,
+      "usd": 0.011325,
+      "usdPrice": 25.0
+    },
+    "steps": [
+      {
+        "step": "push",
+        "ok": true,
+        "detail": "revert-6 → aaaaaaa"
+      }
+    ],
+    "schemaVersion": 1
+  }
+}

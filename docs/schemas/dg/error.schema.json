@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/error.schema.json",
+  "title": "dg --json: a failed command",
+  "description": "Printed on stdout instead of the command's output when it fails. A command that finished part of its work adds that part's fields beside `error`.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "error": {
+      "$ref": "common.schema.json#/$defs/error"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "error"
+  ],
+  "additionalProperties": true
+}

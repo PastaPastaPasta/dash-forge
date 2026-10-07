@@ -1,0 +1,17 @@
+{
+  "source": "negative: a failed run must carry the error block",
+  "command": "repo fork",
+  "args": [
+    "--json",
+    "repo",
+    "fork",
+    "o/r"
+  ],
+  "exit": 5,
+  "expect": "invalid",
+  "stdout": {
+    "schemaVersion": 1,
+    "status": "incomplete",
+    "repoId": "Bq9mN3x7Lq2kXv8sTcY4pR6wZ1hJ5fD2gA7eK9uW3nM"
+  }
+}

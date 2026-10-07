@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-review.schema.json",
+  "title": "dg pr review --json",
+  "description": "A review: submitted, kept pending, or discarded.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "reviewed",
+        "pending",
+        "discarded",
+        "no_pending_review"
+      ]
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "verdict": {},
+    "verdictLabel": {},
+    "audience": {
+      "$ref": "common.schema.json#/$defs/audience"
+    },
+    "commitOid": {
+      "type": "string"
+    },
+    "reviewId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "comments": {
+      "type": "array",
+      "items": {}
+    },
+    "documents": {},
+    "landed": {},
+    "failed": {},
+    "resumed": {},
+    "counts": {
+      "type": "boolean",
+      "description": "Whether the verdict counts toward the required approvals (yours is an approver's)."
+    },
+    "added": {
+      "type": "integer"
+    },
+    "anchoredTo": {
+      "type": "string"
+    },
+    "headMoved": {
+      "type": "boolean"
+    },
+    "encrypted": {
+      "type": "boolean"
+    },
+    "draftFile": {
+      "type": "string"
+    },
+    "discarded": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "How many pending comments were thrown away; null when the pending review could not be read."
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr"
+  ],
+  "additionalProperties": true
+}

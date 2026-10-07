@@ -1,0 +1,41 @@
+{
+  "source": "emitter: crates/dg/src/auth/mod.rs login (with_group_fields, auth/group.rs GroupCheck::json)",
+  "command": "auth login",
+  "args": [
+    "--yes",
+    "--json",
+    "auth",
+    "login",
+    "id.json"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "logged_in",
+    "identityId": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "network": "devnet-sakura",
+    "keyId": 5,
+    "fullKey": false,
+    "encryptionKeyIds": [
+      3
+    ],
+    "budgetCredits": 5000000000,
+    "expiresAt": 1790000000000,
+    "storage": "file",
+    "storedAt": "~/.config/dash-forge/keys/x.json",
+    "source": "file:/k",
+    "balanceCredits": 98000000000,
+    "balanceDash": 0.98,
+    "cost": {
+      "credits": 45300000,
+      "dash": 0.000453,
+      "usd": 0.011325,
+      "usdPrice": 25.0
+    },
+    "unknownGroupMembers": [
+      "NEWCOLLAB"
+    ],
+    "uncheckedGroupMembers": [],
+    "schemaVersion": 1
+  }
+}

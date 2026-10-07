@@ -229,21 +229,30 @@ export async function readRunners(sdk: EvoSDK, repo: RepoRef): Promise<string[]>
 }
 
 // Runners change rarely and every commit and PR page of a repo reads them: cached per repo, like
-// the members. A failed read is never cached.
+// the members. A failed read is never cached. A merge reads them afresh ({@link readRunnersFresh}).
 const RUNNERS_TTL_MS = 5 * 60_000
 const runnersCache = new Map<string, { at: number; promise: Promise<string[]> }>()
 
-/** {@link readRunners} through the per-repo session cache. */
-export function readRunnersCached(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
-  const key = `${repo.forge.core}:${repo.repoId}`
-  const hit = runnersCache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < RUNNERS_TTL_MS) return hit.promise
+function startRunnersRead(sdk: EvoSDK, repo: RepoRef, key: string): Promise<string[]> {
   const promise = readRunners(sdk, repo)
   runnersCache.set(key, { at: Date.now(), promise })
   promise.catch(() => {
     if (runnersCache.get(key)?.promise === promise) runnersCache.delete(key)
   })
   return promise
+}
+
+/** {@link readRunners} through the per-repo session cache. */
+export function readRunnersCached(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
+  const key = `${repo.forge.core}:${repo.repoId}`
+  const hit = runnersCache.get(key)
+  if (hit !== undefined && Date.now() - hit.at < RUNNERS_TTL_MS) return hit.promise
+  return startRunnersRead(sdk, repo, key)
+}
+
+/** {@link readRunners} past the cache, the read then cached: the page's next read shows it. */
+export function readRunnersFresh(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
+  return startRunnersRead(sdk, repo, `${repo.forge.core}:${repo.repoId}`)
 }
 
 /** A head's check runs as the page shows them, and the rows the merge-box rule reads. */

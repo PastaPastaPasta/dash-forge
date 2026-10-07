@@ -32,6 +32,9 @@ export HARNESS_SHARED=1
 
 # The shared forge-v2 test repo: created (resumably, ~0.001 DASH) on the first run.
 harness_ensure_repo "$E2E_REPO_NAME" || { log "${C_RED}fatal:${C_RST} could not create/resolve ${E2E_REMOTE}"; exit 1; }
+# The setup's own dg --json output (the create above), checked like a scenario's.
+SETUP_JSON_OK=1
+check_json_outputs || SETUP_JSON_OK=0
 
 SCENARIOS=(
   "01-round-trip"
@@ -105,6 +108,9 @@ fi
 
 declare -a NAMES RESULTS
 FAILED=0; PASSED=0; SKIPPED=0
+if [[ $SETUP_JSON_OK -eq 0 ]]; then
+  NAMES+=("suite setup: dg --json output matches docs/schemas"); RESULTS+=("FAIL"); FAILED=$((FAILED+1))
+fi
 
 printf '\n%s########  Dash Forge CLI e2e — run %s  ########%s\n' "${C_DIM}" "${RUN_ID}" "${C_RST}" >&2
 printf '%srepo: %s%s\n' "${C_DIM}" "${E2E_REMOTE}" "${C_RST}" >&2

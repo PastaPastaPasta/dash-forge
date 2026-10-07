@@ -535,7 +535,7 @@ fn reindex_estimate(
 
 /// The `--json` body of a finished reindex. `spent` is `None` when the balance could not be
 /// read.
-fn reindex_body(
+pub(crate) fn reindex_body(
     handle: &forge_core::scope::RepoRef,
     report: &forge_core::repo::ReindexReport,
     spent: Option<u64>,
