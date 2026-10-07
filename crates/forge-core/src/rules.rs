@@ -2886,24 +2886,7 @@ mod tests {
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "profile_input" | "avatar_config" | "profile_bot" => run_profile_case(v),
-            "closed_by_pr" => {
-                #[derive(Deserialize, Serialize)]
-                #[serde(rename_all = "camelCase", deny_unknown_fields)]
-                struct ClosedByInput {
-                    issue: u32,
-                    closed_by_pr: Option<u32>,
-                    closed_at: u64,
-                    pr: Option<super::transition::ClosingPr>,
-                }
-                let inp: ClosedByInput = input(v);
-                let got = super::transition::closed_by_pr(
-                    inp.issue,
-                    inp.closed_by_pr,
-                    inp.closed_at,
-                    inp.pr.as_ref(),
-                );
-                assert_eq!(got, expected::<Option<u32>>(v), "vector `{}`", v.name);
-            }
+            "closed_by_pr" => run_closed_by_pr_case(v),
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
             "pubkey_entry" | "commit_signature" | "tag_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),
@@ -2920,6 +2903,25 @@ mod tests {
             "key_handoff" | "key_handoff_open" | "copy" => run_key_handoff_case(v),
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
+    }
+
+    fn run_closed_by_pr_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ClosedByInput {
+            issue: u32,
+            closed_by_pr: Option<u32>,
+            closed_at: u64,
+            pr: Option<super::transition::ClosingPr>,
+        }
+        let inp: ClosedByInput = input(v);
+        let got = super::transition::closed_by_pr(
+            inp.issue,
+            inp.closed_by_pr,
+            inp.closed_at,
+            inp.pr.as_ref(),
+        );
+        assert_eq!(got, expected::<Option<u32>>(v), "vector `{}`", v.name);
     }
 
     fn run_role_oracle(v: &Vector) {
