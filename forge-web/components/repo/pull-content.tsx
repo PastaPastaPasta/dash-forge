@@ -146,6 +146,7 @@ import { Button } from '@/components/ui/button'
 import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
 import { checkMerge } from '@/lib/view/merge-check'
+import { recheckMergeMembers } from '@/lib/view/merge-recheck'
 import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
@@ -833,6 +834,9 @@ function PullPage({
         return
       }
       case 'mark-merged':
+        await recheckMembers(p.bypass).then((problem) => {
+          if (problem !== null) throw new Error(problem)
+        })
         await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent })
         // A maintainer recording it past unmet branch rules: the bypass is recorded on the PR,
         // as the merge box and `dg pr merge --event-only --override-policy` record theirs.
@@ -1145,6 +1149,29 @@ function PullPage({
     if (crossRepo) sourceState.reload()
     else reloadHome?.()
     return `${shortBranch(name)} moved to ${tip.slice(0, 7)} since this page read it, ahead of this PR's head ${pull.headOid.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`
+  }
+
+  // A merge (the box's, or "Mark as merged") judged again at the click with the members read
+  // then: the page's read can be minutes old. Only the membership is read again.
+  const recheckMembers = async (bypass: readonly string[]): Promise<string | null> => {
+    if (!sdk) return null
+    const problem = await recheckMergeMembers(sdk, repo, network, {
+      gate: { pull, viewer, protectedPatterns: home.config?.protectedPatterns ?? [], maintainersOnly: policyNow?.approverRole === 1 },
+      policy: rules.policy,
+      status: rules.status,
+      approvals: thread.approvals,
+      checks: (oracle) =>
+        requiredChecks === null || requiredChecks === 'unknown' || checks.data === null || policyNow === null
+          ? requiredChecks
+          : checksState(checks.data.rows, pull.headOid, oracle, checks.data.runners, policyNow),
+      bypass,
+    })
+    // Show the page as the members stand now.
+    if (problem !== null) {
+      holdings.reload()
+      refresh()
+    }
+    return problem
   }
 
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
@@ -1553,6 +1580,7 @@ function PullPage({
                   onRunning: setMergeRunning,
                   branchAhead: sync?.kind === 'ahead' ? { branch: shortBranch(pull.sourceRefName ?? ''), tip: sync.tip } : null,
                   checkSourceBranch,
+                  recheckMembers,
                   onBranchDeleted: () => {
                     if (pull.sourceRefName !== null) setBranchWrite({ ref: pull.sourceRefName, head: pull.headOid, to: 'deleted' })
                     sourceState.reload()

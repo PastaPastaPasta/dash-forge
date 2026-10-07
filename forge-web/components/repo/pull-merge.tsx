@@ -79,6 +79,8 @@ export interface MergeExtras {
   readonly branchAhead?: { readonly branch: string; readonly tip: string } | null
   /** Re-read the source branch right before merging: why not to, or null. */
   readonly checkSourceBranch?: () => Promise<string | null>
+  /** Judge the merge again with the members read now: why not to, or null. */
+  readonly recheckMembers?: (bypass: readonly string[]) => Promise<string | null>
   /** "Delete the branch after merging" deleted it. */
   readonly onBranchDeleted?: () => void
 }
@@ -128,6 +130,7 @@ function MergeReaders({
       {...(extras.canBypass !== undefined ? { canBypass: extras.canBypass } : {})}
       {...(extras.branchAhead !== undefined ? { branchAhead: extras.branchAhead } : {})}
       {...(extras.checkSourceBranch !== undefined ? { checkSourceBranch: extras.checkSourceBranch } : {})}
+      {...(extras.recheckMembers !== undefined ? { recheckMembers: extras.recheckMembers } : {})}
       {...(extras.onBranchDeleted !== undefined ? { onBranchDeleted: extras.onBranchDeleted } : {})}
     />
   )

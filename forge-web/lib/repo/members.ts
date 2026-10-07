@@ -72,13 +72,40 @@ export async function readMemberships(sdk: EvoSDK, repo: RepoRef): Promise<Membe
   return perRole.flat()
 }
 
+/**
+ * Membership reads in start order: every read takes the next generation as it starts. A read
+ * records over a cached one only when it started later, and never when it started before the
+ * last {@link invalidateMembers} (a member add or revoke through this tab). One counter for all
+ * repos: a seed skipped for another repo's change only costs that repo one membership read.
+ */
+let membersGenerationNow = 0
+let membersInvalidatedAt = 0
+
+/** The generation of a membership read starting now: pass it to {@link seedMemberships}. */
+export function membersGeneration(): number {
+  membersGenerationNow += 1
+  return membersGenerationNow
+}
+
 // Membership changes rarely and every issue, PR and browse view of a repo consults it, so it
-// is cached per repo. A failed read is never cached.
+// is cached per repo for display. A failed read is never cached. A decision (merging, bypassing
+// the branch rules, publishing a release) reads it afresh: {@link readMembershipsFresh}.
 const MEMBERS_TTL_MS = 5 * 60_000
-const membersCache = new Map<string, { at: number; promise: Promise<Membership[]> }>()
+/** `started`: the {@link membersGeneration} the read behind `promise` took as it started. */
+const membersCache = new Map<string, { at: number; started: number; promise: Promise<Membership[]> }>()
 
 function membersKey(network: Network, repo: RepoRef): string {
   return `${network}:${repo.forge.core}:${repo.repoId}`
+}
+
+function startMembersRead(sdk: EvoSDK, repo: RepoRef, key: string): Promise<Membership[]> {
+  const started = membersGeneration()
+  const promise = readMemberships(sdk, repo)
+  membersCache.set(key, { at: Date.now(), started, promise })
+  promise.catch(() => {
+    if (membersCache.get(key)?.promise === promise) membersCache.delete(key)
+  })
+  return promise
 }
 
 /** {@link readMemberships} through the per-repo session cache. */
@@ -90,12 +117,15 @@ export function readMembershipsCached(
   const key = membersKey(network, repo)
   const hit = membersCache.get(key)
   if (hit !== undefined && Date.now() - hit.at < MEMBERS_TTL_MS) return hit.promise
-  const promise = readMemberships(sdk, repo)
-  membersCache.set(key, { at: Date.now(), promise })
-  promise.catch(() => {
-    if (membersCache.get(key)?.promise === promise) membersCache.delete(key)
-  })
-  return promise
+  return startMembersRead(sdk, repo, key)
+}
+
+/**
+ * {@link readMemberships} read now, whatever is cached, for a decision: a member revoked since
+ * the page loaded must not count. The cache keeps the answer, so the page's display catches up.
+ */
+export function readMembershipsFresh(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<Membership[]> {
+  return startMembersRead(sdk, repo, membersKey(network, repo))
 }
 
 /**
@@ -110,33 +140,22 @@ export function membershipsFromDocs(maintainers: readonly PlainDocument[] | null
 }
 
 /**
- * Bumped by every {@link invalidateMembers} (a member add or revoke through this tab): a read that
- * started before one never seeds the cache. One counter for all repos: a seed skipped for another
- * repo's change only costs that repo one membership read.
- */
-let membersGenerationNow = 0
-
-/** The membership generation now: pass it to {@link seedMemberships} for a read starting now. */
-export function membersGeneration(): number {
-  return membersGenerationNow
-}
-
-/**
- * Record a repo's complete membership read elsewhere, unless a fresher read is cached, or a
- * membership changed through this tab since that read started (`generation`, taken then).
+ * Record a repo's complete membership read elsewhere (one that took `generation` as it started),
+ * unless the cached read started later, or a membership changed through this tab since it started.
+ * A newer read always lands, however young the cached one: a revocation it proves shows at once.
  */
 export function seedMemberships(repo: RepoRef, network: Network, memberships: Membership[], generation: number): void {
   const key = membersKey(network, repo)
-  if (generation !== membersGenerationNow) return
+  if (generation <= membersInvalidatedAt) return
   const hit = membersCache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < MEMBERS_TTL_MS) return
-  membersCache.set(key, { at: Date.now(), promise: Promise.resolve(memberships) })
+  if (hit !== undefined && hit.started >= generation) return
+  membersCache.set(key, { at: Date.now(), started: generation, promise: Promise.resolve(memberships) })
 }
 
 /** Drop a repo's cached membership (tests; and after a member add/revoke). */
 export function invalidateMembers(repo: RepoRef, network: Network = DEFAULT_NETWORK): void {
   membersCache.delete(membersKey(network, repo))
-  membersGenerationNow += 1
+  membersInvalidatedAt = membersGeneration()
 }
 
 /**
