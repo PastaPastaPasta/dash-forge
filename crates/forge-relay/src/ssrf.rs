@@ -498,15 +498,15 @@ mod tests {
             "fec0::1",
             "ff02::1",
             "2001:db8::1",
-            "::ffff:0:7f00:1",  // IPv4-translated 127.0.0.1
-            "::ffff:0:a00:1",   // IPv4-translated 10.0.0.1
-            "100::1",           // discard-only
-            "2001:2::1",        // benchmarking
-            "2001:10::1",       // ORCHID
-            "2001:2f:ffff::1",  // ORCHIDv2
-            "3fff::1",          // documentation
-            "3fff:fff::1",      // documentation, end of the /20
-            "5f00::1",          // SRv6 SIDs
+            "::ffff:0:7f00:1", // IPv4-translated 127.0.0.1
+            "::ffff:0:a00:1",  // IPv4-translated 10.0.0.1
+            "100::1",          // discard-only
+            "2001:2::1",       // benchmarking
+            "2001:10::1",      // ORCHID
+            "2001:2f:ffff::1", // ORCHIDv2
+            "3fff::1",         // documentation
+            "3fff:fff::1",     // documentation, end of the /20
+            "5f00::1",         // SRv6 SIDs
         ] {
             assert!(ip_is_non_public(ip.parse().unwrap()), "{ip}");
         }

@@ -1253,7 +1253,10 @@ mod tests {
         assert_eq!(heads.lock().unwrap().len(), 1);
 
         let other = format!("http://localhost:{}/h", addr.port());
-        assert!(http.post(other).send().await.is_err(), "no DNS for an unpinned name");
+        assert!(
+            http.post(other).send().await.is_err(),
+            "no DNS for an unpinned name"
+        );
         assert_eq!(heads.lock().unwrap().len(), 1, "nothing else was sent");
     }
 
