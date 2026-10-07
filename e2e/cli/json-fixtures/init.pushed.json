@@ -1,0 +1,69 @@
+{
+  "source": "emitter: crates/dg/src/publish.rs run() + wire_and_push()",
+  "command": "init",
+  "args": [
+    "--yes",
+    "--json",
+    "init",
+    "--name",
+    "r",
+    "--storage",
+    "platform"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "created",
+    "generation": "v2",
+    "repoId": "Bq9mN3x7Lq2kXv8sTcY4pR6wZ1hJ5fD2gA7eK9uW3nM",
+    "ownerId": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "name": "r",
+    "remoteUrl": "dash://4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi/r",
+    "webUrl": null,
+    "storage": {
+      "profiles": [
+        "platform"
+      ]
+    },
+    "network": "devnet-sakura",
+    "visibility": "private",
+    "protectedPatterns": [
+      "refs/heads/main",
+      "refs/tags/*"
+    ],
+    "steps": {
+      "repo": "created",
+      "config": "created"
+    },
+    "cost": {
+      "credits": 45300000,
+      "dash": 0.000453,
+      "usd": 0.011325,
+      "usdPrice": 25.0
+    },
+    "remote": "origin",
+    "gitConfig": [
+      "dash.storage=platform"
+    ],
+    "push": {
+      "remote": "origin",
+      "branch": "main",
+      "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tracking": true,
+      "cost": {
+        "credits": 45300000,
+        "dash": 0.000453,
+        "usd": null,
+        "usdPrice": null
+      }
+    },
+    "balanceCredits": 97000000000,
+    "totalCost": {
+      "credits": 45300000,
+      "dash": 0.000453,
+      "usd": 0.011325,
+      "usdPrice": 25.0
+    },
+    "schemaVersion": 1
+  }
+}

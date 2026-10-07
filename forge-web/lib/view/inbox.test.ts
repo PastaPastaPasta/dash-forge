@@ -4,10 +4,11 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { idbEntries, idbPut, resetMemoryStores } from '../idb'
-import type { DocumentQuery } from '../sdk'
+import { bytesToBase64, type DocumentQuery } from '../sdk'
 import {
   BACKFILL_BUDGET,
   BACKFILL_MS,
@@ -42,6 +43,9 @@ import {
   type ThreadSub,
 } from './inbox'
 import { assignedTargets, mentions } from './mine'
+
+/** A public ref name's `refNameHash` as a document carries it (base64 of its sha256). */
+const refHash = (name: string): string => bytesToBase64(sha256(new TextEncoder().encode(name)))
 
 const ME = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const OTHER = '7Ej2YTftCL23mVwvhviak8ZJMmpqcsVj7CU5KPxzyy4h'
@@ -190,8 +194,28 @@ describe('toItems', () => {
   it('names review verdicts and pushes', () => {
     const reviews = toItems({ kind: 'reviews', thread: thread() }, [doc(OTHER, 5, { verdict: 1 }), doc(OTHER, 6, { verdict: 2 })], ME)
     expect(reviews.map((i) => i.what)).toEqual(['approved', 'requested changes'])
-    const push = toItems({ kind: 'push', type: 'refUpdate', repo: REPO }, [doc(OTHER, 5, { refName: 'refs/heads/main' })], ME)
+    const push = toItems({ kind: 'push', type: 'refUpdate', repo: REPO }, [doc(OTHER, 5, { refName: 'refs/heads/main', refNameHash: refHash('refs/heads/main') })], ME)
     expect(push[0]?.what).toBe('pushed to main')
+  })
+  it('names a push only by a ref name that hashes to the key it is filed under', () => {
+    const feed: Feed = { kind: 'push', type: 'protectedRefUpdate', repo: REPO }
+    const pushes = toItems(
+      feed,
+      [
+        // Filed under another ref's key: it moves no ref named main.
+        doc(OTHER, 5, { refName: 'refs/heads/main', refNameHash: refHash('refs/heads/scratch') }),
+        doc(OTHER, 6, { refName: 'refs/heads/main' }),
+        doc(OTHER, 7, { refName: 'refs/heads/main', refNameHash: 'not base64!' }),
+        doc(OTHER, 8, { refName: 'refs/heads/../main', refNameHash: refHash('refs/heads/../main') }),
+        doc(OTHER, 9, { refNameHash: refHash('refs/heads/main') }),
+        doc(OTHER, 10, { refName: 'refs/tags/v1.0', refNameHash: refHash('refs/tags/v1.0') }),
+      ],
+      ME,
+    )
+    expect(pushes.map((i) => [i.id, i.what])).toEqual([['d10', 'pushed to v1.0']])
+    // A private repo's name is sealed and its key keyed: the row never shows a name.
+    const sealed = toItems({ ...feed, repo: { ...REPO, private: true } }, [doc(OTHER, 5, { refName: 'refs/heads/main', refNameHash: refHash('refs/heads/scratch') })], ME)
+    expect(sealed.map((i) => i.what)).toEqual(['pushed to a branch'])
   })
   it('drops documents that do not parse instead of casting them', () => {
     expect(toItems({ kind: 'new', type: 'issue', repo: REPO }, [{ $id: 'x', $ownerId: OTHER }], ME)).toEqual([])

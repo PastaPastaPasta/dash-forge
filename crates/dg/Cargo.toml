@@ -41,6 +41,9 @@ rpassword = "7"
 # tests/no_secrets_on_pipes.rs greps dg's piped output for every BIP-39 English word (the
 # version dash-sdk already pulls in).
 bip39 = "2"
+# The --json schemas under docs/schemas/ are checked against dg's output (src/json_schemas.rs):
+# the same JSON Schema crate dash-sdk already pulls in, with draft 2020-12.
+jsonschema = { git = "https://github.com/dashpay/jsonschema-rs", branch = "configure_regexp", default-features = false, features = ["draft202012"] }
 
 # `cargo binstall` fetches the prebuilt release archive instead of compiling (release.yml
 # publishes dash-forge-<version>-<target>.{tar.gz,zip}; the binaries sit in a top-level

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-protect-remove.schema.json",
+  "title": "dg repo protect remove --json",
+  "description": "A pattern no longer protected.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "protected",
+        "unprotected",
+        "unchanged"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "pattern": {},
+    "protectedPatterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "configDocumentId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repo",
+    "protectedPatterns"
+  ],
+  "additionalProperties": true
+}

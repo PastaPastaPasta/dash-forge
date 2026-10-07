@@ -29,6 +29,10 @@ on:
       # The storage fixture the `storage-it` steps run against.
       - 'infra/**'
       - 'Makefile'
+      # dg's --json schemas, and the checker and cases the json schemas step runs.
+      - 'docs/schemas/**'
+      - 'e2e/cli/json_check.py'
+      - 'e2e/cli/json-fixtures/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
   schedule:
@@ -78,7 +82,7 @@ jobs:
           fi
           echo "Changed files:"
           printf '%s\n' "$files"
-          pattern='^(crates/|services/|build-support/|forge-contracts/|infra/|Cargo\.toml$|Cargo\.lock$|rustfmt\.toml$|Makefile$|\.github/workflows/rust\.yml$)'
+          pattern='^(crates/|services/|build-support/|forge-contracts/|infra/|docs/schemas/|e2e/cli/json_check\.py$|e2e/cli/json-fixtures/|Cargo\.toml$|Cargo\.lock$|rustfmt\.toml$|Makefile$|\.github/workflows/rust\.yml$)'
           if printf '%s\n' "$files" | grep -Eq "$pattern"; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
@@ -164,6 +168,15 @@ jobs:
       # cargo command, with cargo's own precise message.
       - name: fmt
         run: cargo fmt --all -- --check
+
+      # dg's --json schemas: the committed files are what docs/schemas/generate.py writes, and
+      # json_check.py (which checks the CLI e2e suite's real --json output) gives every case in
+      # e2e/cli/json-fixtures its expected verdict. The `json_schemas` unit test (in `cargo test`
+      # below) checks the schemas against dg's commands and builders, and the same cases.
+      - name: json schemas
+        run: |
+          python3 docs/schemas/generate.py --check
+          python3 e2e/cli/json_check.py --cases e2e/cli/json-fixtures
 
       - name: clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings

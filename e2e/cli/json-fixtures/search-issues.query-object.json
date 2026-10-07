@@ -1,0 +1,66 @@
+{
+  "source": "emitter: crates/dg/src/search.rs issues() (query: IssueQuery)",
+  "command": "search issues",
+  "args": [
+    "--json",
+    "search",
+    "issues",
+    "o/r",
+    "crash",
+    "label:bug",
+    "assignee:@me",
+    "comments:>2"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "repo": "o/r",
+    "query": {
+      "state": "all",
+      "labels": [
+        "bug"
+      ],
+      "author": null,
+      "assignee": "me",
+      "mentions": false,
+      "sort": "newest",
+      "q": "crash",
+      "page": 1,
+      "notLabels": [],
+      "noLabel": false,
+      "milestone": null,
+      "noMilestone": false,
+      "authorLogin": null,
+      "scope": "any",
+      "comments": ">2",
+      "reason": null
+    },
+    "notApplied": [
+      "comments:>2"
+    ],
+    "total": 1,
+    "count": 1,
+    "hidden": 0,
+    "membersOnly": 0,
+    "hiddenOmitted": 0,
+    "issues": [
+      {
+        "number": 3,
+        "title": "It crashes",
+        "state": "open",
+        "author": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+        "labels": [
+          "bug"
+        ],
+        "assignees": [
+          "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi"
+        ],
+        "milestone": null,
+        "createdAt": 1790000000000,
+        "hiddenBy": null,
+        "authorName": null
+      }
+    ],
+    "schemaVersion": 1
+  }
+}

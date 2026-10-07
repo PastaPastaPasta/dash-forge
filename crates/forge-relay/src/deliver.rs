@@ -219,11 +219,11 @@ impl Deliverer {
         tokio::sync::OwnedSemaphorePermit,
     )> {
         let ip = target.ip_key();
-        let host = target.url.host_str().unwrap_or_default();
+        let host = target.url().host_str().unwrap_or_default();
         let tenant = self.pool(&format!("{ip}|{host}"), MAX_IN_FLIGHT_PER_DEST);
         let address = self.pool(&format!("{ip}|*"), MAX_IN_FLIGHT_PER_IP);
         let busy =
-            || RelayError::DestinationBusy(format!("{} busy", ssrf::redact(target.url.as_str())));
+            || RelayError::DestinationBusy(format!("{} busy", ssrf::redact(target.url().as_str())));
         tokio::time::timeout(SLOT_WAIT, async {
             let a = tenant.acquire_owned().await;
             let b = address.acquire_owned().await;
@@ -235,12 +235,11 @@ impl Deliverer {
     }
 
     /// An HTTP client for one validated target, cached by host and pinned addresses. For a
-    /// hostname it is **pinned** (`resolve_to_addrs`) to exactly the addresses
-    /// [`ssrf::resolve_and_validate`] validated, so no second DNS resolution happens.
-    /// Redirects are off (a 30x to an internal host would bypass the check), and so are
-    /// proxies from the environment (a proxy would resolve the host itself).
+    /// hostname it is **pinned** to exactly the addresses [`ssrf::resolve_and_validate`]
+    /// validated and resolves nothing else, with redirects and environment proxies off
+    /// ([`ssrf::ValidatedTarget::client_builder`]).
     fn client_for(&self, target: &ssrf::ValidatedTarget) -> Result<reqwest::Client> {
-        let key = format!("{}|{:?}", target.host, target.pinned_addrs);
+        let key = format!("{}|{:?}", target.host(), target.pinned_addrs());
         let mut cache = self
             .clients
             .lock()
@@ -248,14 +247,9 @@ impl Deliverer {
         if let Some(c) = cache.get(&key) {
             return Ok(c.clone());
         }
-        let mut builder = reqwest::Client::builder()
+        let client = target
+            .client_builder()
             .timeout(self.config.timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy();
-        if let Some(addrs) = &target.pinned_addrs {
-            builder = builder.resolve_to_addrs(&target.host, addrs);
-        }
-        let client = builder
             .build()
             .map_err(|e| RelayError::Config(format!("building HTTP client: {e}")))?;
         if cache.len() >= MAX_DEST_POOLS {
@@ -314,10 +308,23 @@ impl Deliverer {
                     RelayError::Ssrf(m) => RelayError::Permanent(format!("ssrf guard: {m}")),
                     other => other,
                 })?;
-        let http = self.client_for(&target)?;
-        let signature = sign_body(secret, &body);
+        self.send(&target, &body, secret, hook_id, event).await
+    }
+
+    /// Send `body` to a validated `target`, with retries. The raw URL is not in scope here:
+    /// the request goes to the validated one.
+    async fn send(
+        &self,
+        target: &ssrf::ValidatedTarget,
+        body: &[u8],
+        secret: &[u8],
+        hook_id: &str,
+        event: &WebhookEvent,
+    ) -> Result<DeliveryReceipt> {
+        let http = self.client_for(target)?;
+        let signature = sign_body(secret, body);
         let delivery = delivery_id(hook_id, &event.source_doc_id);
-        let shown = ssrf::redact(url);
+        let shown = ssrf::redact(target.url().as_str());
 
         let mut last_reason = String::new();
         let mut attempts = 0;
@@ -331,7 +338,7 @@ impl Deliverer {
             }
             // A slot per attempt, released when the attempt ends. A slot that stays busy is
             // this attempt lost, not the delivery: try again within the overall budget.
-            let _slots = match self.slots(&target).await {
+            let _slots = match self.slots(target).await {
                 Ok(s) => s,
                 Err(e) => {
                     last_reason = e.to_string();
@@ -340,15 +347,15 @@ impl Deliverer {
                 }
             };
             sent = true;
-            match http
-                .post(target.url.clone())
+            match target
+                .post(&http)
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "dash-forge-relay")
                 .header("X-GitHub-Event", event.event)
                 .header("X-GitHub-Delivery", &delivery)
                 .header("X-GitHub-Hook-ID", hook_id)
                 .header("X-Hub-Signature-256", &signature)
-                .body(body.clone())
+                .body(body.to_vec())
                 .send()
                 .await
             {
@@ -1088,16 +1095,46 @@ mod tests {
         assert!(err.to_string().contains("cap"), "{err}");
     }
 
+    /// The request goes to the URL the guard validated, parsed once: for a URL a hand-rolled
+    /// parser would split differently, the guard and the connection agree on the host.
+    #[tokio::test]
+    async fn the_request_goes_to_the_url_that_was_validated() {
+        let (addr, heads) = recorder().await;
+        let port = addr.port();
+        // The WHATWG host is 127.0.0.1 (a backslash ends the authority); the `@` suffix is path.
+        let url = format!("http://127.0.0.1:{port}\\@unresolvable.invalid/hook");
+
+        let refused = Deliverer::new(DeliverConfig::default())
+            .deliver(&url, b"s", "h", &push(1))
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("ssrf guard"), "{refused}");
+        assert!(heads.lock().unwrap().is_empty(), "nothing was sent");
+
+        let receipt = Deliverer::new(quick())
+            .deliver(&url, b"s", "h", &push(1))
+            .await
+            .unwrap();
+        assert_eq!(receipt.status, 200);
+        let head = heads.lock().unwrap()[0].to_ascii_lowercase();
+        assert!(
+            head.starts_with("post /@unresolvable.invalid/hook http/1.1\r\n"),
+            "{head}"
+        );
+        assert!(
+            head.contains(&format!("\r\nhost: 127.0.0.1:{port}\r\n")),
+            "{head}"
+        );
+    }
+
     #[tokio::test]
     async fn tenants_sharing_an_address_each_get_their_own_slots() {
         let d = Deliverer::new(DeliverConfig {
             allow_private: true,
             ..DeliverConfig::default()
         });
-        let target = |url: &str| ssrf::ValidatedTarget {
-            url: reqwest::Url::parse(url).unwrap(),
-            host: String::new(),
-            pinned_addrs: Some(vec!["192.0.2.1:443".parse().unwrap()]),
+        let target = |url: &str| {
+            ssrf::ValidatedTarget::pinned_for_test(url, vec!["192.0.2.1:443".parse().unwrap()])
         };
         let (a, b) = (target("https://a.example/h"), target("https://b.example/h"));
         // Tenant a takes all of its slots...
@@ -1171,6 +1208,109 @@ mod tests {
             hits.load(std::sync::atomic::Ordering::SeqCst) <= 1,
             "queued events of a removed hook are not delivered"
         );
+    }
+
+    /// A receiver that answers `200` to every request and records each request head.
+    async fn recorder() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let srv = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = srv.local_addr().unwrap();
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&heads);
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = srv.accept().await.unwrap();
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match s.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => raw.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                // Drain the body too: closing with unread bytes can reset the connection
+                // before the client reads the reply.
+                let text = String::from_utf8_lossy(&raw).into_owned();
+                let head = text
+                    .split("\r\n\r\n")
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                let want = head
+                    .lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length")
+                            .then(|| v.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                let mut have = raw.len() - (head.len() + 4).min(raw.len());
+                while have < want {
+                    match s.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => have += n,
+                    }
+                }
+                seen.lock().unwrap().push(head + "\r\n");
+                let reply = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = s.write_all(reply.as_bytes()).await;
+            }
+        });
+        (addr, heads)
+    }
+
+    /// A delivery client reaches a hostname only through the addresses pinned for its target:
+    /// a name that is not in DNS works through the pin, and any other name fails rather than
+    /// being resolved, even one that would resolve.
+    #[tokio::test]
+    async fn a_delivery_client_reaches_only_its_pinned_addresses() {
+        let (addr, heads) = recorder().await;
+        let d = Deliverer::new(quick());
+        let url = format!("http://pinned.invalid:{}/h", addr.port());
+        let target = ssrf::ValidatedTarget::pinned_for_test(&url, vec![addr]);
+        let http = d.client_for(&target).unwrap();
+        let resp = target.post(&http).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(heads.lock().unwrap().len(), 1);
+
+        let other = format!("http://localhost:{}/h", addr.port());
+        assert!(
+            http.post(other).send().await.is_err(),
+            "no DNS for an unpinned name"
+        );
+        assert_eq!(heads.lock().unwrap().len(), 1, "nothing else was sent");
+    }
+
+    /// Hooks are keyed by (repo, hook id): a hook of repo A that reuses repo B's hook id is a
+    /// separate worker with its own URL and secret, and an event of A is never signed with B's.
+    #[tokio::test]
+    async fn the_same_hook_id_in_two_repos_is_two_hooks_each_with_its_own_secret() {
+        let ((addr_a, heads_a), (addr_b, heads_b)) = (recorder().await, recorder().await);
+        let hook = |repo: &str, addr: std::net::SocketAddr, key: u8| WebhookSub {
+            repo_id: repo.into(),
+            secret: forge_core::envelope::SecretBytes::new(vec![key; 32]),
+            ..sub(&format!("http://{addr}/h"), &[])
+        };
+        let d = Dispatcher::new(Deliverer::new(quick()));
+        d.sync_all(&[hook("A", addr_a, b'a'), hook("B", addr_b, b'b')]);
+        assert_eq!(
+            d.hooks.lock().unwrap().len(),
+            2,
+            "one worker per (repo, hook)"
+        );
+
+        d.enqueue("A", push(1));
+        wait_until(|| heads_a.lock().unwrap().len() == 1).await;
+        let body = serde_json::to_vec(&push(1).payload).unwrap();
+        let head = heads_a.lock().unwrap()[0].to_ascii_lowercase();
+        let signed_with = |key: u8| {
+            let sig = sign_body(&[key; 32], &body);
+            head.contains(&format!("\r\nx-hub-signature-256: {sig}\r\n"))
+        };
+        assert!(signed_with(b'a'), "{head}");
+        assert!(!signed_with(b'b'), "{head}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(heads_b.lock().unwrap().is_empty(), "B's hook got nothing");
     }
 
     /// A receiver that answers every request with `status` and counts them.

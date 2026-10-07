@@ -24,6 +24,8 @@ mod help_lint;
 mod import;
 mod infer;
 mod issue;
+#[cfg(test)]
+mod json_schemas;
 mod keys;
 mod label;
 mod long_body;
@@ -2310,7 +2312,7 @@ fn run(cli: &Cli) -> Result<()> {
 async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
     match &cli.command {
         Command::Auth(cmd) => auth::run(ctx, cmd).await,
-        Command::Repo(cmd) => repo::run(ctx, cmd).await,
+        Command::Repo(cmd) => Box::pin(repo::run(ctx, cmd)).await,
         Command::Issue(cmd) => issue::run(ctx, cmd).await,
         Command::Pr(cmd) => Box::pin(pr::run(ctx, cmd)).await,
         Command::Release(cmd) => release::run(ctx, cmd).await,

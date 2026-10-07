@@ -629,6 +629,20 @@ describe('the store never answers across this tab\'s own write (review M1, L1, L
     expect(fake.calls.some((c) => c === 'query:writer')).toBe(true)
   })
 
+  it('a newer chrome read lands a revoked writer over a young cached membership', async () => {
+    const store = fixture(3)
+    const WRITER = 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h'
+    store.CORE!.writer!.push(doc({ $ownerId: OWNER, repoId: REPO, memberId: WRITER }))
+    const fake = fakeSdk(store)
+    expect(await readMembershipsCached(fake.sdk, REF, 'devnet')).toHaveLength(2)
+    // Revoked (its document deleted) a moment later, well inside the cache's lifetime.
+    store.CORE!.writer = []
+    await readRepoChrome(fake.sdk, FORGE, OWNER, 'demo', 'devnet')
+    fake.calls.length = 0
+    expect((await readMembershipsCached(fake.sdk, REF, 'devnet')).map((m) => m.identity)).toEqual([OWNER])
+    expect(fake.calls).toEqual([])
+  })
+
   it('an issue created after the chrome read was issued: the header counts again', async () => {
     const fake = fakeSdk(fixture(3))
     await readRepoChrome(fake.sdk, FORGE, OWNER, 'demo', 'devnet')

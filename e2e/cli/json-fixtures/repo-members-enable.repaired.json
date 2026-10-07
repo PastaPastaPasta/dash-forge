@@ -1,0 +1,30 @@
+{
+  "source": "emitter: crates/dg/src/keys.rs enable() -> repair() -> emit_repair()",
+  "command": "repo members enable",
+  "args": [
+    "--yes",
+    "--json",
+    "repo",
+    "members",
+    "enable",
+    "o/r"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "repaired",
+    "rotated": null,
+    "nonMembers": [],
+    "wrapped": [
+      "B"
+    ],
+    "skipped": [],
+    "cost": {
+      "credits": 45300000,
+      "dash": 0.000453,
+      "usd": 0.011325,
+      "usdPrice": 25.0
+    },
+    "schemaVersion": 1
+  }
+}

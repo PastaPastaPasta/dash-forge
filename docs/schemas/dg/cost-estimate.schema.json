@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/cost-estimate.schema.json",
+  "title": "dg cost estimate --json",
+  "description": "What a first push of the current repository would cost.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "first_push"
+      ]
+    },
+    "bytes": {
+      "type": "integer"
+    },
+    "objects": {
+      "type": "integer"
+    },
+    "objectsCounted": {},
+    "sealed": {
+      "type": "boolean"
+    },
+    "backend": {
+      "type": "string"
+    },
+    "platformStoresBytes": {},
+    "externalTargets": {},
+    "manifests": {},
+    "refUpdates": {
+      "type": "integer"
+    },
+    "historyIndexBytes": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "historyIndexSkipped": {},
+    "metadataCredits": {
+      "type": "integer"
+    },
+    "chunkCredits": {
+      "type": "integer"
+    },
+    "depositCredits": {
+      "type": "integer"
+    },
+    "totalCredits": {
+      "type": "integer"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "storageDeposit": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "notPriced": {},
+    "upperBound": {
+      "type": "boolean"
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "mode",
+    "totalCredits",
+    "cost"
+  ],
+  "additionalProperties": true
+}
