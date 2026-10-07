@@ -12,7 +12,7 @@
  * repo's in page memory only).
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
@@ -128,10 +128,12 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   // Keep the draft for this tab (a sign-in in between must not lose it). Only a title the author
   // typed is kept: one filled in from a head commit belongs to that head, and a draft restored
   // later (another branch, a new push) must take its own head's subject (L-16).
-  useEffect(
-    () => savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting }),
-    [repo, title, titleTouched, body, headKey, base, quoting],
-  )
+  // Not while the PR is being opened, nor after a submit whose outcome is unknown: a reload must
+  // not bring the draft back to be opened a second time.
+  const draftHeld = useRef(false)
+  useEffect(() => {
+    if (!draftHeld.current) savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting })
+  }, [repo, title, titleTouched, body, headKey, base, quoting])
 
   const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null), home.defaultBranch), [home.branches, home.defaultBranch])
   // A fork the link's (or the kept draft's) head names, e.g. a fork's Contribute link: listed even
@@ -318,6 +320,9 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     setPending(true)
     setError(null)
     setNote(null)
+    // Until the outcome is known, a reload must not bring the PR back to be opened twice.
+    draftHeld.current = true
+    dropPrDraft(repo)
     try {
       // The PR, its draft mark and its code owners' review requests are one action: one toast
       // with their total (QW3-039).
@@ -351,6 +356,11 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         draftIntent.renew()
         router.push(repoHref('/repo/pulls', addr))
         return
+      }
+      // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays dropped.)
+      if (!(e instanceof UnconfirmedWriteError)) {
+        draftHeld.current = false
+        savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting })
       }
       setError(guard.failed(e))
       setPending(false)

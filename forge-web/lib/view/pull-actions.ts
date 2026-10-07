@@ -31,6 +31,7 @@
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
 import { capabilitiesOf, roleLimit } from '../rules/roles'
 import { linkedIssues, type Approvals, type ChecksState, type Policy, type PolicyStatus } from '../rules/v2'
+import type { MergeVerdict } from '../rules/merge-content'
 import type { PullView } from '../repo'
 import type { ProvedVerdicts } from '../repo/verdicts'
 import { branchName, plural } from './format'
@@ -566,4 +567,43 @@ export function mergeBoxShown(canMerge: boolean, shownBefore: boolean): boolean 
 export function mergeBoxSlot(i: { onConversation: boolean; draft: boolean; running: boolean; ranOnPage: boolean; ranOnThisTab: boolean }): 'shown' | 'kept' | 'none' {
   if ((i.onConversation && !i.draft) || i.running || i.ranOnThisTab) return 'shown'
   return i.ranOnPage ? 'kept' : 'none'
+}
+
+/** What {@link unrecordedMerge} needs: the PR, the viewer's merge right, and the merge check of the base tip. */
+export interface UnrecordedMergeInputs {
+  readonly pull: Pick<PullView, 'headOid' | 'baseTipOid' | 'baseTipPrev' | 'stateComplete'> & { readonly state: Pick<PullView['state'], 'open' | 'draft' | 'merged'> }
+  /** {@link PullActions.canMerge}: the viewer may record a merge (a writer is refused on a protected base). */
+  readonly canMerge: boolean
+}
+
+/**
+ * Whether the base tip is worth checking for an unrecorded merge of this PR: an open, ready PR the
+ * viewer can merge, whose base has a tip that is not the head (a head on the base is "Mark as
+ * merged") and a tip before it the merge could have built on.
+ */
+export function unrecordedMergeCandidate({ pull, canMerge }: UnrecordedMergeInputs): boolean {
+  const tip = pull.baseTipOid.toLowerCase()
+  return (
+    canMerge &&
+    pull.stateComplete &&
+    pull.state.open &&
+    !pull.state.merged &&
+    !pull.state.draft &&
+    isOidHex(tip) &&
+    tip !== pull.headOid.toLowerCase() &&
+    (pull.baseTipPrev ?? '') !== ''
+  )
+}
+
+/**
+ * "Record merge of <commit>": the base tip to record as this PR's merge when a merge moved the
+ * base but its merge transition was never written (the browser merge stopped between the ref
+ * update and the merge event, or a merge was pushed with git). Offered only when the merge check
+ * (`mergeContent`, the same rule `dg pr merge --event-only` applies) says the tip contains the PR
+ * or is a squash or rebase of it; null otherwise. The commit is a valid tip of the base, so the
+ * recorded merge counts.
+ */
+export function unrecordedMerge(i: UnrecordedMergeInputs, verdict: MergeVerdict | null): string | null {
+  if (!unrecordedMergeCandidate(i) || verdict === null) return null
+  return verdict === 'contains' || verdict === 'squash' || verdict === 'rebase' ? i.pull.baseTipOid.toLowerCase() : null
 }

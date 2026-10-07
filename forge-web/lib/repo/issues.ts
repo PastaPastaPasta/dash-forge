@@ -204,6 +204,12 @@ export interface PullView {
    * at open would count base commits a later "Update branch" merged in as the PR's own (QW3-014).
    */
   readonly baseOidAtMerge?: string
+  /**
+   * The base's valid tip just before its current one ({@link baseTipOid}), or `''` (none, or a
+   * list row). An open PR whose base tip already makes its changes, built on this tip, is a merge
+   * that moved the base but was never recorded ("Record merge of …").
+   */
+  readonly baseTipPrev?: string
   /** The merge transition's commit and `$createdAt`, when the PR is merged and a detail read it. */
   readonly mergeOid?: string
   readonly mergedAt?: number
@@ -917,6 +923,7 @@ export async function readPull(
     baseTipOid: baseTip ?? '',
     baseOidAtOpen: tips.atOpen ?? baseTip ?? '',
     baseOidAtMerge: mergeOid === null ? '' : tipBeforeMerge(tips.historical, mergeOid),
+    baseTipPrev: baseTip === undefined ? '' : tipBeforeMerge(tips.historical, baseTip),
     ...(merge !== null && mergeOid !== null ? { mergeOid: mergeOid.toLowerCase(), mergedAt: merge.createdAt } : {}),
     headOid,
     initialHeadOid,

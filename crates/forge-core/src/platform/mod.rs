@@ -1987,6 +1987,10 @@ pub struct FetchedDocument {
     /// `$updatedAtBlockHeight`, when the document type records it (replaceable issue, patch
     /// and comment: the late-content rule judges edits too, §8.2).
     pub updated_at_block_height: Option<u64>,
+    /// Consensus `$updatedAt` in ms, when the document type records it (a mutable document's
+    /// last replace: a check run's status moving on). Absent from rows cached before it was read.
+    #[serde(default)]
+    pub updated_at: Option<u64>,
     /// Property name → value, in the SDK-free field representation.
     pub fields: BTreeMap<String, FieldValue>,
     /// `$revision` of a mutable document (what a guarded replace compares, see
@@ -2012,6 +2016,7 @@ impl FetchedDocument {
             created_at,
             created_at_block_height,
             updated_at_block_height,
+            updated_at: doc.updated_at(),
             fields,
             revision: doc.revision(),
         }
@@ -5006,6 +5011,7 @@ mod tests {
             created_at: Some(i as u64),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             fields: BTreeMap::new(),
             revision: None,
         }

@@ -29,7 +29,7 @@ import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/lib/view'
-import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
+import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
 import { publicTextOf, quotesMembersText } from '@/lib/view/audience'
 import { cn } from '@/lib/utils'
@@ -217,8 +217,34 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // "Close with comment": the comment a close already posted, by the confirm's intent, so a retry
   // of a close that failed after it never posts the comment twice.
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
-  const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
-  const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
+  // Unsaved edits survive a reload (public repos only), bound to the revision they started from:
+  // once the issue or the comment changes, the old edit is dropped, never restored over it. Like
+  // the comment, never kept for members-only text, nor once it quotes members-only text.
+  const editIssueId = data?.issue.id ?? ''
+  const issueRev = data?.issue.revision ?? -1
+  const storable = (text: string | null): boolean => text !== null && !quotesMembersText(text, membersTexts)
+  const editDraft = useEditDraft<{ title: string; body: string; rev: number }>(
+    editDraftKey(home.repo, editIssueId, identity),
+    (d) => d.rev === issueRev,
+    (d) => d.title !== (data?.issue.title ?? '') || d.body !== (data?.issue.body ?? ''),
+    (d) => data !== null && storable(publicTextOf(`${d.title}\n${d.body}`, data.issue.audience)),
+  )
+  const editing = editDraft.value
+  const setEditing = (e: { title: string; body: string } | null): void => editDraft.set(e === null ? null : { title: e.title, body: e.body, rev: issueRev })
+  const comments = useMemo(() => (data?.timeline ?? []).flatMap((t) => (t.kind === 'comment' ? [t.comment] : [])), [data])
+  const commentDraft = useEditDraft<{ id: string; body: string; rev: number | null }>(
+    commentEditDraftKey(home.repo, editIssueId, identity),
+    (d) => comments.some((c) => c.id === d.id && (c.revision ?? null) === d.rev),
+    (d) => d.body !== comments.find((c) => c.id === d.id)?.body,
+    (d) => {
+      const c = comments.find((x) => x.id === d.id)
+      return data !== null && c !== undefined && storable(publicTextOf(d.body, c.audience, data.issue.audience))
+    },
+  )
+  const editingComment = commentDraft.value
+  const setEditingComment = (e: { id: string; body: string } | null): void =>
+    commentDraft.set(e === null ? null : { id: e.id, body: e.body, rev: comments.find((c) => c.id === e.id)?.revision ?? null })
+  const editsDropped = editDraft.dropped || commentDraft.dropped
   // A hidden issue's body and timeline show only after "Show it anyway" (RC2 MOD).
   const [threadRevealed, setThreadRevealed] = useState(false)
 
@@ -390,26 +416,26 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         const changes: { title?: string; body?: string } = {}
         if (pending.title !== issue.title) changes.title = pending.title
         if (pending.body !== issue.body) changes.body = pending.body
-        await updateTarget(sdk, signer, home.repo, {
+        await editDraft.saving(() => updateTarget(sdk, signer, home.repo, {
           type: 'issue',
           id: issue.id,
           ...changes,
           expectedRevision: BigInt(issue.revision),
           seal: { current: { title: issue.title, body: issue.long?.field ?? issue.body }, bind: { number: issue.number }, imported: issue.importedRaw ?? null },
           intent,
-        })
+        }))
         setEditing(null)
         break
       }
       case 'editComment':
-        await updateComment(sdk, signer, home.repo, {
+        await commentDraft.saving(() => updateComment(sdk, signer, home.repo, {
           id: pending.id,
           body: pending.body,
           ...commentEditDropsOf(timeline, pending.id, { isMember, allReadable: totalHidden(hidden) === 0 }),
           ...(timelineComment(timeline, pending.id)?.revision !== undefined ? { expectedRevision: BigInt(timelineComment(timeline, pending.id)?.revision as number) } : {}),
           seal: { current: { body: timelineComment(timeline, pending.id)?.body ?? '' }, bind: { targetId: issue.id }, imported: timelineComment(timeline, pending.id)?.importedRaw ?? null },
           intent,
-        })
+        }))
         setEditingComment(null)
         break
       case 'deleteComment':
@@ -555,7 +581,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
           </div>
           <div className="px-4 py-3">
-            {editing ? (
+            {editsDropped && editing === null && editingComment === null ? (
+                    <p role="status" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="edit-draft-dropped">
+                      Your unsaved edit was discarded: it changed on Platform since you started.
+                    </p>
+                  ) : null}
+                  {editing ? (
               <>
                 <MarkdownEditor id="edit-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
                 <BodyCounter repo={home.repo} text={editing.body} field="description" long={editLong} />

@@ -64,7 +64,7 @@ const COMMIT_B = '2'.repeat(40)
 function home(tagTip: string, more: readonly string[] = [], protectedPatterns: readonly string[] = []): RepoHome {
   const ref = (refName: string, oid: string) => ({ refName, refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } })
   return {
-    repo: { repoId: 'r', visibility: 'public' },
+    repo: { repoId: 'r', visibility: 'public', forge: { core: 'c', collab: 'l', community: 'm' } },
     config: { protectedPatterns },
     defaultBranch: 'main',
     branches: [ref('refs/heads/main', COMMIT_A), ...more.map((b) => ref(`refs/heads/${b}`, COMMIT_B))],
@@ -226,7 +226,8 @@ describe('RefListContent Activity links', () => {
   })
 
   it('has none on a private repo (its ref names are sealed and would sit in the address)', async () => {
-    const priv = { ...home(TAG_A, ['dev']), repo: { repoId: 'r', visibility: 'private' } } as unknown as RepoHome
+    const base = home(TAG_A, ['dev'])
+    const priv = { ...base, repo: { ...base.repo, visibility: 'private' } } as unknown as RepoHome
     await act(async () => root.render(<RefListContent home={priv} addr={addr} kind="branches" />))
     await settle()
     expect(links()).toEqual([])

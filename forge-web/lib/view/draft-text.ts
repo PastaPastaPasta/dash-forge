@@ -11,6 +11,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { UnconfirmedWriteError } from '../sdk'
+
 const PREFIX = 'forge:draft:v1:'
 
 /** Drafts older than this are dropped (two weeks). */
@@ -41,6 +43,29 @@ export function commentDraftKey(
 ): string | null {
   if (repo.visibility !== 'public' || audience !== 'public' || viewer === null || targetId === '') return null
   return `${viewer}:${repo.repoId}:${targetId}:comment`
+}
+
+type DraftRepo = { readonly repoId: string; readonly visibility?: string }
+
+/** Where `viewer`'s draft `what` of `targetId` is kept, or null (a private repo, signed out). */
+function draftKeyOf(repo: DraftRepo, targetId: string, viewer: string | null, what: string): string | null {
+  if (repo.visibility !== 'public' || viewer === null || targetId === '') return null
+  return `${viewer}:${repo.repoId}:${targetId}:${what}`
+}
+
+/** `viewer`'s unsaved edit of an issue's or PR's title and description. */
+export function editDraftKey(repo: DraftRepo, targetId: string, viewer: string | null): string | null {
+  return draftKeyOf(repo, targetId, viewer, 'edit')
+}
+
+/** `viewer`'s unsaved edit of one of their comments on `targetId` (one at a time, as the page edits them). */
+export function commentEditDraftKey(repo: DraftRepo, targetId: string, viewer: string | null): string | null {
+  return draftKeyOf(repo, targetId, viewer, 'comment-edit')
+}
+
+/** `viewer`'s new issue in `repo` (its title and description). */
+export function newIssueDraftKey(repo: DraftRepo, viewer: string | null): string | null {
+  return draftKeyOf(repo, 'new', viewer, 'issue')
 }
 
 function parse(raw: string | null): { text: string; at: number } | null {
@@ -197,4 +222,106 @@ export function useQuotedUntilEmptied(quotesNow: boolean, empty: boolean): boole
   if (quotesNow && !quoted) setQuoted(true)
   else if (empty && quoted) setQuoted(false)
   return quotesNow || (quoted && !empty)
+}
+
+/** {@link DraftPersist} for a structured draft: a fixed answer, or one decided from the value. */
+export type DraftValuePersist<T> = boolean | ((value: T) => boolean)
+
+/**
+ * {@link useDraftText} for a structured value (its `hold` the same: nothing stored while a write's
+ * outcome is unknown) (an edit's title and body, with the revision it
+ * started from), kept as JSON under `key`. A stored value `valid` rejects (the document changed
+ * since the edit started, the comment is gone) reads as none and is dropped, so an old edit never
+ * resurrects over a newer saved version. `null` removes it. `persist` as in {@link useDraftText},
+ * judged on the value: one it refuses (members-only, or quoting members-only text) stays in memory.
+ */
+export function useDraftState<T>(
+  key: string | null,
+  valid: (value: T) => boolean,
+  persist: DraftValuePersist<T> = true,
+): [T | null, (value: T | null) => void, (held: boolean, value: T | null) => void, boolean] {
+  const [text, setText, holdText] = useDraftText(key, typeof persist === 'function' ? (t) => persistJson(t, persist) : persist)
+  // A stored value dropped as stale in this mount (the page says so).
+  const [dropped, setDropped] = useState(false)
+  const validRef = useRef(valid)
+  validRef.current = valid
+  let value: T | null = null
+  if (text !== '') {
+    try {
+      value = JSON.parse(text) as T
+    } catch {
+      value = null
+    }
+  }
+  const stale = value !== null && !valid(value)
+  useEffect(() => {
+    if (stale) {
+      setText('')
+      setDropped(true)
+    }
+  }, [stale, setText])
+  const set = useCallback((v: T | null) => setText(v === null ? '' : JSON.stringify(v)), [setText])
+  const hold = useCallback((on: boolean, v: T | null) => holdText(on, v === null ? '' : JSON.stringify(v)), [holdText])
+  return [stale ? null : value, set, hold, dropped]
+}
+
+/** Whether a stored structured draft's JSON may stay on disk (unreadable JSON: no). */
+function persistJson<T>(text: string, persist: (value: T) => boolean): boolean {
+  try {
+    return persist(JSON.parse(text) as T)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * An edit box's draft ({@link useDraftState}): the edit in progress, stored only while it differs
+ * from the saved document (`changed`), so opening Edit and leaving stores nothing. `dropped`: a
+ * stored edit was discarded because the document changed since it started. `persist`: as in
+ * {@link useDraftState} (a members-only document's edit, or one quoting members-only text, is
+ * never stored).
+ */
+export function useEditDraft<T>(
+  key: string | null,
+  valid: (value: T) => boolean,
+  changed: (value: T) => boolean,
+  persist: DraftValuePersist<T> = true,
+): {
+  readonly value: T | null
+  readonly set: (value: T | null) => void
+  readonly dropped: boolean
+  /**
+   * Run the edit's save: the stored copy is held away while it runs (a reload must neither save
+   * it twice nor call the user's own landed save "discarded"), cleared once it lands, and kept
+   * again only when the save is known not to have been sent.
+   */
+  readonly saving: <R>(write: () => Promise<R>) => Promise<R>
+} {
+  const [stored, store, hold, droppedStored] = useDraftState<T>(key, valid, persist)
+  const [local, setLocal] = useState<{ readonly key: string | null; readonly value: T | null } | null>(null)
+  // The "discarded" note goes once the user edits again.
+  const [seen, setSeen] = useState(false)
+  const value = local !== null && local.key === key ? local.value : stored
+  const keep = (v: T | null): T | null => (v !== null && changed(v) ? v : null)
+  const set = (v: T | null): void => {
+    setLocal({ key, value: v })
+    setSeen(true)
+    store(keep(v))
+  }
+  const saving = async <R,>(write: () => Promise<R>): Promise<R> => {
+    const v = value
+    hold(true, null)
+    try {
+      const r = await write()
+      hold(false, null)
+      return r
+    } catch (e) {
+      // A write that may have landed: its text is the user's own, so a later revision is no
+      // discarded draft. A write known not to have landed keeps its draft, still judged as one.
+      if (e instanceof UnconfirmedWriteError) setSeen(true)
+      else hold(false, keep(v))
+      throw e
+    }
+  }
+  return { value, set, dropped: droppedStored && !seen, saving }
 }
