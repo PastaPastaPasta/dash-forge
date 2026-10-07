@@ -16,6 +16,25 @@
         "object",
         "null"
       ]
+    },
+    "bot": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "operator": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operator"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The identity's operator when both profiles agree, else null."
     }
   },
   "required": [
