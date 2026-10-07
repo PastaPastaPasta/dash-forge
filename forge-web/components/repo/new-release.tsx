@@ -319,7 +319,7 @@ function NewReleaseDialog({
     (newTag && targetOid === null ? `${trimmedTag} does not exist yet, and this repo has no branch to tag: push one first.` : null) ??
     releaseTextProblem(sealedRepo ? { name: title.trim(), notes: notes.trimEnd() } : { name: finalName, notes: longNotes ? '' : finalNotes }) ??
     longNotesCompose.problem ??
-    assetFilesProblem(newFiles) ??
+    assetFilesProblem(newFiles, sealedRepo ? [] : kept) ??
     // A sealed revision whose notes continue stores an asset list even with no file.
     ((newFiles.length > 0 || sealedPlan?.storesList === true) && gap !== null ? gap.message : null) ??
     (sealedRepo ? null : assetPlanProblem(files, policy, profiles, kept))

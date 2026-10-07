@@ -25,6 +25,7 @@ use anyhow::Result;
 
 use forge_core::collab::v2::TargetKind;
 use forge_core::collab::{CommentAnchor, ReleaseAsset, Verdict};
+use forge_core::rules::asset_name::derived_asset_name;
 use forge_core::rules::v2::CloseReason;
 
 use crate::github::{iso8601_to_unix, GhComment, GhIssue, GithubClient, GithubRepoRef};
@@ -666,7 +667,8 @@ fn release(r: &crate::github::GhRelease) -> SrcRelease {
         .assets
         .iter()
         .map(|a| ReleaseAsset {
-            name: model::clip(&a.name, 200, 200),
+            // A download saves under the name: a plain file name, else one from the URL.
+            name: derived_asset_name(&model::clip(&a.name, 200, 200), &a.browser_download_url),
             sha256: a
                 .digest
                 .as_deref()

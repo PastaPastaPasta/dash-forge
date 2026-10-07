@@ -327,6 +327,7 @@ fn releases_reference_their_links() {
     assert_eq!(r.assets.len(), 2);
     assert!(r.assets[0].uris[0].contains("/-/releases/v1.119.0/downloads/"));
     assert!(r.assets[0].sha256.is_empty());
+    assert_eq!(r.assets[0].name, "glab_1.119.0_linux_386.deb");
 }
 
 /// Without a token, gitlab.com shows the items but not their threads or labels: the run

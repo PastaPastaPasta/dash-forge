@@ -1,0 +1,14 @@
+{
+  "name": "set_ok",
+  "description": "Distinct plain names: no problem.",
+  "case": "asset_file_names",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "a.tar.gz",
+      "b.zip",
+      "A.tar"
+    ]
+  },
+  "expected": null
+}

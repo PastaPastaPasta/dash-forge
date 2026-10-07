@@ -1,0 +1,16 @@
+{
+  "name": "set_sharp_s",
+  "description": "A sharp s and SS are one name without case.",
+  "case": "asset_file_names",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "stra\u00dfe.txt",
+      "STRASSE.txt"
+    ]
+  },
+  "expected": {
+    "name": "STRASSE.txt",
+    "sameFileAs": "stra\u00dfe.txt"
+  }
+}

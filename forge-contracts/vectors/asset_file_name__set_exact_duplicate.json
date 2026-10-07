@@ -1,0 +1,17 @@
+{
+  "name": "set_exact_duplicate",
+  "description": "Two assets with the same name are refused.",
+  "case": "asset_file_names",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "a",
+      "b",
+      "a"
+    ]
+  },
+  "expected": {
+    "name": "a",
+    "sameFileAs": "a"
+  }
+}
