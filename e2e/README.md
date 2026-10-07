@@ -43,6 +43,8 @@ Everything runs on devnet sakura because the RC2 contracts need Platform 5.0.0-b
 
 The binaries come from `target/`, `$CARGO_TARGET_DIR`, or `E2E_BIN_DIR` when set.
 
+Every scenario also checks dg's `--json` output. The harness runs dg through `cli/dg-json-capture`, which keeps what each `--json` run printed, its arguments and its exit code. At the end of the scenario, `cli/json_check.py` checks each one against its schema in `docs/schemas/dg/`: the command's own on exit 0, the error schema otherwise. A mismatch fails the scenario. `E2E_JSON_CHECK=0` turns the check off. The same check runs offline, with no devnet, on the case files in `cli/json-fixtures/` (`python3 e2e/cli/json_check.py --cases e2e/cli/json-fixtures`).
+
 ## Reserved fixture repos
 
 Each fixture repo belongs to one suite. Don't push to a repo that another suite owns, and don't run ad-hoc experiments on any of them.
