@@ -749,6 +749,160 @@ pub async fn deletable_source(s: &Session, view: &PatchView, number: u64) -> Res
     Ok(src)
 }
 
+/// How an open PR uses a branch that is about to be deleted ([`dependent`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Uses {
+    /// The PR merges into it (its base, after any retarget): a stacked PR.
+    Base,
+    /// The PR's changes are on it (its head).
+    Head,
+}
+
+/// How `v` uses the branch `ref_name` of repository `repo_id` (in the PR's own repository,
+/// `target_id`), when it is an open PR other than `merging`'s: `None` when it does not.
+pub fn dependent(
+    v: &PatchView,
+    merging: u32,
+    target_id: &str,
+    repo_id: &str,
+    ref_name: &str,
+) -> Option<Uses> {
+    if !v.state.open || v.patch.number == merging {
+        return None;
+    }
+    if v.patch.source_repo_id == repo_id
+        && v.patch.source_ref_name.as_deref().map(git::full_ref) == Some(ref_name.to_string())
+    {
+        return Some(Uses::Head);
+    }
+    (target_id == repo_id && git::full_ref(&v.merge_base.ref_name) == ref_name)
+        .then_some(Uses::Base)
+}
+
+/// The most PRs [`refuse_dependents`] reads: one page, the newest.
+const DEPENDENTS_READ: u32 = 100;
+
+/// The open PRs among `rows` that use the branch `ref_name` of repository `repo_id` ([`dependent`]),
+/// with their numbers and titles.
+pub fn dependents_in<'a>(
+    rows: impl IntoIterator<Item = &'a PatchView>,
+    merging: u32,
+    target_id: &str,
+    repo_id: &str,
+    ref_name: &str,
+) -> Vec<(u32, String, Uses)> {
+    rows.into_iter()
+        .filter_map(|v| {
+            dependent(v, merging, target_id, repo_id, ref_name)
+                .map(|u| (v.patch.number, v.patch.title.clone(), u))
+        })
+        .collect()
+}
+
+/// What the dependent-PR check says when it could not look at every pull request: the page was
+/// full (`more`), or some rows could not be read (`hidden`). `None` when it saw them all.
+pub fn partial_check_note(more: bool, hidden: usize) -> Option<String> {
+    let mut parts = Vec::new();
+    if more {
+        parts.push(format!(
+            "checked the newest {DEPENDENTS_READ} pull requests; older ones were not checked"
+        ));
+    }
+    if hidden > 0 {
+        parts.push(format!(
+            "{hidden} pull request{} could not be read and {} not checked",
+            if hidden == 1 { "" } else { "s" },
+            if hidden == 1 { "was" } else { "were" }
+        ));
+    }
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+/// Refuse `--delete-branch` (E808) before merging when other open PRs of the repository use
+/// the branch it would delete: a PR based on it (a stack) would be left with no base, and one
+/// whose head it is would lose its changes. One read of the repository's newest
+/// [`DEPENDENTS_READ`] PRs. `--force-delete-branch` skips this. `Ok(Some(note))` when nothing
+/// was found but not every PR was checked ([`partial_check_note`]).
+pub async fn refuse_dependents(
+    collab: &forge_core::collab::v2::Collab<'_>,
+    handle: &Repo,
+    view: &PatchView,
+    src: &SourceBranch,
+) -> Result<Option<String>> {
+    let page = collab
+        .list_patch_views(handle, DEPENDENTS_READ)
+        .await
+        .context("reading which open pull requests use the branch --delete-branch would delete")?;
+    let using = dependents_in(
+        page.rows.iter().map(|(v, _)| v),
+        view.patch.number,
+        handle.id(),
+        src.repo.id(),
+        &src.ref_name,
+    );
+    let note = partial_check_note(page.more, page.hidden);
+    match dependents_refusal(&using, &handle.display(), view, &src.ref_name) {
+        Some(u) => Err(match &note {
+            Some(n) => {
+                let checked = u.note.clone().unwrap_or_default();
+                u.note(format!("{checked}; {n}"))
+            }
+            None => u,
+        }
+        .into()),
+        None => Ok(note),
+    }
+}
+
+/// The E808 for the open PRs `using` the branch `ref_name` that merging `view` with
+/// `--delete-branch` would delete; `None` when there are none.
+pub fn dependents_refusal(
+    using: &[(u32, String, Uses)],
+    repo: &str,
+    view: &PatchView,
+    ref_name: &str,
+) -> Option<UserError> {
+    if using.is_empty() {
+        return None;
+    }
+    let branch = safe(forge_core::repo::short_branch_name(ref_name));
+    let base = safe(forge_core::repo::short_branch_name(
+        &view.merge_base.ref_name,
+    ));
+    let listed: Vec<String> = using
+        .iter()
+        .map(|(n, title, how)| {
+            let how = match how {
+                Uses::Base => "based on it",
+                Uses::Head => "its head",
+            };
+            format!("#{n} {} ({how})", safe(title))
+        })
+        .collect();
+    let (count, verb) = if using.len() == 1 {
+        ("1 other open pull request".to_string(), "uses")
+    } else {
+        (format!("{} other open pull requests", using.len()), "use")
+    };
+    let mut u = UserError::new(
+        codes::BRANCH_IN_USE,
+        format!("merge not attempted: {count} {verb} {branch}, which --delete-branch would delete"),
+    )
+    .cause(listed.join("; "));
+    if let Some((n, _, _)) = using.iter().find(|(_, _, how)| *how == Uses::Base) {
+        u = u.fix(format!(
+            "retarget the PRs based on it first: `dg pr edit {repo} {n} --base {base}`"
+        ));
+    }
+    Some(
+        u.fix(
+            "or merge without --delete-branch, and delete the branch once they no longer need it",
+        )
+        .fix("or pass --force-delete-branch to delete it anyway")
+        .note("checked before anything was pushed or written"),
+    )
+}
+
 /// Delete the source branch (a push of `:<ref>`).
 pub fn delete_source_branch(ctx: &Ctx, src: &SourceBranch) -> Result<()> {
     let scratch = super::scratch_repo()?;
@@ -774,6 +928,88 @@ pub fn delete_source_branch(ctx: &Ctx, src: &SourceBranch) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pr(number: u32, base: &str, source_repo: &str, head_ref: &str) -> PatchView {
+        let mut v = crate::pr::tests::view_with(base, &"a".repeat(40));
+        v.patch.number = number;
+        v.patch.title = format!("PR {number}");
+        v.patch.repo_id = "target".into();
+        v.patch.source_repo_id = source_repo.into();
+        v.patch.source_ref_name = Some(head_ref.into());
+        v
+    }
+
+    #[test]
+    fn dependents_are_open_prs_based_on_or_from_the_branch() {
+        let feat = "refs/heads/feat";
+        let base_on = pr(2, feat, "target", "refs/heads/two");
+        let head_of = pr(3, "refs/heads/main", "target", feat);
+        let unrelated = pr(4, "refs/heads/main", "target", "refs/heads/four");
+        // The PR being merged is never its own dependent.
+        let merging = pr(1, "refs/heads/main", "target", feat);
+        // A fork's branch of the same name is not this repository's branch.
+        let fork = pr(5, "refs/heads/main", "fork", feat);
+        let mut retargeted = pr(6, "refs/heads/main", "target", "refs/heads/six");
+        retargeted.merge_base.ref_name = feat.into();
+        retargeted.merge_base.retargeted = true;
+        let mut closed = pr(7, feat, "target", "refs/heads/seven");
+        closed.state.open = false;
+        let rows = [
+            &base_on,
+            &head_of,
+            &unrelated,
+            &merging,
+            &fork,
+            &retargeted,
+            &closed,
+        ];
+        let got: Vec<(u32, Uses)> = dependents_in(rows, 1, "target", "target", feat)
+            .into_iter()
+            .map(|(n, _, u)| (n, u))
+            .collect();
+        assert_eq!(got, [(2, Uses::Base), (3, Uses::Head), (6, Uses::Base)]);
+        // Merging a fork's branch: only PRs from that fork's branch use it, and nothing here is
+        // based on it.
+        let got: Vec<u32> = dependents_in(rows, 1, "target", "fork", feat)
+            .into_iter()
+            .map(|(n, _, _)| n)
+            .collect();
+        assert_eq!(got, [5]);
+    }
+
+    #[test]
+    fn the_refusal_names_each_pr_and_how_to_retarget() {
+        let view = pr(1, "refs/heads/main", "target", "refs/heads/feat");
+        assert!(dependents_refusal(&[], "o/r", &view, "refs/heads/feat").is_none());
+        let using = [
+            (2, "Stack 2".to_string(), Uses::Base),
+            (3, "Other".to_string(), Uses::Head),
+        ];
+        let u = dependents_refusal(&using, "o/r", &view, "refs/heads/feat").unwrap();
+        assert_eq!(u.code, codes::BRANCH_IN_USE);
+        assert!(u.message.contains("2 other open pull requests use feat"));
+        assert_eq!(
+            u.cause.as_deref(),
+            Some("#2 Stack 2 (based on it); #3 Other (its head)")
+        );
+        assert!(u
+            .fix
+            .iter()
+            .any(|f| f.contains("dg pr edit o/r 2 --base main")));
+    }
+
+    #[test]
+    fn a_partial_check_says_what_it_did_not_see() {
+        assert_eq!(partial_check_note(false, 0), None);
+        assert_eq!(
+            partial_check_note(true, 0).as_deref(),
+            Some("checked the newest 100 pull requests; older ones were not checked")
+        );
+        assert_eq!(
+            partial_check_note(false, 2).as_deref(),
+            Some("2 pull requests could not be read and were not checked")
+        );
+    }
     use forge_core::rules::v2::AnchorFields;
 
     const HEAD: &str = "3333333333333333333333333333333333333333";

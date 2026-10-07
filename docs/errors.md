@@ -501,3 +501,11 @@ A devnet name that does not exist is reported here too, because a lookup failure
 A private key, AWS key or token only warns when its file is in a `test`, `tests`, `testdata` or `fixtures` folder. A `.env` file is refused there too. Any finding only warns when it is only in history older than the repository on Forge (commits made more than a day before the repository was created, and everything `forge-import` mirrors). [Secrets in a push](guides/quick-start.md#secrets-in-a-push) lists what is checked.
 
 **What to do:** take the file out of the commits that added it (`git rm --cached <file>`, add it to `.gitignore`, then amend or rebase), and replace any real secret it held. If you have checked it and it is safe to publish, push with `-o allow-secret=<fingerprint>` (the code printed in brackets beside each finding), or add the fingerprint to `.forge/secret-scan-allow` at the tip of the branch or tag and commit that. A path in that file turns the refusal into a warning that is printed on every push.
+
+## E808
+
+**Branch other pull requests use.** `dg pr merge --delete-branch` would delete the PR's source branch, but other open pull requests use it: as their base (a PR stacked on this one) or as their head. A pull request whose base branch is deleted can't be merged until its base is changed, and one whose head branch is deleted stops following new pushes. The cause names each pull request and how it uses the branch. Nothing was pushed or written.
+
+**What to do:** retarget the pull requests based on it (`dg pr edit <owner>/<repo> <n> --base <branch>`), or merge without `--delete-branch` and delete the branch once nothing needs it, or pass `--force-delete-branch` to delete it anyway.
+
+Only the repository's newest 100 pull requests are checked. When there are older ones, or some can't be read, the error (or, when none was found, the merge's output) says they were not checked.
