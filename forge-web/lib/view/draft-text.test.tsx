@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownEditor } from '@/components/repo/issue-bits'
-import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, readDraft, useDraftText, writeDraft } from './draft-text'
+import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, commentEditDraftKey, editDraftKey, newIssueDraftKey, readDraft, useDraftState, useDraftText, useEditDraft, writeDraft } from './draft-text'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -108,6 +108,102 @@ describe('useDraftText', () => {
     type('secret plan')
     expect(field().value).toBe('secret plan')
     expect(localStorage.length).toBe(0)
+  })
+})
+
+describe('useDraftState (edits and new issues)', () => {
+  type Edit = { title: string; body: string; rev: number }
+  let api: { value: Edit | null; set: (v: Edit | null) => void; hold: (on: boolean, v: Edit | null) => void } | null = null
+  function Editor({ k, rev }: { k: string | null; rev: number }): JSX.Element {
+    const [value, set, hold] = useDraftState<Edit>(k, (d) => d.rev === rev)
+    api = { value, set, hold }
+    return <span>{value?.body ?? ''}</span>
+  }
+
+  it('keys edits and new issues per identity, public repos only', () => {
+    const pub = { repoId: 'R', visibility: 'public' }
+    expect(editDraftKey(pub, 'T', 'A')).toBe('A:R:T:edit')
+    expect(commentEditDraftKey(pub, 'T', 'A')).toBe('A:R:T:comment-edit')
+    expect(newIssueDraftKey(pub, 'A')).toBe('A:R:new:issue')
+    expect(editDraftKey({ repoId: 'R', visibility: 'private' }, 'T', 'A')).toBeNull()
+    expect(newIssueDraftKey(pub, null)).toBeNull()
+  })
+
+  it('restores an edit after a remount while the document is unchanged', () => {
+    act(() => root.render(<Editor k="A:R:T:edit" rev={3} />))
+    act(() => api!.set({ title: 'New title', body: 'half an edit', rev: 3 }))
+    act(() => root.unmount())
+    root = createRoot(host)
+    act(() => root.render(<Editor k="A:R:T:edit" rev={3} />))
+    expect(api!.value).toEqual({ title: 'New title', body: 'half an edit', rev: 3 })
+  })
+
+  it('drops an edit once the document changed since it started, never restoring it over the newer version', () => {
+    writeDraft('A:R:T:edit', JSON.stringify({ title: 't', body: 'old edit', rev: 3 }))
+    act(() => root.render(<Editor k="A:R:T:edit" rev={4} />))
+    expect(api!.value).toBeNull()
+    expect(readDraft('A:R:T:edit')).toBe('')
+  })
+
+  it('stores nothing while held, and clears on null', () => {
+    act(() => root.render(<Editor k="A:R:T:edit" rev={1} />))
+    act(() => api!.hold(true, null))
+    act(() => api!.set({ title: 't', body: 'b', rev: 1 }))
+    expect(readDraft('A:R:T:edit')).toBe('')
+    act(() => api!.hold(false, { title: 't', body: 'b', rev: 1 }))
+    expect(JSON.parse(readDraft('A:R:T:edit'))).toEqual({ title: 't', body: 'b', rev: 1 })
+    act(() => api!.set(null))
+    expect(readDraft('A:R:T:edit')).toBe('')
+  })
+})
+
+describe('useEditDraft', () => {
+  type Edit = { title: string; body: string; rev: number }
+  let api: ReturnType<typeof useEditDraft<Edit>> | null = null
+  function Editor({ rev }: { rev: number }): JSX.Element {
+    api = useEditDraft<Edit>('A:R:T:edit', (d) => d.rev === rev, (d) => d.title !== 'Saved' || d.body !== 'saved body')
+    return <span />
+  }
+
+  it('stores an edit only while it differs from the saved document', () => {
+    act(() => root.render(<Editor rev={1} />))
+    act(() => api!.set({ title: 'Saved', body: 'saved body', rev: 1 }))
+    expect(api!.value).toEqual({ title: 'Saved', body: 'saved body', rev: 1 })
+    expect(readDraft('A:R:T:edit')).toBe('')
+    act(() => api!.set({ title: 'Saved', body: 'changed', rev: 1 }))
+    expect(JSON.parse(readDraft('A:R:T:edit'))).toMatchObject({ body: 'changed' })
+    act(() => api!.set(null))
+    expect(api!.value).toBeNull()
+    expect(readDraft('A:R:T:edit')).toBe('')
+  })
+
+  it('says when a stored edit was discarded because the document changed, until the next edit', () => {
+    writeDraft('A:R:T:edit', JSON.stringify({ title: 't', body: 'old', rev: 1 }))
+    act(() => root.render(<Editor rev={2} />))
+    expect(api!.value).toBeNull()
+    expect(api!.dropped).toBe(true)
+    act(() => api!.set({ title: 'Saved', body: 'new', rev: 2 }))
+    expect(api!.dropped).toBe(false)
+  })
+
+  it('holds the stored edit while it saves, keeps it again only when nothing was sent', async () => {
+    const { UnconfirmedWriteError } = await import('../sdk')
+    act(() => root.render(<Editor rev={1} />))
+    act(() => api!.set({ title: 'Saved', body: 'edited', rev: 1 }))
+    expect(readDraft('A:R:T:edit')).not.toBe('')
+    await act(async () => {
+      await expect(api!.saving(async () => { throw new UnconfirmedWriteError('d') })).rejects.toThrow()
+    })
+    // Sent but not shown yet: held away, so a reload neither saves it twice nor calls it discarded.
+    expect(readDraft('A:R:T:edit')).toBe('')
+    await act(async () => {
+      await expect(api!.saving(async () => { throw new Error('refused') })).rejects.toThrow()
+    })
+    expect(JSON.parse(readDraft('A:R:T:edit'))).toMatchObject({ body: 'edited' })
+    await act(async () => {
+      await api!.saving(async () => 'ok')
+    })
+    expect(readDraft('A:R:T:edit')).toBe('')
   })
 })
 

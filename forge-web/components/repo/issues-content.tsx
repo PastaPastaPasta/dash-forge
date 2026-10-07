@@ -17,7 +17,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { HiddenRowMark, HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -96,6 +96,7 @@ import { IssueFormFields } from '@/components/repo/issue-form'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
 import { TriageNav } from '@/components/repo/triage-nav'
+import { BulkBar, BulkRowCheckbox, useBulkAllowed, useBulkHold, useBulkSelection } from '@/components/repo/bulk-actions'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { useLongCompose } from '@/components/repo/long-body'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -103,6 +104,7 @@ import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
 import { applyTemplate, type IssueTemplate } from '@/lib/view/issue-templates'
 import { formBody, initialFormValues, missingAnswers, type FormValue } from '@/lib/view/issue-forms'
 import { capabilitiesOf, whoCan } from '@/lib/rules/roles'
+import { newIssueDraftKey, useDraftState } from '@/lib/view/draft-text'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
 const ISSUE_GRAMMAR: ListGrammar<IssueListQuery> = { text: searchText, parse: parseSearchText, unresolved: unresolvedQualifiers, submitBase: searchSubmitBase }
@@ -151,7 +153,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const [pinsAsked, setPinsAsked] = useState(false)
   // Read by the list's read itself: asking re-reads with the list kept on screen, not reset.
   const pinsAskedRef = useRef(false)
-  const { data, loading, error, reload } = useAsync<IssueListPage>(
+  // While a bulk batch runs, the list keeps its rows (each close re-reads it).
+  const bulkHold = useBulkHold<IssueListPage>()
+  const { data: freshData, loading, error, reload } = useAsync<IssueListPage>(
     async (signal) => {
       const me = identity ?? ''
       const who = (v: string | null): string | null => (v === 'me' ? me : v)
@@ -175,6 +179,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 
+  const data = bulkHold.keep(freshData)
   // A sparse tab finding its older rows through the state scan reads on by itself (QW3-002).
   useAutoReadOn(data?.searchedOf, loading, reload)
 
@@ -191,6 +196,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const hiddenIds = useHiddenThreads(sdk, ready, home.repo, network, data?.rows)
   const rows = (data?.rows ?? []).filter((r) => showHidden || !hiddenIds.has(r.id))
   const hiddenOnPage = (data?.rows ?? []).filter((r) => hiddenIds.has(r.id)).length
+  // Bulk close and label (members who may close and label; nothing read until they act).
+  const bulkAllowed = useBulkAllowed(home)
+  const bulkRows = useMemo(() => rows.map((r) => ({ id: r.id, number: r.number, title: r.title, author: r.author, open: r.state.open, merged: false, labels: r.state.labels })), [rows])
+  const bulk = useBulkSelection(bulkRows)
   const empty = data !== null && data.rows.length === 0
   const filtered = hasFilters(query)
   const lastPage = empty ? pastLastPage(query.page, data?.matching ?? null, ISSUE_PAGE_SIZE) : null
@@ -269,6 +278,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
+          {bulkAllowed ? <BulkBar kind="issue" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} onBusy={bulkHold.setBusy} /> : null}
           <StateTabs label="Issue state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
               <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open
@@ -340,6 +350,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           <ul aria-label="Issues" aria-busy={loading}>
             {rows.map((issue) => (
               <li key={issue.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="issue-row" data-number={issue.number}>
+                {bulkAllowed ? <BulkRowCheckbox kind="issue" number={issue.number} checked={bulk.selected.has(issue.id)} onChange={(on) => bulk.toggle(issue.id, on)} /> : null}
                 {issue.state.open ? (
                   <><CircleDot className={`mt-0.5 h-4 w-4 shrink-0 ${STATE_TEXT.open}`} aria-hidden /><span className="sr-only">Open</span></>
                 ) : closedSkipped(reasons.data?.get(issue.id)) ? (
@@ -422,6 +433,26 @@ function ComposeIssueDialog({
   const guard = useWriteGuard()
   const [title, setTitle] = useState(prefill.title)
   const [body, setBody] = useState(prefill.body)
+  // The unsent issue survives a reload (per identity, public repos only; nothing is kept while a
+  // submit's outcome is unknown). Kept only while the form is open, and restored when it opens
+  // empty (a link's prefill wins).
+  const [kept, keep, holdKept] = useDraftState<{ title: string; body: string }>(newIssueDraftKey(repo, identity), () => true)
+  const seeded = useRef(false)
+  useEffect(() => {
+    if (!open) {
+      seeded.current = false
+      return
+    }
+    if (!seeded.current) {
+      seeded.current = true
+      if (title === '' && body === '' && kept !== null) {
+        setTitle(kept.title)
+        setBody(kept.body)
+        return
+      }
+    }
+    if (!pending) keep(title.trim() === '' && body.trim() === '' ? null : { title, body })
+  }, [open, title, body]) // eslint-disable-line react-hooks/exhaustive-deps
   const [template, setTemplate] = useState<IssueTemplate | null>(null)
   // Each YAML issue form's answers, by file (the issue's body is made from them): kept while
   // another template is picked, so arrowing through the picker loses nothing (QW4-037).
@@ -497,11 +528,14 @@ function ComposeIssueDialog({
     setPending(true)
     setError(null)
     setNote(null)
+    // Until the outcome is known, a reload must not bring the issue back to be posted again.
+    holdKept(true, null)
     try {
       const created = await createIssue(sdk, signer, repo, { title: title.trim(), body: issueBody, intent: draft.intent }, (taken, next) =>
         setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
       )
       await applyLabels(created, labelsToApply)
+      holdKept(false, null)
       setTitle('')
       setBody('')
       setTemplate(null)
@@ -512,6 +546,7 @@ function ComposeIssueDialog({
     } catch (e) {
       if (e instanceof SupersededWriteError) {
         // The earlier version was posted: this draft is done (never post it a second time).
+        holdKept(false, null)
         setTitle('')
         setBody('')
         setTemplate(null)
@@ -520,6 +555,8 @@ function ComposeIssueDialog({
         onClose()
         return
       }
+      // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays held.)
+      if (!(e instanceof UnconfirmedWriteError)) holdKept(false, { title, body })
       setError(guard.failed(e))
     } finally {
       setPending(false)

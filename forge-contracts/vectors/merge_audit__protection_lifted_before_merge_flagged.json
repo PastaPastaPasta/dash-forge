@@ -1,0 +1,60 @@
+{
+  "name": "protection_lifted_before_merge_flagged",
+  "description": "Protection lifted half an hour before a writer's merge: not protected at the merge, and the change is flagged.",
+  "case": "merge_audit",
+  "rules": "v2",
+  "input": {
+    "mergedAt": 10000000,
+    "merger": "writ",
+    "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prAuthor": "auth",
+    "policies": [],
+    "protection": [
+      {
+        "id": "c1",
+        "createdAt": 100,
+        "protected": true
+      },
+      {
+        "id": "c2",
+        "createdAt": 8200000,
+        "protected": false
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "reviews": [],
+    "dismissals": [],
+    "runs": [],
+    "runners": [],
+    "bypasses": []
+  },
+  "expected": {
+    "verdict": "none",
+    "policy": null,
+    "protected": false,
+    "mergerRole": "writer",
+    "protectionUnmet": false,
+    "approvals": null,
+    "checks": null,
+    "checksUnread": false,
+    "bypass": null,
+    "rulesChanged": true
+  }
+}

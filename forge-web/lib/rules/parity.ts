@@ -33,6 +33,8 @@ export interface CheckRunRow {
   /** `$ownerId`. */
   readonly reporter: string
   readonly createdAt: number
+  /** `$updatedAt`: when the run was last replaced. Absent: not read (the merge audit then reads the run as still running at the merge). */
+  readonly updatedAt?: number
 }
 
 /** What a branch `policy` says about checks. */

@@ -890,6 +890,7 @@ mod tests {
             created_at: Some(5),
             created_at_block_height: None,
             updated_at_block_height: None,
+            updated_at: None,
             revision: None,
             fields: BTreeMap::from([
                 ("repoId".into(), FieldValue::identifier([1; 32])),

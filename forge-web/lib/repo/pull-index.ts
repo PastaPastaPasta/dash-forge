@@ -396,3 +396,48 @@ export async function pullMilestoneItems(sdk: EvoSDK, repo: RepoRef, network: Ne
   const rows = await rowsWithEvent(sdk, await indexOf(sdk, repo, network), 'milestoneSet')
   return rows?.map((r) => ({ open: r.state.open, milestone: r.review.milestone })) ?? null
 }
+
+/** An open PR that uses a branch (see {@link openPullsOnBranch}). */
+export interface PullOnBranch {
+  readonly number: number
+  readonly title: string
+  /** `base`: it merges into the branch; `head`: its commits come from it. */
+  readonly uses: 'base' | 'head'
+}
+
+/** How many chunks of PRs (100 each, newest first) the branch-delete check looks through at most. */
+const ON_BRANCH_CHUNKS = 5
+
+/**
+ * The open PRs of `repo` that use the branch `refName` (`refs/heads/…`): as their base (the
+ * newest retarget's, so the member events are read) or, opened from this repo, as their head.
+ * Read when a branch is about to be deleted, never on a page load, from the pull index the PR
+ * list shares, through the newest {@link ON_BRANCH_CHUNKS} chunks; `searched` says when the
+ * answer covers only those. `except` leaves one PR out (the PR whose page deletes its branch).
+ */
+export async function openPullsOnBranch(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  refName: string,
+  { except = null, network = DEFAULT_NETWORK }: { readonly except?: number | null; readonly network?: Network } = {},
+): Promise<{ readonly pulls: readonly PullOnBranch[]; readonly searched: number | null }> {
+  const index = await indexOf(sdk, repo, network)
+  const sameRepo = (r: PullRow): boolean => r.sourceId === '' || r.sourceId === repo.repoId
+  const usesOf = (r: PullRow): PullOnBranch['uses'] | null =>
+    r.mergeBaseRefName === refName ? 'base' : sameRepo(r) && r.sourceRefName === refName ? 'head' : null
+  const selected = await selectRows(sdk, index, {
+    candidates: null,
+    matches: (r) => r.state.open && r.number !== except && usesOf(r) !== null,
+    cmp: compareRows('newest'),
+    direction: 'desc',
+    want: 50,
+    walkAll: true,
+    partial: true,
+    needLogs: true,
+    maxChunks: ON_BRANCH_CHUNKS,
+  })
+  return {
+    pulls: selected.rows.map((r) => ({ number: r.number, title: r.title, uses: usesOf(r) ?? 'base' })),
+    searched: selected.complete ? null : selected.searched,
+  }
+}

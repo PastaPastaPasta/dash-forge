@@ -6103,6 +6103,7 @@ mod tests {
                 created_at: Some(at),
                 created_at_block_height: Some(1),
                 updated_at_block_height: None,
+                updated_at: None,
                 revision: None,
                 fields: fields
                     .iter()
