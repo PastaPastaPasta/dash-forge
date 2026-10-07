@@ -77,7 +77,7 @@ pub fn report(json: bool, err: &anyhow::Error, ctx: &ErrorContext<'_>) -> i32 {
 }
 
 /// `body` (an object) with the `"error"` block of `user` added; just the error without one.
-fn with_error(body: Option<&Value>, user: &UserError) -> Value {
+pub(crate) fn with_error(body: Option<&Value>, user: &UserError) -> Value {
     let mut out = user.to_json();
     if let Some(Value::Object(fields)) = body {
         let error = out["error"].take();
