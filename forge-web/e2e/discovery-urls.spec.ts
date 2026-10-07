@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, countDapi, countDocumentQueries, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, DEMO, deployment, loadSeedPulls, nodeSdk, repoUrl, runAxe, shot } from './helpers'
+import { atRoute, collectPageErrors, countDapi, countDocumentQueries, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, DEMO, deployment, loadSeedPulls, nodeSdk, ownerIs, repoUrl, runAxe, shot } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -150,7 +150,7 @@ test('g3. the jump box: a bare repo name opens the repo, not "No such identity"'
     // A pick closes the popover.
     await expect(choices).toHaveCount(0)
   }
-  await expect(page).toHaveURL(new RegExp(`/repo/?\\?owner=${DEMO.owner}&name=${DEMO.name}`), { timeout: 60_000 })
+  await expect(page).toHaveURL(atRoute(new RegExp(`/repo/?\\?${await ownerIs(DEMO.owner)}&name=${DEMO.name}`)), { timeout: 60_000 })
   await expect(page.getByText('No such identity')).toHaveCount(0)
 
   // A name one owner uses (the paging fixture): straight there.
@@ -158,7 +158,7 @@ test('g3. the jump box: a bare repo name opens the repo, not "No such identity"'
   test.skip(pagingOwner === undefined || others.length > 0, 'issues-paging is not a unique repo name on this devnet')
   await jump.fill('issues-paging')
   await jump.press('Enter')
-  await expect(page).toHaveURL(new RegExp(`/repo/?\\?owner=${pagingOwner}&name=issues-paging`), { timeout: 60_000 })
+  await expect(page).toHaveURL(atRoute(new RegExp(`/repo/?\\?${await ownerIs(pagingOwner!)}&name=issues-paging`)), { timeout: 60_000 })
 
   // A word that is neither: says so, and offers the Explore search.
   await jump.fill('zz-nothing-called-this')
@@ -171,7 +171,7 @@ test('g3. the jump box: a bare repo name opens the repo, not "No such identity"'
   // @name stays a profile, owner/name a repo (unchanged).
   await jump.fill(`${DEMO.owner}/${DEMO.name}`)
   await jump.press('Enter')
-  await expect(page).toHaveURL(new RegExp(`/repo/?\\?owner=${DEMO.owner}`))
+  await expect(page).toHaveURL(atRoute(new RegExp(`/repo/?\\?${await ownerIs(DEMO.owner)}&name=${DEMO.name}(&|$)`)))
   expect(errors, errors.join('\n')).toEqual([])
 })
 
@@ -192,7 +192,7 @@ test('g4. short URLs: branches, tags, stargazers, commit, releases/tag, tree, pu
   ]
   for (const [short, canonical, content] of cases) {
     await page.goto(short, { waitUntil: 'domcontentloaded' })
-    await expect(page, short).toHaveURL(canonical, { timeout: 30_000 })
+    await expect(page, short).toHaveURL(atRoute(canonical), { timeout: 30_000 })
     await expect(page.getByText('Nothing here'), short).toHaveCount(0)
     await expect(page.locator('main').getByText(content).first(), short).toBeVisible({ timeout: 60_000 })
   }
@@ -204,7 +204,7 @@ test('g4. short URLs: branches, tags, stargazers, commit, releases/tag, tree, pu
   const oid = new URL(String(await tip.getAttribute('href')), page.url()).searchParams.get('oid') ?? ''
   expect(oid).toMatch(/^[0-9a-f]{40}$/)
   await page.goto(`${base}/commit/${oid.slice(0, 12)}`, { waitUntil: 'domcontentloaded' })
-  await expect(page).toHaveURL(new RegExp(`/repo/commit/?\\?owner=.*oid=${oid.slice(0, 12)}`))
+  await expect(page).toHaveURL(atRoute(new RegExp(`/repo/commit/?\\?owner=.*oid=${oid.slice(0, 12)}`)))
   await expect(page.locator('main h1').first()).toBeVisible({ timeout: 60_000 })
   await expect(page.getByText('Nothing here')).toHaveCount(0)
   await shot(page, 'g14-short-commit')
@@ -236,10 +236,51 @@ test('g6. showcase repos are discoverable: search, jump box and short URL (showc
   await jump.fill('ripgrep')
   await jump.press('Enter')
   // One ripgrep and no DPNS name "ripgrep": the repo opens (D-034: it used to open /u/?name=ripgrep).
-  await expect(page).toHaveURL(new RegExp(`/repo/?\\?owner=${id}&name=ripgrep`), { timeout: 60_000 })
+  await expect(page).toHaveURL(atRoute(new RegExp(`/repo/?\\?${await ownerIs(id)}&name=ripgrep`)), { timeout: 60_000 })
 
   await page.goto(`/${id}/ripgrep/tags`, { waitUntil: 'domcontentloaded' })
-  await expect(page).toHaveURL(/\/repo\/tags\/?\?owner=/)
+  await expect(page).toHaveURL(atRoute(/\/repo\/tags\/?\?owner=/))
   // A tag's link (the shell header's tabs would match a bare /repo prefix before the page resolves).
   await expect(page.locator('main a[href*="/repo/tree/"], main a[href*="/repo/release/"], main a[href*="/repo/commit/"]').first()).toBeVisible({ timeout: 60_000 })
+})
+
+test('g7. the address bar keeps the short URL: load, in-app navigation, Back, reload (CJ-6)', async ({ page }) => {
+  const { errors } = collectPageErrors(page)
+  // The owner is written by DPNS name when the fixture's owner has one, else by id.
+  const owner = (await ownerIs(DEMO.owner)).slice('owner='.length)
+  const shortOf = (rest: string): RegExp => new RegExp(`^[^?#]*/${owner}/${DEMO.name}/${rest}$`)
+  const issues = shortOf('issues\\?(?:.*&)?q=is%3Aclosed(?:&.*)?')
+  await page.goto(repoUrl('issues', '&q=is%3Aclosed'), { waitUntil: 'domcontentloaded' })
+  await expect(page).toHaveURL(issues, { timeout: 60_000 })
+  await expect(page).toHaveURL(atRoute(new RegExp(`/repo/issues/\\?${await ownerIs(DEMO.owner)}&name=${DEMO.name}&.*q=is%3Aclosed`)))
+  await expect(page.getByTestId('issue-row').or(page.getByText(/No closed issues|No issues/i)).first()).toBeVisible({ timeout: 60_000 })
+  await shot(page, 'g14-short-address-bar')
+  // Copy link writes the owner as the address bar does.
+  const barOwner = new URL(page.url()).pathname.split('/').at(-3)
+  const copied = new URL(String(await page.getByTestId('copy-link').first().getAttribute('data-href')))
+  expect(copied.pathname.split('/').at(-2)).toBe(barOwner)
+
+  // In-app navigation: the next page's short URL.
+  const pullsTab = page.getByRole('link', { name: /^Pull requests/ }).first()
+  await pullsTab.click()
+  await expect(page).toHaveURL(shortOf('pulls'), { timeout: 60_000 })
+  await expect(pullsTab).toHaveAttribute('aria-current', 'page', { timeout: 60_000 })
+
+  // The tab already open: no new history entry, and the address bar stays short.
+  const entries = await page.evaluate(() => history.length)
+  await pullsTab.click()
+  await page.waitForTimeout(1_000)
+  await expect(page).toHaveURL(shortOf('pulls'))
+  expect(await page.evaluate(() => history.length)).toBe(entries)
+
+  // Back: the issues search again, the same page.
+  await page.goBack()
+  await expect(page).toHaveURL(issues)
+  await expect(page.getByRole('link', { name: /^Issues/ }).first()).toHaveAttribute('aria-current', 'page')
+
+  // Reload: the 404 page's shim opens the route, and the address bar is short again.
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page).toHaveURL(issues, { timeout: 60_000 })
+  await expect(page.getByText('Nothing here')).toHaveCount(0)
+  expect(errors, errors.join('\n')).toEqual([])
 })

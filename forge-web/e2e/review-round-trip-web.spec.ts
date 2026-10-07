@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { answerStorageQuestion, expectPlatformPreAllowed, idFile, idOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { answerStorageQuestion, atRoute, expectPlatformPreAllowed, idFile, idOf, routeOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * The full GitHub-style review round trip in the browser (review-parity spec §7 PRs 3–6), two
@@ -152,8 +152,8 @@ test('r2. the contributor opens a PR from the fork', async ({ browser }) => {
   await page.getByLabel('Title', { exact: true }).fill(TITLE)
   await page.getByLabel('Description', { exact: true }).fill('Greets the forge.')
   await page.getByRole('button', { name: 'Create pull request' }).click()
-  await page.waitForURL(/\/repo\/pull\/\?.*number=\d+/, { timeout: 180_000 })
-  prNumber = Number(new URL(page.url()).searchParams.get('number'))
+  await page.waitForURL(atRoute(/\/repo\/pull\/\?.*number=\d+/), { timeout: 180_000 })
+  prNumber = Number(routeOf(page.url()).searchParams.get('number'))
   expect(prNumber).toBeGreaterThan(0)
 })
 

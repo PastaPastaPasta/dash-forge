@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 
 import { useSdk } from '@/hooks/use-sdk'
 import { resolveDpnsName } from '@/lib/view'
-import { lookupDpnsName } from '@/lib/view/dpns'
+import { cachedDpnsName, lookupDpnsName } from '@/lib/view/dpns'
 import { isIdentityId } from '@/lib/utils'
 
 /**
@@ -25,6 +25,29 @@ export function useDpnsName(identityId: string): string | undefined {
     }
   }, [sdk, ready, identityId, network])
   return resolved?.id === identityId ? resolved.name ?? undefined : undefined
+}
+
+/**
+ * The DPNS name of `identityId` as {@link useDpnsName} reads it, telling "still reading"
+ * (undefined) from "none" (null: no name, a failed read, or `identityId` is not an id). A name this
+ * tab has read already is there on the first render: what waits for the name, and should not
+ * show the id meanwhile, needs that (the address bar's short URL).
+ */
+export function useSettledDpnsName(identityId: string): string | null | undefined {
+  const { sdk, ready, network } = useSdk()
+  const cached = isIdentityId(identityId) ? cachedDpnsName(network, identityId) : null
+  const [resolved, setResolved] = useState<{ id: string; name: string | null } | null>(null)
+  useEffect(() => {
+    if (cached !== undefined || !ready || !sdk) return
+    let live = true
+    // Never throws: a failed read is cached as none.
+    void resolveDpnsName(sdk, identityId, network).then((name) => live && setResolved({ id: identityId, name }))
+    return () => {
+      live = false
+    }
+  }, [sdk, ready, identityId, network, cached])
+  if (cached !== undefined) return cached
+  return resolved?.id === identityId ? resolved.name : undefined
 }
 
 /**

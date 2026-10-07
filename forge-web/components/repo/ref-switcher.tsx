@@ -8,7 +8,8 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { Check, ChevronDown, GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome, SelectedRef } from '@/lib/view'
 import { findBranch, isLive, matchesRefQuery, refParamFor, splitRefPath } from '@/lib/view'
