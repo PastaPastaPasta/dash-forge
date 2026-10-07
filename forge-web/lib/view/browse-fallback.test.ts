@@ -27,7 +27,7 @@ import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
 import { bytesToBase64 } from '../sdk'
 import { base58Decode } from '../auth/base58'
-import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
+import { AUTO_INDEX_DECODE_MAX_BYTES, cachedFallback, fallbackNeedsAsk, FallbackTooLargeError, startFallback, type FallbackProgress } from './browse-fallback'
 import {
   artifactRangeFetch,
   externalFetchUrls,
@@ -128,9 +128,30 @@ describe('startFallback', () => {
     const repo = testRepo('fallback-badhash')
     const sdk = mockSdk(new Map([[manifest.packHash, pack]]))
 
-    await expect(startFallback(sdk, repo, [manifest])).rejects.toThrow(/hash mismatch/)
+    // Refused as it downloads (bytes are checked against packHash before any use).
+    await expect(startFallback(sdk, repo, [manifest])).rejects.toThrow(/does not hash to the pack/)
     await Promise.resolve() // let the eviction handler run
     expect(cachedFallback(repo.repoId)).toBeNull()
+  })
+
+  it('stops a clone started without asking at its smaller budget, and an asked-for one at the larger', async () => {
+    // One blob whose header declares more than the budget: refused before anything is inflated.
+    const pack = (declared: number): Uint8Array => packFrame(concat(objHeader(T_BLOB, declared), new Uint8Array(64)))
+    const auto = pack(AUTO_INDEX_DECODE_MAX_BYTES + 1)
+    const autoManifest = manifestFor(auto, 1)
+    const autoRun = startFallback(mockSdk(new Map([[autoManifest.packHash, auto]])), testRepo('fallback-auto-big'), [autoManifest], undefined, true)
+    await expect(autoRun).rejects.toBeInstanceOf(FallbackTooLargeError)
+    await expect(autoRun).rejects.toMatchObject({ automatic: true })
+    // Remembered for the session: the next page asks rather than decode these packs again.
+    expect(fallbackNeedsAsk('fallback-auto-big', [autoManifest])).toBe(true)
+    expect(fallbackNeedsAsk('fallback-auto-big', [manifestFor(pack(1), 1)])).toBe(false)
+
+    const huge = pack(2 * 1024 * 1024 * 1024)
+    const hugeManifest = manifestFor(huge, 1)
+    const asked = startFallback(mockSdk(new Map([[hugeManifest.packHash, huge]])), testRepo('fallback-asked-big'), [hugeManifest])
+    await expect(asked).rejects.toThrow(/too large to open in the browser/)
+    await expect(asked).rejects.toMatchObject({ automatic: false })
+    expect(fallbackNeedsAsk('fallback-asked-big', [hugeManifest])).toBe(false)
   })
 
   it('rejects when the manifest objectCount disagrees with the pack header', async () => {
