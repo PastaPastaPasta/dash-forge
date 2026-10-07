@@ -4247,17 +4247,24 @@ mod tests {
         );
     }
 
-    /// A push asks whether a pack is already stored from the copies the repository's manifests
-    /// record, never a pack mirror (source check): a mirror anyone may record and delete must
-    /// not let a push skip storing its pack.
+    /// A push asks whether a pack is already stored, and whether its index is, from the copies
+    /// the repository's manifests record, never a pack mirror (source check): a mirror anyone
+    /// may record and delete must not let a push skip storing its pack or its index.
+    /// `is_pack_indexed` reading recorded copies only is pinned in forge-core
+    /// (`only_the_read_path_reaches_pack_mirrors`).
     #[test]
     fn a_push_never_takes_a_pack_mirror_as_stored() {
         let src = include_str!("helper.rs");
-        let at = src
-            .find("async fn confirm_existing_manifest")
-            .expect("confirm_existing_manifest");
-        let body = &src[at..at + src[at..].find("\n}\n").expect("its end")];
-        assert!(body.contains(".fetch_best_copy(ctx.repo"), "{body}");
-        assert!(!body.contains("mirror("), "{body}");
+        let body = |from: &str| {
+            let at = src.find(from).unwrap_or_else(|| panic!("{from}"));
+            &src[at..at + src[at..].find("\n}\n").expect("its end")]
+        };
+        let stored = body("async fn confirm_existing_manifest");
+        assert!(stored.contains(".fetch_best_copy(ctx.repo"), "{stored}");
+        let indexed = body("async fn missing_index(");
+        assert!(indexed.contains(".is_pack_indexed(ctx.repo"), "{indexed}");
+        for b in [stored, indexed] {
+            assert!(!b.contains("mirror("), "{b}");
+        }
     }
 }

@@ -204,7 +204,8 @@ pub async fn mirror_of_owner(
 pub enum ServeCheck {
     /// One of them served bytes that hash to the pack.
     Serves,
-    /// None served it, and at least one served other bytes (each failure, in words).
+    /// None served it, and at least one served other bytes: a body that does not hash to the
+    /// pack, or one larger than the pack (each failure, in words).
     WrongBytes(String),
     /// None answered with it: not found, refused, timed out, or none this computer reads.
     Unreachable(String),
@@ -218,6 +219,7 @@ pub async fn check_serves(
     pack_hash: &str,
     size: Option<u64>,
 ) -> ServeCheck {
+    use crate::backends::https::LARGER_THAN_EXPECTED;
     use crate::storage::read::{external_budget, Missed, WRONG_BYTES};
     match reader
         .race(uris, pack_hash, size, Some(external_budget(size)))
@@ -228,7 +230,12 @@ pub async fn check_serves(
             "this computer reads none of these addresses (an ipfs:// address needs a read gateway in storage.toml)".into(),
         ),
         Err(Missed::Unverified { error, places }) => {
-            if places.iter().any(|p| p.contains(WRONG_BYTES)) {
+            // A body over the pack's `size` (the only cap a read sets) is other bytes too,
+            // refused before it was hashed.
+            if places
+                .iter()
+                .any(|p| p.contains(WRONG_BYTES) || p.contains(LARGER_THAN_EXPECTED))
+            {
                 ServeCheck::WrongBytes(error.to_string())
             } else {
                 ServeCheck::Unreachable(error.to_string())

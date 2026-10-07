@@ -508,6 +508,7 @@ export function resetExternalFetchState(): void {
   resetRepoGateways()
   resetMirrorUris()
   mirroredWhole.clear()
+  mirroredBytes = 0
 }
 
 /**
@@ -1004,22 +1005,55 @@ async function fromPackMirrors(
   }
 }
 
-/** Packs a mirror served whole this session, for range reads (`repoKey:pack`); the newest few. */
-const mirroredWhole = new Map<string, Promise<Uint8Array | null>>()
-const MIRRORED_PACKS_KEPT = 4
+/**
+ * Packs a mirror served whole this session, for range reads (`repoKey:pack`), least recently
+ * used first. `size` is set once the read resolved; only those count toward the budget.
+ */
+const mirroredWhole = new Map<string, { read: Promise<Uint8Array | null>; size?: number }>()
+let mirroredBytes = 0
+
+/**
+ * Bytes of mirror-served packs kept for range reads. A pack larger than this is shared only
+ * while its read is in flight (the ranges a view asks at once), then dropped: a later range
+ * reads it again rather than holding it for the session.
+ */
+const MIRRORED_BYTES_KEPT = 64 * 1024 * 1024
+let mirroredBytesKept = MIRRORED_BYTES_KEPT
+
+/** Test hook: keep `bytes` of mirror-served packs (`null` restores {@link MIRRORED_BYTES_KEPT}). */
+export function overrideMirroredBytesKept(bytes: number | null): void {
+  mirroredBytesKept = bytes ?? MIRRORED_BYTES_KEPT
+}
 
 /** {@link fromPackMirrors} once per pack for range reads: each range is a slice of checked bytes. */
 function mirroredPack(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest, before: readonly string[]): Promise<Uint8Array | null> {
   const key = `${repoKey(repo)}:${manifest.packHash.toLowerCase()}`
   const hit = mirroredWhole.get(key)
-  if (hit !== undefined) return hit
-  const read = fromPackMirrors(sdk, repo, manifest, before).then((bytes) => {
-    if (bytes === null && mirroredWhole.get(key) === read) mirroredWhole.delete(key)
+  if (hit !== undefined) {
+    // Touch: re-insert so the map stays least recently used first.
+    mirroredWhole.delete(key)
+    mirroredWhole.set(key, hit)
+    return hit.read
+  }
+  const entry: { read: Promise<Uint8Array | null>; size?: number } = { read: Promise.resolve(null) }
+  entry.read = fromPackMirrors(sdk, repo, manifest, before).then((bytes) => {
+    if (mirroredWhole.get(key) !== entry) return bytes
+    if (bytes === null || bytes.length > mirroredBytesKept) {
+      mirroredWhole.delete(key)
+      return bytes
+    }
+    entry.size = bytes.length
+    mirroredBytes += bytes.length
+    for (const [k, e] of mirroredWhole) {
+      if (mirroredBytes <= mirroredBytesKept) break
+      if (e.size === undefined) continue // in flight: a range still awaits it
+      mirroredWhole.delete(k)
+      mirroredBytes -= e.size
+    }
     return bytes
   })
-  mirroredWhole.set(key, read)
-  trimOldest(mirroredWhole, MIRRORED_PACKS_KEPT)
-  return read
+  mirroredWhole.set(key, entry)
+  return entry.read
 }
 
 /** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */

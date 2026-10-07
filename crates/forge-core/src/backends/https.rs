@@ -165,6 +165,10 @@ pub(crate) async fn http_get_watched(
     read_body_watched(resp, max_bytes, url, flowing).await
 }
 
+/// Why a body was refused for exceeding the size expected of it ([`read_body_watched`]): when
+/// that size is the artifact's own, the host is serving other bytes, not failing to answer.
+pub(crate) const LARGER_THAN_EXPECTED: &str = "response is larger than the expected";
+
 /// Read a response body, erroring as soon as it exceeds `max_bytes` (checked against
 /// `Content-Length` up front and against the running total while streaming), and setting
 /// `flowing` when the first non-empty chunk arrives.
@@ -176,7 +180,7 @@ pub(crate) async fn read_body_watched(
 ) -> Result<Vec<u8>> {
     let too_big = |n: u64| match max_bytes {
         Some(m) if n > m => Err(Error::Io(format!(
-            "{what}: response is larger than the expected {m} bytes; refusing to read it"
+            "{what}: {LARGER_THAN_EXPECTED} {m} bytes; refusing to read it"
         ))),
         _ => Ok(()),
     };

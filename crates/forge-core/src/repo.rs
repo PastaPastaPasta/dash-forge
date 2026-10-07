@@ -2403,7 +2403,10 @@ impl<'a> RepoService<'a> {
 
     /// Whether a fragment readers merge already covers git pack `pack_hash` (a retry of a push
     /// that recorded the pack but died before its index, D-920). `Ok(false)` when the pack is
-    /// not listed at all. Reads the fragments a reader would (small artifacts).
+    /// not listed at all. Reads the fragments a reader would (small artifacts), from their
+    /// recorded copies only ([`Self::read_fragments`]): a push asks this before its refs are
+    /// written, and a pack mirror must not let it skip publishing an index its own storage
+    /// lacks.
     pub async fn is_pack_indexed(&self, repo: &RepoRef, pack_hash: [u8; 32]) -> Result<bool> {
         let manifests = self.read_pack_manifests(repo).await?;
         let roles = self.copy_roles(repo).await?;
@@ -2424,7 +2427,8 @@ impl<'a> RepoService<'a> {
             .any(|(_, f)| f.pack_ref_iter().any(|r| r == pack_ref)))
     }
 
-    /// Download and parse the live index fragments `live` (newest first), oldest first.
+    /// Download and parse the live index fragments `live` (newest first), oldest first, from
+    /// their recorded copies only: a push folds them, and a push never asks a pack mirror.
     async fn read_live_fragments(
         &self,
         repo: &RepoRef,
@@ -2445,7 +2449,7 @@ impl<'a> RepoService<'a> {
                 .collect();
             let copies = if copies.is_empty() { vec![m] } else { copies };
             let (sealed, best) = self
-                .fetch_best_copy_or_mirror(repo, &contract, &copies, roles, &reader)
+                .fetch_best_copy(repo, &contract, &copies, roles, &reader)
                 .await?;
             let bytes = self
                 .open_artifact_of(repo, &copies, best.size_bytes, sealed)
@@ -2484,10 +2488,10 @@ impl<'a> RepoService<'a> {
             .find(|m| !read.iter().any(|(r, _)| r.pack_hash == m.pack_hash))
         {
             return Err(Error::Config(format!(
-                "index fragment {} cannot be read (no copy verifies, or this identity cannot \
-                 open it); readers fall back to downloading the packs until it can be read, \
-                 and a new index would not change that. Restore its storage (`dg reseed`), or \
-                 check `dg storage status`",
+                "index fragment {} cannot be read from its recorded copies (none verifies, or \
+                 this identity cannot open it); readers fall back to downloading the packs \
+                 until it can be read, and a new index would not change that. Restore its \
+                 storage (`dg reseed`), or check `dg storage status`",
                 hex::encode(bad.pack_hash)
             )));
         }
@@ -2521,8 +2525,12 @@ impl<'a> RepoService<'a> {
     }
 
     /// Download and parse the index fragments `fragments` (one representative copy each, as
-    /// [`index_fragments`] lists them; the best verifying copy is read). One that cannot be
-    /// read or parsed is left out and logged: it covers nothing.
+    /// [`index_fragments`] lists them; the best verifying recorded copy is read). One that
+    /// cannot be read or parsed is left out and logged: it covers nothing.
+    ///
+    /// Recorded copies only, never a pack mirror: every caller decides from this what a write
+    /// publishes (a push's owed index, `dg repo reindex`'s plan), and a fragment only a mirror
+    /// still serves is not stored where readers of the recorded copies find it.
     async fn read_fragments(
         &self,
         repo: &RepoRef,
@@ -2540,7 +2548,7 @@ impl<'a> RepoService<'a> {
                 .filter(|m| m.kind == locator && m.pack_hash == f.pack_hash)
                 .collect();
             let parsed = match self
-                .fetch_best_copy_or_mirror(repo, &contract, &copies, roles, &reader)
+                .fetch_best_copy(repo, &contract, &copies, roles, &reader)
                 .await
             {
                 Ok((sealed, m)) => match self
@@ -4558,7 +4566,9 @@ mod tests {
 
     /// `fetch_best_copy` reads recorded copies only (source check): a push asks it whether a
     /// pack is already stored, and a pack mirror must never answer that. Only
-    /// `fetch_best_copy_or_mirror` reaches the mirrors.
+    /// `fetch_best_copy_or_mirror` reaches the mirrors. The index fragments a push or
+    /// `dg repo reindex` reads to decide what to publish (`is_pack_indexed`, the fold,
+    /// `plan_reindex`) are recorded copies only too.
     #[test]
     fn only_the_read_path_reaches_pack_mirrors() {
         let src = include_str!("repo.rs");
@@ -4575,12 +4585,36 @@ mod tests {
                 "async fn best_copy<'m>",
                 "/// `manifest`'s pack from its recorded mirrors",
             ),
+            body(
+                "pub async fn is_pack_indexed(",
+                "/// Download and parse the live index fragments",
+            ),
+            body(
+                "async fn read_live_fragments(",
+                "/// What [`Self::reindex`]",
+            ),
+            body(
+                "pub async fn plan_reindex(",
+                "/// Download and parse the index",
+            ),
+            body(
+                "async fn read_fragments(",
+                "/// Publish the browse index for",
+            ),
         ] {
             assert!(
                 !b.contains("fetch_from_mirrors") && !b.contains("or_mirror("),
                 "{b}"
             );
         }
+        // The fragment readers above reach storage through the recorded-only path.
+        for f in ["async fn read_live_fragments(", "async fn read_fragments("] {
+            assert!(body(f, "Ok(").contains(".fetch_best_copy(repo"), "{f}");
+        }
+        assert!(
+            body("pub async fn is_pack_indexed(", "/// Download and parse")
+                .contains(".read_fragments(")
+        );
         assert!(body(
             "pub async fn fetch_best_copy_or_mirror<'m>",
             "async fn best_copy<'m>"

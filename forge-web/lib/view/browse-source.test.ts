@@ -35,6 +35,7 @@ import {
   clearChunkCache,
   loadArtifactBytesProgress,
   loadBrowseContext,
+  overrideMirroredBytesKept,
   PackUnavailableError,
   resetExternalFetchState,
 } from './browse-source'
@@ -1007,6 +1008,75 @@ describe('fork pack via a platform:// locator', () => {
       expect(checks.mirroredPacks).toEqual([hash])
       expect(checks.fellBackFrom.length).toBeGreaterThan(0)
     } finally {
+      mirrorUris.value = []
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+      resetContentChecks()
+    }
+  })
+
+  it('keeps mirror-served packs within a byte budget: a larger one is shared only while it is read', async () => {
+    const { sdk } = parentSdk(bytes)
+    let asked = 0
+    vi.stubGlobal('fetch', () => {
+      asked += 1
+      return Promise.resolve(new Response(bytes.slice()))
+    })
+    mirrorUris.value = ['https://honest.example/p']
+    overrideMirroredBytesKept(total - 1)
+    try {
+      const read = artifactRangeFetch(sdk, FORK, forkManifest(`platform://CORE/PARENT/gone/${hash}`))
+      // The ranges a view asks at once share one read of the pack.
+      const both = await Promise.all([read(0, 8), read(8, 16)])
+      expect(Array.from(both[1])).toEqual(Array.from(bytes.subarray(8, 16)))
+      expect(asked).toBe(1)
+      // It is not kept: a later range reads it again.
+      expect(Array.from(await read(16, 24))).toEqual(Array.from(bytes.subarray(16, 24)))
+      expect(asked).toBe(2)
+      // Within the budget it is kept for the session.
+      resetExternalFetchState()
+      overrideMirroredBytesKept(total)
+      await read(0, 8)
+      await read(8, 16)
+      expect(asked).toBe(3)
+    } finally {
+      overrideMirroredBytesKept(null)
+      mirrorUris.value = []
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+      resetContentChecks()
+    }
+  })
+
+  it('drops the least recently used mirror-served pack once the kept bytes pass the budget', async () => {
+    const other = bytes.map((b) => b ^ 0x5a)
+    const otherHash = bytesToHex(sha256(other))
+    const { sdk } = parentSdk(bytes)
+    const asked: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      asked.push(String(url))
+      return Promise.resolve(new Response((String(url).endsWith('/b') ? other : bytes).slice()))
+    })
+    const manifestOf = (h: string): PackManifest => ({ ...forkManifest(`platform://CORE/PARENT/gone/${h}`), packHash: h })
+    const mirrors = new Map([
+      [hash, 'https://honest.example/a'],
+      [otherHash, 'https://honest.example/b'],
+    ])
+    overrideMirroredBytesKept(total + 1)
+    try {
+      const a = artifactRangeFetch(sdk, FORK, manifestOf(hash))
+      const b = artifactRangeFetch(sdk, FORK, manifestOf(otherHash))
+      mirrorUris.value = [mirrors.get(hash)!]
+      await a(0, 8)
+      mirrorUris.value = [mirrors.get(otherHash)!]
+      expect(Array.from(await b(0, 8))).toEqual(Array.from(other.subarray(0, 8)))
+      // Both do not fit: the first pack was dropped, the second is kept.
+      await b(8, 16)
+      mirrorUris.value = [mirrors.get(hash)!]
+      await a(8, 16)
+      expect(asked).toEqual(['https://honest.example/a', 'https://honest.example/b', 'https://honest.example/a'])
+    } finally {
+      overrideMirroredBytesKept(null)
       mirrorUris.value = []
       vi.unstubAllGlobals()
       resetExternalFetchState()

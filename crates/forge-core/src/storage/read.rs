@@ -1277,6 +1277,34 @@ mod tests {
         format!("http://{addr}")
     }
 
+    /// `dg storage mirror add` tells a host serving other bytes (E504) from one that does not
+    /// answer (E503): a body larger than the pack is other bytes, though the size cap refuses
+    /// it before it is hashed.
+    #[tokio::test]
+    async fn a_mirror_check_reads_an_oversized_body_as_wrong_bytes() {
+        use crate::pack_mirror::{check_serves, ServeCheck};
+        let good = b"the real pack".to_vec();
+        let hash = hex::encode(sha256(&good));
+        let base = serve(vec![
+            ("/huge", vec![7u8; 1 << 20]),
+            ("/other", b"not the pack!".to_vec()),
+            ("/good", good.clone()),
+        ]);
+        let r = PackReader::new(vec![base.clone()], &StorageProfiles::default());
+        let size = Some(good.len() as u64);
+        let at = |path: &str| vec![format!("{base}{path}")];
+        let huge = check_serves(&r, &at("/huge"), &hash, size).await;
+        assert!(matches!(huge, ServeCheck::WrongBytes(_)), "{huge:?}");
+        let other = check_serves(&r, &at("/other"), &hash, size).await;
+        assert!(matches!(other, ServeCheck::WrongBytes(_)), "{other:?}");
+        let gone = check_serves(&r, &at("/gone"), &hash, size).await;
+        assert!(matches!(gone, ServeCheck::Unreachable(_)), "{gone:?}");
+        assert_eq!(
+            check_serves(&r, &at("/good"), &hash, size).await,
+            ServeCheck::Serves
+        );
+    }
+
     #[tokio::test]
     async fn oversized_bodies_and_slow_hosts_cost_one_candidate() {
         let good = b"the real pack".to_vec();
