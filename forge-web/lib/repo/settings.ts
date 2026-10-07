@@ -119,6 +119,34 @@ export function patternsProblem(patterns: readonly string[]): string | null {
   return null
 }
 
+/**
+ * How long a repo may show no config before it counts as having none: a create writes the repo,
+ * then its maintainer document, then its config, and a node can lag a few blocks behind.
+ */
+export const CONFIG_LAG_MS = 10 * 60 * 1000
+
+/**
+ * The config whose patterns the default-protection suggestion judges, or `null` while they are
+ * unknown: a private repo this viewer hasn't unlocked (its public view shows no patterns), a
+ * private repo with no sealed config (only finishing its create can write one), or a repo too new
+ * for a missing config to mean anything. A public repo older than {@link CONFIG_LAG_MS} with no
+ * config (a create that stopped part-way) protects nothing, on the default branch its repo
+ * document names (`repoDefaultBranch`, as readers take it).
+ */
+export function suggestionConfig(o: {
+  readonly config: RepoConfig | null
+  readonly sealed: boolean
+  readonly unlocked: boolean
+  readonly repoDefaultBranch: string
+  readonly repoCreatedAt: number
+  readonly now: number
+}): RepoConfig | null {
+  if (o.sealed && !o.unlocked) return null
+  if (o.config !== null) return o.config
+  if (o.sealed || o.now - o.repoCreatedAt <= CONFIG_LAG_MS) return null
+  return { ...DEFAULT_CONFIG, defaultBranch: o.repoDefaultBranch }
+}
+
 /** `current` with `change` applied (the next config). */
 export function applyConfigChange(current: RepoConfig, change: ConfigChange): RepoConfig {
   let patterns = [...current.protectedPatterns]

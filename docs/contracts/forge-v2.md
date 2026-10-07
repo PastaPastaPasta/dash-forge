@@ -335,7 +335,7 @@ A **public** repo may hold members-only issues, comments and reviews beside its 
   | Kind | Use |
   |---|---|
   | 7 | reveal bundle (making members-only documents public): reserved |
-  | 8 | **environment snapshot**: one environment's canonical JSON, DFPK `0x01` under the members key (audience Members) or DFPK `0x02` to the current maintainers (audience Maintainers); `supersedes` names earlier snapshots. Written by maintainers only by client rule: consensus admits a manifest from any role-1 writer, and readers count a snapshot only from a current maintainer <!-- PENDING #397 (environments lite) --> |
+  | 8 | **environment snapshot**: one environment's canonical JSON, DFPK `0x01` under the members key (audience Members) or DFPK `0x02` to the current maintainers (audience Maintainers); `supersedes` names earlier snapshots. Written by maintainers only by client rule: consensus admits a manifest from any role-1 writer, and readers count a snapshot only from a current maintainer |
   | 9 | environment registry: reserved |
   | 10 | branch grant: reserved |
   | 64–69 | the members-only form of kinds 0–5 (64 + k): reserved |

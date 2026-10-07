@@ -25,8 +25,8 @@ This page explains what each audience means, what a public repository can keep *
 | Audience | Who reads it | Changes when members change | Available |
 |---|---|---|---|
 | **Public** | Everyone | — | today |
-| **Members** | Every current member of the repository: maintainers, writers, triage members and readers. Members added later read it too, including what was posted before they joined. | yes | today, for issues, comments, reviews and environments <!-- PENDING #397: environments --> |
-| **Specific people** | A list the writer picks, members or not. The writer is always on it. | no | **coming later**. Environments already use one fixed list, **Maintainers**: the repository's maintainers when each change is saved. <!-- PENDING #397 --> |
+| **Members** | Every current member of the repository: maintainers, writers, triage members and readers. Members added later read it too, including what was posted before they joined. | yes | today, for issues, comments, reviews and environments |
+| **Specific people** | A list the writer picks, members or not. The writer is always on it. | no | **coming later**. Environments already use one fixed list, **Maintainers**: the repository's maintainers when each change is saved. |
 
 The Members audience is encrypted on your computer or in your browser before anything is sent. Dash Platform stores the encrypted text. Nobody without the repository's members key can read it: not Platform nodes, not storage providers, not Forge's developers.
 
@@ -39,7 +39,7 @@ A **private** repository is different: everything in it is encrypted, code inclu
 | Issues | yes |
 | Comments on issues and pull requests | yes |
 | Reviews of a pull request (the review's text; its verdict stays public, [below](#what-everyone-can-still-see)) | yes |
-| [Environments](../guides/environments.md): configuration and secrets kept outside git <!-- PENDING #397 (environments lite): the guide lands with it --> | yes: **Members** or **Maintainers** |
+| [Environments](../guides/environments.md): configuration and secrets kept outside git | yes: **Members** or **Maintainers** |
 | Pull requests themselves, branches, commits and code | **coming later**. Everything you push to a public repository is public. |
 | Releases | **coming later** |
 | Label and milestone definitions | no, they stay public. Which label or milestone a members-only issue has is encrypted. |
@@ -122,7 +122,7 @@ Measured on devnet sakura:
 | Add a member to a repository with members-only content | the usual membership write, plus about 0.0007 DASH to share the key |
 | Remove a member | the usual delete, plus a key change: about 0.0007 DASH per remaining member and about 0.0006 DASH more |
 | Post a members-only issue, comment or review | 0 to 8 % more than the same thing in public |
-| Save an environment change <!-- PENDING #397 --> | about 0.0025 DASH |
+| Save an environment change | about 0.0025 DASH |
 
 Reading costs nothing.
 
@@ -141,7 +141,7 @@ And per kind of item:
 |---|---|---|
 | A members-only comment or review on a public issue or pull request | which issue or pull request it is on, and which comment it replies to; an inline comment's line numbers and commit; **a review's verdict** (approved, changes requested, commented), which counts toward the branch policy for everyone | the text, an inline comment's file path, the review's text |
 | A members-only issue | its number ("#12 · members-only"); when it was opened, closed, reopened or locked, and by whom; that a label or milestone was set or someone assigned, and **who** was assigned; the counts that include it | the title, the body, the names of its labels and milestone |
-| An environment <!-- PENDING #397 --> | that the repository has environments and how many; for each change, who made it, when, and its size rounded up to 512 bytes; for a Maintainers environment, how many people it was sent to | its name, the names, types and notes of its entries, and every value |
+| An environment | that the repository has environments and how many; for each change, who made it, when, and its size rounded up to 512 bytes; for a Maintainers environment, how many people it was sent to | its name, the names, types and notes of its entries, and every value |
 | The repository | that members-only content is on; when the members key changed; who shared the key with whom; the member list and roles (public on every repository) | the key |
 
 A review's verdict is public on purpose: everyone agrees on whether a pull request has its approvals, so a member and a non-member see the same merge button. A pull request's author who is not a member sees "Changes requested by @bob" and cannot read why. Add one public line saying what to fix.
@@ -157,7 +157,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 | A current member | yes | |
 | A removed member | everything posted before the removal, forever | sizes and timing afterwards |
 | A CI runner | no, unless you make its identity a reader | |
-| Someone who builds a modified Forge | no | they can post encrypted text, as anyone may. A comment or review from someone who was not a member is shown by no member's client. An issue gets its numbered row, like any members-only issue. |
+| Someone who builds a modified Forge | no | they can post encrypted text, as anyone may. No member's Forge app shows a comment or review from someone who was not a member. An issue gets its numbered row, like any members-only issue. |
 | A tampered copy of the web app that you unlock | everything you can read | [Verify the app you loaded](../guides/verify-the-app.md), or run your own copy |
 
 ## What can still leak
@@ -165,7 +165,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 - **Everything in [What everyone can still see](#what-everyone-can-still-see).** Who talks, when, how much, and on which issue can say a lot. Leave out what the timing alone would give away.
 - **What members copy.** Any member can copy, quote or screenshot what they read. Quoting a members-only comment into a public reply publishes the quoted text.
 - **What removed members kept.** They keep everything posted before the removal. Removing someone protects only what comes after.
-- **Past values in a Members environment.** <!-- PENDING #397 --> Everyone who becomes a member later can read every value ever stored there, including past values. Keep production credentials in a **Maintainers** environment, and rotate a secret at its source when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
+- **Past values in a Members environment.** Everyone who becomes a member later can read every value ever stored there, including past values. Keep production credentials in a **Maintainers** environment, and rotate a secret at its source when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
 - **Code.** Everything pushed to a public repository is public, forever, even if you delete it later. The push helper refuses some files that look like secrets and warns about others ([Secrets in a push](../guides/quick-start.md#secrets-in-a-push)), but it cannot know everything. Keep secrets in an environment instead.
 - **Your encryption key.** It reads every private repository and every members-only conversation you belong to. Keep it like your signing keys, and replace it after a lost device ([Identity and keys](../guides/identity-and-keys.md#replacing-it-after-a-lost-device)).
 - **Mentions.** Mentioning someone who is not a member in a members-only comment tells them nothing they can read, but they may learn that something was posted.
@@ -198,19 +198,19 @@ Change members only with an up-to-date Forge (`dg`, and the web app from its upd
 
 Forge says: "You're a member, but no key has been shared with you yet. Ask a maintainer to share it: Repair on the repo page, or `dg repo keys repair`."
 
-Fix: ask a maintainer to share it. They choose **Repair** on the repository page <!-- PENDING #400 (weblane) --> (it shows the cost first), or run `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, set one up first: `dg auth keys add --encryption`.
+**What to do:** ask a maintainer to share it. They choose **Repair** on the repository page <!-- PENDING #400 (weblane) --> (it shows the cost first), or run `dg repo keys repair <owner>/<repo>`. If your identity has no encryption key yet, set one up first: `dg auth keys add --encryption`.
 
 ### E312
 
 **Members-only content is not turned on.** You asked for a members-only issue, comment or review in a public repository where no maintainer has turned it on.
 
-Fix: a maintainer runs `dg repo members enable <owner>/<repo>` (it shows the cost first). Otherwise, post it publicly, or ask a maintainer to turn it on.
+**What to do:** a maintainer runs `dg repo members enable <owner>/<repo>` (it shows the cost first). Otherwise, post it publicly, or ask a maintainer to turn it on.
 
 ### E313
 
 **Members-only.** That issue or pull request is members-only, and you can't read it. Everyone can see that it exists, its number, who opened it and when. `dg issue view` and `dg pr view` show that as a row and exit normally. E313 comes from commands that need the content, such as commenting on it or checking it out.
 
-Fix: ask the repository's owner to make you a member (run `dg collab accept <owner>/<repo>` first: that is your consent). If you are a member already, see [E311](#e311). If your key is locked (a key protected by a passphrase, with no terminal to ask for it), set `DASH_FORGE_PASSPHRASE` or run the command in a terminal.
+**What to do:** ask the repository's owner to make you a member (run `dg collab accept <owner>/<repo>` first: that is your consent). If you are a member already, see [E311](#e311). If your key is locked (a key protected by a passphrase, with no terminal to ask for it), set `DASH_FORGE_PASSPHRASE` or run the command in a terminal.
 
 A members-only write by someone who is not a member stops with [E601](../errors.md#e601) before anything is signed. A member whose identity has no encryption key gets [E306](../errors.md#e306): set up your encryption key first. Every code is also in [Error codes](../errors.md).
 

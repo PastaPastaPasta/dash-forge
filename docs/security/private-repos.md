@@ -929,7 +929,7 @@ A members-only review's plaintext `verdict` counts for **every reader** when it 
 | Kind | What | Status |
 |---|---|---|
 | 7 | reveal bundle: per-object keys that make members-only documents public | reserved (phase 2) |
-| 8 | **environment snapshot**: one environment's canonical JSON, padded to 512-byte buckets, sealed as DFPK `0x01` under the members key at the write epoch (audience Members) or DFPK `0x02` to the current maintainers' encryption keys, the writer first (audience Maintainers). `supersedes` names earlier counted snapshots of the same environment. Readers check the bytes against the owner-signed `packHash` before decrypting, and count a snapshot only when its `$ownerId` is a current maintainer (DESIGN D24); vectors `env_snapshot__*` | used <!-- PENDING #397 (environments lite) --> |
+| 8 | **environment snapshot**: one environment's canonical JSON, padded to 512-byte buckets, sealed as DFPK `0x01` under the members key at the write epoch (audience Members) or DFPK `0x02` to the current maintainers' encryption keys, the writer first (audience Maintainers). `supersedes` names earlier counted snapshots of the same environment. Readers check the bytes against the owner-signed `packHash` before decrypting, and count a snapshot only when its `$ownerId` is a current maintainer (DESIGN D24); vectors `env_snapshot__*` | used |
 | 9 | environment registry | reserved (phase 4) |
 | 10 | branch grant (the keys of one members-only branch, sealed to one recipient) | reserved (phase 3) |
 | 64 + k | the members-only (sealed) form of plain kind k in a public repository: 64 git pack, 65 object locator, 66 flat index, 67 history index, 68 release assets, 69 history version lists | reserved (phase 3) |
