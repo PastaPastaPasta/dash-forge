@@ -1,0 +1,14 @@
+{
+  "name": "https_port_query_fragment",
+  "description": "A port, a query and a fragment are part of an https address.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://mirror.example.com:8443/p?x=1#y"
+    ]
+  },
+  "expected": {
+    "kind": 1
+  }
+}

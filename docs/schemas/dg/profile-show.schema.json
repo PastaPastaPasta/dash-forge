@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/profile-show.schema.json",
+  "title": "dg profile show --json",
+  "description": "An identity's public profile.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "profile": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "bot": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "operator": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operator"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The identity's operator when both profiles agree, else null."
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "identityId",
+    "profile"
+  ],
+  "additionalProperties": true
+}

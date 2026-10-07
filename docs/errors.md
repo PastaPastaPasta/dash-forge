@@ -13,8 +13,10 @@ error: push rejected: you are not a writer of alice/project            [E601]
 The helper prints the same block with each line prefixed `dash: `, because git shows the helper's stderr verbatim. With `--json`, `dg` prints the error on **stdout** instead:
 
 ```json
-{ "error": { "code": "E601", "message": "…", "cause": "…", "fix": ["…"], "note": null, "docs": "…#e601", "exitCode": 6 } }
+{ "error": { "code": "E601", "message": "…", "cause": "…", "fix": ["…"], "note": null, "docs": "…#e601", "exitCode": 6 }, "schemaVersion": 1 }
 ```
+
+A command that finished part of its work adds that part's fields beside `error` (for example `steps`). The shape is [`docs/schemas/dg/error.schema.json`](schemas/dg/error.schema.json).
 
 Codes never change meaning once shipped, so scripts can match on them. A code that no longer occurs is marked **retired** below and its number is never reused. The code's first digit is the process exit code:
 
@@ -89,9 +91,11 @@ The message lists the conflicting files.
 
 ## E201
 
-**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` that names neither `add <label>…` nor `remove <label>…` (or both of the older `--add` and `--remove` flags), or a value is not of the form the flag takes: a `--color` that is not a hex color, an empty `--title`, a text over its length limit, or a comment, review or thread id that is not a document id (`dg issue delete-comment <repo> 2`; the ids are in `dg issue view --json` and `dg pr view --comments --json`). A command line `dg` cannot parse at all (a missing argument, an unknown flag) is E201 too: the cause quotes what is wrong, and the command's usage line follows the error block. Inside a `dash://` clone, a command that leaves out the repository uses the clone's, so `dg issue list`, `dg issue label 3 add bug` or `dg release download v1.0` there is not an error. What you typed where the repository goes is kept when it names one: the clone's own repository (`dg label create project` in a clone of `alice/project` is a label name left out), or an `owner/name` whose owner is an identity id, `@name` or `name.dash`. `-R <repo>` (`--repo`) names the repository anywhere on the line, as with `gh`. In a clone of a fork, `dg pr create` with no repository opens the PR in the fork's parent.
+**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` that names neither `add <label>…` nor `remove <label>…` (or both of the older `--add` and `--remove` flags), or a value is not of the form the flag takes: a `--color` that is not a hex color, an empty `--title`, a text over its length limit, or a comment, review or thread id that is not a document id (`dg issue delete-comment <repo> 2`; the ids are in `dg issue view --json` and `dg pr view --comments --json`). A command line `dg` cannot parse at all (a missing argument, an unknown flag) is E201 too: the cause quotes what is wrong, and the command's usage line follows the error block. Inside a `dash://` clone, a command that leaves out the repository uses the clone's, so `dg issue list`, `dg issue label 3 add bug` or `dg release download v1.0` there is not an error. What you typed where the repository goes is kept when it names one: the clone's own repository (`dg label create project` in a clone of `alice/project` is a label name left out), or an `owner/name` whose owner is an identity id, `@name` or `name.dash`. `-R <repo>` (`--repo`) names the repository anywhere on the line, as with `gh`. In a clone of a fork, `dg pr create` with no repository opens the PR in the fork's parent. A release asset whose name `dg release download` will not save under (a path, a dotfile, a Windows device name: see [releases](guides/collaborating.md#releases)) is E201 too: `dg release create` refuses to publish it, and `dg release download --asset <name> --output <file>` saves an existing one to a file you choose.
 
 **What to do:** see `dg <command> --help`.
+
+`dg storage mirror add` reports E201, before anything is signed, for addresses a mirror can't hold (more than 4, a mix of https and IPFS, a user name or password in a URL, an `ipfs://` address with a path) and for an address on this machine or a private network (`localhost`, `127.0.0.1`, `192.168.…`): other readers never fetch from those. Record a public https address or an `ipfs://` CID.
 
 ## E202
 
@@ -290,6 +294,8 @@ When every copy a pack's manifest records is one no reader follows (the pusher's
 
 A fork records its parent's packs where the parent's pusher stored them. When those are copies no reader follows, `dg repo fork` warns before it writes anything, and the fork's E503 says the packs are its parent's. A fork keeps the copies its parent had when it was made: the parent's maintainers record the packs at a public https address (`dg repack <parent> --profile <profile>`), and then the parent can be cloned, or forked again. Running `dg repo fork <parent> --name <fork name>` again on the same fork records the repack's new pack in it.
 
+`dg storage mirror add` stops with E503, before anything is written or paid, when **none of the addresses answers with the pack**: not found, refused, timed out, or an `ipfs://` address with no read gateway configured. What to do: check that the file is uploaded and public, or pass `--no-verify` to record the addresses anyway.
+
 `dg release download` stops with E503 before downloading anything when none of the asset's recorded copies is one this computer reads from. A copy recorded on chain is followed only if it is a public https URL, an IPFS CID with a gateway to ask, or a bucket or host named in one of your own storage profiles. Plain http, loopback and private-network addresses are never followed just because a publisher recorded them. If the host is your own storage, add a profile whose `public_url` is it, and retry.
 
 ## E504
@@ -300,7 +306,9 @@ A fork records its parent's packs where the parent's pusher stored them. When th
 
 `git fetch` and `git push` also stop with E504 when a `dash://<owner>/<repo>` URL **now names a different repository** than the one the clone was made from. The first time git-remote-dash resolves a named URL in a repository (at clone, or the first fetch of an older clone), it records the repository id and owner id in that repository's git config, per network (`[dash "devnet-sakura:dash://alice/project"]` `repoId`, `ownerId`). A DPNS name can change hands, so a later resolution to another repository is refused rather than mixing in someone else's history or pushing your commits to them. The message names both repositories. What to do: keep using the repository you cloned with `git remote set-url origin dash://<pinned repo id>`, or, if you trust the change (for example after a devnet reset), run the same git command once with `git -c dash.allowRepin=true`, which warns and re-pins. `dg` commands run in the clone check the same pin before they read from or write to a pinned name (`dg issue list`, `dg issue create`, `dg pr create`, …): a moved name stops them with E504 too, before anything is read or signed. To keep working with the pinned repository, name it by id (`-R <pinned repo id>`). `dg` never re-pins: `git -c dash.allowRepin=true fetch` does, and with `dash.allowRepin` set `dg` goes on with a warning.
 
-`dg release verify` exits with E504 when a release **changed since it was first published**: its tag points at another commit, was deleted, or two pushes race on it, or its assets were replaced, added or removed. It also exits with E504 when no tag of that name was ever pushed, since there is nothing to check the release against (the web release list marks only real changes). The output names every move (who, when, from and to) and every asset change. What to do: ask the repository's maintainers which commit and files the release should name before installing from it.
+`dg storage mirror add` stops with E504, before anything is written or paid, when an address serves **other bytes** than the pack's: a different file, or one larger than the pack. What to do: check the addresses, or pass `--no-verify` to record them anyway.
+
+`dg release verify` exits with E504 when a release **changed since it was first published**: its tag points at another commit, was deleted, or two pushes race on it, or its assets were replaced, added or removed, or the commit the release records is not where its tag pointed when it was published. It also exits with E504 when no tag of that name was ever pushed, since there is nothing to check the release against (the web release list marks only real changes). The output names every move (who, when, from and to) and every asset change. What to do: ask the repository's maintainers which commit and files the release should name before installing from it.
 
 `dg release download` also stops with E504, before downloading anything, when the release asset records **no SHA-256** (older `forge-import` releases recorded an empty digest for an asset its source gave none for). There is nothing to check the bytes against, and nothing is downloaded unverified. What to do: a maintainer re-runs the import with a current `forge-import`, which hashes each such asset and republishes the release, or publishes it again with the file (`dg release create <repo> --tag <tag> --asset <file>`).
 
@@ -394,6 +402,8 @@ Outside a push (collaborator admin, releases, repo settings) the headline says y
 **Already exists.** That name is already taken, for example a repository name you already use.
 
 **What to do:** pick another name. Issue and PR numbers are retried automatically, so Platform raises this only for names.
+
+`dg storage mirror add` reports E603, before anything is signed, when you already recorded a mirror of that pack: each person holds one record per pack. To change its addresses, remove it (`dg storage mirror remove <record id>`, the id is in the message) and add the new one.
 
 `dg pr create` also reports E603, before anything is signed, when you already have an open pull request from the same head branch into the same base (as GitHub refuses a second one): a pull request cannot be deleted, so a duplicate would stay. The message names the open one. Push to the branch to update it, or pick another base. Pull requests other people opened from your branch do not count.
 

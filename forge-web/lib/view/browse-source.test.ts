@@ -13,6 +13,14 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Pack mirrors (UPDATE-1) are read only after every copy failed: these tests count the copies'
+// own reads, so the mirror read is stubbed (none recorded) unless a test sets addresses.
+const mirrorUris: { value: string[] } = { value: [] }
+vi.mock('../repo/pack-mirrors', async (orig) => ({
+  ...(await orig<typeof import('../repo/pack-mirrors')>()),
+  mirrorUrisOf: async () => mirrorUris.value,
+}))
+
 import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
 import { bytesToBase64 } from '../sdk'
@@ -27,10 +35,12 @@ import {
   clearChunkCache,
   loadArtifactBytesProgress,
   loadBrowseContext,
+  overrideMirroredBytesKept,
   PackUnavailableError,
   resetExternalFetchState,
 } from './browse-source'
 import { memoryArtifactStore, setIndexArtifactStore } from './index-cache'
+import { contentChecks, resetContentChecks } from './content-checks'
 
 // These fixtures reuse short fake packHashes ('aa', 'bb') with DIFFERENT bytes per suite —
 // impossible in production (packHash = sha256 of the bytes), so the session chunk cache
@@ -189,6 +199,43 @@ describe('chunk LRU', () => {
     await expect(fetchRange(0, 10)).rejects.toThrow('transient')
     fail = false
     expect(Array.from(await fetchRange(0, 10))).toEqual(Array.from(full.subarray(0, 10)))
+  })
+
+  it("never serves one repo's or contract's cached chunks for another's read", async () => {
+    // Each scope stores different bytes under the same pack hash, uploader and seq.
+    const bytesOf = (scope: string): Uint8Array => new TextEncoder().encode(`${scope} chunk bytes`)
+    const scopes: string[] = []
+    const sdk = {
+      documents: {
+        query: (q: { dataContractId: string; where?: readonly (readonly unknown[])[] }): Promise<Map<string, unknown>> => {
+          const repoId = String((q.where ?? []).find((w) => w[0] === 'repoId')?.[2])
+          const scope = `${q.dataContractId}/${repoId}`
+          scopes.push(scope)
+          return Promise.resolve(new Map([['c0', { seq: 0, d0: bytesToBase64(bytesOf(scope)) }]]))
+        },
+      },
+    } as unknown as EvoSDK
+    const manifest = gitPack('ab', 0, 'dc')
+    const other: RepoRef = { ...REPO, repoId: 'REP2' }
+    const otherCore: RepoRef = { ...REPO, forge: { ...REPO.forge, core: 'COR2' } }
+    const read = async (repo: RepoRef): Promise<string> =>
+      new TextDecoder().decode(await artifactRangeFetch(sdk, repo, manifest)(0, 'CORE/REPO chunk bytes'.length))
+    expect(await read(REPO)).toBe('CORE/REPO chunk bytes')
+    expect(await read(other)).toBe('CORE/REP2 chunk bytes')
+    expect(await read(otherCore)).toBe('COR2/REPO chunk bytes')
+    // Each scope's own entry is reused.
+    expect(await read(REPO)).toBe('CORE/REPO chunk bytes')
+    expect(scopes).toEqual(['CORE/REPO', 'CORE/REP2', 'COR2/REPO'])
+  })
+
+  it("drops a copy's cached chunks when the whole artifact does not hash to its packHash", async () => {
+    const { sdk, calls } = spyingSdk()
+    const manifest = { ...gitPack('00'.repeat(32), 0, 'dd'), sizeBytes: total }
+    await expect(loadArtifactBytesProgress(sdk, REPO, manifest)).rejects.toThrow(/does not hash to the pack/)
+    expect(calls).toEqual([[0, 1, 2]])
+    // Nothing of it was kept: a later read of the same copy asks Platform again.
+    await artifactRangeFetch(sdk, REPO, manifest)(0, 10)
+    expect(calls).toEqual([[0, 1, 2], [0]])
   })
 
   it('keeps at most CHUNK_QUERIES_IN_FLIGHT chunk queries out across every pack read at once', async () => {
@@ -944,6 +991,133 @@ describe('fork pack via a platform:// locator', () => {
     } finally {
       vi.unstubAllGlobals()
       resetExternalFetchState()
+    }
+  })
+
+  it('reads a recorded pack mirror when every copy failed, and only bytes that hash to the pack', async () => {
+    const tampered = bytes.slice()
+    tampered[0]! ^= 0xff
+    const { sdk } = parentSdk(tampered)
+    const served: string[] = []
+    let good = true
+    vi.stubGlobal('fetch', (url: string) => {
+      served.push(String(url))
+      return Promise.resolve(new Response(good ? bytes.slice() : tampered.slice()))
+    })
+    mirrorUris.value = ['https://mirror.example/recorded']
+    try {
+      const manifest = forkManifest(`platform://CORE/PARENT/uploader/${hash}`)
+      const got = await loadArtifactBytesProgress(sdk, FORK, manifest)
+      expect(bytesToHex(sha256(got))).toBe(hash)
+      expect(served).toEqual(['https://mirror.example/recorded'])
+      // A mirror serving other bytes is no copy: the copies' own failure stands.
+      resetExternalFetchState()
+      good = false
+      await expect(loadArtifactBytesProgress(sdk, FORK, manifest)).rejects.toBeDefined()
+    } finally {
+      mirrorUris.value = []
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+    }
+  })
+
+  it('answers a range from a mirror only with checked bytes: a junk mirror never serves one', async () => {
+    // The only copy's chunks are gone (no uploader holds them).
+    const { sdk } = parentSdk(bytes)
+    const asked: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      asked.push(String(url))
+      // The junk mirror answers every request, Range or not, with more bytes than the pack holds.
+      if (String(url).includes('junk')) return Promise.resolve(new Response(new Uint8Array(total + 100), { status: 206 }))
+      return Promise.resolve(new Response(bytes.slice()))
+    })
+    mirrorUris.value = ['https://junk.example/p', 'https://honest.example/p']
+    resetContentChecks()
+    try {
+      const read = artifactRangeFetch(sdk, FORK, forkManifest(`platform://CORE/PARENT/gone/${hash}`))
+      const [start, end] = [CHUNK_PAYLOAD_MAX - 4, CHUNK_PAYLOAD_MAX + 4]
+      expect(Array.from(await read(start, end))).toEqual(Array.from(bytes.subarray(start, end)))
+      expect(Array.from(await read(0, 8))).toEqual(Array.from(bytes.subarray(0, 8)))
+      // The pack was read whole once, and each range sliced from it.
+      expect(asked.filter((u) => u.includes('honest'))).toHaveLength(1)
+      // The repo is surviving on a mirror, and its copies failed: the ledger says both.
+      const checks = contentChecks('FORK')
+      expect(checks.mirroredPacks).toEqual([hash])
+      expect(checks.fellBackFrom.length).toBeGreaterThan(0)
+    } finally {
+      mirrorUris.value = []
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+      resetContentChecks()
+    }
+  })
+
+  it('keeps mirror-served packs within a byte budget: a larger one is shared only while it is read', async () => {
+    const { sdk } = parentSdk(bytes)
+    let asked = 0
+    vi.stubGlobal('fetch', () => {
+      asked += 1
+      return Promise.resolve(new Response(bytes.slice()))
+    })
+    mirrorUris.value = ['https://honest.example/p']
+    overrideMirroredBytesKept(total - 1)
+    try {
+      const read = artifactRangeFetch(sdk, FORK, forkManifest(`platform://CORE/PARENT/gone/${hash}`))
+      // The ranges a view asks at once share one read of the pack.
+      const both = await Promise.all([read(0, 8), read(8, 16)])
+      expect(Array.from(both[1])).toEqual(Array.from(bytes.subarray(8, 16)))
+      expect(asked).toBe(1)
+      // It is not kept: a later range reads it again.
+      expect(Array.from(await read(16, 24))).toEqual(Array.from(bytes.subarray(16, 24)))
+      expect(asked).toBe(2)
+      // Within the budget it is kept for the session.
+      resetExternalFetchState()
+      overrideMirroredBytesKept(total)
+      await read(0, 8)
+      await read(8, 16)
+      expect(asked).toBe(3)
+    } finally {
+      overrideMirroredBytesKept(null)
+      mirrorUris.value = []
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+      resetContentChecks()
+    }
+  })
+
+  it('drops the least recently used mirror-served pack once the kept bytes pass the budget', async () => {
+    const other = bytes.map((b) => b ^ 0x5a)
+    const otherHash = bytesToHex(sha256(other))
+    const { sdk } = parentSdk(bytes)
+    const asked: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      asked.push(String(url))
+      return Promise.resolve(new Response((String(url).endsWith('/b') ? other : bytes).slice()))
+    })
+    const manifestOf = (h: string): PackManifest => ({ ...forkManifest(`platform://CORE/PARENT/gone/${h}`), packHash: h })
+    const mirrors = new Map([
+      [hash, 'https://honest.example/a'],
+      [otherHash, 'https://honest.example/b'],
+    ])
+    overrideMirroredBytesKept(total + 1)
+    try {
+      const a = artifactRangeFetch(sdk, FORK, manifestOf(hash))
+      const b = artifactRangeFetch(sdk, FORK, manifestOf(otherHash))
+      mirrorUris.value = [mirrors.get(hash)!]
+      await a(0, 8)
+      mirrorUris.value = [mirrors.get(otherHash)!]
+      expect(Array.from(await b(0, 8))).toEqual(Array.from(other.subarray(0, 8)))
+      // Both do not fit: the first pack was dropped, the second is kept.
+      await b(8, 16)
+      mirrorUris.value = [mirrors.get(hash)!]
+      await a(8, 16)
+      expect(asked).toEqual(['https://honest.example/a', 'https://honest.example/b', 'https://honest.example/a'])
+    } finally {
+      overrideMirroredBytesKept(null)
+      mirrorUris.value = []
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+      resetContentChecks()
     }
   })
 })

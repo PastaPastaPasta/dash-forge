@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-export.schema.json",
+  "title": "dg auth export --json",
+  "description": "The identity file written.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "exported"
+      ]
+    },
+    "path": {
+      "type": "string"
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "keyId": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "encrypted": {
+      "type": "boolean"
+    },
+    "format": {
+      "type": "string"
+    },
+    "network": {
+      "type": "string"
+    },
+    "unknownGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "uncheckedGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "path",
+    "identityId"
+  ],
+  "additionalProperties": true
+}

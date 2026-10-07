@@ -62,6 +62,7 @@ dg repo protect remove <owner>/<repo> main
 dg repo protect list   <owner>/<repo>
 dg repo edit <owner>/<repo> --default-branch trunk       # maintainers
 dg repo edit <owner>/<repo> --description "…" --topics rust,cli   # the owner
+dg repo edit <owner>/<repo> --moved-to <owner>/<new-repo>          # maintainers; "" clears it
 dg repo policy set  <owner>/<repo> --required-approvals 2 --maintainers-only true --merge-methods ff,squash
 dg repo policy show <owner>/<repo>
 dg repo archive   <owner>/<repo>
@@ -74,6 +75,7 @@ What each one enforces:
 - **The default branch** is what a clone checks out and what the web opens on.
 - **The branch policy** is enforced by Forge apps. The web disables the merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). The PR author's own approval never counts. When the policy requires approvals, a request for changes from a maintainer or writer whose approval would count blocks the merge, as on GitHub, until they approve or the review is dismissed. A maintainer can bypass it, as on GitHub: tick "bypass rules" in the merge box and confirm, or pass `dg pr merge --override-policy`. The code is really merged, and an event on the PR records which rules were bypassed. Unlike a comment, the event cannot be edited or deleted, by the maintainer who bypassed or anyone else. Nothing on Platform requires approvals.
 - **Mark as merged (done elsewhere)** records a merge that already happened some other way (a push). It moves no code, so the web offers it only once the PR's head is on the base branch (`dg pr merge --event-only`).
+- **Moving** a public repository marks it with the repository that replaces it. Its pages then show "This repository moved to …" with a link, `dg` commands on it print a one-line note, and `git clone` or `git fetch` prints a hint with the `git remote set-url` to run. Nothing is redirected: the old repository stays readable and writable, so archive it as well if work should stop there. A private repository cannot be marked.
 - **Archiving** is enforced by Forge apps too. They refuse writes to an archived repository: the web disables issues, PRs, merges and releases; `dg` refuses issue, PR, comment, review, merge and release writes; and the push helper refuses pushes. All of these use [`E606`](../errors.md#e606). Override with `dg --allow-archived …` or `git push -o allow-archived`. Platform still accepts a member's writes.
 
 ### Who enforces what
@@ -479,7 +481,7 @@ Merging PR #7 of <owner>/project into refs/heads/main
 2. Fast-forward if it can. Otherwise build a merge commit, authored with your git `user.name` and `user.email`, with the message `Merge pull request #7 from <branch>` and the PR title (`--message` sets your own; `--no-ff` writes a merge commit even where the base could fast-forward). `--squash` instead makes one commit on the base with the PR's changes, authored by the PR's author (the author of its oldest commit) and committed by you, with a `Co-authored-by` line for each other author (`--message` sets its message). `--rebase` instead replays the PR's commits on the base with `git rebase`: each keeps its author and message and you commit it, a commit whose change the base already has is skipped, and a head already on the base tip is fast-forwarded unchanged. A commit that does not apply cleanly stops it, naming the commit and files.
 3. Push the result to the base branch. The push uses your `dash.storage` settings when you run `dg pr merge` inside a clone of the repository.
 4. Post the `merge` event naming the commit that landed.
-5. Close the open issues the description closes (`Fixes #12`, `closes #3`, `resolves #7`; at most 10), as GitHub and the web's merge box do. `--keep-linked-open` leaves them open, and each close is quoted with the merge.
+5. Close the open issues the description closes (`Fixes #12`, `closes #3`, `resolves #7`; at most 10), as GitHub and the web's merge box do. `--keep-linked-open` leaves them open, and each close is quoted with the merge. On a public repository each close names the pull request, and the issue reads "closed this as completed in #7" once readers confirm that the pull request was merged before the close and its description closes the issue. A close that names a pull request that fails that check reads as a plain close.
 
 Each step is reported. If one fails, the output says what already happened. If the push landed but the event did not, `dg pr merge --event-only` records the event. `--delete-branch` deletes the PR's branch afterwards. This needs write access to the repository it lives in. Before merging, it checks the repository's newest 100 pull requests: when another open PR is based on that branch (a stack) or uses it as its head, the merge is refused with [`E808`](../errors.md#e808), naming them. When there are older pull requests, or some can't be read, the output says they were not checked (`branchCheckNote` in `--json`). Retarget them first (`dg pr edit <repo> <n> --base <branch>`), merge without `--delete-branch`, or pass `--force-delete-branch` to delete it anyway.
 
@@ -532,7 +534,7 @@ git tag v1.0.0 && git push dash://<owner>/<repo> v1.0.0
 dg release create <owner>/<repo> --tag v1.0.0 --name "1.0.0" --notes "First stable release" \
   --asset ./dist/app-linux.tar.gz --asset ./dist/app-macos.tar.gz [--storage <profiles>]
 dg release list   <owner>/<repo>
-dg release download <owner>/<repo> v1.0.0 [--asset <name>] [-O/--output <dir | file>]
+dg release download <owner>/<repo> v1.0.0 [--asset <name>] [-O/--output <dir | file>] [--force]
 dg release unpublish <owner>/<repo> v1.0.0
 dg release verify <owner>/<repo> v1.0.0     # has the tag or any asset changed since it was published?
 ```
@@ -541,7 +543,7 @@ The tag must exist in the repository first (push it, as above, or publish from t
 
 `--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)).
 
-`dg release download` fetches every asset of the release, or only `--asset <name>`, and saves each under its own name in the current directory or in the `--output` directory (`-O`, `-o`, and `gh`'s `-D`/`--dir` work too). `--output <file>` names the file for a single asset. It never replaces a file of the same name that is already there. It accepts only bytes that hash to the recorded SHA-256. It needs no identity, and no credentials when the storage has a public URL.
+`dg release download` fetches every asset of the release, or only `--asset <name>`, and saves each under its own name in the current directory or in the `--output` directory (`-O`, `-o`, and `gh`'s `-D`/`--dir` work too). `--output <file>` names the file for a single asset. It never replaces a file that is already there unless you pass `--force` (`--clobber` works too); a symlink there is replaced, never written through. A file that already holds the asset's bytes is kept and counted as downloaded. An asset is saved under its own name only when that is a plain file name. A name that is a path, starts with a dot (`.git`, `.npmrc`) or a dash, holds `:`, `<`, `>`, `"`, `|`, `?`, `*` or control characters, ends in a dot or space, is over 255 bytes, or is a Windows device name such as `CON` or `nul.txt` is skipped with a warning, and so is one that saves as the same file as an earlier asset (`README.txt` and `readme.TXT`). `--asset <name> --output <file>` downloads such an asset to a file you choose. `dg release create` and the web app refuse to publish a file with such a name, or one whose name differs only in case from another asset of the release. A directory given with `--output` or `-D` is made only once an asset is verified. It accepts only bytes that hash to the recorded SHA-256. It needs no identity, and no credentials when the storage has a public URL.
 
 `dg release list` always names who published each release. Every publish, edit or unpublish is a fresh revision that needs a *current* maintainer to sign it, so a maintainer who is later removed can no longer touch the releases they published — not edit them, and not unpublish them either. Only a maintainer still on the repo can do that.
 
@@ -550,6 +552,15 @@ The tag must exist in the repository first (push it, as above, or publish from t
 `dg release unpublish <owner>/<repo> <tag>` goes further: it takes the tag off the release list entirely (it no longer shows in `dg release list` or counts toward the repo's release total), and only works while the tag currently has a live release — a tag that was never published, or is already unpublished, is refused. Publishing the same tag again afterwards starts a fresh release.
 
 **Releases are never deleted.** Releases are listed by version (highest first), and the latest is the highest that is neither a pre-release nor yanked. Every revision a release ever had — including an unpublish — stays on chain, so a tag's publication history can always be reconstructed.
+
+**Branch and tag activity.** The **Activity** link beside each branch and tag (on the Branches and Tags pages) lists everything that ever happened to it, newest first: who created it, each push with the commits before and after, deletions, and every change to its protection. A push that replaced the branch's history instead of adding to it carries a red **force-pushed** badge; a moved tag carries **moved**; two pushes that raced from the same starting point, leaving two tips until a later push settles them, carry **diverged**. **Protection lifted** and **protection restored** mark when a settings change stopped and resumed protecting it, so a force-push in between is easy to spot. From the CLI:
+
+```sh
+dg repo activity <owner>/<repo> main          # a branch
+dg repo activity <owner>/<repo> v1.0 --tag    # a tag
+```
+
+Run it inside a clone to tell force-pushes from ordinary pushes with your local git; elsewhere a push whose commits it cannot compare reads "updated". The web's Activity page covers public repositories only for now; `dg repo activity` works for private ones too.
 
 **Provenance: is this still what was published?** A tag can be moved after its release is published, by a maintainer, or by any writer when tags are not protected (new repositories protect them). Every move stays on chain, so each release's page has a **Provenance** card:
 
@@ -560,6 +571,8 @@ The tag must exist in the repository first (push it, as above, or publish from t
 - whether tags are protected now.
 
 The card turns red, and the release list marks the release **changed since publish**, when the tag points somewhere else, was deleted, or two pushes race on it, or when the assets changed. A tag that was moved and then moved back is shown in amber.
+
+A public release also records the commit its tag pointed at when you published it (the web's release form and `dg release create` both write it). The card shows it under **Release records** and turns red if the tag's history says the tag pointed somewhere else at that moment. If the tag moved while you had the release form open, publishing stops and asks you to reload, so the record is always what you saw. A release whose tag named nothing when it was published (it was deleted then, or pushed only later) is checked against its record instead of the tag's history.
 
 `dg release verify <owner>/<repo> <tag>` prints the same checks and exits with [E504](../errors.md#e504) when the release changed, so a script can stop before installing from the tag. Run it inside a clone that has fetched the tag (`git fetch --tags`) to check the tag's signature as well. A private repository's sealed release may record its commit; it is checked against that when its tag named nothing at the moment of publish (the tag's own history wins otherwise).
 

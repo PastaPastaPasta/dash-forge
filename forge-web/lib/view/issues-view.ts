@@ -27,7 +27,7 @@ import {
   policyFromDocs,
   readPolicy,
   readPull,
-  reviewViewOf,
+  readableReviews,
   seedMemberships,
   sharedIssueCloses,
   sharedRepoCounts,
@@ -38,7 +38,6 @@ import {
   repoSource,
   str,
   titleOf,
-  wellFormed,
   type IssueView,
   type PullView,
   type LabelDef,
@@ -56,7 +55,7 @@ import { prefetchDpnsNames } from './dpns'
 import { withLongBodies, withLongBody, type LongBodyState } from './long-body'
 import type { Membership } from '../rules/v2'
 import type { RerunRequest } from '../rules/ci-rerun'
-import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
+import { HiddenTally, admitAll, admittedAudience, gateFor, type HiddenCounts } from '../repo/private-content'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
@@ -69,6 +68,8 @@ import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, 
 /** One comment on an issue/PR. */
 export interface CommentView {
   readonly id: string
+  /** Who it was written for (a public repo's members-only comment reads as `members`). Absent: public. */
+  readonly audience?: 'members'
   readonly author: string
   /** The text to show: a long body's full text once read (`long`, `forge-v2.md` §6.3). */
   readonly body: string
@@ -130,6 +131,7 @@ export function toCommentView(d: PlainDocument): CommentView {
   const id = (f: string): string | null => asIdentifierString(d[f]) || null
   return {
     id: str(d, '$id'),
+    ...(admittedAudience(d) === 'members' ? { audience: 'members' as const } : {}),
     author: str(d, '$ownerId'),
     body: str(d, 'body'),
     createdAt: num(d, '$createdAt'),
@@ -183,13 +185,12 @@ export async function readComments(
       ],
     }),
   )
-  // Private repo: only comments that open with the reader's keys, decrypted (§8), which also
-  // covers well-formedness and a stranger's ciphertext; the rest are counted, never shown.
-  if (repo.visibility === 'private') {
-    const { docs } = await admitAll(gateFor(repo), 'comment', documents, tally)
-    return docs.map(toCommentView)
-  }
-  return documents.filter((d) => wellFormed(repo, 'comment', d)).map(toCommentView)
+  // Through the repo's gate, per document: a private repo's comments that open with the reader's
+  // keys, a public repo's plaintext ones and the members-only ones the reader's members key opens
+  // (decrypted, §8). Anything else (malformed, a stranger's ciphertext, members-only without the
+  // key) is counted, never shown as a blank comment.
+  const { docs } = await admitAll(gateFor(repo), 'comment', documents, tally)
+  return docs.map(toCommentView)
 }
 
 /** A merged timeline item: a comment or a state event. */
@@ -660,7 +661,9 @@ export async function loadPullThread(
 
   const tally = new HiddenTally()
   const admittedComments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
-  const admittedReviews = (await admitAll(gate, 'review', [...reviewDocs].sort(byTime), tally)).docs.map(reviewViewOf)
+  // D15: a members-only review this reader cannot open still counts for its plaintext verdict.
+  const readReviews = await readableReviews(gate, repo.visibility, [...reviewDocs].sort(byTime), tally)
+  const admittedReviews = readReviews.shown
   // Long bodies (forge-v2.md §6.3): each full text read beside the rest; none read nothing. The
   // merge box's squash message, the linked issues and a suggestion read the whole text.
   const [pull, comments, reviews] = await Promise.all([
@@ -675,7 +678,10 @@ export async function loadPullThread(
   const policy: Promise<Policy | null> = policyDocs === null ? readPolicy(sdk, repo) : Promise.resolve(policyFromDocs(policyDocs))
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
   const proved = hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false)
-  const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead, proved])
+  // The fold counts what the reader can read, with long bodies, plus the members-only verdicts it cannot.
+  const readable = new Map(reviews.map((r) => [r.id, r]))
+  const countedReviews = readReviews.counted.map((r) => readable.get(r.id) ?? r)
+  const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, countedReviews, review, pull.author), verdictsRead, proved])
   const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews })
   return {
     moderation: foldModeration(modInput),

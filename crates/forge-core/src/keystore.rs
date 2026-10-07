@@ -468,13 +468,14 @@ pub fn migration_notice(legacy: &Path, dir: &Path, m: &Migration) -> Option<Stri
     Some(line)
 }
 
-/// Create `dir` (and its parents) if missing; a directory this creates is 0700.
-fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+/// Create `dir` (and its parents) if missing; every directory this creates is 0700, and one
+/// that already exists is left as it is.
+pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
     if dir.is_dir() {
         return Ok(());
     }
-    if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent)?;
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        ensure_private_dir(parent)?;
     }
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut b = std::fs::DirBuilder::new();
@@ -623,21 +624,27 @@ fn configured_default_source_in(path: &Path) -> Result<Option<String>> {
 
 /// Write `bytes` to `path` readable by the owner only, replacing it atomically: the data goes
 /// to a 0600 temporary file in the same directory (created exclusively, so no symlink is
-/// followed) that is then renamed over `path`. A parent directory under the Forge config
-/// directory is created and kept 0700.
+/// followed) that is then renamed over `path`. Under the Forge config directory, every
+/// directory this creates is 0700 and the parent is kept 0700.
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_private_file_in(path, bytes, forge_config_dir().as_deref())
+}
+
+/// [`write_private_file`] for an explicit Forge config directory `forge_dir`.
+fn write_private_file_in(path: &Path, bytes: &[u8], forge_dir: Option<&Path>) -> Result<()> {
     let io = |e: std::io::Error| Error::Io(format!("writing {}: {e}", path.display()));
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).map_err(io)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let forge_dir = forge_config_dir();
-            // Only Forge's own directories are tightened, never one the user named.
-            if forge_dir.is_some_and(|c| dir.starts_with(c)) {
+        // Only Forge's own directories are made or tightened, never one the user named.
+        if forge_dir.is_some_and(|c| dir.starts_with(c)) {
+            ensure_private_dir(dir).map_err(io)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
                 std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
                     .map_err(io)?;
             }
+        } else {
+            std::fs::create_dir_all(dir).map_err(io)?;
         }
     }
     let dir = path
@@ -1310,6 +1317,100 @@ mod tests {
     }
 
     // ---- F-16: the pre-XDG config directory is carried over once ----------------------
+
+    #[cfg(unix)]
+    mod private_files {
+        use super::super::{write_private_file_in, Error};
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::path::Path;
+
+        fn mode(p: &Path) -> u32 {
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+        }
+
+        /// Runs `f` under umask 022 (a common default), then restores the old umask. The umask
+        /// is per process, so the tests that set it take turns.
+        fn with_umask_022<T>(f: impl FnOnce() -> T) -> T {
+            use nix::sys::stat::{umask, Mode};
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _turn = LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let old = umask(Mode::from_bits_truncate(0o022));
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            umask(old);
+            out.unwrap_or_else(|p| std::panic::resume_unwind(p))
+        }
+
+        #[test]
+        fn every_directory_created_under_the_config_dir_is_owner_only() {
+            let t = tempfile::tempdir().unwrap();
+            // The config directory itself does not exist yet either.
+            let config = t.path().join("home/.config/dash-forge");
+            let key = config.join("identities/deep/testnet-X.key");
+            with_umask_022(|| write_private_file_in(&key, b"secret", Some(&config)).unwrap());
+            assert_eq!(mode(&key), 0o600);
+            for dir in ["identities/deep", "identities", ""] {
+                assert_eq!(mode(&config.join(dir)), 0o700, "{dir:?}");
+            }
+            // Nothing is left beside the key.
+            assert_eq!(
+                std::fs::read_dir(config.join("identities/deep"))
+                    .unwrap()
+                    .count(),
+                1
+            );
+            // Replacing it keeps it private.
+            write_private_file_in(&key, b"again", Some(&config)).unwrap();
+            assert_eq!(std::fs::read(&key).unwrap(), b"again");
+            assert_eq!(mode(&key), 0o600);
+        }
+
+        #[test]
+        fn a_directory_outside_the_config_dir_is_not_touched() {
+            let t = tempfile::tempdir().unwrap();
+            let config = t.path().join("config/dash-forge");
+            let theirs = t.path().join("theirs");
+            std::fs::create_dir(&theirs).unwrap();
+            std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let key = theirs.join("runner.dfk1");
+            with_umask_022(|| write_private_file_in(&key, b"secret", Some(&config)).unwrap());
+            assert_eq!(mode(&key), 0o600);
+            assert_eq!(
+                mode(&theirs),
+                0o755,
+                "a folder the user named keeps its mode"
+            );
+            assert!(!config.exists());
+        }
+
+        #[test]
+        fn a_symlink_at_the_destination_is_replaced_not_followed() {
+            let t = tempfile::tempdir().unwrap();
+            let config = t.path().join("dash-forge");
+            std::fs::create_dir(&config).unwrap();
+            let victim = t.path().join("victim.txt");
+            std::fs::write(&victim, "keep me").unwrap();
+            let key = config.join("testnet-X.key");
+            std::os::unix::fs::symlink(&victim, &key).unwrap();
+            with_umask_022(|| write_private_file_in(&key, b"secret", Some(&config)).unwrap());
+            assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+            assert!(!key.symlink_metadata().unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read(&key).unwrap(), b"secret");
+            assert_eq!(mode(&key), 0o600);
+        }
+
+        #[test]
+        fn a_file_where_a_directory_is_needed_is_an_error() {
+            let t = tempfile::tempdir().unwrap();
+            let config = t.path().join("dash-forge");
+            std::fs::create_dir(&config).unwrap();
+            std::fs::write(config.join("identities"), "not a directory").unwrap();
+            let err = write_private_file_in(&config.join("identities/k"), b"x", Some(&config))
+                .unwrap_err();
+            assert!(matches!(err, Error::Io(_)), "{err}");
+        }
+    }
 
     mod legacy_config {
         use super::super::{

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-status.schema.json",
+  "title": "dg pr status --json",
+  "description": "Your pull requests: the current branch's, the ones you opened, the ones waiting for your review.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "currentBranch": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "pr": {
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "createdBy": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "needsReview": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "searchedNewest": {
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "hiddenOmitted": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "createdBy",
+    "needsReview"
+  ],
+  "additionalProperties": true
+}

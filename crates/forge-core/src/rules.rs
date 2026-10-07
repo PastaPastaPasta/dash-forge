@@ -46,16 +46,19 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod asset_name;
 pub mod ci_rerun;
 pub mod codeowners;
 pub mod long_body;
 pub mod merge_check;
 pub mod mirror;
 pub mod moderation;
+pub mod pack_mirror;
 pub mod parity;
 pub mod profile;
 pub mod provenance;
 pub mod ref_collision;
+pub mod ref_history;
 pub mod review;
 pub mod search;
 pub mod signature;
@@ -1576,6 +1579,7 @@ mod tests {
                 assert_eq!(got, want, "vector `{ctx}`");
             }
             "release_provenance"
+            | "ref_history"
             | "ref_update_route"
             | "missing_default_protection"
             | "default_protection" => run_protection_case(v),
@@ -1900,6 +1904,13 @@ mod tests {
         copies: Vec<v2::PackCopyRow>,
         #[serde(default)]
         as_of: Option<v2::CopyKey>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PlanningSupersededInput {
+        copies: Vec<v2::PackCopyRow>,
+        kind: u64,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -2594,8 +2605,43 @@ mod tests {
         assert_eq!(got.expect("serialize"), v.expected, "vector `{ctx}`");
     }
 
+    /// `ref_history`: a ref's activity ([`super::ref_history`]).
+    fn run_ref_history_case(v: &Vector) {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Input {
+            ref_name: String,
+            ref_name_hash: String,
+            updates: Vec<RefUpdate>,
+            #[serde(default)]
+            configs: Vec<ConfigDoc>,
+            /// `[old, new, contains]`: what the caller knows; any other pair is unknown.
+            #[serde(default)]
+            contains: Vec<(String, String, bool)>,
+        }
+        let ctx = &v.name;
+        let inp: Input = serde_json::from_value(v.input.clone()).expect("ref_history input");
+        let got = super::ref_history::ref_history(
+            &inp.ref_name,
+            &inp.ref_name_hash,
+            &inp.updates,
+            &inp.configs,
+            |old, new| {
+                inp.contains
+                    .iter()
+                    .find(|(o, n, _)| o == old && n == new)
+                    .map(|(_, _, c)| *c)
+            },
+        );
+        assert_eq!(
+            serde_json::to_value(&got).expect("ref history json"),
+            v.expected,
+            "vector `{ctx}`"
+        );
+    }
+
     /// The protection and release-provenance conventions (epic E5): `default_protection`,
-    /// `missing_default_protection`, `ref_update_route` and `release_provenance`.
+    /// `missing_default_protection`, `ref_update_route`, `release_provenance` and `ref_history`.
     fn run_protection_case(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2609,6 +2655,8 @@ mod tests {
                     revisions: Vec<super::provenance::ProvenanceRevision>,
                     #[serde(default)]
                     pin: Option<String>,
+                    #[serde(default)]
+                    target: Option<String>,
                 }
                 let inp: Input =
                     serde_json::from_value(v.input.clone()).expect("release_provenance input");
@@ -2618,6 +2666,7 @@ mod tests {
                     &inp.configs,
                     &inp.revisions,
                     inp.pin.as_deref(),
+                    inp.target.as_deref(),
                 );
                 assert_eq!(
                     serde_json::to_value(&got).expect("provenance json"),
@@ -2625,6 +2674,7 @@ mod tests {
                     "vector `{ctx}`"
                 );
             }
+            "ref_history" => run_ref_history_case(v),
             "ref_update_route" => {
                 let name = v.input["refName"]
                     .as_str()
@@ -2704,6 +2754,25 @@ mod tests {
         assert_eq!(got, v.expected, "vector `{ctx}`");
     }
 
+    /// `pack_mirror_uris` and `pack_mirror_order`: the pack mirror rules ([`super::pack_mirror`]).
+    fn run_pack_mirror_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct UrisInput {
+            uris: Vec<String>,
+        }
+        let ctx = &v.name;
+        let got = if v.case == "pack_mirror_uris" {
+            let inp: UrisInput = input(v);
+            serde_json::to_value(super::pack_mirror::check_mirror_uris(&inp.uris))
+                .expect("serialises")
+        } else {
+            let inp: super::pack_mirror::MirrorReadInput = input(v);
+            serde_json::json!({ "uris": super::pack_mirror::mirror_read_order(&inp) })
+        };
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+    }
+
     /// `profile_input` and `avatar_config`: the profile rules ([`super::profile`]).
     fn run_profile_case(v: &Vector) {
         #[derive(Deserialize, Serialize)]
@@ -2713,6 +2782,20 @@ mod tests {
             identity_id: String,
         }
         let ctx = &v.name;
+        if v.case == "profile_bot" {
+            #[derive(Deserialize, Serialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct BotInput {
+                bot_id: String,
+                bot: Option<super::profile::BotClaim>,
+                operator: Option<super::profile::BotClaim>,
+            }
+            let inp: BotInput = input(v);
+            let got =
+                super::profile::bot_operator(&inp.bot_id, inp.bot.as_ref(), inp.operator.as_ref());
+            assert_eq!(got, expected::<Option<String>>(v), "vector `{ctx}`");
+            return;
+        }
         if v.case == "profile_input" {
             let inp: super::profile::ProfileInput = input(v);
             let got = serde_json::to_value(super::profile::check_profile(&inp)).expect("serialize");
@@ -2802,6 +2885,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per vector case
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -2817,6 +2901,13 @@ mod tests {
                 let inp: V2PackListInput = input(v);
                 let got = v2::v2_pack_list(&inp.copies, inp.as_of.as_ref());
                 assert_eq!(got, expected::<Vec<v2::V2Pack>>(v), "vector `{ctx}`");
+            }
+            "planning_superseded" => {
+                let inp: PlanningSupersededInput = input(v);
+                let got: Vec<String> = v2::planning_superseded(&inp.copies, inp.kind)
+                    .into_iter()
+                    .collect();
+                assert_eq!(got, expected::<Vec<String>>(v), "vector `{ctx}`");
             }
             "approvals" => run_approvals_case(v),
             "well_formed" | "content_well_formed" => {
@@ -2868,11 +2959,14 @@ mod tests {
                 let got = v2::ref_name_hashes_agree(&inp.doc, key.as_ref());
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
-            "profile_input" | "avatar_config" => run_profile_case(v),
+            "profile_input" | "avatar_config" | "profile_bot" => run_profile_case(v),
+            "closed_by_pr" => run_closed_by_pr_case(v),
             "mirror_backlink" | "mirror_backlink_file" => run_mirror_case(v),
+            "pack_mirror_uris" | "pack_mirror_order" => run_pack_mirror_case(v),
             "pubkey_entry" | "commit_signature" | "tag_signature" => run_signature_case(v),
             "repo_name" => run_repo_name_case(v),
             "webhook_url" => run_webhook_url_case(v),
+            "asset_file_name" | "asset_file_names" => run_asset_file_name_case(v),
             "role_oracle" => run_role_oracle(v),
             "code_owners" | "code_owner_requests" => run_code_owners_case(v),
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
@@ -2885,6 +2979,25 @@ mod tests {
             "key_handoff" | "key_handoff_open" | "copy" => run_key_handoff_case(v),
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
+    }
+
+    fn run_closed_by_pr_case(v: &Vector) {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ClosedByInput {
+            issue: u32,
+            closed_by_pr: Option<u32>,
+            closed_at: u64,
+            pr: Option<super::transition::ClosingPr>,
+        }
+        let inp: ClosedByInput = input(v);
+        let got = super::transition::closed_by_pr(
+            inp.issue,
+            inp.closed_by_pr,
+            inp.closed_at,
+            inp.pr.as_ref(),
+        );
+        assert_eq!(got, expected::<Option<u32>>(v), "vector `{}`", v.name);
     }
 
     fn run_role_oracle(v: &Vector) {
@@ -3033,6 +3146,38 @@ mod tests {
             }
             Some(UrlSecret::PathToken) => serde_json::json!({ "secret": "pathToken" }),
             None => serde_json::json!({ "secret": null }),
+        };
+        assert_eq!(got, v.expected, "vector `{}`", v.name);
+    }
+
+    /// `asset_file_name`: each name's problem code (or null); `asset_file_names`: the first
+    /// problem of one release's names, `{name, problem}` or `{name, sameFileAs}` (or null).
+    fn run_asset_file_name_case(v: &Vector) {
+        use super::asset_name::{
+            asset_name_problem, asset_names_problem, AssetNameProblem, AssetNamesProblem,
+        };
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            names: Vec<String>,
+        }
+        let inp: Input = input(v);
+        let got = if v.case == "asset_file_name" {
+            inp.names
+                .iter()
+                .map(|n| asset_name_problem(n).map(AssetNameProblem::code))
+                .collect::<Vec<_>>()
+                .into()
+        } else {
+            match asset_names_problem(inp.names.iter().map(String::as_str)) {
+                None => serde_json::Value::Null,
+                Some(AssetNamesProblem::Name(name, p)) => {
+                    serde_json::json!({ "name": name, "problem": p.code() })
+                }
+                Some(AssetNamesProblem::SameFile { name, first }) => {
+                    serde_json::json!({ "name": name, "sameFileAs": first })
+                }
+            }
         };
         assert_eq!(got, v.expected, "vector `{}`", v.name);
     }

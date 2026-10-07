@@ -1398,6 +1398,7 @@ async fn view(
     // Who it is for, and the members-only comments this reader cannot open: the ones D14
     // shows, and how many (kept out of the `json!` above: its macro depth is at the limit).
     let audience = json!({
+        "createdAt": v.patch.created_at,
         "audience": crate::audience::json(pr_audience),
         "readable": true,
         "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),
@@ -2097,10 +2098,15 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     // The linked issues, once the merge is recorded. The merge stands if one fails; say so.
     let mut closed_issues = Vec::new();
     for (n, target) in &linked {
-        match collab
-            .set_state(handle, target, StateAction::Close, None)
-            .await
-        {
+        let closed = match u32::try_from(number) {
+            Ok(pr) => collab.close_by_merge(handle, target, pr).await,
+            Err(_) => {
+                collab
+                    .set_state(handle, target, StateAction::Close, None)
+                    .await
+            }
+        };
+        match closed {
             Ok(_) => {
                 closed_issues.push(*n);
                 steps.ok("close", format!("issue #{n}"));
@@ -3313,6 +3319,11 @@ fn build_merge(
             let author = squash_identity(&authors, author());
             let message = match how.message {
                 Some(m) => m.to_string(),
+                // A members-only PR's title and body are for members: the public squash commit
+                // names only its number (parity: forge-web `membersSquashMessage`).
+                None if view.patch.audience != forge_core::rules::v2::Audience::Public => {
+                    members_squash_message(view.patch.number, &authors, &author_line(&author))
+                }
                 None => squash_message(
                     &view.patch.title,
                     &view.patch.body,
@@ -3378,6 +3389,10 @@ fn merge_commit_message(view: &PatchView, message: Option<&str>) -> String {
         .source_ref_name
         .as_deref()
         .map_or(view.head.as_str(), forge_core::repo::short_branch_name);
+    // A members-only PR's title is for members: the public merge commit names only its number.
+    if view.patch.audience != forge_core::rules::v2::Audience::Public {
+        return format!("Merge pull request #{} from {}", view.patch.number, source);
+    }
     format!(
         "Merge pull request #{} from {}\n\n{}",
         view.patch.number, source, view.patch.title
@@ -3470,6 +3485,23 @@ pub(crate) fn squash_message(
         m.truncate(m.trim_end().len());
     }
     m
+}
+
+/// A members-only PR's squash message: its number (`#N`) and the co-author trailers of the
+/// squashed commits, never its title or body (they are for members; the commit is public).
+/// Parity: forge-web `membersSquashMessage`.
+pub(crate) fn members_squash_message(number: u32, authors: &[String], author: &str) -> String {
+    let own = canonical_ident(author);
+    let co: Vec<String> = authors
+        .iter()
+        .filter(|a| canonical_ident(a) != own)
+        .map(|a| format!("Co-authored-by: {a}"))
+        .collect();
+    if co.is_empty() {
+        format!("#{number}")
+    } else {
+        format!("#{number}\n\n{}", co.join("\n"))
+    }
 }
 
 /// Run `git push` (`argv`) in `dir` for `goal` ("merge failed", "suggestions not applied"),
@@ -4585,6 +4617,22 @@ pub(crate) mod tests {
             "Add x (#7)\n\nBody\n\nCo-authored-by: A <a@x>\nCo-authored-by: B <b@x>"
         );
         assert_eq!(squash_message("T", "", 1, &[], "Me <m>"), "T (#1)");
+        // a members-only PR: its number and the co-authors only, never its title or body
+        assert_eq!(members_squash_message(4, &[], "Me <m>"), "#4");
+        let mut members = view_with("refs/heads/main", &"2".repeat(40));
+        members.patch.audience = forge_core::rules::v2::Audience::Members;
+        assert_eq!(
+            merge_commit_message(&members, None),
+            "Merge pull request #1 from f"
+        );
+        assert_eq!(
+            merge_commit_message(&view_with("refs/heads/main", &"2".repeat(40)), None),
+            "Merge pull request #1 from f\n\nt"
+        );
+        assert_eq!(
+            members_squash_message(4, &["Me <m>".into(), "Ann <a@x>".into()], "Me <m>"),
+            "#4\n\nCo-authored-by: Ann <a@x>"
+        );
     }
 
     #[test]

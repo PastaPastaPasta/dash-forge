@@ -1,0 +1,40 @@
+{
+  "name": "unknown_kind_skipped",
+  "description": "A kind readers do not know is skipped.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "k3",
+        "ownerRole": "maintainer",
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 3,
+        "uris": [
+          "https://kind3.example/p"
+        ]
+      },
+      {
+        "id": "s1",
+        "ownerRole": null,
+        "createdAt": 2,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://stranger.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://stranger.example/p"
+    ]
+  }
+}

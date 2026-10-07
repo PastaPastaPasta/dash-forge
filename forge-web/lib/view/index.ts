@@ -93,6 +93,8 @@ export {
 } from './browse-source'
 export {
   cachedFallback,
+  fallbackNeedsAsk,
+  FallbackTooLargeError,
   restoreFallback,
   startFallback,
   type FallbackProgress,
@@ -136,9 +138,11 @@ export { ACL_NAME, ARCHIVED_REASON, policyOf, pullActions, verdictSummary, type 
 export {
   backendInfo,
   loadPrivateHome,
+  withMembersSession,
   loadRepoHome,
   type BackendInfo,
   type PrivateAccess,
+  type MembersAccess,
   type RepoHome,
   type RepoHomeRefs,
 } from './repo-view'

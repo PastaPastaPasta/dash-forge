@@ -1,0 +1,59 @@
+{
+  "name": "tag_moved",
+  "description": "A tag that names another object reads moved, whatever the commit graph says.",
+  "case": "ref_history",
+  "input": {
+    "refName": "refs/tags/v1.0",
+    "refNameHash": "H",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": true,
+        "protected": false,
+        "author": "bob",
+        "createdAt": 200
+      }
+    ],
+    "configs": [],
+    "contains": [
+      [
+        "A",
+        "B",
+        true
+      ]
+    ]
+  },
+  "expected": [
+    {
+      "kind": "created",
+      "id": "u1",
+      "at": 100,
+      "by": "alice",
+      "from": null,
+      "to": "A"
+    },
+    {
+      "kind": "moved",
+      "id": "u2",
+      "at": 200,
+      "by": "bob",
+      "from": "A",
+      "to": "B"
+    }
+  ]
+}

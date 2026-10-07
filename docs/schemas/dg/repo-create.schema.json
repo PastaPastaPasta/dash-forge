@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-create.schema.json",
+  "title": "dg repo create --json",
+  "description": "A new repository.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created",
+        "exists"
+      ]
+    },
+    "generation": {},
+    "repoId": {
+      "type": "string"
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "remoteUrl": {
+      "type": "string"
+    },
+    "webUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "storage": {},
+    "network": {
+      "type": "string"
+    },
+    "visibility": {
+      "type": "string",
+      "enum": [
+        "public",
+        "private"
+      ]
+    },
+    "protectedPatterns": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What the config this run wrote protects; null when an earlier run wrote it."
+    },
+    "steps": {
+      "$ref": "common.schema.json#/$defs/createSteps"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "totalCost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "remote": {
+      "type": "string"
+    },
+    "gitConfig": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "push": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "remote": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "oid": {
+              "type": "string"
+            },
+            "tracking": {
+              "type": "boolean"
+            },
+            "cost": {
+              "$ref": "common.schema.json#/$defs/cost"
+            },
+            "indexSkipped": {}
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "balanceCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repoId",
+    "ownerId",
+    "name"
+  ],
+  "additionalProperties": true
+}

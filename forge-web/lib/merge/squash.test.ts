@@ -9,7 +9,7 @@ import { BrowseReader, ObjectLocator, type GitObject } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
 import { parseCommit } from '../view/git-objects'
-import { checkMergeDetailed, packSizeBound, runMerge, squashAuthor, squashDraft, squashMessage, type MergeInput } from './engine'
+import { MEMBERS_MESSAGE_WARNING, checkMergeDetailed, mergeMessage, membersSquashMessage, packSizeBound, runMerge, squashAuthor, squashDraft, squashMessage, type MergeInput } from './engine'
 import { writePack } from './pack-writer'
 import { gitAcceptsHistory, HAVE_GIT } from './git-oracle'
 
@@ -164,5 +164,29 @@ describe('the check names the conflicting paths', () => {
     const r = await checkMergeDetailed(s.reader(), input(base, head))
     expect(r.check).toBe('conflict')
     expect([...r.conflictPaths].sort()).toEqual(['a.txt', 'src/x.rs'])
+  })
+})
+
+describe('a members-only PR merges with a public message that names only its number', () => {
+  it('squash: #N and the co-authors, never the title or body; the draft warns', () => {
+    expect(membersSquashMessage(4, [], 'Me <m>')).toBe('#4')
+    expect(membersSquashMessage(4, ['Me <m>', 'Ann <a@x>'], 'Me <m>')).toBe('#4\n\nCo-authored-by: Ann <a@x>')
+    const d = squashDraft({ title: 'SECRET title', body: 'SECRET body', number: 4, audience: 'members' }, { authors: ['Ann <a@x>'], complete: true }, 'Me <m>', null)
+    expect(d.message).not.toMatch(/SECRET/)
+    expect(d.warning).toBe(MEMBERS_MESSAGE_WARNING)
+  })
+
+  it('squash: the public-message warning stays when the authors are unknown or incomplete', () => {
+    const pr = { title: 'SECRET', body: '', number: 4, audience: 'members' as const }
+    const unread = squashDraft(pr, { error: 'node down' }, 'Me <m>', null).warning ?? ''
+    expect(unread.startsWith(MEMBERS_MESSAGE_WARNING)).toBe(true)
+    expect(unread).toMatch(/could not be read \(node down\)/)
+    const partial = squashDraft(pr, { authors: ['Ann <a@x>'], complete: false }, 'Me <m>', 'edited').warning ?? ''
+    expect(partial.startsWith(MEMBERS_MESSAGE_WARNING)).toBe(true)
+    expect(partial).toMatch(/more commits than the page lists/)
+  })
+
+  it('merge commit: the default without a title is the subject alone (the panel passes no title for a members-only PR)', () => {
+    expect(mergeMessage(4, 'feature', '')).toBe('Merge pull request #4 from feature\n')
   })
 })

@@ -22,7 +22,7 @@ let consentReads: (string | null)[] = []
 let consentCalls = 0
 let members: Membership[] = []
 
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('owner=o&name=demo&invite=1') }))
+vi.mock('next/navigation', () => ({ usePathname: () => '/repo/', useSearchParams: () => new URLSearchParams('owner=o&name=demo&invite=1') }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
 /** The viewer's session: signed in as ME unless a test signs out or locks. */
 type Auth = { identity: string | null; signer: { identityId: string } | null; locked: boolean; resuming: boolean; vaultsLoaded?: boolean; vaultsError?: string | null; lockedIdentity?: string | null }
@@ -301,9 +301,9 @@ describe("the owner's pending invitations while Settings is open", () => {
 })
 
 describe('invitedRole: the role an invite link suggests', () => {
-  it('names a role the owner could grant here, never a reader on a public repo', () => {
+  it('names a role the owner could grant here (a reader on public and private repos)', () => {
     expect(invitedRole('triage', 'public')).toBe('triage')
-    expect(invitedRole('reader', 'public')).toBeNull()
+    expect(invitedRole('reader', 'public')).toBe('reader')
     expect(invitedRole('reader', 'private')).toBe('reader')
     expect(invitedRole('1', 'private')).toBeNull()
     expect(invitedRole(null, 'public')).toBeNull()
@@ -325,7 +325,7 @@ describe('a pending invitation picks its own role (QW4-034)', () => {
     const select = row.querySelector<HTMLSelectElement>('select')!
     const add = row.querySelector<HTMLButtonElement>('button')!
     expect(select.value).toBe('')
-    expect([...select.options].map((o) => o.value)).toEqual(['', 'writer', 'triage', 'maintainer'])
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'writer', 'triage', 'reader', 'maintainer'])
     expect(add.textContent).toBe('Add')
     expect(add.disabled).toBe(true)
     await act(async () => {

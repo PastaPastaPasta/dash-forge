@@ -257,7 +257,10 @@ pub async fn target_view(
     let open = state == "open";
     let more = match kind {
         TargetKind::Issue => serde_json::json!({
-            "state": { "open": open, "labels": [], "assignees": [] },
+            "state": state,
+            "open": open,
+            "labels": [],
+            "assignees": [],
         }),
         TargetKind::Patch => serde_json::json!({
             "state": state,

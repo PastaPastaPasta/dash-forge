@@ -1,6 +1,6 @@
 import { test, expect, devices, type Browser, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { loadSeedPulls, PASSPHRASE, expectLanded, repoUrl, waitForRepoResolved } from './helpers'
+import { atRoute, expectLanded, loadSeedPulls, PASSPHRASE, repoUrl, waitForRepoResolved } from './helpers'
 
 /**
  * Phones and tablets, on the forge-v2 read fixture (e2e/helpers.ts `DEMO`; read only).
@@ -331,7 +331,7 @@ test('iPhone SE: offline, a tab says so (held, or the plain offline state), fits
   await expect(page.getByText(/grpc error|Application error/i).filter({ visible: true })).toHaveCount(0)
   expect(await overflowX(page)).toBeLessThanOrEqual(1)
   await context.setOffline(false)
-  await expect(page).toHaveURL(/\/repo\/pulls\//, { timeout: 60_000 })
+  await expect(page).toHaveURL(atRoute(/\/repo\/pulls\//), { timeout: 60_000 })
   await expect(page.getByTestId('read-unreachable').or(page.getByTestId('app-offline'))).toHaveCount(0, { timeout: 90_000 })
   await context.close()
 })

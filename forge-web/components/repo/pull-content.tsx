@@ -26,7 +26,8 @@ import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { pullOriginOf, trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import {
   AlertTriangle,
   Check,
@@ -84,6 +85,7 @@ import {
   postTargetEvent,
   readViewerPermissions,
   repoContractIds,
+  contentKey,
   repoKey,
   setAssignee,
   setLabel,
@@ -146,6 +148,7 @@ import { Button } from '@/components/ui/button'
 import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
 import { checkMerge } from '@/lib/view/merge-check'
+import { markMerged, recheckPageMerge } from '@/lib/view/merge-recheck'
 import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
@@ -169,6 +172,7 @@ import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
 import { cn, shortId } from '@/lib/utils'
 import { useDpnsName } from '@/hooks/use-dpns-name'
+import { threadAuthorIds } from '@/lib/repo/bots'
 
 /** No pending review comments (a stable empty list). */
 const NO_DRAFTS: readonly DraftComment[] = []
@@ -283,7 +287,7 @@ export function PullContent({
       }
       return t
     },
-    [ready, repoKey(home.repo), number, network],
+    [ready, contentKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
   const refresh = useCallback(
@@ -586,7 +590,7 @@ function PullPage({
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
   // The unsent comment survives a reload (never stored for a private repo).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity))
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(repo, pull.id, identity, pull.audience ?? 'public'))
   const commentIntent = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -597,6 +601,8 @@ function PullPage({
   // "Close with comment": the comment a close already posted, by the confirm's intent, so a retry
   // of a close that failed after it never posts the comment twice.
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
+  // The intent whose "Mark as merged" transition landed: its retry writes only the bypass record.
+  const markLanded = useRef<string | null>(null)
   const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
   const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
 
@@ -624,7 +630,7 @@ function PullPage({
   const confirmEvent = (p: Pending, cost: Cost = eventCost): void => {
     if (guard.check(cost, 'collab')) setPending(p)
   }
-  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid)
+  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid, pull.audience === 'members')
   // The diff's lines, as the inline comments saw them load (re-anchoring a pending review).
   const knownLines = useRef<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
   const refreshRef = useRef(refresh)
@@ -833,17 +839,17 @@ function PullPage({
         return
       }
       case 'mark-merged':
-        await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent })
         // A maintainer recording it past unmet branch rules: the bypass is recorded on the PR,
         // as the merge box and `dg pr merge --event-only --override-policy` record theirs.
-        if (p.bypass.length > 0) {
-          try {
-            await recordPolicyBypass(sdk, signer, repo, { target, rules: p.bypass, mergeOid: pull.headOid, intent: `${intent}:bypass` })
-          } catch (e) {
-            // The merge is recorded (final); a retry of this same action re-uses it and writes only the record.
-            throw new Error(`The merge is recorded, but recording the rules bypass failed: ${guard.failed(e)} Retry to record it.`)
-          }
-        }
+        await markMerged({
+          intent,
+          bypass: p.bypass,
+          landed: markLanded,
+          recheck: recheckMembers,
+          merge: () => setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent }),
+          recordBypass: (rules) => recordPolicyBypass(sdk, signer, repo, { target, rules, mergeOid: pull.headOid, intent: `${intent}:bypass` }),
+          describe: guard.failed,
+        })
         refresh((t) => t.pull.state.merged)
         return
       case 'review': {
@@ -1097,11 +1103,13 @@ function PullPage({
           target: { id: i.id, number: i.number, type: 'issue', author: i.author },
           action: 'close',
           isMember: true,
+          // An imported PR's links are mapped from the source's numbers: not named as the cause.
+          ...(linkedUpstream ? {} : { closedByPr: pull.number }),
           intent: `close-linked:${repo.repoId}:${pull.number}:${i.number}`,
         })
       },
     }
-  }, [linkedOpen.data, sdk, signer, repo, pull.number, linked.length])
+  }, [linkedOpen.data, sdk, signer, repo, pull.number, linked.length, linkedUpstream])
   // D-104: a merged PR's header says what happened ("2 commits merged into main"), not "wants to".
   // Who recorded the merge is in the timeline. A count only from a real comparison (not the
   // first-parent fallback).
@@ -1147,10 +1155,37 @@ function PullPage({
     return `${shortBranch(name)} moved to ${tip.slice(0, 7)} since this page read it, ahead of this PR's head ${pull.headOid.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`
   }
 
+  // A merge (the box's, or "Mark as merged") judged again at the click with the members (and a
+  // counted check's runners) read then: the page's reads can be minutes old. Throws when they
+  // cannot be read, and refuses when there is no connection to read them: either stops the merge.
+  const recheckMembers = async (bypass: readonly string[]): Promise<string | null> => {
+    const problem = await recheckPageMerge(
+      sdk,
+      repo,
+      network,
+      {
+        gate: { pull, viewer, protectedPatterns: home.config?.protectedPatterns ?? [], maintainersOnly: policyNow?.approverRole === 1 },
+        policy: rules.policy,
+        status: rules.status,
+        approvals: thread.approvals,
+        requiredChecks,
+        checkRuns: checks.data,
+      },
+      bypass,
+    )
+    // Refused: show the page as the members (and the runners, cached by the recheck) stand now.
+    if (problem !== null && sdk) {
+      holdings.reload()
+      checks.reload()
+      refresh()
+    }
+    return problem
+  }
+
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
   return (
-    <AuthorRolesProvider owner={repo.ownerId} members={thread.members}>
+    <AuthorRolesProvider owner={repo.ownerId} members={thread.members} authors={tab === 'conversation' ? threadAuthorIds(pull.author, thread.timeline) : []}>
     <div className="space-y-4" data-testid="pull-page">
       {/* Header */}
       <div>
@@ -1291,7 +1326,7 @@ function PullPage({
           <MessageSquareDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
           <span className="min-w-0 flex-1">
             You have a pending review ({plural(reviewDraft.draft.comments.length, 'comment')}), not yet submitted.{' '}
-            <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private')}</span>
+            <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private', pull.audience === 'members')}</span>
           </span>
           {tab !== 'files' ? (
             <Button size="sm" variant="outline" onClick={() => setTab('files')}>
@@ -1543,6 +1578,7 @@ function PullPage({
                 canMerge={actions.canMerge && !archived}
                 isMaintainer={holdings.data?.maintain === true}
                 checkout={checkout}
+                recheckMembers={recheckMembers}
                 onMerged={() => {
                   refresh((t) => t.pull.state.merged)
                   // The base branch moved and a pack was stored: the repo's refs and its
@@ -1744,6 +1780,7 @@ function PullPage({
               action={
                 identity !== null && open && !writeBlocked ? (
                   <ReviewDrawer
+                    membersOnly={pull.audience === 'members'}
                     repo={repo}
                     pullId={pull.id}
                     headOid={pull.headOid}

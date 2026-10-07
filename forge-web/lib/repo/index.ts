@@ -18,13 +18,14 @@ export {
   str,
   stringArray,
   repoContractIds,
+  contentKey,
   repoKey,
   toEvent,
   toRefUpdate,
   wellFormed,
   type RepoRef,
 } from './contract'
-export { CHUNK_QUERY_MAX, repoSource } from './source'
+export { CHUNK_QUERY_MAX, contractOf, repoSource } from './source'
 export {
   readRepoChrome,
   repoTimelines,
@@ -123,6 +124,7 @@ export {
   readBrowseManifests,
   readPackCopies,
   packsOfKind,
+  plannedSuperseded,
   type AsOf,
   type PackManifest,
 } from './packs'
@@ -148,6 +150,7 @@ export {
   readIssue,
   readPull,
   readReviews,
+  readableReviews,
   reviewViewOf,
   verdictFromCode,
   VERDICT_LABEL,

@@ -22,7 +22,9 @@ import { trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
-import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
+import { threadAuthorIds } from '@/lib/repo/bots'
+import { LinkedPulls, namedClosingPull, useIssueBacklinks, useNamedClosingPulls, type IssueBacklinks } from '@/components/repo/linked-pulls'
+import type { NamedPull } from '@/lib/repo/closing-pull'
 import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
@@ -45,6 +47,7 @@ import {
   eventFirsts,
   readViewerPermissions,
   repoContractIds,
+  contentKey,
   repoKey,
   setAssignee,
   setLabel,
@@ -152,7 +155,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
       return t
     },
-    [ready, repoKey(home.repo), number, network],
+    [ready, contentKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
   const refresh = useCallback(
@@ -184,7 +187,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   )
 
   // The unsent comment survives a reload (never stored for a private repo).
-  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity))
+  const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, data?.issue.id ?? '', identity, data?.issue.audience ?? 'public'))
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -204,6 +207,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // in #3" and "mentioned this issue in #4", QW2-048). The trusted upstream number needs the thread.
   const upstream = data ? trustedUpstreamNumber(data.issue.upstreamNumber, data.issue.author, home.repo.ownerId, new RoleOracle([...data.members])) : null
   const backlinks = useIssueBacklinks(home, number, upstream, data != null)
+  // The PRs this issue's closes name, read by number when the backlinks do not hold them.
+  const namedCloses = (data?.timeline ?? []).flatMap((it) => (it.kind === 'transition' && it.transition.closedByPr !== undefined ? [it.transition.closedByPr] : []))
+  const namedPulls = useNamedClosingPulls(home, backlinks, namedCloses, data != null)
   // Issues closed as a duplicate of this one (QW4-024), read once the thread shows.
   const duplicatesOf = useAsync(() => readDuplicatesOf(sdk!, home.repo, number), [ready, repoKey(home.repo), number, data === null ? 0 : 1], {
     enabled: ready && sdk !== null && data !== null,
@@ -447,7 +453,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const canModerate = isMaintainer && !archived && guard.disabledReason === null
 
   return (
-    <AuthorRolesProvider owner={home.repo.ownerId} members={members}>
+    <AuthorRolesProvider owner={home.repo.ownerId} members={members} authors={threadAuthorIds(issue.author, timeline)}>
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]">
       <div className="min-w-0 space-y-5">
         {/* Header */}
@@ -551,7 +557,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   ),
                 }
               : {})}
-            closedIn={(t) => closedInRef(t, backlinks, addr)}
+            closedIn={(t) => closedInRef(t, backlinks, namedPulls, addr, home.repo.visibility === 'public' ? issue.number : null)}
             closeWhy={(t) => closeWhyOf(t, issue.number, data.duplicates ?? NO_DUPLICATES, (n) => (addr ? repoHref('/repo/issue', addr, { number: String(n) }) : ''))}
             crossRefs={crossRefsOf(backlinks.linking.data, addr)}
             imported={origin === null ? null : { origin, signer: issue.author, createdAt: issue.createdAt }}
@@ -788,9 +794,16 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
 }
 
 /** "closed this as completed in #3": the merged PR that closes this issue whose merge made `t` (QW2-048). */
-function closedInRef(t: TransitionView, backlinks: IssueBacklinks, addr: RepoAddress | undefined): TimelineRef | null {
+function closedInRef(
+  t: TransitionView,
+  backlinks: IssueBacklinks,
+  named: ReadonlyMap<number, NamedPull | null>,
+  addr: RepoAddress | undefined,
+  issue: number | null,
+): TimelineRef | null {
   if (addr === undefined) return null
-  const pull = closedIn(t, backlinks.merges)
+  // A close naming its merge is judged by that alone, on a public repo (`issue` null otherwise).
+  const pull = closedIn(t, backlinks.merges, issue === null ? undefined : () => namedClosingPull(backlinks, named, issue, t))
   return pull === null ? null : { number: pull.number, title: pull.title, href: pullHref(addr, pull.number) }
 }
 

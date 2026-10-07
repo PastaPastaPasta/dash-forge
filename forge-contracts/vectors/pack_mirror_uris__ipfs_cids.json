@@ -1,0 +1,15 @@
+{
+  "name": "ipfs_cids",
+  "description": "Bare CIDs: kind 2.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+      "ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+    ]
+  },
+  "expected": {
+    "kind": 2
+  }
+}

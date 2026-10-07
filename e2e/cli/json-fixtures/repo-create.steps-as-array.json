@@ -1,0 +1,25 @@
+{
+  "source": "negative: steps is an object, not a list",
+  "command": "repo create",
+  "args": [
+    "--json",
+    "repo",
+    "create",
+    "r"
+  ],
+  "exit": 0,
+  "expect": "invalid",
+  "stdout": {
+    "schemaVersion": 1,
+    "status": "created",
+    "repoId": "Bq9mN3x7Lq2kXv8sTcY4pR6wZ1hJ5fD2gA7eK9uW3nM",
+    "ownerId": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "name": "r",
+    "steps": [
+      {
+        "step": "repo",
+        "ok": true
+      }
+    ]
+  }
+}

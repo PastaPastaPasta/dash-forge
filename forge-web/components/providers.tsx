@@ -8,6 +8,7 @@ import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
 import { installDapiFetchGate } from '@/lib/sdk/budget'
 import { stopPrehydrationCatcher } from '@/lib/prehydration'
 import { installHashLinkHistory } from '@/lib/hash-links'
+import { installSamePageLinks } from '@/hooks/use-route'
 
 // Before any component runs: every DAPI request of this page, including the Core-over-DAPI
 // calls sign-in makes before the SDK connects, goes through the shared request budget.
@@ -28,6 +29,8 @@ export function Providers({ children }: { children: ReactNode }): JSX.Element {
   }, [])
   // In-page `#fragment` links go through the router's history, so Back after one works (QW4-005).
   useEffect(() => installHashLinkHistory(), [])
+  // A link to the page open while the address bar shows its short URL adds no entry (CJ-6).
+  useEffect(() => installSamePageLinks(), [])
   return (
     <ThemeProvider
       attribute="class"

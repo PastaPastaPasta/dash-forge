@@ -19,7 +19,8 @@
  */
 
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { usePathname, useSearchParams } from '@/hooks/use-route'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GitCommit, History } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
@@ -246,8 +247,8 @@ function OrderToggle({ firstParent, path, pathname, params }: { firstParent: boo
  */
 export const dayOf = (e: LogEntry): number => e.committedAt ?? e.author.when
 
-/** Where the list was scrolled, per URL, for this tab. */
-const scrollKey = (): string => `forge:log-scroll:${window.location.pathname}${window.location.search}`
+/** Where the list was scrolled, per route (the same while the address bar shows its short URL), for this tab. */
+const scrollKey = (pathname: string, params: URLSearchParams): string => `forge:log-scroll:${pathname}?${params.toString()}`
 
 function LogBody({
   repo,
@@ -342,10 +343,11 @@ function LogBody({
     if (restored.current || state.loading || (state.pages < wanted && state.next !== null)) return
     restored.current = true
     // Used once: a later visit by a plain link starts at the top.
-    const y = Number(sessionStorage.getItem(scrollKey()))
-    sessionStorage.removeItem(scrollKey())
+    const key = scrollKey(pathname, params)
+    const y = Number(sessionStorage.getItem(key))
+    sessionStorage.removeItem(key)
     if (y > 0) window.scrollTo(0, y)
-  }, [state.loading, state.pages, state.next, wanted])
+  }, [state.loading, state.pages, state.next, wanted, pathname, params])
   const older = (): void => {
     const q = new URLSearchParams(params.toString())
     q.set('pages', String(Math.min(state.pages + 1, MAX_URL_PAGES)))
@@ -353,7 +355,7 @@ function LogBody({
     loadMore(state.next)
   }
   // Leaving for a commit (or anywhere): keep the position for Back.
-  const keepScroll = (): void => sessionStorage.setItem(scrollKey(), String(Math.round(window.scrollY)))
+  const keepScroll = (): void => sessionStorage.setItem(scrollKey(pathname, params), String(Math.round(window.scrollY)))
 
   if (state.error !== null && state.entries.length === 0) return <ErrorState message={state.error} onRetry={retry} />
   if (state.entries.length === 0 && state.loading) return <LoadingBlock label={path ? `Walking the history of ${path}` : 'Walking history'} />

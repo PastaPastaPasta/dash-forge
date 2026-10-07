@@ -1,0 +1,15 @@
+{
+  "name": "ipfs_empty_cid",
+  "description": "An ipfs address needs a CID.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "ipfs://"
+    ]
+  },
+  "expected": {
+    "problem": "address",
+    "index": 0
+  }
+}

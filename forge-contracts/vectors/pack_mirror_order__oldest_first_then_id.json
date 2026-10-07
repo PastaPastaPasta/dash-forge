@@ -1,0 +1,52 @@
+{
+  "name": "oldest_first_then_id",
+  "description": "Within a group: oldest record first, then by document id.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "b",
+        "ownerRole": "writer",
+        "createdAt": 7,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://b.example/p"
+        ]
+      },
+      {
+        "id": "a",
+        "ownerRole": "writer",
+        "createdAt": 7,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://a.example/p"
+        ]
+      },
+      {
+        "id": "c",
+        "ownerRole": "writer",
+        "createdAt": 3,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://c.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://c.example/p",
+      "https://a.example/p",
+      "https://b.example/p"
+    ]
+  }
+}

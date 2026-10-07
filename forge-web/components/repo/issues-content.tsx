@@ -20,7 +20,8 @@ import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useRef, useState } from 'react'
 import { HiddenRowMark, HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
+import { useSearchParams } from '@/hooks/use-route'
 import { CheckCircle2, CircleDot, CircleSlash, MessageSquarePlus, Pin, X } from 'lucide-react'
 import { STATE_TEXT } from '@/lib/design/state'
 import { readCloseReasons } from '@/lib/repo/transitions'
@@ -43,7 +44,7 @@ import {
   utf8Length,
   type IssueListQuery,
 } from '@/lib/view/issue-query'
-import { createIssue, issueFirsts, queryIssues, readLabels, repoContractIds, repoKey, rowFiltersOf, setLabel, type IssueListPage, type IssueSelection } from '@/lib/repo'
+import { createIssue, issueFirsts, queryIssues, readLabels, contentKey, repoContractIds, repoKey, rowFiltersOf, setLabel, type IssueListPage, type IssueSelection } from '@/lib/repo'
 import { SupersededWriteError, UnconfirmedWriteError, previewCreate, sumPreviews } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration, useViewerRole } from '@/hooks/use-repo-chrome'
@@ -170,7 +171,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
     },
     // Not `totals`: it arrives while page 1 reads, and the same query again reads on a load (a sort
     // or search would read two loads cold). The page's own proved count fills in for it.
-    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
+    [ready, contentKey(home.repo), generation, JSON.stringify(query), identity ?? '', query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 

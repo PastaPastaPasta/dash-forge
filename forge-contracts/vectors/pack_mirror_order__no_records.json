@@ -1,0 +1,17 @@
+{
+  "name": "no_records",
+  "description": "No records: nothing to try.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": []
+  },
+  "expected": {
+    "uris": []
+  }
+}

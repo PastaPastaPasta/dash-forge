@@ -43,10 +43,11 @@ import type { RepoRef } from './contract'
 import { requireMaintainer } from './members'
 import { readReleases, type ReleaseAssetView } from './releases'
 import type { ResolvedSealedRelease, SealedReleaseEvent, SealedReleaseWarning } from './sealed-release'
-import { ensureTag } from './ref-admin'
+import { ensureTag, readRefNow } from './ref-admin'
 import { createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
 import { isLongBody, longBodyField } from './long-body'
 import { isRc1TagName } from '../rules'
+import { ASSET_NAME_WHY, assetNamesProblem, sameFileKey } from '../rules/asset-name'
 
 /** The `release` schema's limits (forge-core `release`: `maxLength` characters, `maxBytes`). */
 export const RELEASE_LIMITS = {
@@ -57,8 +58,6 @@ export const RELEASE_LIMITS = {
 
 /** The largest single asset the browser reads into memory; bigger ones go through the CLI. */
 export const MAX_ASSET_BYTES = 256 * 1024 * 1024
-/** The web reader refuses longer asset names (`parseReleaseAssets`). */
-export const MAX_ASSET_NAME = 255
 
 const utf8 = (s: string): number => new TextEncoder().encode(s).length
 const chars = (s: string): number => [...s].length
@@ -86,19 +85,29 @@ export function releaseTextProblem(input: { name: string; notes: string }): stri
   return fits('the title', input.name, RELEASE_LIMITS.name) ?? fits('the notes', input.notes, RELEASE_LIMITS.notes)
 }
 
-/** C0 controls, DEL, bidi embeddings/overrides/isolates, LRM/RLM and ALM: they disguise a name. */
-const DISGUISING = /[\u0000-\u001f\u007f‪-‮⁦-⁩‎‏؜]/
-
-/** Why a set of asset files cannot be published, or null. */
-export function assetFilesProblem(files: readonly { readonly name: string; readonly size: number }[]): string | null {
-  const names = files.map((f) => f.name)
-  if (new Set(names).size !== names.length) return 'two assets have the same name'
+/**
+ * Why a set of asset files cannot be published, or null. Each name must be one a download saves
+ * as itself (`../rules/asset-name`, as `dg release create` checks), and no two assets of the
+ * release, the `kept` ones a public revision carries included, may save as one file on a
+ * case-insensitive disk. A kept name is not checked itself: it was published before.
+ */
+export function assetFilesProblem(
+  files: readonly { readonly name: string; readonly size: number }[],
+  kept: readonly { readonly name: string }[] = [],
+): string | null {
+  const names = assetNamesProblem(files.map((f) => f.name))
+  if (names !== null && 'problem' in names) {
+    return `${names.name.slice(0, 40)}: ${ASSET_NAME_WHY[names.problem]}, so a download would not save it under that name: rename the file`
+  }
+  if (names !== null) {
+    return names.name === names.sameFileAs ? 'two assets have the same name' : `${names.name} and ${names.sameFileAs} save as the same file on a case-insensitive disk: rename one`
+  }
+  const keptKeys = new Map(kept.map((a) => [sameFileKey(a.name), a.name]))
   for (const f of files) {
-    if (f.name === '' || f.name.includes('/') || f.name.includes('\\') || f.name === '.' || f.name === '..') return 'an asset name must be a plain file name'
-    // Control and text-direction characters disguise a file name.
-    if (DISGUISING.test(f.name)) return `${f.name}: the name holds control or text-direction characters`
-    // UTF-16 length, as the reader's zod `.max(255)` counts it.
-    if (f.name.length > MAX_ASSET_NAME) return `${f.name.slice(0, 40)}…: asset names hold at most ${MAX_ASSET_NAME} characters`
+    const other = keptKeys.get(sameFileKey(f.name))
+    if (other !== undefined) return `${f.name} saves as the same file as this release's asset ${other}: name it ${other} to replace that asset, or rename it`
+  }
+  for (const f of files) {
     if (f.size === 0) return `${f.name} is empty`
     if (f.size > MAX_ASSET_BYTES) return `${f.name} is over ${MAX_ASSET_BYTES / 1024 / 1024} MiB: publish large assets with dg release create`
   }
@@ -311,6 +320,26 @@ interface PublishInput {
    * that exists at another commit refuses the publish before anything uploads.
    */
   readonly createTag?: { readonly target: string }
+  /**
+   * The existing tag's tip as the page read it (hex). The publish reads the tip again and refuses
+   * when it moved (the person chose a release of what they saw), else records it: provenance checks
+   * the tag's history against it. With `createTag`, the new tag's target is recorded.
+   */
+  readonly tagTip?: string
+}
+
+/**
+ * The tag's tip now, read fresh: what a public release records as its target. Refused when the page
+ * showed another tip (`shown`): the tag moved while the form was open, and recording either would
+ * mislabel the release. Undefined when the tag names nothing for sure (deleted, or two pushes race).
+ */
+export async function currentTagTip(sdk: EvoSDK, repo: RepoRef, tag: string, shown: string | undefined): Promise<string | undefined> {
+  const { state } = await readRefNow(sdk, repo, `refs/tags/${tag}`)
+  const now = state?.state === 'resolved' ? state.oid.toLowerCase() : undefined
+  if (shown !== undefined && now !== shown.toLowerCase()) {
+    throw new Error(`${tag} moved after this page loaded${now !== undefined ? ` (it is at ${now.slice(0, 7)} now)` : ''}. Reload the page and publish again.`)
+  }
+  return now
 }
 
 /** Create the tag a publish names, when asked to: once the role is known, before any upload. */
@@ -422,8 +451,10 @@ export async function publishRelease(
   const longNotes = !input.stored && input.notes !== '' && isLongBody(repo, 'release', input.notes)
   const keep = carriedAssets(existing, input.files)
   const problem =
-    releaseTextProblem({ name, notes: longNotes ? '' : typed }) ?? (input.stored ? null : assetPlanProblem(input.files, storage.policy, storage.profiles, keep))
+    releaseTextProblem({ name, notes: longNotes ? '' : typed }) ??
+    (input.stored ? null : (assetFilesProblem(input.files, keep) ?? assetPlanProblem(input.files, storage.policy, storage.profiles, keep)))
   if (problem) throw new Error(problem)
+  const target = input.createTag?.target ?? (await currentTagTip(sdk, repo, input.tagName, input.tagTip))
   await createTagFirst(sdk, auth, repo, input, onEvent)
 
   // A retry of an unconfirmed write re-signs exactly what it named (kept assets included) and
@@ -450,6 +481,7 @@ export async function publishRelease(
       ...(name ? { name } : {}),
       ...(notes ? { notes } : {}),
       ...(assets.length > 0 ? { assets } : {}),
+      ...(target !== undefined ? { targetOid: target } : {}),
       intent,
     })
     return { release, assets }

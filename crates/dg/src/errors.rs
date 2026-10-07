@@ -77,7 +77,7 @@ pub fn report(json: bool, err: &anyhow::Error, ctx: &ErrorContext<'_>) -> i32 {
 }
 
 /// `body` (an object) with the `"error"` block of `user` added; just the error without one.
-fn with_error(body: Option<&Value>, user: &UserError) -> Value {
+pub(crate) fn with_error(body: Option<&Value>, user: &UserError) -> Value {
     let mut out = user.to_json();
     if let Some(Value::Object(fields)) = body {
         let error = out["error"].take();
@@ -88,8 +88,30 @@ fn with_error(body: Option<&Value>, user: &UserError) -> Value {
     out
 }
 
-/// Pretty-print a JSON value on stdout (the `--json` output of every command).
+/// The version of dg's `--json` output shapes (`docs/schemas/`). Adding a field leaves it as is;
+/// renaming or removing a field, or changing its type, raises it (`docs/VERSIONING.md`).
+pub const SCHEMA_VERSION: u64 = 1;
+
+/// `v` as dg prints it: an object carries [`SCHEMA_VERSION`] as `schemaVersion`.
+pub fn versioned(v: &Value) -> Value {
+    match v {
+        Value::Object(o) => {
+            let mut o = o.clone();
+            o.insert("schemaVersion".into(), Value::from(SCHEMA_VERSION));
+            Value::Object(o)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Pretty-print a JSON value on stdout (the `--json` output of every command, errors included),
+/// with its `schemaVersion` ([`versioned`]).
 pub fn print_json(v: &Value) {
+    print_raw_json(&versioned(v));
+}
+
+/// Pretty-print a JSON value on stdout as it is (`dg api`: raw Platform documents, unversioned).
+pub fn print_raw_json(v: &Value) {
     println!(
         "{}",
         serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
@@ -111,6 +133,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Init(a) => ("repository not published", a.name.as_ref()),
         Command::Repo(Rp::Clone { repo, .. }) => ("repository not cloned", Some(repo)),
         Command::Repo(Rp::View { repo }) => ("could not show the repository", Some(repo)),
+        Command::Repo(Rp::Activity { repo, .. }) => ("could not read the activity", Some(repo)),
         Command::Repo(Rp::Fork { repo, .. }) => ("repository not forked", Some(repo)),
         Command::Repo(Rp::Sync { repo, .. }) => ("fork not synced", Some(repo)),
         Command::Repo(Rp::Reindex { repo, .. }) => ("browse index not published", Some(repo)),
@@ -237,6 +260,12 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("storage command failed", Some(repo))
         }
         Command::Storage(S::Add(_)) => ("storage profile not added", None),
+        Command::Storage(S::Mirror(crate::StorageMirrorCommand::Add { repo, .. })) => {
+            ("mirror not recorded", Some(repo))
+        }
+        Command::Storage(S::Mirror(crate::StorageMirrorCommand::Remove { .. })) => {
+            ("mirror not removed", None)
+        }
         Command::Storage(_) => ("storage command failed", None),
         Command::Webhook(w) => w.context(),
         Command::Env(e) => e.context(),
@@ -259,6 +288,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("could not read your signing keys", None)
         }
         Command::Profile(crate::ProfileCommand::Key(_)) => ("signing keys not changed", None),
+        Command::Profile(crate::ProfileCommand::Bot(_)) => ("bot claim not changed", None),
         Command::VerifyCommit { repo, .. } => ("could not verify the commits", repo.as_ref()),
         Command::VerifyMirror { .. } => ("could not verify the mirror", None),
         Command::VerifyApp(_) => ("could not verify the web app", None),

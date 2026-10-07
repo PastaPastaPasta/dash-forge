@@ -1,0 +1,16 @@
+{
+  "name": "set_kelvin_sign",
+  "description": "The Kelvin sign lower-cases to k.",
+  "case": "asset_file_names",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "\u212ax.bin",
+      "kx.bin"
+    ]
+  },
+  "expected": {
+    "name": "kx.bin",
+    "sameFileAs": "\u212ax.bin"
+  }
+}

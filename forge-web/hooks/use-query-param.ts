@@ -2,11 +2,12 @@
 
 /**
  * Query-param routing helpers (static export: no dynamic segments — every address is
- * `?owner=&name=&path=` etc.). Thin wrappers over Next's `useSearchParams` that must be used
- * under a `<Suspense>` boundary (the pages wrap themselves).
+ * `?owner=&name=&path=` etc.). Thin wrappers over `useSearchParams` (`./use-route`: the route's
+ * query, also while the address bar shows its short URL) that must be used under a `<Suspense>`
+ * boundary (the pages wrap themselves).
  */
 
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams } from './use-route'
 
 import { SEALED_PARAMS, isExpiredToken, openParam, sealParams } from '@/lib/view/private-nav'
 

@@ -1,0 +1,60 @@
+{
+  "name": "target_matches_tag",
+  "description": "A public release records the tag's tip at publish; the tag's history agrees, so nothing changed (the record is compared case-insensitively).",
+  "case": "release_provenance",
+  "input": {
+    "refNameHash": "T",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "T",
+        "refName": "refs/tags/v1.0",
+        "prevOid": "0",
+        "newOid": "ab",
+        "force": false,
+        "protected": false,
+        "author": "alice",
+        "createdAt": 100
+      }
+    ],
+    "configs": [],
+    "revisions": [
+      {
+        "id": "r1",
+        "createdAt": 200,
+        "delta": 1,
+        "publisher": "alice",
+        "assets": []
+      }
+    ],
+    "target": "AB"
+  },
+  "expected": {
+    "published": {
+      "id": "r1",
+      "at": 200,
+      "by": "alice"
+    },
+    "baseline": {
+      "oid": "ab",
+      "by": "alice",
+      "at": 100
+    },
+    "pinnedBy": "tag",
+    "lateTag": false,
+    "current": {
+      "oid": "ab",
+      "by": "alice",
+      "at": 100
+    },
+    "moves": [],
+    "tag": "unchanged",
+    "assets": {
+      "added": [],
+      "removed": [],
+      "replaced": []
+    },
+    "recorded": "ab",
+    "recordDiffers": false
+  }
+}

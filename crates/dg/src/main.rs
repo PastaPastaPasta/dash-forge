@@ -24,18 +24,22 @@ mod help_lint;
 mod import;
 mod infer;
 mod issue;
+#[cfg(test)]
+mod json_schemas;
 mod keys;
 mod label;
 mod long_body;
 mod maint;
 mod meta;
 mod milestone;
+mod pack_mirror;
 mod pin;
 mod pr;
 mod profile;
 mod prompt;
 mod publish;
 mod quote;
+mod ref_activity;
 mod release;
 mod release_verify;
 mod repo;
@@ -459,6 +463,19 @@ pub enum RepoCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
+    /// A branch's or tag's activity: every push, force-push, move and deletion, and every
+    /// change to its protection, newest first. Inside a clone, a push is checked against local
+    /// git to tell a force-push from a fast-forward.
+    Activity {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The branch (`main`), or with --tag the tag (`v1.0`); a full `refs/…` name also works.
+        #[arg(value_name = "REF")]
+        ref_name: String,
+        /// Name a tag rather than a branch.
+        #[arg(long)]
+        tag: bool,
+    },
     /// List an owner's repositories.
     List {
         /// The owner (identity id or DPNS name); defaults to the signing identity. `--owner`
@@ -539,6 +556,11 @@ pub struct RepoEditArgs {
     /// The topics, comma-separated (`""` clears them): up to 10 of `a-z`, `0-9`, `-`.
     #[arg(long)]
     pub topics: Option<String>,
+    /// Mark the repository as moved to another (`owner/name` or a repo id; `""` clears the
+    /// mark). Readers show where it went; nothing is redirected. Public repositories only;
+    /// writes a new `config` (maintainers only).
+    #[arg(long = "moved-to", value_name = "REPO")]
+    pub moved_to: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -975,6 +997,34 @@ pub enum ProfileCommand {
     /// The keys you sign commits with, published on your profile for Verified badges.
     #[command(subcommand)]
     Key(ProfileKeyCommand),
+    /// Mark an identity as a bot: its profile names its operator, and the operator's profile
+    /// lists it. Forge shows a "bot" badge only when both say so.
+    #[command(subcommand)]
+    Bot(ProfileBotCommand),
+}
+
+/// `dg profile bot` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ProfileBotCommand {
+    /// Run as the bot: name the identity that operates you (id, DPNS name or `@name`; `""`
+    /// clears it).
+    Operator {
+        /// The operator.
+        #[arg(value_name = "IDENTITY")]
+        who: String,
+    },
+    /// Run as the operator: list a bot you operate on your profile (at most 8).
+    Add {
+        /// The bot (id, DPNS name or `@name`).
+        #[arg(value_name = "IDENTITY")]
+        bot: String,
+    },
+    /// Run as the operator: stop listing a bot.
+    Remove {
+        /// The bot (id, DPNS name or `@name`).
+        #[arg(value_name = "IDENTITY")]
+        bot: String,
+    },
 }
 
 /// `dg profile key` subcommands.
@@ -1595,12 +1645,16 @@ pub enum ReleaseCommand {
         #[arg(long)]
         asset: Option<String>,
         /// A directory to save the assets in, by name (default: the current directory), or a
-        /// file name for a single asset. `-o` works too.
+        /// file name for a single asset. An existing file is kept unless --force. `-o` works too.
         #[arg(long, short = 'O', short_alias = 'o', conflicts_with = "dir")]
         output: Option<PathBuf>,
         /// A directory to save the assets in, made if it does not exist (gh's `-D/--dir`).
         #[arg(long, short = 'D')]
         dir: Option<PathBuf>,
+        /// Replace a file that already exists (a symlink there is replaced, not followed).
+        /// Without it, an existing file is refused. `--clobber` works too.
+        #[arg(long, alias = "clobber")]
+        force: bool,
     },
     /// Unpublish a live release (maintainers only).
     ///
@@ -1613,7 +1667,8 @@ pub enum ReleaseCommand {
         tag: String,
     },
     /// Check that a release's tag and assets are still what was first published. Exits with
-    /// E504 when the tag moved, was deleted or races, or the assets changed.
+    /// E504 when the tag moved, was deleted or races, the assets changed, or the release
+    /// records another commit than its tag held at publish.
     ///
     /// It compares the tag's history on Platform (who pushed it, every later move) and the
     /// assets with the first publish, and checks the tag's signature when this directory's git
@@ -1842,6 +1897,45 @@ pub enum StorageCommand {
         /// `remote.<name>.dash*` overrides), not just `dash.*`.
         #[arg(long)]
         remote: Option<String>,
+    },
+    /// Pack mirrors: another copy of a public repo's pack that readers try when its own copies
+    /// fail.
+    #[command(subcommand)]
+    Mirror(StorageMirrorCommand),
+}
+
+/// `dg storage mirror` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum StorageMirrorCommand {
+    /// Record a mirror of one pack of a public repo: up to 4 `https://` URLs (no user name or
+    /// password) or `ipfs://<CID>` addresses. Readers check the bytes against the pack's hash
+    /// and try members' mirrors first.
+    Add {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The pack's hash (hex), as `dg storage status` lists it.
+        #[arg(value_name = "PACK")]
+        pack: String,
+        /// The addresses (1-4), all https or all IPFS.
+        #[arg(value_name = "URI", required = true)]
+        uris: Vec<String>,
+        /// Record it without first checking that the addresses serve the pack.
+        #[arg(long)]
+        no_verify: bool,
+    },
+    /// List the mirrors of a repo's packs (`--mine`: every mirror you recorded).
+    List {
+        /// The repository (`owner/name`); omit with --mine.
+        #[arg(required_unless_present = "mine")]
+        repo: Option<String>,
+        /// The mirrors you recorded, in every repo.
+        #[arg(long)]
+        mine: bool,
+    },
+    /// Delete one of your mirror records (part of its storage fee is refunded).
+    Remove {
+        /// The record's id (`dg storage mirror list --mine` shows them).
+        id: String,
     },
 }
 
@@ -2272,7 +2366,7 @@ fn run(cli: &Cli) -> Result<()> {
 async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
     match &cli.command {
         Command::Auth(cmd) => auth::run(ctx, cmd).await,
-        Command::Repo(cmd) => repo::run(ctx, cmd).await,
+        Command::Repo(cmd) => Box::pin(repo::run(ctx, cmd)).await,
         Command::Issue(cmd) => issue::run(ctx, cmd).await,
         Command::Pr(cmd) => Box::pin(pr::run(ctx, cmd)).await,
         Command::Release(cmd) => release::run(ctx, cmd).await,

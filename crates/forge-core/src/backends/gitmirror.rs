@@ -10,7 +10,8 @@
 //! tips (a rebuilt object that hashes to a wanted OID is the wanted object, whatever pack
 //! it arrived in). For this reason a `gitmirror://` URI must be resolved via
 //! [`GitMirrorBackend::rebuild_pack`] / the tips-covered clone path, **not** through
-//! [`super::verify_and_get`] (which would reject the non-matching whole-pack hash). The
+//! the hash-checked reader, [`crate::storage::PackReader`] (which would reject the
+//! non-matching whole-pack hash). The
 //! manifest records the mirror under `tips` (the refs it covers), not as a hash-verified
 //! mirror URI.
 //!
@@ -156,6 +157,10 @@ impl PackBackend for GitMirrorBackend {
                 Ok(bytes[start..end].to_vec())
             }
         }
+    }
+
+    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
+        super::within_cap(uri, self.get(uri, None).await?, max_bytes)
     }
 
     async fn probe(&self, uri: &Uri) -> Result<Health> {

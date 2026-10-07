@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { Store } from './diff-fixtures'
-import { firstPushers, headUpdatePhrases } from './head-updates'
+import { firstPushers, headUpdatePhrases, tipContains } from './head-updates'
 
 describe('headUpdatePhrases', () => {
   const at = (id: string, oid: string, createdAt: number, actor = 'a') => ({ id, oid, actor, createdAt })
@@ -66,5 +66,23 @@ describe('firstPushers', () => {
     expect(m.get(a.toLowerCase())).toBe('first')
     expect(m.get(b)).toBe('other')
     expect(m.has(zero)).toBe(false)
+  })
+})
+
+describe('tipContains', () => {
+  it('is exact whatever the dates, unknown past its cap or budget', async () => {
+    const s = new Store()
+    const h1 = s.commit(s.files({ a: '1' }), [], 'one')
+    const h2 = s.commit(s.files({ a: '2' }), [h1], 'two')
+    const h3 = s.commit(s.files({ a: '3' }), [h2], 'three')
+    const other = s.commit(s.files({ a: 'x' }), [h1], 'rewritten')
+    expect(await tipContains(s.reader(), h1, h3)).toBe(true)
+    expect(await tipContains(s.reader(), h3, h3)).toBe(true)
+    expect(await tipContains(s.reader(), h3, other)).toBe(false)
+    expect(await tipContains(s.reader(), h1, h3, 1)).toBeNull()
+    const budget = { left: 1 }
+    expect(await tipContains(s.reader(), h1, h3, 500, budget)).toBeNull()
+    expect(budget.left).toBe(0)
+    expect(await tipContains(s.reader(), h1, 'f'.repeat(40))).toBeNull()
   })
 })

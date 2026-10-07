@@ -1,0 +1,18 @@
+{
+  "source": "negative: a repair whose rotation is not a rotation object",
+  "command": "repo members enable",
+  "args": [
+    "--json",
+    "repo",
+    "members",
+    "enable",
+    "o/r"
+  ],
+  "exit": 0,
+  "expect": "invalid",
+  "stdout": {
+    "schemaVersion": 1,
+    "status": "repaired",
+    "rotated": "yes"
+  }
+}

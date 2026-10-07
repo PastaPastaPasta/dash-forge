@@ -37,15 +37,20 @@ import {
 import { VERDICT_LABEL, verdictFromCode } from '../repo'
 import { refUpdateType } from '../repo/push'
 import { releaseProvenance, type ProvenanceInput } from './releaseProvenance'
-import { hexToBytes } from '@noble/hashes/utils.js'
+import { refHistory } from './refHistory'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+import { encodeTlv } from '../private/tlv'
+import { anchorContent } from '../repo/members-anchor'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
-import { avatarSpec, checkProfile, type ProfileInput } from './profile'
+import { avatarSpec, botOperator, checkProfile, type BotClaim, type ProfileInput } from './profile'
 import { backlinkFile, readBacklink } from './mirror-backlink'
+import { checkMirrorUris, mirrorReadOrder, type MirrorReadInput } from './pack-mirror'
 import { readPubkeyEntry, verifyCommitSignature, verifyTagSignature, type Signer } from './signature'
 import { HandoffError, RECOVERY_PHRASE_WARNING, handoffRequest, openHandoffReply } from '../auth/key-handoff'
 import { planRefs, syncDecision } from '../repo/fork'
 import { webhookUrlSecret } from '../repo/webhooks'
+import { assetNameProblem, assetNamesProblem } from './asset-name'
 import { matchesText, mentions } from '../repo/issue-index'
 import { parseSearchText, unresolvedQualifiers } from '../view/issue-query'
 import { parsePullSearch, unresolvedPullQualifiers } from '../view/pull-query'
@@ -169,6 +174,18 @@ function runCaseBase(v: Vector): void {
     }
     case 'release_provenance': {
       expect(releaseProvenance(v.input as ProvenanceInput)).toEqual(v.expected)
+      break
+    }
+    case 'ref_history': {
+      const inp = v.input as {
+        readonly refName: string
+        readonly refNameHash: string
+        readonly updates: readonly RefUpdate[]
+        readonly configs?: readonly ConfigDoc[]
+        readonly contains?: readonly (readonly [string, string, boolean])[]
+      }
+      const known = (old: string, next: string): boolean | null => inp.contains?.find(([o, n]) => o === old && n === next)?.[2] ?? null
+      expect(refHistory(inp.refName, inp.refNameHash, inp.updates, inp.configs ?? [], known)).toEqual(v.expected)
       break
     }
     case 'ref_update_route': {
@@ -385,6 +402,12 @@ function runCaseV2(v: Vector): void {
       expect(v2.v2PackList(inp.copies, inp.asOf)).toEqual(v.expected)
       break
     }
+    case 'planning_superseded': {
+      onlyKeys(v, ['copies', 'kind'], PACK_LIST_KEYS)
+      const inp = v.input as { readonly copies: readonly v2.PackCopyRow[]; readonly kind: number }
+      expect(v2.planningSuperseded(inp.copies, inp.kind)).toEqual(v.expected)
+      break
+    }
     case 'approvals': {
       onlyKeys(v, ['reviews', 'memberships', 'headOid', 'dismissed', 'prAuthor'])
       const inp = v.input as {
@@ -509,10 +532,65 @@ function runCaseV2(v: Vector): void {
       }).toEqual(v.expected)
       break
     }
-    case 'well_formed': {
+    case 'well_formed':
+    case 'content_well_formed': {
       onlyKeys(v, ['doc', 'visibility'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly visibility: v2.Visibility }
-      expect(v2.isWellFormed(inp.doc, inp.visibility)).toEqual(v.expected)
+      expect(v2.contentWellFormed(inp.doc, inp.visibility)).toEqual(v.expected)
+      break
+    }
+    case 'git_plane_well_formed': {
+      onlyKeys(v, ['doc', 'visibility'])
+      const inp = v.input as { readonly doc: v2.ContentDoc; readonly visibility: v2.Visibility }
+      // the git plane is a public repository's
+      expect(inp.visibility).toBe('public')
+      expect(v2.gitPlaneWellFormed(inp.doc)).toEqual(v.expected)
+      break
+    }
+    case 'approval_count': {
+      onlyKeys(v, ['visibility', 'reviews', 'memberships', 'headOid', 'dismissed', 'prAuthor'], {
+        ...NESTED_KEYS,
+        reviews: ['id', 'reviewer', 'verdict', 'commitOid', 'createdAt', 'sealed', 'opened', 'asMember'],
+      })
+      const inp = v.input as {
+        readonly visibility: v2.Visibility
+        readonly reviews: readonly v2.ReadReview[]
+        readonly memberships: readonly v2.Membership[]
+        readonly headOid: string
+        readonly dismissed?: readonly string[]
+        readonly prAuthor?: string
+      }
+      const counted = v2.countedReviews(inp.reviews, inp.visibility)
+      const oracle = new v2.RoleOracle(inp.memberships)
+      expect(v2.countApprovals(counted, oracle, inp.headOid, new Set(inp.dismissed ?? []), inp.prAuthor ?? '')).toEqual(v.expected)
+      break
+    }
+    case 'mixed_edit': {
+      onlyKeys(v, ['stored', 'edited'], { stored: NESTED_KEYS['doc'] as readonly string[], edited: NESTED_KEYS['doc'] as readonly string[] })
+      const inp = v.input as { readonly stored: v2.ContentDoc; readonly edited: v2.ContentDoc }
+      expect(v2.editKeepsAudience(inp.stored, inp.edited)).toEqual(v.expected)
+      break
+    }
+    case 'mixed_anchor': {
+      onlyKeys(v, ['visibility', 'current', 'link'])
+      const inp = v.input as {
+        readonly visibility: v2.Visibility
+        readonly current: { readonly defaultBranch: string; readonly protectedPatterns?: readonly string[]; readonly backendMode: number; readonly archived: boolean }
+        readonly link?: { readonly prev: number; readonly prevKey?: string; readonly skipKey?: string; readonly burned?: boolean }
+      }
+      const got = anchorContent(
+        inp.visibility,
+        { defaultBranch: inp.current.defaultBranch, protectedPatterns: inp.current.protectedPatterns ?? [], backend: { mode: inp.current.backendMode }, archived: inp.current.archived },
+        inp.link === undefined
+          ? null
+          : {
+              prevEpoch: inp.link.prev,
+              ...(inp.link.prevKey !== undefined ? { prevEpochKey: hexToBytes(inp.link.prevKey) } : {}),
+              ...(inp.link.skipKey !== undefined ? { skipEpochKey: hexToBytes(inp.link.skipKey) } : {}),
+              ...(inp.link.burned === true ? { burned: true } : {}),
+            },
+      )
+      expect({ vis: got.vis, plaintext: Object.keys(got.plaintext).sort(), tlv: bytesToHex(encodeTlv(got.fields)) }).toEqual(v.expected)
       break
     }
     case 'merge_base_tips':
@@ -581,6 +659,18 @@ function runCaseV2(v: Vector): void {
       expect(checkProfile(v.input as ProfileInput)).toEqual(v.expected)
       break
     }
+    case 'closed_by_pr': {
+      onlyKeys(v, ['issue', 'closedByPr', 'closedAt', 'pr'])
+      const inp = v.input as { readonly issue: number; readonly closedByPr: number | null; readonly closedAt: number; readonly pr: v2.ClosingPr | null }
+      expect(v2.closedByPr(inp.issue, inp.closedByPr, inp.closedAt, inp.pr)).toEqual(v.expected)
+      break
+    }
+    case 'profile_bot': {
+      onlyKeys(v, ['botId', 'bot', 'operator'])
+      const inp = v.input as { readonly botId: string; readonly bot: BotClaim | null; readonly operator: BotClaim | null }
+      expect(botOperator(inp.botId, inp.bot, inp.operator)).toEqual(v.expected)
+      break
+    }
     case 'avatar_config': {
       onlyKeys(v, ['config', 'identityId'])
       const inp = v.input as { readonly config: string | null; readonly identityId: string }
@@ -590,6 +680,16 @@ function runCaseV2(v: Vector): void {
     case 'webhook_url': {
       onlyKeys(v, ['url'])
       expect(webhookUrlSecret((v.input as { readonly url: string }).url)).toEqual(v.expected)
+      break
+    }
+    case 'asset_file_name': {
+      onlyKeys(v, ['names'])
+      expect((v.input as { readonly names: readonly string[] }).names.map((n) => assetNameProblem(n))).toEqual(v.expected)
+      break
+    }
+    case 'asset_file_names': {
+      onlyKeys(v, ['names'])
+      expect(assetNamesProblem((v.input as { readonly names: readonly string[] }).names)).toEqual(v.expected)
       break
     }
     case 'repo_name': {
@@ -686,6 +786,16 @@ function runCaseV2(v: Vector): void {
       expect(readBacklink(inp.file, inp.repoId)).toEqual(v.expected)
       break
     }
+    case 'pack_mirror_uris': {
+      onlyKeys(v, ['uris'], {})
+      expect(checkMirrorUris((v.input as { readonly uris: readonly string[] }).uris)).toEqual(v.expected)
+      break
+    }
+    case 'pack_mirror_order': {
+      onlyKeys(v, ['packHash', 'listed', 'visibility', 'mirrors'], { mirrors: ['id', 'ownerRole', 'createdAt', 'packHash', 'kind', 'uris'] })
+      expect({ uris: mirrorReadOrder(v.input as MirrorReadInput) }).toEqual(v.expected)
+      break
+    }
     case 'mirror_backlink_file': {
       onlyKeys(v, ['repoIds'])
       expect({ file: backlinkFile((v.input as { readonly repoIds: readonly string[] }).repoIds) }).toEqual(v.expected)
@@ -753,15 +863,6 @@ async function runSignatureVector(v: Vector): Promise<void> {
   expect(await verifyCommitSignature(new TextEncoder().encode(inp.commit), inp.signers)).toEqual(v.expected)
 }
 
-/** The mixed-repository cases the Rust rules run and this port does not yet (stream 1B). */
-const MIXED_PENDING_CASES: ReadonlySet<string> = new Set([
-  'content_well_formed',
-  'git_plane_well_formed',
-  'approval_count',
-  'mixed_edit',
-  'mixed_anchor',
-])
-
 /** The key handoff cases (`../auth/key-handoff`): asynchronous, since WebCrypto is. */
 const HANDOFF_CASES: ReadonlySet<string> = new Set(['key_handoff', 'key_handoff_open', 'copy'])
 
@@ -813,18 +914,17 @@ describe('FORGE_RULES conformance vectors', () => {
   // the environment snapshots (`env_snapshot*`) in `lib/env/conformance.test.ts`.
   const isPrivate = (v: Vector) =>
     ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'env_snapshot'].some((p) => v.case.startsWith(p))
-  // Members-only content in public repositories (private-repos.md §17): the Rust rules landed
-  // first; the TypeScript port (phase-1 stream 1B) runs these cases and removes this list.
-  const isMixedPending = (v: Vector) => MIXED_PENDING_CASES.has(v.case)
-  const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v) && !isMixedPending(v))
+  const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
   const privateVectors = vectors.filter(isPrivate)
-  const mixedPending = vectors.filter(isMixedPending)
 
   it('loads the full vector corpus', () => {
     expect(base.length).toBeGreaterThanOrEqual(45)
     expect(v2Vectors.length).toBeGreaterThanOrEqual(110)
     expect(privateVectors.length).toBeGreaterThanOrEqual(138)
-    expect(base.length + v2Vectors.length + privateVectors.length + mixedPending.length).toBe(vectors.length)
+    expect(base.length + v2Vectors.length + privateVectors.length).toBe(vectors.length)
+    // the members-only content cases (private-repos.md §17) run byte for byte with forge-core
+    const mixed = ['content_well_formed', 'git_plane_well_formed', 'approval_count', 'mixed_edit', 'mixed_anchor']
+    expect(v2Vectors.filter((v) => mixed.includes(v.case)).length).toBeGreaterThanOrEqual(30)
   })
 
   it('knows every vector rule set', () => {

@@ -1,0 +1,16 @@
+{
+  "name": "set_final_sigma",
+  "description": "A final small sigma and a small sigma are one letter without case.",
+  "case": "asset_file_names",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "\u03a3\u0391\u03a3.txt",
+      "\u03c3\u03b1\u03c2.txt"
+    ]
+  },
+  "expected": {
+    "name": "\u03c3\u03b1\u03c2.txt",
+    "sameFileAs": "\u03a3\u0391\u03a3.txt"
+  }
+}

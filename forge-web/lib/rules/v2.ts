@@ -247,8 +247,8 @@ export interface PackPick {
 }
 
 /**
- * Every readable pack of a repo, in fetch order: per pack hash the selected copy (packs with
- * no verified copy left out); packs a selected copy of another pack supersedes go last, not
+ * Every readable pack of a repo, in fetch order, from its manifests of one kind (a reader passes
+ * its git packs): per pack hash the selected copy (packs with no verified copy left out); packs a selected copy of another pack supersedes go last, not
  * dropped; then `createdAt`, then `packHash`.
  */
 export function packReadOrder(copies: readonly PackCopy[]): PackPick[] {
@@ -317,6 +317,14 @@ export interface V2Pack {
 }
 
 /**
+ * Whether a `supersedes` entry naming `claimed` counts (forge-v2.md §4): a pack never
+ * supersedes itself, and a manifest supersedes only packs of its own kind.
+ */
+function claimCounts(claimantHash: string, claimantKind: number, claimedHash: string, claimedKind: number): boolean {
+  return claimedHash !== claimantHash && claimedKind === claimantKind
+}
+
+/**
  * Every pack of a repository with its `packRef`, from all its `packManifest` copies
  * (forge-v2.md §4; the Rust `v2_pack_list`; vectors `v2_pack_list__*`). Kind-agnostic:
  * pass every copy and select a kind from the output.
@@ -326,7 +334,7 @@ export interface V2Pack {
  * representative (a hash with none is left out), whose kind and metadata are the pack's;
  * copies of another kind leave `copies`. `first` is the earliest key among ALL the hash's
  * copies; `packRef` is the index by `first` among packs of the same kind. A pack is
- * superseded only by a listed pack whose representative verified (`true`).
+ * superseded only by a listed pack of the same kind whose representative verified (`true`).
  * Output order: kind, then packRef.
  */
 export function v2PackList(copies: readonly PackCopyRow[], asOf?: CopyKey | null): V2Pack[] {
@@ -361,10 +369,14 @@ export function v2PackList(copies: readonly PackCopyRow[], asOf?: CopyKey | null
       verified: rep.verified === true,
     })
   }
+  const kindOf = new Map(packs.map(({ pack }) => [pack.packHash, pack.kind]))
   const superseded = new Set<string>()
   for (const { pack, verified } of packs) {
     if (!verified) continue
-    for (const s of pack.supersedes) if (s !== pack.packHash) superseded.add(s)
+    for (const s of pack.supersedes) {
+      const kind = kindOf.get(s)
+      if (kind !== undefined && claimCounts(pack.packHash, pack.kind, s, kind)) superseded.add(s)
+    }
   }
   const sorted = packs
     .map((p) => p.pack)
@@ -380,6 +392,22 @@ export function v2PackList(copies: readonly PackCopyRow[], asOf?: CopyKey | null
     out.push({ packRef: index++, ...p, superseded: superseded.has(p.packHash) })
   }
   return out
+}
+
+/**
+ * The supersedes claims planning honours for `kind` artifacts (the Rust `planning_superseded`;
+ * vectors `planning_superseded__*`), sorted: every hash named by a manifest of `kind` whose
+ * uploader is currently a maintainer or writer, except the manifest's own. A `kind` artifact is
+ * superseded for planning when its hash is listed. The web plans a merge's index fragment and
+ * which history indexes are live with it (`plannedSuperseded` in `lib/repo/packs.ts`).
+ */
+export function planningSuperseded(copies: readonly PackCopyRow[], kind: number): string[] {
+  const out = new Set<string>()
+  for (const c of copies) {
+    if (c.kind !== kind || (c.ownerRole !== 'maintainer' && c.ownerRole !== 'writer')) continue
+    for (const s of c.supersedes ?? []) if (claimCounts(c.packHash, c.kind, s, kind)) out.add(s)
+  }
+  return [...out].sort(compareStrings)
 }
 
 // ---------------------------------------------------------------------------
@@ -501,20 +529,115 @@ function contentFields(doc: ContentDoc): [Field | null, Field[]] {
   }
 }
 
+/** `enc[0]` of a members-only document in a public repository (`private-repos.md` §17). */
+export const ENC_MEMBERS = 0x03
+/** `enc[0]` of a specific-people document (`private-repos.md` §17). */
+export const ENC_SPECIFIC_PEOPLE = 0x04
+
+/** The `enc` version byte of `doc` (`enc[0]`), when it carries a non-empty `enc`. */
+function encVersion(doc: Pick<ContentDoc, 'enc'>): number | null {
+  const hex = doc.enc
+  if (hex == null || hex.length < 2) return null
+  const v = Number.parseInt(hex.slice(0, 2), 16)
+  return Number.isNaN(v) ? null : v
+}
+
 /**
- * Plaintext xor `enc`, and the visibility says which (`forge-v2.md` §5): a public repo's
- * document has no `enc`, its kind's required plaintext field, if the kind has one, and ref
- * names that hash (sha256) to their indexed keys ({@link refNameHashesAgree}); a private
- * repo's has a non-empty `enc`, an `epoch`, and none of its kind's plaintext fields (its
- * names are checked after decryption).
+ * Who a document is for, read from the document itself (`private-repos.md` §17; forge-core
+ * `rules::v2::Audience`): no `enc` is public, `enc` v0x04 names specific people, any other `enc`
+ * is the repository's members.
  */
-export function isWellFormed(doc: ContentDoc, visibility: Visibility): boolean {
-  const [required, plaintext] = contentFields(doc)
+export type Audience = 'public' | 'members' | 'specificPeople'
+
+/** The audience `doc` was written for (its `enc`, never the repository's visibility). */
+export function audienceOf(doc: Pick<ContentDoc, 'enc'>): Audience {
+  if (!present(doc.enc)) return 'public'
+  return encVersion(doc) === ENC_SPECIFIC_PEOPLE ? 'specificPeople' : 'members'
+}
+
+/**
+ * Whether content for `child` may sit under a parent for `parent` (DESIGN §3.3: a child's audience
+ * is a subset of its parent's). Specific people are compared by kind only here.
+ */
+export function fitsUnder(child: Audience, parent: Audience): boolean {
+  if (parent === 'public') return true
+  if (child === 'public') return false
+  return child === parent
+}
+
+/** The narrower of two audiences a document sits under: the one the other fits under. */
+export function narrower(a: Audience, b: Audience): Audience {
+  return fitsUnder(a, b) ? a : b
+}
+
+/**
+ * Whether a document's **content** is well-formed for its repository (`forge-v2.md` §5,
+ * `private-repos.md` §8.1, §17; forge-core `content_well_formed`). Readers skip a malformed
+ * document. The git plane (settings fold, ref fold) uses {@link gitPlaneWellFormed} instead.
+ *
+ * - public: the plaintext form ({@link gitPlaneWellFormed}), or, for an issue, patch, comment or
+ *   review only, `enc` v0x03 / v0x04 with an `epoch` and none of the kind's plaintext fields;
+ * - private: a non-empty `enc` with an `epoch` and none of the kind's plaintext fields.
+ */
+export function contentWellFormed(doc: ContentDoc, visibility: Visibility): boolean {
+  const [, plaintext] = contentFields(doc)
   const encrypted = present(doc.enc)
   if (visibility === 'public') {
-    return !encrypted && (required === null || present(required)) && refNameHashesAgree(doc, null)
+    if (!encrypted) return gitPlaneWellFormed(doc)
+    const v = encVersion(doc)
+    return (
+      (doc.kind === 'issue' || doc.kind === 'patch' || doc.kind === 'comment' || doc.kind === 'review') &&
+      (v === ENC_MEMBERS || v === ENC_SPECIFIC_PEOPLE) &&
+      doc.epoch != null &&
+      !plaintext.some(present)
+    )
   }
   return encrypted && doc.epoch != null && !plaintext.some(present)
+}
+
+/**
+ * Whether a public repository's **git-plane** document (a `config` of the settings fold, a ref
+ * update of the ref fold) is well-formed: the plaintext form only (forge-core
+ * `git_plane_well_formed`). A `config` carrying any `enc` (the members-key anchor) is never read
+ * as the settings (DESIGN D1).
+ */
+export function gitPlaneWellFormed(doc: ContentDoc): boolean {
+  const [required] = contentFields(doc)
+  return !present(doc.enc) && (required === null || present(required)) && refNameHashesAgree(doc, null)
+}
+
+/**
+ * Whether an edit keeps the document's audience (DESIGN §2.4: fixed at creation; forge-core
+ * `edit_keeps_audience`): a plaintext edit of a sealed document and a sealed edit of a
+ * plaintext one are refused, and a sealed replace carries no plaintext content.
+ */
+export function editKeepsAudience(stored: ContentDoc, edited: ContentDoc): boolean {
+  const a = audienceOf(stored)
+  const b = audienceOf(edited)
+  return a === b && (b === 'public' || !contentFields(edited)[1].some(present))
+}
+
+/** One review as the approval fold takes it from a reader who may not open it (DESIGN D15). */
+export interface ReadReview extends Review {
+  /** It carries `enc`. */
+  readonly sealed?: boolean
+  /** The reader opened it (always true for a plaintext review). */
+  readonly opened?: boolean
+  /** It carries `asMember`. */
+  readonly asMember?: boolean
+}
+
+/**
+ * The reviews whose verdict the approval fold counts ({@link countApprovals}; DESIGN D15,
+ * forge-core `counted_reviews`): plaintext and opened reviews; in a public repository also a
+ * sealed review the reader cannot open when it carries `asMember` (its verdict is plaintext and
+ * consensus admits a member verdict only with the proof). In a private repository an unopened
+ * review never counts (§8.1).
+ */
+export function countedReviews(reviews: readonly ReadReview[], visibility: Visibility): Review[] {
+  return reviews
+    .filter((r) => r.sealed !== true || r.opened === true || (visibility === 'public' && r.asMember === true))
+    .map(({ sealed: _s, opened: _o, asMember: _a, ...review }) => review)
 }
 
 /**
