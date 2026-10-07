@@ -78,7 +78,7 @@ It shares the members key with every current member who has an encryption key, a
 
 Turning it on cannot be undone, and it changes nothing that is already public.
 
-In the web app, **Turn on members-only content** is **coming soon**. Use `dg` for now. <!-- PENDING web UX stream (1D): the enable sheet. -->
+In the web app, a maintainer chooses **Turn on members-only content** (in the audience picker or under Settings → Members); the sheet shows the cost for the current members first.
 
 ## Post and read members-only content
 
@@ -106,7 +106,7 @@ $ dg pr view alice/shop 7
 
 `dg issue view` adds a line saying only members can read it, and `dg pr view --comments` shows each members-only comment as a placeholder with its author and time. Lists say how many rows you can't read: "Issues 3 (1 members-only; only members of alice/shop can read them)".
 
-**In the web app**, members read members-only issues, comments and reviews after unlocking once in the tab, and a reply in a members-only conversation stays members-only. The audience picker for a new issue or comment, the members-only rows and placeholders for everyone else, the "#N · members-only" page and **View as public** are **coming soon**. <!-- PENDING web UX stream (1D). -->
+**In the web app**, members read members-only issues, comments and reviews after unlocking once in the tab, and a reply in a members-only conversation stays members-only. Every composer has an audience chip (**Public** or **Members**); a reply inside a members-only conversation can only be members-only. Everyone else sees members-only rows and placeholders and a "#N · members-only" page instead of the content, and members can check what the public sees with **View as public**. Before a public post that quotes members-only text, the web asks you to confirm.
 
 **Search** looks only at what you can read. `dg search` tells you how many members-only issues it could not search.
 

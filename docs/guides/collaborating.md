@@ -182,13 +182,13 @@ dg pr comment    <owner>/<repo> 7 --members --body "…"
 dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 ```
 
-**Turning it on** shares a members key with every member who has an encryption key: about 0.0004 DASH plus about 0.0007 DASH per member (about 0.004 DASH for 5 members). Members without an encryption key are listed. They get the key once they set one up (`dg auth keys add --encryption`) and a maintainer runs `dg repo keys repair`. A member who asks for members-only content before it is on gets [`E312`](../errors.md#e312). In the web app, turning it on is **coming soon**. <!-- PENDING web UX stream (1D) -->
+**Turning it on** shares a members key with every member who has an encryption key: about 0.0004 DASH plus about 0.0007 DASH per member (about 0.004 DASH for 5 members). Members without an encryption key are listed. They get the key once they set one up (`dg auth keys add --encryption`) and a maintainer runs `dg repo keys repair`. A member who asks for members-only content before it is on gets [`E312`](../errors.md#e312). In the web app, a maintainer chooses **Turn on members-only content**; the sheet shows the same cost first.
 
 **Replies follow what they answer.** Without `--members`, a comment on a members-only issue, or a reply to a members-only comment, is members-only. A public reply inside a members-only conversation is refused before anything is signed. Edits keep the audience.
 
 **Reading.** Members read members-only items in `dg issue view`/`list` and `dg pr view`/`list`, marked "members-only". Everyone else sees `#3 · members-only issue by @alice · open`, "3 members-only comments hidden, shown as placeholders (you're not a member of alice/shop)", and lists that say how many rows they can't read ("Issues 3 (1 members-only; only members of alice/shop can read them)"). In `--json`, every item has `"audience"` and `"readable"`. A `dg` key protected by a passphrase is asked for on the terminal. Without a terminal (or with `--json`, and no `DASH_FORGE_PASSPHRASE`), a member sees the items as locked instead. A removed member still reads what was posted before the removal.
 
-**From the web app**, members read members-only issues, comments and reviews after one unlock per tab, and a reply in a members-only conversation stays members-only. Choosing Members for a new issue or comment, the members-only rows and placeholders for everyone else, and **View as public** are **coming soon**. <!-- PENDING web UX stream (1D) -->
+**From the web app**, members read members-only issues, comments and reviews after one unlock per tab, and a reply in a members-only conversation stays members-only. Choose **Members** on a composer's audience chip for a new issue or comment; everyone else sees members-only rows and placeholders, and **View as public** shows you what they see.
 
 **A members-only review counts.** Its verdict is public, so an approval counts toward the branch policy for everyone, member or not, while its text stays members-only. Older Forge builds don't count it, and may refuse a merge an up-to-date build allows ([`E804`](../errors.md#e804)). Update to see and count members-only reviews.
 
@@ -630,7 +630,7 @@ On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-
 | Merge a PR (see below) | |
 | Create a repository (public or private), or fork one, with a cost preview; sync a fork with its parent (fast-forward) | Syncing a fork whose branch has commits of its own (open the pull request it offers) |
 | Add and remove members (owner) | |
-| Read members-only issues, comments and reviews (members, after one unlock per tab) | Choosing Members for a new issue or comment, and turning members-only content on (use `dg`) <!-- PENDING 1D --> |
+| Read and write members-only issues, comments and reviews (members, after one unlock per tab), and turn members-only content on (maintainers) | Members-only pull requests and branches (not yet in Forge) |
 | Publish a release with assets, creating its tag when it does not exist (maintainers) | |
 | Star repositories and follow people | |
 | See your repositories, issues, PRs and stars in **Explore**, and new activity in **Notifications** | |
