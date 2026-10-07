@@ -30,13 +30,14 @@ function store(): Storage | null {
 /**
  * Where `viewer`'s comment draft on `targetId` is kept, or null: not kept (a private repo, a
  * members-only composer, signed out). `audience`: who the composer writes for (a members-only
- * thread's composer is members-only).
+ * thread's composer is members-only); required, so no caller can default a members-only one to
+ * a stored draft.
  */
 export function commentDraftKey(
   repo: { readonly repoId: string; readonly visibility?: string },
   targetId: string,
   viewer: string | null,
-  audience: 'public' | 'members' | 'specificPeople' = 'public',
+  audience: 'public' | 'members' | 'specificPeople',
 ): string | null {
   if (repo.visibility !== 'public' || audience !== 'public' || viewer === null || targetId === '') return null
   return `${viewer}:${repo.repoId}:${targetId}:comment`

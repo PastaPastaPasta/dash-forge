@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/issue-status.schema.json",
+  "title": "dg issue status --json",
+  "description": "Issues assigned to you, mentioning you, and opened by you.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "assigned": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "mentioned": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "authored": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "hidden": {
+      "type": "integer"
+    },
+    "membersOnly": {
+      "type": "integer"
+    },
+    "hiddenOmitted": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "assigned",
+    "mentioned",
+    "authored"
+  ],
+  "additionalProperties": true
+}

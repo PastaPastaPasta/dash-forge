@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-members-enable.schema.json",
+  "title": "dg repo members enable --json",
+  "description": "Members-only content turned on. When it is on already and the key needs a repair (a member with no key yet, a rotation), the command repairs it and prints what `dg repo keys repair` prints.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string"
+    },
+    "repo": {
+      "type": "string"
+    },
+    "epoch": {},
+    "wrapped": {},
+    "skipped": {},
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status"
+  ],
+  "additionalProperties": true,
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "enabled",
+            "finished",
+            "already_on"
+          ]
+        }
+      },
+      "required": [
+        "repo"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "repaired",
+            "nothing_to_do"
+          ]
+        },
+        "rotated": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/rotation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nonMembers": {}
+      }
+    }
+  ]
+}

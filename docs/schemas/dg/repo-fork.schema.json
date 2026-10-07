@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-fork.schema.json",
+  "title": "dg repo fork --json",
+  "description": "A fork of a repository.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "forked",
+        "exists"
+      ]
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "forkOf": {
+      "type": "string"
+    },
+    "parent": {
+      "type": "string"
+    },
+    "remoteUrl": {
+      "type": "string"
+    },
+    "manifestsWritten": {
+      "type": "integer"
+    },
+    "platformPacksReferenced": {
+      "type": "integer"
+    },
+    "manifestsExisting": {
+      "type": "integer"
+    },
+    "unreferenceablePacks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "refsWritten": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The refs this run wrote to the fork."
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repoId"
+  ],
+  "additionalProperties": true
+}

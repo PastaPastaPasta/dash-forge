@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-policy-set.schema.json",
+  "title": "dg repo policy set --json",
+  "description": "A new branch policy.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "set",
+        "unchanged"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "policy": {
+      "$ref": "common.schema.json#/$defs/policy"
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repo",
+    "policy"
+  ],
+  "additionalProperties": true
+}

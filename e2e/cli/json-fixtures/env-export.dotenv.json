@@ -1,0 +1,15 @@
+{
+  "source": "emitter: crates/dg/src/env.rs export without --output",
+  "command": "env export",
+  "args": [
+    "--json",
+    "env",
+    "export",
+    "o/r",
+    "--env",
+    "prod"
+  ],
+  "exit": 0,
+  "expect": "skipped",
+  "stdout": "API_URL=https://example.org\n"
+}

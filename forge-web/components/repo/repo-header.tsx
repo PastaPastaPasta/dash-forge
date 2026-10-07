@@ -28,6 +28,7 @@ import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo
 import { CodeSearchBox } from '@/components/repo/code-search-box'
 import { MembersChip } from '@/components/repo/audience'
 import { membersOnlyOf, onMembersOnlyCounts } from '@/lib/repo/members-only-counts'
+import { MovedBanner } from '@/components/repo/moved-banner'
 
 /** How many of the repo's open issues and PRs are members-only, once a list has read them all. */
 function useMembersOnlyOpen(repo: RepoHome['repo']): { issues: number | null; pulls: number | null } {
@@ -158,6 +159,8 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       {home.description ? (
         <p className="mt-2 max-w-3xl text-dense text-anvil-600 dark:text-anvil-300">{home.description}</p>
       ) : null}
+
+      <MovedBanner home={home} />
 
       {home.config?.archived ? (
         <div className="mt-3 flex items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-1.5 text-dense text-caution-700 dark:text-caution-400">

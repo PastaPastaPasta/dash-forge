@@ -290,6 +290,10 @@ pub struct Transition {
     /// `transition.dupNumber` (QW-069): the canonical issue's number in the same repo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dup_number: Option<u32>,
+    /// `transition.closedByPr` (UPDATE-1): the pull request whose merge made this issue close,
+    /// as its writer says; readers verify it ([`closed_by_pr`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_by_pr: Option<u32>,
 }
 
 /// Why an issue was closed (`transition.reason`, GitHub's `stateReason`).
@@ -469,6 +473,45 @@ pub fn names_dense_rule(message: &str) -> bool {
     message.contains("rule \"dense\"") || message.contains("rule \\\"dense\\\"")
 }
 
+/// The pull request an issue close names as its cause (`transition.closedByPr`, UPDATE-1), as a
+/// reader sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClosingPr {
+    /// Its number.
+    pub number: u32,
+    /// It is merged (state code 2).
+    pub merged: bool,
+    /// When its merge was recorded (`$createdAt` of its merge transition, ms), when known.
+    #[serde(default)]
+    pub merged_at: Option<u64>,
+    /// Its description.
+    pub body: String,
+    /// It was imported from another forge (its `Fixes #n` are the source's numbers).
+    #[serde(default)]
+    pub imported: bool,
+}
+
+/// The pull request an issue close of `issue` (recorded at `closed_at`) was made by, when the
+/// close says so and it holds: `closed_by_pr` names a pull request (`pr`, as read) that was
+/// merged no later than the close, is not imported, is not the issue itself, and whose
+/// description closes the issue ("Fixes #N", [`super::review::linked_issues`]). `None` otherwise: the close reads as a plain close. A
+/// close that names nothing (`closed_by_pr` `None`, every close written before the field) is
+/// left to the timing match readers used before (`closing_merge`, `closedIn`).
+#[must_use]
+pub fn closed_by_pr(
+    issue: u32,
+    closed_by_pr: Option<u32>,
+    closed_at: u64,
+    pr: Option<&ClosingPr>,
+) -> Option<u32> {
+    let n = closed_by_pr?;
+    let pr = pr.filter(|p| p.number == n && n != issue)?;
+    let merged_before = pr.merged && pr.merged_at.is_some_and(|at| at <= closed_at);
+    (merged_before && !pr.imported && super::review::linked_issues(&pr.body).contains(&issue))
+        .then_some(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,6 +604,7 @@ mod tests {
             created_at: 0,
             reason: None,
             dup_number: None,
+            closed_by_pr: None,
         };
         let log = [t(ISSUE_CLOSE), t(ISSUE_LOCK)];
         assert_eq!(
@@ -619,6 +663,7 @@ mod tests {
             created_at: at,
             reason,
             dup_number: dup,
+            closed_by_pr: None,
         };
         let dup = |n| ClosedAs {
             reason: CloseReason::Duplicate,

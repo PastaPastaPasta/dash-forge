@@ -1,0 +1,16 @@
+{
+  "source": "negative: every object carries schemaVersion",
+  "command": "label list",
+  "args": [
+    "--json",
+    "label",
+    "list",
+    "o/r"
+  ],
+  "exit": 0,
+  "expect": "invalid",
+  "stdout": {
+    "count": 0,
+    "labels": []
+  }
+}

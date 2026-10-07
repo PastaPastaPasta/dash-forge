@@ -1,0 +1,22 @@
+{
+  "name": "self_operated",
+  "description": "An identity naming itself as its operator is no bot.",
+  "rules": "v2",
+  "case": "profile_bot",
+  "input": {
+    "botId": "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv",
+    "bot": {
+      "operator": "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv",
+      "operates": [
+        "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv"
+      ]
+    },
+    "operator": {
+      "operator": "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv",
+      "operates": [
+        "7x3PFaUpX2nZfUnnSo1a4NqDb5gwZqQhT8QTm3Tq8cbv"
+      ]
+    }
+  },
+  "expected": null
+}

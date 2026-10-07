@@ -188,6 +188,20 @@ describe('a resumed maintainer demotion', () => {
   })
 })
 
+describe('a resumed promotion to maintainer', () => {
+  it('takes a maintainer document that already stands as the add, then removes the writer document', async () => {
+    configs = [plainConfig, membersAnchor]
+    memberships = {
+      consent: [{ $id: 'k', $ownerId: BOB }],
+      maintainer: [{ $id: 'm', $ownerId: ALICE, memberId: BOB }],
+      writer: [{ $id: 'w', $ownerId: ALICE, memberId: BOB, role: 1 }],
+    }
+    await changeMemberRole(sdk, auth, REPO, BOB, 'writer', 'maintainer', 'i8', ops)
+    expect(flows).toEqual([`add:maintainer:${BOB}`])
+    expect(created).toEqual(['delete'])
+  })
+})
+
 describe('a failed role change on a repo with members-only content', () => {
   it('rotates the key away from someone left without a role, never silently', async () => {
     configs = [plainConfig, membersAnchor]

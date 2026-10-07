@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/webhook-add.schema.json",
+  "title": "dg webhook add --json",
+  "description": "A webhook registered with a relay.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "repoId": {
+      "type": "string"
+    },
+    "documentId": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "hookId": {
+      "type": "string"
+    },
+    "url": {
+      "type": "string"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "relayIdentityId": {
+      "type": "string"
+    },
+    "relayKeyId": {},
+    "senderKeyId": {},
+    "secretFile": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "estimate": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "hookId"
+  ],
+  "additionalProperties": true
+}

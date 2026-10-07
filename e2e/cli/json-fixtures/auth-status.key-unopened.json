@@ -1,0 +1,34 @@
+{
+  "source": "emitter: crates/dg/src/auth/mod.rs status() (keyUnopened is Option<String>)",
+  "command": "auth status",
+  "args": [
+    "--json",
+    "auth",
+    "status"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "network": "devnet-sakura",
+    "authenticated": true,
+    "identityId": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "names": [],
+    "keyId": null,
+    "keyDisabled": null,
+    "limited": null,
+    "capped": null,
+    "boundDocumentType": null,
+    "encryptionKeyIds": null,
+    "budgetCredits": null,
+    "budgetRemainingCredits": null,
+    "expiresAt": null,
+    "balanceCredits": null,
+    "balanceDash": null,
+    "storage": "file",
+    "storedAt": "~/.config/dash-forge/identity.json",
+    "defaultIdentityId": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "masterKeyStored": null,
+    "keyUnopened": "the key is sealed and no passphrase is available here (set DASH_FORGE_PASSPHRASE)",
+    "schemaVersion": 1
+  }
+}

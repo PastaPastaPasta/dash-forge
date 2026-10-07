@@ -49,15 +49,20 @@ on:
         description: Build and package only; do not attest or publish a release
         type: boolean
         default: true
-  # A dry run on every PR that could break a release-only leg (musl, Windows, macOS), so it
-  # fails at review time rather than at tag time.
+  # A dry run on PRs that change what the release-only legs (musl, Windows, macOS) depend on:
+  # dependencies, the toolchain, build scripts and this packaging. A PR that only changes crate
+  # source doesn't trigger it: the six-platform build costs about an hour of runner time
+  # (two of it on scarce macOS runners) and starved the required checks when many PRs were
+  # open. The master dry run above still builds every leg after each merge, so a
+  # platform-specific break shows up at the next merge, well before a tag.
   pull_request:
     paths:
       - '.github/workflows/release.yml'
       - '.github/workflows/web-ipfs.yml'
       - 'install.sh'
       - 'build-support/**'
-      - 'crates/**'
+      - 'crates/*/Cargo.toml'
+      - 'crates/*/build.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'

@@ -22,12 +22,19 @@ From 1.0, breaking changes to these come only in a major release.
 
 ## JSON output
 
-`--json` output is **not stable before 1.0**. A minor release may add, rename or remove fields. Scripts should:
+Every `dg` command run with `--json` prints one JSON object on stdout, and every such object, an error included, carries `"schemaVersion": 1`. [`docs/schemas/`](schemas/README.md) has a JSON Schema (draft 2020-12) for each command's object and lists the few commands that print no JSON: `dg completions`, `dg env run` (its output is the command's) and `dg api query`, which prints raw Platform documents as they are, like `gh api`.
 
-- check `dg --version` and pin the version they were written for (`DASH_FORGE_VERSION` for `install.sh`, a tag for the actions);
-- ignore fields they do not use.
+The exit code says which schema applies. A command that exits 0 prints its own command's object. One that exits non-zero prints the [error object](schemas/dg/error.schema.json); a command that finished part of its work (an import that stopped at `--max-spend`, a review submit that wrote some comments) adds that part's fields beside `error`. `dg env export` prints JSON only with `--output`: without it, it prints the variables as a .env file, even with `--json`.
 
-From 1.0, the `--json` schema follows semver: a minor release only adds fields, and removing or renaming one needs a major release.
+`schemaVersion` is the contract scripts can check:
+
+- **Adding a field doesn't change it.** Scripts should ignore fields they don't use. Each schema allows extra fields.
+- **Renaming or removing a field, changing its type, or changing what a value means raises it.** The changelog names the change.
+- A field a schema lists as `required` is in every success of that command. Others appear in some outcomes only (an `unchanged` result has no `cost`, for example).
+
+Times are milliseconds since the Unix epoch (`createdAt`, `updatedAt`, `expiresAt`). Identities are base58 ids. Costs are `{ "credits", "dash", "usd", "usdPrice" }`.
+
+Before 1.0, a minor release may still raise `schemaVersion`, so pin the `dg` version a script was written for (`DASH_FORGE_VERSION` for `install.sh`, a tag for the actions) as well as checking `schemaVersion`. From 1.0, raising it needs a major release.
 
 ## Networks and contracts
 
