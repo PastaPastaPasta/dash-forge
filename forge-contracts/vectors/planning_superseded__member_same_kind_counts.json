@@ -1,0 +1,46 @@
+{
+  "name": "member_same_kind_counts",
+  "description": "A maintainer's fold (kind 1) names F1 and F2 and a writer's names F3; a fragment naming itself does not count. Result is sorted.",
+  "case": "planning_superseded",
+  "rules": "v2",
+  "input": {
+    "kind": 1,
+    "copies": [
+      {
+        "id": "m",
+        "packHash": "M1",
+        "kind": 1,
+        "createdAt": 10,
+        "ownerRole": "maintainer",
+        "supersedes": [
+          "F2",
+          "F1"
+        ]
+      },
+      {
+        "id": "w",
+        "packHash": "W1",
+        "kind": 1,
+        "createdAt": 10,
+        "ownerRole": "writer",
+        "supersedes": [
+          "F3",
+          "W1"
+        ]
+      },
+      {
+        "id": "f1",
+        "packHash": "F1",
+        "kind": 1,
+        "createdAt": 10,
+        "ownerRole": "writer",
+        "supersedes": []
+      }
+    ]
+  },
+  "expected": [
+    "F1",
+    "F2",
+    "F3"
+  ]
+}

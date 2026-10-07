@@ -48,6 +48,7 @@ import { StepRow, type StepState } from '@/components/repo/step-list'
 import { widenEstimate, type PackEstimate } from '@/lib/storage/merge-choice'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
+import { MERGE_UNCONFIRMED } from '@/lib/view/merge-recheck'
 import { CommitIdentityPrompt } from '@/components/repo/branch-commit-panel'
 import { branchName, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
@@ -112,6 +113,7 @@ export function MergePanel({
   canBypass = false,
   branchAhead = null,
   checkSourceBranch,
+  recheckMembers,
   onBranchDeleted,
 }: {
   repo: RepoRef
@@ -155,6 +157,11 @@ export function MergePanel({
    * the page read it), or null. A failed read does not stop the merge.
    */
   checkSourceBranch?: () => Promise<string | null>
+  /**
+   * Judge the merge again with the members read now, `bypass` the rules confirmed bypassed: why
+   * not to merge, or null. A failed read (or a throw) stops the merge.
+   */
+  recheckMembers: (bypass: readonly string[]) => Promise<string | null>
   /** Told once "Delete the branch after merging" deleted it (the page shows it deleted at once). */
   onBranchDeleted?: () => void
 }): JSX.Element | null {
@@ -400,11 +407,17 @@ export function MergePanel({
     setFailure(null)
     setStopped(null)
     // The branch moved past the head since the page read it (QW3-013): merging now would leave
-    // the newer commits out. Only a fresh run checks; a retry resumes the merge it started.
-    if (checkSourceBranch !== undefined && run.done.length === 0) {
-      const moved = await checkSourceBranch().catch(() => null)
-      if (moved !== null) {
-        setStopped(moved)
+    // the newer commits out. And the members, read now: one revoked since the page loaded must
+    // not carry the merge (a failed read stops it too). Only a fresh run checks; a retry resumes the
+    // merge it started.
+    if (run.done.length === 0) {
+      const [moved, members] = await Promise.all([
+        checkSourceBranch?.().catch(() => null) ?? null,
+        recheckMembers(bypass ?? []).catch((e: unknown) => (e instanceof Error ? e.message : MERGE_UNCONFIRMED)),
+      ])
+      const why = moved ?? members
+      if (why !== null) {
+        setStopped(why)
         setBusy(false)
         starting.current = false
         return
@@ -494,7 +507,7 @@ export function MergePanel({
       setBusy(false)
       starting.current = false
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.createdAt, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, onBranchDeleted])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.createdAt, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, recheckMembers, onBranchDeleted])
   const onMergeClick = (): void => {
     // Locked: the click opens Unlock (the guard); merging is the next click, once unlocked.
     if (unlockFirst) {
@@ -767,7 +780,7 @@ export function MergePanel({
       ) : null}
       {stopped ? (
         <p role="alert" className="mt-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
-          Merge stopped: {stopped}
+          Merge stopped. {stopped}
         </p>
       ) : null}
       {newTip ? (

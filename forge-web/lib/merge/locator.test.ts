@@ -40,6 +40,18 @@ describe('merge index fragment (forge-core plan_push_index)', () => {
     expect(planFragment(tooMany, h(2))).toMatchObject({ kind: 'skip', retry: false })
   })
 
+  it('counts a fragment retired only by a maintainer or writer fragment naming it, as forge-core does', () => {
+    const frags = Array.from({ length: MAX_LOCATOR_FRAGMENTS }, (_, i) => m(1, h(100 + i), 2 + i))
+    const fold = { ...m(1, h(200), 40), supersedes: frags.slice(0, 15).map((f) => f.packHash) }
+    // The fold leaves two live fragments (its own and the newest): room for one more.
+    expect(planFragment([m(0, h(1), 1), ...frags, fold, m(0, h(2), 50)], h(2))).toEqual({ kind: 'publish', packRef: 1 })
+    // The same claims from a triage member, or on a git pack, retire nothing.
+    const triage = { ...fold, ownerRole: 'triage' as const }
+    expect(planFragment([m(0, h(1), 1), ...frags, triage, m(0, h(2), 50)], h(2))).toMatchObject({ kind: 'skip', retry: false })
+    const gitClaim = { ...m(0, h(3), 41), supersedes: fold.supersedes }
+    expect(planFragment([m(0, h(1), 1), ...frags, gitClaim, m(0, h(2), 50)], h(2))).toMatchObject({ kind: 'skip', retry: false })
+  })
+
   it('builds a fragment whose rows address the pack at its packRef', async () => {
     const s = new Store()
     const c = s.commit(s.files({ 'a.txt': 'hello\n' }))

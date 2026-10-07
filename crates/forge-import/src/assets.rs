@@ -35,8 +35,9 @@ pub const MAX_HASHED_BYTES: u64 = 2 << 30;
 /// What one run downloads for hashing, in all (later runs hash the rest).
 pub const RUN_BYTES: u64 = 4 << 30;
 
-/// The most an asset with no recorded size is read for hashing.
-pub const UNSIZED_BYTES: u64 = 256 << 20;
+/// The most an asset with no recorded size is read for hashing: also the most a reader takes
+/// of a body whose size is unknown, so every asset hashed here can be downloaded.
+pub const UNSIZED_BYTES: u64 = forge_core::storage::read::MAX_UNSIZED_BYTES;
 
 /// Redirect hops followed (each one checked like the first URL).
 const MAX_REDIRECTS: usize = 5;
@@ -99,7 +100,24 @@ impl Default for Https {
 }
 
 impl Fetch for Https {
+    /// The whole download, redirects included, gets the reader's deadline for `limit` bytes
+    /// ([`transfer_deadline`](forge_core::storage::read::transfer_deadline)), so a host that
+    /// keeps trickling bytes cannot hold a run open.
     async fn fetch(&self, url: &str, limit: u64, sink: &mut dyn FnMut(&[u8])) -> Result<u64> {
+        let deadline = forge_core::storage::read::transfer_deadline(Some(limit));
+        tokio::time::timeout(deadline, self.fetch_within(url, limit, sink))
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("not done within {}s", deadline.as_secs())))
+    }
+}
+
+impl Https {
+    async fn fetch_within(
+        &self,
+        url: &str,
+        limit: u64,
+        sink: &mut dyn FnMut(&[u8]),
+    ) -> Result<u64> {
         let mut url = url.to_string();
         let mut resp = None;
         for _ in 0..=MAX_REDIRECTS {

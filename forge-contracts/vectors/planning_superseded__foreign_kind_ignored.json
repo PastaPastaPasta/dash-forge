@@ -1,0 +1,49 @@
+{
+  "name": "foreign_kind_ignored",
+  "description": "Planning which index fragments (kind 1) are live: a writer's long text (kind 6) and a maintainer's git pack (kind 0) name fragments F1 and F2; claims count only from a manifest of the claimed kind, so neither is superseded.",
+  "case": "planning_superseded",
+  "rules": "v2",
+  "input": {
+    "kind": 1,
+    "copies": [
+      {
+        "id": "f1",
+        "packHash": "F1",
+        "kind": 1,
+        "createdAt": 10,
+        "ownerRole": "writer",
+        "supersedes": []
+      },
+      {
+        "id": "f2",
+        "packHash": "F2",
+        "kind": 1,
+        "createdAt": 10,
+        "ownerRole": "writer",
+        "supersedes": []
+      },
+      {
+        "id": "t",
+        "packHash": "T1",
+        "kind": 6,
+        "createdAt": 10,
+        "ownerRole": "writer",
+        "supersedes": [
+          "F1",
+          "F2"
+        ]
+      },
+      {
+        "id": "g",
+        "packHash": "G1",
+        "kind": 0,
+        "createdAt": 10,
+        "ownerRole": "maintainer",
+        "supersedes": [
+          "F1"
+        ]
+      }
+    ]
+  },
+  "expected": []
+}
