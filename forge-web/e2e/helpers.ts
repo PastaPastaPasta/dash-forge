@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { canonicalOfShort } from '../lib/short-url'
 import { E2E_DEVNET, loadSeedPulls, seedRepo, type SeedPulls } from './seed-summary'
 export { E2E_DEVNET, loadSeedPulls, type SeedPulls }
 
@@ -557,4 +558,30 @@ export function readKeptSession(page: Page): Promise<Record<string, unknown> | n
         }
       }),
   )
+}
+
+/**
+ * The route a page at `url` reads: its canonical query route, also once the address bar shows the
+ * page's short URL (CJ-6), which the 404.html shim opens as that route.
+ */
+export function routeOf(url: URL | string): URL {
+  const u = new URL(String(url))
+  const route = canonicalOfShort(u.pathname, u.search.slice(1))
+  return route === null ? u : new URL(`${route}${u.hash}`, u.origin)
+}
+
+/** A `toHaveURL` / `waitForURL` matcher: `want` against the route the page reads ({@link routeOf}). */
+export function atRoute(want: RegExp | ((route: URL) => boolean)): (url: URL) => boolean {
+  return (url) => {
+    const route = routeOf(url)
+    return typeof want === 'function' ? want(route) : want.test(route.href)
+  }
+}
+
+/**
+ * `owner=<id>` in a route pattern, or the owner's DPNS name: the address bar's short URL writes the
+ * owner by name once the page has read it, so a URL alone cannot tell which identity it is.
+ */
+export function ownerIs(id: string): string {
+  return `owner=(?:${id}|[A-Za-z0-9-]+(?:\\.dash)?)`
 }

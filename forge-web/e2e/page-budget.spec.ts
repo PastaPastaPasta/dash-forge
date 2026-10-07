@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
-import { collectPageErrors, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, DEMO, E2E_DEVNET, EMPTY, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { atRoute, collectPageErrors, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, DEMO, E2E_DEVNET, EMPTY, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 import { quorumGuardLong } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -137,7 +137,7 @@ test.describe('page request budget (S-1)', () => {
     await page.evaluate(() => window.scrollTo(0, 0))
     const beforeWarm = dapi.all().length
     await page.getByRole('link', { name: 'README.md', exact: true }).first().click()
-    await expect(page).toHaveURL(/\/repo\/blob\//)
+    await expect(page).toHaveURL(atRoute(/\/repo\/blob\//))
     await expect(page.locator('main').getByText(/forge|README/i).first()).toBeVisible({ timeout: 30_000 })
     await page.goBack()
     await expect(fileRows(page).first()).toBeVisible({ timeout: 30_000 })
@@ -481,7 +481,7 @@ test.describe('code browsing budgets on the dash mirror (QW-027, QW-028, QW-087)
     expect(walk).toBeLessThanOrEqual(GOTO_WALK_REQUESTS)
     await page.keyboard.press('ArrowDown')
     await page.keyboard.press('Enter')
-    await expect(page).toHaveURL(/\/repo\/blob\/.*net_processing/)
+    await expect(page).toHaveURL(atRoute(/\/repo\/blob\/.*net_processing/))
     await shot(page, 'cb-01-goto-file-enter')
     await context.close()
 

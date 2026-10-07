@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { idFile, idOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { atRoute, idFile, idOf, routeOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * The PR page's information architecture, drafts and head sync (review-parity spec §7 PR 3),
@@ -143,8 +143,8 @@ test('i1. the contributor opens a draft PR from the fork; tabs, counts and the r
   await page.getByLabel('Description', { exact: true }).fill('Greets the forge. Fixes #1')
   await page.getByLabel('Open as a draft').check()
   await page.getByRole('button', { name: 'Create draft pull request' }).click()
-  await page.waitForURL(/\/repo\/pull\/\?.*number=\d+/, { timeout: 180_000 })
-  prNumber = Number(new URL(page.url()).searchParams.get('number'))
+  await page.waitForURL(atRoute(/\/repo\/pull\/\?.*number=\d+/), { timeout: 180_000 })
+  prNumber = Number(routeOf(page.url()).searchParams.get('number'))
   await expect(page.getByTestId('pr-state')).toHaveText('Draft', { timeout: 90_000 })
   await expect(page.getByTestId('draft-box')).toBeVisible()
   await expect(page.getByTestId('merge-panel')).toHaveCount(0)

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { DEMO, repoUrl, waitForRepoResolved } from './helpers'
+import { atRoute, DEMO, ownerIs, repoUrl, waitForRepoResolved } from './helpers'
 import { quorumGuardLong, quorumHeldMs } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -67,7 +67,7 @@ test.describe('shell resilience (L-10, L-56)', () => {
     // The raw error is only behind the collapsed Details: nothing visible reads as gRPC internals.
     await expect(page.getByText(/grpc error|That read did not land|Application error/i).filter({ visible: true })).toHaveCount(0)
     await context.setOffline(false)
-    await expect(page).toHaveURL(/\/repo\/pulls\//, { timeout: 60_000 })
+    await expect(page).toHaveURL(atRoute(/\/repo\/pulls\//), { timeout: 60_000 })
     await expect(page.getByTestId('read-unreachable').or(page.getByTestId('app-offline'))).toHaveCount(0, { timeout: 90_000 })
     await expect(page.getByRole('heading', { name: /pull requests/i }).or(page.getByText(/No pull requests|open/i)).first()).toBeVisible({ timeout: 60_000 })
   })
@@ -123,7 +123,7 @@ test.describe('titles, headings and short links', () => {
     await waitForRepoResolved(page)
     const href = String(await page.getByTestId('copy-link').first().getAttribute('data-href'))
     await page.goto(new URL(href).pathname + new URL(href).search, { waitUntil: 'domcontentloaded' })
-    await expect(page).toHaveURL(new RegExp(`/repo/\\?owner=${DEMO.owner}&name=${DEMO.name}`))
+    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/\\?${ownerIs(DEMO.owner)}&name=${DEMO.name}`)))
     await expect(README(page)).toBeVisible({ timeout: 90_000 })
   })
 })

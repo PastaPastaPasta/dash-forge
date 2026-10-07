@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, countDapi, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, repoUrl, shot } from './helpers'
+import { atRoute, collectPageErrors, countDapi, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, repoUrl, shot } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -104,7 +104,7 @@ test.describe('history index (live)', () => {
     // A subdirectory: the same index answers its entries (full paths).
     const dir = page.locator('main a[href*="/repo/tree/"]').first()
     await dir.click()
-    await expect(page).toHaveURL(/\/repo\/tree\//)
+    await expect(page).toHaveURL(atRoute(/\/repo\/tree\//))
     await settledColumn(page)
     await expect(pendingCells(page)).toHaveCount(0)
     await shot(page, 'hi-02-subdirectory-from-history-index')

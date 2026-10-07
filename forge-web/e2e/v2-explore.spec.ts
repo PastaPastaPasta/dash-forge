@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { collectPageErrors, DEMO, E2E_DEVNET, runAxe, shot } from './helpers'
+import { atRoute, collectPageErrors, DEMO, E2E_DEVNET, ownerIs, routeOf, runAxe, shot } from './helpers'
 
 /** The read fixture's owner (`forge-contracts/scripts/seed-v2-fixture.mjs`). */
 const DEMO_OWNER = DEMO.owner
@@ -64,7 +64,7 @@ test('x2. the header: New menu, jump box, and the landing links Explore', async 
   await expect(page.getByRole('status').filter({ hasText: /inside a repo/ })).toBeVisible()
   await jump.fill(`${DEMO_OWNER}/forge-v2-demo`)
   await jump.press('Enter')
-  await expect(page).toHaveURL(new RegExp(`/repo/?\\?owner=${DEMO_OWNER}`))
+  await expect(page).toHaveURL(atRoute(new RegExp(`/repo/?\\?${ownerIs(DEMO_OWNER)}`)))
 })
 
 /**
@@ -111,19 +111,24 @@ test('x3. #n in a repo opens the issue or the PR', async ({ page }) => {
   // An issue number: straight to the issue.
   if (issueOnly !== undefined) {
     await go(issueOnly)
-    await expect(page).toHaveURL(new RegExp(`/repo/issue/?\\?.*number=${issueOnly}(&|$)`), { timeout: 60_000 })
+    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/issue/?\\?.*number=${issueOnly}(&|$)`)), { timeout: 60_000 })
   }
   // A PR number: straight to the PR.
   if (pullOnly !== undefined) {
     await go(pullOnly)
-    await expect(page).toHaveURL(new RegExp(`/repo/pull/?\\?.*number=${pullOnly}(&|$)`), { timeout: 60_000 })
+    await expect(page).toHaveURL(atRoute(new RegExp(`/repo/pull/?\\?.*number=${pullOnly}(&|$)`)), { timeout: 60_000 })
   }
 
   // Neither: say so, stay put.
-  const url = page.url()
+  // The page, not the address bar's spelling of it: that may turn to the owner's name meanwhile.
+  const here = (): string => {
+    const route = routeOf(page.url())
+    return `${route.pathname}?number=${route.searchParams.get('number')}`
+  }
+  const before = here()
   await go(absent)
   await expect(page.getByRole('status').filter({ hasText: `No issue or PR #${absent}` })).toBeVisible({ timeout: 60_000 })
-  expect(page.url()).toBe(url)
+  expect(here()).toBe(before)
 })
 
 test('x4. notifications, signed out, say what they are', async ({ page }) => {
