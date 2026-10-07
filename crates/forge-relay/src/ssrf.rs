@@ -25,13 +25,18 @@
 //! reqwest re-resolves at connect time, so a rebinding record (public at check, private at
 //! connect) bypasses the guard. [`resolve_and_validate`] resolves the host **once** (async,
 //! with a timeout), validates **every** returned address, and returns them as `pinned_addrs`;
-//! the caller pins the client to exactly those (`ClientBuilder::resolve_to_addrs`), so the IP
-//! validated is the IP connected to. IP-literal URLs skip DNS. Redirects are disabled by the
-//! caller (a 30x to an internal host would bypass all of this).
+//! [`ValidatedTarget::client_builder`] pins the client to exactly those
+//! (`ClientBuilder::resolve_to_addrs`) and gives it a resolver that answers no name, so the
+//! pinned addresses are the only route: the IP validated is the IP connected to, and a host
+//! that does not match the pin fails instead of being resolved again. IP-literal URLs skip DNS.
+//! Redirects and environment proxies are off (a 30x to an internal host, or a proxy resolving
+//! the name itself, would bypass all of this), and [`ValidatedTarget::post`] sends to the
+//! validated URL, never to the original string.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
+use reqwest::dns::{Name, Resolve, Resolving};
 use reqwest::Url;
 
 use crate::error::{RelayError, Result};
@@ -52,6 +57,8 @@ fn v4_is_non_public(ip: Ipv4Addr) -> bool {
         || (o[0] == 100 && (o[1] & 0xC0) == 64)
         // 192.0.0.0/24 IETF protocol assignments.
         || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+        // 192.88.99.0/24 deprecated 6to4 relay anycast (RFC 7526).
+        || (o[0] == 192 && o[1] == 88 && o[2] == 99)
         // 198.18.0.0/15 benchmarking (RFC 2544).
         || (o[0] == 198 && (o[1] & 0xFE) == 18)
         // 240.0.0.0/4 reserved (includes 255.255.255.255).
@@ -92,6 +99,22 @@ fn v6_is_non_public(ip: Ipv6Addr) -> bool {
     if seg[..6].iter().all(|&s| s == 0) {
         return v4_is_non_public(embedded_v4(seg[6], seg[7]));
     }
+    // ::ffff:0:0:0/96 IPv4-translated (RFC 2765).
+    if seg[..6] == [0, 0, 0, 0, 0xFFFF, 0] {
+        return v4_is_non_public(embedded_v4(seg[6], seg[7]));
+    }
+    // Special-purpose ranges that are never a public host: 100::/64 discard-only,
+    // 2001:2::/48 benchmarking, 2001:10::/28 ORCHID, 2001:20::/28 ORCHIDv2,
+    // 3fff::/20 documentation, 5f00::/16 SRv6 SIDs.
+    if (seg[0] == 0x0100 && seg[1..4] == [0, 0, 0])
+        || (seg[0] == 0x2001 && seg[1] == 0x0002 && seg[2] == 0)
+        || (seg[0] == 0x2001 && (seg[1] & 0xFFF0) == 0x0010)
+        || (seg[0] == 0x2001 && (seg[1] & 0xFFF0) == 0x0020)
+        || (seg[0] == 0x3FFF && (seg[1] & 0xF000) == 0)
+        || seg[0] == 0x5F00
+    {
+        return true;
+    }
     // 64:ff9b::/96 NAT64 well-known prefix, and 64:ff9b:1::/48 local-use NAT64 (RFC 8215):
     // the target is the embedded IPv4 in the last 32 bits. The local-use prefix is
     // operator-defined, so it is refused whatever it embeds.
@@ -120,16 +143,14 @@ pub fn ip_is_non_public(ip: IpAddr) -> bool {
     }
 }
 
-/// A delivery target whose address(es) passed the SSRF policy.
+/// A delivery target whose address(es) passed the SSRF policy. Only [`resolve_and_validate`]
+/// makes one and its fields are read-only, so the URL a request is sent to is the URL that
+/// was checked.
 #[derive(Debug, Clone)]
 pub struct ValidatedTarget {
-    /// The parsed URL. Send the request to exactly this value.
-    pub url: Url,
-    /// The host as reqwest resolves it (a domain; empty for an IP literal).
-    pub host: String,
-    /// The validated addresses the connection must be **pinned** to (hostname case). `None`
-    /// for an IP-literal URL, which reqwest connects to without DNS.
-    pub pinned_addrs: Option<Vec<SocketAddr>>,
+    url: Url,
+    host: String,
+    pinned_addrs: Option<Vec<SocketAddr>>,
 }
 
 /// Parse `url` and apply the checks that hold even with `allow_private`: http(s) only, a
@@ -167,6 +188,53 @@ pub fn redact(url: &str) -> String {
 }
 
 impl ValidatedTarget {
+    /// The parsed URL. Send the request to exactly this value.
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// The host as reqwest resolves it (a domain; empty for an IP literal).
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The validated addresses the connection must be **pinned** to (hostname case). `None`
+    /// for an IP-literal URL, which reqwest connects to without DNS.
+    pub fn pinned_addrs(&self) -> Option<&[SocketAddr]> {
+        self.pinned_addrs.as_deref()
+    }
+
+    /// A client builder for this target: no redirects, no environment proxy, and DNS that
+    /// answers only the pinned addresses for this target's host ([`NoDns`] for any other
+    /// name). The caller adds timeouts and builds it.
+    pub fn client_builder(&self) -> reqwest::ClientBuilder {
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .dns_resolver(std::sync::Arc::new(NoDns));
+        if let Some(addrs) = &self.pinned_addrs {
+            builder = builder.resolve_to_addrs(&self.host, addrs);
+        }
+        builder
+    }
+
+    /// A `POST` to exactly the validated URL, through `client` (from [`Self::client_builder`]).
+    pub fn post(&self, client: &reqwest::Client) -> reqwest::RequestBuilder {
+        client.post(self.url.clone())
+    }
+
+    /// A hostname target pinned to `addrs`, without the checks, for tests of what a target
+    /// drives (pools, clients).
+    #[cfg(test)]
+    pub(crate) fn pinned_for_test(url: &str, addrs: Vec<SocketAddr>) -> Self {
+        let url = Url::parse(url).unwrap();
+        Self {
+            host: url.host_str().unwrap_or_default().to_string(),
+            url,
+            pinned_addrs: Some(addrs),
+        }
+    }
+
     /// The address the connection goes to (the first pinned one), for per-destination bounds:
     /// many hostnames that resolve to one server share its pool.
     pub fn ip_key(&self) -> String {
@@ -176,6 +244,18 @@ impl ValidatedTarget {
             (_, Some(url::Host::Ipv6(ip))) => ip.to_string(),
             _ => self.host.clone(),
         }
+    }
+}
+
+/// A DNS resolver that resolves nothing. A delivery client reaches a hostname only through
+/// the addresses pinned for it ([`ValidatedTarget::client_builder`]), so a host that does not
+/// match the pin fails to connect instead of being resolved again.
+struct NoDns;
+
+impl Resolve for NoDns {
+    fn resolve(&self, name: Name) -> Resolving {
+        let err = format!("{} has no validated address", name.as_str());
+        Box::pin(std::future::ready(Err(err.into())))
     }
 }
 
@@ -260,9 +340,16 @@ mod tests {
             "http://224.0.0.1/x",
             "http://198.18.0.1/x",
             "http://255.255.255.255/x",
+            "http://192.88.99.1/x",
         ] {
             assert!(refused(url).await, "{url} should be refused");
         }
+    }
+
+    #[tokio::test]
+    async fn a_zone_id_is_not_a_valid_host_even_with_allow_private() {
+        let url = "http://[fe80::1%25eth0]/x";
+        assert!(resolve_and_validate(url, true, T).await.is_err(), "{url}");
     }
 
     #[tokio::test]
@@ -286,6 +373,70 @@ mod tests {
         let t = parse_target("http://127.0.0.1\\@public.example/x").unwrap();
         assert_eq!(t.host_str(), Some("127.0.0.1"));
         assert!(refused("http://127.0.0.1\\@public.example/x").await);
+    }
+
+    /// URLs whose canonical (WHATWG) host is not public, however they are spelled: the host
+    /// checked is the one the parser settles on, never a later `@` or a suffix.
+    const NON_PUBLIC_SPELLINGS: &[(&str, &str)] = &[
+        ("http://127.0.0.1:8080\\@1.1.1.1/../admin", "127.0.0.1"),
+        ("http://10.0.0.1\\@1.1.1.1/", "10.0.0.1"),
+        ("https://169.254.169.254\\\\@1.1.1.1/", "169.254.169.254"),
+        ("http://127.0.0.1#@1.1.1.1/", "127.0.0.1"),
+        ("http://127.0.0.1?@1.1.1.1/", "127.0.0.1"),
+        ("http://127.0.0.1/@1.1.1.1/", "127.0.0.1"),
+        ("http://127.0.0.1./x", "127.0.0.1"),
+        ("http://0x7f.0.0.1./x", "127.0.0.1"),
+        ("http://017700000001/x", "127.0.0.1"),
+        ("http://127.0.0.1%2e/x", "127.0.0.1"),
+        ("http://\u{ff11}\u{ff12}\u{ff17}.0.0.1/x", "127.0.0.1"),
+        ("http://[::ffff:127.0.0.1]/x", "[::ffff:7f00:1]"),
+        ("http://[::ffff:a9fe:a9fe]/x", "[::ffff:a9fe:a9fe]"),
+        ("http://[fe80::1]/x", "[fe80::1]"),
+        ("http://[::1]:8080\\@1.1.1.1/", "[::1]"),
+    ];
+
+    #[tokio::test]
+    async fn non_public_hosts_are_refused_in_every_spelling() {
+        for &(url, host) in NON_PUBLIC_SPELLINGS {
+            let parsed = parse_target(url).unwrap_or_else(|e| panic!("{url}: {e}"));
+            assert_eq!(parsed.host_str(), Some(host), "{url}");
+            assert!(refused(url).await, "{url} should be refused");
+            // With allow_private the same canonical URL is the one validated.
+            let t = resolve_and_validate(url, true, T).await.unwrap();
+            assert_eq!(t.url(), &parsed, "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn userinfo_is_refused_whatever_follows_it() {
+        for url in [
+            "http://1.1.1.1@127.0.0.1/",
+            "http://user@127.0.0.1\\@1.1.1.1/",
+            "http://a@b@169.254.169.254/",
+            "http://public.example:80@10.0.0.1/",
+            "http://%31@127.0.0.1/",
+        ] {
+            for allow_private in [false, true] {
+                let err = resolve_and_validate(url, allow_private, T)
+                    .await
+                    .expect_err(url);
+                assert!(err.to_string().contains("userinfo"), "{url}: {err}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_public_host_before_the_backslash_is_the_one_kept() {
+        // The canonical host is public, so it is allowed; what follows the backslash is path.
+        let t = resolve_and_validate("https://1.1.1.1\\@127.0.0.1/hook", false, T)
+            .await
+            .unwrap();
+        assert_eq!(t.url().host_str(), Some("1.1.1.1"));
+        assert_eq!(t.url().path(), "/@127.0.0.1/hook");
+        // An ordinary DNS name parses as a domain, to be resolved and pinned.
+        let u = parse_target("https://ci.example.com:8443/hook").unwrap();
+        assert_eq!(u.host(), Some(url::Host::Domain("ci.example.com")));
+        assert_eq!(u.port(), Some(8443));
     }
 
     #[tokio::test]
@@ -351,6 +502,15 @@ mod tests {
             "fec0::1",
             "ff02::1",
             "2001:db8::1",
+            "::ffff:0:7f00:1", // IPv4-translated 127.0.0.1
+            "::ffff:0:a00:1",  // IPv4-translated 10.0.0.1
+            "100::1",          // discard-only
+            "2001:2::1",       // benchmarking
+            "2001:10::1",      // ORCHID
+            "2001:2f:ffff::1", // ORCHIDv2
+            "3fff::1",         // documentation
+            "3fff:fff::1",     // documentation, end of the /20
+            "5f00::1",         // SRv6 SIDs
         ] {
             assert!(ip_is_non_public(ip.parse().unwrap()), "{ip}");
         }
@@ -358,6 +518,10 @@ mod tests {
             "2606:4700:4700::1111",
             "64:ff9b::808:808",
             "2002:0808:0808::1",
+            "::ffff:0:808:808", // IPv4-translated 8.8.8.8
+            "100:0:0:1::1",     // past the discard-only /64
+            "2001:3::1",
+            "3fff:1000::1", // past the documentation /20
         ] {
             assert!(!ip_is_non_public(ip.parse().unwrap()), "{ip}");
         }

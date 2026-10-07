@@ -15,6 +15,7 @@
  * the `close_reason__*` vectors).
  */
 
+import { linkedIssues } from './review'
 import type { Oid } from './types'
 
 export const ISSUE_CLOSE = 1
@@ -330,4 +331,32 @@ export function transitionPhrase(kind: number): string {
     default:
       return `changed the state (kind ${kind})`
   }
+}
+
+/** The pull request an issue close names as its cause (`transition.closedByPr`), as read. */
+export interface ClosingPr {
+  readonly number: number
+  /** It is merged (state code 2). */
+  readonly merged: boolean
+  /** When its merge was recorded (ms), when known. */
+  readonly mergedAt?: number | null
+  /** Its description. */
+  readonly body: string
+  /** Imported from another forge: its `Fixes #n` are the source's numbers. */
+  readonly imported?: boolean
+}
+
+/**
+ * The pull request an issue close of `issue` (recorded at `closedAt`) was made by, when the close
+ * says so and it holds: `closedByPr` names a pull request (`pr`, as read) merged no later than the
+ * close, not imported, not the issue itself, and whose description closes the issue ("Fixes #N", {@link linkedIssues}). Null
+ * otherwise: the close reads as a plain close. A close that names nothing (every close written
+ * before the field) is left to the timing match (`closedIn`). Parity: forge-core
+ * `rules::transition::closed_by_pr` (vectors `closed_by_pr__*`).
+ */
+export function closedByPr(issue: number, closedBy: number | null | undefined, closedAt: number, pr: ClosingPr | null | undefined): number | null {
+  if (closedBy === null || closedBy === undefined) return null
+  if (!pr || pr.number !== closedBy || closedBy === issue) return null
+  const mergedBefore = pr.merged && typeof pr.mergedAt === 'number' && pr.mergedAt <= closedAt
+  return mergedBefore && pr.imported !== true && linkedIssues(pr.body).includes(issue) ? closedBy : null
 }
