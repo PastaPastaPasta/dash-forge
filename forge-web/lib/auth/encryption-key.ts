@@ -35,6 +35,7 @@ import {
   type DocFields,
   type EpochKeys,
   type LetterOpenResult,
+  type LetterReader,
   type LetterRecipient,
   type OwnerKey,
   type PrivateDoc,
@@ -599,6 +600,15 @@ export function openLetterAs(
   return withEncryptionKeys(network, identityId, (keys) =>
     openLetter(p.repoId, p.doc, p.ownerKeys, { identityId: privateId(identityId), secrets: keys.map((k) => k.secret) }),
   )
+}
+
+/**
+ * Run `use` as (network, identity) holding every encryption key this browser stores for it, for
+ * a reader that opens artifacts addressed to specific people (an environment for Maintainers).
+ * The keys are wiped after the call; a locked vault makes the call throw.
+ */
+export function withLetterReader<T>(network: Network, identityId: string, use: (reader: LetterReader) => Promise<T>): Promise<T> {
+  return withEncryptionKeys(network, identityId, (keys) => use({ identityId: privateId(identityId), secrets: keys.map((k) => k.secret) }))
 }
 
 /** Why a webhook's secret cannot be sealed from this browser (QW-071), or the sealer. */
