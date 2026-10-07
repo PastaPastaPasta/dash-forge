@@ -39,6 +39,7 @@ import {
   resetExternalFetchState,
 } from './browse-source'
 import { memoryArtifactStore, setIndexArtifactStore } from './index-cache'
+import { contentChecks, resetContentChecks } from './content-checks'
 
 // These fixtures reuse short fake packHashes ('aa', 'bb') with DIFFERENT bytes per suite —
 // impossible in production (packHash = sha256 of the bytes), so the session chunk cache
@@ -979,6 +980,37 @@ describe('fork pack via a platform:// locator', () => {
       mirrorUris.value = []
       vi.unstubAllGlobals()
       resetExternalFetchState()
+    }
+  })
+
+  it('answers a range from a mirror only with checked bytes: a junk mirror never serves one', async () => {
+    // The only copy's chunks are gone (no uploader holds them).
+    const { sdk } = parentSdk(bytes)
+    const asked: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      asked.push(String(url))
+      // The junk mirror answers every request, Range or not, with more bytes than the pack holds.
+      if (String(url).includes('junk')) return Promise.resolve(new Response(new Uint8Array(total + 100), { status: 206 }))
+      return Promise.resolve(new Response(bytes.slice()))
+    })
+    mirrorUris.value = ['https://junk.example/p', 'https://honest.example/p']
+    resetContentChecks()
+    try {
+      const read = artifactRangeFetch(sdk, FORK, forkManifest(`platform://CORE/PARENT/gone/${hash}`))
+      const [start, end] = [CHUNK_PAYLOAD_MAX - 4, CHUNK_PAYLOAD_MAX + 4]
+      expect(Array.from(await read(start, end))).toEqual(Array.from(bytes.subarray(start, end)))
+      expect(Array.from(await read(0, 8))).toEqual(Array.from(bytes.subarray(0, 8)))
+      // The pack was read whole once, and each range sliced from it.
+      expect(asked.filter((u) => u.includes('honest'))).toHaveLength(1)
+      // The repo is surviving on a mirror, and its copies failed: the ledger says both.
+      const checks = contentChecks('FORK')
+      expect(checks.mirroredPacks).toEqual([hash])
+      expect(checks.fellBackFrom.length).toBeGreaterThan(0)
+    } finally {
+      mirrorUris.value = []
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+      resetContentChecks()
     }
   })
 })

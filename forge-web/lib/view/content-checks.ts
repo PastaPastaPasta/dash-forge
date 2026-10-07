@@ -62,6 +62,11 @@ export interface ContentChecks {
    * row names them so a lost copy is noticed while the others still hold the repo.
    */
   readonly fellBackFrom: readonly string[]
+  /**
+   * Packs (hash hex) no recorded copy served and a pack mirror did: the repo survives on records
+   * anyone may delete, so the source row asks for the packs to be stored again.
+   */
+  readonly mirroredPacks: readonly string[]
 }
 
 export const NO_CONTENT_CHECKS: ContentChecks = {
@@ -77,11 +82,12 @@ export const NO_CONTENT_CHECKS: ContentChecks = {
   corruptMirrorPacks: [],
   unreachable: [],
   fellBackFrom: [],
+  mirroredPacks: [],
 }
 
 type Counter = Exclude<
   keyof ContentChecks,
-  'sources' | 'packSources' | 'viewPacks' | 'unavailablePacks' | 'corruptMirrorPacks' | 'unreachable' | 'fellBackFrom'
+  'sources' | 'packSources' | 'viewPacks' | 'unavailablePacks' | 'corruptMirrorPacks' | 'unreachable' | 'fellBackFrom' | 'mirroredPacks'
 >
 
 /**
@@ -101,6 +107,8 @@ export type ContentCheckDelta = Partial<Record<Counter, number>> & {
   readonly unreachable?: readonly string[]
   /** Recorded copies that failed while another served (see {@link ContentChecks.fellBackFrom}). */
   readonly fellBackFrom?: readonly string[]
+  /** A pack only a pack mirror served (see {@link ContentChecks.mirroredPacks}). */
+  readonly mirroredPack?: string
 }
 
 const ledger = new Map<string, ContentChecks>()
@@ -140,6 +148,8 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
     missing !== undefined && delta.corruptMirror === true && !prev.corruptMirrorPacks.includes(missing)
   const newPlaces = (delta.unreachable ?? []).filter((p) => !prev.unreachable.includes(p))
   const newFellBack = [...new Set(delta.fellBackFrom ?? [])].filter((p) => !prev.fellBackFrom.includes(p))
+  const mirrored = delta.mirroredPack?.toLowerCase()
+  const newMirrored = mirrored !== undefined && !prev.mirroredPacks.includes(mirrored)
   if (
     !newSource &&
     !newPackSource &&
@@ -148,7 +158,8 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
     !newMissing &&
     !newCorrupt &&
     newPlaces.length === 0 &&
-    newFellBack.length === 0
+    newFellBack.length === 0 &&
+    !newMirrored
   ) {
     return
   }
@@ -162,6 +173,7 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
   if (newCorrupt) next.corruptMirrorPacks = [...prev.corruptMirrorPacks, missing]
   if (newPlaces.length > 0) next.unreachable = [...prev.unreachable, ...newPlaces]
   if (newFellBack.length > 0) next.fellBackFrom = [...prev.fellBackFrom, ...newFellBack]
+  if (newMirrored) next.mirroredPacks = [...prev.mirroredPacks, mirrored]
   ledger.set(key, next)
   for (const l of listeners) l()
 }
@@ -172,8 +184,13 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
  */
 export function clearUnreachable(key: string): void {
   const prev = ledger.get(key)
-  if (prev === undefined || (prev.unreachable.length === 0 && prev.unavailablePacks.length === 0 && prev.fellBackFrom.length === 0)) return
-  ledger.set(key, { ...prev, unreachable: [], unavailablePacks: [], corruptMirrorPacks: [], fellBackFrom: [] })
+  if (
+    prev === undefined ||
+    (prev.unreachable.length === 0 && prev.unavailablePacks.length === 0 && prev.fellBackFrom.length === 0 && prev.mirroredPacks.length === 0)
+  ) {
+    return
+  }
+  ledger.set(key, { ...prev, unreachable: [], unavailablePacks: [], corruptMirrorPacks: [], fellBackFrom: [], mirroredPacks: [] })
   for (const l of listeners) l()
 }
 

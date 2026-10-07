@@ -19,11 +19,13 @@ use crate::rules::pack_mirror::{
 };
 use crate::rules::v2::{Role, Visibility};
 use crate::scope::RepoRef;
+use crate::storage::read::PackReader;
 
 /// forge-core's pack mirror type.
 pub const DOC_PACK_MIRROR: &str = "packMirror";
 
-/// The records one read of a pack's mirrors returns at most (one page).
+/// The records one read of a pack's mirrors returns at most (one page), and the members one
+/// read of their records names (the `in` clause's limit).
 pub const MIRROR_RECORDS_READ: u32 = 100;
 
 /// A `packMirror` document, as its writer and readers see it.
@@ -86,7 +88,8 @@ fn hash_value(pack_hash: &str) -> Result<FieldValue> {
         .ok()
         .and_then(|b| b.try_into().ok())
         .ok_or_else(|| Error::InvalidInput(format!("{pack_hash:?} is not a pack hash")))?;
-    Ok(FieldValue::bytes32(bytes))
+    // `packHash` is a `hid` (an identifier-typed byteArray), as on `packManifest`.
+    Ok(FieldValue::identifier(bytes))
 }
 
 fn repo_value(repo: &RepoRef) -> Result<FieldValue> {
@@ -95,16 +98,86 @@ fn repo_value(repo: &RepoRef) -> Result<FieldValue> {
     )?))
 }
 
-/// The recorded mirrors of `pack_hash` in `repo` (its `byHash` index, one page). Empty on a
+/// The recorded mirrors of `pack_hash` in `repo` (its `byHash` index): every record of the
+/// repository's `members` (read by writer, so no number of strangers' records can push a
+/// member's out), then one page of everyone's, ordered by writer. Each record once. Empty on a
 /// contract without the type.
 pub async fn mirrors_of(
     client: &PlatformClient,
     core: &LoadedContract,
     repo: &RepoRef,
     pack_hash: &str,
+    members: &[String],
 ) -> Result<Vec<PackMirror>> {
     if !core.has_document_type(DOC_PACK_MIRROR) {
         return Ok(Vec::new());
+    }
+    let pack = [
+        QueryFilter::eq("repoId", repo_value(repo)?),
+        QueryFilter::eq("packHash", hash_value(pack_hash)?),
+    ];
+    let by_writer = [QueryOrder::asc("$ownerId")];
+    let mut members: Vec<[u8; 32]> = members
+        .iter()
+        .map(|m| platform::decode_identifier(m))
+        .collect::<Result<_>>()?;
+    members.sort_unstable();
+    members.dedup();
+    let mut docs = Vec::new();
+    for chunk in members.chunks(MIRROR_RECORDS_READ as usize) {
+        let mut filters = pack.to_vec();
+        filters.push(QueryFilter::in_list(
+            "$ownerId",
+            chunk.iter().map(|id| FieldValue::identifier(*id)).collect(),
+        ));
+        docs.extend(
+            client
+                .query_documents(
+                    core,
+                    DOC_PACK_MIRROR,
+                    &filters,
+                    &by_writer,
+                    MIRROR_RECORDS_READ,
+                    None,
+                )
+                .await?,
+        );
+    }
+    docs.extend(
+        client
+            .query_documents(
+                core,
+                DOC_PACK_MIRROR,
+                &pack,
+                &by_writer,
+                MIRROR_RECORDS_READ,
+                None,
+            )
+            .await?,
+    );
+    Ok(dedup_records(docs.iter().filter_map(mirror_from_doc)))
+}
+
+/// `records` with each document once (the first time it appears).
+fn dedup_records(records: impl IntoIterator<Item = PackMirror>) -> Vec<PackMirror> {
+    let mut seen = std::collections::BTreeSet::new();
+    records
+        .into_iter()
+        .filter(|m| seen.insert(m.id.clone()))
+        .collect()
+}
+
+/// `owner`'s record of `pack_hash` in `repo`, if any (`byHash` is unique per writer: one
+/// record per pack each).
+pub async fn mirror_of_owner(
+    client: &PlatformClient,
+    core: &LoadedContract,
+    repo: &RepoRef,
+    pack_hash: &str,
+    owner: &str,
+) -> Result<Option<PackMirror>> {
+    if !core.has_document_type(DOC_PACK_MIRROR) {
+        return Ok(None);
     }
     let docs = client
         .query_documents(
@@ -113,13 +186,55 @@ pub async fn mirrors_of(
             &[
                 QueryFilter::eq("repoId", repo_value(repo)?),
                 QueryFilter::eq("packHash", hash_value(pack_hash)?),
+                QueryFilter::eq(
+                    "$ownerId",
+                    FieldValue::identifier(platform::decode_identifier(owner)?),
+                ),
             ],
             &[QueryOrder::asc("$ownerId")],
-            MIRROR_RECORDS_READ,
+            1,
             None,
         )
         .await?;
-    Ok(docs.iter().filter_map(mirror_from_doc).collect())
+    Ok(docs.iter().find_map(mirror_from_doc))
+}
+
+/// Whether addresses serve a pack ([`check_serves`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServeCheck {
+    /// One of them served bytes that hash to the pack.
+    Serves,
+    /// None served it, and at least one served other bytes (each failure, in words).
+    WrongBytes(String),
+    /// None answered with it: not found, refused, timed out, or none this computer reads.
+    Unreachable(String),
+}
+
+/// Whether one of `uris` serves `pack_hash` (`size` bytes, when known), as a reader would read
+/// it, within [`crate::storage::read::external_budget`].
+pub async fn check_serves(
+    reader: &PackReader,
+    uris: &[String],
+    pack_hash: &str,
+    size: Option<u64>,
+) -> ServeCheck {
+    use crate::storage::read::{external_budget, Missed, WRONG_BYTES};
+    match reader
+        .race(uris, pack_hash, size, Some(external_budget(size)))
+        .await
+    {
+        Ok(_) => ServeCheck::Serves,
+        Err(Missed::NoCandidate) => ServeCheck::Unreachable(
+            "this computer reads none of these addresses (an ipfs:// address needs a read gateway in storage.toml)".into(),
+        ),
+        Err(Missed::Unverified { error, places }) => {
+            if places.iter().any(|p| p.contains(WRONG_BYTES)) {
+                ServeCheck::WrongBytes(error.to_string())
+            } else {
+                ServeCheck::Unreachable(error.to_string())
+            }
+        }
+    }
 }
 
 /// Every mirror `owner` recorded (its `byOwner` index), oldest first.
@@ -173,6 +288,28 @@ pub fn read_order(
     })
 }
 
+/// The `packMirror` properties recording `uris` (of `kind`) for `pack_hash` of `repo`, for
+/// `core`: stamped `vis: "public"` where the contract declares it (the mainnet build's
+/// `mainnet_mirror_public`, whose `repoId` reference requires it to equal the repository's).
+pub fn mirror_props(
+    core: &LoadedContract,
+    repo: &RepoRef,
+    pack_hash: &str,
+    kind: u64,
+    uris: &[String],
+) -> Result<BTreeMap<String, FieldValue>> {
+    let mut props = BTreeMap::from([
+        ("repoId".to_string(), repo_value(repo)?),
+        ("packHash".to_string(), hash_value(pack_hash)?),
+        ("kind".to_string(), FieldValue::integer(kind)),
+        ("uris".to_string(), FieldValue::text_list(uris.to_vec())),
+    ]);
+    if core.has_property(DOC_PACK_MIRROR, "vis") {
+        crate::layout::stamp_public(&mut props);
+    }
+    Ok(props)
+}
+
 /// Record a mirror of `pack_hash` of `repo` at `uris` as the signer. Refused before signing for
 /// a private repository, for addresses the shared rule refuses, and on a contract without the
 /// type. Returns the document id.
@@ -199,12 +336,7 @@ pub async fn record_mirror(
             "this network's Forge doesn't support pack mirrors yet".into(),
         ));
     }
-    let props = BTreeMap::from([
-        ("repoId".to_string(), repo_value(repo)?),
-        ("packHash".to_string(), hash_value(pack_hash)?),
-        ("kind".to_string(), FieldValue::integer(kind)),
-        ("uris".to_string(), FieldValue::text_list(uris.to_vec())),
-    ]);
+    let props = mirror_props(core, repo, pack_hash, kind, uris)?;
     engine.create_document(core, DOC_PACK_MIRROR, props).await
 }
 
@@ -215,4 +347,112 @@ pub async fn delete_mirror(
     id: &str,
 ) -> Result<()> {
     engine.delete_document(core, DOC_PACK_MIRROR, id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::ForgeIds;
+
+    use dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+    use dpp::data_contract::document_type::property_constraints::DocumentSystemValues;
+    use dpp::data_contract::validate_document::DataContractDocumentValidationMethodsV0;
+    use dpp::data_contract::DataContract;
+    use dpp::identifier::Identifier;
+    use dpp::platform_value::string_encoding::Encoding;
+    use dpp::version::PlatformVersion;
+
+    const HASH: &str = "abababababababababababababababababababababababababababababababab";
+
+    fn repo() -> RepoRef {
+        RepoRef {
+            forge: ForgeIds::test_forge(),
+            repo_id: platform::encode_identifier([3; 32]),
+            owner_id: platform::encode_identifier([4; 32]),
+            name: "proj".into(),
+            visibility: Visibility::Public,
+        }
+    }
+
+    /// forge-core as `forge-contracts/schema/build.py` builds it with `args`, parsed with full
+    /// validation under protocol 14 (as `test_support::rc1` parses the committed one).
+    fn built_core(args: &[&str]) -> DataContract {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../forge-contracts");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out = std::process::Command::new("python3")
+            .arg(format!("{root}/schema/build.py"))
+            .args(args)
+            .arg("--out")
+            .arg(dir.path())
+            .output()
+            .expect("python3 runs build.py");
+        assert!(
+            out.status.success(),
+            "build.py {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = std::fs::read_to_string(dir.path().join("forge-core.json")).expect("built");
+        let mut json: serde_json::Value = serde_json::from_str(&text).expect("contract JSON");
+        let owner = Identifier::from([7u8; 32]);
+        let id = DataContract::generate_data_contract_id_v0(owner, 1);
+        json["id"] = serde_json::Value::String(id.to_string(Encoding::Base58));
+        json["ownerId"] = serde_json::Value::String(owner.to_string(Encoding::Base58));
+        let pv = PlatformVersion::get(14).expect("protocol 14");
+        DataContract::from_json(json, true, pv).expect("forge-core parses")
+    }
+
+    /// The schema's verdict on a create of `props` by a stranger.
+    fn schema_errors(c: &DataContract, props: &BTreeMap<String, FieldValue>) -> Vec<String> {
+        let data: BTreeMap<String, dpp::platform_value::Value> = props
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone().into_value()))
+            .collect();
+        let pv = PlatformVersion::get(14).expect("protocol 14");
+        let system = DocumentSystemValues::owned_by(Identifier::from([9u8; 32]));
+        c.validate_document_properties(DOC_PACK_MIRROR, data.into(), &system, pv)
+            .expect("validation runs")
+            .errors
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    /// The mainnet build requires `vis: "public"` on a mirror; the testnet build has no such
+    /// property. The writer stamps it exactly where the contract declares it, and both builds
+    /// accept what it writes.
+    #[test]
+    fn a_mirror_carries_vis_where_the_contract_requires_it() {
+        let uris = vec!["https://m.example.com/p.pack".to_string()];
+        for (args, vis) in [(&["--mainnet"][..], true), (&[][..], false)] {
+            let c = built_core(args);
+            let core = LoadedContract::for_tests(c.clone());
+            let props = mirror_props(&core, &repo(), HASH, 1, &uris).expect("props");
+            assert_eq!(props.contains_key("vis"), vis, "{args:?}");
+            assert_eq!(schema_errors(&c, &props), Vec::<String>::new(), "{args:?}");
+            assert_eq!(props["packHash"], FieldValue::identifier([0xab; 32]));
+            if vis {
+                let mut bare = props.clone();
+                bare.remove("vis");
+                assert!(!schema_errors(&c, &bare).is_empty(), "mainnet requires vis");
+            }
+        }
+    }
+
+    #[test]
+    fn a_record_read_twice_is_listed_once() {
+        let m = |id: &str| PackMirror {
+            id: id.into(),
+            owner_id: "o".into(),
+            repo_id: "r".into(),
+            pack_hash: HASH.into(),
+            kind: 1,
+            uris: vec!["https://m.example/p".into()],
+            created_at: 1,
+        };
+        let got = dedup_records([m("a"), m("b"), m("a")]);
+        assert_eq!(
+            got.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+    }
 }

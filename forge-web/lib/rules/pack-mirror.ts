@@ -19,6 +19,8 @@ export const MAX_URIS = 4
 export const MAX_URI_CHARS = 300
 /** Distinct mirror addresses one read of a pack tries, over every record. */
 export const MIRROR_URIS_TRIED = 8
+/** Addresses one non-member's record gives a read at most (a member's gives all of its own). */
+export const STRANGER_URIS_TRIED = 2
 
 /** Why a writer's addresses cannot be recorded. */
 export type UriProblem = 'none' | 'tooMany' | 'length' | 'address' | 'ipfsPath' | 'duplicate' | 'mixedKinds'
@@ -110,7 +112,8 @@ function rank(role: Role | null | undefined): number {
 /**
  * The mirror addresses a reader tries for `packHash`, in order: none for a private repository or
  * an unlisted pack; members' records first, each group by `(createdAt, id)`; unknown kinds and
- * addresses that do not fit their record's kind skipped; at most {@link MIRROR_URIS_TRIED}.
+ * addresses that do not fit their record's kind skipped; a non-member's record gives at most
+ * {@link STRANGER_URIS_TRIED}; at most {@link MIRROR_URIS_TRIED} in all.
  */
 export function mirrorReadOrder(input: MirrorReadInput): string[] {
   const want = input.packHash.toLowerCase()
@@ -120,9 +123,12 @@ export function mirrorReadOrder(input: MirrorReadInput): string[] {
     .sort((a, b) => rank(a.ownerRole) - rank(b.ownerRole) || compareKey(a, b))
   const out: string[] = []
   for (const m of records) {
+    let given = 0
     for (const uri of m.uris) {
+      if (m.ownerRole == null && given === STRANGER_URIS_TRIED) break
       if (uriKind(uri) === m.kind && !out.includes(uri)) {
         out.push(uri)
+        given += 1
         if (out.length === MIRROR_URIS_TRIED) return out
       }
     }

@@ -7,11 +7,12 @@ use anyhow::{bail, Result};
 use serde_json::json;
 
 use forge_core::pack_mirror::{
-    delete_mirror, mirrors_by, mirrors_of, record_mirror, uri_problem_words, PackMirror,
-    DOC_PACK_MIRROR,
+    check_serves, delete_mirror, mirror_of_owner, mirrors_by, mirrors_of, record_mirror,
+    uri_problem_words, PackMirror, ServeCheck, DOC_PACK_MIRROR,
 };
 use forge_core::rules::pack_mirror::{check_mirror_uris, UriCheck};
 use forge_core::rules::v2::Visibility;
+use forge_core::storage::publish::{publish_problem, PublishProblem};
 use forge_core::storage::read::PackReader;
 use forge_core::user_error::{codes, UserError};
 
@@ -50,11 +51,69 @@ fn bad_uris(check: &UriCheck) -> anyhow::Error {
     .into()
 }
 
-async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool) -> Result<()> {
+/// The addresses among `uris` other readers never follow: loopback and private-network hosts
+/// (their egress guard refuses them), each as written.
+fn private_addresses(uris: &[String]) -> Vec<&str> {
+    uris.iter()
+        .filter(|u| matches!(publish_problem(u), Some(PublishProblem::PrivateHost)))
+        .map(String::as_str)
+        .collect()
+}
+
+/// E201 for addresses no mirror may hold, or that other readers never fetch (checked before
+/// anything is read or signed).
+fn refuse_unusable(uris: &[String]) -> Result<()> {
     let check = check_mirror_uris(uris);
     if matches!(check, UriCheck::Refused { .. }) {
         return Err(bad_uris(&check));
     }
+    let private = private_addresses(uris);
+    if !private.is_empty() {
+        bail!(UserError::new(
+            codes::USAGE,
+            format!(
+                "mirror not recorded: {} {} on this machine or a private network",
+                private
+                    .iter()
+                    .map(|u| safe(u).into_owned())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if private.len() == 1 { "is" } else { "are" }
+            )
+        )
+        .cause("other readers never fetch from a loopback or private-network address")
+        .fix("record a public https address, or an ipfs:// CID")
+        .note("checked before anything was signed; nothing was written or paid"));
+    }
+    Ok(())
+}
+
+/// The addresses must serve the pack: a mirror that cannot is a record nobody can use. E504 when
+/// one serves other bytes, E503 when none answers with it.
+async fn require_serves(uris: &[String], pack: &str, size: Option<u64>) -> Result<()> {
+    let reader = PackReader::from_user_config();
+    let fix = "check the addresses, or pass --no-verify to record them anyway";
+    match check_serves(&reader, uris, pack, size).await {
+        ServeCheck::Serves => Ok(()),
+        ServeCheck::WrongBytes(why) => bail!(UserError::new(
+            codes::INTEGRITY,
+            "mirror not recorded: an address serves other bytes than that pack"
+        )
+        .cause(why)
+        .fix(fix)
+        .note("nothing was written or paid")),
+        ServeCheck::Unreachable(why) => bail!(UserError::new(
+            codes::PACKS_UNREADABLE,
+            "mirror not recorded: none of the addresses serves that pack"
+        )
+        .cause(why)
+        .fix(fix)
+        .note("nothing was written or paid")),
+    }
+}
+
+async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool) -> Result<()> {
+    refuse_unusable(uris)?;
     let pack = pack.to_ascii_lowercase();
     if pack.len() != 64 || !pack.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!(crate::errors::usage(format!(
@@ -82,20 +141,26 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
         )
         .fix(format!("`dg storage status {repo}` lists its packs")));
     };
-    // The addresses must serve the pack (unless told not to check): a mirror that cannot is a
-    // record nobody can use.
-    if !no_verify {
-        let reader = PackReader::from_user_config();
-        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
-        if let Err(e) = reader.fetch_verified(uris, &pack, size, None).await {
-            bail!(UserError::new(
-                codes::INTEGRITY,
-                "mirror not recorded: the addresses do not serve that pack"
+    let core = s.client.fetch_contract(&s.repo.forge().core).await?;
+    // One record per pack each: a second would be refused at consensus, after paying for it.
+    if let Some(mine) = mirror_of_owner(&s.client, &core, &s.repo, &pack, &s.identity.id()).await? {
+        bail!(UserError::new(
+            codes::ALREADY_EXISTS,
+            format!(
+                "mirror not recorded: you already have a mirror of pack {} ({})",
+                &pack[..12],
+                mine.id
             )
-            .cause(format!("{e:#}"))
-            .fix("check the addresses, or pass --no-verify to record them anyway")
-            .note("nothing was written or paid"));
-        }
+        )
+        .fix(format!(
+            "to change its addresses, remove it first: `dg storage mirror remove {}`",
+            mine.id
+        ))
+        .note("nothing was written or paid"));
+    }
+    if !no_verify {
+        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
+        require_serves(uris, &pack, size).await?;
     }
     let price = ctx.usd_price();
     ctx.confirm_or_cancel(&format!(
@@ -108,7 +173,6 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
             .join(", "),
         cost_line(MIRROR_CREDITS, price)
     ))?;
-    let core = s.client.fetch_contract(&s.repo.forge().core).await?;
     let engine = forge_core::profile::engine(&s.client, &s.identity, &s.bridge)?;
     let before = s.balance().await;
     let id = record_mirror(&engine, &core, &s.repo, &pack, uris).await?;
@@ -159,12 +223,15 @@ async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
     } else {
         let r = Reader::open_unsealed(ctx, repo.unwrap_or_default()).await?;
         let core = r.client.fetch_contract(&r.repo.forge().core).await?;
-        let manifests = r.service().read_pack_manifests(&r.repo).await?;
-        let mut hashes: Vec<String> = manifests.iter().map(|m| hex::encode(m.pack_hash)).collect();
-        hashes.dedup();
+        let svc = r.service();
+        let manifests = svc.read_pack_manifests(&r.repo).await?;
+        // Each pack once (a pack has a manifest per copy).
+        let hashes: std::collections::BTreeSet<String> =
+            manifests.iter().map(|m| hex::encode(m.pack_hash)).collect();
+        let members: Vec<String> = svc.copy_roles(&r.repo).await?.into_keys().collect();
         let mut out = Vec::new();
         for h in hashes {
-            out.extend(mirrors_of(&r.client, &core, &r.repo, &h).await?);
+            out.extend(mirrors_of(&r.client, &core, &r.repo, &h, &members).await?);
         }
         out
     };
@@ -215,4 +282,30 @@ async fn remove(ctx: &Ctx, id: &str) -> Result<()> {
         || println!("✓ removed mirror record {id}"),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::private_addresses;
+
+    #[test]
+    fn loopback_and_private_hosts_are_refused_public_ones_kept() {
+        let uris: Vec<String> = [
+            "https://m.example.com/p",
+            "https://127.0.0.1:8443/p",
+            "https://192.168.1.4/p",
+            "https://localhost/p",
+            "ipfs://bafyq",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            private_addresses(&uris),
+            [
+                "https://127.0.0.1:8443/p",
+                "https://192.168.1.4/p",
+                "https://localhost/p"
+            ]
+        );
+    }
 }

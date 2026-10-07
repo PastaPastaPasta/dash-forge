@@ -743,7 +743,7 @@ async fn fetch_one(
 ) -> Result<([u8; 32], Got)> {
     let hash = hex::encode(h);
     let got = match svc
-        .fetch_best_copy(repo, contract, copies, roles, reader)
+        .fetch_best_copy_or_mirror(repo, contract, copies, roles, reader)
         .await
     {
         // A private repository's copy verified by its (ciphertext) hash; open it.
@@ -4245,5 +4245,19 @@ mod tests {
             PushOutcome::Error("refs/heads/main".into(), "non-fast-forward".into()).wire(),
             "error refs/heads/main non-fast-forward"
         );
+    }
+
+    /// A push asks whether a pack is already stored from the copies the repository's manifests
+    /// record, never a pack mirror (source check): a mirror anyone may record and delete must
+    /// not let a push skip storing its pack.
+    #[test]
+    fn a_push_never_takes_a_pack_mirror_as_stored() {
+        let src = include_str!("helper.rs");
+        let at = src
+            .find("async fn confirm_existing_manifest")
+            .expect("confirm_existing_manifest");
+        let body = &src[at..at + src[at..].find("\n}\n").expect("its end")];
+        assert!(body.contains(".fetch_best_copy(ctx.repo"), "{body}");
+        assert!(!body.contains("mirror("), "{body}");
     }
 }

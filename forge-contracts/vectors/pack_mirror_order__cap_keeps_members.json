@@ -50,6 +50,32 @@
         ]
       },
       {
+        "id": "s3",
+        "ownerRole": null,
+        "createdAt": 3,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://s30.example/p",
+          "https://s31.example/p",
+          "https://s32.example/p",
+          "https://s33.example/p"
+        ]
+      },
+      {
+        "id": "s4",
+        "ownerRole": null,
+        "createdAt": 4,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://s40.example/p",
+          "https://s41.example/p",
+          "https://s42.example/p",
+          "https://s43.example/p"
+        ]
+      },
+      {
         "id": "m1",
         "ownerRole": "maintainer",
         "createdAt": 99,
@@ -66,11 +92,11 @@
       "https://maint.example/p",
       "https://s00.example/p",
       "https://s01.example/p",
-      "https://s02.example/p",
-      "https://s03.example/p",
       "https://s10.example/p",
       "https://s11.example/p",
-      "https://s12.example/p"
+      "https://s20.example/p",
+      "https://s21.example/p",
+      "https://s30.example/p"
     ]
   }
 }

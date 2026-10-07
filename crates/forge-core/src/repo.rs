@@ -1704,6 +1704,10 @@ impl<'a> RepoService<'a> {
     /// `copies` are its manifests, tried maintainers' first, then writers', then former
     /// members', each by `($createdAt, $id)`. Returns the bytes and the copy they came
     /// from, or the last error when no copy verifies.
+    ///
+    /// Recorded copies only, never a pack mirror: a push asks this whether a pack is already
+    /// stored (git-remote-dash `confirm_existing_manifest`), and a mirror anyone may delete
+    /// must not answer that. Reads use [`Self::fetch_best_copy_or_mirror`].
     pub async fn fetch_best_copy<'m>(
         &self,
         repo: &RepoRef,
@@ -1712,6 +1716,61 @@ impl<'a> RepoService<'a> {
         roles: &RoleMap,
         reader: &PackReader,
     ) -> Result<(Vec<u8>, &'m PackManifestInfo)> {
+        self.best_copy(repo, contract, copies, roles, reader)
+            .await
+            .map(|(served, m)| (served.note_on(reader, &hex::encode(m.pack_hash)), m))
+            .map_err(|(last, _)| last)
+    }
+
+    /// [`Self::fetch_best_copy`] for a read: when no recorded copy verifies, a public
+    /// repository's recorded pack mirrors ([`Self::fetch_from_mirrors`]). A mirror that serves
+    /// is recorded on `reader` as a [`crate::storage::read::Fallback`] naming every copy that
+    /// failed, so the reader learns the repository is surviving on a mirror.
+    pub async fn fetch_best_copy_or_mirror<'m>(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        copies: &[&'m PackManifestInfo],
+        roles: &RoleMap,
+        reader: &PackReader,
+    ) -> Result<(Vec<u8>, &'m PackManifestInfo)> {
+        match self.best_copy(repo, contract, copies, roles, reader).await {
+            Ok((served, m)) => Ok((served.note_on(reader, &hex::encode(m.pack_hash)), m)),
+            Err((last, mut failed)) => {
+                let Some(first) = copies.first() else {
+                    return Err(last);
+                };
+                let Some(served) = self
+                    .fetch_from_mirrors(repo, contract, first, roles, reader)
+                    .await
+                else {
+                    return Err(last);
+                };
+                failed.extend(served.failed);
+                reader.note_fallback(crate::storage::read::Fallback {
+                    pack: hex::encode(first.pack_hash),
+                    served_by: format!("a pack mirror at {}", served.by),
+                    failed,
+                    mirror: true,
+                });
+                Ok((served.bytes, first))
+            }
+        }
+    }
+
+    /// The best recorded copy that verifies, unrecorded; or the last error with every place
+    /// that failed (`place (why)` each).
+    async fn best_copy<'m>(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        copies: &[&'m PackManifestInfo],
+        roles: &RoleMap,
+        reader: &PackReader,
+    ) -> std::result::Result<
+        (crate::storage::read::Served, &'m PackManifestInfo),
+        (Error, Vec<String>),
+    > {
         let mut last = Error::NotFound;
         // The places that failed before the copy that serves, over every uploader's copy
         // tried: one Fallback for the pack, however many copies it took.
@@ -1723,7 +1782,7 @@ impl<'a> RepoService<'a> {
                     let mut seen = BTreeSet::new();
                     failed.retain(|p| seen.insert(p.clone()));
                     served.failed = failed;
-                    return Ok((served.note_on(reader, &hex::encode(m.pack_hash)), m));
+                    return Ok((served, m));
                 }
                 Err(Unserved {
                     error,
@@ -1756,22 +1815,15 @@ impl<'a> RepoService<'a> {
                 }
             }
         }
-        // Every copy failed: the recorded mirrors of a public repository's pack (UPDATE-1
-        // `packMirror`), members' first, at most 8 addresses, each verified against the hash.
-        if let Some(first) = copies.first() {
-            if let Some(bytes) = self
-                .fetch_from_mirrors(repo, contract, first, roles, reader)
-                .await
-            {
-                return Ok((bytes, first));
-            }
-        }
-        Err(last)
+        let mut seen = BTreeSet::new();
+        failed.retain(|p| seen.insert(p.clone()));
+        Err((last, failed))
     }
 
     /// `manifest`'s pack from its recorded mirrors ([`crate::pack_mirror`]), when every copy
-    /// failed: a public repository's only, read in the shared order and verified against the
-    /// pack hash. `None` when there is none, or none serves (one read of the records).
+    /// failed: a public repository's only, members' records first, read in the shared order
+    /// and verified against the pack hash, within [`crate::storage::read::external_budget`] so
+    /// slow strangers cannot stall the read. `None` when there is none, or none serves.
     async fn fetch_from_mirrors(
         &self,
         repo: &RepoRef,
@@ -1779,14 +1831,27 @@ impl<'a> RepoService<'a> {
         manifest: &PackManifestInfo,
         roles: &RoleMap,
         reader: &PackReader,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<crate::storage::read::Served> {
         if repo.visibility != Visibility::Public {
             return None;
         }
         let hash = hex::encode(manifest.pack_hash);
-        let mirrors = crate::pack_mirror::mirrors_of(self.client, contract, repo, &hash)
-            .await
-            .ok()?;
+        let members: Vec<String> = roles.keys().cloned().collect();
+        let mirrors = match crate::pack_mirror::mirrors_of(
+            self.client,
+            contract,
+            repo,
+            &hash,
+            &members,
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::info!(pack = %hash, error = %e, "pack mirrors unreadable");
+                return None;
+            }
+        };
         let uris = crate::pack_mirror::read_order(
             repo,
             &hash,
@@ -1798,13 +1863,14 @@ impl<'a> RepoService<'a> {
             return None;
         }
         let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
-        match reader.fetch_verified(&uris, &hash, size, None).await {
-            Ok(bytes) => {
-                tracing::info!(pack = %hash, "pack served by a recorded mirror");
-                Some(bytes)
+        let budget = crate::storage::read::external_budget(size);
+        match reader.race(&uris, &hash, size, Some(budget)).await {
+            Ok(served) => {
+                tracing::info!(pack = %hash, by = %served.by, "pack served by a recorded mirror");
+                Some(served)
             }
             Err(e) => {
-                tracing::info!(pack = %hash, error = %e, "no recorded mirror served the pack");
+                tracing::info!(pack = %hash, error = %Error::from(e), "no recorded mirror served the pack");
                 None
             }
         }
@@ -1825,7 +1891,7 @@ impl<'a> RepoService<'a> {
         let mut blob_hashes = Vec::new();
         for (hash, copies) in group_by_hash(git) {
             let (sealed, m) = self
-                .fetch_best_copy(repo, contract, &copies, roles, &reader)
+                .fetch_best_copy_or_mirror(repo, contract, &copies, roles, &reader)
                 .await
                 .map_err(|e| {
                     Error::Io(format!(
@@ -2044,7 +2110,7 @@ impl<'a> RepoService<'a> {
         let mut report = ReseedReport::default();
         for (hash, copies) in group_by_hash(&git) {
             let (bytes, best) = match self
-                .fetch_best_copy(repo, &contract, &copies, &roles, &reader)
+                .fetch_best_copy_or_mirror(repo, &contract, &copies, &roles, &reader)
                 .await
             {
                 Ok(got) => got,
@@ -2379,7 +2445,7 @@ impl<'a> RepoService<'a> {
                 .collect();
             let copies = if copies.is_empty() { vec![m] } else { copies };
             let (sealed, best) = self
-                .fetch_best_copy(repo, &contract, &copies, roles, &reader)
+                .fetch_best_copy_or_mirror(repo, &contract, &copies, roles, &reader)
                 .await?;
             let bytes = self
                 .open_artifact_of(repo, &copies, best.size_bytes, sealed)
@@ -2474,7 +2540,7 @@ impl<'a> RepoService<'a> {
                 .filter(|m| m.kind == locator && m.pack_hash == f.pack_hash)
                 .collect();
             let parsed = match self
-                .fetch_best_copy(repo, &contract, &copies, roles, &reader)
+                .fetch_best_copy_or_mirror(repo, &contract, &copies, roles, &reader)
                 .await
             {
                 Ok((sealed, m)) => match self
@@ -2525,7 +2591,7 @@ impl<'a> RepoService<'a> {
                 .collect();
             let indexed = async {
                 let (sealed, m) = self
-                    .fetch_best_copy(repo, &contract, &copies, &plan.roles, &reader)
+                    .fetch_best_copy_or_mirror(repo, &contract, &copies, &plan.roles, &reader)
                     .await
                     .map_err(|e| format!("unreadable: {e}"))?;
                 let bytes = self
@@ -4489,6 +4555,38 @@ mod tests {
     use crate::error::Error;
     use crate::rules::v2::{CopyKey, Role};
     use crate::rules::ConfigDoc;
+
+    /// `fetch_best_copy` reads recorded copies only (source check): a push asks it whether a
+    /// pack is already stored, and a pack mirror must never answer that. Only
+    /// `fetch_best_copy_or_mirror` reaches the mirrors.
+    #[test]
+    fn only_the_read_path_reaches_pack_mirrors() {
+        let src = include_str!("repo.rs");
+        let body = |from: &str, to: &str| {
+            let at = src.find(from).unwrap_or_else(|| panic!("{from}"));
+            &src[at..at + src[at..].find(to).unwrap_or_else(|| panic!("{to}"))]
+        };
+        for b in [
+            body(
+                "pub async fn fetch_best_copy<'m>",
+                "/// [`Self::fetch_best_copy`] for a read",
+            ),
+            body(
+                "async fn best_copy<'m>",
+                "/// `manifest`'s pack from its recorded mirrors",
+            ),
+        ] {
+            assert!(
+                !b.contains("fetch_from_mirrors") && !b.contains("or_mirror("),
+                "{b}"
+            );
+        }
+        assert!(body(
+            "pub async fn fetch_best_copy_or_mirror<'m>",
+            "async fn best_copy<'m>"
+        )
+        .contains(".fetch_from_mirrors("));
+    }
 
     /// `store_history_index`'s error is what it was before `store_history_index_parts`: the
     /// version lists' own failure as raised, a column failure naming the lists already published

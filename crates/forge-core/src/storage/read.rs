@@ -109,6 +109,10 @@ impl Candidate {
     }
 }
 
+/// Why a candidate failed when its bytes do not hash to the artifact (a host serving other
+/// content, not one that is down).
+pub(crate) const WRONG_BYTES: &str = "served bytes that do not match the manifest hash";
+
 /// A read that a copy other than the reader's first choice served: where the bytes came from
 /// and every copy tried before it, with why it did not serve them. A clone that succeeds this
 /// way says so ([`fallback_lines`]), so a lost bucket or a dead gateway is noticed while the
@@ -121,6 +125,9 @@ pub struct Fallback {
     pub served_by: String,
     /// The copies that did not, each `place (why)`.
     pub failed: Vec<String>,
+    /// A pack mirror served it: every copy the repository's manifests record failed, so the
+    /// repository survives on a record someone else may delete ([`crate::pack_mirror`]).
+    pub mirror: bool,
 }
 
 impl std::fmt::Display for Fallback {
@@ -160,6 +167,13 @@ pub fn fallback_lines(fallbacks: &[Fallback], repo: &str) -> Vec<String> {
     out.push(format!(
         "hint: a recorded copy of this repository is unavailable; `dg storage status {repo}` checks every copy"
     ));
+    let mirrored = fallbacks.iter().filter(|f| f.mirror).count();
+    if mirrored > 0 {
+        out.push(format!(
+            "hint: no recorded copy of {} served, only a pack mirror someone else may delete; a maintainer or writer restores the copies with `dg reseed {repo}`",
+            if mirrored == 1 { "a pack".to_string() } else { format!("{mirrored} packs") }
+        ));
+    }
     out
 }
 
@@ -200,6 +214,7 @@ impl Served {
                 pack: pack.to_ascii_lowercase(),
                 served_by: self.by,
                 failed: self.failed,
+                mirror: false,
             });
         }
         self.bytes
@@ -547,7 +562,7 @@ impl PackReader {
         if hex::encode(sha256(&bytes)).eq_ignore_ascii_case(expected_sha256) {
             Ok(bytes)
         } else {
-            Err("served bytes that do not match the manifest hash".to_string())
+            Err(WRONG_BYTES.to_string())
         }
     }
 
@@ -1673,6 +1688,7 @@ mod tests {
                     format!("{host} (not found)"),
                     format!("{host2} (served bytes that do not match the manifest hash)"),
                 ],
+                mirror: false,
             }]
         );
         // Taken: the list starts over.
@@ -1720,6 +1736,7 @@ mod tests {
             pack: format!("{n:02x}").repeat(32),
             served_by: "Platform chunks".into(),
             failed: vec!["pub.example (HTTP 403 Forbidden)".into()],
+            mirror: false,
         };
         assert_eq!(fallback_lines(&[], "o/r"), Vec::<String>::new());
         let lines = fallback_lines(&[f(1)], "o/r");
@@ -1735,6 +1752,17 @@ mod tests {
         assert_eq!(
             lines[3],
             "warning: and 2 more packs read from a fallback copy"
+        );
+        // A pack only a mirror served says so, and how the copies come back.
+        let m = Fallback {
+            served_by: "a pack mirror at m.example".into(),
+            mirror: true,
+            ..f(9)
+        };
+        let lines = fallback_lines(&[f(1), m], "o/r");
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("hint: no recorded copy of a pack served, only a pack mirror someone else may delete; a maintainer or writer restores the copies with `dg reseed o/r`")
         );
     }
 

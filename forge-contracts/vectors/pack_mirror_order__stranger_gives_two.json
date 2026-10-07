@@ -1,6 +1,6 @@
 {
-  "name": "capped_at_eight",
-  "description": "At most eight addresses are tried, over every record.",
+  "name": "stranger_gives_two",
+  "description": "A non-member's record gives two of its addresses; a member's gives all of its own.",
   "case": "pack_mirror_order",
   "rules": "v2",
   "input": {
@@ -11,16 +11,16 @@
     "visibility": "public",
     "mirrors": [
       {
-        "id": "m0",
-        "ownerRole": "maintainer",
+        "id": "s0",
+        "ownerRole": null,
         "createdAt": 0,
         "packHash": "abababababababababababababababababababababababababababababababab",
         "kind": 1,
         "uris": [
-          "https://m00.example/p",
-          "https://m01.example/p",
-          "https://m02.example/p",
-          "https://m03.example/p"
+          "https://s00.example/p",
+          "https://s01.example/p",
+          "https://s02.example/p",
+          "https://s03.example/p"
         ]
       },
       {
@@ -35,32 +35,17 @@
           "https://w12.example/p",
           "https://w13.example/p"
         ]
-      },
-      {
-        "id": "w2",
-        "ownerRole": "writer",
-        "createdAt": 2,
-        "packHash": "abababababababababababababababababababababababababababababababab",
-        "kind": 1,
-        "uris": [
-          "https://w20.example/p",
-          "https://w21.example/p",
-          "https://w22.example/p",
-          "https://w23.example/p"
-        ]
       }
     ]
   },
   "expected": {
     "uris": [
-      "https://m00.example/p",
-      "https://m01.example/p",
-      "https://m02.example/p",
-      "https://m03.example/p",
       "https://w10.example/p",
       "https://w11.example/p",
       "https://w12.example/p",
-      "https://w13.example/p"
+      "https://w13.example/p",
+      "https://s00.example/p",
+      "https://s01.example/p"
     ]
   }
 }

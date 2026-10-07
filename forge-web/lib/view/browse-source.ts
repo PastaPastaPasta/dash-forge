@@ -67,7 +67,7 @@ import {
 import { mapPooled, trimOldest } from './pool'
 import { openPrivateArtifact, readPrivateRange } from './private-packs'
 import { onPrivateSessionEnded } from '../repo/private-session'
-import { mirrorCopy, mirrorUrisOf } from '../repo/pack-mirrors'
+import { mirrorCopy, mirrorUrisOf, resetMirrorUris } from '../repo/pack-mirrors'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -506,6 +506,8 @@ export function resetExternalFetchState(): void {
   originSlots.clear()
   resetGatewayHealth()
   resetRepoGateways()
+  resetMirrorUris()
+  mirroredWhole.clear()
 }
 
 /**
@@ -970,6 +972,56 @@ async function afterChunksFailed(
   }
 }
 
+/** The places a copy's failure names (`host: why` each), for {@link servedBy}'s `before`. */
+function failedPlaces(e: unknown): string[] {
+  return e instanceof PackUnavailableError ? e.reason.split('; ') : [errorText(e)]
+}
+
+/**
+ * A public repo's pack from its recorded mirrors (UPDATE-1), once every copy failed (`before`:
+ * their failures): the whole artifact, its size and sha256 checked like any copy's, so a mirror
+ * serving other bytes cannot answer, and one that ignores a size cap cannot stream forever. The
+ * ledger notes the pack survives on a mirror, and the copies that failed. Null when none is
+ * recorded or none serves.
+ */
+async function fromPackMirrors(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifest: PackManifest,
+  before: readonly string[],
+  cancel?: AbortSignal,
+): Promise<Uint8Array | null> {
+  if (repo.session !== undefined || cancel?.aborted) return null
+  const uris = await mirrorUrisOf(sdk, repo, manifest)
+  if (uris.length === 0) return null
+  try {
+    const bytes = await fetchExternalWhole(mirrorCopy(manifest, uris), readGatewaysFor(repoKey(repo)), servedBy(repo, manifest.packHash, undefined, before), cancel)
+    noteContentCheck(repoKey(repo), { mirroredPack: manifest.packHash })
+    return bytes
+  } catch {
+    // the copies' own failure is the one to report
+    return null
+  }
+}
+
+/** Packs a mirror served whole this session, for range reads (`repoKey:pack`); the newest few. */
+const mirroredWhole = new Map<string, Promise<Uint8Array | null>>()
+const MIRRORED_PACKS_KEPT = 4
+
+/** {@link fromPackMirrors} once per pack for range reads: each range is a slice of checked bytes. */
+function mirroredPack(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest, before: readonly string[]): Promise<Uint8Array | null> {
+  const key = `${repoKey(repo)}:${manifest.packHash.toLowerCase()}`
+  const hit = mirroredWhole.get(key)
+  if (hit !== undefined) return hit
+  const read = fromPackMirrors(sdk, repo, manifest, before).then((bytes) => {
+    if (bytes === null && mirroredWhole.get(key) === read) mirroredWhole.delete(key)
+    return bytes
+  })
+  mirroredWhole.set(key, read)
+  trimOldest(mirroredWhole, MIRRORED_PACKS_KEPT)
+  return read
+}
+
 /** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */
 export function artifactRangeFetch(
   sdk: EvoSDK,
@@ -1028,23 +1080,19 @@ export function artifactRangeFetch(
       return readPlain(chosen, start, end)
     }
     let lastErr: unknown
+    const failed: string[] = []
     for (const c of copies) {
       try {
         return await readPlain(c, start, end)
       } catch (e) {
         lastErr = e
+        failed.push(...failedPlaces(e))
       }
     }
     // Every copy failed: a public repo's recorded mirrors (UPDATE-1), read only now.
     if (session === undefined) {
-      const uris = await mirrorUrisOf(sdk, repo, manifest)
-      if (uris.length > 0) {
-        try {
-          return await fetchExternalRange(mirrorCopy(manifest, uris), start, end, readGatewaysFor(repoKey(repo)), servedBy(repo, manifest.packHash, undefined, []))
-        } catch {
-          // the copies' own failure is the one to report
-        }
-      }
+      const whole = await mirroredPack(sdk, repo, manifest, failed)
+      if (whole !== null) return whole.subarray(start, Math.min(end, whole.length))
     }
     // The rail's "where the bytes came from" row lists the places that did not answer.
     if (lastErr instanceof PackUnavailableError) {
@@ -1105,23 +1153,11 @@ export async function loadArtifactBytesProgress(
     session !== undefined || bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()
   // Every copy failed: a public repo's recorded mirrors (UPDATE-1), whose bytes must hash to the
   // pack like any copy's. Read only then, never on the happy path.
-  const fromMirrors = async (): Promise<Uint8Array | null> => {
-    if (session !== undefined || cancel?.aborted) return null
-    const uris = await mirrorUrisOf(sdk, repo, manifest)
-    if (uris.length === 0) return null
-    try {
-      const bytes = await fetchExternalWhole(mirrorCopy(manifest, uris), readGatewaysFor(repoKey(repo)), servedBy(repo, manifest.packHash, undefined, []), cancel)
-      return verified(manifest, bytes) ? bytes : null
-    } catch {
-      // the copies' own failure is the one to report
-      return null
-    }
-  }
   if (manifest.copies === undefined) {
     try {
       return await open(manifest)
     } catch (e) {
-      const mirrored = await fromMirrors()
+      const mirrored = await fromPackMirrors(sdk, repo, manifest, failedPlaces(e), cancel)
       if (mirrored !== null) return mirrored
       throw e
     }
@@ -1142,7 +1178,7 @@ export async function loadArtifactBytesProgress(
       failures.push(e)
     }
   }
-  const mirrored = await fromMirrors()
+  const mirrored = await fromPackMirrors(sdk, repo, manifest, failures.flatMap(failedPlaces), cancel)
   if (mirrored !== null) return mirrored
   // One copy: its own error. Every copy external and unserved: the fallback clone's
   // "unavailable" case, which it reports rather than failing the clone on.

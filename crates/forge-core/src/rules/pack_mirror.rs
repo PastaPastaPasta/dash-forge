@@ -16,7 +16,8 @@
 //!   repository, and none for a pack the repository's manifests do not list. Members' records
 //!   first (maintainers, then other members), then everyone else's; each group by
 //!   `($createdAt, $id)`. An unknown `kind` is skipped, and so is an address that does not fit
-//!   its record's kind. At most [`MIRROR_URIS_TRIED`] distinct addresses.
+//!   its record's kind. A non-member's record gives at most [`STRANGER_URIS_TRIED`] addresses,
+//!   so two strangers cannot fill the read; at most [`MIRROR_URIS_TRIED`] distinct addresses.
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,8 @@ pub const MAX_URI_CHARS: usize = 300;
 /// Distinct mirror addresses one read of a pack tries, over every record: a stranger cannot make
 /// a reader spend more than this on a dead pack, however many records they pay for.
 pub const MIRROR_URIS_TRIED: usize = 8;
+/// Addresses one non-member's record gives a read at most (a member's gives all of its own).
+pub const STRANGER_URIS_TRIED: usize = 2;
 
 /// Why a writer's addresses cannot be recorded ([`check_mirror_uris`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,9 +219,14 @@ pub fn mirror_read_order(input: &MirrorReadInput) -> Vec<String> {
     });
     let mut out: Vec<String> = Vec::new();
     for m in records {
+        let mut given = 0;
         for uri in &m.uris {
+            if m.owner_role.is_none() && given == STRANGER_URIS_TRIED {
+                break;
+            }
             if uri_kind(uri) == Some(m.kind) && !out.contains(uri) {
                 out.push(uri.clone());
+                given += 1;
                 if out.len() == MIRROR_URIS_TRIED {
                     return out;
                 }
@@ -341,6 +349,31 @@ mod tests {
             order(Visibility::Public, &["AB"], many).len(),
             MIRROR_URIS_TRIED
         );
+    }
+
+    #[test]
+    fn a_strangers_record_gives_two_addresses_a_members_all() {
+        let s4 = [
+            "https://s0/p",
+            "https://s1/p",
+            "https://s2/p",
+            "https://s3/p",
+        ];
+        let w4 = [
+            "https://w0/p",
+            "https://w1/p",
+            "https://w2/p",
+            "https://w3/p",
+        ];
+        let got = order(
+            Visibility::Public,
+            &["ab"],
+            vec![
+                rec("s", None, 1, 1, &s4),
+                rec("w", Some(Role::Writer), 2, 1, &w4),
+            ],
+        );
+        assert_eq!(got, s(&[&w4[..], &s4[..2]].concat()));
     }
 
     #[test]
