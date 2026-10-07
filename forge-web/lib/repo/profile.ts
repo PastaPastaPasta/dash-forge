@@ -24,7 +24,9 @@ import {
 } from '../sdk'
 import { sameValue } from '../sdk/write'
 import { checkProfile, PROFILE_FIELDS, profileProblems, type ProfileField, type ProfileFields, type ProfileInput } from '../rules/profile'
-import { DOC, str, stringArray } from './contract'
+import { base58Decode, base58Encode } from '../auth/base58'
+import { DOC, asIdentifierString, str, stringArray } from './contract'
+import type { BotClaim } from '../rules/profile'
 import { revisionOf } from './issues'
 
 /** A stored profile. */
@@ -39,10 +41,35 @@ export interface Profile {
   readonly fields: ProfileFields
   /** Signing keys (`gpg:…` / `ssh-…`), for signed-commit badges. */
   readonly pubkeys: readonly string[]
+  /** The `bot` claim: its operator, or the bots it operates (a badge needs both sides). */
+  readonly bot?: BotClaim
+}
+
+/** A nested identifier (bytes, base58 or base64) as base58, or '' when it is not 32 bytes. */
+function idOf(v: unknown): string {
+  if (v instanceof Uint8Array) return v.length === 32 ? base58Encode(v) : ''
+  const s = asIdentifierString(v)
+  try {
+    return s !== '' && base58Decode(s).length === 32 ? s : ''
+  } catch {
+    return ''
+  }
+}
+
+/** A profile document's `bot` object; ids that do not read as identifiers are skipped. */
+export function botClaimOf(doc: PlainDocument): BotClaim | undefined {
+  const raw = doc['bot']
+  if (raw === null || typeof raw !== 'object') return undefined
+  const o = raw as Record<string, unknown>
+  const operator = idOf(o['operator'])
+  const operates = Array.isArray(o['operates']) ? o['operates'].map(idOf).filter((id) => id !== '') : []
+  if (operator === '' && operates.length === 0) return undefined
+  return { ...(operator !== '' ? { operator } : {}), ...(operates.length > 0 ? { operates } : {}) }
 }
 
 /** A `profile` document, flattened. */
 export function profileFromDoc(doc: PlainDocument): Profile {
+  const bot = botClaimOf(doc)
   const fields: ProfileFields = {}
   for (const f of PROFILE_FIELDS) {
     if (f === 'links') {
@@ -59,6 +86,7 @@ export function profileFromDoc(doc: PlainDocument): Profile {
     revision: revisionOf(doc),
     fields,
     pubkeys: stringArray(doc, 'pubkeys') ?? [],
+    ...(bot !== undefined ? { bot } : {}),
   }
 }
 

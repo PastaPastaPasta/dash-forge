@@ -2098,10 +2098,15 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     // The linked issues, once the merge is recorded. The merge stands if one fails; say so.
     let mut closed_issues = Vec::new();
     for (n, target) in &linked {
-        match collab
-            .set_state(handle, target, StateAction::Close, None)
-            .await
-        {
+        let closed = match u32::try_from(number) {
+            Ok(pr) => collab.close_by_merge(handle, target, pr).await,
+            Err(_) => {
+                collab
+                    .set_state(handle, target, StateAction::Close, None)
+                    .await
+            }
+        };
+        match closed {
             Ok(_) => {
                 closed_issues.push(*n);
                 steps.ok("close", format!("issue #{n}"));

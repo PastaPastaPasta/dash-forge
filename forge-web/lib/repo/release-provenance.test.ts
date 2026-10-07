@@ -49,4 +49,14 @@ describe('tagRevisions', () => {
     expect(revisions.find((r) => r.id === 's2')?.delta).toBe(-1)
     expect(revisions.every((r) => r.assets.length === 0)).toBe(true)
   })
+
+  it("records a public release's target from its first published revision", () => {
+    const list: ReleaseList = {
+      current: [view({ id: 'r2', createdAt: 200, delta: 0, targetOid: 'b'.repeat(40) })],
+      previous: [view({ id: 'r1', createdAt: 100, delta: 1, targetOid: 'a'.repeat(40) })],
+    }
+    expect(tagRevisions(list, 'v1').target).toBe('a'.repeat(40))
+    // a release written before the field records none
+    expect(tagRevisions({ current: [view({ id: 'r1' })], previous: [] }, 'v1').target).toBeNull()
+  })
 })

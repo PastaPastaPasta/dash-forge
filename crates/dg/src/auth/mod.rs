@@ -1458,21 +1458,38 @@ fn sealed_or_clear(text: &Secret, pass: Option<&Secret>) -> Result<zeroize::Zero
 /// directory: that is usually a git work tree, one `git add .` away from publishing the key).
 /// The file must not exist yet.
 fn export_path(args: &ExportArgs, identity_id: &str, to_stdout: bool) -> Result<PathBuf> {
-    let path = match &args.output {
-        Some(p) => p.clone(),
-        None => crate::config::config_dir()?.join("exports").join(
-            match (args.reveal_secrets, args.format.as_str()) {
-                (true, "dfk1") => format!("dash-forge-{identity_id}.dfk1"),
-                (true, _) => format!("dash-forge-{identity_id}.identity.json"),
-                (false, _) => format!("dash-forge-{identity_id}.key.json"),
-            },
-        ),
-    };
+    export_path_in(args, identity_id, to_stdout, crate::config::config_dir)
+}
+
+/// [`export_path`] with the config directory (only asked for without `-o`) supplied.
+fn export_path_in(
+    args: &ExportArgs,
+    identity_id: &str,
+    to_stdout: bool,
+    config_dir: impl FnOnce() -> Result<PathBuf>,
+) -> Result<PathBuf> {
+    let path =
+        match &args.output {
+            Some(p) => p.clone(),
+            None => config_dir()?.join("exports").join(
+                match (args.reveal_secrets, args.format.as_str()) {
+                    (true, "dfk1") => format!("dash-forge-{identity_id}.dfk1"),
+                    (true, _) => format!("dash-forge-{identity_id}.identity.json"),
+                    (false, _) => format!("dash-forge-{identity_id}.key.json"),
+                },
+            ),
+        };
     if to_stdout {
         return Ok(path);
     }
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        // The default folder is Forge's own, so it is 0700; one named with `-o` is not touched.
+        if args.output.is_some() {
+            std::fs::create_dir_all(dir)
+        } else {
+            forge_core::keystore::ensure_private_dir(dir)
+        }
+        .with_context(|| format!("creating {}", dir.display()))?;
     }
     if path.exists() || path.symlink_metadata().is_ok() {
         return Err(crate::errors::usage(format!(
@@ -1679,6 +1696,32 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
 mod tests {
     use super::*;
     use forge_core::network::NetworkSettings;
+
+    /// The default export folder is created owner-only (0700), however the config directory
+    /// itself came to exist; a folder named with `-o` keeps the creator's default mode.
+    #[cfg(unix)]
+    #[test]
+    fn the_default_export_folder_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: ExportArgs,
+        }
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let t = tempfile::tempdir().unwrap();
+        let config = t.path().join("a/b/dash-forge");
+        let args = <Cli as clap::Parser>::parse_from(["dg"]).args;
+        let path = export_path_in(&args, "ID", false, || Ok(config.clone())).unwrap();
+        assert_eq!(path, config.join("exports/dash-forge-ID.key.json"));
+        for dir in [&config, &config.join("exports")] {
+            assert_eq!(mode(dir), 0o700, "{}", dir.display());
+        }
+        // Stdout never creates anything.
+        let other = t.path().join("c/dash-forge");
+        export_path_in(&args, "ID", true, || Ok(other.clone())).unwrap();
+        assert!(!other.exists());
+    }
 
     /// L-34: the recovery-words prompt names the way out for an identity-file user.
     #[test]
