@@ -35,7 +35,8 @@ vi.mock('@/components/confirm-dialog', () => ({
 }))
 const privateWrite: { context: unknown; loading?: boolean; error?: string | null; retry?: () => void; done: () => void } = { context: null, done: () => undefined }
 vi.mock('@/hooks/use-private-write', () => ({ usePrivateWrite: () => privateWrite }))
-vi.mock('@/lib/auth/encryption-key', () => ({ encryptionKeyState: async () => 'open' }))
+let keyState: 'open' | 'locked' | 'none' = 'open'
+vi.mock('@/lib/auth/encryption-key', () => ({ encryptionKeyState: async () => keyState }))
 vi.mock('@/lib/repo/checks', () => ({ readRunners: async () => [] }))
 let membersRead: () => Promise<Membership[]> = async () => []
 vi.mock('@/lib/repo', async (orig) => ({
@@ -270,6 +271,20 @@ describe('the Turn on sheet', () => {
     act(() => root.render(<TurnOnMembersSheet home={homeWith({ access: 'none' } as MembersAccess)} open onClose={() => undefined} />))
     await flush()
     expect(q('turn-on-cost')?.textContent).toContain("You're the only member so far.")
+  })
+
+  it('offers the unlock when the encryption key is locked in this tab, even with a write context', async () => {
+    membersRead = async () => MEMBERS
+    privateWrite.context = {}
+    keyState = 'locked'
+    try {
+      act(() => root.render(<TurnOnMembersSheet home={homeWith({ access: 'none' } as MembersAccess)} open onClose={() => undefined} />))
+      await flush()
+      expect(q('confirm')?.dataset.blocked).toBe('yes')
+      expect(q('turn-on-unlock')).not.toBeNull()
+    } finally {
+      keyState = 'open'
+    }
   })
 
   it('says why the keys could not be read, with Retry, instead of "Reading your keys…" for ever', async () => {

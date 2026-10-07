@@ -102,10 +102,15 @@ async function openIssue(page: Page, path: string): Promise<void> {
   await expect(page.getByTestId('thread-conversation').or(page.getByTestId('members-only-target'))).toBeVisible({ timeout: 120_000 })
 }
 
-/** A member's in-tab unlock of the encryption key, where the page offers one. */
+/**
+ * A member's in-tab unlock of the encryption key, where the page offers one. The offer appears
+ * once the page has read the thread, so wait for it or for the members-only comment itself.
+ */
 async function unlockMembers(page: Page): Promise<void> {
   const offer = page.getByTestId('members-only-unlock')
-  if (!(await offer.isVisible().catch(() => false))) return
+  const readable = page.getByTestId('timeline-comment').filter({ hasText: MARKER })
+  await expect(offer.or(readable).first()).toBeVisible({ timeout: 120_000 })
+  if (!(await offer.isVisible())) return
   await offer.click()
   const panel = page.getByTestId('members-only-unlock-panel')
   await panel.getByLabel('Passphrase').fill(PASSPHRASE)

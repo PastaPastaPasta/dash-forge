@@ -551,9 +551,15 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
       <p className={cn('text-dense', MUTED)} data-testid="turn-on-reading-members">
         Reading the members…
       </p>
-    ) : write.context !== null ? null : key.error !== null ? (
+    ) : key.error !== null ? (
       retry(`Couldn't read your encryption key: ${key.error}`, key.reload, 'turn-on-key-error')
+    ) : key.data === null ? (
+      <p className={cn('text-dense', MUTED)} data-testid="turn-on-reading-keys">
+        Reading your keys…
+      </p>
     ) : key.data === 'locked' ? (
+      // Checked before the write context: a tab reloaded since sign-in has one, but Turn on still
+      // needs the encryption key unlocked here.
       <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="turn-on-unlock" forgot={false} />
     ) : key.data === 'none' ? (
       <p className="text-dense" data-testid="turn-on-no-key">
@@ -562,9 +568,9 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
           {SET_UP_KEY}
         </Link>
       </p>
-    ) : write.error ? (
+    ) : write.context !== null ? null : write.error ? (
       retry(`Couldn't open your encryption key: ${write.error}`, () => write.retry?.(), 'turn-on-key-error')
-    ) : key.data === null || write.loading !== false ? (
+    ) : write.loading !== false ? (
       <p className={cn('text-dense', MUTED)} data-testid="turn-on-reading-keys">
         Reading your keys…
       </p>
