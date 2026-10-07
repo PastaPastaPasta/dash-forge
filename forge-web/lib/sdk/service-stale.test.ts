@@ -116,8 +116,8 @@ describe('refreshing a contract a read found stale (UPDATE-1)', () => {
 })
 
 describe('a read over several contracts refreshes only the ones the network moved past (review: refetch storm)', () => {
-  const CORE = 'EfLLbzVBngukybqgraA7VXtLZ5PpU54eiaB9Dcxqbkkz'
-  const COLLAB = '6scu1j9FQkt3EYr9yoAfEL1SUaYX7F7mnaUFYiRLgjgb'
+  const CORE = 'BKt2Lk6RwUchcdytHT8Sn1ZzYvu8vD4JFEh5G9LHFzRo'
+  const COLLAB = 'BTEsn5BmsSWF8ahQLJjohy392vnpD2NgPnTjAVEUCWKh'
   const DPNS = 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec'
   const newer = (v: number): unknown => ({
     __wbg_ptr: 1,
