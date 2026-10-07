@@ -701,6 +701,7 @@ impl PackReader {
     /// [`Self::fetch_verified`] without recording anything: which copy served, and each
     /// failed copy's `place (why)` apart from the error text, so a caller with more copies
     /// (Platform chunks, other uploaders' copies) records one [`Fallback`] for the whole read.
+    #[allow(clippy::too_many_lines)] // one race: candidate slots, deadlines, refills and the verdict
     pub(crate) async fn race(
         &self,
         uris: &[String],
@@ -1468,7 +1469,7 @@ mod tests {
                         }
                     }
                     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n");
-                    let block = [0u8; 64 * 1024];
+                    let block = vec![0u8; 64 * 1024];
                     while stream.write_all(&block).is_ok() {}
                 });
             }
