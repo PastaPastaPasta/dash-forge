@@ -1061,6 +1061,16 @@ export function loadArtifactBytes(
 }
 
 /**
+ * A whole artifact's bytes as stored, never opened as a pack, even in a private repo: the first
+ * copy whose bytes hash to its `packHash`. For artifacts with their own codec (an environment
+ * snapshot), which checks and opens them itself. `repo` keeps its session, so the repo's own
+ * gateways and caches are the ones used.
+ */
+export function loadStoredArtifactBytes(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest): Promise<Uint8Array> {
+  return loadArtifactBytesProgress(sdk, repo, manifest, undefined, undefined, true)
+}
+
+/**
  * Bytes per windowed whole-artifact fetch. `fetchPlatformRange` now splits an oversized
  * request across parallel {@link CHUNK_QUERY_MAX}-row queries, so this is a
  * memory/progress-granularity knob rather than a correctness ceiling.
@@ -1081,10 +1091,12 @@ export async function loadArtifactBytesProgress(
   manifest: PackManifest,
   onProgress?: (bytesFetched: number, bytesTotal: number) => void,
   cancel?: AbortSignal,
+  stored = false,
 ): Promise<Uint8Array> {
   // A private repo: every copy's sealed bytes are checked against `packHash`, then its standing,
-  // then decrypted; the plaintext is what the caller gets.
-  const session = repo.session
+  // then decrypted; the plaintext is what the caller gets. `stored`: the bytes as uploaded,
+  // checked against `packHash` and never opened ({@link loadStoredArtifactBytes}).
+  const session = stored ? undefined : repo.session
   const open = async (copy: PackManifest): Promise<Uint8Array> => {
     const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel)
     return session === undefined ? bytes : openPrivateArtifact(session, copy, bytes, manifest.copies ?? [copy])

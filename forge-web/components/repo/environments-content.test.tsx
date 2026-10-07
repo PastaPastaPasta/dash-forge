@@ -79,16 +79,35 @@ describe('EnvironmentsView', () => {
     const log = vi.spyOn(console, 'log')
     render(<EnvironmentsView view={page([card({})])} />)
     expect(host.innerHTML).not.toContain(SECRET)
-    expect(byTestId('env-value').map((v) => v.textContent)).toEqual(['•'.repeat(16), '•'.repeat(16)])
+    const masked = `${'•'.repeat(16)}hidden`
+    expect(byTestId('env-value').map((v) => v.textContent)).toEqual([masked, masked])
     const show = host.querySelector<HTMLButtonElement>('button[aria-label="Show DB_URL"]')!
     act(() => show.click())
     expect(byTestId('env-value')[0]?.textContent).toBe(SECRET)
-    expect(byTestId('env-value')[1]?.textContent).toBe('•'.repeat(16))
-    expect(host.querySelector('button[aria-label="Hide DB_URL"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(byTestId('env-value')[1]?.textContent).toBe(masked)
+    expect(show.getAttribute('aria-pressed')).toBe('true')
     expect(setItem).not.toHaveBeenCalled()
     expect(log).not.toHaveBeenCalled()
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Hide DB_URL"]')!.click())
+    act(() => show.click())
     expect(host.innerHTML).not.toContain(SECRET)
+    expect(show.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('hides every shown value when the page is put away (Back cache, hidden tab)', () => {
+    render(<EnvironmentsView view={page([card({})])} />)
+    const show = host.querySelector<HTMLButtonElement>('button[aria-label="Show DB_URL"]')!
+    act(() => show.click())
+    expect(host.innerHTML).toContain(SECRET)
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    expect(host.innerHTML).not.toContain(SECRET)
+  })
+
+  it('says how many changes were ignored, and is not empty when that is all there is', () => {
+    render(<EnvironmentsView view={{ cards: [], hidden: 0, ignored: 2, empty: false }} />)
+    expect(byTestId('env-ignored-count')[0]?.textContent).toBe("2 changes by people who aren't maintainers now were ignored.")
+    expect(byTestId('env-empty')).toHaveLength(0)
   })
 
   it('names who can read a Maintainers environment, and who updated it when', () => {

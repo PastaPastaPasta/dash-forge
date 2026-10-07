@@ -14,7 +14,7 @@
  * {@link EnvironmentsRemoval} is the member-removal hook: what a removed member could read.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, ChevronLeft, Eye, EyeOff, KeyRound, Lock, Users } from 'lucide-react'
 
@@ -25,6 +25,7 @@ import {
   environmentsView,
   exposureLine,
   hiddenLine,
+  ignoredLine,
   ignoredWarning,
   removalView,
   unreadableLine,
@@ -105,6 +106,19 @@ export function EnvironmentsView({ view, onRetry }: { view: EnvPageView; onRetry
       if (!next.delete(k)) next.add(k)
       return next
     })
+  // A page kept for Back (the back/forward cache) or a hidden tab shows nothing it showed.
+  useEffect(() => {
+    const hide = (): void => setShown(new Set())
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'hidden') hide()
+    }
+    window.addEventListener('pagehide', hide)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('pagehide', hide)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
   if (view.empty) {
     return (
       <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-8 text-center text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="env-empty">
@@ -121,6 +135,11 @@ export function EnvironmentsView({ view, onRetry }: { view: EnvPageView; onRetry
         <p className="flex items-center gap-2 text-dense text-anvil-600 dark:text-anvil-300" data-testid="env-hidden">
           <Lock className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
           {hiddenLine(view.hidden, view.cards.length)}
+        </p>
+      ) : null}
+      {view.ignored > 0 ? (
+        <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="env-ignored-count">
+          {ignoredLine(view.ignored)}
         </p>
       ) : null}
     </div>
@@ -225,9 +244,16 @@ function Entries({ entries, prefix, shown, toggle }: { entries: readonly EntryVi
             <span className="rounded bg-anvil-100 px-1.5 text-[11px] text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">{e.type === 'secret' ? 'secret' : 'variable'}</span>
             <span className="ml-auto flex min-w-0 max-w-full items-center gap-1">
               <code className="min-w-0 break-all font-mono text-[12px] text-anvil-800 dark:text-anvil-100" data-testid="env-value">
-                {open ? e.value : MASK}
+                {open ? (
+                  e.value
+                ) : (
+                  <>
+                    <span aria-hidden>{MASK}</span>
+                    <span className="sr-only">hidden</span>
+                  </>
+                )}
               </code>
-              <Button variant="ghost" size="icon" aria-label={open ? `Hide ${e.name}` : `Show ${e.name}`} aria-pressed={open} onClick={() => toggle(k)}>
+              <Button variant="ghost" size="icon" aria-label={`Show ${e.name}`} aria-pressed={open} onClick={() => toggle(k)}>
                 {open ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
               </Button>
             </span>
@@ -300,7 +326,7 @@ function Conflict({
       </ol>
       <p className="text-dense text-anvil-700 dark:text-anvil-200">
         Compare them with <code className="font-mono text-[12px]">dg env history --env {env}</code>, then a maintainer keeps one:{' '}
-        <code className="break-all font-mono text-[12px]">dg env edit --env {env} --keep &lt;id&gt;</code>
+        <code className="break-words font-mono text-[12px]">dg env edit --env {env} --keep &lt;id&gt;</code>
       </p>
     </div>
   )

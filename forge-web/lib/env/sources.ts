@@ -2,7 +2,7 @@
  * The loader's reads ({@link EnvSources}) over the SDK: the kind-8 manifests by the `(kind,
  * $createdAt)` index, the maintainers read fresh (D24 counts only a current maintainer, so no
  * cached list decides it), each artifact from Platform chunks or its recorded copies (the stored
- * bytes, never opened as a pack: the env codec opens them), and owners' identity keys.
+ * bytes, never opened as a pack: the env codec checks and opens them), and owners' identity keys.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -13,7 +13,7 @@ import { hexToBytes, type OwnerKey } from '../private'
 import type { RepoRef } from '../repo/contract'
 import { readMemberships } from '../repo/members'
 import { readManifestsOfKind, type PackManifest } from '../repo/packs'
-import { loadArtifactBytes } from '../view/browse-source'
+import { loadStoredArtifactBytes } from '../view/browse-source'
 import type { EnvManifest, EnvSources } from './loader'
 
 /** Platform's numbers for ENCRYPTION and ECDSA_SECP256K1; anything else is a number no sender key has. */
@@ -44,10 +44,6 @@ export function envManifestOf(m: PackManifest): EnvManifest {
 
 /** {@link EnvSources} for `repo`. */
 export function sdkEnvSources(sdk: EvoSDK, repo: RepoRef): EnvSources {
-  // The stored bytes: read without a members session, which would open them as a pack.
-  const { session: _session, lane: _lane, ...stored } = repo as RepoRef & { readonly lane?: unknown }
-  void _session
-  void _lane
   const raw = new Map<string, PackManifest>()
   return {
     manifests: async () => {
@@ -59,7 +55,7 @@ export function sdkEnvSources(sdk: EvoSDK, repo: RepoRef): EnvSources {
     fetch: async (m) => {
       const manifest = raw.get(m.id)
       if (manifest === undefined) throw new Error('no such manifest')
-      return loadArtifactBytes(sdk, stored as RepoRef, manifest)
+      return loadStoredArtifactBytes(sdk, repo, manifest)
     },
     ownerKeys: async (id) => ownerKeysOf((await fetchIdentityKeys(sdk, id)) ?? []),
   }

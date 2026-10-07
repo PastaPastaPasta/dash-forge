@@ -40,8 +40,7 @@ export interface EnvironmentsState {
   readonly locked: boolean
 }
 
-/** `enabled: false` reads nothing (a closed dialog). */
-export function useEnvironments(home: RepoHome, enabled = true): EnvironmentsState {
+export function useEnvironments(home: RepoHome): EnvironmentsState {
   const repo = home.repo
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, unlockScope } = useAuth()
@@ -59,7 +58,7 @@ export function useEnvironments(home: RepoHome, enabled = true): EnvironmentsSta
       return { book: await readEnvironments(sdkEnvSources(sdk!, repo), keys), encryption }
     },
     [ready, network, repo.repoId, identity ?? '', unlockScope ?? '', session?.id ?? ''],
-    { enabled: enabled && ready && sdk !== null },
+    { enabled: ready && sdk !== null },
   )
   const locked = home.lane?.access === 'locked' || home.private?.access === 'locked' || state.data?.encryption === 'locked'
   return { state, locked }

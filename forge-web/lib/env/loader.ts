@@ -161,8 +161,9 @@ export async function readEnvironments(sources: EnvSources, keys: EnvKeys, open:
   if (keys.members === null && !keys.hasReader) {
     for (const m of counted) opened.set(m.id, { kind: 'skipped' })
   } else {
-    const fetched = await pool(counted, FETCH_WINDOW, async (m): Promise<Uint8Array | string> => {
-      if (m.sizeBytes > MAX_SEALED) return 'it is larger than an environment can be'
+    const fetched = await pool(counted, FETCH_WINDOW, async (m): Promise<Uint8Array | string | null> => {
+      // larger than any snapshot can be: refused unfetched, as the codec would refuse it
+      if (m.sizeBytes > MAX_SEALED) return null
       try {
         return await sources.fetch(m)
       } catch (e) {
@@ -170,12 +171,16 @@ export async function readEnvironments(sources: EnvSources, keys: EnvKeys, open:
       }
     })
     // a Maintainers snapshot's sender key comes from its manifest owner's identity only
-    const owners = [...new Set(counted.filter((_, i) => typeof fetched[i] !== 'string' && (fetched[i] as Uint8Array)[4] === 0x02).map((m) => m.ownerId))]
+    const owners = [...new Set(counted.filter((_, i) => fetched[i] instanceof Uint8Array && (fetched[i] as Uint8Array)[4] === 0x02).map((m) => m.ownerId))]
     const ownerKeys = new Map<string, readonly OwnerKey[]>(await Promise.all(owners.map(async (o) => [o, await sources.ownerKeys(o)] as const)))
     const epochKeys: EpochKeyring = keys.members?.keys ?? new Map()
     await keys.withReader(async (reader) => {
       for (const [i, m] of counted.entries()) {
-        const bytes = fetched[i] as Uint8Array | string
+        const bytes = fetched[i] as Uint8Array | string | null
+        if (bytes === null) {
+          opened.set(m.id, { kind: 'refused', code: 'sizeMismatch' })
+          continue
+        }
         if (typeof bytes === 'string') {
           opened.set(m.id, { kind: 'unfetched', message: bytes })
           continue

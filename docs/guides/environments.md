@@ -4,11 +4,12 @@ Keep configuration and secrets for each environment (`dev`, `staging`, `producti
 
 1. [Who can read an environment](#who-can-read-an-environment)
 2. [Commands](#commands)
-3. [Changing an environment](#changing-an-environment)
-4. [When two people change it at once](#when-two-people-change-it-at-once)
-5. [Removing a member](#removing-a-member)
-6. [What is public](#what-is-public)
-7. [Limits](#limits)
+3. [In the web app](#in-the-web-app)
+4. [Changing an environment](#changing-an-environment)
+5. [When two people change it at once](#when-two-people-change-it-at-once)
+6. [Removing a member](#removing-a-member)
+7. [What is public](#what-is-public)
+8. [Limits](#limits)
 
 ---
 
@@ -54,6 +55,15 @@ dg env history <owner>/<repo> --env production        # who changed what, and wh
 - `export -o` first adds the file to `.git/info/exclude` and checks with `git check-ignore` that git ignores it, then creates it with mode 0600. It refuses a file git already tracks (also one whose name differs only in letter case), a path a `.gitignore` rule un-ignores, a folder inside a git work tree where git can't run, and an existing file unless you pass `--force` (which replaces a symlink rather than writing through it). The text quotes values so that `source .env` in a shell never runs anything inside them.
 - `edit` opens `$VISUAL` or `$EDITOR` on a temporary file only you can read, and removes it afterwards, also when the terminal closes. Your editor may keep its own swap or backup copies elsewhere. Ctrl-C goes to the editor while it is open. Delete a line to remove an entry. Closing the editor without a change saves nothing.
 - Every command takes `--json`.
+
+## In the web app
+
+The repository's **Settings → Environments** page shows the environments you can read, read-only. Change them with `dg env`.
+
+- Each environment shows its audience, who can read it, its entries and who saved the version in use, and when. Values are hidden. The eye button shows one value on this page only: it isn't stored or logged, and it's hidden again when you leave the page.
+- Environments you can't read are only counted: "2 environments", or "1 more environment you can't read" below the ones you can.
+- Members environments open with the repository's members key, which your tab holds once it's unlocked. Maintainers environments open with your encryption key. After a reload, unlock the tab to read them.
+- An ignored change and two versions saved at once show the same warning and versions as `dg`, with the commands to keep one. The page also says how many changes by people who aren't maintainers now were ignored.
 
 ## Changing an environment
 
@@ -110,7 +120,7 @@ Changes saved by someone who wasn't a maintainer are ignored, but they stay on P
 
 Removing, demoting or adding a maintainer of a repository that has environments needs the steps above, which the web app doesn't take yet. It refuses with "This repo has environments. Remove or demote maintainers with dg for now." (or "Make maintainers with dg for now."). Use `dg collab remove --role maintainer` (then `dg collab add` to give a demoted maintainer another role) or `dg collab add --role maintainer`.
 
-The list also notes how many environments you can't read yourself: the removed member may have been able to read values there.
+Removing a member who isn't a maintainer works on the web. Its confirmation lists the environments and value names they could read, as `dg collab remove` does, and notes how many environments you can't read yourself: the removed member may have been able to read values there.
 
 ## What is public
 

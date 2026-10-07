@@ -212,7 +212,7 @@ describe('readEnvironments', () => {
     const src = sources([big])
     const book = await readEnvironments(src, await viewer(alice, 1, true))
     expect(src.fetch).not.toHaveBeenCalled()
-    expect(book.opened.get(dev1.manifest.id)?.kind).toBe('unfetched')
+    expect(book.opened.get(dev1.manifest.id)).toEqual({ kind: 'refused', code: 'sizeMismatch' })
   })
 })
 

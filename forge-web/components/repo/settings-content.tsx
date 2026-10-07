@@ -20,7 +20,7 @@ import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/componen
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
-import { ROLE_LABEL, ROLE_NOUN, grantableRoles, membershipTitle } from '@/lib/rules/roles'
+import { ROLE_LABEL, ROLE_NOUN, grantableRoles, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import { decodeIdentifier } from '@/lib/auth'
@@ -356,7 +356,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         >
           {/* What they could read in the repo's environments, to rotate at its source. A
               maintainer's removal is refused while the repo has environments (dg handles it). */}
-          {action?.kind === 'revoke' && action.role !== 'maintainer' ? <EnvironmentsRemoval home={home} member={action.member} heldMembersKey={keyed} /> : null}
+          {action?.kind === 'revoke' && action.role !== 'maintainer' ? <EnvironmentsRemoval home={home} member={action.member} heldMembersKey={keyed && holdsMembersKey(action.role, 'public')} /> : null}
         </ConfirmDialog>
         </>
         )}

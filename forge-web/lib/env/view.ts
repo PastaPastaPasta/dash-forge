@@ -120,7 +120,8 @@ export function environmentsView(book: EnvBook): EnvPageView {
     return { ...base, kind: 'unreadable', entries: [], updated: head, savedFor: null, conflict: null, unreadable: { reason: '', unfetched: false, head } }
   })
   const hidden = book.resolution.hidden.length
-  return { cards, hidden, ignored: ignoredCount(book), empty: cards.length === 0 && hidden === 0 }
+  const ignored = ignoredCount(book)
+  return { cards, hidden, ignored, empty: cards.length === 0 && hidden === 0 && ignored === 0 }
 }
 
 /**
@@ -131,6 +132,11 @@ export function environmentsView(book: EnvBook): EnvPageView {
 export function ignoredWarning(env: string, ignored: { readonly head: Head; readonly more: number }, author: string): string {
   const more = ignored.more > 0 ? ` (and ${ignored.more} more)` : ''
   return `${env} has a newer change by ${author} at ${utc(ignored.head.createdAt)} (${shortHead(ignored.head)})${more}, who isn't a maintainer now; it was ignored. Ask a maintainer to check ${env}'s values.`
+}
+
+/** The line for ignored changes (`dg env ls`'s "Ignored:" line): "2 changes by people who aren't maintainers now were ignored." */
+export function ignoredLine(n: number): string {
+  return `${count(n, 'change')} by people who aren't maintainers now ${n === 1 ? 'was' : 'were'} ignored.`
 }
 
 /** The count line for environments this reader cannot name: "2 environments" or, beside named ones, "1 more environment you can't read". */
